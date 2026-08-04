@@ -5,6 +5,12 @@ import {
   updateStoredRuntimeSettings,
 } from '../../../../lib/agent/runtime-settings-store';
 import { rejectCrossOrigin } from '../../agent/_shared';
+import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
+import { applyRuntimeProviderBaseURLs } from '../../../../lib/agent/provider-runtime';
+import { applyRuntimeSearchSettings, getRuntimeSearchSettings } from '../../../../lib/search/search-runtime';
+import { applyRuntimeImageSettings } from '../../../../lib/image/image-generation-runtime';
+import { applyRuntimeVideoSettings } from '../../../../lib/video/video-generation-runtime';
+import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -14,6 +20,7 @@ const noStoreHeaders = { 'Cache-Control': 'no-cache, no-store, must-revalidate' 
 export async function GET(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
   if (originError) return originError;
+  hydrateServerRuntimeSettings();
   return NextResponse.json(
     { ok: true, settings: readStoredRuntimeSettings() },
     { headers: noStoreHeaders },
@@ -30,6 +37,27 @@ export async function PUT(req: NextRequest) {
       ? body.settings
       : body;
     await updateStoredRuntimeSettings(settings || {});
+    if (Object.prototype.hasOwnProperty.call(settings || {}, 'apiKeys')) {
+      applyRuntimeApiKeys(settings?.apiKeys && typeof settings.apiKeys === 'object' ? settings.apiKeys : {});
+    }
+    if (Object.prototype.hasOwnProperty.call(settings || {}, 'modelOverrides')) {
+      applyRuntimeModelOverrides(settings?.modelOverrides && typeof settings.modelOverrides === 'object' ? settings.modelOverrides : {});
+    }
+    if (Object.prototype.hasOwnProperty.call(settings || {}, 'baseURLs')) {
+      applyRuntimeProviderBaseURLs(settings?.baseURLs && typeof settings.baseURLs === 'object' ? settings.baseURLs : {});
+    }
+    if (settings?.search) {
+      applyRuntimeSearchSettings(settings?.search || {}, settings?.apiKeys?.tavily);
+    } else if (Object.prototype.hasOwnProperty.call(settings || {}, 'apiKeys')
+      && settings?.apiKeys && Object.prototype.hasOwnProperty.call(settings.apiKeys, 'tavily')) {
+      const currentSearch = getRuntimeSearchSettings();
+      applyRuntimeSearchSettings({
+        ...currentSearch,
+        apiKeys: { ...currentSearch.apiKeys, tavily: settings.apiKeys.tavily },
+      });
+    }
+    if (settings?.image) applyRuntimeImageSettings(settings.image);
+    if (settings?.video) applyRuntimeVideoSettings(settings.video);
     return NextResponse.json(
       { ok: true, settings: readStoredRuntimeSettings() },
       { headers: noStoreHeaders },
@@ -46,5 +74,11 @@ export async function DELETE(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
   if (originError) return originError;
   await clearStoredRuntimeSettings();
+  applyRuntimeApiKeys({});
+  applyRuntimeModelOverrides({});
+  applyRuntimeProviderBaseURLs({});
+  applyRuntimeSearchSettings({});
+  applyRuntimeImageSettings({});
+  applyRuntimeVideoSettings({});
   return NextResponse.json({ ok: true }, { headers: noStoreHeaders });
 }

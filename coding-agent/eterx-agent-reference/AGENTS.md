@@ -19,7 +19,7 @@ Complete the current software task using the real workspace, exact EterX tools, 
 
 ## Tool Defaults
 
-- Inspect: `workspace_semantic_search`, `workspace_symbol_lookup`, `workspace_find_files`, `workspace_search_text`, `workspace_read_many_files`, `workspace_read_file`.
+- Inspect: `workspace_semantic_search`, `workspace_file_outline`, `workspace_find_files`, `workspace_search_text`, `workspace_read_many_files`, `workspace_read_file`.
 - Edit: `workspace_str_replace`, `workspace_apply_patch`, `workspace_edit_file`, `workspace_edit_many_files`, `smart_refactor`.
 - Create: `workspace_write_file` for new files only.
 - Commands: `workspace_run_command` for finite commands, `process_manager` for servers.

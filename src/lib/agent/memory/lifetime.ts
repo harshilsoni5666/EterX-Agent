@@ -886,19 +886,6 @@ class LifetimeBrain {
           break;
         }
 
-        case 'workspace_analyze': {
-          if (result?.profile) {
-            const p = result.profile;
-            this.recordFact({
-              chatId, projectId,
-              fact: `Project: ${p.framework || 'unknown'} with ${p.language || 'unknown'}. Build: ${p.buildSystem || 'unknown'}`,
-              confidence: 0.9,
-              tags: ['project', 'framework', 'stack'],
-            });
-          }
-          break;
-        }
-
         case 'get_skill_guidelines': {
           const skillName = String(args.skill_name || args.skillName || '');
           if (skillName) {

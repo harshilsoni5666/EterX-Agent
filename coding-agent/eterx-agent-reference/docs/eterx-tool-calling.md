@@ -179,16 +179,13 @@ Example syntax check:
 Use these when the task needs project-level understanding:
 
 - `code_intelligence`: symbol and code relationship analysis.
-- `smart_file_analyzer`: file role and risk analysis.
 - `smart_refactor`: structured refactor support.
-- `project_scaffolder`: project or feature scaffolding.
-- `workspace_analyze`: broad workspace summary.
 
 Example:
 
 ```json
 {
-  "tool": "smart_file_analyzer",
+  "tool": "workspace_file_outline",
   "arguments": {
     "filename": "src/lib/agent/tools/workspaceTool.ts"
   }

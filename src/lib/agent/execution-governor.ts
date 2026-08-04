@@ -55,6 +55,7 @@ const MUTATION_TOOLS = new Set([
   'office_artifact_builder',
   'docx_generator',
   'image_generator',
+  'video_generator',
   'scheduled_tasks',
 ]);
 

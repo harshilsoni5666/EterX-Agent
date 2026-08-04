@@ -21,7 +21,7 @@
  *   drag          → Drag from one point to another.
  *   hover         → Move cursor to position (no click).
  *   find          → Find UI element by name/text using OCR + UIAutomation.
- *   read          → Read text from screen region via Windows OCR.
+ *   read          → Read text from screen region via the available platform OCR backend.
  *   wait_change   → Wait until screen content changes (diff-based).
  *   wait_text     → Wait until specific text appears on screen.
  *   wait_ms       → Sleep for N milliseconds (useful between actions).
@@ -80,6 +80,9 @@ import {
 import { enforceToolCapability } from '../security/tool_policy';
 import { resolveTerminalShell } from './shell_resolver';
 import { getEterxWorkspaceDir } from '../../storage-paths';
+import { executePlatformScreenAction } from '../../computer/platform-control';
+import { readPlatformScreenText } from '../../computer/platform-ocr';
+import { executeCuaScreenAction } from '../../computer/cua-driver';
 
 const execFileAsync = promisify(execFile);
 
@@ -106,7 +109,7 @@ async function ps(script: string, timeout = 12000): Promise<string> {
 }
 
 // ─── Core C# assembly (loaded once per PS session via inline Add-Type) ────────
-// Uses GDI BitBlt for fast capture, Win32 for mouse/keyboard, Windows OCR
+// Uses GDI/Win32/Windows OCR on Windows; macOS/Linux route to native providers.
 const CS_PREAMBLE = `
 Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
 using System;
@@ -797,6 +800,7 @@ ACTIONS (all return a screenshot so you see the result):
   wait_text     - Wait until specific text appears on screen
   wait_ms       - Pause for N milliseconds
   launch_app    - Open any app by name
+  open_url      - Open an http(s) URL with the platform default handler
   focus_app     - Focus a running app by name/title
   list_apps     - List all open windows
   get_cursor    - Get current cursor X,Y
@@ -815,8 +819,9 @@ ACTIONS (all return a screenshot so you see the result):
   run_command   - Run a shell command and return output
 
 SAFETY:
-  - Default mode controls the isolated EterX Computer only.
-  - Real host desktop control requires ETERX_ALLOW_UNSAFE_HOST_COMPUTER=1.
+  - Browser control and Computer Use are separate capabilities. Browser control stays page-scoped; Computer Use uses the Cua Driver desktop scope when enabled.
+  - Computer Use is disabled until its setting is enabled and the selected run grants host control.
+  - When Cua Driver is unavailable, macOS/Linux may use their installed native screen provider; Windows stays isolated rather than pretending host control is available.
 
 TIPS:
   - Always SEE first before clicking — coordinates come from what you see
@@ -832,7 +837,7 @@ TIPS:
       'see', 'see_region', 'click', 'right_click', 'double_click',
       'type', 'key', 'scroll', 'drag', 'hover',
       'find', 'read', 'wait_change', 'wait_text', 'wait_ms',
-      'launch_app', 'focus_app', 'list_apps', 'get_cursor',
+      'launch_app', 'open_url', 'focus_app', 'list_apps', 'get_cursor',
       'clipboard_get', 'clipboard_set',
       'stream_start', 'stream_stop',
       'select_all', 'copy', 'paste', 'save', 'undo',
@@ -852,6 +857,7 @@ TIPS:
 
     // Text / query
     text: z.string().optional().describe('Text to type, key to press, app name, text to find/wait for, clipboard content, or command'),
+    url: z.string().optional().describe('HTTP or HTTPS URL for open_url'),
     query: z.string().optional().describe('Element search query for find action'),
 
     // Scroll
@@ -864,6 +870,8 @@ TIPS:
 
     // Screenshot quality
     quality: z.number().optional().describe('Screenshot JPEG quality 40-95 (default 72)'),
+    fps: z.number().min(1).max(20).optional().describe('Live stream frames per second'),
+    maxWidth: z.number().optional().describe('Maximum live stream frame width'),
 
     // Speed
     speed: z.enum(['slow', 'normal', 'fast']).optional().describe('Action speed (affects mouse movement and typing)'),
@@ -880,17 +888,114 @@ TIPS:
     if (!decision.allowed) {
       return { success: false, action, result: decision.reason || 'Screen agent control is not allowed', vision: null };
     }
+    // Auto-start live stream whenever screen_agent is used
+    if (chatId) autoStreamPing(chatId);
+
+    // Computer Use is an explicit host capability. Prefer the real Cua Driver
+    // on every desktop platform when the setting is enabled. This keeps the
+    // browser/page path and the desktop path separate, while preserving the
+    // existing platform fallback on Unix-like desktops when Cua is not installed.
+    const computerUseEnabled = ctx?.allowHostControl === true && ctx?.computerUseEnabled !== false;
+    if (computerUseEnabled) {
+      const cuaResult = await executeCuaScreenAction(action, input);
+      if (cuaResult) {
+        if (cuaResult.success) {
+          monitorEmitter.desktopAction(`${action} (${cuaResult.provider})`, undefined, { provider: cuaResult.provider }, chatId);
+        }
+        return { success: cuaResult.success, action, result: cuaResult.result, vision: cuaResult.vision || null };
+      }
+      // Keep small OS utilities (clipboard and safe URL opening) available on
+      // Windows even when the installed Cua Driver version does not expose
+      // those optional tools yet.
+      if (process.platform === 'win32') {
+        const systemFallback = await executePlatformScreenAction(action, input);
+        if (systemFallback) return { success: systemFallback.success, action, result: systemFallback.result, vision: null };
+      }
+    }
+
     if (process.platform !== 'win32') {
+      const platformResult = await executePlatformScreenAction(action, input);
+      if (platformResult) {
+        const vision = ['clipboard_get', 'clipboard_set', 'get_cursor', 'list_apps'].includes(action)
+          ? null
+          : await takeScreenshot(quality, 1280, chatId || '');
+        if (platformResult.success) monitorEmitter.desktopAction(`${action} (${platformResult.provider})`, undefined, { provider: platformResult.provider }, chatId);
+        return { success: platformResult.success, action, result: platformResult.result, vision };
+      }
+      if (action === 'see' || action === 'see_region') {
+        const shot = await takeScreenshot(quality, 1280, chatId || '');
+        return { success: !!shot, action, result: shot ? 'Current screen captured' : 'Screenshot failed - check screen recording/display access', vision: shot };
+      }
+      if (action === 'wait_change') {
+        const timeout = input.timeout_ms ?? 8000;
+        const changed = await waitForChange(timeout, 350, chatId || '');
+        return { success: changed, action, result: changed ? 'Screen changed' : `No change detected in ${timeout}ms`, vision: await takeScreenshot(quality, 1280, chatId || '') };
+      }
+      if (action === 'wait_ms') {
+        const ms = Math.min(input.ms ?? input.timeout_ms ?? 1000, 30000);
+        await new Promise(resolve => setTimeout(resolve, ms));
+        return { success: true, action, result: `Waited ${ms}ms`, vision: await takeScreenshot(quality, 1280, chatId || '') };
+      }
+      if (action === 'stream_start') {
+        const { startLiveStream } = await import('../../computer/live-stream');
+        await startLiveStream({ fps: input.fps || 8, quality, maxWidth: input.maxWidth || 1280, chatId: chatId || '' });
+        return { success: true, action, result: `Cross-platform live screen stream started (${input.fps || 8}fps)`, vision: null };
+      }
+      if (action === 'stream_stop') {
+        const { stopLiveStream } = await import('../../computer/live-stream');
+        stopLiveStream();
+        return { success: true, action, result: 'Live screen stream stopped', vision: null };
+      }
+      if (action === 'read' || action === 'find') {
+        const ocr = await readPlatformScreenText();
+        const vision = await takeScreenshot(quality, 1280, chatId || '');
+        if (!ocr.available) return { success: false, action, result: ocr.error, vision };
+        if (action === 'read') {
+          const hasRegion = input.x != null && input.width != null;
+          const words = hasRegion
+            ? ocr.words.filter(word => word.left < Number(input.x) + Number(input.width) && word.left + word.width > Number(input.x) && word.top < Number(input.y || 0) + Number(input.height || 600) && word.top + word.height > Number(input.y || 0))
+            : ocr.words;
+          return { success: true, action, result: words.map(word => word.text).join(' ') || '(no text detected on screen)', vision };
+        }
+        const query = String(input.query || input.text || '').trim().toLowerCase();
+        if (!query) return { success: false, action, result: 'No query provided', vision };
+        const match = ocr.words.find(word => word.text.toLowerCase().includes(query));
+        if (!match) return { success: false, action, result: `Element "${query}" not found on screen`, vision };
+        return {
+          success: true,
+          action,
+          result: {
+            text: match.text,
+            center: { x: match.left + Math.round(match.width / 2), y: match.top + Math.round(match.height / 2) },
+            bounds: { x: match.left, y: match.top, w: match.width, h: match.height },
+            source: ocr.provider,
+            tip: 'Use click with the returned center coordinates.',
+          },
+          vision,
+        };
+      }
+      if (action === 'wait_text') {
+        const wanted = String(input.text || '').trim().toLowerCase();
+        if (!wanted) return { success: false, action, result: 'No text to wait for', vision: null };
+        const deadline = Date.now() + Math.min(Number(input.timeout_ms || 12000), 60_000);
+        let lastOcr = await readPlatformScreenText();
+        if (!lastOcr.available) return { success: false, action, result: lastOcr.error, vision: await takeScreenshot(quality, 1280, chatId || '') };
+        while (Date.now() < deadline) {
+          if (lastOcr.available && lastOcr.text.toLowerCase().includes(wanted)) {
+            return { success: true, action, result: `Text "${wanted}" appeared`, vision: await takeScreenshot(quality, 1280, chatId || '') };
+          }
+          await new Promise(resolve => setTimeout(resolve, 500));
+          lastOcr = await readPlatformScreenText();
+        }
+        return { success: false, action, result: lastOcr.error || `Text "${wanted}" not found`, vision: await takeScreenshot(quality, 1280, chatId || '') };
+      }
       return {
         success: false,
         action,
-        result: `Interactive screen automation is currently unavailable on ${process.platform}. Use screenshot_capture for cross-platform screen capture.`,
-        vision: null
+        result: `Action ${action} needs an installed platform input provider or OCR backend on ${process.platform}. Browser CDP control remains available for browser UI work.`,
+        vision: await takeScreenshot(quality, 1280, chatId || ''),
       };
     }
-
-    // Auto-start live stream whenever screen_agent is used
-    if (chatId) autoStreamPing(chatId);
 
     if (!isUnsafeHostControlEnabled()) {
       const managedResult = await executeManagedScreenAction(action, input, chatId, quality);
@@ -1112,6 +1217,20 @@ TIPS:
           const vision = await snap();
           monitorEmitter.appConnected(appName, undefined, undefined, chatId);
           return { success: true, action, result: `Launched: ${appName}`, vision };
+        }
+
+        case 'open_url': {
+          let url: string;
+          try {
+            const parsed = new URL(String(input.url ?? input.text ?? '').trim());
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('only http:// and https:// URLs are allowed');
+            url = parsed.toString();
+          } catch (error: any) {
+            return { success: false, action, result: `Invalid URL: ${String(error?.message || error)}`, vision: null };
+          }
+          const opened = await ps(`Start-Process -LiteralPath '${url.replace(/'/g, "''")}'`, 8000);
+          if (opened.startsWith('ERROR')) return { success: false, action, result: opened, vision: null };
+          return { success: true, action, result: `Opened URL: ${url}`, vision: await snap() };
         }
 
         case 'get_cursor': {

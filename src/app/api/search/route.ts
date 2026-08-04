@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Query is required' }, { status: 400 });
     }
 
-    // Execute the Tavily Search core tool
+    // Execute the configured External service search route.
     const results = await webSearchTool.execute({
       action: 'search',
       query,

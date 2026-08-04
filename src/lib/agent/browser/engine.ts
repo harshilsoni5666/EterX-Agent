@@ -210,11 +210,18 @@ export class BrowserEngine {
     if (this.isConnected && this.context) {
       try {
         const page = await this.getActivePage();
-        if (page && !page.isClosed()) {
+        const requestedMode = options.mode;
+        if (page && !page.isClosed() && (!requestedMode || requestedMode === this.connectionMode)) {
           console.log('[BrowserEngine] Reusing existing browser connection');
           return page;
         }
       } catch {}
+    }
+
+    // Keep managed and signed-in browser sessions distinct. Disconnecting a
+    // CDP session only detaches EterX; it does not close the user's browser.
+    if (this.isConnected && options.mode && options.mode !== this.connectionMode) {
+      await this.disconnect();
     }
 
     const mode = options.mode || 'cdp';
@@ -881,6 +888,14 @@ export class BrowserEngine {
   /** Read-only readiness check used by Settings before offering signed mode. */
   async getSignedBrowserReadiness(): Promise<{ available: boolean; reason: string; browser?: string }> {
     try {
+      if (this.isConnected && this.connectionMode === 'managed') {
+        const install = await this.findBrowserInstall(false);
+        return {
+          available: true,
+          reason: `Signed-in ${install.displayName} is available; choosing it will switch from the isolated browser.`,
+          browser: install.displayName,
+        };
+      }
       const install = await this.findBrowserInstall();
       const debugPort = await this.findDebugPortForInstall(install);
       if (debugPort) {
@@ -1140,14 +1155,13 @@ export class BrowserEngine {
       },
     ];
 
-    const defaultBrowser = this.detectDefaultChromiumBrowser();
-    if (requireSystemDefault && defaultBrowser === 'unsupported') {
-      throw new Error(
-        'The system default browser is not a supported Chromium browser. ' +
-        'Set Chrome, Edge, or Brave as the default browser, then retry browser control.'
-      );
-    }
-    const orderedCandidates = requireSystemDefault && defaultBrowser && defaultBrowser !== 'unsupported'
+    const detectedDefaultBrowser = this.detectDefaultChromiumBrowser();
+    // Browser control is allowed to use an installed supported Chromium
+    // browser even when Firefox/Safari is the system default. Prefer a
+    // supported default when one exists, then fall back to the first installed
+    // Chrome/Edge/Brave on every desktop platform.
+    const defaultBrowser = detectedDefaultBrowser === 'unsupported' ? null : detectedDefaultBrowser;
+    const orderedCandidates = requireSystemDefault && defaultBrowser
       ? [...candidates].sort((a, b) => (
           Number(b.displayName.toLowerCase() === defaultBrowser) -
           Number(a.displayName.toLowerCase() === defaultBrowser)

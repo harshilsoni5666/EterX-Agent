@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getEterxDataDir } from './storage-paths';
+import type { SearchSettings } from '../search/search-config';
+import { normalizeImageSettings, type ImageSettings } from '../image/image-generation-config';
+import { normalizeVideoSettings, type VideoSettings } from '../video/video-generation-config';
 
 export type StoredRuntimeSettings = {
   apiKeys?: Record<string, string | string[]>;
@@ -10,11 +13,32 @@ export type StoredRuntimeSettings = {
   modelApiKeys?: Record<string, string>;
   modelOverrides?: Record<string, string>;
   baseURLs?: Record<string, string>;
+  search?: SearchSettings;
+  image?: ImageSettings;
+  video?: VideoSettings;
 };
 
 const SETTINGS_DIR = path.join(getEterxDataDir(), 'settings');
 const SETTINGS_FILE = path.join(SETTINGS_DIR, 'runtime-settings.bin');
 const SETTINGS_BACKUP_FILE = path.join(SETTINGS_DIR, 'runtime-settings.backup.bin');
+
+const fileRevision = (source: string) => {
+  try {
+    const stat = fs.statSync(source);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return 'missing';
+  }
+};
+
+/**
+ * Cheap change marker used by server entry points. It lets a long-lived
+ * Next/Electron process pick up a settings write from another window without
+ * re-applying the key pool on every request.
+ */
+export function getStoredRuntimeSettingsRevision(): string {
+  return `${fileRevision(SETTINGS_FILE)}|${fileRevision(SETTINGS_BACKUP_FILE)}`;
+}
 
 const runtimeSettingsGlobal = globalThis as typeof globalThis & {
   __eterxRuntimeSettingsWriteChain?: Promise<void>;
@@ -49,6 +73,15 @@ const normalizeStoredSettings = (value: unknown): StoredRuntimeSettings => {
     baseURLs: source.baseURLs && typeof source.baseURLs === 'object' && !Array.isArray(source.baseURLs)
       ? source.baseURLs as Record<string, string>
       : {},
+    search: source.search && typeof source.search === 'object' && !Array.isArray(source.search)
+      ? source.search as SearchSettings
+      : undefined,
+    image: source.image && typeof source.image === 'object' && !Array.isArray(source.image)
+      ? normalizeImageSettings(source.image)
+      : undefined,
+    video: source.video && typeof source.video === 'object' && !Array.isArray(source.video)
+      ? normalizeVideoSettings(source.video)
+      : undefined,
   };
 };
 

@@ -5,8 +5,9 @@ import path from 'path';
 import fs from 'fs-extra';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
 import { enforceToolCapability } from '../security/tool_policy';
+import { isSearchServiceEnabled } from '../../../search/search-runtime';
 
-function detectTavilyTopic(text: string): 'general' | 'news' | 'finance' {
+function detectSearchTopic(text: string): 'general' | 'news' | 'finance' {
   const lower = text.toLowerCase();
   if (/\b(stock|share price|market cap|revenue|earnings|nifty|sensex|crypto|bitcoin|ethereum|finance|financial|valuation|pe ratio|dividend|roe)\b/.test(lower)) {
     return 'finance';
@@ -71,7 +72,7 @@ function summarizeSearchResult(result: any): string {
  */
 export const deepResearchTool: ToolDefinition = {
   name: 'deep_research',
-  description: `Run deep multi-angle research on a topic. Automatically searches from multiple angles, scrapes top results, and synthesizes findings into a structured report.
+  description: `Run deep multi-angle research on a topic. Automatically searches from multiple angles, uses the active External service provider's enabled reading service, and synthesizes findings into a structured report. The selected model and latest provider/service settings are resolved at request time; native provider research is used when available, otherwise the agent orchestrates the same workflow through search and page reading.
 
 USE FOR: stock analysis, competitive analysis, market research, technology comparison, product review, academic research
 
@@ -101,7 +102,8 @@ Returns a structured research synthesis with sources.`,
     success: z.boolean(),
     report: z.string(),
     sources: z.array(z.string()),
-    savedTo: z.string()
+    savedTo: z.string(),
+    route: z.string().optional(),
   }),
   execute: async (input: {
     topic: string,
@@ -112,6 +114,9 @@ Returns a structured research synthesis with sources.`,
     const decision = enforceToolCapability('deep_research', input, context);
     if (!decision.allowed) {
       return { success: false, report: '', sources: [], savedTo: '', error: decision.reason || 'Deep research is not allowed' };
+    }
+    if (!isSearchServiceEnabled('research')) {
+      return { success: false, report: '', sources: [], savedTo: '', error: 'Deep research is disabled for every enabled External service route.' };
     }
 
     const depth = input.depth || 'medium';
@@ -139,13 +144,13 @@ Returns a structured research synthesis with sources.`,
         const result = await webSearch.execute({
           action: 'search',
           query: angle,
-          topic: detectTavilyTopic(`${input.topic} ${angle}`),
+          topic: detectSearchTopic(`${input.topic} ${angle}`),
           searchDepth: depth === 'quick' ? 'basic' : 'advanced',
           includeAnswer: true,
           includeRawContent: depth === 'deep',
           numResults: depth === 'deep' ? 8 : 5
         }, networkContext);
-        return { angle, result, success: true };
+        return { angle, result, success: !result?.error };
       } catch (err: any) {
         return { angle, result: null, success: false, error: err.message };
       }
@@ -220,9 +225,13 @@ Returns a structured research synthesis with sources.`,
     console.log(`[DeepResearch] Phase 3: Synthesizing report...`);
 
     const sources: string[] = [];
+    const routeSummary = [...new Set(successfulSearches
+      .map(search => `${String(search.result?.provider || 'external')} (${String(search.result?.providerActionMode || 'configured route')})`))]
+      .join(', ') || 'No live route completed';
     let report = `# Research Report: ${input.topic}\n\n`;
     report += `**Date:** ${new Date().toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' })}\n`;
     report += `**Depth:** ${depth} | **Angles:** ${angles.length} | **Sources:** ${successfulSearches.length + scrapedContent.length}\n\n`;
+    report += `**Live route:** ${routeSummary}\n\n`;
     report += `---\n\n`;
 
     // Add findings from each angle
@@ -279,7 +288,8 @@ Returns a structured research synthesis with sources.`,
       success: true,
       report: report.substring(0, 5000),  // Cap return to 5KB
       sources: uniqueSources,
-      savedTo: outputFile
+      savedTo: outputFile,
+      route: routeSummary,
     };
   }
 };

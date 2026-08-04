@@ -52,7 +52,6 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
  * STRATEGY:
  * - Cache web_search results for 30 minutes (info changes)
  * - Cache file reads for 5 minutes (files may change)
- * - Cache workspace_analyze for 1 hour (project rarely changes mid-session)  
  * - Never cache write/edit/shell tools (side effects)
  * - In-memory + disk persistence
  */
@@ -73,7 +72,6 @@ const TOOL_TTL: Record<string, number> = {
   workspace_read_file: 5 * 60 * 1000, // 5 min
   workspace_list_directory: 5 * 60 * 1000,
   workspace_search_text: 5 * 60 * 1000,
-  workspace_analyze: 60 * 60 * 1000,  // 1 hour
   pdf_parser: 60 * 60 * 1000,
   youtube_transcript: 60 * 60 * 1000,
   rss_feed_reader: 15 * 60 * 1000,   // 15 min
@@ -87,10 +85,10 @@ const UNCACHEABLE_TOOLS = new Set([
   'workspace_run_command', 'workspace_verify_code', 'git_operations',
   'docx_generator', 'task_decomposer', 'spawn_sub_agent', 'background_task',
   'scheduled_tasks',
-  'create_dynamic_tool', 'run_macro', 'screenshot_capture',
+  'screenshot_capture',
   'desktop_notification', 'email_sender', 'tts_engine',
-  'process_manager', 'file_watcher',
-  'code_generator', 'compression_tool', 'self_improve',
+  'process_manager',
+  'code_generator', 'compression_tool',
   'ask_user',            // MUST always actually ask the user
   'task_checkpoint',     // MUST always read/write real checkpoint state
   'get_skill_guidelines', // Skills should load fresh content each time
@@ -99,12 +97,12 @@ const UNCACHEABLE_TOOLS = new Set([
 const INVALIDATES_SCOPED_CACHE_TOOLS = new Set([
   'workspace_apply_patch', 'workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_str_replace', 'workspace_run_command',
   'workspace_run_command', 'workspace_verify_code', 'git_operations',
-  'process_manager', 'run_macro', 'create_dynamic_tool',
+  'process_manager',
 ]);
 
 const WORKSPACE_DERIVED_CACHE_TOOLS = new Set([
   'workspace_read_file', 'workspace_list_directory', 'workspace_search_text',
-  'workspace_analyze', 'realtime_verify',
+  'realtime_verify',
 ]);
 
 export class IntelligentCache {
@@ -532,16 +530,6 @@ export class KnowledgeEngine {
 
   /** Auto-extract knowledge from tool results — stores ACTUAL DATA, not just query strings */
   async extractFromToolResult(toolName: string, args: any, result: any): Promise<void> {
-    // Extract project insights from workspace_analyze
-    if (toolName === 'workspace_analyze' && result?.profile) {
-      await this.addEntry('project_insight',
-        `Project uses ${result.profile.framework} with ${result.profile.language}. Build: ${result.profile.buildSystem}`,
-        'workspace_analyze',
-        ['project', 'framework', 'stack'],
-        0.9
-      );
-    }
-
     // Extract from web search results — store ACTUAL RESULTS, not just the query
     if (toolName === 'web_search' && result && !result.error) {
       const query = args?.query || '';

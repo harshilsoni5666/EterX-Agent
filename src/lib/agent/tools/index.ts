@@ -15,6 +15,7 @@ import { desktopNotifyTool } from './core/notify';
 import { screenshotTool } from './core/screenshot';
 import { ttsTool } from './core/tts';
 import { imageGenTool } from './core/imagegen';
+import { videoGenTool } from './core/videogen';
 import { imageAssetSearchTool } from './core/image_asset_search';
 import { taskDecomposerTool } from './core/task_decomposer';
 import { memoryV2Tool } from './core/memory_v2';
@@ -76,17 +77,53 @@ import { slackControllerTool } from './communication/slack';
 import { gatewayBridgeTool } from './communication/gateway_bridge';
 import { connectorMcpTool } from './communication/connector_mcp';
 import { agentBuilderTools } from './automation/agent_builder';
+import { isExecutableAvailable } from './core/shell_resolver';
 
-// Only expose native desktop tools where their required OS facilities are
-// built in and their full declared contract is implemented. Linux desktop
-// environments vary widely, so optional xclip/espeak/notify utilities are not
-// advertised as guaranteed capabilities. The browser remains the portable UI
-// automation surface on every platform.
-const PLATFORM_TOOLS = process.platform === 'win32'
-  ? [clipboardTool, desktopNotifyTool, screenshotTool, ttsTool, computerTool, desktopControlTool, screenAgentTool]
+// Shared desktop tools stay registered on every supported OS so agents do not
+// lose the capability name when a machine lacks an optional utility. Their
+// providers return an explicit availability/permission message at execution
+// time. Optional clipboard, notification, screenshot, and TTS tools are still
+// filtered by the utilities they actually require.
+type PlatformToolCandidate = {
+  tool: typeof clipboardTool;
+  available: () => boolean;
+};
+
+const PLATFORM_TOOL_CANDIDATES: PlatformToolCandidate[] = process.platform === 'win32'
+  ? [
+      { tool: clipboardTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
+      { tool: desktopNotifyTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
+      { tool: screenshotTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
+      { tool: ttsTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
+      { tool: computerTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
+      { tool: desktopControlTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
+      { tool: screenAgentTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
+    ]
   : process.platform === 'darwin'
-    ? [clipboardTool, desktopNotifyTool, screenshotTool, ttsTool]
-    : [clipboardTool, screenshotTool];
+    ? [
+        { tool: clipboardTool, available: () => isExecutableAvailable(['pbpaste']) && isExecutableAvailable(['pbcopy']) },
+        { tool: desktopNotifyTool, available: () => isExecutableAvailable(['osascript']) },
+        { tool: screenshotTool, available: () => isExecutableAvailable(['screencapture']) },
+        { tool: ttsTool, available: () => isExecutableAvailable(['say']) },
+        { tool: computerTool, available: () => true },
+        { tool: desktopControlTool, available: () => true },
+        { tool: screenAgentTool, available: () => true },
+      ]
+    : [
+        { tool: clipboardTool, available: () => (
+          isExecutableAvailable(['wl-paste']) && isExecutableAvailable(['wl-copy'])
+        ) || isExecutableAvailable(['xclip']) || isExecutableAvailable(['xsel']) },
+        { tool: desktopNotifyTool, available: () => isExecutableAvailable(['notify-send']) },
+        { tool: screenshotTool, available: () => isExecutableAvailable(['grim', 'gnome-screenshot', 'spectacle', 'scrot', 'maim', 'import']) },
+        { tool: ttsTool, available: () => isExecutableAvailable(['espeak', 'spd-say']) },
+        { tool: computerTool, available: () => true },
+        { tool: desktopControlTool, available: () => true },
+        { tool: screenAgentTool, available: () => true },
+      ];
+
+const PLATFORM_TOOLS = PLATFORM_TOOL_CANDIDATES
+  .filter(candidate => candidate.available())
+  .map(candidate => candidate.tool);
 
 const BUILTIN_TOOLS = [
   webSearchTool,
@@ -99,6 +136,7 @@ const BUILTIN_TOOLS = [
   sysAutomationTool,
   ...PLATFORM_TOOLS,
   imageGenTool,
+  videoGenTool,
   imageAssetSearchTool,
   taskDecomposerTool,
   memoryV2Tool,

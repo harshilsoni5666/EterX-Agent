@@ -3,6 +3,7 @@ const fs = require('fs');
 const net = require('net');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { pathToFileURL } = require('url');
 
 function logToFile(msg) {
   try {
@@ -33,12 +34,11 @@ const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Men
 const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig } = require('../src/lib/agent/gateways/daemon.cjs');
 // Disable HTTP Cache globally in development to prevent aggressive cache storage of stylesheets and scripts
 app.commandLine.appendSwitch('disable-http-cache');
+// Chromium's GPU shader cache is independent of the HTTP cache. Disable it
+// for the desktop shell because stale legacy profiles can be read-only or
+// owned by another Electron process on Windows.
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.setName('EterX');
-
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
-if (!hasSingleInstanceLock) {
-  app.quit();
-}
 
 // Keep installed-app state out of the source folder, Desktop, and roaming
 // profile. The renderer, packaged server, and Electron IPC all use the same
@@ -62,8 +62,20 @@ if (path.resolve(LEGACY_USER_DATA_PATH) !== path.resolve(CANONICAL_USER_DATA_PAT
 }
 app.setPath('sessionData', path.join(CANONICAL_USER_DATA_PATH, 'session'));
 try {
-  fs.mkdirSync(CANONICAL_USER_DATA_PATH, { recursive: true });
+  app.setPath('cache', path.join(CANONICAL_USER_DATA_PATH, 'cache'));
 } catch { }
+try {
+  fs.mkdirSync(CANONICAL_USER_DATA_PATH, { recursive: true });
+  fs.mkdirSync(path.join(CANONICAL_USER_DATA_PATH, 'cache'), { recursive: true });
+} catch { }
+
+// Acquire the instance lock after selecting the canonical user-data directory.
+// Calling this before app.setPath('userData', ...) can create separate locks
+// for development and packaged launches and still allow duplicate gateways.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
 
 function getEterxDataRoot() {
   return path.join(app.getPath('userData'), 'data');
@@ -125,7 +137,7 @@ const APP_ICON_PNG = app.isPackaged
   : path.join(__dirname, '../public/logo.png');
 
 const APP_ICON_PATH = app.isPackaged
-  ? path.join(process.resourcesPath, 'icon.ico')
+  ? path.join(process.resourcesPath, process.platform === 'win32' ? 'icon.ico' : 'logo.png')
   : (process.platform === 'win32' && fs.existsSync(path.join(__dirname, '../public/icon.ico'))
     ? path.join(__dirname, '../public/icon.ico')
     : APP_ICON_PNG);
@@ -146,6 +158,12 @@ const SECURE_RUNTIME_SETTINGS_PROVIDERS = new Set([
 const SECURE_RUNTIME_MODEL_PROVIDERS = new Set([
   ...SECURE_RUNTIME_SETTINGS_PROVIDERS,
 ]);
+const SECURE_RUNTIME_SEARCH_PROVIDERS = new Set([
+  'tavily', 'brave', 'exa', 'firecrawl', 'firecrawl_selfhosted', 'parallel', 'searxng', 'duckduckgo', 'xai',
+]);
+const SECURE_RUNTIME_SEARCH_SERVICES = new Set(['search', 'read', 'crawl', 'map', 'research']);
+const SECURE_RUNTIME_IMAGE_PROVIDERS = new Set(['deepinfra', 'fal', 'krea', 'openai', 'openrouter', 'xai', 'freepik']);
+const SECURE_RUNTIME_VIDEO_PROVIDERS = new Set(['google', 'openai', 'runway', 'luma', 'minimax', 'fal', 'replicate', 'xai']);
 const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'GEMINI_API_KEY',
   'MISTRAL_API_KEY',
@@ -188,7 +206,62 @@ const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'CUSTOM_API_KEY',
   'TAVILY_API_KEY',
   'VITE_TAVILY_API_KEY',
+  'BRAVE_API_KEY',
+  'BRAVE_SEARCH_API_KEY',
+  'EXA_API_KEY',
+  'FIRECRAWL_API_KEY',
+  'FIRECRAWL_API_URL',
+  'FIRECRAWL_SELF_HOSTED_URL',
+  'PARALLEL_API_KEY',
+  'XAI_API_KEY',
+  'SEARXNG_URL',
+  'TAVILY_BASE_URL',
+  'BRAVE_SEARCH_BASE_URL',
+  'EXA_BASE_URL',
+  'FIRECRAWL_BASE_URL',
+  'PARALLEL_BASE_URL',
+  'DUCKDUCKGO_BASE_URL',
+  'XAI_BASE_URL',
+  'ETERX_SEARCH_PROVIDER',
+  'ETERX_SEARCH_FALLBACK_PROVIDERS',
+  'ETERX_PREFER_MODEL_SEARCH',
   'GITHUB_TOKEN',
+  'ETERX_IMAGE_PROVIDER',
+  'ETERX_IMAGE_FALLBACK_PROVIDERS',
+  'ETERX_IMAGE_ENABLED',
+  'ETERX_IMAGE_DEEPINFRA_API_KEY',
+  'ETERX_IMAGE_FAL_API_KEY',
+  'ETERX_IMAGE_KREA_API_KEY',
+  'ETERX_IMAGE_OPENAI_API_KEY',
+  'ETERX_IMAGE_OPENROUTER_API_KEY',
+  'ETERX_IMAGE_XAI_API_KEY',
+  'ETERX_IMAGE_FREEPIK_API_KEY',
+  'ETERX_IMAGE_MODEL_DEEPINFRA',
+  'ETERX_IMAGE_MODEL_FAL',
+  'ETERX_IMAGE_MODEL_KREA',
+  'ETERX_IMAGE_MODEL_OPENAI',
+  'ETERX_IMAGE_MODEL_OPENROUTER',
+  'ETERX_IMAGE_MODEL_XAI',
+  'ETERX_IMAGE_MODEL_FREEPIK',
+  'ETERX_VIDEO_ENABLED',
+  'ETERX_VIDEO_PROVIDER',
+  'ETERX_VIDEO_FALLBACK_PROVIDERS',
+  'ETERX_VIDEO_GOOGLE_API_KEY',
+  'ETERX_VIDEO_OPENAI_API_KEY',
+  'ETERX_VIDEO_RUNWAY_API_KEY',
+  'ETERX_VIDEO_LUMA_API_KEY',
+  'ETERX_VIDEO_MINIMAX_API_KEY',
+  'ETERX_VIDEO_FAL_API_KEY',
+  'ETERX_VIDEO_REPLICATE_API_KEY',
+  'ETERX_VIDEO_XAI_API_KEY',
+  'ETERX_VIDEO_MODEL_GOOGLE',
+  'ETERX_VIDEO_MODEL_OPENAI',
+  'ETERX_VIDEO_MODEL_RUNWAY',
+  'ETERX_VIDEO_MODEL_LUMA',
+  'ETERX_VIDEO_MODEL_MINIMAX',
+  'ETERX_VIDEO_MODEL_FAL',
+  'ETERX_VIDEO_MODEL_REPLICATE',
+  'ETERX_VIDEO_MODEL_XAI',
   'ETERX_THINK_MODEL',
   'GEMINI_THINK_MODEL',
   'MISTRAL_MODEL',
@@ -379,10 +452,9 @@ function nativeThemePath() {
   return path.join(getEterxSettingsRoot(), NATIVE_THEME_FILE);
 }
 
-function getSplashIconDataUrl() {
+function getSplashIconUrl() {
   try {
-    const icon = nativeImage.createFromPath(APP_ICON_PNG);
-    return icon.isEmpty() ? '' : icon.toDataURL();
+    return fs.existsSync(APP_ICON_PNG) ? pathToFileURL(APP_ICON_PNG).href : '';
   } catch {
     return '';
   }
@@ -407,6 +479,39 @@ function normalizeSecureRuntimeSettings(raw) {
   const modelApiKeys = {};
   const modelOverrides = {};
   const baseURLs = {};
+  const hasSearchSettings = source.search && typeof source.search === 'object' && !Array.isArray(source.search);
+  const hasImageSettings = source.image && typeof source.image === 'object' && !Array.isArray(source.image);
+  const hasVideoSettings = source.video && typeof source.video === 'object' && !Array.isArray(source.video);
+  const search = hasSearchSettings ? {
+    enabled: source.search.enabled !== false,
+    preferModelSearch: source.search.preferModelSearch !== false,
+    provider: SECURE_RUNTIME_SEARCH_PROVIDERS.has(String(source.search.provider || '').trim()) ? String(source.search.provider).trim() : 'tavily',
+    fallbackProviders: Array.from(new Set((Array.isArray(source.search.fallbackProviders) ? source.search.fallbackProviders : [])
+      .map((provider) => String(provider || '').trim())
+      .filter((provider) => SECURE_RUNTIME_SEARCH_PROVIDERS.has(provider)))),
+    enabledServices: {},
+    apiKeys: {},
+    baseURLs: {},
+  } : undefined;
+  const image = hasImageSettings ? {
+    enabled: source.image.enabled !== false,
+    provider: SECURE_RUNTIME_IMAGE_PROVIDERS.has(String(source.image.provider || '').trim()) ? String(source.image.provider).trim() : 'freepik',
+    fallbackProviders: Array.from(new Set((Array.isArray(source.image.fallbackProviders) ? source.image.fallbackProviders : [])
+      .map((provider) => String(provider || '').trim())
+      .filter((provider) => SECURE_RUNTIME_IMAGE_PROVIDERS.has(provider)))),
+    modelByProvider: {},
+    apiKeys: {},
+    baseURLs: {},
+  } : undefined;
+  const video = hasVideoSettings ? {
+    enabled: source.video.enabled !== false,
+    provider: SECURE_RUNTIME_VIDEO_PROVIDERS.has(String(source.video.provider || '').trim()) ? String(source.video.provider).trim() : 'google',
+    fallbackProviders: Array.from(new Set((Array.isArray(source.video.fallbackProviders) ? source.video.fallbackProviders : [])
+      .map((provider) => String(provider || '').trim())
+      .filter((provider) => SECURE_RUNTIME_VIDEO_PROVIDERS.has(provider)))),
+    modelByProvider: {},
+    apiKeys: {},
+  } : undefined;
 
   for (const [provider, value] of Object.entries(source.apiKeys || {})) {
     if (!SECURE_RUNTIME_SETTINGS_PROVIDERS.has(provider) || typeof value !== 'string') continue;
@@ -415,7 +520,10 @@ function normalizeSecureRuntimeSettings(raw) {
   }
 
   for (const [modelKey, value] of Object.entries(source.modelApiKeys || {})) {
-    const provider = String(modelKey || '').split('::', 1)[0];
+    // Renderer model keys use the canonical `provider:encodedModelId` form.
+    // The model id is URI-encoded, so the first colon is an unambiguous
+    // provider separator and must remain consistent with modelEntryKey().
+    const provider = String(modelKey || '').split(':', 1)[0];
     if (!SECURE_RUNTIME_SETTINGS_PROVIDERS.has(provider) || typeof value !== 'string') continue;
     const key = value.trim();
     if (key && key.length <= 40_000) modelApiKeys[modelKey] = key;
@@ -439,11 +547,73 @@ function normalizeSecureRuntimeSettings(raw) {
     if (baseURL && baseURL.length <= 2048 && !/[\r\n\t]/.test(baseURL)) baseURLs[provider] = baseURL;
   }
 
-  return { apiKeys, liveApiKeys, modelApiKeys, modelOverrides, baseURLs };
+  if (search) {
+    for (const [provider, value] of Object.entries(source.search.enabledServices || {})) {
+      if (!SECURE_RUNTIME_SEARCH_PROVIDERS.has(provider) || !Array.isArray(value)) continue;
+      search.enabledServices[provider] = Array.from(new Set(value
+        .map((service) => String(service || '').trim())
+        .filter((service) => SECURE_RUNTIME_SEARCH_SERVICES.has(service))));
+    }
+    for (const [provider, value] of Object.entries(source.search.apiKeys || {})) {
+      if (!SECURE_RUNTIME_SEARCH_PROVIDERS.has(provider)) continue;
+      const values = (Array.isArray(value) ? value : [value])
+        .flatMap((item) => typeof item === 'string' ? item.split(/[\n,]/) : [])
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      if (values.length > 0) search.apiKeys[provider] = Array.from(new Set(values));
+    }
+    for (const [provider, value] of Object.entries(source.search.baseURLs || {})) {
+      if (!SECURE_RUNTIME_SEARCH_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+      const baseURL = value.trim().replace(/\/+$/, '');
+      if (baseURL && baseURL.length <= 2048 && !/[\r\n\t]/.test(baseURL)) search.baseURLs[provider] = baseURL;
+    }
+  }
+
+  if (image) {
+    for (const [provider, value] of Object.entries(source.image.modelByProvider || {})) {
+      if (!SECURE_RUNTIME_IMAGE_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+      const model = value.trim();
+      if (model && model.length <= 220 && !/[\r\n\t]/.test(model)) image.modelByProvider[provider] = model;
+    }
+    for (const [provider, value] of Object.entries(source.image.apiKeys || {})) {
+      if (!SECURE_RUNTIME_IMAGE_PROVIDERS.has(provider)) continue;
+      const values = (Array.isArray(value) ? value : [value])
+        .flatMap((item) => typeof item === 'string' ? item.split(/[\n,]/) : [])
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      if (values.length > 0) image.apiKeys[provider] = Array.from(new Set(values));
+    }
+    for (const [provider, value] of Object.entries(source.image.baseURLs || {})) {
+      if (!SECURE_RUNTIME_IMAGE_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+      const baseURL = value.trim().replace(/\/+$/, '');
+      if (baseURL && baseURL.length <= 2048 && !/[\r\n\t]/.test(baseURL)) image.baseURLs[provider] = baseURL;
+    }
+  }
+
+  if (video) {
+    for (const [provider, value] of Object.entries(source.video.modelByProvider || {})) {
+      if (!SECURE_RUNTIME_VIDEO_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+      const model = value.trim();
+      if (model && model.length <= 240 && !/[\r\n\t]/.test(model)) video.modelByProvider[provider] = model;
+    }
+    for (const [provider, value] of Object.entries(source.video.apiKeys || {})) {
+      if (!SECURE_RUNTIME_VIDEO_PROVIDERS.has(provider)) continue;
+      const values = (Array.isArray(value) ? value : [value])
+        .flatMap((item) => typeof item === 'string' ? item.split(/[\n,]/) : [])
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      if (values.length > 0) video.apiKeys[provider] = Array.from(new Set(values));
+    }
+  }
+
+  return { apiKeys, liveApiKeys, modelApiKeys, modelOverrides, baseURLs, ...(search ? { search } : {}), ...(image ? { image } : {}), ...(video ? { video } : {}) };
 }
 
 function readSecureRuntimeSettings() {
-  if (!secureStorageAvailable()) return { available: false, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {} };
+  if (!secureStorageAvailable()) return { available: false, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {}, image: undefined, video: undefined };
 
   for (const source of [secureRuntimeSettingsPath(), `${secureRuntimeSettingsPath()}.backup`]) {
     try {
@@ -453,7 +623,7 @@ function readSecureRuntimeSettings() {
       return { available: true, ...normalizeSecureRuntimeSettings(JSON.parse(decoded)) };
     } catch { }
   }
-  return { available: true, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {} };
+  return { available: true, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {}, image: undefined };
 }
 
 function writeSecureRuntimeSettings(raw) {
@@ -732,6 +902,45 @@ function secureRuntimeSettingsEnvironment(settings) {
     upstage: 'UPSTAGE_MODEL',
     custom: 'CUSTOM_MODEL',
   };
+  const searchKeyEnvironment = {
+    tavily: 'TAVILY_API_KEY',
+    brave: 'BRAVE_API_KEY',
+    exa: 'EXA_API_KEY',
+    firecrawl: 'FIRECRAWL_API_KEY',
+    firecrawl_selfhosted: '',
+    parallel: 'PARALLEL_API_KEY',
+    xai: 'XAI_API_KEY',
+  };
+  const searchBaseEnvironment = {
+    tavily: 'TAVILY_BASE_URL',
+    brave: 'BRAVE_SEARCH_BASE_URL',
+    exa: 'EXA_BASE_URL',
+    firecrawl: 'FIRECRAWL_BASE_URL',
+    firecrawl_selfhosted: 'FIRECRAWL_API_URL',
+    parallel: 'PARALLEL_BASE_URL',
+    searxng: 'SEARXNG_URL',
+    duckduckgo: 'DUCKDUCKGO_BASE_URL',
+    xai: 'XAI_BASE_URL',
+  };
+  const imageKeyEnvironment = {
+    deepinfra: 'ETERX_IMAGE_DEEPINFRA_API_KEY',
+    fal: 'ETERX_IMAGE_FAL_API_KEY',
+    krea: 'ETERX_IMAGE_KREA_API_KEY',
+    openai: 'ETERX_IMAGE_OPENAI_API_KEY',
+    openrouter: 'ETERX_IMAGE_OPENROUTER_API_KEY',
+    xai: 'ETERX_IMAGE_XAI_API_KEY',
+    freepik: 'ETERX_IMAGE_FREEPIK_API_KEY',
+  };
+  const videoKeyEnvironment = {
+    google: 'ETERX_VIDEO_GOOGLE_API_KEY',
+    openai: 'ETERX_VIDEO_OPENAI_API_KEY',
+    runway: 'ETERX_VIDEO_RUNWAY_API_KEY',
+    luma: 'ETERX_VIDEO_LUMA_API_KEY',
+    minimax: 'ETERX_VIDEO_MINIMAX_API_KEY',
+    fal: 'ETERX_VIDEO_FAL_API_KEY',
+    replicate: 'ETERX_VIDEO_REPLICATE_API_KEY',
+    xai: 'ETERX_VIDEO_XAI_API_KEY',
+  };
   const env = {};
 
   const providerKeyPools = {};
@@ -740,7 +949,7 @@ function secureRuntimeSettingsEnvironment(settings) {
     providerKeyPools[provider].push(key);
   }
   for (const [modelKey, key] of Object.entries(settings.modelApiKeys || {})) {
-    const provider = String(modelKey || '').split('::', 1)[0];
+    const provider = String(modelKey || '').split(':', 1)[0];
     if (!providerKeyPools[provider]) providerKeyPools[provider] = [];
     providerKeyPools[provider].push(key);
   }
@@ -753,6 +962,46 @@ function secureRuntimeSettingsEnvironment(settings) {
   for (const [provider, model] of Object.entries(settings.modelOverrides || {})) {
     const name = modelEnvironment[provider];
     if (name && model) env[name] = model;
+  }
+
+  const searchSettings = settings.search && typeof settings.search === 'object' ? settings.search : {};
+  for (const [provider, keys] of Object.entries(searchSettings.apiKeys || {})) {
+    const name = searchKeyEnvironment[provider];
+    const keyPool = Array.from(new Set((Array.isArray(keys) ? keys : [keys]).filter(Boolean))).join('\n');
+    if (name && keyPool) env[name] = keyPool;
+  }
+  for (const [provider, baseURL] of Object.entries(searchSettings.baseURLs || {})) {
+    const name = searchBaseEnvironment[provider];
+    if (name && baseURL) env[name] = baseURL;
+  }
+  if (searchSettings.provider) env.ETERX_SEARCH_PROVIDER = searchSettings.provider;
+  if (Array.isArray(searchSettings.fallbackProviders)) env.ETERX_SEARCH_FALLBACK_PROVIDERS = searchSettings.fallbackProviders.join(',');
+  if (searchSettings.preferModelSearch === false) env.ETERX_PREFER_MODEL_SEARCH = '0';
+
+  const imageSettings = settings.image && typeof settings.image === 'object' ? settings.image : {};
+  if (imageSettings.enabled === false) env.ETERX_IMAGE_ENABLED = '0';
+  if (imageSettings.provider) env.ETERX_IMAGE_PROVIDER = imageSettings.provider;
+  if (Array.isArray(imageSettings.fallbackProviders)) env.ETERX_IMAGE_FALLBACK_PROVIDERS = imageSettings.fallbackProviders.join(',');
+  for (const [provider, keys] of Object.entries(imageSettings.apiKeys || {})) {
+    const name = imageKeyEnvironment[provider];
+    const keyPool = Array.from(new Set((Array.isArray(keys) ? keys : [keys]).filter(Boolean))).join('\n');
+    if (name && keyPool) env[name] = keyPool;
+  }
+  for (const [provider, model] of Object.entries(imageSettings.modelByProvider || {})) {
+    if (model) env[`ETERX_IMAGE_MODEL_${String(provider).toUpperCase()}`] = model;
+  }
+
+  const videoSettings = settings.video && typeof settings.video === 'object' ? settings.video : {};
+  if (videoSettings.enabled === false) env.ETERX_VIDEO_ENABLED = '0';
+  if (videoSettings.provider) env.ETERX_VIDEO_PROVIDER = videoSettings.provider;
+  if (Array.isArray(videoSettings.fallbackProviders)) env.ETERX_VIDEO_FALLBACK_PROVIDERS = videoSettings.fallbackProviders.join(',');
+  for (const [provider, keys] of Object.entries(videoSettings.apiKeys || {})) {
+    const name = videoKeyEnvironment[provider];
+    const keyPool = Array.from(new Set((Array.isArray(keys) ? keys : [keys]).filter(Boolean))).join('\n');
+    if (name && keyPool) env[name] = keyPool;
+  }
+  for (const [provider, model] of Object.entries(videoSettings.modelByProvider || {})) {
+    if (model) env[`ETERX_VIDEO_MODEL_${String(provider).toUpperCase()}`] = model;
   }
 
   return env;
@@ -1298,7 +1547,7 @@ function getAppTarget() {
   if (app.isPackaged && packagedServerUrl) return packagedServerUrl;
 
   const port = process.env.ETERX_PORT || process.env.PORT || '3000';
-  return `http://localhost:${port}`;
+  return `http://127.0.0.1:${port}`;
 }
 
 function readEnvFile(filePath) {
@@ -1431,9 +1680,9 @@ async function startPackagedServer() {
   Object.assign(env, secureRuntimeSettingsEnvironment(secureSettings));
 
   // Keep the BrowserWindow origin aligned with Next's canonical local URL.
-  // The server remains bound to loopback only; using localhost here prevents
-  // the desktop UI from being treated as cross-origin from its own API.
-  packagedServerUrl = `http://localhost:${port}`;
+  // Use the numeric loopback address so systems that prefer IPv6 localhost do
+  // not try ::1 while the bundled server is bound to 127.0.0.1.
+  packagedServerUrl = `http://127.0.0.1:${port}`;
   packagedServer = spawn(process.execPath, [path.join(runtimeRoot, 'server.js')], {
     cwd: dataRoot,
     env,
@@ -1600,7 +1849,9 @@ async function showSplashScreen() {
 
   applySplashWindowTheme(theme);
   await mainWindow.loadFile(path.join(__dirname, 'splash.html'), {
-    query: { theme, icon: getSplashIconDataUrl() },
+    // Keep the query small. Embedding the full PNG as a data URL can create a
+    // 60KB+ file:// URL, which Chromium may reject on Windows with ERR_FAILED.
+    query: { theme, icon: getSplashIconUrl() },
   });
   if (!launchInBackground && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     mainWindow.show();
@@ -2358,6 +2609,8 @@ ipcMain.on('pet-reply', (_event, message) => {
 });
 
 app.on('ready', async () => {
+  if (!hasSingleInstanceLock) return;
+
   const { session } = require('electron');
   Menu.setApplicationMenu(null);
 

@@ -61,13 +61,14 @@ async function findFreePort(start = 3000) {
 function startNextServer(port, mode = 'dev') {
   const args = mode === 'production' ? ['run', 'start', '--', '-p', String(port)]
     : ['run', 'dev', '--', '-p', String(port)];
+  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
   console.log(`[EterX] Starting Next.js (${mode}) on port ${port}...`);
 
-  const proc = spawn('npm', args, {
+  const proc = spawn(npmCommand, args, {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
-    shell: true,
+    shell: process.platform === 'win32',
     env: { ...process.env, PORT: String(port) },
     detached: false,
   });
@@ -105,7 +106,7 @@ function waitForServer(port, timeoutMs = 60000) {
 }
 
 function startElectron(port) {
-  console.log(`[EterX] Launching Electron → localhost:${port}`);
+  console.log(`[EterX] Launching Electron → 127.0.0.1:${port}`);
   const electronPath = path.join(ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'electron.cmd' : 'electron');
 
   if (!fs.existsSync(electronPath.replace('.cmd', '.exe')) && !fs.existsSync(electronPath)) {
@@ -118,8 +119,8 @@ function startElectron(port) {
   const proc = spawn(electronPath, ['.'], {
     cwd: ROOT,
     stdio: 'inherit',
-    shell: true,
-    env: { ...process.env, ETERX_PORT: String(port), ELECTRON_URL: `http://localhost:${port}` },
+    shell: process.platform === 'win32',
+    env: { ...process.env, ETERX_PORT: String(port), ELECTRON_URL: `http://127.0.0.1:${port}` },
   });
 
   return proc;

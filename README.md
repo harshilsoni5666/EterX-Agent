@@ -11,7 +11,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Status-Under%20Development-orange" alt="Status">
   <img src="https://img.shields.io/badge/Developer-Harshil%20Soni-blue" alt="Developer">
-  <img src="https://img.shields.io/badge/Tools-80%2B%20Native%20Tools-green" alt="Tools">
+  <img src="https://img.shields.io/badge/Tools-75%20curated%20definitions-green" alt="Tools">
 </p>
 
 
@@ -182,43 +182,45 @@ The Agent Builder is a specialized AI agent designed to dynamically configure, w
 *   **Profile Finalization & Validation**: Before deployment, the builder runs a comprehensive audit of the custom agent's configuration. It verifies that the prompt has sufficient depth, that the behavior and safety rules are properly established, and that all attached code tools have passed security reviews.
 ## The Tools: What EterX Can Actually Do
 
-EterX features **80+ native tool systems** mapped to a capability-based architecture to securely perform local actions, network operations, and cognitive tasks.
+EterX currently has **73 native tool definitions plus 2 builder runtime tools**, for **75 registered tools when all optional providers are present**. macOS and Linux keep the shared desktop tools registered and only filter optional clipboard, notification, screenshot, and text-to-speech tools when their required OS utility is absent. This keeps the advertised tool list honest on every supported device.
 
 ### 1. OS Automation & Computer Vision (`host.control`, `host.system`)
 Provides low-level OS access and computer vision control to securely see and interact with any workspace:
-*   **Vision & Mouse Control**: `screen_agent` captures screenshots, runs Windows OCR + UI Automation to locate controls, and drives natural Bezier cursor movements.
-*   **Isolation & Stream**: `computer` runs and isolates windows within sandboxed environments while streaming real-time frames to the dashboard.
-*   **System Utilities**: Tools like `system_monitor`, `clipboard`, `desktop_notify`, `tts`, and system macros automate OS-level events.
+*   **Vision & Mouse Control**: `screen_agent`, `desktop_control`, and `computer` expose the same cross-platform action surface. Windows uses the isolated/native backend; macOS uses Accessibility plus `screencapture`; Linux uses `xdotool`/XWayland plus the installed screenshot utility. Browser UI remains available through `browser_control` on every platform.
+*   **Isolation & Stream**: `computer` uses the isolated EterX Computer on Windows and a native desktop-provider fallback on macOS/Linux, with provider and missing-permission messages returned explicitly instead of hiding the tool.
+*   **System Utilities**: `system_monitor`, `system_automation`, and platform-checked clipboard, notification, screenshot, and text-to-speech tools automate OS-level events.
+
+For native desktop input, macOS needs Accessibility and Screen Recording permission for EterX; `cliclick` adds reliable pointer movement and drag support. Linux input uses `xdotool` with X11/XWayland, while Wayland-only sessions should use `browser_control` for browser UI or install a compatible desktop bridge. Install a screenshot utility (`grim`, `gnome-screenshot`, `spectacle`, `scrot`, `maim`, or ImageMagick `import`) and optional `tesseract` OCR when screen text/find actions are needed. Missing utilities produce an explicit provider message and do not remove the shared tools.
 
 ### 2. Workspace & Code Intelligence (`command.workspace`, `filesystem`)
 A robust code-editing and workspace analysis environment for developers:
-*   **Precise Editing**: `workspace_read_file`, `workspace_write_file`, `workspace_edit_file`, and `workspace_apply_patch` allow high-precision, search-and-replace changes and Git-style diff applications.
-*   **Search & Scans**: `workspace_search_text` (Ripgrep), `workspace_symbol_lookup`, `workspace_file_outline`, and semantic vector search identify codebase architectures.
-*   **Compiles & Runs**: `workspace_run_command`, `workspace_execute_script`, and `workspace_verify_code` handle linting, compile verification, and command execution.
+*   **Precise Editing**: `workspace_read_file`, `workspace_write_file`, `workspace_edit_file`, `workspace_str_replace`, and `workspace_apply_patch` allow high-precision edits.
+*   **Search & Scans**: `workspace_search_text`, `workspace_find_files`, `workspace_file_outline`, and `workspace_semantic_search` identify codebase architecture.
+*   **Compiles & Runs**: `workspace_run_command` and `workspace_verify_code` handle commands, linting, compilation, and tests through the active OS shell.
 
 ### 3. Deep Research & Web Scraping (`network.public`)
 Gathers, parses, and synthesizes data directly from public resources:
 *   **Synthesized Research**: `deep_research` runs multiple concurrent queries, scraping matching pages to compile structured markdown reports with source citations.
-*   **Parsing Utilities**: `web_scraper` (via Cheerio DOM parsing), `pdf_parser`, `youtube_transcript`, and `rss_feed` extract clean text content from web layouts, documents, and feeds.
+*   **Parsing Utilities**: `web_scraper`, `parse_pdf`, `parse_docx`, `youtube_transcript`, and `rss_feed_reader` extract clean text content from web layouts, documents, and feeds.
 
 ### 4. Autonomous Collaboration & Planning (`agent.spawn`, `memory.manage`)
 Multi-agent task delegation and persistent cognitive systems:
 *   **Parallel Sub-Agents**: `spawn_sub_agent` deploys background specialist personas (Mira, Leo, Zara) and hosts Consensus and Debate panels.
 *   **Relational Memories**: `memory_v2` and `synapse-graph` retain project facts, configurations, and long-term user preferences locally.
-*   **Task Orchestration**: `task_decomposer`, `dynamic_tool_creator`, `checkpoint`, and `macro_runner` manage complex execution pipelines.
+*   **Task Orchestration**: `task_decomposer`, `task_checkpoint`, `background_task`, `scheduled_tasks`, and `spawn_sub_agent` manage complex execution pipelines.
 
-### 5. Communication & Messengers (`communication.external`)
+### 5. Communication & Connected Services (`communication.connected`)
 Outbound integrations with collaborative and chat environments:
-*   **Messenger Bots & Clients**: `telegram` (GramJS user session automation), `slack`, `whatsapp`, and `email` allow automated notifications, file transfers, and chat interactions.
+*   **Live connectors**: `slack_controller` uses Slack directly, while `gateway_bridge` handles configured gateway channels and `connector_mcp` discovers and operates saved REST/MCP services.
 
 ### 6. Office Documents & Structured Data (`filesystem.write`)
 Generates rich data documents, presentations, and analyses:
 *   **Office Generators**: `office_artifact_builder` and `docx_generator` build styled Excel spreadsheets, PowerPoint slides, and Word documents in *Executive*, *Modern*, *Classic*, and *Minimal* layouts.
-*   **Data Analysis**: `csv_analyzer` and `chart_generator` aggregate datasets, run SQL-like filters, and generate plots.
+*   **Data Analysis**: `csv_data_analyzer` aggregates and inspects CSV datasets.
 
-### 7. Utilities & Infrastructure (`secrets.manage`, `tool.utility`)
+### 7. Utilities & Infrastructure (`tool.utility`)
 Built-in computational utilities supporting the EterX OS runtime:
-*   Includes `browser_control` (automated Chrome), `api_key_vault`, `api_caller`, `crypto` hashing, database clients, JSONPath tools, regular expression builders, and background shell management.
+*   Includes `browser_control` (automated Chrome), `api_caller`, `calculator`, JSON/YAML transforms, regular expression processing, image generation/search, and background process management.
 
 ---
 

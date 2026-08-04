@@ -166,6 +166,10 @@ function posixShellCandidates(shell: string): string[] {
   }
 }
 
+export function isExecutableAvailable(candidates: string[]): boolean {
+  return findExecutable(candidates) !== null;
+}
+
 function findExecutable(candidates: string[]): string | null {
   for (const candidate of candidates) {
     if (!candidate) continue;

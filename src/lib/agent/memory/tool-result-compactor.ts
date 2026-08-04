@@ -60,7 +60,6 @@ export class ToolResultCompactor {
         
         case 'workspace_list_directory':
         case 'workspace_find_files':
-        case 'workspace_analyze':
           return this.compactDirectoryListing(args, result);
         
         case 'web_scraper':

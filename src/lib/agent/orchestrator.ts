@@ -97,6 +97,7 @@ type RuntimeProjectContext = ProjectContext & {
   allowDynamicCode?: boolean;
   allowBrowserControl?: boolean;
   allowHostControl?: boolean;
+  computerUseEnabled?: boolean;
   allowAutomation?: boolean;
   allowExternalCommunication?: boolean;
   allowSecretManagement?: boolean;
@@ -492,7 +493,9 @@ export class AgentOrchestrator {
     context.allowAgentSpawning = isSandboxRun ? false : (!context.disableSubAgents && pinnedContext?.allowAgentSpawning !== false);
     context.allowDynamicCode = isSandboxRun ? false : pinnedContext?.allowDynamicCode !== false;
     context.allowBrowserControl = isSandboxRun ? false : pinnedContext?.allowBrowserControl !== false;
-    context.allowHostControl = isSandboxRun ? false : pinnedContext?.allowHostControl === true;
+    context.allowHostControl = isSandboxRun
+      ? false
+      : pinnedContext?.allowHostControl === true && pinnedContext?.computerUseEnabled !== false;
     context.allowAutomation = isSandboxRun ? false : pinnedContext?.allowAutomation === true;
     context.allowExternalCommunication = isSandboxRun ? false : pinnedContext?.allowExternalCommunication === true;
     context.allowSecretManagement = isSandboxRun ? false : pinnedContext?.allowSecretManagement === true;

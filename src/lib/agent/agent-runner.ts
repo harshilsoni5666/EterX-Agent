@@ -1177,7 +1177,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       networkPolicy: networkDenied ? 'deny' : 'allow',
       allowNetwork: !networkDenied,
       allowAgentSpawning: isSandboxRun ? false : config.pinnedContext?.allowAgentSpawning !== false,
-      allowHostControl: isSandboxRun ? false : config.pinnedContext?.allowHostControl === true,
+      allowHostControl: isSandboxRun
+        ? false
+        : config.pinnedContext?.allowHostControl === true && config.pinnedContext?.computerUseEnabled !== false,
       allowExternalCommunication: isSandboxRun ? false : config.pinnedContext?.allowExternalCommunication === true,
       allowDynamicCode: isSandboxRun ? false : config.pinnedContext?.allowDynamicCode !== false,
       allowRawCommand: isSandboxRun ? false : config.pinnedContext?.allowRawCommand !== false,

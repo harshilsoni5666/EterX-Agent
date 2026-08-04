@@ -30,8 +30,6 @@ const formatCustomToolLabel = (toolName: string) => {
     workspace_edit_file: 'Editing file',
     workspace_apply_patch: 'Patching files',
     workspace_search_text: 'Searching codebase',
-    smart_file_analyzer: 'Analyzing files',
-    workspace_analyze: 'Analyzing workspace',
     code_intelligence: 'Analyzing code',
     realtime_verify: 'Verifying output',
     workspace_verify_code: 'Verifying code',
@@ -47,15 +45,12 @@ const formatCustomToolLabel = (toolName: string) => {
     calculator: 'Calculating',
     csv_analyzer: 'Analyzing data',
     image_generator: 'Generating image',
+    video_generator: 'Generating video',
     screenshot_capture: 'Capturing screen',
-    markdown_to_html: 'Converting markdown',
     json_yaml_transform: 'Transforming data',
     gateway_bridge: 'Using Gateway channel',
     connector_mcp: 'Using connected service',
     slack_controller: 'Slack operation',
-    telegram_user_controller: 'Telegram operation',
-    whatsapp_controller: 'WhatsApp operation',
-    email_manager: 'Email operation',
   };
   if (known[toolName]) return known[toolName];
   return String(toolName || 'Running tool')
@@ -105,7 +100,6 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
     workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKeys: ['command'] },
     workspace_list_directory: { text: 'Scanning directory', type: 'exploration', iconCategory: 'folder_read', argKeys: ['directory', 'dir', 'path'] },
     workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKeys: ['query', 'question'] },
-    workspace_symbol_lookup: { text: 'Finding symbol', type: 'exploration', iconCategory: 'search', argKeys: ['symbol', 'name'] },
     workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKeys: ['filename', 'path', 'file'] },
     workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['filename', 'filePath', 'file_path', 'path', 'file'] },
     workspace_apply_patch: { text: 'Patching files', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['patch', 'content', 'diff'] },
@@ -116,8 +110,6 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
     workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['filename', 'filePath', 'file_path', 'path'] },
     workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['edits', 'files'] },
     workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKeys: ['pattern', 'query', 'directory'] },
-    smart_file_analyzer: { text: 'Analyzing files', type: 'exploration', iconCategory: 'search', argKeys: ['path', 'filename', 'directory'] },
-    workspace_analyze: { text: 'Analyzing workspace', type: 'exploration', iconCategory: 'search', argKeys: ['directory', 'path'] },
     code_intelligence: { text: 'Analyzing code', type: 'exploration', iconCategory: 'search', argKeys: ['target', 'path', 'query'] },
     realtime_verify: { text: 'Verifying output', type: 'command', iconCategory: 'verification', argKeys: ['target', 'mode', 'checkType'] },
     workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKeys: ['checkType', 'filename', 'path'] },
@@ -132,15 +124,12 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
     calculator: { text: 'Calculating', type: 'command', iconCategory: 'computer', argKeys: ['expression'] },
     csv_analyzer: { text: 'Analyzing data', type: 'exploration', iconCategory: 'search', argKeys: ['filename', 'path'] },
     image_generator: { text: 'Generating image', type: 'file_edit', iconCategory: 'image', argKeys: ['prompt', 'filename'] },
+    video_generator: { text: 'Generating video', type: 'file_edit', iconCategory: 'image', argKeys: ['prompt', 'filename'] },
     screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKeys: ['target', 'filename'] },
-    markdown_to_html: { text: 'Converting markdown', type: 'file_edit', iconCategory: 'file_create', argKeys: ['title', 'filename'] },
     json_yaml_transform: { text: 'Transforming data', type: 'command', iconCategory: 'computer', argKeys: ['operation'] },
     gateway_bridge: { text: 'Using Gateway channel', type: 'communication', iconCategory: 'connector', argKeys: ['platform', 'channel', 'action', 'target'] },
     connector_mcp: { text: 'Using connected service', type: 'communication', iconCategory: 'connector', argKeys: ['connector_id', 'connectorId', 'server_id', 'action'] },
     slack_controller: { text: 'Slack operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'channel', 'target'] },
-    telegram_user_controller: { text: 'Telegram operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'chatId', 'target'] },
-    whatsapp_controller: { text: 'WhatsApp operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'target'] },
-    email_manager: { text: 'Email operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'subject', 'to'] },
   };
 
   if (known[toolName]) return known[toolName];
@@ -299,7 +288,7 @@ export const createCustomToolActionLog = (
   const shouldLinkFile = ['file_read', 'file_edit', 'file_create'].includes(ui.iconCategory)
     || /workspace_(?:read|write|edit)_file|docx|pdf|csv|markdown|chart|image/i.test(toolName);
   const linkedFile = shouldLinkFile ? (traceFields.filename || filePath || primaryPath) : '';
-  const isConnectorTool = ui.type === 'communication' || ['gateway_bridge', 'connector_mcp', 'slack_controller', 'telegram_user_controller', 'whatsapp_controller', 'email_manager'].includes(toolName);
+  const isConnectorTool = ui.type === 'communication' || ['gateway_bridge', 'connector_mcp', 'slack_controller'].includes(toolName);
   const iconCategory = isConnectorTool ? 'connector' : (mapCustomUiIcon(args?.uiIcon) || (command ? 'terminal' : ui.iconCategory));
   return {
     id: `custom_tool_${startedAt}_${toolName}_${randomSuffix()}`,
@@ -427,8 +416,8 @@ export const createCustomToolResultLogs = (
 
   // --- Add Professional Tool Result Previews ---
   const EXCLUDED_PREVIEW_TOOLS = new Set([
-    'skill_loader', 'screenshot_capture', 'system_automation', 'self_improve',
-    'memory_v2', 'api_hub', 'api_key_vault', 'env_manager', 'desktop_control',
+    'skill_loader', 'screenshot_capture', 'system_automation',
+    'memory_v2', 'desktop_control',
     'browser_control', 'checkpoint', 'computer', 'screen_agent'
   ]);
 

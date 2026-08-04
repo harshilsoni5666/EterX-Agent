@@ -60,7 +60,6 @@
     "expectedTools": [
       "workspace_list_directory",
       "workspace_search_text",
-      "safety_guard",
       "workspace_run_command"
     ],
     "mustVerify": [

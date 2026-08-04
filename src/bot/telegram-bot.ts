@@ -516,7 +516,7 @@ function buildTelegramPrompt(ctx: any, parsed: TelegramParsedMessage, userName: 
       '[TELEGRAM DIRECT ANSWER]',
       'Answer only the current Telegram message.',
       'Do not inspect, mention, edit, or continue any local project/workspace unless this exact message asks for project/workspace work.',
-      'For latest/current/today/news/price/weather/schedule questions, use Tavily web grounding before answering and state the concrete date when useful.',
+      'For latest/current/today/news/price/weather/schedule questions, use the configured External service web grounding before answering and state the concrete date when useful.',
       'Your name is EterX. Answer identity questions naturally.',
       'Keep the response concise, factual, professional, and AI-generated from the current request.',
       'Do not add extra explanation, suggestions, or continuation text unless the user asked for it.',

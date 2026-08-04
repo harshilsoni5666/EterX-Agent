@@ -230,7 +230,6 @@ export function evaluateAgentBuilderProfile(profile: AgentBuilderProfile): {
 
 const AGENT_BUILDER_ROOT = getEterxWorkspaceDir('agent-builder', 'agents');
 const BUILDER_TOOL_PREFIX = 'agent_builder_';
-const GLOBAL_DYNAMIC_TOOL_NAMES = new Set(['create_dynamic_tool']);
 const BUILDER_RUNTIME_TOOL_NAMES = new Set([
   'agent_tool_load',
   'agent_tool_unload',
@@ -422,14 +421,13 @@ export function buildAgentBuilderRuntimePrompt(agentId: string, agentName?: stri
   const mainToolNames = globalToolRegistry.getAllTools()
     .map(tool => tool.name)
     .filter(name => !isBuilderOnlyToolName(name))
-    .filter(name => !GLOBAL_DYNAMIC_TOOL_NAMES.has(name))
     .sort()
     .join(', ');
 
   // Group tools by category for the builder to understand what's available
   const toolsByCategory: Record<string, string[]> = {};
   for (const tool of globalToolRegistry.getAllTools()) {
-    if (isBuilderOnlyToolName(tool.name) || GLOBAL_DYNAMIC_TOOL_NAMES.has(tool.name)) continue;
+    if (isBuilderOnlyToolName(tool.name)) continue;
     const cat = tool.category || 'other';
     if (!toolsByCategory[cat]) toolsByCategory[cat] = [];
     toolsByCategory[cat].push(`${tool.name}: ${tool.description.substring(0, 80)}`);

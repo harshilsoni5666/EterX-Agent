@@ -84,7 +84,7 @@ Before risky actions:
 1. Identify target.
 2. Resolve path or external destination.
 3. Classify risk.
-4. Use `safety_guard` if high-risk.
+4. Rely on the runtime sandbox and capability policy for high-risk actions.
 5. Ask user only for red actions or missing credentials.
 
 ## Evolution Loop

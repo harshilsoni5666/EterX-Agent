@@ -19,7 +19,7 @@ Attach these EterX tools first:
 
 - `workspace_list_directory`
 - `workspace_semantic_search`
-- `workspace_symbol_lookup`
+- `workspace_file_outline`
 - `workspace_find_files`
 - `workspace_search_text`
 - `workspace_read_many_files`
@@ -33,9 +33,8 @@ Attach these EterX tools first:
 - `workspace_verify_code`
 - `realtime_verify`
 - `code_intelligence`
-- `smart_file_analyzer`
+- `workspace_read_file`
 - `smart_refactor`
-- `workspace_analyze`
 - `git_intelligence`
 - `git_operations`
 - `browser_control`
@@ -47,12 +46,11 @@ Attach these EterX tools first:
 - `get_skill_guidelines`
 - `memory_v2`
 - `context_manager`
-- `safety_guard`
 - `web_search`
 - `web_scraper`
 - `deep_research`
 - `image_asset_search`
-- `project_scaffolder`
+- `code_generator`
 
 ## Tool Attachment Guidance
 

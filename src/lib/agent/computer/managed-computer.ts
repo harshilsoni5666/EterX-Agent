@@ -46,7 +46,7 @@ function encode(value: string) {
 
 async function ensureBinary(): Promise<string> {
   if (process.platform !== 'win32') {
-    throw new Error(`Isolated managed computer is currently available only on Windows, not ${process.platform}.`);
+    throw new Error(`The isolated Windows computer backend is unavailable on ${process.platform}; use computer or screen_agent with the native platform provider.`);
   }
   const bundledBinary = getEterxExecutableAssetPath('native', 'win', 'EterXManagedComputer.exe');
   if (await fs.pathExists(bundledBinary)) return bundledBinary;

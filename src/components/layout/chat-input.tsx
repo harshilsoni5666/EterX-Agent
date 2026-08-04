@@ -372,8 +372,9 @@ interface ChatInputProps {
   activeChatId?: string | null;
   selectedAgent?: string | null;
   selectedAgentName?: string;
+  chatMode?: boolean;
   composerPlaceholder?: string;
-  onAgentChange?: (agentId: string | null, agentName: string) => void;
+  onAgentChange?: (agentId: string | null, agentName: string, chatMode?: boolean) => void;
   workspacePath?: string | null;
   onWorkspacePathChange?: (path: string | null) => void;
   runLocation?: 'local' | 'sandbox';
@@ -393,7 +394,9 @@ interface ChatInputProps {
 
 const formatContextTokenCount = (value: number) => {
   const safeValue = Math.max(0, Math.round(Number.isFinite(value) ? value : 0));
-  return safeValue.toLocaleString();
+  if (safeValue < 1_000) return safeValue.toLocaleString();
+  if (safeValue >= 1_000_000) return `${(safeValue / 1_000_000).toFixed(safeValue >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
+  return `${(safeValue / 1_000).toFixed(safeValue >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`;
 };
 
 const getFileIconPath = (filepath: string) => {
@@ -1114,6 +1117,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   activeChatId = null,
   selectedAgent = null,
   selectedAgentName = 'General',
+  chatMode = false,
   composerPlaceholder,
   onAgentChange,
   workspacePath,
@@ -1406,6 +1410,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const textareaMaxHeight = isCompressed ? 180 : 240;
   const isModelLocked = isThinking;
   const activeAgentDisplay = useMemo(() => {
+    if (chatMode) {
+      return {
+        label: 'Chat',
+        description: 'Direct conversation with current chat context',
+        activeClass: 'border-white/[0.16] bg-white/[0.055] text-white hover:bg-white/[0.08] hover:border-white/[0.24]',
+      };
+    }
     if (!selectedAgent) {
       return {
         label: 'General',
@@ -1434,7 +1445,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       description: serverAgent?.mission || storedAgent?.description || 'Custom-built agent',
       activeClass: 'border-white/[0.18] bg-white/[0.065] text-white hover:bg-white/[0.09] hover:border-white/[0.26]',
     };
-  }, [availableAgents, selectedAgent, selectedAgentName, storedAgents]);
+  }, [availableAgents, chatMode, selectedAgent, selectedAgentName, storedAgents]);
 
   const refreshAvailableAgents = useCallback(async () => {
     try {
@@ -3496,7 +3507,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   >
                     <AnimatePresence mode="wait">
                       <motion.div
-                        key={selectedAgent || 'general'}
+                        key={chatMode ? 'chat' : selectedAgent || 'general'}
                         initial={{ opacity: 0, scale: 0.85 }}
                         animate={{ opacity: 1, scale: 1 }}
                         exit={{ opacity: 0, scale: 0.85 }}
@@ -3535,32 +3546,47 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       style={{ transform: `translateX(${ agentMenuX })` }}
                       className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-h-[280px] overflow-y-auto eterx-scrollbar max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
                       role="dialog"
-                      aria-label="Agent selection"
+                       aria-label="Chat and agent selection"
                     >
                       {/* Header */}
                       <div className="px-2.5 pt-1 pb-1.5">
                         <span className="text-[11.5px] font-semibold text-white/50">Agents</span>
                       </div>
 
+                      {/* Chat (direct conversation path) */}
+                      <button
+                        onClick={() => {
+                          onAgentChange?.(null, 'Chat', true);
+                          setShowAgentMenu(false);
+                        }}
+                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ chatMode
+                          ? 'bg-white/[0.08] text-white font-medium shadow-sm'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
+                          }`}
+                      >
+                        <span className="text-[12px] font-normal truncate flex-1">Chat</span>
+                        {chatMode && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
+                      </button>
+
                       {/* General (default) */}
                       <button
                         onClick={() => {
-                          onAgentChange?.(null, 'General');
+                          onAgentChange?.(null, 'General', false);
                           setShowAgentMenu(false);
                         }}
-                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ !selectedAgent
+                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ !chatMode && !selectedAgent
                           ? 'bg-white/[0.08] text-white font-medium shadow-sm'
                           : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
                           }`}
                       >
                         <span className="text-[12px] font-normal truncate flex-1">General</span>
-                        {!selectedAgent && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
+                        {!chatMode && !selectedAgent && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
                       </button>
 
                       {/* Autonomous */}
                       <button
                         onClick={() => {
-                          onAgentChange?.('autonomous', 'Autonomous');
+                          onAgentChange?.('autonomous', 'Autonomous', false);
                           setShowAgentMenu(false);
                         }}
                         className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ selectedAgent === 'autonomous'
@@ -3575,7 +3601,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       {/* Coding */}
                       <button
                         onClick={() => {
-                          onAgentChange?.('coding', 'Coding');
+                          onAgentChange?.('coding', 'Coding', false);
                           setShowAgentMenu(false);
                         }}
                         className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ selectedAgent === 'coding'
@@ -3602,7 +3628,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                               <button
                                 key={agent.agentId}
                                 onClick={() => {
-                                  onAgentChange?.(agent.agentId, agent.name);
+                                  onAgentChange?.(agent.agentId, agent.name, false);
                                   setShowAgentMenu(false);
                                 }}
                                 className={`flex min-h-[32px] w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-all duration-150 ${ selectedAgent === agent.agentId

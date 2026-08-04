@@ -25,7 +25,7 @@ Use:
 - `workspace_search_text`,
 - `workspace_read_file`,
 - `code_intelligence`,
-- `smart_file_analyzer`.
+- `workspace_file_outline`.
 
 Goal:
 

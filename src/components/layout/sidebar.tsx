@@ -236,17 +236,22 @@ const lightweightSidebarCss = `
   .eterx-sidebar-project-filter {
     min-height: 26px;
     -webkit-tap-highlight-color: transparent;
+    background: transparent;
   }
 
   .eterx-sidebar-project-filter:hover,
-  .eterx-sidebar-project-filter:focus-visible {
+  .eterx-sidebar-project-filter:focus-visible,
+  .eterx-sidebar-project-filter.is-open {
+    background: color-mix(in srgb, var(--sidebar-hover-bg) 88%, transparent);
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sidebar-hover-text) 8%, transparent);
   }
 
   .eterx-sidebar-project-menu {
-    background: var(--sidebar-menu-bg);
-    border-color: var(--sidebar-menu-border);
-    box-shadow: var(--sidebar-menu-shadow);
+    background: color-mix(in srgb, var(--sidebar-bg) 88%, var(--sidebar-strong-text) 12%);
+    border-color: color-mix(in srgb, var(--sidebar-strong-text) 14%, transparent);
+    box-shadow:
+      0 14px 30px rgba(0, 0, 0, 0.26),
+      inset 0 1px 0 color-mix(in srgb, var(--sidebar-strong-text) 10%, transparent);
     transform-origin: top left;
   }
 
@@ -256,21 +261,26 @@ const lightweightSidebarCss = `
     display: flex;
     align-items: center;
     gap: 8px;
-    border-radius: 9px;
-    padding: 6px 8px;
+    border-radius: 8px;
+    padding: 5px 8px;
     color: var(--sidebar-muted-text);
-    font-size: 12px;
-    font-weight: 520;
+    font-size: 12.5px;
+    font-weight: 500;
     text-align: left;
-    transition: background-color 150ms ease, color 150ms ease, transform 150ms ease;
+    transition: background-color 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
   }
 
   .eterx-sidebar-project-menu-item:hover,
   .eterx-sidebar-project-menu-item:focus-visible,
   .eterx-sidebar-project-menu-item.is-selected {
-    background: var(--sidebar-hover-bg);
+    background: color-mix(in srgb, var(--sidebar-hover-bg) 82%, transparent);
     color: var(--sidebar-hover-text);
     outline: none;
+  }
+
+  .eterx-sidebar-project-menu-item:hover,
+  .eterx-sidebar-project-menu-item:focus-visible {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sidebar-hover-text) 7%, transparent);
   }
 
   .eterx-sidebar-project-menu-item:active {
@@ -1426,7 +1436,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                         event.stopPropagation();
                         setProjectMenuOpen(open => !open);
                       }}
-                      className="eterx-sidebar-project-filter group/filter inline-flex max-w-[180px] items-center gap-1 rounded-full border border-transparent px-2 py-1 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]"
+                      className={`eterx-sidebar-project-filter group/filter inline-flex max-w-[180px] items-center gap-1 rounded-full border border-transparent px-2 py-1 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ projectMenuOpen ? 'is-open' : '' }`}
                     >
                       <span className="eterx-sidebar-section-title min-w-0 truncate">
                         {activeProject?.name || 'Recents'}
@@ -1443,7 +1453,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                       transition={{ duration: 0.14, ease: 'easeOut' }}
                       role="menu"
                       aria-label="Chat scope"
-                      className="eterx-sidebar-project-menu absolute left-0 top-[calc(100%+6px)] z-[80] min-w-[190px] max-w-[240px] overflow-hidden rounded-[12px] border p-1"
+                      className="eterx-sidebar-project-menu eterx-scrollbar absolute left-0 top-[calc(100%+6px)] z-[120] max-h-[min(280px,calc(100vh-180px))] min-w-[190px] max-w-[228px] overflow-y-auto rounded-[12px] border p-1"
                     >
                       <button
                         type="button"
@@ -1452,11 +1462,10 @@ export const Sidebar = React.memo<SidebarProps>(({
                         onClick={() => handleProjectSelect(null)}
                         className={`eterx-sidebar-project-menu-item group/menu-item ${ !selectedProjectPath ? 'is-selected' : '' }`}
                       >
-                        <span className="flex min-w-0 flex-1 items-center gap-2">
-                          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-55" />
-                          <span className="truncate">Recents</span>
+                        <span className="min-w-0 flex-1 truncate text-left">Recents</span>
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--sidebar-muted-text)] transition-colors group-hover/menu-item:text-[var(--sidebar-hover-text)]">
+                          <ChevronRight className="h-4 w-4" strokeWidth={1.9} />
                         </span>
-                        {!selectedProjectPath && <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={2.5} />}
                       </button>
 
                       {projects.map(project => {
@@ -1473,7 +1482,9 @@ export const Sidebar = React.memo<SidebarProps>(({
                           >
                             <Folder className="h-3.5 w-3.5 shrink-0" strokeWidth={1.95} />
                             <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
-                            {isSelectedProject && <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={2.5} />}
+                            <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--sidebar-muted-text)] transition-colors group-hover/menu-item:text-[var(--sidebar-hover-text)]">
+                              <ChevronRight className="h-4 w-4" strokeWidth={1.9} />
+                            </span>
                           </button>
                         );
                       })}

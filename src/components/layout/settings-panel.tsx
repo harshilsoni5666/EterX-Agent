@@ -31,12 +31,63 @@ import {
 } from '../../lib/agent/model-selector-store';
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
 import { appStorage, appStorageReady, registerDurableFlush, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
-import { DEFAULT_GEMINI_LIVE_MODEL, LIVE_PROVIDER_OPTIONS, isGeminiLiveModel, normalizeLiveProvider } from '../../lib/live/live-provider';
-import { GEMINI_LIVE_VOICE_OPTIONS } from '../../lib/live/voice-catalog';
+import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
+import {
+  LIVE_PROVIDER_OPTIONS,
+  getLiveModelOptions,
+  getLiveProvider,
+  isLiveModelForProvider,
+  normalizeLiveProvider,
+} from '../../lib/live/live-provider';
+import { getLiveVoiceOptions } from '../../lib/live/voice-catalog';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
+import {
+  DEFAULT_SEARCH_SETTINGS,
+  normalizeSearchSettings,
+  SEARCH_PROVIDER_IDS,
+  SEARCH_PROVIDER_META,
+  SEARCH_SERVICE_IDS,
+  type SearchProvider,
+  type SearchService,
+  type SearchSettings,
+} from '../../lib/search/search-config';
+import {
+  DEFAULT_IMAGE_SETTINGS,
+  IMAGE_PROVIDER_IDS,
+  IMAGE_PROVIDER_META,
+  normalizeImageSettings,
+  type ImageProvider,
+  type ImageSettings,
+} from '../../lib/image/image-generation-config';
+import {
+  DEFAULT_VIDEO_SETTINGS,
+  VIDEO_PROVIDER_IDS,
+  VIDEO_PROVIDER_META,
+  normalizeVideoSettings,
+  type VideoProvider,
+  type VideoSettings,
+} from '../../lib/video/video-generation-config';
 
 type SettingsGlyphProps = React.SVGProps<SVGSVGElement> & { strokeWidth?: number };
 const PROVIDER_BASE_URLS_STORAGE_KEY = 'eterx_provider_base_urls';
+const SEARCH_CAPABILITY_LABELS: Record<'search' | 'read' | 'crawl' | 'map', string> = {
+  search: 'Search',
+  read: 'Page reading',
+  crawl: 'Crawl',
+  map: 'Site map',
+};
+const SEARCH_SERVICE_META: Record<SearchService, { label: string; description: string }> = {
+  search: { label: 'Web search', description: 'Find current sources and ranked results.' },
+  read: { label: 'Read pages', description: 'Extract readable content from selected URLs.' },
+  crawl: { label: 'Crawl websites', description: 'Follow a site and collect content across pages.' },
+  map: { label: 'Map websites', description: 'Discover links without reading every page.' },
+  research: { label: 'Deep research', description: 'Run multi-angle research and source synthesis.' },
+};
+const IMAGE_CAPABILITY_LABELS = {
+  text: 'Text to image',
+  edit: 'Image editing',
+  ratio: 'Aspect ratio',
+} as const;
 
 const SettingsGlyph = ({
   children,
@@ -55,12 +106,6 @@ const Key = (props: SettingsGlyphProps) => (
   <SettingsGlyph {...props}>
     <circle cx="8.2" cy="12" r="3.2" />
     <path d="M11.4 12h7.4M15.6 12v2.2M18.8 12v-2.2" />
-  </SettingsGlyph>
-);
-
-const Zap = (props: SettingsGlyphProps) => (
-  <SettingsGlyph {...props}>
-    <path d="m13.4 2.9-7.1 10h5.05l-.75 8.2 7.1-10h-5.05l.75-8.2Z" />
   </SettingsGlyph>
 );
 
@@ -125,13 +170,6 @@ const Globe = (props: SettingsGlyphProps) => (
   </SettingsGlyph>
 );
 
-const FolderOpen = (props: SettingsGlyphProps) => (
-  <SettingsGlyph {...props}>
-    <path d="M3.9 8.2c0-1.25 1-2.25 2.25-2.25h4l1.75 1.9h5.95c1.25 0 2.25 1 2.25 2.25v1.3H3.9V8.2Z" />
-    <path d="M4.95 11.4h14.1c1 0 1.75.92 1.55 1.9l-.88 4.35a2.3 2.3 0 0 1-2.25 1.85H6.53a2.3 2.3 0 0 1-2.25-1.85L3.4 13.3c-.2-.98.55-1.9 1.55-1.9Z" />
-  </SettingsGlyph>
-);
-
 const Lock = (props: SettingsGlyphProps) => (
   <SettingsGlyph {...props}>
     <rect x="5" y="10.2" width="14" height="9.2" rx="2.2" />
@@ -157,6 +195,20 @@ const PlugZap = (props: SettingsGlyphProps) => (
 const Plus = (props: SettingsGlyphProps) => (
   <SettingsGlyph {...props}>
     <path d="M12 5v14M5 12h14" />
+  </SettingsGlyph>
+);
+
+const BookOpen = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M4.5 5.5c2.25-.8 4.75-.35 7.5 1.35v12.1c-2.75-1.7-5.25-2.15-7.5-1.35V5.5Z" />
+    <path d="M19.5 5.5c-2.25-.8-4.75-.35-7.5 1.35v12.1c2.75-1.7 5.25-2.15 7.5-1.35V5.5Z" />
+    <path d="M12 6.85v12.1" />
+  </SettingsGlyph>
+);
+
+const ArrowLeft = (props: SettingsGlyphProps) => (
+  <SettingsGlyph {...props}>
+    <path d="M19 12H5M11 6l-6 6 6 6" />
   </SettingsGlyph>
 );
 
@@ -362,8 +414,8 @@ const CONTEXT_WINDOW_SIZE_OPTIONS = [
 const compactTokenLabel = (tokens: number) => {
   if (!Number.isFinite(tokens) || tokens <= 0) return 'Not measured yet';
   if (tokens < 1_000) return Math.round(tokens).toLocaleString();
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens % 1_000_000 === 0 ? 0 : 1)}M`;
-  return `${Math.round(tokens / 1000)}k`;
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
+  return `${(tokens / 1_000).toFixed(tokens >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`;
 };
 
 const normalizeAppSettings = (value: unknown): AppSettings => {
@@ -490,6 +542,8 @@ type RuntimeSettingsSnapshot = {
   baseURLs?: Record<string, string>;
   modelEntries: ModelSelectorEntry[];
   selectionKeys?: string[];
+  search?: SearchSettings;
+  image?: ImageSettings;
 };
 
 const splitApiKeyPool = (value: string | undefined) =>
@@ -535,6 +589,7 @@ const providerKeyLooksValid = (provider: string, key: string) => {
   if (provider === 'mistral') return value.length >= 16;
   if (provider === 'tavily') return value.length >= 12;
   if (provider === 'github') return value.length >= 20;
+  if (['ollama', 'lmstudio', 'vllm', 'llamacpp'].includes(provider)) return value.length >= 1;
   return value.length >= 12;
 };
 
@@ -689,29 +744,6 @@ export const LIVE_PROVIDER_VOICES: Record<string, Array<{ value: string; label: 
     { value: 'piper-tts-en', label: 'Piper Local Neural Voice', tag: 'FREE (LOCAL)' },
     { value: 'coqui-xtts-v2', label: 'Coqui Local XTTS-v2', tag: 'FREE (LOCAL)' },
   ],
-};
-
-export const PROVIDER_PRICING_TAG: Record<string, string> = {
-  gemini: 'FREE TIER',
-  groq: 'FREE TIER',
-  ollama: 'FREE (LOCAL)',
-  lmstudio: 'FREE (LOCAL)',
-  vllm: 'FREE (OPEN SOURCE)',
-  huggingface: 'FREE TIER',
-  openrouter: 'FREE MODELS',
-  deepseek: 'FREE TIER',
-  cerebras: 'FREE TIER',
-  together: 'FREE CREDIT',
-  fireworks: 'FREE CREDIT',
-  'gemini-live': 'FREE TIER',
-  'groq-live': 'FREE TIER',
-  'ollama-local': 'FREE (LOCAL)',
-  'lmstudio-local': 'FREE (LOCAL)',
-  'vllm-local': 'FREE (OPEN SOURCE)',
-  'deepseek-live': 'FREE TIER',
-  'cerebras-live': 'FREE TIER',
-  'huggingface-live': 'FREE TIER',
-  'openrouter-live': 'FREE MODELS',
 };
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -1003,14 +1035,41 @@ const OFFICIAL_PROVIDER_GUIDE: Record<string, {
   ollama: {
     source: 'Ollama Local Instance',
     keySource: 'Local endpoint (No Key Required)',
-    endpoint: 'GET http://localhost:11434/api/tags',
-    docsUrl: 'ollama.com',
+    endpoint: 'GET /v1/models · POST /v1/chat/completions (catalog fallback: /api/tags)',
+    docsUrl: 'docs.ollama.com/api/openai-compatibility',
     families: [
       { name: 'DeepSeek R1 70B Local', id: 'deepseek-r1:70b', note: 'Full local 70B quantized reasoning' },
       { name: 'DeepSeek R1 14B Local', id: 'deepseek-r1:14b', note: 'Balanced local reasoning' },
       { name: 'DeepSeek R1 8B Local', id: 'deepseek-r1:8b', note: 'Fast local reasoning' },
       { name: 'Llama 3.3 70B Local', id: 'llama3.3:70b', note: 'Offline full capability Llama' },
       { name: 'Qwen 2.5 Coder 14B', id: 'qwen2.5-coder:14b', note: 'Local coding specialist' },
+    ],
+  },
+  lmstudio: {
+    source: 'LM Studio Local Server',
+    keySource: 'Local endpoint (API key optional)',
+    endpoint: 'GET /v1/models · POST /v1/chat/completions',
+    docsUrl: 'lmstudio.ai/docs/developer/openai-compat',
+    families: [
+      { name: 'Any loaded LM Studio model', note: 'The live catalog returns the exact model identifier required by the server.' },
+    ],
+  },
+  vllm: {
+    source: 'vLLM OpenAI-Compatible Server',
+    keySource: 'Local endpoint (API key optional; use the server token if configured)',
+    endpoint: 'GET /v1/models · POST /v1/chat/completions',
+    docsUrl: 'docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server.html',
+    families: [
+      { name: 'Any served Hugging Face model', note: 'The live catalog uses the model ID returned by `vllm serve`.' },
+    ],
+  },
+  llamacpp: {
+    source: 'llama.cpp llama-server',
+    keySource: 'Local endpoint (API key optional; use the server token if configured)',
+    endpoint: 'GET /v1/models · POST /v1/chat/completions',
+    docsUrl: 'github.com/ggml-org/llama.cpp/tree/master/tools/server',
+    families: [
+      { name: 'The loaded GGUF model', note: 'llama-server exposes the loaded model and its alias through the OpenAI-compatible catalog.' },
     ],
   },
 };
@@ -1032,6 +1091,8 @@ type ContextChatSummary = {
 
 const formatTokenMetric = (tokens: number) => {
   if (!Number.isFinite(tokens) || tokens <= 0) return '0';
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`;
   return Math.round(tokens).toLocaleString();
 };
 
@@ -1125,17 +1186,23 @@ const tokenCountForStoredLog = (log: any): number => {
 const TOKEN_ACTIVITY_CELL_COUNT = 200;
 
 const buildTokenActivityDates = (endAt = Date.now()) => {
-  const end = new Date(endAt);
-  end.setHours(0, 0, 0, 0);
+  const start = new Date(endAt);
+  start.setDate(1);
+  start.setHours(0, 0, 0, 0);
   return Array.from({ length: TOKEN_ACTIVITY_CELL_COUNT }, (_, index) => {
-    const date = new Date(end);
-    date.setDate(end.getDate() - (TOKEN_ACTIVITY_CELL_COUNT - 1 - index));
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
     return date;
   });
 };
 
 const dayKey = (value: number) => {
-  const date = new Date(value);
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) return '';
+  // Runtime traces from older providers can store Unix seconds while newer
+  // traces use milliseconds. Normalize both before mapping into a cell.
+  const timestamp = numericValue < 10_000_000_000 ? numericValue * 1000 : numericValue;
+  const date = new Date(timestamp);
   if (!Number.isFinite(date.getTime())) return '';
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -1202,7 +1269,7 @@ const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void; disab
     <motion.div
       animate={{ x: enabled ? 20 : 2 }}
       transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-      className="absolute top-[3px] w-[18px] h-[18px] rounded-full bg-white shadow-md"
+      className="absolute left-0 top-[3px] w-[18px] h-[18px] rounded-full bg-white shadow-md"
     />
   </button>
 );
@@ -1347,17 +1414,22 @@ const ApiKeyPoolEditor: React.FC<{
   sync?: ApiProviderStatus;
   onChange: (value: string) => void;
   minRows?: number;
+  maxRows?: number;
   scopeControl?: React.ReactNode;
   showTest?: boolean;
-}> = ({ provider, providerLabel, value, sync, onChange, minRows = 1, scopeControl, showTest = true }) => {
+  testEndpoint?: string;
+  testBaseURL?: string;
+  testBody?: (key: string) => Record<string, unknown>;
+  testProvider?: string;
+}> = ({ provider, providerLabel, value, sync, onChange, minRows = 1, maxRows, scopeControl, showTest = true, testEndpoint, testBaseURL, testBody, testProvider }) => {
   const buildRows = useCallback((rawValue: string) => {
-    const parsed = splitApiKeyPool(rawValue);
+    const parsed = splitApiKeyPool(rawValue).slice(0, maxRows || Number.POSITIVE_INFINITY);
     const rowCount = Math.max(minRows, parsed.length || 1);
     return Array.from({ length: rowCount }, (_, index) => parsed[index] || '');
-  }, [minRows]);
+  }, [maxRows, minRows]);
 
   const [rows, setRows] = useState<string[]>(() => {
-    const parsed = splitApiKeyPool(value);
+    const parsed = splitApiKeyPool(value).slice(0, maxRows || Number.POSITIVE_INFINITY);
     const rowCount = Math.max(minRows, parsed.length || 1);
     return Array.from({ length: rowCount }, (_, index) => parsed[index] || '');
   });
@@ -1385,16 +1457,19 @@ const ApiKeyPoolEditor: React.FC<{
     if (!key.trim()) return;
     setTestingStatus(prev => ({ ...prev, [index]: 'testing' }));
     try {
-      const res = await fetch('/api/settings/models', {
+      const res = await fetch(testEndpoint || '/api/settings/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          apiKeys: { [provider]: key.trim() },
-          providers: [provider]
+          ...(testEndpoint
+            ? (testBody ? testBody(key.trim()) : { provider, key: key.trim(), baseURL: testBaseURL || '' })
+            : { apiKeys: { [provider]: key.trim() }, providers: [provider] })
         }),
       });
       const data = await res.json();
-      if (res.ok && data?.ok && data?.providers?.[provider]?.connected) {
+      if (res.ok && data?.ok && (testEndpoint
+        ? data?.provider === provider || data?.provider === testProvider
+        : data?.providers?.[provider]?.connected)) {
         setTestingStatus(prev => ({ ...prev, [index]: 'success' }));
       } else {
         setTestingStatus(prev => ({ ...prev, [index]: 'failed' }));
@@ -1410,7 +1485,7 @@ const ApiKeyPoolEditor: React.FC<{
     setRows(prev => {
       const next = [...prev];
       if (pastedKeys.length > 1) {
-        next.splice(index, 1, ...pastedKeys);
+        next.splice(index, 1, ...pastedKeys.slice(0, maxRows || Number.POSITIVE_INFINITY));
       } else {
         next[index] = rawValue;
       }
@@ -1420,6 +1495,7 @@ const ApiKeyPoolEditor: React.FC<{
   };
 
   const addRow = () => {
+    if (maxRows && rows.length >= maxRows) return;
     setRows(prev => [...prev, '']);
   };
 
@@ -1485,14 +1561,14 @@ const ApiKeyPoolEditor: React.FC<{
           <span className="rounded-full border border-white/[0.08] bg-white/[0.045] px-2 py-1 text-[11px] font-medium text-[#D8D8D8]">
             {acceptedCount || configuredCount} active
           </span>
-          <button
-            type="button"
-            onClick={addRow}
-            className="inline-flex h-8 items-center gap-1 rounded-lg bg-[#303030] px-2.5 text-[12px] font-medium text-[#F2F2F2] transition-colors hover:bg-[#393939]"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Add
-          </button>
+          {(!maxRows || rows.length < maxRows) && <button
+              type="button"
+              onClick={addRow}
+              className="inline-flex h-8 items-center gap-1 rounded-lg bg-[#303030] px-2.5 text-[12px] font-medium text-[#F2F2F2] transition-colors hover:bg-[#393939]"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add
+            </button>}
         </div>
       </div>
 
@@ -1681,6 +1757,96 @@ const ProviderMark: React.FC<{ provider: string; className?: string }> = ({ prov
   </span>
 );
 
+const MANUAL_GUIDES: Record<string, { title: string; intro: string; steps: Array<[string, string]>; tip: string }> = {
+  'first-chat': {
+    title: 'Start your first chat',
+    intro: 'A good first request gives EterX-Agent a clear outcome, useful context, and a definition of what finished looks like.',
+    steps: [
+      ['Open a new chat', 'Return to the main workspace and start a fresh conversation when the task is unrelated to your previous work. Use a descriptive first message so the chat is easy to find later.'],
+      ['Describe the outcome', 'Start with the result you want: “Prepare a launch checklist”, “Review this folder for risks”, or “Build a dashboard from this data.” Add audience, format, deadline, and constraints when they matter.'],
+      ['Add context and files', 'Attach the relevant files or select the workspace that contains them. Tell the agent which files are authoritative and which files it may edit.'],
+      ['Choose the model and agent', 'Use the model picker in the composer for model choice. Use the agent selector when a specialist or custom agent is better suited to the work.'],
+      ['Review and steer', 'Read the plan, provide corrections early, and send follow-ups if priorities change. You can ask for a summary, a preview, or a smaller next step at any time.'],
+    ],
+    tip: 'The most reliable prompt pattern is: outcome + context + constraints + deliverable format.'
+  },
+  workspaces: {
+    title: 'Workspaces, files, and changes',
+    intro: 'Workspaces give the agent a safe place to understand project context and make focused changes without losing the conversation around them.',
+    steps: [
+      ['Choose a workspace', 'Use the workspace or folder control to select the project you want to work in. Keep unrelated projects separate so file context stays focused.'],
+      ['Attach individual files', 'Attach a specific document, image, spreadsheet, or code file when the task depends on a small known set of inputs.'],
+      ['Ask for inspection first', 'For unfamiliar projects, ask EterX-Agent to map the structure, identify relevant files, and summarize conventions before asking it to edit.'],
+      ['Review every change', 'When files are edited, inspect the change summary and open the affected files. Ask for a diff, tests, or a rollback plan when the change is important.'],
+      ['Keep generated work organized', 'Ask the agent to place outputs in a named folder and use predictable filenames. This keeps future chats and manual review simple.'],
+    ],
+    tip: 'For large projects, start with a scoped folder and a short task brief instead of attaching everything.'
+  },
+  agents: {
+    title: 'Agents and work modes',
+    intro: 'EterX-Agent combines a general workflow with specialist and custom agents so you can choose the right level of focus and autonomy.',
+    steps: [
+      ['Use General mode for everyday work', 'General mode is the best default for planning, writing, research, coding, file work, and routine questions.'],
+      ['Use Autonomous mode for longer goals', 'Autonomous mode is useful when the work needs multiple steps, continued progress, or collaboration between the main agent and proxy work. Define the goal and boundaries clearly.'],
+      ['Choose a specialist when useful', 'Select a configured specialist such as coding, research, design, or review when its instructions and tools match the task better than a broad general workflow.'],
+      ['Build a custom agent when repeated', 'Create a custom agent when you have a stable role, tone, workflow, or tool policy you want to reuse. Give it a focused description and test it on a small request first.'],
+      ['Control the handoff', 'Ask the active agent to explain what it is delegating, what evidence it received, and what remains for you to review.'],
+    ],
+    tip: 'Use the least specialized agent that can do the job well; add specialization when the workflow repeats or needs strict behavior.'
+  },
+  tasks: {
+    title: 'Scheduled tasks and background work',
+    intro: 'Tasks let EterX-Agent repeat work on a schedule and keep selected chats running when the main window is hidden.',
+    steps: [
+      ['Create a task from a clear prompt', 'Describe the recurring outcome, source context, expected output, schedule, and the agent or model it should use.'],
+      ['Review the schedule', 'Confirm timezone, recurrence, next run, and whether the task should create a new chat or continue an existing one.'],
+      ['Enable background operation', 'In General settings, configure the background companion and scheduled-chat behavior when you want work to continue while the window is closed or hidden.'],
+      ['Inspect run history', 'Use the task history to review completed, failed, paused, and retried runs. Read the recorded output before changing the schedule.'],
+      ['Pause or edit safely', 'Pause a task before changing its prompt, files, permissions, or provider settings when the next run could otherwise start with stale assumptions.'],
+    ],
+    tip: 'Start recurring tasks with a low-risk read-only report. Add editing or external actions only after the output is trustworthy.'
+  },
+  live: {
+    title: 'Live conversation and voice',
+    intro: 'Live Convo provides a faster hands-free way to talk with the agent while keeping the same model, provider, and app context controls.',
+    steps: [
+      ['Configure Live Convo', 'Open the Live Convo settings, choose a provider, add its API key, and select a live model and voice from the available catalog.'],
+      ['Check the connection state', 'Wait for the provider catalog and connection status to become ready before starting. If the catalog is unavailable, check the key and endpoint first.'],
+      ['Speak in short turns', 'Give one goal at a time, pause between instructions, and ask the agent to repeat important decisions before acting.'],
+      ['Use app controls deliberately', 'Live tools can navigate settings, select agents, inspect tasks, and control supported app actions. Confirm consequential actions yourself.'],
+      ['End or resume cleanly', 'Disconnect when finished and return to the text chat when you need files, long-form output, or a detailed review trail.'],
+    ],
+    tip: 'Voice is excellent for direction and exploration; text chat is better for precise specifications, code, and documents.'
+  },
+  'settings-guide': {
+    title: 'Settings guide',
+    intro: 'Settings are organized by the part of the app they control. Configure the essentials first, then tune behavior as you learn your workflow.',
+    steps: [
+      ['API', 'Add provider keys and verify that they sync successfully. Keys are used to connect model and external-service providers.'],
+      ['Models', 'Choose a provider, load its current catalog, inspect capabilities and context limits, then add preferred models to the custom selector list.'],
+      ['General', 'Set work mode, permissions, background behavior, terminal shell, destination defaults, follow-up behavior, notifications, and this manual.'],
+      ['Profile and Personalization', 'Set identity, response preferences, tone, and instructions that should apply across conversations.'],
+      ['Appearance and Shortcuts', 'Choose theme and density, then learn or configure keyboard shortcuts for faster navigation and common actions.'],
+      ['External service, Browser, and Computer use', 'Configure web search providers and decide whether browser or computer actions are available to the agent. Review access carefully.'],
+      ['Context, Tokens, and Archives', 'Inspect context usage, token reporting, older chats, and archived conversations when you need to manage history or performance.'],
+    ],
+    tip: 'For a new install, configure API → Models → General first. Everything else can be tuned after your first successful chat.'
+  },
+  troubleshooting: {
+    title: 'Troubleshooting',
+    intro: 'When something does not work, identify whether the issue is credentials, provider discovery, permissions, workspace context, or the running task itself.',
+    steps: [
+      ['No models appear', 'Confirm a valid key exists in API, the same provider is selected in Models, and the provider catalog request can reach its endpoint.'],
+      ['A chat uses the wrong model', 'Check the active model in the composer, confirm the model is in the custom list, and verify that a saved model override is not taking priority.'],
+      ['The agent cannot access a file', 'Confirm the correct workspace is selected, attach the file directly if needed, and check whether the requested action requires additional permissions.'],
+      ['A task stopped or failed', 'Open its run history, read the first error, then check provider credentials, model availability, background settings, and the task’s file paths.'],
+      ['Live Convo will not connect', 'Check the Live provider, API key, catalog status, selected model, voice availability, and network endpoint. Reconnect after changing credentials.'],
+      ['The app feels slow', 'Reduce the task scope, use a faster model for exploration, archive irrelevant chats, and avoid attaching large unrelated folders.'],
+    ],
+    tip: 'When asking for help, include the exact screen, provider, model, action, and error message. Avoid sharing API keys or secrets.'
+  },
+};
+
 const SETTINGS_DROPDOWN_OPEN_EVENT = 'eterx-settings-dropdown-open';
 
 const ModernSelect: React.FC<{
@@ -1800,7 +1966,6 @@ const ProviderSelect: React.FC<{
     return () => window.removeEventListener(SETTINGS_DROPDOWN_OPEN_EVENT, closeOtherDropdowns);
   }, []);
   const label = PROVIDER_LABEL[value] || value || 'Select provider';
-  const currentTag = PROVIDER_PRICING_TAG[value];
   const searchable = providers.length > 6;
   const normalizedQuery = query.trim().toLowerCase();
   const visibleProviders = normalizedQuery
@@ -1829,11 +1994,6 @@ const ProviderSelect: React.FC<{
           <span className="truncate">{label}</span>
         </span>
         <span className="flex items-center gap-2 shrink-0">
-          {currentTag && (
-            <span className="rounded-full bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 text-[9.5px] font-bold text-emerald-400 tracking-wider leading-none">
-              {sentenceCaseLabel(currentTag)}
-            </span>
-          )}
           <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
         </span>
       </button>
@@ -1856,7 +2016,6 @@ const ProviderSelect: React.FC<{
           )}
           <div className="min-h-0 overflow-y-auto eterx-scrollbar">
           {visibleProviders.map(provider => {
-            const tag = PROVIDER_PRICING_TAG[provider];
             return (
               <button
                 key={provider}
@@ -1875,11 +2034,6 @@ const ProviderSelect: React.FC<{
                   <span className="truncate">{PROVIDER_LABEL[provider] || provider}</span>
                 </span>
                 <span className="flex items-center gap-1.5 shrink-0">
-                  {tag && (
-                    <span className="rounded-full bg-emerald-500/10 border border-emerald-500/25 px-2 py-0.5 text-[9.5px] font-bold text-emerald-400 tracking-wider leading-none">
-                      {sentenceCaseLabel(tag)}
-                    </span>
-                  )}
                   {value === provider && <Check className="h-3.5 w-3.5 shrink-0 text-[#F4F4F4]" />}
                 </span>
               </button>
@@ -1989,19 +2143,30 @@ const ApiKeyRow: React.FC<{
 // ═══════════════════════════════════════════════════════
 export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen, onClose, initialTab = 'general', standalone = false }) => {
   const [activeTab, setActiveTab] = useState<Tab>(normalizeSettingsTab(initialTab));
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualTopic, setManualTopic] = useState('model-selection');
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [terminalPlatform, setTerminalPlatform] = useState<'unknown' | 'windows' | 'mac' | 'linux'>('unknown');
   const [browserRuntimeStatus, setBrowserRuntimeStatus] = useState<any>(null);
   const [browserRuntimeBusy, setBrowserRuntimeBusy] = useState(false);
+  const [searchProbe, setSearchProbe] = useState<{ provider: SearchProvider; status: 'idle' | 'testing' | 'success' | 'failed'; message: string }>({ provider: 'tavily', status: 'idle', message: '' });
   const [browserRuntimeMessage, setBrowserRuntimeMessage] = useState('Checking browser runtime…');
   const [availableTerminalShells, setAvailableTerminalShells] = useState<string[]>([]);
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+  const [searchSettings, setSearchSettings] = useState<SearchSettings>(DEFAULT_SEARCH_SETTINGS);
+  const [imageSettings, setImageSettings] = useState<ImageSettings>(DEFAULT_IMAGE_SETTINGS);
+  const [imageProbe, setImageProbe] = useState<{ provider: ImageProvider; status: 'idle' | 'testing' | 'success' | 'failed'; message: string }>({ provider: 'freepik', status: 'idle', message: '' });
+  const [videoSettings, setVideoSettings] = useState<VideoSettings>(DEFAULT_VIDEO_SETTINGS);
+  const [videoProbe, setVideoProbe] = useState<{ provider: VideoProvider; status: 'idle' | 'testing' | 'success' | 'failed'; message: string }>({ provider: 'google', status: 'idle', message: '' });
   const [liveApiKeys, setLiveApiKeys] = useState<Record<string, string>>({});
   const [apiSyncStatus, setApiSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
   const [apiSyncMessage, setApiSyncMessage] = useState('Runtime keys are local until synced.');
   const [apiProviderStatus, setApiProviderStatus] = useState<ApiProviderStatus[]>([]);
   const [modelDirectory, setModelDirectory] = useState<ModelDirectory>({});
-  const [liveModelOptionsFromApi, setLiveModelOptionsFromApi] = useState<LiveModelOption[]>([]);
+  const [liveModelOptionsFromApi, setLiveModelOptionsFromApi] = useState<Record<string, LiveModelOption[]>>({});
+  const [liveVoiceOptionsFromApi, setLiveVoiceOptionsFromApi] = useState<Record<string, Array<{ value: string; label: string; tag?: string; description?: string }>>>({});
+  const [liveCatalogStatus, setLiveCatalogStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [liveCatalogMessage, setLiveCatalogMessage] = useState('Select a provider to load its live catalog.');
   const [modelDirectoryStatus, setModelDirectoryStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [modelDirectoryUpdatedAt, setModelDirectoryUpdatedAt] = useState<number | null>(null);
   const [modelOverrides, setModelOverrides] = useState<ModelOverrides>({});
@@ -2033,6 +2198,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [gatewayConfig, setGatewayConfig] = useState<any>(null);
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const apiKeysRef = useRef<Record<string, string>>({});
+  const searchSettingsRef = useRef<SearchSettings>(DEFAULT_SEARCH_SETTINGS);
+  const imageSettingsRef = useRef<ImageSettings>(DEFAULT_IMAGE_SETTINGS);
+  const videoSettingsRef = useRef<VideoSettings>(DEFAULT_VIDEO_SETTINGS);
   const liveApiKeysRef = useRef<Record<string, string>>({});
   const modelApiKeysRef = useRef<Record<string, string>>({});
   const modelOverridesRef = useRef<ModelOverrides>({});
@@ -2054,20 +2222,38 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     message: 'Desktop updates are available in the installed application.',
   });
   apiKeysRef.current = apiKeys;
+  searchSettingsRef.current = searchSettings;
+  imageSettingsRef.current = imageSettings;
+  videoSettingsRef.current = videoSettings;
   liveApiKeysRef.current = liveApiKeys;
   modelApiKeysRef.current = modelApiKeys;
   modelOverridesRef.current = modelOverrides;
   const terminalShellOptions = getTerminalShellOptions(terminalPlatform, availableTerminalShells);
+  const selectedSearchMeta = SEARCH_PROVIDER_META[searchSettings.provider];
+  const selectedImageMeta = IMAGE_PROVIDER_META[imageSettings.provider];
+  const selectedImageModel = imageSettings.modelByProvider[imageSettings.provider] || selectedImageMeta.defaultModel;
+  const selectedVideoMeta = VIDEO_PROVIDER_META[videoSettings.provider];
+  const selectedVideoModel = videoSettings.modelByProvider[videoSettings.provider] || selectedVideoMeta.defaultModel;
+  const computerRuntime = browserRuntimeStatus?.computer;
+  const cuaDriver = computerRuntime?.cuaDriver;
+  const computerState = !settings.computerUse
+    ? { label: 'Off', tone: 'neutral' }
+    : cuaDriver?.healthy
+      ? { label: 'Ready', tone: 'good' }
+      : cuaDriver?.installed
+        ? { label: 'Needs setup', tone: 'warn' }
+        : { label: 'Driver unavailable', tone: 'warn' };
+  const selectedSearchServices = searchSettings.enabledServices[searchSettings.provider] || [...SEARCH_SERVICE_IDS];
 
   const refreshBrowserRuntimeStatus = useCallback(async () => {
     try {
-      const response = await fetch('/api/browser/status', { cache: 'no-store' });
+      const response = await fetch('/api/browser/status', { cache: 'no-store', signal: AbortSignal.timeout(12000) });
       const payload = await response.json();
       setBrowserRuntimeStatus(payload);
       if (!payload?.success) setBrowserRuntimeMessage(payload?.error || 'Browser status unavailable.');
-      else setBrowserRuntimeMessage('Runtime status updated.');
-    } catch {
-      setBrowserRuntimeMessage('Could not reach the browser runtime.');
+      else setBrowserRuntimeMessage(payload?.signedBrowser ? 'Signed-in browser control is ready.' : payload?.managedBrowser ? 'Isolated browser control is ready.' : payload?.signedBrowserReason || 'Choose a browser mode.');
+    } catch (error: any) {
+      setBrowserRuntimeMessage(error?.name === 'TimeoutError' ? 'Browser status check timed out.' : 'Could not reach the browser runtime.');
     }
   }, []);
 
@@ -2079,16 +2265,20 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
+        signal: AbortSignal.timeout(25000),
       });
       const payload = await response.json();
       setBrowserRuntimeStatus(payload);
       setBrowserRuntimeMessage(payload?.success ? payload.message || 'Browser action completed.' : payload?.error || 'Browser action failed.');
-    } catch {
-      setBrowserRuntimeMessage('Browser action could not be completed.');
+    } catch (error: any) {
+      setBrowserRuntimeMessage(error?.name === 'TimeoutError'
+        ? 'Browser action timed out. Close the browser once, then retry.'
+        : 'Browser action could not be completed.');
     } finally {
       setBrowserRuntimeBusy(false);
+      window.setTimeout(() => { void refreshBrowserRuntimeStatus(); }, 250);
     }
-  }, []);
+  }, [refreshBrowserRuntimeStatus]);
 
   useEffect(() => {
     applyUiDensity(settings.fontSize);
@@ -2244,6 +2434,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       modelApiKeys: { ...nextModelApiKeys },
       modelOverrides: { ...nextModelOverrides },
       baseURLs: { ...(nextBaseURLs ?? providerBaseURLsRef.current) },
+      search: normalizeSearchSettings(searchSettingsRef.current),
+      image: normalizeImageSettings(imageSettingsRef.current),
+      video: normalizeVideoSettings(videoSettingsRef.current),
     };
     const write = async () => {
       let saved = true;
@@ -2795,8 +2988,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           nextSettings.terminalShell = 'auto';
         }
       }
-      nextSettings.liveConvoProvider = normalizeLiveProvider(nextSettings.liveConvoProvider).value;
-      if (nextSettings.liveConvoModel !== 'auto' && !isGeminiLiveModel(nextSettings.liveConvoModel)) {
+      const normalizedLiveProvider = normalizeLiveProvider(nextSettings.liveConvoProvider);
+      nextSettings.liveConvoProvider = normalizedLiveProvider.value;
+      if (!isLiveModelForProvider(normalizedLiveProvider.value, nextSettings.liveConvoModel)) {
         nextSettings.liveConvoModel = 'auto';
       }
       const savedModelOverrides = appStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
@@ -2844,6 +3038,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         && Object.keys(secureSettings.baseURLs).length > 0
         ? secureSettings.baseURLs
         : null;
+      const secureSearchSettings = secureSettings?.available && secureSettings.search && typeof secureSettings.search === 'object'
+        ? secureSettings.search
+        : null;
+      const secureImageSettings = secureSettings?.available && secureSettings.image && typeof secureSettings.image === 'object'
+        ? secureSettings.image
+        : null;
+      const secureVideoSettings = secureSettings?.available && secureSettings.video && typeof secureSettings.video === 'object'
+        ? secureSettings.video
+        : null;
       const folderApiKeys = folderRuntimeSettings?.apiKeys && typeof folderRuntimeSettings.apiKeys === 'object'
         ? folderRuntimeSettings.apiKeys
         : {};
@@ -2860,6 +3063,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         && folderRuntimeSettings.baseURLs && typeof folderRuntimeSettings.baseURLs === 'object' && !Array.isArray(folderRuntimeSettings.baseURLs)
         ? folderRuntimeSettings.baseURLs
         : null;
+      const folderSearchSettings = folderRuntimeSettings?.search && typeof folderRuntimeSettings.search === 'object'
+        ? folderRuntimeSettings.search
+        : null;
+      const folderImageSettings = folderRuntimeSettings?.image && typeof folderRuntimeSettings.image === 'object'
+        ? folderRuntimeSettings.image
+        : null;
+      const folderVideoSettings = folderRuntimeSettings?.video && typeof folderRuntimeSettings.video === 'object'
+        ? folderRuntimeSettings.video
+        : null;
       const parsedApiKeys = { ...folderApiKeys, ...(secureApiKeys || {}) };
       const parsedLiveApiKeys = { ...folderLiveApiKeys, ...(secureLiveApiKeys || {}) };
       const parsedModelApiKeys = { ...folderModelApiKeys, ...(secureModelApiKeys || {}) };
@@ -2873,6 +3085,44 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             .filter(([, value]) => Boolean(value)),
         )
         : {};
+      const effectiveSearchSource = {
+        ...(secureSearchSettings || {}),
+        ...(folderSearchSettings || {}),
+        apiKeys: {
+          ...(secureSearchSettings?.apiKeys || {}),
+          ...(folderSearchSettings?.apiKeys || {}),
+        },
+        baseURLs: {
+          ...(secureSearchSettings?.baseURLs || {}),
+          ...(folderSearchSettings?.baseURLs || {}),
+        },
+        enabledServices: {
+          ...(secureSearchSettings?.enabledServices || {}),
+          ...(folderSearchSettings?.enabledServices || {}),
+        },
+      };
+      const effectiveSearchSettings = normalizeSearchSettings(
+        { ...effectiveSearchSource, enabled: nextSettings.groundingSearch },
+        (folderSearchSettings || secureSearchSettings) ? undefined : normalizedApiKeys.tavily,
+      );
+      const effectiveImageSource = {
+        ...(secureImageSettings || {}),
+        ...(folderImageSettings || {}),
+        apiKeys: {
+          ...(secureImageSettings?.apiKeys || {}),
+          ...(folderImageSettings?.apiKeys || {}),
+        },
+        baseURLs: {
+          ...(secureImageSettings?.baseURLs || {}),
+          ...(folderImageSettings?.baseURLs || {}),
+        },
+        modelByProvider: {
+          ...(secureImageSettings?.modelByProvider || {}),
+          ...(folderImageSettings?.modelByProvider || {}),
+        },
+      };
+      const effectiveImageSettings = normalizeImageSettings(effectiveImageSource);
+      const effectiveVideoSettings = normalizeVideoSettings({ ...(secureVideoSettings || {}), ...(folderVideoSettings || {}), apiKeys: { ...(secureVideoSettings?.apiKeys || {}), ...(folderVideoSettings?.apiKeys || {}) }, modelByProvider: { ...(secureVideoSettings?.modelByProvider || {}), ...(folderVideoSettings?.modelByProvider || {}) } });
       const normalizedLiveApiKeys = parsedLiveApiKeys && typeof parsedLiveApiKeys === 'object'
         ? Object.fromEntries(
           Object.entries(parsedLiveApiKeys as Record<string, unknown>)
@@ -2934,6 +3184,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       }
       setModelOverrides(normalizedModelOverrides);
       setApiKeys(normalizedApiKeys);
+      searchSettingsRef.current = effectiveSearchSettings;
+      setSearchSettings(effectiveSearchSettings);
+      imageSettingsRef.current = effectiveImageSettings;
+      setImageSettings(effectiveImageSettings);
+      videoSettingsRef.current = effectiveVideoSettings;
+      setVideoSettings(effectiveVideoSettings);
       setLiveApiKeys(normalizedLiveApiKeys);
       liveApiKeysRef.current = normalizedLiveApiKeys;
       persistApiKeyPresence(normalizedApiKeys, normalizedModelApiKeys);
@@ -3028,6 +3284,32 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const runtimeModelApiKeys = normalizeStringMap({ ...(runtime.modelApiKeys || {}), ...(secure?.modelApiKeys || {}) });
       const runtimeOverrides = normalizeStringMap({ ...(runtime.modelOverrides || {}), ...(secure?.modelOverrides || {}) });
       const runtimeBaseURLs = normalizeStringMap({ ...(runtime.baseURLs || {}), ...(secure?.baseURLs || {}) });
+      const runtimeSearchSettings = {
+        ...(secure?.search || {}),
+        ...(runtime.search || {}),
+        apiKeys: { ...(secure?.search?.apiKeys || {}), ...(runtime.search?.apiKeys || {}) },
+        baseURLs: { ...(secure?.search?.baseURLs || {}), ...(runtime.search?.baseURLs || {}) },
+        enabledServices: { ...(secure?.search?.enabledServices || {}), ...(runtime.search?.enabledServices || {}) },
+      };
+      const runtimeImageSettings = {
+        ...(secure?.image || {}),
+        ...(runtime.image || {}),
+        apiKeys: { ...(secure?.image?.apiKeys || {}), ...(runtime.image?.apiKeys || {}) },
+        baseURLs: { ...(secure?.image?.baseURLs || {}), ...(runtime.image?.baseURLs || {}) },
+        modelByProvider: { ...(secure?.image?.modelByProvider || {}), ...(runtime.image?.modelByProvider || {}) },
+      };
+      const runtimeVideoSettings = {
+        ...(secure?.video || {}),
+        ...(runtime.video || {}),
+        apiKeys: { ...(secure?.video?.apiKeys || {}), ...(runtime.video?.apiKeys || {}) },
+        modelByProvider: { ...(secure?.video?.modelByProvider || {}), ...(runtime.video?.modelByProvider || {}) },
+      };
+      const nextSearchSettings = normalizeSearchSettings(
+        runtimeSearchSettings,
+        (runtime.search || secure?.search) ? undefined : runtimeApiKeys.tavily,
+      );
+      const nextImageSettings = normalizeImageSettings(runtimeImageSettings);
+      const nextVideoSettings = normalizeVideoSettings(runtimeVideoSettings);
       const nextOverrides = Object.keys(storedOverrides).length > 0 || appStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY) !== null
         ? storedOverrides
         : runtimeOverrides;
@@ -3044,6 +3326,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
       setSettings(current => normalizeAppSettings({ ...current, ...storedSettings }));
       setApiKeys(runtimeApiKeys);
+      setSearchSettings(current => JSON.stringify(current) === JSON.stringify(nextSearchSettings) ? current : nextSearchSettings);
+      setImageSettings(current => JSON.stringify(current) === JSON.stringify(nextImageSettings) ? current : nextImageSettings);
+      setVideoSettings(current => JSON.stringify(current) === JSON.stringify(nextVideoSettings) ? current : nextVideoSettings);
       setLiveApiKeys(runtimeLiveApiKeys);
       setModelApiKeys(runtimeModelApiKeys);
       setModelOverrides(current => JSON.stringify(current) === JSON.stringify(nextOverrides) ? current : nextOverrides);
@@ -3052,6 +3337,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       setModelThinkingCapabilities(syncedThinking);
       setProviderBaseURLs(current => JSON.stringify(current) === JSON.stringify(nextBaseURLs) ? current : nextBaseURLs);
       apiKeysRef.current = runtimeApiKeys;
+      searchSettingsRef.current = nextSearchSettings;
+      imageSettingsRef.current = nextImageSettings;
+      videoSettingsRef.current = nextVideoSettings;
       liveApiKeysRef.current = runtimeLiveApiKeys;
       modelApiKeysRef.current = runtimeModelApiKeys;
       modelOverridesRef.current = nextOverrides;
@@ -3233,6 +3521,170 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     keysChangedRef.current = true;
   }, [modelEntries, persistApiKeyPresence, persistDesktopRuntimeSettings, queueRuntimeSync]);
 
+  const updateSearchSettings = useCallback((nextValue: SearchSettings | ((current: SearchSettings) => SearchSettings)) => {
+    settingsRevisionRef.current += 1;
+    const current = searchSettingsRef.current;
+    const next = normalizeSearchSettings(
+      typeof nextValue === 'function' ? nextValue(current) : nextValue,
+    );
+    searchSettingsRef.current = next;
+    setSearchSettings(next);
+    void persistDesktopRuntimeSettings(apiKeysRef.current, modelApiKeysRef.current, modelOverridesRef.current);
+    broadcastEterxSettingsUpdate({ type: 'search-settings-updated', search: next });
+    setHasChanges(true);
+  }, [persistDesktopRuntimeSettings]);
+
+  const updateImageSettings = useCallback((nextValue: ImageSettings | ((current: ImageSettings) => ImageSettings)) => {
+    settingsRevisionRef.current += 1;
+    const current = imageSettingsRef.current;
+    const next = normalizeImageSettings(typeof nextValue === 'function' ? nextValue(current) : nextValue);
+    imageSettingsRef.current = next;
+    setImageSettings(next);
+    void persistDesktopRuntimeSettings(apiKeysRef.current, modelApiKeysRef.current, modelOverridesRef.current);
+    broadcastEterxSettingsUpdate({ type: 'image-settings-updated', image: next });
+    setHasChanges(true);
+  }, [persistDesktopRuntimeSettings]);
+
+  const updateImageKeyPool = useCallback((provider: ImageProvider, value: string) => {
+    updateImageSettings(current => ({
+      ...current,
+      apiKeys: { ...current.apiKeys, [provider]: splitApiKeyPool(value).slice(0, 3) },
+    }));
+  }, [updateImageSettings]);
+
+  const moveImageFallback = useCallback((provider: ImageProvider, direction: -1 | 1) => {
+    updateImageSettings(current => {
+      const index = current.fallbackProviders.indexOf(provider);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.fallbackProviders.length) return current;
+      const fallbackProviders = [...current.fallbackProviders];
+      [fallbackProviders[index], fallbackProviders[target]] = [fallbackProviders[target], fallbackProviders[index]];
+      return { ...current, fallbackProviders };
+    });
+  }, [updateImageSettings]);
+
+  const testImageConnection = useCallback(async (provider: ImageProvider) => {
+    setImageProbe({ provider, status: 'testing', message: 'Checking live connectivity...' });
+    try {
+      const response = await fetch('/api/settings/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider,
+          key: imageSettingsRef.current.apiKeys[provider]?.[0] || '',
+          model: imageSettingsRef.current.modelByProvider[provider] || IMAGE_PROVIDER_META[provider].defaultModel,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || 'Connection test failed.');
+      setImageProbe({ provider, status: 'success', message: payload.result?.message || 'Provider connection is ready.' });
+    } catch (error: any) {
+      setImageProbe({ provider, status: 'failed', message: error?.message || 'Connection test failed.' });
+    }
+  }, []);
+
+  const updateVideoSettings = useCallback((nextValue: VideoSettings | ((current: VideoSettings) => VideoSettings)) => {
+    settingsRevisionRef.current += 1;
+    const current = videoSettingsRef.current;
+    const next = normalizeVideoSettings(typeof nextValue === 'function' ? nextValue(current) : nextValue);
+    videoSettingsRef.current = next;
+    setVideoSettings(next);
+    void persistDesktopRuntimeSettings(apiKeysRef.current, modelApiKeysRef.current, modelOverridesRef.current);
+    broadcastEterxSettingsUpdate({ type: 'video-settings-updated', video: next });
+    setHasChanges(true);
+  }, [persistDesktopRuntimeSettings]);
+
+  const updateVideoKeyPool = useCallback((provider: VideoProvider, value: string) => {
+    updateVideoSettings(current => ({ ...current, apiKeys: { ...current.apiKeys, [provider]: splitApiKeyPool(value).slice(0, 3) } }));
+  }, [updateVideoSettings]);
+
+  const moveVideoFallback = useCallback((provider: VideoProvider, direction: -1 | 1) => {
+    updateVideoSettings(current => {
+      const index = current.fallbackProviders.indexOf(provider);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.fallbackProviders.length) return current;
+      const fallbackProviders = [...current.fallbackProviders];
+      [fallbackProviders[index], fallbackProviders[target]] = [fallbackProviders[target], fallbackProviders[index]];
+      return { ...current, fallbackProviders };
+    });
+  }, [updateVideoSettings]);
+
+  const testVideoConnection = useCallback(async (provider: VideoProvider) => {
+    setVideoProbe({ provider, status: 'testing', message: 'Checking live connectivity...' });
+    try {
+      const response = await fetch('/api/settings/video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, key: videoSettingsRef.current.apiKeys[provider]?.[0] || '', model: videoSettingsRef.current.modelByProvider[provider] || VIDEO_PROVIDER_META[provider].defaultModel }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || 'Connection test failed.');
+      setVideoProbe({ provider, status: 'success', message: payload.result?.message || 'Provider connection is ready.' });
+    } catch (error: any) {
+      setVideoProbe({ provider, status: 'failed', message: error?.message || 'Connection test failed.' });
+    }
+  }, []);
+
+  const updateSearchKeyPool = useCallback((provider: SearchProvider, value: string) => {
+    updateSearchSettings(current => ({
+      ...current,
+      apiKeys: { ...current.apiKeys, [provider]: splitApiKeyPool(value).slice(0, 3) },
+    }));
+  }, [updateSearchSettings]);
+
+  const toggleSearchService = useCallback((provider: SearchProvider, service: SearchService) => {
+    updateSearchSettings(current => {
+      const currentServices = current.enabledServices[provider] || [...SEARCH_SERVICE_IDS];
+      const enabledServices = currentServices.includes(service)
+        ? currentServices.filter(item => item !== service)
+        : [...currentServices, service];
+      return {
+        ...current,
+        enabledServices: { ...current.enabledServices, [provider]: enabledServices },
+      };
+    });
+  }, [updateSearchSettings]);
+
+  const testSearchConnection = useCallback(async (provider: SearchProvider) => {
+    setSearchProbe({ provider, status: 'testing', message: 'Checking live connectivity...' });
+    try {
+      const response = await fetch('/api/settings/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider,
+          key: searchSettingsRef.current.apiKeys[provider]?.[0] || '',
+          baseURL: searchSettingsRef.current.baseURLs[provider] || '',
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || 'Connection test failed.');
+      setSearchProbe({ provider, status: 'success', message: `${payload.result?.resultCount || 0} live result${payload.result?.resultCount === 1 ? '' : 's'} returned.` });
+    } catch (error: any) {
+      setSearchProbe({ provider, status: 'failed', message: error?.message || 'Connection test failed.' });
+    }
+  }, []);
+
+  const toggleSearchFallback = useCallback((provider: SearchProvider) => {
+    updateSearchSettings(current => ({
+      ...current,
+      fallbackProviders: current.fallbackProviders.includes(provider)
+        ? current.fallbackProviders.filter(item => item !== provider)
+        : [...current.fallbackProviders, provider],
+    }));
+  }, [updateSearchSettings]);
+
+  const moveSearchFallback = useCallback((provider: SearchProvider, direction: -1 | 1) => {
+    updateSearchSettings(current => {
+      const index = current.fallbackProviders.indexOf(provider);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.fallbackProviders.length) return current;
+      const fallbackProviders = [...current.fallbackProviders];
+      [fallbackProviders[index], fallbackProviders[target]] = [fallbackProviders[target], fallbackProviders[index]];
+      return { ...current, fallbackProviders };
+    });
+  }, [updateSearchSettings]);
+
   const updateLiveApiKey = useCallback((name: string, value: string) => {
     const trimmed = value.trim();
     const next = { ...liveApiKeysRef.current };
@@ -3251,42 +3703,67 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     return () => window.removeEventListener('keydown', onKey);
   }, [isOpen, handleClose]);
 
-  const activeLiveProviderKey = 'gemini';
-  const liveApiKeyProvider = 'gemini';
-  const liveApiKeyLabel = 'Agent Live Convo / Gemini';
+  const activeLiveProvider = getLiveProvider(settings.liveConvoProvider);
+  const activeLiveProviderKey = activeLiveProvider.provider;
+  const liveApiKeyProvider = activeLiveProvider.keyProvider;
+  const liveApiKeyLabel = `${activeLiveProvider.label}`;
+  const activeLiveApiKey = liveApiKeys[liveApiKeyProvider] || '';
   const discoveredLiveModels = (modelDirectory[activeLiveProviderKey]?.models || [])
     .filter(m => /live|native-audio/i.test(m.id));
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'live-convo') return;
     let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void fetch('/api/live/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'agent-live-convo' }),
-      }).then(response => response.ok ? response.json() : null).then(payload => {
+    const providerValue = activeLiveProvider.value;
+    const timer = window.setTimeout(async () => {
+      setLiveCatalogStatus('loading');
+      setLiveCatalogMessage(`Loading ${activeLiveProvider.label} models and voices…`);
+      try {
+        const [modelResponse, voiceResponse] = await Promise.all([
+          fetch('/api/live/models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: providerValue }),
+          }),
+          fetch('/api/settings/live-voices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: providerValue, modelId: settings.liveConvoModel || 'auto' }),
+          }),
+        ]);
+        const modelPayload = await modelResponse.json().catch(() => null);
+        const voicePayload = await voiceResponse.json().catch(() => null);
         if (cancelled) return;
-        const models = Array.isArray(payload?.models) ? payload.models : [];
-        setLiveModelOptionsFromApi(models.map((model: any) => ({
+
+        const models = Array.isArray(modelPayload?.models) ? modelPayload.models : [];
+        const normalizedModels = models.map((model: any) => ({
           value: String(model?.id || '').trim(),
           label: String(model?.name || model?.id || '').trim(),
-          tag: 'LIVE API',
-          description: String(model?.description || 'Returned by the Agent Live API'),
-        })).filter((model: LiveModelOption) => model.value));
-      }).catch(() => {
-        if (!cancelled) setLiveModelOptionsFromApi([]);
-      });
-    }, liveApiKeys.gemini ? 350 : 0);
+          tag: String(model?.tag || 'LIVE API'),
+          description: String(model?.description || `Returned by ${activeLiveProvider.label}`),
+        })).filter((model: LiveModelOption) => model.value);
+        const voices = Array.isArray(voicePayload?.voices) ? voicePayload.voices : [];
+        setLiveModelOptionsFromApi(previous => ({ ...previous, [providerValue]: normalizedModels }));
+        setLiveVoiceOptionsFromApi(previous => ({ ...previous, [providerValue]: voices }));
+        setLiveCatalogStatus(modelResponse.ok && voiceResponse.ok ? 'ready' : 'error');
+        const keyState = activeLiveApiKey ? 'key configured' : 'add an API key to connect';
+        setLiveCatalogMessage(`${normalizedModels.length} model${normalizedModels.length === 1 ? '' : 's'} and ${voices.length} voice${voices.length === 1 ? '' : 's'} available · ${keyState}`);
+      } catch {
+        if (!cancelled) {
+          setLiveCatalogStatus('error');
+          setLiveCatalogMessage(`Could not load the ${activeLiveProvider.label} catalog.`);
+        }
+      }
+    }, activeLiveApiKey ? 180 : 0);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeTab, isOpen, liveApiKeys.gemini]);
+  }, [activeLiveApiKey, activeLiveProvider, activeTab, isOpen, settings.liveConvoModel]);
 
   const activeLiveModelOptions = Array.from(new Map([
-    { value: 'auto', label: 'Auto (latest Agent Live model)', tag: 'LIVE API', description: `Uses the newest available live model (default: ${DEFAULT_GEMINI_LIVE_MODEL})` },
-    ...liveModelOptionsFromApi,
+    ...getLiveModelOptions(activeLiveProvider.value),
+    ...(liveModelOptionsFromApi[activeLiveProvider.value] || []),
     ...discoveredLiveModels.map(m => ({
       value: m.id,
       label: m.name || m.id,
@@ -3294,6 +3771,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       description: m.description || 'Returned by the Agent Live API',
     })),
   ].map(option => [option.value, option] as const)).values());
+  const activeLiveVoiceOptions = liveVoiceOptionsFromApi[activeLiveProvider.value]?.length
+    ? liveVoiceOptionsFromApi[activeLiveProvider.value]
+    : getLiveVoiceOptions(activeLiveProvider.value);
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
     { id: 'general', label: 'General', icon: 'general' },
@@ -3309,7 +3789,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     { id: 'live-convo', label: 'Live Convo', icon: 'live-convo' },
     { id: 'git', label: 'Git', icon: 'git' },
     { id: 'environments', label: 'Environments', icon: 'environments' },
-    { id: 'browser', label: 'Web search', icon: 'browser' },
+    { id: 'browser', label: 'External service', icon: 'browser' },
     { id: 'computer', label: 'Computer use', icon: 'computer' },
     { id: 'updates', label: 'Updates', icon: 'updates' },
   ];
@@ -3380,7 +3860,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       : selectedProviderDirectory.error || 'Not connected')
     : 'Open Models to load live models';
   const selectedProviderCapabilities = [
-    selectedProviderKeyCount > 0 ? `${ selectedProviderKeyCount } key${ selectedProviderKeyCount === 1 ? '' : 's' } in pool` : 'Key not connected',
+    isLocalModelProvider(selectedConnectionProvider)
+      ? 'Local endpoint · no key required'
+      : selectedProviderKeyCount > 0
+        ? `${ selectedProviderKeyCount } key${ selectedProviderKeyCount === 1 ? '' : 's' } in pool`
+        : 'Key not connected',
     selectedProviderDirectory?.connected ? 'Live catalog' : 'Catalog pending',
     globalSelectorCount > 0 ? `${ globalSelectorCount } chat model${ globalSelectorCount === 1 ? '' : 's' }` : 'Chat list empty',
   ];
@@ -3631,7 +4115,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                   {tabs.map(tab => (
                     <button
                       key={tab.id}
-                      onClick={() => setActiveTab(tab.id)}
+                      onClick={() => { setManualOpen(false); setActiveTab(tab.id); }}
                       className={`flex h-8 shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
                         ? 'bg-[#313131] text-[#F5F5F5]'
                         : 'text-[#F0F0F0] hover:bg-white/[0.045]'
@@ -3653,14 +4137,72 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                 {/* Scrollable Body */}
                 <div className={`flex-1 eterx-scrollbar px-6 ${activeTab === 'tokens' ? 'overflow-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
-                  <div className={`mx-auto w-full ${activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : 'max-w-[560px]'} pb-8`}>
+                  <div className={`mx-auto w-full ${manualOpen || activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : 'max-w-[560px]'} pb-8`}>
                       <div className="mb-6 flex items-center justify-between gap-4">
-                        <h3 className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">{tabs.find(t => t.id === activeTab)?.label}</h3>
+                        <h3 className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">
+                          {manualOpen ? 'User manual' : tabs.find(t => t.id === activeTab)?.label}
+                          {activeTab === 'models' && (
+                            <span className="ml-2 text-[11px] font-normal tracking-normal text-[#8E8A84]">
+                              (For fetching models, please add at least one API key for that provider.)
+                            </span>
+                          )}
+                        </h3>
                         {activeTab === 'tokens' && <div className="flex items-center gap-3"><span className="text-[12px] text-[#999]">Show token count</span><Toggle enabled={settings.showTokenCount} onChange={value => updateSetting('showTokenCount', value)} /></div>}
                       </div>
 
                       {/* ═══ GENERAL TAB ═══ */}
-                      {activeTab === 'general' && (
+                      {manualOpen && activeTab === 'general' && (
+                        <div className="space-y-6">
+                          <button type="button" onClick={() => setManualOpen(false)} className="inline-flex items-center gap-2 rounded-lg px-1 py-1 text-[12.5px] font-medium text-[#A7A7A7] transition-colors hover:text-[#F1F1F1]">
+                            <ArrowLeft className="h-4 w-4" /> Back to General settings
+                          </button>
+                          <div className="rounded-2xl border border-white/[0.09] bg-gradient-to-br from-[#252525] to-[#1B1B1B] p-6 sm:p-8">
+                            <div className="flex max-w-[690px] items-start gap-4">
+                              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-[#3D9BFF]/25 bg-[#3D9BFF]/10 text-[#76B9FF]"><BookOpen className="h-5 w-5" /></span>
+                              <div><div className="text-[12px] font-semibold uppercase tracking-[0.14em] text-[#76B9FF]">Getting started</div><h4 className="mt-2 text-[25px] font-semibold tracking-[-0.02em] text-[#F4F4F4]">Welcome to EterX-Agent</h4><p className="mt-2 text-[14px] leading-6 text-[#B3B3B3]">A practical guide to setting up your workspace, starting conversations, and turning ideas into finished work.</p></div>
+                            </div>
+                            <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                              {[['01', 'Start a chat', 'Describe what you want to accomplish in plain language.'], ['02', 'Add context', 'Attach files or choose a workspace when the task needs them.'], ['03', 'Review results', 'Follow progress, steer the work, and inspect what changed.']].map(([number, title, description]) => <div key={number} className="rounded-xl border border-white/[0.08] bg-black/10 p-4"><div className="text-[11px] font-semibold tracking-[0.12em] text-[#76B9FF]">{number}</div><div className="mt-2 text-[13px] font-semibold text-[#F1F1F1]">{title}</div><div className="mt-1.5 text-[12px] leading-5 text-[#999]">{description}</div></div>)}
+                            </div>
+                          </div>
+                          <div className="grid gap-5 md:grid-cols-[220px_1fr]">
+                            <div className="space-y-1 rounded-xl border border-white/[0.08] bg-[#202020] p-2">
+                              <div className="px-3 pb-2 pt-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[#777]">Topics</div>
+                              {[
+                                ['model-selection', 'Model selection'],
+                                ['first-chat', 'Your first chat'],
+                                ['workspaces', 'Workspaces & files'],
+                                ['agents', 'Agents & work modes'],
+                                ['tasks', 'Scheduled tasks'],
+                                ['live', 'Live Convo'],
+                                ['settings-guide', 'Settings guide'],
+                                ['troubleshooting', 'Troubleshooting'],
+                              ].map(([id, topic]) => <button key={id} type="button" onClick={() => setManualTopic(id)} className={`w-full rounded-lg px-3 py-2 text-left text-[12.5px] font-medium transition-colors ${manualTopic === id ? 'bg-[#303030] text-[#F1F1F1]' : 'text-[#A7A7A7] hover:bg-white/[0.045] hover:text-[#F1F1F1]'}`}>{topic}</button>)}
+                            </div>
+                            <article className="rounded-xl border border-white/[0.08] bg-[#202020] p-5 sm:p-7">
+                              <div className="flex items-center justify-between gap-4"><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#777]">User manual · {manualTopic === 'model-selection' ? 'Settings' : 'Guide'}</div><span className="rounded-full border border-emerald-400/15 bg-emerald-400/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-300">Preview</span></div>
+                              {manualTopic === 'model-selection' ? <>
+                                <h4 className="mt-4 text-[21px] font-semibold tracking-[-0.015em] text-[#F1F1F1]">Choose and add a chat model</h4>
+                                <p className="mt-3 text-[14px] leading-6 text-[#B0B0B0]">EterX-Agent discovers models from the provider you configure. Add a key first, load that provider’s catalog, then save the models you want in the chat model selector.</p>
+                                <div className="mt-7 space-y-5">
+                                  {[['1', 'Open Settings → API', 'Go to the API section and add at least one API key for the provider you want to use. Keep the key local and use the provider row that matches your account.'], ['2', 'Select the model provider', 'Open Settings → Models and choose the same provider. Once a valid API key is available, EterX-Agent can request the provider’s current model list instead of relying on an outdated preset.'], ['3', 'Load and review models', 'Use the provider catalog to fetch available models. The list can include model IDs, context limits, capabilities, and thinking support returned by that provider.'], ['4', 'Add to your custom list', 'Choose Add for a model you want to use. It becomes part of your saved model list and can then be selected from the model control in the chat composer.']].map(([number, title, description]) => <div key={number} className="flex gap-3.5"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#303030] text-[11px] font-semibold text-[#BFDFFF]">{number}</span><div><div className="text-[13px] font-semibold text-[#F1F1F1]">{title}</div><p className="mt-1 text-[13px] leading-5 text-[#9F9F9F]">{description}</p></div></div>)}
+                                </div>
+                                <div className="mt-7 rounded-xl border border-[#3D9BFF]/15 bg-[#3D9BFF]/[0.06] px-4 py-3 text-[12px] leading-5 text-[#AFCDF0]">Tip: if no models appear, check that the API key is valid, the provider is selected in both sections, and the provider endpoint is reachable.</div>
+                              </> : (() => {
+                                const guide = MANUAL_GUIDES[manualTopic] || MANUAL_GUIDES['first-chat'];
+                                return <>
+                                  <h4 className="mt-4 text-[21px] font-semibold tracking-[-0.015em] text-[#F1F1F1]">{guide.title}</h4>
+                                  <p className="mt-3 text-[14px] leading-6 text-[#B0B0B0]">{guide.intro}</p>
+                                  <div className="mt-7 space-y-5">{guide.steps.map(([title, description], index) => <div key={title} className="flex gap-3.5"><span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#303030] text-[11px] font-semibold text-[#BFDFFF]">{index + 1}</span><div><div className="text-[13px] font-semibold text-[#F1F1F1]">{title}</div><p className="mt-1 text-[13px] leading-5 text-[#9F9F9F]">{description}</p></div></div>)}</div>
+                                  <div className="mt-7 rounded-xl border border-[#3D9BFF]/15 bg-[#3D9BFF]/[0.06] px-4 py-3 text-[12px] leading-5 text-[#AFCDF0]">{guide.tip}</div>
+                                </>;
+                              })()}
+                            </article>
+                          </div>
+                        </div>
+                      )}
+
+                      {activeTab === 'general' && !manualOpen && (
                         <div>
                           <SectionHeader title="Work mode" />
                           <p className="-mt-2 mb-5 text-[14px] text-[#A5A5A5]">Choose how EterX-Agent should shape responses for your work.</p>
@@ -3797,6 +4339,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               >
                                 View
                               </SoftButton>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="User manual" description="Learn how to use EterX-Agent, explore the workspace, and get the most from every feature.">
+                              <SoftButton onClick={() => setManualOpen(true)}>Open manual</SoftButton>
                             </SettingsStackRow>
                           </SettingsStack>
 
@@ -4050,7 +4595,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     key={key}
                                     aria-label={`${formatTokenMetric(value)} tokens on ${date.toLocaleDateString()}`}
                                     onMouseEnter={event => setHoveredToken({ value, date: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), cellKey: key, x: event.clientX, y: event.clientY })}
-                                    className={`eterx-token-activity-cell eterx-token-activity-cell-${intensity}${hoveredToken?.cellKey === key ? ' is-hovered' : ''}`}
+                                    className={`eterx-token-activity-cell eterx-token-activity-cell-${intensity}${hoveredToken?.cellKey === key ? ' is-hovered' : ''} h-3.5 w-3.5 justify-self-center rounded-[3px]`}
                                   />
                                 );
                               })}
@@ -4112,7 +4657,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               <Toggle enabled={settings.streamResponses} onChange={v => updateSetting('streamResponses', v)} />
                             </SettingsStackRow>
                             <SettingsStackRow title="Grounding search" description="Allow current web search when the task needs up-to-date facts.">
-                              <Toggle enabled={settings.groundingSearch} onChange={v => updateSetting('groundingSearch', v)} />
+                            <Toggle enabled={settings.groundingSearch} onChange={v => { updateSetting('groundingSearch', v); updateSearchSettings(current => ({ ...current, enabled: v })); }} />
                             </SettingsStackRow>
                           </SettingsStack>
 
@@ -4435,16 +4980,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <SectionHeader title="Service APIs" />
                           <SettingsStack>
-                            <SettingsStackRow title="External search" description="Tavily enables current web search for facts, docs, and research." tall>
-                              <ApiKeyPoolEditor
-                                provider="tavily"
-                                providerLabel="Tavily search"
-                                value={apiKeys.tavily || ''}
-                                sync={providerSync('tavily')}
-                                minRows={3}
-                                onChange={(nextValue) => updateApiKey('tavily', nextValue)}
-                              />
-                            </SettingsStackRow>
+                            <SettingsStackRow title="External service" description="Configure live web search, provider order, endpoints, and three-key failover pools in the External service tab." />
                             <SettingsStackRow title="Code platform" description="GitHub token enables repository-aware actions when needed." tall>
                               <ApiKeyPoolEditor
                                 provider="github"
@@ -4465,7 +5001,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <SectionHeader
                             title="Live Convo"
                             badge={settings.liveConvoEnabled ? 'Live' : 'Disabled'}
-                            info="Configure the native Agent Live voice and multimodal session. Other providers remain available in Models and API."
+                            info="Configure the selected model provider, realtime model, voice, and dedicated key pool. No provider is substituted silently."
                           />
                           <SettingsStack>
                             <SettingsStackRow
@@ -4481,10 +5017,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <SettingsStackRow
                               title="Live Provider"
                               description="Select the real-time stream provider for active live sessions."
-                              info="Agent Live Convo uses Gemini's native bidirectional streaming transport."
+                              info="Every provider keeps its own API key, model catalog, and voice catalog."
                             >
                               <ModernSelect
-                                value="agent-live-convo"
+                                value={activeLiveProvider.value}
                                 onChange={(val) => {
                                   updateSetting('liveConvoProvider', val);
                                   updateSetting('liveConvoModel', 'auto');
@@ -4502,7 +5038,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <SettingsStackRow
                               title="Live Model"
                               description="Specific model engine active for current provider stream."
-                              info="Auto mode resolves the newest real Gemini Live model available to the separate Agent Live Convo key."
+                              info={`Models are loaded for ${activeLiveProvider.label} and never fall back to another provider.`}
                             >
                               <ModernSelect
                                 value={settings.liveConvoModel || 'auto'}
@@ -4515,14 +5051,30 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <SettingsStackRow
                               title="Voice Persona"
                               description="Choose the synthesized output voice for live responses."
-                              info="These are the native voices supported by the selected Agent Live Convo model."
+                              info={`Voices are loaded for the selected ${activeLiveProvider.label} model.`}
                             >
                               <ModernSelect
                                 value={settings.liveConvoVoice || 'auto'}
                                 onChange={(val) => updateSetting('liveConvoVoice', val)}
                                 className="w-[340px]"
-                                options={GEMINI_LIVE_VOICE_OPTIONS}
+                                options={activeLiveVoiceOptions}
                               />
+                            </SettingsStackRow>
+
+                            <SettingsStackRow
+                              title="Provider catalog status"
+                              description="Live model and voice catalogs are refreshed whenever the provider, model, or key changes."
+                            >
+                              <div className={`flex min-w-[340px] items-center justify-end gap-2 text-[12px] ${
+                                liveCatalogStatus === 'ready'
+                                  ? 'text-emerald-300'
+                                  : liveCatalogStatus === 'error'
+                                    ? 'text-amber-300'
+                                    : 'text-[#A5A5A5]'
+                              }`}>
+                                {liveCatalogStatus === 'loading' && <Spinner className="h-3.5 w-3.5" />}
+                                <span>{liveCatalogMessage}</span>
+                              </div>
                             </SettingsStackRow>
 
                             <SettingsStackRow
@@ -4575,19 +5127,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             className="min-h-[120px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 font-mono text-[13px] leading-6 text-[#F1F1F1] outline-none transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
                           />
 
-                            <SectionHeader title="Agent Live Convo API Key" />
+                            <SectionHeader title={`${activeLiveProvider.label} API Key`} />
                           <SettingsStack>
                             <SettingsStackRow
                               title="Live Convo Key Pool"
-                              description="Separate key used only by Agent Live Convo. It does not replace any provider key in Models or API."
+                              description={`Dedicated ${activeLiveProvider.label} key pool. It is stored separately from the provider key in Models/API and is tested against the selected provider.`}
                               tall
                             >
                               <ApiKeyPoolEditor
                                 provider={liveApiKeyProvider}
                                 providerLabel={liveApiKeyLabel}
-                                value={liveApiKeys[liveApiKeyProvider] || ''}
+                                value={activeLiveApiKey}
                                 minRows={2}
-                                showTest={false}
+                                testEndpoint="/api/live/models"
+                                testProvider={activeLiveProvider.value}
+                                testBody={(key) => ({ provider: activeLiveProvider.value, key, testOnly: true })}
                                 onChange={(nextValue) => updateLiveApiKey(liveApiKeyProvider, nextValue)}
                               />
                             </SettingsStackRow>
@@ -4698,63 +5252,381 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                       {activeTab === 'browser' && (
                         <div>
-                          <SectionHeader title="Browser control & web search" />
-                          <div className="mb-5 rounded-2xl border border-white/[0.10] bg-gradient-to-br from-[#20252B] to-[#191B1F] p-5">
-                            <div className="flex items-start gap-3">
-                              <div className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${browserRuntimeStatus?.signedBrowser || browserRuntimeStatus?.managedBrowser ? 'bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,.65)]' : 'bg-amber-400'}`} />
-                              <div className="min-w-0 flex-1">
-                                <div className="text-[15px] font-semibold text-[#F1F1F1]">{browserRuntimeStatus?.signedBrowser ? 'Signed-in browser connected' : browserRuntimeStatus?.managedBrowser ? 'New isolated browser connected' : 'Choose a browser mode'}</div>
-                                <div className="mt-1 text-[12px] leading-5 text-[#A5A5A5]">{browserRuntimeMessage}</div>
-                                {browserRuntimeStatus?.signedBrowserAvailable === false && <div className="mt-1 text-[11px] text-amber-300">Signed-in mode is disabled: {browserRuntimeStatus.signedBrowserReason}</div>}
-                                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#777]">
-                                  <span>Platform: {browserRuntimeStatus?.platform || terminalPlatform}</span>
-                                  <span>Mode: {browserRuntimeStatus?.browser?.mode || 'not connected'}</span>
-                                  <span>Screen: {browserRuntimeStatus?.computer?.screenProvider || 'checking'}</span>
-                                </div>
-                              </div>
-                            </div>
-                            <div className="mt-4 flex flex-wrap gap-2">
-                              <button type="button" disabled={browserRuntimeBusy || browserRuntimeStatus?.signedBrowserAvailable === false} onClick={() => runBrowserRuntimeAction('connect_signed')} className="rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-[11px] font-semibold text-emerald-200 transition-colors hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-40">Signed-in existing browser</button>
-                              <button type="button" disabled={browserRuntimeBusy} onClick={() => runBrowserRuntimeAction('launch_managed')} className="rounded-lg border border-white/[0.10] bg-white/[0.06] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.11] disabled:opacity-50">New isolated browser</button>
-                              <button type="button" disabled={browserRuntimeBusy} onClick={refreshBrowserRuntimeStatus} className="rounded-lg border border-white/[0.10] px-3 py-2 text-[11px] font-semibold text-[#A5A5A5] transition-colors hover:bg-white/[0.08] disabled:opacity-50">Refresh status</button>
-                            </div>
-                            <div className="mt-3 text-[11px] leading-5 text-[#777]">Signed-in mode uses your existing Chrome/Edge/Brave profile. If the browser is already open without CDP, close it once and retry so EterX can reopen the same profile with control enabled.</div>
+                          <SectionHeader
+                            title="External service"
+                            badge={settings.groundingSearch ? 'Live' : 'Off'}
+                            info="External service is the single control plane for live web search, source extraction, and deep research. Provider credentials remain local and are never placed in chat requests."
+                          />
+
+                          <SettingsStack>
+                            <SettingsStackRow
+                              title="Use built-in model search first"
+                              description="When the active model supports native web search, use it first. If it is unavailable or fails, continue automatically through the external provider and key fallback order."
+                            >
+                              <Toggle enabled={searchSettings.preferModelSearch} onChange={v => updateSearchSettings(current => ({ ...current, preferModelSearch: v }))} />
+                            </SettingsStackRow>
+                            <SettingsStackRow
+                              title="Live web intelligence"
+                              description="Enable live search, source reading, and deep research through the selected route."
+                            >
+                              <Toggle enabled={settings.groundingSearch} onChange={v => { updateSetting('groundingSearch', v); updateSearchSettings(current => ({ ...current, enabled: v })); }} />
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <div className="mb-4 mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-[11px] text-[#858585]">
+                            <span>Route: <span className="font-medium text-[#D7D7D7]">{selectedSearchMeta.label}</span>{searchSettings.fallbackProviders.length ? ` + ${searchSettings.fallbackProviders.length} fallback${searchSettings.fallbackProviders.length === 1 ? '' : 's'}` : ''}</span>
+                            <span>Credentials: <span className="font-medium text-[#D7D7D7]">{selectedSearchMeta.requiresKey ? `${(searchSettings.apiKeys[searchSettings.provider] || []).length}/3` : 'Not required'}</span></span>
+                            <span>Research: <span className="font-medium text-[#D7D7D7]">{selectedSearchMeta.deepResearch === 'native' ? 'Provider-native' : 'Agent-led'}</span></span>
                           </div>
-                          <SettingRow icon={<Globe className="w-4 h-4" />} title="Browser access" description="Allow the agent to inspect local app pages, capture screenshots, and verify UI behavior.">
-                            <Toggle enabled={settings.browserAccess} onChange={v => updateSetting('browserAccess', v)} />
-                          </SettingRow>
-                          <SettingRow icon={<Search className="w-4 h-4" />} title="External web search" description="Enable real-time web search to ground agent responses in current facts.">
-                            <Toggle enabled={settings.groundingSearch} onChange={v => updateSetting('groundingSearch', v)} />
-                          </SettingRow>
-                          <SettingRow icon={<Monitor className="w-4 h-4" />} title="Preview target" description="Default local app URL used by browser verification.">
-                            <span className="rounded-lg border border-white/[0.10] bg-[#141414] px-3 py-2 font-mono text-[13px] text-[#CFCFCF]">http://localhost:3000</span>
-                          </SettingRow>
+
+                          <SettingsStack>
+                            <SettingsStackRow title="Primary provider" description="This provider receives the first live request. Choose another service at any time without changing the agent or research tools.">
+                              <ModernSelect
+                                value={searchSettings.provider}
+                                onChange={(value) => {
+                                  if (!SEARCH_PROVIDER_IDS.includes(value as SearchProvider)) return;
+                                  const provider = value as SearchProvider;
+                                  updateSearchSettings(current => ({
+                                    ...current,
+                                    provider,
+                                    fallbackProviders: current.fallbackProviders.filter(item => item !== provider),
+                                  }));
+                                }}
+                                className="w-[280px]"
+                                options={SEARCH_PROVIDER_IDS.map(provider => ({
+                                  value: provider,
+                                  label: SEARCH_PROVIDER_META[provider].label,
+                                  description: SEARCH_PROVIDER_META[provider].description,
+                                }))}
+                              />
+                            </SettingsStackRow>
+                            {selectedSearchMeta.requiresEndpoint && (
+                              <SettingsStackRow
+                                title={selectedSearchMeta.requiresEndpoint ? 'Service URL' : 'Custom endpoint'}
+                                description={selectedSearchMeta.requiresEndpoint ? `Required for ${selectedSearchMeta.label}. Enter the base URL of the service instance.` : 'Only needed for a private relay or custom deployment.'}
+                                tall
+                              >
+                                <input
+                                  value={searchSettings.baseURLs[searchSettings.provider] || ''}
+                                  onChange={event => updateSearchSettings(current => ({
+                                    ...current,
+                                    baseURLs: { ...current.baseURLs, [searchSettings.provider]: event.target.value },
+                                  }))}
+                                  placeholder={selectedSearchMeta.baseURLPlaceholder || selectedSearchMeta.defaultBaseURL || 'Service URL'}
+                                  className="h-10 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-sky-300/35"
+                                />
+                              </SettingsStackRow>
+                            )}
+                            <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.07] px-4 py-3">
+                              <span className="mr-1 text-[11px] text-[#777]">This route provides</span>
+                              {selectedSearchMeta.capabilities.map(capability => (
+                                <span key={capability} className="rounded-full border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-[#BDBDBD]">{SEARCH_CAPABILITY_LABELS[capability]}</span>
+                              ))}
+                              <span className="rounded-full border border-sky-300/15 bg-sky-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-sky-200">{selectedSearchMeta.deepResearch === 'native' ? 'Native research' : 'Agent-led research'}</span>
+                            </div>
+                            <SettingsStackRow title="Provider services" description="Choose which services this provider can receive. Changes apply to the next agent request and stay scoped to this provider." tall>
+                              <div className="w-full overflow-hidden rounded-xl border border-white/[0.08] bg-[#141414]">
+                                {SEARCH_SERVICE_IDS.map(service => {
+                                  const enabled = selectedSearchServices.includes(service);
+                                  const native = service === 'research'
+                                    ? selectedSearchMeta.deepResearch === 'native'
+                                    : selectedSearchMeta.capabilities.includes(service === 'read' ? 'read' : service as 'search' | 'crawl' | 'map');
+                                  return (
+                                    <div key={service} className="flex items-center gap-3 border-b border-white/[0.07] px-3.5 py-2.5 last:border-b-0">
+                                      <Toggle enabled={enabled} onChange={() => toggleSearchService(searchSettings.provider, service)} />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="text-[12px] font-medium text-[#E5E5E5]">{SEARCH_SERVICE_META[service].label}</div>
+                                        <div className="mt-0.5 text-[10.5px] leading-4 text-[#777]">{SEARCH_SERVICE_META[service].description}</div>
+                                      </div>
+                                      <span className={`shrink-0 rounded-full px-2 py-1 text-[9px] font-medium ${native ? 'bg-emerald-300/10 text-emerald-200' : 'bg-white/[0.05] text-[#898989]'}`}>{native ? 'Provider route' : 'Agent fallback'}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Provider credentials" description={selectedSearchMeta.credentialDescription || (selectedSearchMeta.requiresKey ? `Up to three ${selectedSearchMeta.label} keys. Keys are tried in order and rotate after a successful request.` : 'This provider does not require a credential.')} tall>
+                              {selectedSearchMeta.requiresKey ? (
+                                <ApiKeyPoolEditor
+                                  key={`search-${searchSettings.provider}`}
+                                  provider={searchSettings.provider}
+                                  providerLabel={selectedSearchMeta.credentialLabel || selectedSearchMeta.label}
+                                  value={(searchSettings.apiKeys[searchSettings.provider] || []).join('\n')}
+                                  minRows={1}
+                                  maxRows={3}
+                                  testEndpoint="/api/settings/search"
+                                  testBaseURL={searchSettings.baseURLs[searchSettings.provider] || ''}
+                                  onChange={value => updateSearchKeyPool(searchSettings.provider, value)}
+                                />
+                              ) : (
+                                <div className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#141414] px-4 py-3">
+                                  <div className="flex min-w-0 items-center gap-3">
+                                    <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-emerald-300/10 text-emerald-300"><Check className="h-4 w-4" /></div>
+                                    <div className="min-w-0"><div className="text-[12px] font-medium text-[#E5E5E5]">No API key required</div><div className="mt-0.5 truncate text-[11px] text-[#777]">The endpoint and live response are the connection check.</div></div>
+                                  </div>
+                                  <button type="button" onClick={() => void testSearchConnection(searchSettings.provider)} disabled={searchProbe.provider === searchSettings.provider && searchProbe.status === 'testing'} className="shrink-0 rounded-lg bg-white/[0.07] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.12] disabled:opacity-40">{searchProbe.provider === searchSettings.provider && searchProbe.status === 'testing' ? 'Testing...' : 'Test connection'}</button>
+                                </div>
+                              )}
+                            </SettingsStackRow>
+                          </SettingsStack>
+
+                          <SectionHeader title="Automatic failover" info="Every enabled provider is tried in order. Each route advertises its own search, reading, crawl, map, and research capabilities so the agent can choose the right action after settings or model changes." />
+                          <div className="overflow-hidden rounded-xl border border-white/[0.09] bg-[#202020]">
+                            {SEARCH_PROVIDER_IDS.filter(provider => provider !== searchSettings.provider).map(provider => {
+                              const enabled = searchSettings.fallbackProviders.includes(provider);
+                              const order = searchSettings.fallbackProviders.indexOf(provider);
+                              return (
+                                <div key={provider} className="flex items-center gap-3 border-b border-white/[0.07] px-4 py-3 last:border-b-0">
+                                  <button type="button" role="switch" aria-checked={enabled} aria-label={`${enabled ? 'Disable' : 'Enable'} ${SEARCH_PROVIDER_META[provider].label} fallback`} onClick={() => toggleSearchFallback(provider)} className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${enabled ? 'bg-sky-400' : 'bg-white/[0.12]'}`}><span className={`absolute left-1 top-1 h-3 w-3 rounded-full bg-white transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0'}`} /></button>
+                                  <ProviderMark provider={provider} />
+                                  <div className="min-w-0 flex-1"><div className="truncate text-[12.5px] font-medium text-[#E9E9E9]">{SEARCH_PROVIDER_META[provider].label}</div><div className="mt-0.5 truncate text-[11px] text-[#777]">{SEARCH_PROVIDER_META[provider].description}</div><div className="mt-1 flex flex-wrap gap-1.5">{SEARCH_PROVIDER_META[provider].capabilities.map(capability => <span key={capability} className="rounded-full bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-[#8F8F8F]">{SEARCH_CAPABILITY_LABELS[capability]}</span>)}<span className="rounded-full bg-white/[0.04] px-1.5 py-0.5 text-[9px] text-[#8F8F8F]">{SEARCH_PROVIDER_META[provider].deepResearch === 'native' ? 'Native research' : 'Agent-led research'}</span></div></div>
+                                  {enabled && <><span className="rounded-full border border-sky-300/15 bg-sky-300/10 px-2 py-1 text-[10px] font-semibold text-sky-200">Fallback {order + 1}</span><button type="button" onClick={() => moveSearchFallback(provider, -1)} disabled={order === 0} className="rounded-md px-2 py-1 text-[11px] text-[#A7A7A7] hover:bg-white/[0.06] disabled:opacity-25">↑</button><button type="button" onClick={() => moveSearchFallback(provider, 1)} disabled={order === searchSettings.fallbackProviders.length - 1} className="rounded-md px-2 py-1 text-[11px] text-[#A7A7A7] hover:bg-white/[0.06] disabled:opacity-25">↓</button></>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {searchProbe.message && searchProbe.provider === searchSettings.provider && <div className={`mt-3 rounded-xl border px-4 py-3 text-[12px] leading-5 ${searchProbe.status === 'success' ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : searchProbe.status === 'failed' ? 'border-red-400/20 bg-red-400/[0.06] text-red-200' : 'border-white/[0.08] bg-white/[0.03] text-[#B8B8B8]'}`}>{searchProbe.message}</div>}
+
+                          <SectionHeader title="Image generation" badge={imageSettings.enabled ? 'Live' : 'Off'} info="Generate real raster images through the selected provider. The agent receives the active provider and model route, rotates keys, and fails over only after a real provider error." />
+                          <SettingsStack>
+                            <SettingsStackRow title="Enable image generation" description="Allow the image_generator tool to call the selected provider and save returned raster files locally.">
+                              <Toggle enabled={imageSettings.enabled} onChange={v => updateImageSettings(current => ({ ...current, enabled: v }))} />
+                            </SettingsStackRow>
+                          </SettingsStack>
+                          <div className="mb-4 mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-[11px] text-[#858585]">
+                            <span>Route: <span className="font-medium text-[#D7D7D7]">{selectedImageMeta.label}</span>{imageSettings.fallbackProviders.length ? ` + ${imageSettings.fallbackProviders.length} fallback${imageSettings.fallbackProviders.length === 1 ? '' : 's'}` : ''}</span>
+                            <span>Model: <span className="font-medium text-[#D7D7D7]">{selectedImageModel}</span></span>
+                            <span>Keys: <span className="font-medium text-[#D7D7D7]">{(imageSettings.apiKeys[imageSettings.provider] || []).length}/3</span></span>
+                          </div>
+                          <SettingsStack>
+                            <SettingsStackRow title="Primary provider" description="The first real image request uses this provider and its selected model.">
+                              <ModernSelect
+                                value={imageSettings.provider}
+                                onChange={value => {
+                                  if (!IMAGE_PROVIDER_IDS.includes(value as ImageProvider)) return;
+                                  const provider = value as ImageProvider;
+                                  updateImageSettings(current => ({
+                                    ...current,
+                                    provider,
+                                    fallbackProviders: current.fallbackProviders.filter(item => item !== provider),
+                                  }));
+                                }}
+                                className="w-[280px]"
+                                options={IMAGE_PROVIDER_IDS.map(provider => ({
+                                  value: provider,
+                                  label: IMAGE_PROVIDER_META[provider].label,
+                                  description: IMAGE_PROVIDER_META[provider].description,
+                                }))}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Model" description="Choose the model sent to the selected provider. The exact model id is shown so the agent route stays transparent.">
+                              <ModernSelect
+                                value={selectedImageModel}
+                                onChange={model => updateImageSettings(current => ({ ...current, modelByProvider: { ...current.modelByProvider, [current.provider]: model } }))}
+                                className="w-[360px]"
+                                options={selectedImageMeta.models.map(model => ({ value: model.id, label: model.label, description: `${model.id} · ${model.description}` }))}
+                              />
+                            </SettingsStackRow>
+                            <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.07] px-4 py-3">
+                              <span className="mr-1 text-[11px] text-[#777]">This route provides</span>
+                              <span className="rounded-full border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-[#BDBDBD]">{IMAGE_CAPABILITY_LABELS.text}</span>
+                              {selectedImageMeta.supportsEditing && <span className="rounded-full border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-[#BDBDBD]">{IMAGE_CAPABILITY_LABELS.edit}</span>}
+                              {selectedImageMeta.supportsAspectRatio && <span className="rounded-full border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-[#BDBDBD]">{IMAGE_CAPABILITY_LABELS.ratio}</span>}
+                              <span className="rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-emerald-200">Provider-native</span>
+                            </div>
+                            <SettingsStackRow title="Provider credentials" description={`Up to three ${selectedImageMeta.authLabel} values. Keys are attempted in order and rotate after a successful request.`} tall>
+                              <ApiKeyPoolEditor
+                                key={`image-${imageSettings.provider}`}
+                                provider={imageSettings.provider}
+                                providerLabel={selectedImageMeta.authLabel}
+                                value={(imageSettings.apiKeys[imageSettings.provider] || []).join('\n')}
+                                minRows={1}
+                                maxRows={3}
+                                testEndpoint="/api/settings/image"
+                                testBody={(key) => ({ provider: imageSettings.provider, key, model: selectedImageModel })}
+                                onChange={value => updateImageKeyPool(imageSettings.provider, value)}
+                              />
+                            </SettingsStackRow>
+                          </SettingsStack>
+                          <div className="mt-3 overflow-hidden rounded-xl border border-white/[0.09] bg-[#202020]">
+                            {IMAGE_PROVIDER_IDS.filter(provider => provider !== imageSettings.provider).map(provider => {
+                              const enabled = imageSettings.fallbackProviders.includes(provider);
+                              const order = imageSettings.fallbackProviders.indexOf(provider);
+                              const meta = IMAGE_PROVIDER_META[provider];
+                              return (
+                                <div key={provider} className="flex items-center gap-3 border-b border-white/[0.07] px-4 py-3 last:border-b-0">
+                                  <button type="button" role="switch" aria-checked={enabled} aria-label={`${enabled ? 'Disable' : 'Enable'} ${meta.label} fallback`} onClick={() => updateImageSettings(current => ({ ...current, fallbackProviders: enabled ? current.fallbackProviders.filter(item => item !== provider) : [...current.fallbackProviders, provider] }))} className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${enabled ? 'bg-sky-400' : 'bg-white/[0.12]'}`}><span className={`absolute left-1 top-1 h-3 w-3 rounded-full bg-white transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0'}`} /></button>
+                                  <ProviderMark provider={provider} />
+                                  <div className="min-w-0 flex-1"><div className="truncate text-[12.5px] font-medium text-[#E9E9E9]">{meta.label}</div><div className="mt-0.5 truncate text-[11px] text-[#777]">{meta.description}</div><div className="mt-1 text-[10px] text-[#8F8F8F]">Model: {imageSettings.modelByProvider[provider] || meta.defaultModel}</div></div>
+                                  {enabled && <><span className="rounded-full border border-sky-300/15 bg-sky-300/10 px-2 py-1 text-[10px] font-semibold text-sky-200">Fallback {order + 1}</span><button type="button" onClick={() => moveImageFallback(provider, -1)} disabled={order === 0} className="rounded-md px-2 py-1 text-[11px] text-[#A7A7A7] hover:bg-white/[0.06] disabled:opacity-25">↑</button><button type="button" onClick={() => moveImageFallback(provider, 1)} disabled={order === imageSettings.fallbackProviders.length - 1} className="rounded-md px-2 py-1 text-[11px] text-[#A7A7A7] hover:bg-white/[0.06] disabled:opacity-25">↓</button></>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-3 flex justify-end">
+                            <button type="button" onClick={() => void testImageConnection(imageSettings.provider)} disabled={imageProbe.provider === imageSettings.provider && imageProbe.status === 'testing'} className="rounded-lg bg-white/[0.07] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.12] disabled:opacity-40">{imageProbe.provider === imageSettings.provider && imageProbe.status === 'testing' ? 'Testing...' : 'Test connection'}</button>
+                          </div>
+                          {imageProbe.message && imageProbe.provider === imageSettings.provider && <div className={`mt-3 rounded-xl border px-4 py-3 text-[12px] leading-5 ${imageProbe.status === 'success' ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : imageProbe.status === 'failed' ? 'border-red-400/20 bg-red-400/[0.06] text-red-200' : 'border-white/[0.08] bg-white/[0.03] text-[#B8B8B8]'}`}>{imageProbe.message}</div>}
+
+                          <SectionHeader title="Video generation" badge={videoSettings.enabled ? 'Live' : 'Off'} info="Generate real video files through the selected provider. The agent receives the live provider, model, capabilities, key status, and fallback order before it chooses this tool." />
+                          <SettingsStack>
+                            <SettingsStackRow title="Enable video generation" description="Allow the video_generator tool to call the selected provider and save returned video files locally.">
+                              <Toggle enabled={videoSettings.enabled} onChange={v => updateVideoSettings(current => ({ ...current, enabled: v }))} />
+                            </SettingsStackRow>
+                          </SettingsStack>
+                          <div className="mb-4 mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-[11px] text-[#858585]">
+                            <span>Route: <span className="font-medium text-[#D7D7D7]">{selectedVideoMeta.label}</span>{videoSettings.fallbackProviders.length ? ` + ${videoSettings.fallbackProviders.length} fallback${videoSettings.fallbackProviders.length === 1 ? '' : 's'}` : ''}</span>
+                            <span>Model: <span className="font-medium text-[#D7D7D7]">{selectedVideoModel}</span></span>
+                            <span>Keys: <span className="font-medium text-[#D7D7D7]">{(videoSettings.apiKeys[videoSettings.provider] || []).length}/3</span></span>
+                          </div>
+                          <SettingsStack>
+                            <SettingsStackRow title="Primary provider" description="The first video request uses this provider and its selected model.">
+                              <ModernSelect
+                                value={videoSettings.provider}
+                                onChange={value => {
+                                  if (!VIDEO_PROVIDER_IDS.includes(value as VideoProvider)) return;
+                                  const provider = value as VideoProvider;
+                                  updateVideoSettings(current => ({ ...current, provider, fallbackProviders: current.fallbackProviders.filter(item => item !== provider) }));
+                                }}
+                                className="w-[280px]"
+                                options={VIDEO_PROVIDER_IDS.map(provider => ({ value: provider, label: VIDEO_PROVIDER_META[provider].label, description: VIDEO_PROVIDER_META[provider].description }))}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Model" description="Choose a suggested model or enter an exact current model ID for FAL and Replicate catalogs.">
+                              <div className="flex w-full flex-col gap-2">
+                                <ModernSelect
+                                  value={selectedVideoModel}
+                                  onChange={model => updateVideoSettings(current => ({ ...current, modelByProvider: { ...current.modelByProvider, [current.provider]: model } }))}
+                                  className="w-full"
+                                  options={selectedVideoMeta.models.map(model => ({ value: model.id, label: model.label, description: `${model.id} · ${model.description}` }))}
+                                />
+                                <input
+                                  value={selectedVideoModel}
+                                  onChange={event => updateVideoSettings(current => ({ ...current, modelByProvider: { ...current.modelByProvider, [current.provider]: event.target.value } }))}
+                                  placeholder="Exact model ID"
+                                  className="h-9 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-sky-300/35"
+                                />
+                              </div>
+                            </SettingsStackRow>
+                            <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.07] px-4 py-3">
+                              <span className="mr-1 text-[11px] text-[#777]">This route provides</span>
+                              {selectedVideoMeta.supportsTextToVideo && <span className="rounded-full border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-[#BDBDBD]">Text to video</span>}
+                              {selectedVideoMeta.supportsImageInput && <span className="rounded-full border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-[#BDBDBD]">Image to video</span>}
+                              {selectedVideoMeta.supportsAudioOutput && <span className="rounded-full border border-sky-300/15 bg-sky-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-sky-200">Synced audio</span>}
+                              <span className="rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-emerald-200">Provider-native</span>
+                            </div>
+                            <SettingsStackRow title="Provider credentials" description={`Up to three ${selectedVideoMeta.authLabel} values. Keys are attempted in order and rotate after a successful request.`} tall>
+                              <ApiKeyPoolEditor
+                                key={`video-${videoSettings.provider}`}
+                                provider={videoSettings.provider}
+                                providerLabel={selectedVideoMeta.authLabel}
+                                value={(videoSettings.apiKeys[videoSettings.provider] || []).join('\n')}
+                                minRows={1}
+                                maxRows={3}
+                                testEndpoint="/api/settings/video"
+                                testBody={(key) => ({ provider: videoSettings.provider, key, model: selectedVideoModel })}
+                                onChange={value => updateVideoKeyPool(videoSettings.provider, value)}
+                              />
+                            </SettingsStackRow>
+                          </SettingsStack>
+                          <div className="mt-3 overflow-hidden rounded-xl border border-white/[0.09] bg-[#202020]">
+                            {VIDEO_PROVIDER_IDS.filter(provider => provider !== videoSettings.provider).map(provider => {
+                              const enabled = videoSettings.fallbackProviders.includes(provider);
+                              const order = videoSettings.fallbackProviders.indexOf(provider);
+                              const meta = VIDEO_PROVIDER_META[provider];
+                              return (
+                                <div key={provider} className="flex items-center gap-3 border-b border-white/[0.07] px-4 py-3 last:border-b-0">
+                                  <button type="button" role="switch" aria-checked={enabled} aria-label={`${enabled ? 'Disable' : 'Enable'} ${meta.label} fallback`} onClick={() => updateVideoSettings(current => ({ ...current, fallbackProviders: enabled ? current.fallbackProviders.filter(item => item !== provider) : [...current.fallbackProviders, provider] }))} className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${enabled ? 'bg-sky-400' : 'bg-white/[0.12]'}`}><span className={`absolute left-1 top-1 h-3 w-3 rounded-full bg-white transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0'}`} /></button>
+                                  <ProviderMark provider={provider} />
+                                  <div className="min-w-0 flex-1"><div className="truncate text-[12.5px] font-medium text-[#E9E9E9]">{meta.label}</div><div className="mt-0.5 truncate text-[11px] text-[#777]">{meta.description}</div><div className="mt-1 text-[10px] text-[#8F8F8F]">Model: {videoSettings.modelByProvider[provider] || meta.defaultModel}</div></div>
+                                  {enabled && <><span className="rounded-full border border-sky-300/15 bg-sky-300/10 px-2 py-1 text-[10px] font-semibold text-sky-200">Fallback {order + 1}</span><button type="button" onClick={() => moveVideoFallback(provider, -1)} disabled={order === 0} className="rounded-md px-2 py-1 text-[11px] text-[#A7A7A7] hover:bg-white/[0.06] disabled:opacity-25">↑</button><button type="button" onClick={() => moveVideoFallback(provider, 1)} disabled={order === videoSettings.fallbackProviders.length - 1} className="rounded-md px-2 py-1 text-[11px] text-[#A7A7A7] hover:bg-white/[0.06] disabled:opacity-25">↓</button></>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-3 flex justify-end">
+                            <button type="button" onClick={() => void testVideoConnection(videoSettings.provider)} disabled={videoProbe.provider === videoSettings.provider && videoProbe.status === 'testing'} className="rounded-lg bg-white/[0.07] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.12] disabled:opacity-40">{videoProbe.provider === videoSettings.provider && videoProbe.status === 'testing' ? 'Testing...' : 'Test connection'}</button>
+                          </div>
+                          {videoProbe.message && videoProbe.provider === videoSettings.provider && <div className={`mt-3 rounded-xl border px-4 py-3 text-[12px] leading-5 ${videoProbe.status === 'success' ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : videoProbe.status === 'failed' ? 'border-red-400/20 bg-red-400/[0.06] text-red-200' : 'border-white/[0.08] bg-white/[0.03] text-[#B8B8B8]'}`}>{videoProbe.message}</div>}
+
                         </div>
                       )}
 
                       {activeTab === 'computer' && (
                         <div>
-                          <SectionHeader title="Computer use & screen control" />
-                          <div className="mb-5 rounded-2xl border border-white/[0.10] bg-[#202020] p-5">
-                            <div className="flex items-start gap-3">
-                              <Monitor className="mt-0.5 h-5 w-5 shrink-0 text-[#9AD8FF]" />
-                              <div>
-                                <div className="text-[15px] font-semibold text-[#F1F1F1]">Cross-platform runtime</div>
-                                <div className="mt-1 text-[12px] leading-5 text-[#A5A5A5]">Screen capture is available across Windows, macOS, and Linux. Full computer actions depend on the platform permission/backend.</div>
-                                <div className="mt-2 text-[11px] text-[#777]">Current provider: {browserRuntimeStatus?.computer?.screenProvider || 'checking…'}</div>
+                          <SectionHeader title="Browser control" />
+                          <div className="eterx-browser-service-card mb-5">
+                            <div className="eterx-browser-service-card__header">
+                              <div className="flex min-w-0 items-start gap-3">
+                                <div className={`eterx-browser-service-card__status-dot mt-1.5 ${browserRuntimeStatus?.signedBrowser || browserRuntimeStatus?.managedBrowser ? 'is-ready' : 'is-pending'}`} />
+                                <div className="min-w-0">
+                                  <div className="eterx-browser-service-card__eyebrow">Browser runtime</div>
+                                  <div className="eterx-browser-runtime-card__title mt-1 text-[16px] font-semibold text-[#F1F1F1]">{browserRuntimeStatus?.signedBrowser ? 'Signed-in browser connected' : browserRuntimeStatus?.managedBrowser ? 'New isolated browser connected' : 'Choose a browser mode'}</div>
+                                  <div className="eterx-browser-runtime-card__message mt-1 text-[12px] leading-5 text-[#A5A5A5]">{browserRuntimeMessage}</div>
+                                  {browserRuntimeStatus?.signedBrowserAvailable === false && <div className="eterx-browser-runtime-card__warning mt-1 text-[11px] text-amber-300">Signed-in mode is disabled: {browserRuntimeStatus.signedBrowserReason}</div>}
+                                </div>
+                              </div>
+                              <div className={`eterx-browser-service-card__state ${browserRuntimeStatus?.signedBrowser || browserRuntimeStatus?.managedBrowser ? 'is-ready' : 'is-pending'}`}>
+                                <span className="eterx-browser-service-card__state-dot" />
+                                {browserRuntimeStatus?.signedBrowser || browserRuntimeStatus?.managedBrowser ? 'Connected' : 'Needs setup'}
                               </div>
                             </div>
+                            <div className="eterx-browser-service-card__meta">
+                              <div><span className="eterx-browser-service-card__meta-label">Platform</span><span className="eterx-browser-service-card__meta-value">{browserRuntimeStatus?.platform || terminalPlatform}</span></div>
+                              <div><span className="eterx-browser-service-card__meta-label">Mode</span><span className="eterx-browser-service-card__meta-value">{browserRuntimeStatus?.browser?.mode || 'Not connected'}</span></div>
+                              <div><span className="eterx-browser-service-card__meta-label">Screen</span><span className="eterx-browser-service-card__meta-value">{browserRuntimeStatus?.computer?.screenProvider || 'Checking'}</span></div>
+                              <div><span className="eterx-browser-service-card__meta-label">Input</span><span className="eterx-browser-service-card__meta-value">{browserRuntimeStatus?.computer?.inputProvider || 'Checking'}</span></div>
+                            </div>
+                            <div className="eterx-browser-service-card__actions">
+                              <button type="button" disabled={browserRuntimeBusy || browserRuntimeStatus?.signedBrowserAvailable === false} onClick={() => runBrowserRuntimeAction('connect_signed')} className="eterx-browser-runtime-card__button eterx-browser-runtime-card__button--signed rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-[11px] font-semibold text-emerald-200 transition-colors hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-40">Signed-in existing browser</button>
+                              <button type="button" disabled={browserRuntimeBusy} onClick={() => runBrowserRuntimeAction('launch_managed')} className="eterx-browser-runtime-card__button rounded-lg border border-white/[0.10] bg-white/[0.06] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.11] disabled:opacity-50">New isolated browser</button>
+                              <button type="button" disabled={browserRuntimeBusy} onClick={refreshBrowserRuntimeStatus} className="eterx-browser-runtime-card__button rounded-lg border border-white/[0.10] px-3 py-2 text-[11px] font-semibold text-[#A5A5A5] transition-colors hover:bg-white/[0.08] disabled:opacity-50">Refresh status</button>
+                            </div>
+                            <div className="eterx-browser-runtime-card__note mt-3 text-[11px] leading-5 text-[#777]">Signed-in mode uses your existing Chrome, Edge, or Brave profile. If it is already open without control enabled, close it once and retry so EterX can reopen the same profile with browser control.</div>
                           </div>
-                          <SettingRow icon={<Cpu className="w-4 h-4" />} title="Enable computer use" description="Allow direct screen-level computer actions for workflows that cannot be handled through APIs.">
-                            <Toggle enabled={settings.computerUse} onChange={v => updateSetting('computerUse', v)} />
+                          <SettingRow icon={<Globe className="w-4 h-4" />} title="Allow browser control" description="Inspect pages and use signed-in browser sessions.">
+                            <Toggle enabled={settings.browserAccess} onChange={v => updateSetting('browserAccess', v)} />
                           </SettingRow>
-                          <SettingRow icon={<Shield className="w-4 h-4" />} title="Require permission review" description="Review sensitive computer actions before they run.">
+
+                          <SectionHeader title="Computer use" info="Control native apps and screens. Separate from browser control." />
+                          <div className="eterx-computer-control-plane mb-5 overflow-hidden rounded-2xl border border-white/[0.12] bg-gradient-to-br from-[#202832] via-[#1B2027] to-[#171A1E] shadow-[0_18px_50px_rgba(0,0,0,.22)]">
+                            <div className="p-5 sm:p-6">
+                              <div className="eterx-computer-control-plane__header">
+                                <div className="flex min-w-0 items-start gap-3.5">
+                                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-sky-200/20 bg-sky-200/10 text-sky-200"><Monitor className="h-4 w-4" /></div>
+                                  <div className="min-w-0">
+                                    <div className="eterx-computer-control-plane__title">Desktop control</div>
+                                    <p className="eterx-computer-control-plane__description">Native apps and screens on Windows, macOS, and Linux.</p>
+                                  </div>
+                                </div>
+                                <div className={`eterx-computer-state eterx-computer-state--${computerState.tone} inline-flex shrink-0 items-center gap-2 self-start rounded-full border px-3 py-1.5 text-[11px] font-semibold`}><span className="h-1.5 w-1.5 rounded-full bg-current" />{computerState.label}</div>
+                              </div>
+
+                              <div className="eterx-computer-toggle-row mt-5 rounded-xl border border-white/[0.10] bg-black/20 px-4 py-3.5">
+                                <div className="eterx-computer-toggle-icon" aria-hidden="true"><Cpu className="eterx-computer-toggle-glyph text-sky-200" /></div>
+                                <div className="eterx-computer-toggle-copy">
+                                  <div className="text-[13px] font-semibold text-[#F1F1F1]">Allow computer actions</div>
+                                  <div className="mt-0.5 text-[11px] leading-5 text-[#98A2AE]">Required for direct screen input.</div>
+                                </div>
+                                <div className="eterx-computer-toggle-control"><Toggle enabled={settings.computerUse} onChange={v => updateSetting('computerUse', v)} /></div>
+                              </div>
+
+                              <div className="eterx-computer-runtime mt-4">
+                                {[
+                                  ['Platform', browserRuntimeStatus?.platform || terminalPlatform || 'Checking'],
+                                  ['Driver', cuaDriver?.healthy ? (cuaDriver.version ? `Cua ${cuaDriver.version}` : 'Ready') : cuaDriver?.installed ? 'Needs setup' : 'Checking'],
+                                  ['Screen', computerRuntime?.screenProvider || 'Checking'],
+                                  ['Input', computerRuntime?.inputProvider || 'Checking'],
+                                ].map(([label, value]) => <div key={label} className="eterx-computer-runtime__item"><span className="eterx-computer-runtime__label">{label}</span><span className="eterx-computer-runtime__value">{value}</span></div>)}
+                              </div>
+                            </div>
+                            <div className="eterx-computer-driver-note flex flex-col gap-2 border-t border-white/[0.08] bg-black/15 px-5 py-3 text-[11px] leading-5 text-[#9DA8B4] sm:flex-row sm:items-center sm:justify-between sm:px-6"><span>{cuaDriver?.healthy ? 'Desktop runtime ready.' : cuaDriver?.installed ? 'Driver installed; permissions may be required.' : 'Checking desktop runtime.'}</span><button type="button" onClick={refreshBrowserRuntimeStatus} disabled={browserRuntimeBusy} className="shrink-0 rounded-lg border border-white/[0.10] bg-white/[0.05] px-3 py-1.5 font-semibold text-[#D5DCE4] transition-colors hover:bg-white/[0.10] disabled:opacity-50">Refresh</button></div>
+                          </div>
+
+                          <SectionHeader title="Safety & permissions" />
+                          <SettingRow icon={<Shield className="w-4 h-4" />} title="Permission review" description="Review sensitive desktop actions before they run.">
                             <Toggle enabled={settings.autoReview} onChange={v => updateSetting('autoReview', v)} />
                           </SettingRow>
-                          <div className="rounded-xl border border-white/[0.08] bg-[#202020] p-5">
-                            <div className="text-[16px] font-medium text-[#F1F1F1]">Safety boundary</div>
-                            <p className="mt-2 text-[14px] leading-relaxed text-[#A5A5A5]">Computer-use actions remain disabled unless this setting is enabled and the runtime has an available tool.</p>
-                          </div>
+                          <div className="eterx-computer-safety mt-4 flex items-start gap-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] p-4"><Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-200" /><div><div className="text-[12px] font-semibold text-amber-100">Explicit approval required</div><p className="mt-1 text-[11px] leading-5 text-amber-100/65">Computer Use also requires host-control permission in the active run.</p></div></div>
                         </div>
                       )}
 
@@ -4802,6 +5674,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     appStorage.removeItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY);
                                     setSettings(DEFAULT_SETTINGS);
                                     setApiKeys({});
+                                    searchSettingsRef.current = DEFAULT_SEARCH_SETTINGS;
+                                    setSearchSettings(DEFAULT_SEARCH_SETTINGS);
+                                    imageSettingsRef.current = DEFAULT_IMAGE_SETTINGS;
+                                    setImageSettings(DEFAULT_IMAGE_SETTINGS);
+                                    videoSettingsRef.current = DEFAULT_VIDEO_SETTINGS;
+                                    setVideoSettings(DEFAULT_VIDEO_SETTINGS);
                                     liveApiKeysRef.current = {};
                                     setLiveApiKeys({});
                                     setModelOverrides({});

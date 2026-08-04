@@ -9,13 +9,110 @@ import {
   listManagedWindows,
   typeManagedText,
 } from '../../computer/managed-computer';
+import { platformControlProvider } from '../../computer/platform-control';
+import { cuaDriverProvider } from '../../computer/cua-driver';
 import { enforceToolCapability } from '../security/tool_policy';
+
+async function executePortableComputerAction(action: string, input: any, ctx: any, chatId?: string) {
+  const { screenAgentTool } = await import('./screen_agent');
+  const appName = String(input.app || input.text || '').trim();
+  const invoke = (screenAction: string, extra: Record<string, any> = {}) => (
+    screenAgentTool as any
+  ).execute({ ...input, ...extra, action: screenAction, chatId }, ctx);
+
+  if (action === 'get_stats') {
+    const { getLiveStreamStats, isLiveStreaming } = await import('../../computer/live-stream');
+    return {
+      success: true,
+      action,
+      result: {
+        provider: ctx?.allowHostControl === true && ctx?.computerUseEnabled !== false ? cuaDriverProvider() : platformControlProvider(),
+        streaming: isLiveStreaming(),
+        streamStats: getLiveStreamStats(),
+        monitorStats: monitorEmitter.getStats(),
+      },
+    };
+  }
+
+  if (action === 'see_window') {
+    if (appName) {
+      const focused = await invoke('focus_app', { text: appName });
+      if (!focused.success) return { success: false, action, result: focused.result };
+    }
+    const captured = await invoke('see');
+    return { ...captured, action, result: appName ? `Window "${appName}" captured` : captured.result };
+  }
+
+  if (action === 'find_app') {
+    const listed = await invoke('list_apps');
+    const apps = Array.isArray(listed.result) ? listed.result : [];
+    const needle = appName.toLowerCase();
+    const match = apps.find((app: any) => JSON.stringify(app).toLowerCase().includes(needle));
+    return match
+      ? { success: true, action, result: match }
+      : { success: false, action, result: `App not found: "${appName}"` };
+  }
+
+  if (action === 'connect') {
+    if (!appName) return { success: false, action, result: 'An app name or window title is required.' };
+    let connected = await invoke('focus_app', { text: appName });
+    if (!connected.success) connected = await invoke('launch_app', { text: appName });
+    if (!connected.success) return { success: false, action, result: connected.result };
+    monitorEmitter.appConnected(appName, undefined, appName, chatId);
+    return { success: true, action, result: { connected: appName, provider: ctx?.allowHostControl === true && ctx?.computerUseEnabled !== false ? cuaDriverProvider() : platformControlProvider() } };
+  }
+
+  if (action === 'type_into') return { ...(await invoke('type', { text: input.text || '' })), action };
+
+  if (action === 'click_in') {
+    if (input.x == null || input.y == null) {
+      return {
+        success: false,
+        action,
+        result: 'Named control clicks are not portable across desktop toolkits. Use see, then click with x and y coordinates.',
+      };
+    }
+    return { ...(await invoke('click', { x: input.x, y: input.y })), action };
+  }
+
+  if (action === 'get_controls') {
+    return {
+      success: false,
+      action,
+      result: `Named UI control enumeration is not provided by the ${platformControlProvider()} backend. Use see plus coordinate actions, or browser_control for browser controls.`,
+    };
+  }
+
+  if (action === 'get_active') {
+    return {
+      success: true,
+      action,
+      result: {
+        provider: ctx?.allowHostControl === true && ctx?.computerUseEnabled !== false ? cuaDriverProvider() : platformControlProvider(),
+        note: 'Use list_apps and focus_app for portable foreground-window control.',
+      },
+    };
+  }
+
+  const screenAction: Record<string, string> = {
+    see: 'see',
+    stream_start: 'stream_start',
+    stream_stop: 'stream_stop',
+    list_apps: 'list_apps',
+    focus_app: 'focus_app',
+    launch_app: 'launch_app',
+    read_text: 'read',
+  };
+  const mapped = screenAction[action];
+  if (!mapped) return { success: false, action, result: `Action ${action} is not supported by the portable desktop provider.` };
+  return { ...(await invoke(mapped, { text: action === 'read_text' ? input.text : appName })), action };
+}
 
 export const computerTool: ToolDefinition = {
   name: 'computer',
   description: `ETERX COMPUTER CONTROL - safe app control inside the isolated EterX Computer.
 
-Default behavior is isolated and does not move the host mouse, type into host apps, launch host apps, or attach to the user's real Chrome.
+On Windows, default behavior is isolated and does not move the host mouse, type into host apps, launch host apps, or attach to the user's real Chrome. When Computer Use is explicitly enabled, the same interface uses Cua Driver for background desktop control. On macOS and Linux, Cua Driver is preferred when installed and the native desktop provider remains an honest fallback.
 
 ACTIONS:
   see          - capture the isolated EterX Computer screen
@@ -48,6 +145,8 @@ Host UI Automation actions (get_controls and click_in) are disabled unless ETERX
     fps: z.number().min(1).max(20).optional().describe('Stream frames per second'),
     quality: z.number().min(10).max(95).optional().describe('JPEG quality 10-95'),
     maxWidth: z.number().optional().describe('Max frame width in px'),
+    x: z.number().optional().describe('X coordinate for portable click actions'),
+    y: z.number().optional().describe('Y coordinate for portable click actions'),
     filter: z.string().optional().describe('Filter controls by name'),
     chatId: z.string().optional(),
   }),
@@ -70,6 +169,10 @@ Host UI Automation actions (get_controls and click_in) are disabled unless ETERX
     }
 
     try {
+      if (process.platform !== 'win32' || (ctx?.allowHostControl === true && ctx?.computerUseEnabled !== false)) {
+        return await executePortableComputerAction(action, input, ctx, chatId);
+      }
+
       switch (action) {
         case 'see': {
           const { captureFrameForVision } = await import('../../computer/live-stream');

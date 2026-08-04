@@ -2,13 +2,33 @@
  * EterX — Auto-Start, Desktop Integration & System Registration
  * Cross-platform: Windows (Registry + Start Menu), Linux (systemd + .desktop), macOS (LaunchAgent)
  */
-const { execSync } = require('child_process');
+const { execFileSync, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { ok, warn, fail, info, c } = require('./banner');
 
 const HOME = os.homedir();
+
+function powershellQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function xmlEscape(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function systemdEscape(value) {
+  return String(value)
+    .replace(/%/g, '%%')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"');
+}
 
 /**
  * Register EterX to auto-start on system boot
@@ -41,7 +61,7 @@ function registerAutoStartWindows(projectRoot, enable) {
     }
 
     const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut('${shortcutPath.replace(/'/g, "''")}');$s.TargetPath='${batPath.replace(/'/g, "''")}';$s.WorkingDirectory='${projectRoot.replace(/'/g, "''")}';$s.WindowStyle=7;$s.Description='EterX AI Agent';$s.Save()`;
-    execSync(`powershell -Command "${ps}"`, { stdio: 'ignore' });
+    execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: 'ignore' });
     ok('Auto-start enabled (Windows Startup folder)');
     return true;
   } catch (e) {
@@ -65,15 +85,15 @@ function registerAutoStartLinux(projectRoot, enable) {
 
     if (!fs.existsSync(serviceDir)) fs.mkdirSync(serviceDir, { recursive: true });
 
-    const nodePathResolved = execSync('which node', { encoding: 'utf8' }).trim();
+    const nodePathResolved = process.execPath;
     const service = `[Unit]
 Description=EterX AI Agent
 After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${projectRoot}
-ExecStart=${nodePathResolved} ${path.join(projectRoot, 'setup', 'launcher.js')} --production --no-electron
+WorkingDirectory="${systemdEscape(projectRoot)}"
+ExecStart="${systemdEscape(nodePathResolved)}" "${systemdEscape(path.join(projectRoot, 'setup', 'launcher.js'))}" --production --no-electron
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
@@ -99,7 +119,11 @@ function registerAutoStartMacOS(projectRoot, enable) {
     const plistPath = path.join(agentsDir, 'com.eterx.agent.plist');
 
     if (!enable) {
-      try { execSync(`launchctl unload "${plistPath}"`, { stdio: 'ignore' }); } catch {}
+      const uid = typeof process.getuid === 'function' ? String(process.getuid()) : '';
+      try {
+        if (uid) execFileSync('launchctl', ['bootout', `gui/${uid}`, plistPath], { stdio: 'ignore' });
+        else execFileSync('launchctl', ['unload', plistPath], { stdio: 'ignore' });
+      } catch {}
       if (fs.existsSync(plistPath)) fs.unlinkSync(plistPath);
       ok('Auto-start disabled');
       return true;
@@ -107,7 +131,10 @@ function registerAutoStartMacOS(projectRoot, enable) {
 
     if (!fs.existsSync(agentsDir)) fs.mkdirSync(agentsDir, { recursive: true });
 
-    const nodePathResolved = execSync('which node', { encoding: 'utf8' }).trim();
+    const nodePathResolved = process.execPath;
+    const logDir = path.join(HOME, 'Library', 'Logs', 'EterX');
+    fs.mkdirSync(logDir, { recursive: true });
+    const uid = typeof process.getuid === 'function' ? String(process.getuid()) : '';
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -115,20 +142,21 @@ function registerAutoStartMacOS(projectRoot, enable) {
   <key>Label</key><string>com.eterx.agent</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${nodePathResolved}</string>
-    <string>${path.join(projectRoot, 'setup', 'launcher.js')}</string>
+    <string>${xmlEscape(nodePathResolved)}</string>
+    <string>${xmlEscape(path.join(projectRoot, 'setup', 'launcher.js'))}</string>
     <string>--production</string>
     <string>--no-electron</string>
   </array>
-  <key>WorkingDirectory</key><string>${projectRoot}</string>
+  <key>WorkingDirectory</key><string>${xmlEscape(projectRoot)}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>${path.join(projectRoot, '.workspaces', 'eterx.log')}</string>
-  <key>StandardErrorPath</key><string>${path.join(projectRoot, '.workspaces', 'eterx-error.log')}</string>
+  <key>StandardOutPath</key><string>${xmlEscape(path.join(logDir, 'eterx.log'))}</string>
+  <key>StandardErrorPath</key><string>${xmlEscape(path.join(logDir, 'eterx-error.log'))}</string>
 </dict>
 </plist>`;
     fs.writeFileSync(plistPath, plist);
-    execSync(`launchctl load "${plistPath}"`, { stdio: 'ignore' });
+    if (uid) execFileSync('launchctl', ['bootstrap', `gui/${uid}`, plistPath], { stdio: 'ignore' });
+    else execFileSync('launchctl', ['load', plistPath], { stdio: 'ignore' });
     ok('Auto-start enabled (LaunchAgent)');
     return true;
   } catch (e) {
@@ -150,8 +178,8 @@ function createStartMenuEntry(projectRoot) {
       const shortcutPath = path.join(menuDir, 'EterX Agent.lnk');
       const iconPath = path.join(projectRoot, 'public', 'icon.ico');
 
-      const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut('${shortcutPath.replace(/'/g, "''")}');$s.TargetPath='${batPath.replace(/'/g, "''")}';$s.WorkingDirectory='${projectRoot.replace(/'/g, "''")}';$s.IconLocation='${iconPath.replace(/'/g, "''")},0';$s.Description='EterX AI Agent';$s.Save()`;
-      execSync(`powershell -Command "${ps}"`, { stdio: 'ignore' });
+      const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut(${powershellQuote(shortcutPath)});$s.TargetPath=${powershellQuote(batPath)};$s.WorkingDirectory=${powershellQuote(projectRoot)};$s.IconLocation=${powershellQuote(`${iconPath},0`)};$s.Description='EterX AI Agent';$s.Save()`;
+      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: 'ignore' });
       ok('Start Menu entry created');
       return true;
     } catch (e) {
@@ -177,9 +205,12 @@ function registerCLI(projectRoot) {
       fs.writeFileSync(cmdPath, cmdContent);
 
       // Add to user PATH
-      const currentPath = execSync('powershell -Command "[Environment]::GetEnvironmentVariable(\'PATH\', \'User\')"', { encoding: 'utf8' }).trim();
-      if (!currentPath.includes(projectRoot)) {
-        execSync(`powershell -Command "[Environment]::SetEnvironmentVariable('PATH', '${currentPath};${projectRoot}', 'User')"`, { stdio: 'ignore' });
+      const currentPath = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[Environment]::GetEnvironmentVariable("PATH", "User")'], { encoding: 'utf8' }).trim();
+      const pathEntries = currentPath.split(';').map((entry) => path.resolve(entry.trim())).filter(Boolean);
+      if (!pathEntries.some((entry) => entry.toLowerCase() === path.resolve(projectRoot).toLowerCase())) {
+        const nextPath = [currentPath, projectRoot].filter(Boolean).join(';');
+        const command = `[Environment]::SetEnvironmentVariable("PATH", ${powershellQuote(nextPath)}, "User")`;
+        execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { stdio: 'ignore' });
         ok('Added "eterx" command to PATH');
       } else {
         ok('"eterx" command already in PATH');
@@ -196,8 +227,21 @@ function registerCLI(projectRoot) {
       const shPath = path.join(projectRoot, 'eterx');
       fs.writeFileSync(shPath, shContent, { mode: 0o755 });
 
-      // Symlink to /usr/local/bin or ~/bin
-      const binDir = fs.existsSync('/usr/local/bin') ? '/usr/local/bin' : path.join(HOME, '.local', 'bin');
+      // Prefer a user-writable bin directory. /usr/local/bin often exists but
+      // is not writable for non-root users on macOS and Linux.
+      const candidates = [
+        process.env.XDG_BIN_HOME,
+        path.join(HOME, '.local', 'bin'),
+        '/usr/local/bin',
+      ].filter(Boolean);
+      const binDir = candidates.find((candidate) => {
+        try {
+          fs.mkdirSync(candidate, { recursive: true });
+          fs.accessSync(candidate, fs.constants.W_OK);
+          return true;
+        } catch { return false; }
+      });
+      if (!binDir) throw new Error('No writable user bin directory is available.');
       if (!fs.existsSync(binDir)) fs.mkdirSync(binDir, { recursive: true });
       const linkPath = path.join(binDir, 'eterx');
 
@@ -226,7 +270,7 @@ function unregisterAll(projectRoot) {
     const desktop = path.join(HOME, 'Desktop', 'EterX Agent.lnk');
     if (fs.existsSync(desktop)) { fs.unlinkSync(desktop); ok('Removed desktop shortcut'); }
   } else if (process.platform === 'linux') {
-    const df = path.join(HOME, '.local', 'share', 'applications', 'eterx.desktop');
+    const df = path.join(process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share'), 'applications', 'eterx.desktop');
     if (fs.existsSync(df)) { fs.unlinkSync(df); ok('Removed .desktop file'); }
   }
 

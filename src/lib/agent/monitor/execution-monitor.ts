@@ -123,7 +123,7 @@ export class ExecutionMonitor {
     const productiveTools = new Set([
       'workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell',
       'workspace_run_command', 'workspace_apply_patch',
-      'image_generator', 'docx_generator', 'office_artifact_builder',
+      'image_generator', 'video_generator', 'docx_generator', 'office_artifact_builder',
     ]);
 
     if (productiveTools.has(toolName) && success) {

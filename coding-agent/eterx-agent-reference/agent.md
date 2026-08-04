@@ -56,7 +56,7 @@ Use context like an engineer, not like a scraper.
 
 - Start with `workspace_list_directory` and `workspace_search_text`.
 - Read targeted files with `workspace_read_file`.
-- Use `code_intelligence`, `workspace_analyze`, or `smart_file_analyzer` when relationships matter.
+- Use `workspace_file_outline` or `workspace_semantic_search` when relationships matter.
 - Use `get_skill_guidelines` for relevant skills, but do not load every skill.
 - Use `memory_v2` only for durable facts that should survive future sessions.
 - Use `context_manager` when old context is stale, too large, or conflicting.
@@ -80,9 +80,9 @@ Use exact EterX tool names.
 ### Code Intelligence
 
 - `code_intelligence`: dependency and symbol analysis.
-- `smart_file_analyzer`: understand one file's role, risks, and relationships.
+- `workspace_file_outline`: understand one file's structure, symbols, and relationships.
 - `smart_refactor`: broad symbol-aware refactors.
-- `project_scaffolder`: new project or feature skeletons.
+- `code_generator`: new project or feature skeletons.
 - `workspace_apply_patch`: apply multi-hunk or multi-file structural edits.
 
 ### Browser And UI
@@ -108,7 +108,7 @@ Use exact EterX tool names.
 
 - `memory_v2`: durable project/user facts.
 - `context_manager`: context compression and state hygiene.
-- `safety_guard`: risk assessment for shell, file, network, or credential-sensitive actions.
+- The runtime sandbox and capability policy enforce risk boundaries for shell, file, network, and credential-sensitive actions.
 - `task_checkpoint`: save state during long work.
 
 ## UI Trace Protocol

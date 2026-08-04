@@ -1155,7 +1155,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                 },
                 {
                   name: 'web_search',
-                  description: 'Search the web using Tavily AI Search for accurate, research-grade, up-to-date information.',
+                  description: 'Search the live web through the configured External service provider for accurate, research-grade, up-to-date information.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {

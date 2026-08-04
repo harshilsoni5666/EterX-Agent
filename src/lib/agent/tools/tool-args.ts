@@ -1,9 +1,11 @@
 import { normalizeRegistryToolName } from './registry';
 import type { ToolDefinition } from '../schemas';
 
-type ToolArgValidationResult =
-  | { success: true; args: any }
-  | { success: false; error: string };
+type ToolArgValidationResult = {
+  success: boolean;
+  args?: any;
+  error?: string;
+};
 
 function normalizeFilenameArgs(input: any): void {
   if (!input || typeof input !== 'object') return;
@@ -64,10 +66,6 @@ export function normalizeRegistryToolArgs(toolName: string, args: any): any {
   if (name === 'workspace_semantic_search') {
     if (input.question && !input.query) input.query = input.question;
     if (input.q && !input.query) input.query = input.q;
-  }
-  if (name === 'workspace_symbol_lookup') {
-    if (input.name && !input.symbol) input.symbol = input.name;
-    if (input.query && !input.symbol) input.symbol = input.query;
   }
   if (name === 'workspace_file_outline') {
     if (input.path && !input.filename) input.filename = input.path;

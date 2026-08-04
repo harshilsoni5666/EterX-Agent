@@ -6,7 +6,7 @@ import { normalizeLiveProvider } from '../../../../lib/live/live-provider';
 export const dynamic = 'force-dynamic';
 
 /**
- * POST /api/live/key — Return the dedicated Agent Live Convo API key.
+ * POST /api/live/key — Return the dedicated selected Live Convo provider key.
  * 
  * The client calls this before connecting to the Live API WebSocket. Credentials
  * are configured only by Settings and never accepted by this endpoint. Live
@@ -19,15 +19,8 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json().catch(() => ({}));
     const provider = normalizeLiveProvider(body?.provider);
-    if (provider.provider !== 'gemini') {
-      return NextResponse.json(
-        { error: 'This Agent Live transport is not configured.' },
-        { status: 400 },
-      );
-    }
-
     const stored = readStoredRuntimeSettings();
-    const rawKeys = stored.liveApiKeys?.gemini;
+    const rawKeys = stored.liveApiKeys?.[provider.keyProvider];
     const keys = (Array.isArray(rawKeys) ? rawKeys : [rawKeys])
       .map(key => String(key || '').trim())
       .filter(Boolean);
@@ -41,7 +34,8 @@ export async function POST(req: NextRequest) {
     
     return NextResponse.json({ 
       apiKey,
-      provider: provider.provider,
+      provider: provider.value,
+      providerKey: provider.keyProvider,
       chatId: body.chatId || `live_${Date.now()}`,
     });
     

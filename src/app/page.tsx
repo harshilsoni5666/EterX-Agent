@@ -448,6 +448,28 @@ const readStoredTerminalShell = (): string => {
   }
 };
 
+const readStoredBrowserAccess = (): boolean => {
+  if (typeof window === 'undefined') return true;
+  try {
+    const saved = appStorage.getItem(SETTINGS_STORAGE_KEY);
+    const settings = saved ? JSON.parse(saved) : {};
+    return settings?.browserAccess !== false;
+  } catch {
+    return true;
+  }
+};
+
+const readStoredComputerUse = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const saved = appStorage.getItem(SETTINGS_STORAGE_KEY);
+    const settings = saved ? JSON.parse(saved) : {};
+    return settings?.computerUse === true;
+  } catch {
+    return false;
+  }
+};
+
 const readStoredMainAgentMode = (): MainAgentMode | null => {
   if (typeof window === 'undefined') return null;
   try {
@@ -574,10 +596,11 @@ const readRuntimeAgentMode = (fallbackMode: MainAgentMode, selection = readRunti
 type SelectedAgentState = {
   agentId: string | null;
   agentName: string;
+  chatMode?: boolean;
 };
 
 const readSelectedAgentState = (): SelectedAgentState => {
-  return { agentId: null, agentName: 'General' };
+  return { agentId: null, agentName: 'General', chatMode: false };
 };
 
 const isDefaultChatTitle = (title?: string | null) =>
@@ -945,7 +968,7 @@ function DeepWorkUI() {
     // Keep the complete composer selection stable during SSR hydration. The
     // saved agent, mode, and model are applied by the browser-only settings
     // effect after the first render.
-    selectedAgent: { agentId: null, agentName: 'General' } as SelectedAgentState,
+    selectedAgent: { agentId: null, agentName: 'General', chatMode: false } as SelectedAgentState,
     agentMode: 'think' as MainAgentMode,
     thinkingLevel: 'low' as MainAgentThinkingLevel,
   });
@@ -1227,17 +1250,26 @@ function DeepWorkUI() {
       const saved = appStorage.getItem(SELECTED_AGENT_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        const agentId = typeof parsed?.agentId === 'string' && parsed.agentId.trim() ? parsed.agentId.trim() : null;
-        const agentName = typeof parsed?.agentName === 'string' && parsed.agentName.trim()
+        const chatMode = parsed?.chatMode === true;
+        const agentId = chatMode
+          ? null
+          : typeof parsed?.agentId === 'string' && parsed.agentId.trim() ? parsed.agentId.trim() : null;
+        const agentName = chatMode
+          ? 'Chat'
+          : typeof parsed?.agentName === 'string' && parsed.agentName.trim()
           ? parsed.agentName.trim()
           : agentId === 'coding' ? 'Coding' : agentId || 'General';
-        setSelectedAgentState({ agentId, agentName });
+        const restoredSelection = { agentId, agentName, chatMode };
+        composerRuntimeSelectionRef.current.selectedAgent = restoredSelection;
+        setSelectedAgentState(restoredSelection);
         return;
       }
       const rawSettings = appStorage.getItem(SETTINGS_STORAGE_KEY);
       const settings = rawSettings ? JSON.parse(rawSettings) : null;
       if (settings?.workMode === 'specialist') {
-        setSelectedAgentState({ agentId: 'autonomous', agentName: 'Autonomous' });
+        const restoredSelection = { agentId: 'autonomous', agentName: 'Autonomous', chatMode: false };
+        composerRuntimeSelectionRef.current.selectedAgent = restoredSelection;
+        setSelectedAgentState(restoredSelection);
       }
       } catch {}
     };
@@ -1338,6 +1370,7 @@ function DeepWorkUI() {
   const dragConstraintsRef = useRef<HTMLDivElement>(null);
   const selectedAgent = selectedAgentState.agentId;
   const selectedAgentName = selectedAgentState.agentName;
+  const chatMode = selectedAgentState.chatMode === true;
   const runningChatsRef = useRef<Set<string>>(new Set());
   // Tracks chats that were explicitly stopped — prevents reconcile from re-adding them during the cleanup window
   const stoppingChatsRef = useRef<Set<string>>(new Set());
@@ -1822,6 +1855,10 @@ function DeepWorkUI() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  // Chat-mode requests use their own API path and never register as agent
+  // executions. This lets stop/reconcile logic leave the existing agent path
+  // unchanged while still using the same composer lifecycle.
+  const directChatRunsRef = useRef<Set<string>>(new Set());
   // Per-chat polling intervals: Map<chatId, intervalId>
   const pollingIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   // Abort the active HTTP poll when a run is replaced or stopped. Generation
@@ -1859,7 +1896,6 @@ function DeepWorkUI() {
   const hydratedChatIdsRef = useRef<Set<string>>(new Set());
   const chatDetailRequestsRef = useRef<Map<string, Promise<void>>>(new Map());
   const chatsRef = useRef<ChatSession[]>([]);
-  const restoredActiveChatRef = useRef(false);
   const panelResizeCleanupRef = useRef<(() => void) | null>(null);
   // Keep ref synced with state
   activeChatIdRef.current = activeChatId;
@@ -2045,10 +2081,11 @@ function DeepWorkUI() {
     } catch { }
   }, [updateComposerState]);
 
-  const handleAgentChange = useCallback((agentId: string | null, agentName: string) => {
+  const handleAgentChange = useCallback((agentId: string | null, agentName: string, isChatMode = false) => {
     const next: SelectedAgentState = {
-      agentId: agentId?.trim() ? agentId.trim() : null,
-      agentName: agentId?.trim() ? (agentName?.trim() || agentId.trim()) : 'General',
+      agentId: isChatMode ? null : agentId?.trim() ? agentId.trim() : null,
+      agentName: isChatMode ? 'Chat' : agentId?.trim() ? (agentName?.trim() || agentId.trim()) : 'General',
+      chatMode: isChatMode,
     };
     composerRuntimeSelectionRef.current.selectedAgent = next;
     setSelectedAgentState(next);
@@ -2920,7 +2957,12 @@ function DeepWorkUI() {
       if (storedLiveSettings.liveConvoEnabled === false) {
         throw new Error('Live Convo is disabled in Settings.');
       }
-      const configuredLiveProvider = normalizeLiveProvider(storedLiveSettings.liveConvoProvider).provider;
+      const configuredLiveProviderOption = normalizeLiveProvider(storedLiveSettings.liveConvoProvider);
+      const configuredLiveProvider = configuredLiveProviderOption.provider;
+      const configuredLiveProviderId = configuredLiveProviderOption.value;
+      if (configuredLiveProvider !== 'gemini') {
+        throw new Error(`${configuredLiveProviderOption.label} is selected in Settings, but its realtime transport is not available in this build. Select a configured provider or add its transport before starting Live Convo.`);
+      }
       const storedLiveModel = String(storedLiveSettings.liveConvoModel || 'auto').trim() || 'auto';
       const configuredLiveModel = storedLiveModel === 'auto' || isGeminiLiveModel(storedLiveModel)
         ? storedLiveModel
@@ -2936,7 +2978,7 @@ function DeepWorkUI() {
           const catalogResponse = await fetch('/api/live/models', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: 'agent-live-convo' }),
+            body: JSON.stringify({ provider: configuredLiveProviderId }),
           });
           const catalogPayload = await catalogResponse.json();
           const currentModels = catalogPayload?.models;
@@ -2972,7 +3014,7 @@ function DeepWorkUI() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            provider: configuredLiveProvider,
+            provider: configuredLiveProviderId,
             modelId: resolvedLiveMediaModel || configuredLiveModel,
           }),
         });
@@ -2999,7 +3041,7 @@ function DeepWorkUI() {
       const res = await fetch('/api/live/key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: 'agent-live-convo', chatId: currentChatId })
+            body: JSON.stringify({ provider: configuredLiveProviderId, chatId: currentChatId })
       });
       if (!isCurrentSession()) return;
 
@@ -4451,11 +4493,10 @@ function DeepWorkUI() {
   }, [headerMenuOpen]);
 
   useEffect(() => {
-    if (restoredActiveChatRef.current) return;
-    restoredActiveChatRef.current = true;
     let cancelled = false;
     let restoreInFlight = false;
     let lastRestoreAt = 0;
+    let restoreRetryTimer: number | null = null;
 
     const applyRestoredChats = (
       restoredChats: ChatSession[],
@@ -4495,7 +4536,15 @@ function DeepWorkUI() {
         }
 
         if (lastError || cancelled) {
-          if (lastError && !cancelled) console.error('[Chats] Durable restore failed:', lastError);
+          if (lastError && !cancelled) {
+            console.error('[Chats] Durable restore failed:', lastError);
+            if (restoreRetryTimer === null) {
+              restoreRetryTimer = window.setTimeout(() => {
+                restoreRetryTimer = null;
+                void restoreChats(true);
+              }, 2000);
+            }
+          }
           return;
         }
 
@@ -4539,13 +4588,16 @@ function DeepWorkUI() {
 
     return () => {
       cancelled = true;
+      if (restoreRetryTimer !== null) {
+        window.clearTimeout(restoreRetryTimer);
+        restoreRetryTimer = null;
+      }
       window.removeEventListener('focus', retryRestoreOnFocus);
       chatChannel?.close();
     };
-  // Chat restoration is intentionally a one-time startup operation. Tying it
-  // to composer state caused its cleanup to cancel the first /api/chats load
-  // when AppData hydration completed; the one-time guard then prevented any
-  // later restore, leaving chatSnapshotReady permanently false.
+  // Chat restoration is a startup operation. It must be safe for React Strict
+  // Mode's setup -> cleanup -> setup cycle: the first cancelled request must
+  // never prevent the second setup from loading the AppData snapshot.
   }, []);
 
   // ═══════════════════════════════════════════════════════════════
@@ -5680,6 +5732,19 @@ function DeepWorkUI() {
           };
         } else {
           logs.push(nextAskLog);
+        }
+      } else if (trace.type === 'model_usage') {
+        // Chat-mode streams provider-measured usage through this same merge
+        // path. Keep one record per usage id so a late stream boundary cannot
+        // hide the token count from the feed summary.
+        const usageId = String(trace.usageId || '').trim();
+        const existingUsageIdx = usageId
+          ? logs.findIndex((log: any) => log?.type === 'model_usage' && String(log.usageId || '').trim() === usageId)
+          : -1;
+        if (existingUsageIdx >= 0) {
+          logs[existingUsageIdx] = { ...logs[existingUsageIdx], ...processedLog };
+        } else {
+          logs.push(processedLog);
         }
       } else if (trace.type === 'task_plan') {
         mergeTaskPlanLog(logs, processedLog);
@@ -6942,6 +7007,20 @@ function DeepWorkUI() {
     ).trim();
     setQueuedFollowUps(previous => previous.filter(message => message.chatId !== chatId));
     setPendingSteering(previous => previous.filter(message => message.chatId !== chatId));
+
+    if (directChatRunsRef.current.has(chatId)) {
+      abortControllersRef.current.get(chatId)?.abort();
+      abortControllersRef.current.delete(chatId);
+      directChatRunsRef.current.delete(chatId);
+      removeRunningChat(chatId);
+      setChatLogsById(chatId, previous => {
+        const clean = stripAgentConnectionLogs(previous);
+        const alreadyMarked = clean.some(log => log?.type === 'agent_status' && log.status === 'stopped');
+        return alreadyMarked ? clean : [...clean, agentStatusLog('stopped', 'Chat stopped', 'Stopped by you.')];
+      });
+      return Promise.resolve(true);
+    }
+
     const stopRequest = (async () => {
       try {
         await runStartReadinessRef.current.get(chatId);
@@ -7828,6 +7907,126 @@ function DeepWorkUI() {
 
     const isBuilderChat = !!chatIdToUse && chatIdToUse.startsWith('agent_builder_');
     const builderAgentId = isBuilderChat ? chatIdToUse!.replace('agent_builder_', '') : null;
+    const runChatMode = runSelectedAgent.chatMode === true && !isBuilderChat;
+
+    // Chat mode has a deliberately separate backend path. It receives the
+    // same bounded history and media context as the normal chat request, but
+    // never enters AgentRegistry, AgentOrchestrator, or an agent prompt path.
+    if (runChatMode) {
+      const controller = new AbortController();
+      directChatRunsRef.current.add(chatIdToUse!);
+      abortControllersRef.current.set(chatIdToUse!, controller);
+
+      try {
+        const response = await fetch('/api/chat/direct', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: promptText,
+            history: chatHistory,
+            mediaAttachments,
+            projectId: chatIdToUse,
+            mode: runAgentMode,
+            runId: clientRunId,
+            selectedModel: runModelEntry
+              ? { provider: runModelEntry.provider, modelId: runModelEntry.modelId }
+              : null,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload?.error || `Chat request failed (${ response.status }).`);
+        }
+        if (!response.body) throw new Error('No readable stream from Chat.');
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let streamCompleted = false;
+        let streamAnswerText = '';
+
+        const handleDirectEvent = (event: any) => {
+          if (!event || typeof event !== 'object') return;
+          if (event.type === 'trace' && event.data && typeof event.data === 'object') {
+            const trace = {
+              ...event.data,
+              runId: clientRunId,
+              turnId: clientRunId,
+            };
+            if (trace.type === 'answer') streamAnswerText += String(trace.text || '');
+            setChatLogsById(chatIdToUse!, previousLogs => processServerTraces([trace], previousLogs), { touchUpdatedAt: true });
+          } else if (event.type === 'error') {
+            throw new Error(String(event.error || 'Chat stream failed.'));
+          } else if (event.type === 'done') {
+            streamCompleted = true;
+            const finalText = String(event.data?.text || '').trim();
+            // A provider should emit answer deltas, but retain a defensive
+            // final answer for adapters that finish without text chunks.
+            if (!streamAnswerText.trim() && finalText) {
+              setChatLogsById(chatIdToUse!, previousLogs => processServerTraces([{
+                type: 'answer',
+                answerId: `direct_answer_fallback_${ clientRunId }`,
+                text: finalText,
+                isDelta: true,
+                isStreaming: true,
+                isLiveTyping: true,
+                runId: clientRunId,
+                turnId: clientRunId,
+                timestamp: Date.now(),
+              }], previousLogs), { touchUpdatedAt: true });
+            }
+          }
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() || '';
+          for (const frame of frames) {
+            const dataLines = frame
+              .split('\n')
+              .filter(line => line.startsWith('data:'))
+              .map(line => line.slice(5).trim());
+            if (!dataLines.length) continue;
+            handleDirectEvent(JSON.parse(dataLines.join('\n')));
+          }
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          const dataLines = buffer
+            .split('\n')
+            .filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).trim());
+          if (dataLines.length) handleDirectEvent(JSON.parse(dataLines.join('\n')));
+        }
+        if (!streamCompleted) throw new Error('Chat stream ended before completion.');
+        if (runOptionsOverride?.backgroundChat) {
+          markChatUnreadIfBackground(chatIdToUse!, `direct:${clientRunId}:completed`);
+        }
+        return true;
+      } catch (error: any) {
+        if (error?.name === 'AbortError') return false;
+        setChatLogsById(chatIdToUse!, previous => [
+          ...stripAgentConnectionLogs(previous),
+          agentStatusLog('failed', 'Chat failed', String(error?.message || error).slice(0, 240)),
+        ], { touchUpdatedAt: true });
+        if (runOptionsOverride?.backgroundChat) {
+          markChatUnreadIfBackground(chatIdToUse!, `direct:${clientRunId}:failed`);
+        }
+        return false;
+      } finally {
+        directChatRunsRef.current.delete(chatIdToUse!);
+        if (abortControllersRef.current.get(chatIdToUse!) === controller) {
+          abortControllersRef.current.delete(chatIdToUse!);
+        }
+        removeRunningChat(chatIdToUse!);
+        sendAdmissionsRef.current.delete(admissionKey);
+      }
+    }
+
     const subAgentSettings = readStoredSubAgentSettings();
     const selectedCustomRuntimeId = runSelectedAgentId && runSelectedAgentId !== 'coding' && runSelectedAgentId !== 'autonomous' && !isBuilderChat
       ? runSelectedAgentId
@@ -7973,6 +8172,9 @@ function DeepWorkUI() {
             runLocation: runLocationVal,
             pinnedContext: {
               terminalShell: readStoredTerminalShell(),
+              allowBrowserControl: readStoredBrowserAccess(),
+              allowHostControl: readStoredComputerUse(),
+              computerUseEnabled: readStoredComputerUse(),
               synapseGraphEnabled: readStoredSynapseGraphEnabled(),
               disableSubAgents: !subAgentSettings.enabled,
               allowAgentSpawning: subAgentSettings.enabled,
@@ -8138,6 +8340,9 @@ function DeepWorkUI() {
 
     const requestPinnedContext = {
       terminalShell: readStoredTerminalShell(),
+      allowBrowserControl: readStoredBrowserAccess(),
+      allowHostControl: readStoredComputerUse(),
+      computerUseEnabled: readStoredComputerUse(),
       contextCompaction: readContextCompactionSettings(contextBudgetModelEntry, chatIdToUse),
       synapseGraphEnabled: readStoredSynapseGraphEnabled(),
       ...(!runSelectedAgentId && !isBuilderChat ? {
@@ -11833,6 +12038,7 @@ function DeepWorkUI() {
                       onOpenAgentBuilder={handleOpenAgentBuilder}
                       selectedAgent={selectedAgent}
                       selectedAgentName={activeSubAgentInfo?.name || activeSubAgentTab || selectedAgentName}
+                      chatMode={chatMode && !activeSubAgentTab}
                       composerPlaceholder={activeSubAgentTab ? `Message ${ activeSubAgentInfo?.name || 'sub-agent' }` : undefined}
                       onAgentChange={handleAgentChange}
                       onOpenPet={openPetWidget}

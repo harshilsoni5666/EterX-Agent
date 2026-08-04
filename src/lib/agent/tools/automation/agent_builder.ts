@@ -139,7 +139,7 @@ export const agentBuilderAttachMainTool: ToolDefinition = {
 
     const toolName = normalizeRegistryToolName(String(args.toolName || '').trim());
     if (!toolName) return { success: false, message: 'toolName is required.' };
-    if (isBuilderOnlyToolName(toolName) || toolName === 'create_dynamic_tool') {
+    if (isBuilderOnlyToolName(toolName)) {
       return { success: false, message: `Cannot attach "${toolName}" as a target-agent main tool.` };
     }
     if (!globalToolRegistry.getTool(toolName)) {
@@ -194,7 +194,7 @@ export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
 
     const excluded = new Set((Array.isArray(args.excludeToolNames) ? args.excludeToolNames : []).map((name: unknown) => String(name || '').trim()));
     const availableTools = globalToolRegistry.getAllTools()
-      .filter(tool => !isBuilderOnlyToolName(tool.name) && tool.name !== 'create_dynamic_tool')
+      .filter(tool => !isBuilderOnlyToolName(tool.name))
       .filter(tool => !excluded.has(tool.name));
     const availableNames = new Set(availableTools.map(tool => tool.name));
     const skippedToolNames = Array.from(excluded).map(String).filter(name => name.length > 0 && !availableNames.has(name));
@@ -327,7 +327,7 @@ export const agentBuilderDefineTool: ToolDefinition = {
           if (!globalToolRegistry.getTool(step.tool)) {
             return { success: false, message: `Tool-chain step "${step.tool}" does not exist.` };
           }
-          if (isBuilderOnlyToolName(step.tool) || step.tool === 'create_dynamic_tool') {
+          if (isBuilderOnlyToolName(step.tool)) {
             return { success: false, message: `Tool-chain step "${step.tool}" is not allowed for target agents.` };
           }
         }

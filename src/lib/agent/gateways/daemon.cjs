@@ -106,6 +106,47 @@ async function readPlatformResponse(response, label) {
   return data;
 }
 
+function probeExistingGateway(host, port, timeoutMs = 900) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const request = http.get({
+      hostname: host,
+      port,
+      path: '/health',
+      headers: { accept: 'application/json' },
+      timeout: timeoutMs,
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        if (response.statusCode !== 200) {
+          finish(null);
+          return;
+        }
+        try {
+          const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          const isGateway = payload?.running === true
+            && Number(payload.port) === Number(port)
+            && payload.platforms
+            && typeof payload.platforms === 'object';
+          finish(isGateway ? payload : null);
+        } catch {
+          finish(null);
+        }
+      });
+    });
+
+    request.on('timeout', () => request.destroy());
+    request.on('error', () => finish(null));
+  });
+}
+
 class GatewayDaemon {
   constructor({ dataDir, config, onEvent, onStatus }) {
     this.config = mergeConfig(config);
@@ -117,6 +158,7 @@ class GatewayDaemon {
     this.onEvent = typeof onEvent === 'function' ? onEvent : () => {};
     this.onStatus = typeof onStatus === 'function' ? onStatus : () => {};
     this.server = null;
+    this.externalRunning = false;
     this.startedAt = null;
     this.lastEventAt = null;
     this.lastError = null;
@@ -172,7 +214,8 @@ class GatewayDaemon {
 
   status() {
     return {
-      running: Boolean(this.server?.listening),
+      running: Boolean(this.server?.listening || this.externalRunning),
+      owner: this.externalRunning ? 'external' : this.server?.listening ? 'local' : 'none',
       startedAt: this.startedAt,
       host: this.config.host,
       port: this.config.port,
@@ -196,8 +239,8 @@ class GatewayDaemon {
 
   configure(raw) {
     const run = async () => {
-      const wasRunning = Boolean(this.server?.listening);
-      await this.stop();
+      const wasRunning = Boolean(this.server?.listening || this.externalRunning);
+      await this.stop({ releaseExternal: true });
       this.config = mergeConfig(raw);
       this.persistControlToken();
       if (wasRunning || this.config.enabled) await this.start();
@@ -210,20 +253,41 @@ class GatewayDaemon {
   }
 
   async start() {
-    if (this.server?.listening || !this.config.enabled) return this.status();
+    if (this.server?.listening || this.externalRunning || !this.config.enabled) return this.status();
     this.lastError = null;
     this.server = http.createServer((request, response) => void this.handleRequest(request, response));
+    let attachedToExisting = false;
     await new Promise((resolve, reject) => {
       const onError = (error) => { this.server?.off('listening', onListen); reject(error); };
       const onListen = () => { this.server?.off('error', onError); resolve(); };
       this.server.once('error', onError);
       this.server.once('listening', onListen);
       this.server.listen(this.config.port, this.config.host);
-    }).catch((error) => {
+    }).catch(async (error) => {
       this.lastError = error.message;
       this.server = null;
+      if (error?.code === 'EADDRINUSE') {
+        const existing = await probeExistingGateway(this.config.host, this.config.port);
+        if (existing) {
+          // A background companion or another launch already owns the gateway.
+          // Reuse it instead of starting duplicate platform pollers or failing
+          // the desktop boot sequence. This process must never stop that owner.
+          this.externalRunning = true;
+          this.startedAt = Number(existing.startedAt) || Date.now();
+          this.lastError = null;
+          for (const id of PLATFORMS) {
+            this.platformState[id] = this.config.platforms[id].enabled ? { state: 'external' } : { state: 'disabled' };
+          }
+          attachedToExisting = true;
+          return;
+        }
+      }
       throw error;
     });
+    if (attachedToExisting) {
+      this.publishStatus();
+      return this.status();
+    }
     this.startedAt = Date.now();
     for (const id of PLATFORMS) this.platformState[id] = { state: this.config.platforms[id].enabled ? 'listening' : 'disabled' };
     if (this.config.platforms.telegram.enabled && this.config.platforms.telegram.mode === 'polling') {
@@ -244,7 +308,15 @@ class GatewayDaemon {
     return this.status();
   }
 
-  async stop() {
+  async stop(options = {}) {
+    if (this.externalRunning && options.releaseExternal !== true) {
+      // This instance attached to another EterX process. Do not make a local
+      // stop request look successful when it cannot own or close that server.
+      this.lastError = 'Gateway is owned by another EterX process.';
+      this.publishStatus();
+      return this.status();
+    }
+    this.externalRunning = false;
     const pollingTask = this.telegramPollingTask;
     this.pollAbort?.abort();
     this.pollAbort = null;

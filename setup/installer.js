@@ -7,6 +7,18 @@ const path = require('path');
 const { ok, warn, fail, info, line, c, spinner } = require('./banner');
 const { getProjectRoot } = require('./detect');
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function desktopFieldEscape(value) {
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/ /g, '\\ ')
+    .replace(/\t/g, '\\t')
+    .replace(/\n/g, '\\n');
+}
+
 const isUnicodeSupported = () => {
   if (process.platform !== 'win32') return true;
   return Boolean(process.env.WT_SESSION) || // Windows Terminal
@@ -396,7 +408,7 @@ function createDesktopShortcut(projectRoot, platform) {
   try {
     if (platform === 'win32') {
       // Create a .bat launcher in the project root
-      const batContent = `@echo off\nsetlocal\ntitle EterX Agent\ncd /d "${projectRoot}"\nnode setup\\launcher.js --production\nif errorlevel 1 pause\n`;
+      const batContent = `@echo off\nsetlocal\ntitle EterX Agent\ncd /d "${projectRoot}"\n"${process.execPath}" "${path.join(projectRoot, 'setup', 'launcher.js')}" --production\nif errorlevel 1 pause\n`;
       fs.writeFileSync(path.join(projectRoot, 'EterX.bat'), batContent);
       ok('Created EterX.bat launcher');
 
@@ -405,26 +417,28 @@ function createDesktopShortcut(projectRoot, platform) {
         const desktop = path.join(process.env.USERPROFILE || '', 'Desktop');
         const shortcutPath = path.join(desktop, 'EterX Agent.lnk');
         const iconPath = path.join(projectRoot, 'public', 'icon.ico');
-        const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut('${shortcutPath.replace(/'/g, "''")}');$s.TargetPath='${path.join(projectRoot, 'EterX.bat').replace(/'/g, "''")}';$s.WorkingDirectory='${projectRoot.replace(/'/g, "''")}';$s.IconLocation='${iconPath.replace(/'/g, "''")},0';$s.Description='EterX AI Agent';$s.Save()`;
-        execSync(`powershell -Command "${ps}"`, { stdio: 'ignore' });
+        const psQuote = (value) => `'${String(value).replace(/'/g, "''")}'`;
+        const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut(${psQuote(shortcutPath)});$s.TargetPath=${psQuote(path.join(projectRoot, 'EterX.bat'))};$s.WorkingDirectory=${psQuote(projectRoot)};$s.IconLocation=${psQuote(`${iconPath},0`)};$s.Description='EterX AI Agent';$s.Save()`;
+        execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: 'ignore' });
         ok('Desktop shortcut created');
       } catch { warn('Could not create desktop shortcut (non-critical)'); }
     } else if (platform === 'linux') {
+      const nodePath = process.execPath;
       const desktopFile = `[Desktop Entry]
 Name=EterX Agent
 Comment=The Autonomous AI Agent
-Exec=node "${path.join(projectRoot, 'setup', 'launcher.js')}" --production
-Icon=${path.join(projectRoot, 'public', 'logo.png')}
+Exec="${desktopFieldEscape(nodePath)}" "${desktopFieldEscape(path.join(projectRoot, 'setup', 'launcher.js'))}" --production
+Icon=${desktopFieldEscape(path.join(projectRoot, 'public', 'logo.png'))}
 Terminal=false
 Type=Application
 Categories=Development;AI;
 `;
-      const appsDir = path.join(process.env.HOME || '~', '.local', 'share', 'applications');
+      const appsDir = path.join(process.env.XDG_DATA_HOME || path.join(process.env.HOME || '~', '.local', 'share'), 'applications');
       if (!fs.existsSync(appsDir)) fs.mkdirSync(appsDir, { recursive: true });
       fs.writeFileSync(path.join(appsDir, 'eterx.desktop'), desktopFile);
       ok('Linux .desktop file created');
     } else if (platform === 'darwin') {
-      const launchScript = `#!/bin/bash\ncd "${projectRoot}"\nnode setup/launcher.js\n`;
+      const launchScript = `#!/bin/sh\ncd -- ${shellQuote(projectRoot)}\nexec ${shellQuote(process.execPath)} ${shellQuote(path.join(projectRoot, 'setup', 'launcher.js'))}\n`;
       fs.writeFileSync(path.join(projectRoot, 'eterx.sh'), launchScript, { mode: 0o755 });
       ok('macOS launcher script created');
     }

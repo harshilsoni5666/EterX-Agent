@@ -1514,7 +1514,7 @@ METHODOLOGY:
 7. Check for anti-patterns (god objects, spaghetti code, tight coupling)
 
 OUTPUT: Architecture assessment with diagrams (mermaid), specific refactoring recommendations, and migration paths.`,
-        toolHints: ['workspace_list_directory', 'workspace_read_file', 'code_intelligence', 'workspace_analyze']
+        toolHints: ['workspace_list_directory', 'workspace_read_file', 'code_intelligence']
       },
       qa_tester: {
         systemBrief: `You are the QA TESTING SPECIALIST for this assignment. Your focus is finding bugs, edge cases, and writing comprehensive tests.

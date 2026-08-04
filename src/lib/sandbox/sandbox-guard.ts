@@ -49,17 +49,9 @@ export const SANDBOX_BLOCKED_TOOLS = new Set<string>([
   'browser_control',
   // Communication
   'slack_controller',
-  'telegram_user_controller',
-  'whatsapp_controller',
-  'email_manager',
   // Agent spawning
   'spawn_sub_agent',
   // Dynamic code
-  'create_dynamic_tool',
-  'code_execution_js',
-  // Secrets
-  'api_key_vault',
-  'env_manager',
   // Git (could push to remote)
 ]);
 

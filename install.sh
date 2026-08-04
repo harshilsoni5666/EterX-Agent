@@ -27,11 +27,14 @@ esac
 case "$MACHINE" in
   x86_64|amd64)
     ARCH="x64"
-    LINUX_ARCH="x86_64"
+    # electron-builder uses its canonical x64 artifact name on Linux.
+    LINUX_ARCH="x64"
+    LINUX_ARCH_FALLBACK="x86_64"
     ;;
   arm64|aarch64)
     ARCH="arm64"
     LINUX_ARCH="arm64"
+    LINUX_ARCH_FALLBACK=""
     ;;
   *) printf '\n  EterX requires a 64-bit Intel/AMD or ARM device. Detected: %s\n' "$MACHINE" >&2; exit 1 ;;
 esac
@@ -188,6 +191,9 @@ if [ "$PLATFORM" = "mac" ]; then
   artifact_url="$(json_asset_url "/EterX-[^/]+-mac-$ARCH\\.zip$" || true)"
 else
   artifact_url="$(json_asset_url "/EterX-[^/]+-linux-$LINUX_ARCH\\.AppImage$" || true)"
+  if [ -z "$artifact_url" ] && [ -n "$LINUX_ARCH_FALLBACK" ]; then
+    artifact_url="$(json_asset_url "/EterX-[^/]+-linux-$LINUX_ARCH_FALLBACK\\.AppImage$" || true)"
+  fi
 fi
 checksum_url="$(json_asset_url '/SHA256SUMS\.txt$' || true)"
 [ -n "$artifact_url" ] || { printf '  The latest release has no %s %s package.\n' "$PLATFORM" "$ARCH" >&2; exit 1; }

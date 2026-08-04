@@ -58,7 +58,6 @@ Use these EterX tools:
 - `workspace_verify_code`
 - `realtime_verify`
 - `code_intelligence`
-- `smart_file_analyzer`
 - `smart_refactor`
 - `git_intelligence`
 - `process_manager`
@@ -69,7 +68,6 @@ Use these EterX tools:
 - `task_checkpoint`
 - `memory_v2`
 - `context_manager`
-- `safety_guard`
 
 ## UI Trace
 

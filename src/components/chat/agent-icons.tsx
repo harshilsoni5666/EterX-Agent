@@ -221,14 +221,14 @@ const CONNECTOR_ALIASES: Record<string, string> = {
 };
 
 const CONNECTOR_TOOL_ALIASES: Record<string, string> = {
-  airtable: 'airtable', asana: 'asana', discord: 'discord', email_manager: 'email',
+  airtable: 'airtable', asana: 'asana', discord: 'discord',
   github: 'github', github_controller: 'github', gitlab: 'gitlab', gmail: 'gmail',
   google_calendar: 'google_calendar', google_drive: 'google_drive', hubspot: 'hubspot',
   jira: 'jira', linear: 'linear', matrix: 'matrix', notion: 'notion',
   outlook_mail: 'outlook_mail', outlook_calendar: 'outlook_calendar',
   slack: 'slack', slack_controller: 'slack', signal: 'signal',
-  teams: 'teams', telegram: 'telegram', telegram_user_controller: 'telegram',
-  trello: 'trello', whatsapp: 'whatsapp', whatsapp_controller: 'whatsapp',
+  teams: 'teams', telegram: 'telegram',
+  trello: 'trello', whatsapp: 'whatsapp',
   connector_mcp: '', gateway_bridge: '',
 };
 
@@ -249,7 +249,7 @@ export const resolveConnectorId = (...values: unknown[]): string | null => {
     if (direct) return direct;
 
     // Tool names and natural-language trace labels can contain the provider
-    // name (for example telegram_user_controller or "Sending Slack").
+    // name (for example "Sending Slack").
     for (const [alias, id] of Object.entries(CONNECTOR_ALIASES).sort((left, right) => right[0].length - left[0].length)) {
       if (token.includes(alias)) return id;
     }
@@ -543,8 +543,6 @@ const SKILL_CATEGORIES: Record<string, string> = {
   deep_research: 'web_search',
   code_intelligence: 'search',
   smart_refactor: 'refactor',
-  project_scaffolder: 'folder_create',
-  auto_docs: 'file_create',
   performance_profiler: 'verification',
   security_auditor: 'verification',
   database_designer: 'database',

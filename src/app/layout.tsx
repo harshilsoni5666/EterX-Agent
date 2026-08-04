@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Inter, JetBrains_Mono, Lora } from 'next/font/google';
+import type { CSSProperties } from 'react';
 import './globals.css';
 import './light-theme.generated.css';
 import './light-theme.enterprise.css';
@@ -7,23 +7,16 @@ import './scrollbars.css';
 import 'katex/dist/katex.min.css';
 import { ThemeBridge } from '../components/theme/theme-bridge';
 
-const inter = Inter({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-sans',
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-mono',
-});
-
-const lora = Lora({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-serif',
-});
+// Keep the native app and offline development startup independent of Google's
+// font CDN. next/font/google fetches font files during the first Next compile,
+// which makes an otherwise local desktop app fail or retry when networking is
+// unavailable. These system stacks render consistently on Windows, macOS, and
+// Linux without a network request.
+const localFontVariables: CSSProperties = {
+  '--font-sans': 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  '--font-mono': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+  '--font-serif': 'Lora, Georgia, Cambria, "Times New Roman", serif',
+} as CSSProperties;
 
 export const metadata: Metadata = {
   title: 'EterX — Autonomous Agent OS',
@@ -69,7 +62,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`light ${inter.variable} ${jetbrainsMono.variable} ${lora.variable}`} data-theme="light" suppressHydrationWarning>
+    <html lang="en" className="light" style={localFontVariables} data-theme="light" suppressHydrationWarning>
       <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
         <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <ThemeBridge />

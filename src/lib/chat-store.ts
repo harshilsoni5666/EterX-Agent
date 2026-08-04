@@ -25,14 +25,69 @@ const emptySnapshot = (): PersistedChatSnapshot => ({
   chats: [],
 });
 
+function legacyMessageText(message: any): string {
+  const content = message?.content ?? message?.text ?? message?.output ?? message?.message;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(part => typeof part === 'string' ? part : String(part?.text || part?.content || ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (content && typeof content === 'object') {
+    return String(content.text || content.value || content.content || '');
+  }
+  return '';
+}
+
+function normalizePersistedChat(chat: any): any | null {
+  if (!chat || typeof chat !== 'object' || chat.id === undefined || chat.id === null) return null;
+
+  const sourceLogs = Array.isArray(chat.traceLogs)
+    ? chat.traceLogs
+    : Array.isArray(chat.logs)
+      ? chat.logs
+      : Array.isArray(chat.messages)
+        ? chat.messages
+        : [];
+  const traceLogs = sourceLogs.map((message: any, index: number) => {
+    if (message && typeof message.type === 'string') return message;
+    const role = String(message?.role || message?.sender || message?.author || '').toLowerCase();
+    return {
+      ...(message && typeof message === 'object' ? message : {}),
+      type: role === 'user' || role === 'human' ? 'user_action' : 'answer',
+      text: legacyMessageText(message),
+      id: String(message?.id || `${String(chat.id)}-legacy-${index}`),
+      ...(Number.isFinite(message?.timestamp) ? { timestamp: message.timestamp } : {}),
+    };
+  });
+
+  return {
+    ...chat,
+    id: String(chat.id),
+    title: String(chat.title || chat.name || 'New chat'),
+    updatedAt: Number.isFinite(chat.updatedAt)
+      ? chat.updatedAt
+      : Number.isFinite(chat.updated_at)
+        ? chat.updated_at
+        : Number.isFinite(chat.createdAt)
+          ? chat.createdAt
+          : 0,
+    traceLogs,
+  };
+}
+
 function normalizeSnapshot(value: any): PersistedChatSnapshot {
-  const chats = Array.isArray(value) ? value : value?.chats;
+  const chats = Array.isArray(value)
+    ? value
+    : value?.chats || value?.chatHistory || value?.sessions;
   if (!Array.isArray(chats)) return emptySnapshot();
   return {
     version: CHAT_STORE_VERSION,
     savedAt: Number.isFinite(value?.savedAt) ? Math.max(0, value.savedAt) : 0,
     chats: chats
-      .filter((chat: any) => chat && typeof chat === 'object' && typeof chat.id === 'string')
+      .map(normalizePersistedChat)
+      .filter(Boolean)
       .slice(0, MAX_CHATS),
   };
 }
@@ -93,7 +148,12 @@ async function readFromDisk(): Promise<PersistedChatSnapshot> {
     }
 
     const raw = await fs.readJson(CHAT_STORE_PATH);
-    if (!raw || (!Array.isArray(raw) && !Array.isArray(raw.chats))) {
+    if (!raw || (
+      !Array.isArray(raw) &&
+      !Array.isArray(raw.chats) &&
+      !Array.isArray(raw.chatHistory) &&
+      !Array.isArray(raw.sessions)
+    )) {
       throw new Error('Invalid chat snapshot');
     }
     const normalized = normalizeSnapshot(raw);

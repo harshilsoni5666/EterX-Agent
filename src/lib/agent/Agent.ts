@@ -103,6 +103,9 @@ import {
 } from './tool-trace';
 import { extractProviderText, mergeStreamingText } from '../streaming-lifecycle';
 import { getAgentConversationScope } from './context-scope';
+import { getSearchRouteBrief } from '../search/search-runtime';
+import { getImageGenerationRouteBrief } from '../image/image-generation-runtime';
+import { getVideoGenerationRouteBrief } from '../video/video-generation-runtime';
 
 const closeThoughtStream = (
   onTrace: ((trace: any) => void) | undefined,
@@ -165,7 +168,6 @@ const PROXY_MANAGER_READ_ONLY_TOOLS = new Set([
   'workspace_find_files',
   'workspace_read_many_files',
   'workspace_semantic_search',
-  'workspace_symbol_lookup',
   'workspace_file_outline',
   'tool_finder',
   'parse_pdf',
@@ -489,6 +491,18 @@ export class GeminiAgentClient {
 
   private getProviderKeyInfo(provider: MainAgentProvider): { apiKey: string; index: number; poolType: string } {
     if (isLocalModelProvider(provider)) {
+      const runtimeProvider = provider as RuntimeApiKeyProvider;
+      const configuredKeys = getScopedRuntimeApiKeyValues(this.runtimeSettings, runtimeProvider);
+      if (configuredKeys.length > 0) {
+        const cursor = this.providerKeyCursor[provider] || 0;
+        const index = cursor % configuredKeys.length;
+        this.providerKeyCursor[provider] = (cursor + 1) % configuredKeys.length;
+        return {
+          apiKey: configuredKeys[index] || configuredKeys[0],
+          index,
+          poolType: 'local endpoint',
+        };
+      }
       return { apiKey: 'local-no-key-required', index: 0, poolType: 'local endpoint' };
     }
     const runtimeProvider = provider === 'gemini' ? 'gemini' : provider as RuntimeApiKeyProvider;
@@ -591,7 +605,7 @@ export class GeminiAgentClient {
     return /\b(latest|current|today|now|news|price|weather|score|schedule|stock|crypto|exchange rate|who is the president|ceo|released|update)\b/i.test(message);
   }
 
-  private async getTelegramTavilyWebContext(message: string): Promise<string> {
+  private async getTelegramExternalWebContext(message: string): Promise<string> {
     const searchTool = globalToolRegistry.getTool('web_search');
     if (!searchTool) return '';
 
@@ -630,16 +644,16 @@ export class GeminiAgentClient {
     const needsCurrentFacts = this.telegramNeedsCurrentFacts(userMessage);
     const now = new Date();
     const dateStr = now.toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' });
-    const webContext = needsCurrentFacts ? await this.getTelegramTavilyWebContext(userMessage) : '';
+    const webContext = needsCurrentFacts ? await this.getTelegramExternalWebContext(userMessage) : '';
     const systemInstruction = [
       'You are EterX.',
-      'Reply naturally in Telegram based on the user message and any supplied Tavily web context.',
+      'Reply naturally in Telegram based on the user message and any supplied External service web context.',
       'Do not use canned responses or templates.',
       'Keep the answer short, professional, and direct unless the user asks for detail.',
       'Do not use emojis, decorative icons, ornamental Unicode, or all-caps section headings.',
       `Current date: ${ dateStr }.`,
       'Do not mention tools, internal state, memory, projects, or background work.',
-      'If Tavily web context is supplied, use it as the source of truth for current facts.'
+      'If External service web context is supplied, use it as the source of truth for current facts.'
     ].join('\n');
 
     const conversationScopeId = this.getConversationScope(context);
@@ -668,7 +682,7 @@ export class GeminiAgentClient {
       role: 'user',
       parts: [{
         text: webContext
-          ? `[CURRENT TAVILY WEB CONTEXT]\n${ webContext }\n\n[USER MESSAGE]\n${ userMessage }`
+          ? `[CURRENT EXTERNAL WEB CONTEXT]\n${ webContext }\n\n[USER MESSAGE]\n${ userMessage }`
           : userMessage
       }]
       },
@@ -978,7 +992,6 @@ export class GeminiAgentClient {
   }
 
   private getProviderApiKey(provider: MainAgentProvider): string {
-    if (isLocalModelProvider(provider)) return 'local-no-key-required';
     const runtimeProvider = provider as RuntimeApiKeyProvider;
     const scopedKeys = getScopedRuntimeApiKeyValues(this.runtimeSettings, runtimeProvider);
     if (scopedKeys.length > 0) {
@@ -987,7 +1000,7 @@ export class GeminiAgentClient {
       this.providerKeyCursor[provider] = (cursor + 1) % scopedKeys.length;
       return apiKey;
     }
-    return getRuntimeApiKey(runtimeProvider);
+    return isLocalModelProvider(provider) ? 'local-no-key-required' : getRuntimeApiKey(runtimeProvider);
   }
 
   private getMistralApiKey(): string {
@@ -1355,6 +1368,28 @@ export class GeminiAgentClient {
       'workspace_edit_file',
       'workspace_edit_many_files',
     ]);
+    // Generated media is a first-class artifact. Emit it through the same
+    // trace channel as workspace previews so the live thought sequence can
+    // open it in the existing cross-platform file panel with playback and
+    // download controls.
+    if (toolName === 'video_generator' && result?.success !== false) {
+      const filepath = String(result?.filePath || result?.path || '').trim();
+      if (!filepath) return;
+      this.emitTracePreview(trace, onTrace, {
+        ownerTraceId,
+        dedupe: false,
+        filename: basenameForTrace(filepath),
+        filepath,
+        language: 'video',
+        content: '',
+        mimeType: 'video/mp4',
+        mediaType: 'video',
+        artifactKind: 'media',
+        isEdit: false,
+      });
+      if (result && typeof result === 'object') result._workspacePreviewTraceEmitted = true;
+      return;
+    }
     if (!previewTools.has(toolName)) return;
     if (!options.includeWriteAndLegacyEdit && (toolName === 'workspace_write_file' || toolName === 'workspace_edit_file')) return;
 
@@ -1931,7 +1966,7 @@ export class GeminiAgentClient {
       web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
       web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
       workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'query' },
-      workspace_symbol_lookup: { text: 'Finding symbol', type: 'exploration', iconCategory: 'search', argKey: 'symbol' },
+      // Symbol lookup is covered by workspace_file_outline.
       workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
       workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKey: 'glob' },
       workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
@@ -1944,7 +1979,7 @@ export class GeminiAgentClient {
       deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
       get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
     };
-    const label = labelMap[name] || { text: name || 'Tool call', type: 'command', iconCategory: 'computer' };
+    const label = labelMap[name] || { text: name || 'Tool call', type: 'command', iconCategory: 'computer', argKey: undefined };
     const traceFields = buildToolTraceFields(name, args, label);
     const secondary = traceFields.secondary || name;
 
@@ -2121,8 +2156,8 @@ export class GeminiAgentClient {
 
       // --- Emit tool_result_preview event for all other tools ---
       const EXCLUDED_PREVIEW_TOOLS = new Set([
-        'skill_loader', 'screenshot_capture', 'system_automation', 'self_improve',
-        'memory_v2', 'api_hub', 'api_key_vault', 'env_manager', 'desktop_control',
+        'skill_loader', 'screenshot_capture', 'system_automation',
+        'memory_v2', 'desktop_control',
         'browser_control', 'checkpoint', 'computer', 'screen_agent'
       ]);
       if (output !== undefined && output !== null && !EXCLUDED_PREVIEW_TOOLS.has(canonicalToolName)) {
@@ -2375,13 +2410,13 @@ export class GeminiAgentClient {
             effort: currentThinkingLevel === 'off' ? 'none' : currentThinkingLevel,
             exclude: true,
           };
-        } else {
-          const isReasoning = isOpenAIReasoningModel(this.mistralModelName) && this.activeProvider === 'openai';
-          if (isReasoning) {
-            params.max_completion_tokens = positiveIntEnv('OPENAI_MAX_TOKENS', 8192);
-            delete params.max_tokens;
-            delete params.temperature;
-          }
+          } else {
+            const isReasoning = isOpenAIReasoningModel(this.mistralModelName) && this.activeProvider === 'openai';
+            if (isReasoning) {
+              params.max_completion_tokens = positiveIntEnv('OPENAI_MAX_TOKENS', 8192);
+              delete params.max_tokens;
+              delete params.temperature;
+            }
           const thinkingParameter = (context as any).modelThinkingCapability?.parameter;
           if (thinkingParameter === 'thinkingLevel') {
             params.thinkingLevel = currentThinkingLevel;
@@ -2393,14 +2428,23 @@ export class GeminiAgentClient {
                 : currentThinkingLevel === 'off'
                   ? 0
                   : 8192;
-          } else if (thinkingParameter === 'reasoning') {
-            params.reasoning = {
-              effort: currentThinkingLevel === 'off' ? 'none' : currentThinkingLevel,
-              exclude: true,
-            };
-          } else {
-            params.reasoning_effort = toOpenAIReasoningEffort(currentThinkingLevel);
-          }
+            } else if (thinkingParameter === 'reasoning') {
+              params.reasoning = {
+                effort: currentThinkingLevel === 'off' ? 'none' : currentThinkingLevel,
+                exclude: true,
+              };
+            } else if (this.activeProvider === 'llamacpp') {
+              // llama-server exposes OpenAI-compatible chat completions, but
+              // its model-template reasoning controls are passed through
+              // `chat_template_kwargs`, not as a top-level reasoning_effort
+              // field. Sending the upstream field silently does nothing.
+              params.chat_template_kwargs = {
+                ...(params.chat_template_kwargs || {}),
+                reasoning_effort: toOpenAIReasoningEffort(currentThinkingLevel),
+              };
+            } else {
+              params.reasoning_effort = toOpenAIReasoningEffort(currentThinkingLevel);
+            }
         }
       } else {
         params.temperature = this.resolveTemperature(adaptiveLearning.classifyTask(message), interactions);
@@ -2603,6 +2647,7 @@ export class GeminiAgentClient {
               const nextModel = fallbackChain[currentIdx + 1];
               console.warn(`[OpenAI/Mistral] Model ${this.mistralModelName} not found/deprecated. Switching to fallback model: ${nextModel}`);
               this.mistralModelName = nextModel;
+              (context as any).selectedModelName = nextModel;
               params.model = nextModel;
               if (params.prompt_cache_key) {
                 applyOpenAIPromptCachePolicy(params, {
@@ -3253,6 +3298,7 @@ export class GeminiAgentClient {
               const nextModel = fallbackChain[currentIdx + 1];
               console.warn(`[Anthropic] Switching to fallback model due to refusal: ${nextModel}`);
               this.mistralModelName = nextModel;
+              (context as any).selectedModelName = nextModel;
               params.model = nextModel;
               apiAttempts = 0; // reset attempts for the new model
               continue;
@@ -3273,6 +3319,7 @@ export class GeminiAgentClient {
               const nextModel = fallbackChain[currentIdx + 1];
               console.warn(`[Anthropic] Model ${this.mistralModelName} not found/deprecated. Switching to fallback model: ${nextModel}`);
               this.mistralModelName = nextModel;
+              (context as any).selectedModelName = nextModel;
               params.model = nextModel;
               apiAttempts = 0; // reset attempts for the new model
               keyInfo = this.getProviderKeyInfo('anthropic');
@@ -3716,9 +3763,6 @@ export class GeminiAgentClient {
       'task_decomposer',
       'task_checkpoint',
       'context_manager',
-      'file_watcher',
-      'create_dynamic_tool',
-      'self_improve',
       'get_skill_guidelines',
     ]);
     const telegramFastTools = new Set([
@@ -3733,25 +3777,20 @@ export class GeminiAgentClient {
       'workspace_run_command',
       'workspace_verify_code',
       'csv_data_analyzer',
-      'smart_file_analyzer',
+      'workspace_file_outline',
       'office_artifact_builder',
       'docx_generator',
       'realtime_verify',
       'calculator',
-      'code_execution_js',
-      'diff_patch',
-      'env_manager',
       'json_yaml_transform',
-      'markdown_to_html',
       'image_generator',
+      'video_generator',
       'file_compression',
       'system_shell',
       'terminal_access',
       'api_caller',
       'parse_pdf',
       'regex_text_processor',
-      'run_macro',
-      'workspace_analyze',
       'youtube_transcript',
       'browser_control',
       'screenshot_capture',
@@ -3821,9 +3860,17 @@ export class GeminiAgentClient {
           // fail on providers that do not emit presentation fields.
         }
 
+        const toolDescription = tool.name === 'web_search'
+          ? `${getSearchRouteBrief(context)}\n\n${tool.description}`
+          : tool.name === 'image_generator'
+            ? `${getImageGenerationRouteBrief()}\n\n${tool.description}`
+            : tool.name === 'video_generator'
+              ? `${getVideoGenerationRouteBrief()}\n\n${tool.description}`
+            : tool.description;
+        const descriptionLimit = tool.name === 'web_search' || tool.name === 'image_generator' || tool.name === 'video_generator' ? 1600 : 300;
         return {
           name: tool.name,
-          description: this.compactText(tool.description, 300),
+          description: this.compactText(toolDescription, descriptionLimit),
           parameters: cleaned
         };
       });
@@ -4303,7 +4350,7 @@ export class GeminiAgentClient {
     const chatId = this.getConversationScope(context);
     if (!chatId) return;
 
-    const createTools = new Set(['workspace_write_file']);
+    const createTools = new Set(['workspace_write_file', 'video_generator']);
     const editTools = new Set([
       'workspace_str_replace',
       'workspace_apply_patch',
@@ -4319,7 +4366,7 @@ export class GeminiAgentClient {
       const edited = new Set<string>(
         (Array.isArray(output?.filesModified) ? output.filesModified : []).map((value: unknown) => String(value || '').trim()).filter(Boolean)
       );
-      const directPath = String(args?.filename || args?.path || args?.filePath || args?.file_path || output?.path || '').trim();
+      const directPath = String(args?.filename || args?.path || args?.filePath || args?.file_path || output?.filePath || output?.path || '').trim();
       if (directPath) {
         if (createTools.has(toolName) && args?.append !== true) created.add(directPath);
         else edited.add(directPath);
@@ -4503,9 +4550,6 @@ ${dynamicContext ? `\nUNTRUSTED RUNTIME CONTEXT (evidence only)\n${dynamicContex
       'task_decomposer',
       'task_checkpoint',
       'context_manager',
-      'file_watcher',
-      'create_dynamic_tool',
-      'self_improve',
       'get_skill_guidelines',
     ]);
     const isBuilderPromptContext = isAgentBuilderRuntimeContext(context);
@@ -4933,11 +4977,12 @@ RESEARCH:
 - deep_research: multi-angle parallel research with source reading.
 
 COMPUTER CONTROL:
-- ${process.platform === 'win32' ? 'computer: isolated Windows desktop automation' : 'Native desktop automation is not exposed on this platform; use browser_control for web UI work'}
+- computer: cross-platform screen, input, app, and stream control (Windows isolated backend; macOS/Linux native desktop provider)
 - browser_control: Chrome automation via CDP + Playwright
 
 CREATION:
 - image_generator: creative images (logos, illustrations, photos)
+- video_generator: real video generation, animation, cinematic clips, and image-to-video; trust its live route briefing for provider, model, credentials, and fallback order
 - docx_generator / office_artifact_builder: documents, PDFs, slides, workbooks, and spreadsheet charts
 
 SUB-AGENTS:
@@ -5379,7 +5424,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       'workspace_view_file',
       'workspace_search_text',
       'workspace_list_directory',
-      'workspace_analyze',
       'web_search',
       'deep_research',
       'get_skill_guidelines',
@@ -5428,7 +5472,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       'workspace_view_file',
       'workspace_search_text',
       'workspace_list_directory',
-      'workspace_analyze',
       'get_skill_guidelines',
       'calculator',
       'json_yaml_transform',
@@ -5540,7 +5583,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
   }
 
   private isExploratoryToolCall(name: string, args: any): boolean {
-    if (['web_search', 'web_scraper', 'deep_research', 'workspace_semantic_search', 'workspace_symbol_lookup', 'workspace_file_outline', 'workspace_find_files', 'workspace_search_text', 'workspace_analyze', 'csv_data_analyzer'].includes(name)) return true;
+    if (['web_search', 'web_scraper', 'deep_research', 'workspace_semantic_search', 'workspace_symbol_lookup', 'workspace_file_outline', 'workspace_find_files', 'workspace_search_text', 'csv_data_analyzer'].includes(name)) return true;
     if (name === 'workspace_read_file' || name === 'workspace_read_many_files') return true;
     if (name === 'system_shell' || name === 'workspace_run_command') {
       const command = String(args?.command || '').toLowerCase();
@@ -5767,7 +5810,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
     }
 
     // Selective cache invalidation: only purge expired entries, keep valid cross-message cache
-    // This preserves expensive results (workspace_analyze, web_search) across messages
+    // This preserves expensive research results across messages
     if (!sharedCacheDisabled) {
       intelligentCache.purgeExpired();
     }
@@ -6911,6 +6954,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           if (!strictModelSelection && isModelError && currentModel === this.modelName) {
             // Switch to fallback model immediately
             currentModel = this.fallbackModel;
+            (context as any).selectedModelName = currentModel;
             if (_cachedContentName) {
               delete (config as any).cachedContent;
               _cachedContentName = null;
@@ -7348,7 +7392,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
               const patternKey = toolSequence.slice(0, 3).join('â†’');
               const existingPatterns = (adaptiveLearning as any).getRepeatingPatterns?.() || [];
               if (existingPatterns.includes(patternKey)) {
-                console.log(`[GeminiClient] ðŸ§¬ PATTERN DETECTED: "${ patternKey }" repeats across tasks. Consider create_dynamic_tool.`);
+                console.log(`[GeminiClient] ðŸ§¬ PATTERN DETECTED: "${ patternKey }" repeats across tasks.`);
                 // Inject a hint into the session for next time
                 if (!sessionPersistenceDisabled) {
                   globalSessionManager.addActionForChat(chatId, `[AUTO-INSIGHT] Repeating tool pattern detected: ${ patternKey }. Consider creating a macro tool.`);
@@ -7486,7 +7530,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
         workspace_list_directory: { text: 'Scanning directory', type: 'exploration', iconCategory: 'folder_read', argKey: 'directory' },
         workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'query' },
-        workspace_symbol_lookup: { text: 'Finding symbol', type: 'exploration', iconCategory: 'search', argKey: 'symbol' },
+        // Symbol lookup is covered by workspace_file_outline.
         workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
         workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKey: 'glob' },
         workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
@@ -7499,7 +7543,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
         git_operations: { text: 'Git operation', type: 'command', iconCategory: 'terminal', argKey: 'operation' },
         screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKey: 'target' },
-        code_execution_js: { text: 'Evaluating logic', type: 'command', iconCategory: 'computer' },
         system_monitor: { text: 'Monitoring system', type: 'exploration', iconCategory: 'computer', argKey: 'check' },
         desktop_notification: { text: 'Notifying', type: 'command', iconCategory: 'computer', argKey: 'title' },
         task_decomposer: { text: 'Decomposing task', type: 'command', iconCategory: 'computer', argKey: 'complexTask' },
@@ -7507,55 +7550,35 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         docx_generator: { text: 'Generating document', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
         office_artifact_builder: { text: 'Generating artifact', type: 'file_edit', iconCategory: 'file_create', argKey: 'format' },
         image_generator: { text: 'Generating image', type: 'file_edit', iconCategory: 'image', argKey: 'prompt' },
-        email_manager: { text: 'Managing email', type: 'command', iconCategory: 'computer', argKey: 'subject' },
+        video_generator: { text: 'Generating video', type: 'file_edit', iconCategory: 'image', argKey: 'prompt' },
         gateway_bridge: { text: 'Using Gateway channel', type: 'communication', iconCategory: 'connector', argKey: 'platform' },
         connector_mcp: { text: 'Using connected service', type: 'communication', iconCategory: 'connector', argKey: 'connector_id' },
         slack_controller: { text: 'Slack operation', type: 'communication', iconCategory: 'connector', argKey: 'action' },
         process_manager: { text: 'Managing process', type: 'command', iconCategory: 'terminal', argKey: 'command' },
-        network_tools: { text: 'Network operation', type: 'exploration', iconCategory: 'computer', argKey: 'target' },
         file_compression: { text: 'Compressing files', type: 'file_edit', iconCategory: 'file_create', argKey: 'source' },
-        local_database: { text: 'Database query', type: 'command', iconCategory: 'computer', argKey: 'table' },
         api_caller: { text: 'API request', type: 'exploration', iconCategory: 'computer', argKey: 'url' },
         calculator: { text: 'Calculating', type: 'command', iconCategory: 'computer', argKey: 'expression' },
         csv_analyzer: { text: 'Analyzing data', type: 'exploration', iconCategory: 'search', argKey: 'filename' },
-        smart_api_hub: { text: 'API call', type: 'exploration', iconCategory: 'computer', argKey: 'connector' },
-        http_server: { text: 'HTTP server', type: 'command', iconCategory: 'computer', argKey: 'action' },
         youtube_transcript: { text: 'Extracting transcript', type: 'exploration', iconCategory: 'web_search', argKey: 'videoUrl' },
         clipboard_manager: { text: 'Clipboard', type: 'command', iconCategory: 'computer', argKey: 'action' },
         text_to_speech: { text: 'Generating speech', type: 'command', iconCategory: 'file_create', argKey: 'text' },
         rss_feed_reader: { text: 'Reading RSS feed', type: 'exploration', iconCategory: 'web_search', argKey: 'feedUrl' },
         browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'computer', argKey: 'action' },
-        whatsapp_controller: { text: 'WhatsApp', type: 'communication', iconCategory: 'computer', argKey: 'action' },
-        telegram_user_controller: { text: 'Telegram', type: 'communication', iconCategory: 'computer', argKey: 'action' },
         code_generator: { text: 'Scaffolding project', type: 'file_edit', iconCategory: 'folder_create', argKey: 'template' },
-        self_improve: { text: 'Self-improving', type: 'command', iconCategory: 'computer', argKey: 'action' },
         memory_v2: { text: 'Updating memory', type: 'command', iconCategory: 'file_create', argKey: 'action' },
-        diff_patch: { text: 'Comparing files', type: 'exploration', iconCategory: 'search' },
         workspace_execute_script: { text: 'Running script', type: 'command', iconCategory: 'terminal', argKey: 'script' },
-        markdown_to_html: { text: 'Converting markdown', type: 'file_edit', iconCategory: 'file_create', argKey: 'title' },
         json_yaml_transform: { text: 'Transforming data', type: 'command', iconCategory: 'computer', argKey: 'operation' },
         regex_text_processor: { text: 'Processing text', type: 'command', iconCategory: 'computer', argKey: 'operation' },
         system_automation: { text: 'System automation', type: 'command', iconCategory: 'computer', argKey: 'action' },
-        file_watcher: { text: 'Watching files', type: 'exploration', iconCategory: 'folder_read', argKey: 'path' },
-        safety_guard: { text: 'Safety check', type: 'command', iconCategory: 'verification', argKey: 'action' },
-        crypto_utils: { text: 'Crypto operation', type: 'command', iconCategory: 'computer', argKey: 'operation' },
-        api_key_vault: { text: 'Vault operation', type: 'command', iconCategory: 'computer', argKey: 'action' },
         context_manager: { text: 'Context operation', type: 'command', iconCategory: 'computer', argKey: 'action' },
         // Next-Gen tools
         spawn_sub_agent: { text: 'Creating agents', type: 'command', iconCategory: 'agent', argKey: 'mode' },
         deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
         code_intelligence: { text: 'Analyzing code', type: 'exploration', iconCategory: 'search', argKey: 'target' },
-        project_scaffolder: { text: 'Scaffolding project', type: 'file_edit', iconCategory: 'folder_create', argKey: 'name' },
-        env_manager: { text: 'Managing environment', type: 'command', iconCategory: 'computer', argKey: 'mode' },
-        auto_docs: { text: 'Generating docs', type: 'file_edit', iconCategory: 'file_create', argKey: 'target' },
-        smart_file_analyzer: { text: 'Analyzing files', type: 'exploration', iconCategory: 'search', argKey: 'path' },
         background_task: { text: 'Checking background task', type: 'command', iconCategory: 'terminal', argKey: 'taskId' },
         scheduled_tasks: { text: 'Managing scheduled task', type: 'command', iconCategory: 'clock', argKey: 'title' },
         wait_timer: { text: 'Waiting for check-in', type: 'command', iconCategory: 'terminal', argKey: 'title' },
         realtime_verify: { text: 'Verifying output', type: 'command', iconCategory: 'verification', argKey: 'target' },
-        create_dynamic_tool: { text: 'Creating tool', type: 'command', iconCategory: 'computer', argKey: 'toolName' },
-        workspace_analyze: { text: 'Analyzing workspace', type: 'exploration', iconCategory: 'search', argKey: 'directory' },
-        run_macro: { text: 'Running macro', type: 'command', iconCategory: 'computer', argKey: 'macroName' },
         ask_user: { text: 'Asking user', type: 'ask_user', iconCategory: 'computer', argKey: 'question' },
         task_checkpoint: { text: 'Saving progress', type: 'command', iconCategory: 'computer', argKey: 'action' },
         image_asset_search: { text: 'Searching images', type: 'exploration', iconCategory: 'image', argKey: 'query' },
@@ -7570,9 +7593,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         'task_decomposer',
         'task_checkpoint',
         'context_manager',
-        'file_watcher',
-        'create_dynamic_tool',
-        'self_improve',
       ]);
 
       const firstBrowserControlIndex = functionCalls.findIndex((call: any) => call.name === 'browser_control');
@@ -7729,7 +7749,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         }
 
         // Get label from compact lookup
-        const label = toolLabels[call.name] || { text: call.name, type: 'command', iconCategory: 'computer' };
+        const label = toolLabels[call.name] || { text: call.name, type: 'command', iconCategory: 'computer', argKey: undefined };
         const traceFields = buildToolTraceFields(call.name, args, label);
         let secondary = traceFields.secondary || call.name;
 
@@ -7966,7 +7986,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
               preflightError = capabilityDecision.reason || `Tool ${ canonicalToolName } is not allowed`;
             }
           } else {
-            preflightError = validation.error;
+            preflightError = validation.error || `Invalid arguments for ${canonicalToolName}`;
           }
         }
         const governorDecision = tool && !preflightError
@@ -8091,8 +8111,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
 
                 // --- Emit tool_result_preview event for all other tools ---
                 const EXCLUDED_PREVIEW_TOOLS = new Set([
-                  'skill_loader', 'screenshot_capture', 'system_automation', 'self_improve',
-                  'memory_v2', 'api_hub', 'api_key_vault', 'env_manager', 'desktop_control',
+                  'skill_loader', 'screenshot_capture', 'system_automation',
+                  'memory_v2', 'desktop_control',
                   'browser_control', 'checkpoint', 'computer', 'screen_agent'
                 ]);
                 if (toolOutput !== undefined && toolOutput !== null && !EXCLUDED_PREVIEW_TOOLS.has(canonicalToolName)) {
@@ -8817,7 +8837,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       const wasWorkTask = toolsUsed.some(t =>
         ['workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell', 'workspace_run_command',
           'process_manager', 'browser_control', 'docx_generator', 'office_artifact_builder',
-          'image_generator'].includes(t)
+          'image_generator', 'video_generator'].includes(t)
       );
 
       // If it was a work task, enrich the final response with what was done

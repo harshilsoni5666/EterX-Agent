@@ -547,16 +547,29 @@ async function fetchElevenLabsVoices(): Promise<ProviderModelResult> {
 
 async function fetchOllamaModels(): Promise<ProviderModelResult> {
   try {
-    const host = getProviderBaseURL('ollama').replace(/\/v1\/?$/i, '') || 'http://localhost:11434';
-    const res = await withTimeout(fetch(`${host.replace(/\/+$/, '')}/api/tags`, {
+    const baseURL = getProviderBaseURL('ollama') || 'http://127.0.0.1:11434/v1';
+    const apiKey = getRuntimeApiKeyValues('ollama' as any)[0] || 'ollama';
+    let res = await withTimeout(fetch(`${baseURL}/models`, {
       cache: 'no-store',
+      headers: { Authorization: `Bearer ${apiKey}` },
     }), 4000);
+
+    // Older Ollama releases may expose the native catalog before they expose
+    // the OpenAI-compatible `/v1/models` route. Keep that route as a fallback
+    // so existing local installs remain discoverable without changing chat,
+    // which always uses the documented `/v1` OpenAI-compatible API.
+    if (!res.ok) {
+      const host = baseURL.replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
+      res = await withTimeout(fetch(`${host}/api/tags`, { cache: 'no-store' }), 4000);
+    }
     if (!res.ok) throw new Error(`Ollama local request failed (${res.status})`);
     const data = await res.json();
-    const models = trimModels((data.models || []).map((model: any) => ({
-      id: String(model.name || model.model || ''),
-      name: String(model.name || model.model || ''),
+    const rawModels = Array.isArray(data?.data) ? data.data : (data?.models || []);
+    const models = trimModels(rawModels.map((model: any) => ({
+      id: String(model.id || model.name || model.model || ''),
+      name: String(model.name || model.model || model.id || ''),
       description: model.details?.parameter_size ? `Local (${model.details.parameter_size})` : 'Local Ollama Model',
+      contextLength: Number(model.context_length || model.details?.context_length || 0) || undefined,
     })));
     return { provider: 'ollama' as any, connected: true, source: 'live', models };
   } catch (error) {
@@ -566,15 +579,26 @@ async function fetchOllamaModels(): Promise<ProviderModelResult> {
 
 async function fetchLMStudioModels(): Promise<ProviderModelResult> {
   try {
-    const host = getProviderBaseURL('lmstudio') || 'http://localhost:1234/v1';
-    const res = await withTimeout(fetch(`${host.replace(/\/+$/, '')}/models`, {
+    const baseURL = getProviderBaseURL('lmstudio') || 'http://127.0.0.1:1234/v1';
+    const apiKey = getRuntimeApiKeyValues('lmstudio' as any)[0];
+    const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+    let res = await withTimeout(fetch(`${baseURL}/models`, {
       cache: 'no-store',
+      headers,
     }), 4000);
+    // LM Studio also exposes a native catalog at `/api/v1/models`. Prefer the
+    // OpenAI-compatible path for consistency with chat, then support the
+    // native path for installations where only the v1 REST server is enabled.
+    if (!res.ok) {
+      const host = baseURL.replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
+      res = await withTimeout(fetch(`${host}/api/v1/models`, { cache: 'no-store', headers }), 4000);
+    }
     if (!res.ok) throw new Error(`LM Studio local request failed (${res.status})`);
     const data = await res.json();
-    const models = trimModels((data.data || []).map((model: any) => ({
-      id: String(model.id || ''),
-      name: String(model.id || ''),
+    const rawModels = Array.isArray(data?.data) ? data.data : (data?.models || []);
+    const models = trimModels(rawModels.map((model: any) => ({
+      id: String(model.id || model.key || model.model_id || ''),
+      name: String(model.id || model.key || model.model_id || ''),
       description: 'LM Studio Desktop Local Server',
     })));
     return { provider: 'lmstudio' as any, connected: true, source: 'live', models };

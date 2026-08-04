@@ -91,6 +91,7 @@ const BASE_PLANNER_TOOLS = new Set([
   'office_artifact_builder',
   'csv_data_analyzer',
   'image_generator',
+  'video_generator',
   'image_asset_search',
   'api_caller',
   'ask_user',
@@ -108,8 +109,6 @@ const TOOL_ALIASES: Record<string, string> = {
   semantic_search: 'workspace_semantic_search',
   csv_analyzer: 'csv_data_analyzer',
   data_analyzer: 'csv_data_analyzer',
-  js_execution: 'code_execution_js',
-  code_execution: 'code_execution_js',
   browser: 'browser_control',
   scraper: 'web_scraper',
   pdf_parser: 'parse_pdf',
@@ -120,21 +119,16 @@ const DISALLOWED_PLANNER_TOOLS = new Set([
   'task_checkpoint',
   'spawn_sub_agent',
   'background_task',
-  'create_dynamic_tool',
-  'run_macro',
-  'self_improve',
   'desktop_control',
   'computer',
   'screen_agent',
-  'file_watcher',
   'process_manager',
 ]);
 
 const EXTERNAL_COMMS_TOOLS = new Set([
   'slack_controller',
-  'telegram_user_controller',
-  'whatsapp_controller',
-  'email_manager',
+  'gateway_bridge',
+  'connector_mcp',
 ]);
 
 const STOPWORDS = new Set([
@@ -191,7 +185,7 @@ Rules:
    web_search, web_scraper, deep_research, parse_pdf, youtube_transcript, rss_feed_reader,
    get_skill_guidelines,
    docx_generator, office_artifact_builder, csv_data_analyzer,
-   image_generator, image_asset_search, api_caller, ask_user.
+   image_generator, video_generator, image_asset_search, api_caller, ask_user.
 
 Return ONLY valid JSON:
 {

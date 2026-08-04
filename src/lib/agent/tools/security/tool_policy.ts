@@ -25,25 +25,20 @@ export const DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES = [
 
 const CAPABILITY_BY_TOOL: Record<string, string> = {
   api_caller: 'network.public',
-  smart_api_hub: 'network.public',
   web_scraper: 'network.public',
   rss_feed_reader: 'network.public',
   deep_research: 'network.public',
   web_search: 'network.public',
   image_asset_search: 'network.public',
   image_generator: 'network.public',
-  network_tools: 'network.public',
+  video_generator: 'network.public',
   youtube_transcript: 'network.public',
-  http_server: 'network.listen',
 
   background_task: 'command.raw',
   process_manager: 'command.raw',
   workspace_run_command: 'command.workspace',
   workspace_verify_code: 'command.workspace',
-  code_execution_js: 'code.dynamic',
   spawn_sub_agent: 'agent.spawn',
-  create_dynamic_tool: 'code.dynamic',
-  run_macro: 'tool.utility',
 
   browser_control: 'browser.control',
   desktop_control: 'host.control',
@@ -57,21 +52,12 @@ const CAPABILITY_BY_TOOL: Record<string, string> = {
   text_to_speech: 'host.audio',
 
   slack_controller: 'communication.external',
-  telegram_user_controller: 'communication.external',
-  whatsapp_controller: 'communication.external',
   gateway_bridge: 'communication.connected',
   connector_mcp: 'communication.connected',
-  email_manager: 'communication.external',
-
-  api_key_vault: 'secrets.manage',
-  env_manager: 'secrets.manage',
   memory_v2: 'memory.manage',
-
-  file_watcher: 'filesystem.watch',
   file_compression: 'filesystem.write',
   docx_generator: 'filesystem.write',
   office_artifact_builder: 'filesystem.write',
-  local_database: 'filesystem.write',
 };
 
 const DEFAULT_ALLOWED_CAPABILITIES = new Set([

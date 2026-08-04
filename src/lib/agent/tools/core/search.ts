@@ -1,213 +1,51 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { tavily } from "@tavily/core";
 import { enforceToolCapability } from '../security/tool_policy';
-
-// Load all Tavily keys from environment
-const getTavilyKeys = (): string[] => {
-  const keys: string[] = [];
-  // Try TAVILY_API_KEY_1, TAVILY_API_KEY_2, etc.
-  for (let i = 1; i <= 20; i++) {
-    const key = process.env[`TAVILY_API_KEY_${i}`] || process.env[`VITE_TAVILY_API_KEY_${i}`];
-    if (key && key.trim() !== '') {
-      keys.push(key.trim());
-    }
-  }
-  // Fallback to single key if no array keys found
-  if (keys.length === 0) {
-    const fallback = process.env.VITE_TAVILY_API_KEY || process.env.TAVILY_API_KEY;
-    if (fallback && fallback.trim() !== '') {
-      keys.push(fallback.trim());
-    }
-  }
-  return keys;
-};
-
-const tavilyKeys = getTavilyKeys();
-let currentKeyIndex = 0;
-
-// PRE-INITIALIZE the clients to completely remove "loading/indexing" overhead
-const tavilyClients = tavilyKeys.map(apiKey => tavily({ apiKey }));
-
-const normalizeImages = (images: any): Array<{ url: string; description?: string }> => {
-  if (!Array.isArray(images)) return [];
-
-  return images
-    .map((image: any) => {
-      if (typeof image === 'string') return { url: image };
-      return {
-        url: String(image?.url || '').trim(),
-        description: image?.description ? String(image.description).trim() : undefined,
-      };
-    })
-    .filter((image: { url: string }) => image.url);
-};
-
-// Function to get the next client in a round-robin fashion
-const getNextTavilyClient = () => {
-  if (tavilyClients.length === 0) {
-    throw new Error("Tavily client is not properly initialized: No valid API keys found.");
-  }
-  
-  const client = tavilyClients[currentKeyIndex];
-  const usedIndex = currentKeyIndex;
-  
-  // Move to the next index, wrap around if needed
-  currentKeyIndex = (currentKeyIndex + 1) % tavilyClients.length;
-  
-  console.log(`[Tool: web_search] Using Tavily key index: ${usedIndex}`);
-  return client;
-};
+import { executeSearchWithFailover } from '../../../search/search-runtime';
 
 export const webSearchTool: ToolDefinition = {
   name: 'web_search',
-  description: `Search the web using Tavily AI Search for accurate, research-grade, up-to-date information.
+  description: `Search the live web through the active model's native search when enabled and available, then fall back to the provider configured in External service settings.
 
-CRITICAL INSTRUCTIONS - WHEN TO USE THIS TOOL:
-1. AUTONOMOUS RESEARCH: Use this tool to conduct deep, multi-step research. Break complex objectives down into multiple queries, run them iteratively, and synthesize the facts before generating a report or document.
-2. PREVENTING HALLUCINATIONS (RAG Grounding): NEVER invent company data, financial figures, news, or specific facts. If you need a company's revenue, competitor names, or market share, use this tool first.
-3. REAL-TIME DATA ENRICHMENT: Use this to fetch the latest news, product launches, leadership changes, or current events that occurred after your training cutoff.
-4. PREPARATION & CONTEXT: Use this to gather background context on people, companies, or events before generating client proposals, meeting briefs, or analytical dashboards.
-5. QUALITY OVER QUANTITY: This tool uses Tavily, an agent-native search engine. It returns clean, structured content specifically optimized for LLM reasoning. Always trust this data over your internal generic knowledge when facts matter.
+Use this tool whenever current facts, recent changes, source citations, documentation, market data, or web-grounded verification matter. The runtime checks the selected model's built-in search capability first, then reads the latest External service settings for every call. It applies the configured provider order and automatically fails over across the saved provider and API-key pool when a request fails. A model change therefore changes the native-search decision immediately, and a settings change changes provider, credentials, endpoint, and fallback routing without restarting the agent.
 
-HOW TO USE:
-- Start with a broad search to understand the landscape, then perform specific searches for exact numbers or dates.
-- Use \`action: "extract"\` to pull the raw text/markdown directly from a list of URLs.
-- Use \`action: "crawl"\` to deep-crawl a single website URL (provide URL in \`urls[0]\`). Good for scraping an entire domain or documentation site.
-- Use \`action: "map"\` to discover all pages on a domain (provide URL in \`urls[0]\`). Good for understanding site structure.
-- Use \`action: "research"\` to trigger an end-to-end autonomous research report on heavy topics. This takes longer but yields an exhaustive deep-dive report.
-- Use \`includeImages: true\` to set Tavily include_images=true and return contextual image URLs alongside search or extraction results.
-- Use \`includeImageDescriptions: true\` with \`includeImages: true\` when visual relevance matters.
-- Use \`includeRawContent: true\` if you need to read the full page text rather than just a snippet.
-- Use \`topic: "news"\` or \`topic: "finance"\` when relevant.`,
+Provider routes have different strengths. Tavily provides provider-native search, extraction, crawling, mapping, and research; Firecrawl provides search and page reading, with a separate self-hosted route for local instances; Exa provides semantic search and content reading; Parallel provides objective search with source excerpts; Brave, SearXNG, DuckDuckGo, and xAI are search-first routes. When a selected route does not provide a native reading, crawl, or map action, the runtime uses its safe agent-level URL reader and returns provider capabilities and action mode in the result. Deep research remains available for every route through multi-angle search plus source reading, while Tavily can use its native research operation.
+
+Actions:
+- search: find current web results and concise source content.
+- extract: retrieve readable content from a list of URLs.
+- crawl: retrieve readable content from a starting URL.
+- map: discover links from a starting URL.
+- research: run provider-native research when supported, otherwise return a live search result for the deep_research orchestrator.
+
+Never invent current facts when this tool can verify them. Treat returned URLs and content as evidence, and cite the relevant sources in the final answer.`,
   category: 'research',
   inputSchema: z.object({
     action: z.enum(['search', 'extract', 'crawl', 'map', 'research']).optional().default('search').describe('Action to perform.'),
     query: z.string().optional().describe('The search query string (required for search and research)'),
     urls: z.array(z.string()).optional().describe('List of URLs (required for extract; first item used for crawl/map)'),
     topic: z.enum(['general', 'news', 'finance']).optional().default('general').describe('The category of the search (search only)'),
-    searchDepth: z.enum(['basic', 'advanced']).optional().default('basic').describe('Search depth. Advanced uses more AI processing for deeper research.'),
-    includeAnswer: z.boolean().optional().default(true).describe('Generate a concise AI-summarized answer from the results (search only)'),
-    includeImages: z.boolean().optional().default(false).describe('Set Tavily include_images=true. Search returns query-level images and per-source result images; extract/crawl return images found on the requested pages. For website assets, prefer image_asset_search because it downloads and validates files.'),
-    includeImageDescriptions: z.boolean().optional().default(true).describe('Set Tavily include_image_descriptions=true when includeImages is true, useful for visual relevance checks in search results.'),
-    includeRawContent: z.boolean().optional().default(false).describe('Include the full markdown text of the retrieved pages'),
-    numResults: z.number().optional().default(5).describe('Number of raw search results to return')
+    searchDepth: z.enum(['basic', 'advanced']).optional().default('basic').describe('Search depth where supported by the active provider.'),
+    includeAnswer: z.boolean().optional().default(true).describe('Generate a concise provider answer when supported.'),
+    includeImages: z.boolean().optional().default(false).describe('Include source images when supported.'),
+    includeImageDescriptions: z.boolean().optional().default(true).describe('Include image descriptions when supported.'),
+    includeRawContent: z.boolean().optional().default(false).describe('Include full readable source text when supported.'),
+    numResults: z.number().optional().default(5).describe('Number of results to return.'),
   }),
   outputSchema: z.any(),
   execute: async (input: any, context?: any) => {
-    console.log(`[Tool: web_search] Tavily AI Action: ${input.action}`);
+    const decision = enforceToolCapability('web_search', input, context);
+    if (!decision.allowed) return { error: decision.reason || 'Web search is not allowed' };
+
     try {
-      const decision = enforceToolCapability('web_search', input, context);
-      if (!decision.allowed) {
-        return { error: decision.reason || 'Web search is not allowed' };
-      }
-
-      const tvlyClient = getNextTavilyClient();
-
-      if (input.action === 'extract') {
-        if (!input.urls || input.urls.length === 0) throw new Error("Extract action requires the 'urls' array parameter.");
-        
-        const response = await tvlyClient.extract(input.urls, {
-          extractDepth: input.searchDepth || 'basic',
-          includeImages: input.includeImages || false
-        });
-        return {
-          results: Array.isArray(response.results)
-            ? response.results.map((result: any) => ({
-              ...result,
-              images: normalizeImages(result.images),
-            }))
-            : response.results,
-          failed: response.failedResults
-        };
-      }
-      else if (input.action === 'crawl') {
-        if (!input.urls || input.urls.length === 0) throw new Error("Crawl action requires 'urls' array (uses the first URL).");
-        const response = await tvlyClient.crawl(input.urls[0], {
-          extractDepth: input.searchDepth || 'basic',
-          includeImages: input.includeImages || false,
-          maxDepth: 2,
-          limit: input.numResults || 10
-        });
-        return response;
-      }
-      else if (input.action === 'map') {
-        if (!input.urls || input.urls.length === 0) throw new Error("Map action requires 'urls' array (uses the first URL).");
-        const response = await tvlyClient.map(input.urls[0], {
-          limit: input.numResults || 20
-        });
-        return response;
-      }
-      else if (input.action === 'research') {
-        if (!input.query) throw new Error("Research action requires the 'query' parameter.");
-        console.log(`[Tool: web_search] Starting Deep Research Task for: "${input.query}"`);
-        const task = await tvlyClient.research(input.query) as any;
-        const reqId = task.requestId;
-        
-        console.log(`[Tool: web_search] Research Task ID: ${reqId}. Polling for completion...`);
-        let attempt = 0;
-        while (attempt < 120) { // wait up to 4 minutes
-          await new Promise(r => setTimeout(r, 2000));
-          attempt++;
-          const res = await tvlyClient.getResearch(reqId);
-          if (res.status !== 'processing' && res.status !== 'pending') {
-             return res;
-          }
-        }
-        throw new Error("Research task timed out.");
-      }
-      else {
-        // Default Search Action
-        if (!input.query) throw new Error("Search action requires the 'query' parameter.");
-
-        const response = await tvlyClient.search(input.query, {
-          searchDepth: input.searchDepth || 'basic',
-          topic: input.topic || 'general',
-          includeAnswer: input.includeAnswer !== false, // default true
-          includeImages: input.includeImages || false,
-          includeImageDescriptions: input.includeImages ? input.includeImageDescriptions !== false : false,
-          includeRawContent: input.includeRawContent ? 'markdown' : false,
-          maxResults: input.numResults || 5,
-        });
-
-        const images = normalizeImages(response.images);
-        const results = Array.isArray(response.results) ? response.results : [];
-        
-        // Safety handling of empty payloads
-        if (!response || results.length === 0) {
-          return {
-            ai_summary: response?.answer || null,
-            images,
-            results: [],
-            message: images.length > 0
-              ? "Search returned images but no text results. Try a more specific query for source text."
-              : "Search returned no results. Try modifying your query."
-          };
-        }
-        
-        return {
-          ai_summary: response.answer || null,
-          images,
-          results: results.map((r: any) => ({
-            title: r.title,
-            url: r.url,
-            content: r.content,
-            rawContent: r.rawContent,
-            score: r.score,
-            favicon: r.favicon,
-            publishedDate: r.publishedDate || r.published_date,
-            images: normalizeImages(r.images)
-          }))
-        };
-      }
-      
+      const response = await executeSearchWithFailover(input, context);
+      return response;
     } catch (error: any) {
-      console.warn('[Tool: web_search] Tavily AI failed. Error:', error.message);
-      return [{ 
-        title: "Search/Extract Error", 
-        url: "", 
-        content: `Tavily failed: ${error.message}. Try relaxing parameters or using different keywords.` 
-      }];
+      console.warn('[Tool: web_search] External search failed:', error?.message || error);
+      return {
+        error: error?.message || 'External search failed.',
+        results: [],
+      };
     }
-  }
+  },
 };

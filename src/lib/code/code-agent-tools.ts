@@ -41,7 +41,6 @@ const STATELESS_TOOLS = new Set<string>([
   'workspace_read_many_files',
   'workspace_list_directory',
   'realtime_verify',
-  'workspace_analyze',
   'get_skill_guidelines',
   'context_manager',
   'web_search',

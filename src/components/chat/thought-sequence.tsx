@@ -2782,7 +2782,10 @@ const isActionContextLog = (log: any) =>
 
 const shouldRenderThoughtSegment = (log: any, flowLogs: any[], idx: number) => {
   const text = normalizeTimelineText(log?.text);
-  if (!text) return false;
+  // Some transports use the existing thought card as a visual lifecycle
+  // container without exposing synthetic reasoning text. Keep that shell
+  // renderable while continuing to suppress genuinely empty thought events.
+  if (!text && log?.uiOnly !== true) return false;
   return true;
 };
 

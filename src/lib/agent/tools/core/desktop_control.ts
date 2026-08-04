@@ -17,7 +17,7 @@ const ACTION_MAP: Record<string, string> = {
   list_windows: 'list_apps',
   focus_window: 'focus_app',
   launch_app: 'launch_app',
-  open_url: 'run_command',
+  open_url: 'open_url',
   clipboard_read: 'clipboard_get',
   clipboard_write: 'clipboard_set',
   minimize_window: 'minimize',
@@ -53,9 +53,9 @@ function mapArgs(action: string, input: any): Record<string, any> {
   if (input.height != null) mapped.height = input.height;
   if (input.ms != null || input.milliseconds != null) mapped.ms = input.ms ?? input.milliseconds ?? 1000;
   if (input.windowTitle != null) mapped.text = input.windowTitle;
-  if (action === 'open_url' && input.url) mapped.text = `Start-Process '${String(input.url).replace(/'/g, "''")}'`;
-  if (action === 'open_start_menu') mapped.text = 'win';
-  if (action === 'open_run_dialog') mapped.text = 'win+r';
+  if (action === 'open_url' && input.url) mapped.url = input.url;
+  if (action === 'open_start_menu') mapped.text = process.platform === 'darwin' ? 'cmd+space' : process.platform === 'win32' ? 'win' : 'super';
+  if (action === 'open_run_dialog') mapped.text = process.platform === 'darwin' ? 'cmd+space' : process.platform === 'win32' ? 'win+r' : 'alt+F2';
   return mapped;
 }
 

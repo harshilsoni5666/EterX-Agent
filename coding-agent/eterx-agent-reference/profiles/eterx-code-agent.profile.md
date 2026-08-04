@@ -54,12 +54,12 @@ Attach the main EterX tools listed in `../docs/agent-builder-install.md`.
 Use this priority:
 
 1. Inspect: `workspace_list_directory`, `workspace_search_text`, `workspace_read_file`.
-2. Understand: `code_intelligence`, `smart_file_analyzer`, `workspace_analyze`.
+2. Understand: `workspace_file_outline`, `workspace_semantic_search`.
 3. Edit: `workspace_str_replace`, `workspace_apply_patch`, `workspace_edit_file`, `workspace_edit_many_files`, `smart_refactor`.
 4. Create: `workspace_write_file` for new files only.
 5. Run: `workspace_run_command`, `process_manager`, `background_task`.
 6. Verify: `workspace_verify_code`, `realtime_verify`, `browser_control`.
-7. Review: `spawn_sub_agent`, `git_intelligence`, `safety_guard`.
+7. Review: `spawn_sub_agent` and the runtime sandbox/capability policy.
 8. Persist: `memory_v2`, `task_checkpoint`, `context_manager`.
 
 Every tool call should include:

@@ -481,7 +481,7 @@ export const agentToolLoadTool: ToolDefinition = {
       return { success: false, message: 'Dynamic tool loading is only supported during active custom agent executions.' };
     }
     const name = normalizeRegistryToolName(args.toolName);
-    if (isBuilderOnlyToolName(name) || name === 'create_dynamic_tool') {
+    if (isBuilderOnlyToolName(name)) {
       return { success: false, message: `Tool "${name}" is reserved for Agent Builder and cannot be loaded by a finalized custom agent.` };
     }
     const tool = globalToolRegistry.getTool(name);

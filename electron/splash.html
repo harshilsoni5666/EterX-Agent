@@ -198,28 +198,28 @@
         place-items: center;
       }
 
-      /* Simple motion without glow: 2s breathe + 3 fast wheel spins */
+      /* Simple breathing motion without rotation or glow. */
       .splash-icon img {
         display: block;
         width: 92px;
         height: 92px;
         object-fit: contain;
         pointer-events: none;
-        animation: logo-breathe-wheel 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        animation: logo-breathe 4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
       }
 
-      @keyframes logo-breathe-wheel {
+      @keyframes logo-breathe {
         0% {
-          transform: scale(1) rotate(0deg);
+          transform: scale(1);
         }
         25% {
-          transform: scale(1.14) rotate(0deg);
+          transform: scale(1.14);
         }
         50% {
-          transform: scale(1) rotate(0deg);
+          transform: scale(1);
         }
         100% {
-          transform: scale(1) rotate(1080deg);
+          transform: scale(1);
         }
       }
 

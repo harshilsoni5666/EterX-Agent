@@ -259,7 +259,9 @@ const formatShortTime = (timestamp: number | string | undefined | null): string 
 
 const formatProviderTokenCount = (tokens: number): string => {
   if (!Number.isFinite(tokens) || tokens <= 0) return '';
-  return Math.round(tokens).toLocaleString();
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`;
+  return String(Math.round(tokens));
 };
 
 const UserMessageActions = React.memo(({ text, onEdit, timestamp }: { text: string; onEdit?: (text: string) => void; timestamp?: number | string | null }) => {
@@ -917,6 +919,13 @@ const isHiddenStatusOnlyLog = (log: any) => {
   if (log?.type === 'work_note_cancel') return true;
   if (log?.type === 'answer_cancel') return true;
   if (log?.type === 'task_plan') return true;
+  // Older direct Chat runs emitted lifecycle work notes as plain rows. The
+  // direct path now uses the shared thought container, but hide those legacy
+  // rows when an existing chat is reopened.
+  if (
+    log?.type === 'work_note' &&
+    /^direct_(?:thinking|search)_/i.test(String(log.noteId || ''))
+  ) return true;
   // Hide streaming worknote placeholders that were cancelled and not yet replaced
   if (log?.type === 'work_note' && log?._streamingCancelled === true) return true;
   if (!log || log.type === 'user_action' || log.type === 'answer') return false;
@@ -1141,14 +1150,17 @@ const ThoughtSequence = ({
 
   const isOpen = open;
   const hasRealActions = stepCount > 0;
-  const hasVisibleWork = logs.length > 0 || liveLogs.length > 0;
+  // A direct answer can still carry a provider-generated thought/work-note
+  // trace. Once the answer is settled, that narrative is not user-visible
+  // work and must not create a fake Working chip or duration summary.
+  const isSettledNarrativeOnly = hasAnswer && !isLiveThinking && !hasRealActions;
   // Start the timer as soon as the turn is active. Waiting for the first
   // trace made the live pill appear late, then disappear/reappear as polling
   // swapped between an empty group and its first streamed event.
   const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, turnLogs, turnEndedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
-  if (stepCount === 0 && logs.length === 0 && !isLiveThinking) return null;
+  if (isSettledNarrativeOnly || (stepCount === 0 && logs.length === 0 && !isLiveThinking)) return null;
 
   const isWaitingForFirstTrace = isLiveThinking && stepCount === 0 && logs.length === 0 && liveLogs.length === 0;
   // The active turn owns the live status pill even before its first trace.
@@ -1157,7 +1169,7 @@ const ThoughtSequence = ({
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
   const isLiveWorkCounter = isLiveThinking;
   const hasTerminalBoundary = hasAnswer || hasInteractionBoundary || turnLogs.some(isTerminalWorkTrace);
-  const showWorkedSummary = !isLiveThinking && hasVisibleWork && hasTerminalBoundary;
+  const showWorkedSummary = !isLiveThinking && hasRealActions && hasTerminalBoundary;
   const shouldStickCounter = hasAnswer || isLiveWorkCounter;
   const counterColor = 'var(--muted-foreground)';
   const counterBackground = 'var(--muted)';
@@ -1218,7 +1230,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   '_autonomyCheckpoint', '_autonomyBoundaryFollowUp', '_connection', 'model', 'modelName',
   'phase', 'compactionId', 'beforeTokens', 'afterTokens', 'contextWindow', 'modelProvider',
   'provider', 'source', 'promptTokens', 'completionTokens', 'totalTokens', 'cachedTokens',
-  'reasoningTokens', 'interaction', 'usageId', 'runId', 'turnId',
+  'reasoningTokens', 'interaction', 'usageId', 'runId', 'turnId', 'uiOnly',
 ] as const;
 
 const haveSameNestedValue = (left: unknown, right: unknown) => {
@@ -1524,6 +1536,10 @@ const ChatFeedMessageGroup = React.memo(({
   // internal status thoughts are not actionable timeline rows.
   const rawWorkLogs = [...displayProcessLogs, ...tailLogs].filter(log =>
     !isInternalStatusThought(log) &&
+    !(
+      log?.type === 'work_note' &&
+      /^direct_(?:thinking|search)_/i.test(String(log.noteId || ''))
+    ) &&
     RENDERABLE_TIMELINE_TYPES.has(String(log?.type || ''))
   );
   const isAskUserInteractionLog = (log: any) =>
@@ -1689,6 +1705,10 @@ const ChatFeedMessageGroup = React.memo(({
           ...(isLastThoughts ? liveCommandLogs : []),
         ]);
 
+        // A settled or streaming direct answer may have a provider narration
+        // row but no actual workflow action. Keep that answer on the normal
+        // answer surface instead of manufacturing a thought-sequence card.
+        if (displayFinalAnswer && stepCount === 0) return null;
         if (stepCount === 0 && (seg.logs || []).length === 0 && !(groupIsThinking && isLastThoughts)) return null;
 
         return (

@@ -75,7 +75,6 @@ function classifyTool(toolName: string, args: Record<string, any>, result: any):
   }
   if (EDIT_TOOLS.has(toolName)) return 'edit';
   if (toolName === 'web_search' || toolName === 'web_scraper' || toolName === 'deep_research') return 'research';
-  if (toolName === 'safety_guard') return 'safety';
   if (toolName === 'browser_control' || toolName === 'screenshot_capture') return 'browser';
   if (toolName.includes('read') || toolName.includes('search') || toolName.includes('symbol')) return 'read';
   if (toolName.includes('command') || toolName.includes('shell') || toolName.includes('process')) return 'command';

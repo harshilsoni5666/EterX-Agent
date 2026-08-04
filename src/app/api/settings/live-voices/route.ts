@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeLiveProvider } from '../../../../lib/live/live-provider';
-import { GEMINI_LIVE_VOICE_OPTIONS } from '../../../../lib/live/voice-catalog';
+import { getLiveVoiceOptions } from '../../../../lib/live/voice-catalog';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,9 +15,9 @@ const buildVoiceCatalogResponse = (providerValue: unknown, modelValue: unknown) 
     modelId,
     mediaProvider: provider.provider,
     source: 'native-media-catalog',
-    defaultVoice: 'Kore',
+    defaultVoice: getLiveVoiceOptions(provider.value).find(voice => voice.value !== 'auto')?.value || 'auto',
     updatedAt: Date.now(),
-    voices: GEMINI_LIVE_VOICE_OPTIONS,
+    voices: getLiveVoiceOptions(provider.value),
   };
 };
 
