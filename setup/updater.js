@@ -129,8 +129,20 @@ function launchBootstrapUpgrade(projectRoot) {
       if (!fs.existsSync(source)) throw new Error('install.ps1 is missing');
       const updaterScript = path.join(os.tmpdir(), `eterx-update-${Date.now()}.ps1`);
       fs.copyFileSync(source, updaterScript);
+      // Do not launch the native installer while the source bootstrap is
+      // still running.  Windows keeps the running Electron/Node image and
+      // its loaded libraries locked, which previously produced the installer
+      // dialog asking the user to close EterX and retry.  The detached helper
+      // waits for this process to exit, then runs the copied script and cleans
+      // it up even when the download fails.
+      const parentPid = process.pid;
+      const psLiteral = (value) => `'${String(value).replace(/'/g, "''")}'`;
+      const command = [
+        `while (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 }`,
+        `try { & ${psLiteral(updaterScript)} } finally { Remove-Item -LiteralPath ${psLiteral(updaterScript)} -Force -ErrorAction SilentlyContinue }`,
+      ].join('; ');
       const child = spawn('powershell.exe', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', updaterScript,
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command,
       ], { detached: true, stdio: 'inherit', windowsHide: false });
       child.unref();
     } else {

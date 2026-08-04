@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { URL } from 'node:url';
+import appPackage from '../../../package.json';
 import {
   ConnectorRecord,
   getConnectorRecord,
@@ -9,6 +10,7 @@ import {
 } from './store';
 
 type JsonRpcResponse = { id?: string | number; result?: any; error?: { message?: string; code?: number } };
+const ETERX_CLIENT_VERSION = String(appPackage.version || '0.0.0');
 
 const DEFAULT_CONNECTOR_ENDPOINTS: Record<string, { baseUrl: string; healthPath: string; authHeader?: string; tokenPrefix?: string }> = {
   github: { baseUrl: 'https://api.github.com', healthPath: '/user', tokenPrefix: 'Bearer' },
@@ -200,7 +202,7 @@ async function mcpRpc(serverId: string, method: string, params: Record<string, u
     const initializeId = cryptoRandomId();
     const requestId = cryptoRandomId();
     const responses = await stdioMcpRpc(server, [
-      { id: initializeId, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'eterx-agent', version: '0.1.9' } } },
+      { id: initializeId, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'eterx-agent', version: ETERX_CLIENT_VERSION } } },
       { id: requestId, method, params },
     ]);
     const response = responses.find((item) => String(item.id) === requestId);
@@ -208,7 +210,7 @@ async function mcpRpc(serverId: string, method: string, params: Record<string, u
     if (response.error) jsonRpcError(response);
     return response.result;
   }
-  const initialize = await httpMcpRpc(server, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'eterx-agent', version: '0.1.9' } });
+  const initialize = await httpMcpRpc(server, 'initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'eterx-agent', version: ETERX_CLIENT_VERSION } });
   const response = await httpMcpRpc(server, method, params, initialize.sessionId);
   return response.result;
 }

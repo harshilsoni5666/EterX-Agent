@@ -32,6 +32,20 @@ const resolveTheme = (theme: ThemePreference): ResolvedTheme => {
   return theme === 'dark' ? 'dark' : 'light';
 };
 
+const syncThemeIcons = (theme: ResolvedTheme) => {
+  if (typeof document === 'undefined') return;
+  const icon = theme === 'dark' ? '/logo-white.png' : '/logo-whitetheme.png';
+  // Metadata emits media-qualified links for the initial system theme. Keep
+  // the active favicon synchronized too when the user switches the app theme
+  // manually while the OS theme stays unchanged.
+  document
+    .querySelectorAll<HTMLLinkElement>('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]')
+    .forEach((link) => {
+      link.href = icon;
+      link.media = '';
+    });
+};
+
 export const applyEterxTheme = (theme: ThemePreference = readThemePreference()): ResolvedTheme => {
   if (typeof window === 'undefined') return 'light';
   const resolved = resolveTheme(theme);
@@ -40,6 +54,7 @@ export const applyEterxTheme = (theme: ThemePreference = readThemePreference()):
   root.classList.toggle('dark', resolved === 'dark');
   root.classList.toggle('light', resolved === 'light');
   root.style.colorScheme = resolved;
+  syncThemeIcons(resolved);
   (window as any).electronAPI?.setNativeTheme?.(resolved);
   return resolved;
 };

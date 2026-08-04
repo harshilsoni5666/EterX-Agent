@@ -39,6 +39,12 @@ app.commandLine.appendSwitch('disable-http-cache');
 // owned by another Electron process on Windows.
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 app.setName('EterX');
+// Keep Windows taskbar grouping, notifications, and jump-list entries tied to
+// the installed EterX identity.  This must be set before any BrowserWindow is
+// created so Windows does not register the Electron default app id first.
+if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function') {
+  app.setAppUserModelId('com.eterx.agent');
+}
 
 // Keep installed-app state out of the source folder, Desktop, and roaming
 // profile. The renderer, packaged server, and Electron IPC all use the same
@@ -135,6 +141,12 @@ app.on('second-instance', () => {
 const APP_ICON_PNG = app.isPackaged
   ? path.join(process.resourcesPath, 'logo.png')
   : path.join(__dirname, '../public/logo.png');
+const APP_ICON_LIGHT = app.isPackaged
+  ? path.join(process.resourcesPath, 'logo-black.png')
+  : path.join(__dirname, '../public/logo-black.png');
+const APP_ICON_DARK = app.isPackaged
+  ? path.join(process.resourcesPath, 'logo-white.png')
+  : path.join(__dirname, '../public/logo-white.png');
 
 const APP_ICON_PATH = app.isPackaged
   ? path.join(process.resourcesPath, process.platform === 'win32' ? 'icon.ico' : 'logo.png')
@@ -452,9 +464,10 @@ function nativeThemePath() {
   return path.join(getEterxSettingsRoot(), NATIVE_THEME_FILE);
 }
 
-function getSplashIconUrl() {
+function getSplashIconUrl(theme = readNativeTheme()) {
   try {
-    return fs.existsSync(APP_ICON_PNG) ? pathToFileURL(APP_ICON_PNG).href : '';
+    const iconPath = normalizeNativeTheme(theme) === 'dark' ? APP_ICON_DARK : APP_ICON_LIGHT;
+    return fs.existsSync(iconPath) ? pathToFileURL(iconPath).href : '';
   } catch {
     return '';
   }
@@ -1202,13 +1215,16 @@ function nativeThemeColors(theme) {
   };
 }
 
-function applyNativeThemeToWindow(targetWindow, colors) {
+function applyNativeThemeToWindow(targetWindow, colors, theme = readNativeTheme()) {
   if (!targetWindow || targetWindow.isDestroyed()) return;
 
   try {
     targetWindow.setBackgroundColor(colors.background);
-    if (typeof targetWindow.setIcon === 'function') {
-      targetWindow.setIcon(APP_ICON_PATH);
+    // macOS takes the icon from the signed application bundle. setIcon is
+    // intended for Windows/Linux and is unsupported for AppKit windows.
+    if (process.platform !== 'darwin' && typeof targetWindow.setIcon === 'function') {
+      const iconPath = normalizeNativeTheme(theme) === 'dark' ? APP_ICON_DARK : APP_ICON_LIGHT;
+      if (fs.existsSync(iconPath)) targetWindow.setIcon(iconPath);
     }
     if (process.platform !== 'darwin' && typeof targetWindow.setTitleBarOverlay === 'function') {
       targetWindow.setTitleBarOverlay({
@@ -1235,7 +1251,7 @@ function applyNativeWindowTheme(theme) {
 
   const windows = new Set(nativeThemedWindows);
   if (mainWindow && !mainWindow.isDestroyed()) windows.add(mainWindow);
-  windows.forEach((targetWindow) => applyNativeThemeToWindow(targetWindow, colors));
+  windows.forEach((targetWindow) => applyNativeThemeToWindow(targetWindow, colors, safeTheme));
 
   return safeTheme;
 }
@@ -1851,7 +1867,7 @@ async function showSplashScreen() {
   await mainWindow.loadFile(path.join(__dirname, 'splash.html'), {
     // Keep the query small. Embedding the full PNG as a data URL can create a
     // 60KB+ file:// URL, which Chromium may reject on Windows with ERR_FAILED.
-    query: { theme, icon: getSplashIconUrl() },
+    query: { theme, icon: getSplashIconUrl(theme) },
   });
   if (!launchInBackground && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     mainWindow.show();
@@ -2152,6 +2168,22 @@ function createWindow() {
     }
 
     const colors = nativeThemeColors(readNativeTheme());
+    const childWindowChrome = process.platform === 'darwin'
+      ? {
+          // macOS owns the traffic-light controls.  Keep the inset title bar
+          // used by the main window instead of sending Windows-only overlay
+          // options to AppKit.
+          titleBarStyle: 'hiddenInset',
+          trafficLightPosition: { x: 14, y: 12 },
+        }
+      : {
+          titleBarStyle: 'hidden',
+          titleBarOverlay: {
+            color: colors.titleBar,
+            symbolColor: colors.titleSymbol,
+            height: NATIVE_FRAME_HEIGHT,
+          },
+        };
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
@@ -2162,12 +2194,7 @@ function createWindow() {
         backgroundColor: colors.background,
         title: 'Settings',
         icon: APP_ICON_PATH,
-        titleBarStyle: 'hidden',
-        titleBarOverlay: {
-          color: colors.titleBar,
-          symbolColor: colors.titleSymbol,
-          height: NATIVE_FRAME_HEIGHT,
-        },
+        ...childWindowChrome,
         autoHideMenuBar: true,
         webPreferences: {
           nodeIntegration: false,

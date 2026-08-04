@@ -1,6 +1,6 @@
 {
   "name": "eterx",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "EterX autonomous AI agent desktop application",
   "author": {
     "name": "Harshil Soni",
@@ -27,9 +27,9 @@
     "desktop:prod": "npm run build && concurrently -k \"npm run start\" \"electron .\"",
     "desktop:prepare-runtime": "node scripts/prepare-desktop-runtime.mjs",
     "desktop:build": "npm run build && npm run desktop:prepare-runtime && electron-builder",
-    "desktop:build:win": "npm run build && npm run desktop:prepare-runtime && electron-builder --win --x64 --arm64",
-    "desktop:build:linux": "npm run build && npm run desktop:prepare-runtime && electron-builder --linux --x64 --arm64",
-    "desktop:build:mac": "npm run build && npm run desktop:prepare-runtime && electron-builder --mac --x64 --arm64",
+    "desktop:build:win": "cross-env ETERX_RUNTIME_TARGETS=win32:x64,win32:arm64 npm run build && cross-env ETERX_RUNTIME_TARGETS=win32:x64,win32:arm64 npm run desktop:prepare-runtime && electron-builder --win --x64 --arm64",
+    "desktop:build:linux": "cross-env ETERX_RUNTIME_TARGETS=linux:x64,linux:arm64 npm run build && cross-env ETERX_RUNTIME_TARGETS=linux:x64,linux:arm64 npm run desktop:prepare-runtime && electron-builder --linux --x64 --arm64",
+    "desktop:build:mac": "cross-env ETERX_RUNTIME_TARGETS=darwin:x64,darwin:arm64 npm run build && cross-env ETERX_RUNTIME_TARGETS=darwin:x64,darwin:arm64 npm run desktop:prepare-runtime && electron-builder --mac --x64 --arm64",
     "build": "node scripts/build-production.mjs",
     "start": "next start",
     "test": "npm run test:ci",
@@ -190,6 +190,14 @@
         "to": "logo.png"
       },
       {
+        "from": "public/logo-black.png",
+        "to": "logo-black.png"
+      },
+      {
+        "from": "public/logo-white.png",
+        "to": "logo-white.png"
+      },
+      {
         "from": "desktop-runtime/dependencies.asar",
         "to": "runtime/dependencies.asar"
       },
@@ -245,7 +253,7 @@
         }
       ],
       "category": "Development",
-      "icon": "public/logo.png",
+      "icon": "public/logo-whitetheme.png",
       "executableName": "eterx",
       "desktop": {
         "Name": "EterX",

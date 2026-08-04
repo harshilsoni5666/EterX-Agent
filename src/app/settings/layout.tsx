@@ -3,7 +3,18 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Settings',
   icons: {
-    icon: '/logo.png',
+    icon: [
+      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
+      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
+    ],
+    shortcut: [
+      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
+      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
+    ],
+    apple: [
+      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
+      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
+    ],
   },
 };
 

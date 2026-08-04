@@ -22,7 +22,20 @@ export const metadata: Metadata = {
   title: 'EterX — Autonomous Agent OS',
   description: 'EterX is a next-generation autonomous agent workspace. Think deeper, build faster, work smarter.',
   icons: {
-    icon: '/logo.png',
+    // Keep browser/OS surfaces readable in both themes. The primary mark is
+    // white for the dark shell, while the light theme needs the dark variant.
+    icon: [
+      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
+      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
+    ],
+    shortcut: [
+      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
+      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
+    ],
+    apple: [
+      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
+      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
+    ],
   },
 };
 

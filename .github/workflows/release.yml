@@ -28,12 +28,15 @@ jobs:
           - platform: Windows
             runner: windows-latest
             target: win
+            runtime_targets: win32:x64,win32:arm64
           - platform: macOS
             runner: macos-14
             target: mac
+            runtime_targets: darwin:x64,darwin:arm64
           - platform: Linux
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04
             target: linux
+            runtime_targets: linux:x64,linux:arm64
     runs-on: ${{ matrix.runner }}
     env:
       NEXT_TELEMETRY_DISABLED: "1"
@@ -43,6 +46,7 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ETERX_RUNTIME_TARGETS: ${{ matrix.runtime_targets }}
 
     steps:
       - name: Check out release source
@@ -107,7 +111,7 @@ jobs:
 
       - name: Include Linux launcher icon
         if: matrix.target == 'linux'
-        run: cp public/logo.png dist/eterx-icon-512.png
+        run: cp public/logo-whitetheme.png dist/eterx-icon-512.png
 
       - name: Verify packaged runtime contents
         run: node scripts/verify-packaged-runtime.mjs dist

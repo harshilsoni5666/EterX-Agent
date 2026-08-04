@@ -40,6 +40,13 @@ case "$MACHINE" in
 esac
 
 INSTALL_DIR="${ETERX_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+# Desktop-entry Exec paths must be absolute. Normalize a relative override so
+# a caller cannot accidentally create a launcher that only works from the
+# directory where the bootstrap was invoked.
+case "$INSTALL_DIR" in
+  /*) ;;
+  *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;;
+esac
 LOG_FILE="$STATE_ROOT/install.log"
 mkdir -p "$STATE_ROOT"
 
@@ -53,7 +60,7 @@ stage() {
   printf '\n  [%s] %3s%%  %s\n  %s\n' "$bar" "$percent" "$title" "$detail"
   log "$percent% $title - $detail"
 }
-cleanup() { rm -rf -- "$TEMP_ROOT"; }
+cleanup() { rm -rf "$TEMP_ROOT"; }
 on_exit() {
   code=$?
   trap - EXIT INT TERM HUP
@@ -120,20 +127,23 @@ install_macos() {
   extract_root="$TEMP_ROOT/app"
   mkdir -p "$extract_root" "$INSTALL_DIR"
   ditto -x -k "$archive" "$extract_root"
-  app_path="$(find "$extract_root" -maxdepth 2 -type d -name 'EterX.app' -print -quit)"
+  # Keep this BSD/GNU find compatible; macOS does not provide GNU's
+  # -maxdepth/-quit primaries. The temporary archive root contains only the
+  # extracted application, so an unrestricted first match is deterministic.
+  app_path="$(find "$extract_root" -type d -name 'EterX.app' -print | head -n 1)"
   [ -n "$app_path" ] || { printf '  EterX.app is missing from the release archive.\n' >&2; return 1; }
 
   target="$INSTALL_DIR/EterX.app"
   staging="$INSTALL_DIR/.EterX.app.staging.$$"
   previous="$INSTALL_DIR/.EterX.app.previous.$$"
-  rm -rf -- "$staging" "$previous"
+  rm -rf "$staging" "$previous"
   ditto "$app_path" "$staging"
-  if [ -d "$target" ]; then mv -- "$target" "$previous"; fi
-  if ! mv -- "$staging" "$target"; then
-    [ -d "$previous" ] && mv -- "$previous" "$target"
+  if [ -d "$target" ]; then mv "$target" "$previous"; fi
+  if ! mv "$staging" "$target"; then
+    [ -d "$previous" ] && mv "$previous" "$target"
     return 1
   fi
-  rm -rf -- "$previous"
+  rm -rf "$previous"
   [ "${ETERX_NO_LAUNCH:-0}" = "1" ] || open "$target"
 }
 
@@ -149,18 +159,29 @@ install_linux() {
   target="$app_root/EterX.AppImage"
   staging="$app_root/.EterX.AppImage.staging.$$"
   previous="$app_root/.EterX.AppImage.previous.$$"
-  cp -- "$appimage" "$staging"
+  cp "$appimage" "$staging"
   chmod 755 "$staging"
-  [ -f "$target" ] && mv -- "$target" "$previous"
-  if ! mv -- "$staging" "$target"; then
-    [ -f "$previous" ] && mv -- "$previous" "$target"
+  [ -f "$target" ] && mv "$target" "$previous"
+  if ! mv "$staging" "$target"; then
+    [ -f "$previous" ] && mv "$previous" "$target"
     return 1
   fi
-  rm -f -- "$previous"
+  rm -f "$previous"
 
-  ln -sfn "$target" "$bin_root/eterx"
-  cp -- "$icon_source" "$icon_root/eterx.png"
-  cat > "$desktop_root/com.eterx.agent.desktop" <<EOF
+  # Replace the launcher and icon atomically. A killed installer must never
+  # leave a truncated desktop file or a half-written icon in the user's menu.
+  link_staging="$bin_root/.eterx.$$"
+  rm -f "$link_staging"
+  ln -s "$target" "$link_staging"
+  mv -f "$link_staging" "$bin_root/eterx"
+
+  icon_staging="$icon_root/.eterx.png.$$"
+  cp "$icon_source" "$icon_staging"
+  chmod 644 "$icon_staging"
+  mv -f "$icon_staging" "$icon_root/eterx.png"
+
+  desktop_staging="$desktop_root/.com.eterx.agent.desktop.$$"
+  cat > "$desktop_staging" <<EOF
 [Desktop Entry]
 Type=Application
 Name=EterX
@@ -172,7 +193,8 @@ Categories=Development;Utility;
 StartupWMClass=EterX
 X-AppImage-Integrate=false
 EOF
-  chmod 644 "$desktop_root/com.eterx.agent.desktop"
+  chmod 644 "$desktop_staging"
+  mv -f "$desktop_staging" "$desktop_root/com.eterx.agent.desktop"
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$desktop_root" >/dev/null 2>&1 || true
   [ "${ETERX_NO_LAUNCH:-0}" = "1" ] || nohup "$target" >/dev/null 2>&1 &
 }

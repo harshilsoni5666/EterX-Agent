@@ -46,15 +46,14 @@ repository.
 
 ## Update behavior
 
-The desktop app uses GitHub Releases through `electron-updater`. It downloads in
-the background, shows progress in Settings, and applies the package using the
-native updater. User data lives outside the installed application and is not an
-update target.
+The desktop app uses GitHub Releases through `electron-updater`, but checks are
+manual. The user opens the Updates section in Settings, chooses **Check for
+updates**, then explicitly downloads and installs a release. User data lives
+outside the installed application and is not an update target.
 
-Each packaged Next.js runtime is first copied to a versioned staging directory
-inside the OS user-data location and then renamed into place. EterX retains one
-previous runtime and removes older versions only after the new runtime has
-started successfully.
+Each release contains a compiled Next.js standalone runtime inside the native
+application package. The updater replaces that immutable package while the
+canonical per-user EterX data directory remains untouched.
 
 ## Recovery
 

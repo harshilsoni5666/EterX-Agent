@@ -39,6 +39,19 @@ const requiredDependencies = [
   'node_modules/mathjs/lib/cjs/index.js',
   'node_modules/mathjs/node_modules/fraction.js/fraction.js',
 ];
+const swcPackageByTarget = {
+  'win32:x64': 'node_modules/@next/swc-win32-x64-msvc/package.json',
+  'win32:arm64': 'node_modules/@next/swc-win32-arm64-msvc/package.json',
+  'darwin:x64': 'node_modules/@next/swc-darwin-x64/package.json',
+  'darwin:arm64': 'node_modules/@next/swc-darwin-arm64/package.json',
+  'linux:x64': 'node_modules/@next/swc-linux-x64-gnu/package.json',
+  'linux:arm64': 'node_modules/@next/swc-linux-arm64-gnu/package.json',
+};
+for (const target of String(process.env.ETERX_RUNTIME_TARGETS || '').split(',').map((value) => value.trim()).filter(Boolean)) {
+  const swcPackage = swcPackageByTarget[target];
+  if (!swcPackage) throw new Error(`Unknown ETERX_RUNTIME_TARGETS entry: ${target}`);
+  requiredDependencies.push(swcPackage);
+}
 const forbiddenPrefixes = [
   'runtime/src/',
   'runtime/coding-agent/',

@@ -62,9 +62,10 @@ creates both an application-menu entry and `~/.local/bin/eterx`.
 
 ### Updates and user data
 
-EterX checks GitHub Releases after launch, downloads updates in the background,
-and exposes progress and installation controls under **Settings → Updates**.
-Downloaded updates are installed on exit or when you choose **Install update**.
+EterX never changes the installed application automatically. Open **Settings →
+Updates** and choose **Check for updates** when you want to look for a newer
+release; you can then review the version, download it, and choose **Restart and
+install**. This keeps updates fully user-controlled.
 
 Application binaries and user-owned data are independent:
 
@@ -75,9 +76,8 @@ Application binaries and user-owned data are independent:
 | Linux | `${XDG_DATA_HOME:-~/.local/share}/EterX/app` | `${XDG_DATA_HOME:-~/.local/share}/EterX/data` |
 
 Updates never replace chats, workspaces, preferences, browser profiles, logs, or
-encrypted API credentials. The runtime is activated from a versioned staging
-directory, the previous runtime is retained for recovery, and older runtime
-copies are cleaned up only after the new version starts successfully.
+encrypted API credentials. The native installer replaces only the compiled
+application bundle; the OS-specific EterX data directory remains independent.
 
 > [!IMPORTANT]
 > A downloadable installation exists only after a maintainer publishes a

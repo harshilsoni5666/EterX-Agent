@@ -14,7 +14,7 @@ const runtimeRoot = path.join(repositoryRoot, 'desktop-runtime');
 const npmExecPath = String(process.env.npm_execpath || '').trim();
 const npmCommand = npmExecPath ? process.execPath : (process.platform === 'win32' ? 'npm.cmd' : 'npm');
 
-function installProductionDependencies(targetRoot, manifest, label) {
+function installProductionDependencies(targetRoot, manifest, label, targetOs = '', targetCpu = '') {
   fs.mkdirSync(targetRoot, { recursive: true });
   fs.writeFileSync(path.join(targetRoot, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   const npmArguments = [
@@ -26,6 +26,14 @@ function installProductionDependencies(targetRoot, manifest, label) {
     '--fund=false',
     '--package-lock=false',
   ];
+  // electron-builder can package multiple target architectures from one
+  // runner. Resolve optional/native packages for the artifact being built,
+  // rather than silently reusing the runner's architecture (for example an
+  // x64 Next SWC binary inside an arm64 Linux or macOS release).
+  const resolvedOs = String(targetOs || process.env.ETERX_RUNTIME_OS || '').trim();
+  const resolvedCpu = String(targetCpu || process.env.ETERX_RUNTIME_CPU || '').trim();
+  if (resolvedOs) npmArguments.push('--os', resolvedOs);
+  if (resolvedCpu) npmArguments.push('--cpu', resolvedCpu);
   if (npmExecPath) npmArguments.unshift(npmExecPath);
   const result = spawnSync(npmCommand, npmArguments, {
     cwd: targetRoot,
@@ -117,24 +125,43 @@ const productionDependencies = Object.fromEntries(
     return [name, lockedPackage.version];
   }),
 );
-const dependencyInstallRoot = path.join(stagingRoot, '.eterx-production-install');
-fs.mkdirSync(dependencyInstallRoot, { recursive: true });
-fs.writeFileSync(
-  path.join(dependencyInstallRoot, 'package-lock.json'),
-  `${JSON.stringify(lockfile, null, 2)}\n`,
-  'utf8',
-);
-installProductionDependencies(dependencyInstallRoot, {
-  ...repositoryPackage,
-  scripts: {},
-}, 'the complete EterX production runtime');
-const installedModules = path.join(dependencyInstallRoot, 'node_modules');
 const stagedModules = path.join(stagingRoot, 'node_modules');
 fs.rmSync(stagedModules, { recursive: true, force: true });
-fs.cpSync(installedModules, stagedModules, { recursive: true, force: true });
-fs.rmSync(installedModules, { recursive: true, force: true });
+const targetSpec = String(process.env.ETERX_RUNTIME_TARGETS || '').trim();
+const targetSpecs = targetSpec
+  ? targetSpec.split(',').map((entry) => entry.trim()).filter(Boolean)
+  : [''];
+if (targetSpecs.length === 0) targetSpecs.push('');
+
+// Build one dependency tree per packaged OS/CPU and merge their optional
+// platform packages into the shared archive. This keeps electron-builder's
+// single multi-arch release metadata intact while ensuring each artifact can
+// resolve its native Next/SWC and other optional modules at runtime.
+for (const [index, spec] of targetSpecs.entries()) {
+  const [targetOs = '', targetCpu = '', ...extra] = spec.split(':').map((part) => part.trim());
+  if (extra.length || (targetOs && !/^[a-z0-9_-]+$/i.test(targetOs)) || (targetCpu && !/^[a-z0-9_-]+$/i.test(targetCpu))) {
+    throw new Error(`Invalid ETERX_RUNTIME_TARGETS entry: ${spec}`);
+  }
+  const dependencyInstallRoot = path.join(stagingRoot, `.eterx-production-install-${index}`);
+  fs.rmSync(dependencyInstallRoot, { recursive: true, force: true });
+  fs.mkdirSync(dependencyInstallRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(dependencyInstallRoot, 'package-lock.json'),
+    `${JSON.stringify(lockfile, null, 2)}\n`,
+    'utf8',
+  );
+  installProductionDependencies(
+    dependencyInstallRoot,
+    { ...repositoryPackage, scripts: {} },
+    spec ? `the complete EterX production runtime (${targetOs}/${targetCpu})` : 'the complete EterX production runtime',
+    targetOs,
+    targetCpu,
+  );
+  const installedModules = path.join(dependencyInstallRoot, 'node_modules');
+  fs.cpSync(installedModules, stagedModules, { recursive: true, force: true });
+  fs.rmSync(dependencyInstallRoot, { recursive: true, force: true });
+}
 fs.rmSync(path.join(stagingRoot, 'node_modules', '.bin'), { recursive: true, force: true });
-fs.rmSync(dependencyInstallRoot, { recursive: true, force: true });
 
 const assetsRoot = path.join(stagingRoot, 'assets');
 const sourceSkillsRoot = path.join(repositoryRoot, 'src', 'lib', 'agent', 'skills-new');
