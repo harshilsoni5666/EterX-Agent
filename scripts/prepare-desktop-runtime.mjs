@@ -127,6 +127,18 @@ const productionDependencies = Object.fromEntries(
 );
 const stagedModules = path.join(stagingRoot, 'node_modules');
 fs.rmSync(stagedModules, { recursive: true, force: true });
+const dependencyCopyOptions = {
+  recursive: true,
+  force: true,
+  // npm creates executable shims in nested .bin directories. Some optional
+  // packages leave a dangling shim (notably next/node_modules/.bin/nanoid)
+  // when npm is resolving a cross-platform production tree; copying that
+  // broken link makes Node's fs.cpSync abort before packaging starts. The
+  // packaged server never invokes npm lifecycle binaries, so omit every .bin
+  // shim directory and retain the actual dependency files and native modules.
+  filter: (source) => path.basename(source) !== '.bin',
+  verbatimSymlinks: true,
+};
 const targetSpec = String(process.env.ETERX_RUNTIME_TARGETS || '').trim();
 const targetSpecs = targetSpec
   ? targetSpec.split(',').map((entry) => entry.trim()).filter(Boolean)
@@ -158,7 +170,7 @@ for (const [index, spec] of targetSpecs.entries()) {
     targetCpu,
   );
   const installedModules = path.join(dependencyInstallRoot, 'node_modules');
-  fs.cpSync(installedModules, stagedModules, { recursive: true, force: true });
+  fs.cpSync(installedModules, stagedModules, dependencyCopyOptions);
   fs.rmSync(dependencyInstallRoot, { recursive: true, force: true });
 }
 fs.rmSync(path.join(stagingRoot, 'node_modules', '.bin'), { recursive: true, force: true });
