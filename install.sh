@@ -48,7 +48,27 @@ case "$INSTALL_DIR" in
   *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;;
 esac
 LOG_FILE="$STATE_ROOT/install.log"
+LOCK_DIR="$STATE_ROOT/.install.lock"
 mkdir -p "$STATE_ROOT"
+
+acquire_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" > "$LOCK_DIR/pid"
+    return 0
+  fi
+  old_pid=""
+  [ -f "$LOCK_DIR/pid" ] && old_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  if [ -n "$old_pid" ] && ! kill -0 "$old_pid" 2>/dev/null; then
+    rm -rf "$LOCK_DIR"
+    mkdir "$LOCK_DIR"
+    printf '%s\n' "$$" > "$LOCK_DIR/pid"
+    return 0
+  fi
+  printf '\n  Another EterX installer is already running. Finish it before starting another installation.\n' >&2
+  exit 1
+}
+
+acquire_lock
 
 log() { printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$LOG_FILE"; }
 stage() {
@@ -60,7 +80,7 @@ stage() {
   printf '\n  [%s] %3s%%  %s\n  %s\n' "$bar" "$percent" "$title" "$detail"
   log "$percent% $title - $detail"
 }
-cleanup() { rm -rf "$TEMP_ROOT"; }
+cleanup() { rm -rf "$TEMP_ROOT" "$LOCK_DIR"; }
 on_exit() {
   code=$?
   trap - EXIT INT TERM HUP
@@ -144,7 +164,12 @@ install_macos() {
     return 1
   fi
   rm -rf "$previous"
-  [ "${ETERX_NO_LAUNCH:-0}" = "1" ] || open "$target"
+  if [ "${ETERX_NO_LAUNCH:-0}" != "1" ]; then
+    if ! open "$target" >/dev/null 2>&1; then
+      printf '  EterX was installed, but macOS could not open it automatically. Launch it from Applications.\n' >&2
+      log 'Installed successfully; automatic macOS launch was unavailable.'
+    fi
+  fi
 }
 
 install_linux() {
@@ -196,7 +221,9 @@ EOF
   chmod 644 "$desktop_staging"
   mv -f "$desktop_staging" "$desktop_root/com.eterx.agent.desktop"
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$desktop_root" >/dev/null 2>&1 || true
-  [ "${ETERX_NO_LAUNCH:-0}" = "1" ] || nohup "$target" >/dev/null 2>&1 &
+  if [ "${ETERX_NO_LAUNCH:-0}" != "1" ]; then
+    nohup "$target" >/dev/null 2>&1 &
+  fi
 }
 
 printf '\n  ETERX\n  Secure desktop installation for %s\n' "$OS"

@@ -18,51 +18,51 @@
 
 ## Install EterX
 
-The bootstrap detects the operating system and processor, downloads the matching
-native GitHub release, verifies its SHA-256 checksum, installs the application,
-and removes the temporary download. Node.js, npm, Git, and the source repository
-are not required on an end user's computer.
+Use exactly one command for the device you are installing on. The bootstrap
+detects the processor, downloads the matching published release, verifies its
+SHA-256 manifest, installs the compiled application, and removes its temporary
+files. End users do not need Node.js, npm, Git, or the source repository.
 
-### Windows
+### Windows (PowerShell)
 
-Open **PowerShell**, paste this command, and press Enter:
+Open **PowerShell** (not Command Prompt), paste this once, and press Enter:
 
 ```powershell
 irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex
 ```
 
-Run that command in the PowerShell window you already opened. It avoids
-starting a second `powershell.exe` process, which can be blocked by Windows
-application-control policies. If you are in `cmd.exe`, open PowerShell first.
+Do not wrap this command in another `powershell.exe` invocation and do not run
+it a second time while the installer is open. The native installer is per-user,
+requires no administrator access, and lets you choose the application folder
+and Desktop/Start Menu shortcuts. When it finishes, launch EterX from the
+shortcut it created.
 
-The native installer lets you choose the app location and Desktop/Start Menu
-shortcuts. EterX is installed per user and does not require administrator access.
+### macOS (Terminal)
 
-### macOS
-
-Open **Terminal**, paste this command, and press Return:
-
-```bash
-curl --fail --silent --show-error --location https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
-```
-
-The default app location is `~/Applications/EterX.app`. To choose another
-application folder:
-
-```bash
-curl --fail --silent --show-error --location https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | ETERX_INSTALL_DIR="/Applications" sh
-```
-
-### Linux
-
-Open a terminal and run:
+Open **Terminal**, paste this once, and press Return:
 
 ```bash
 curl --fail --silent --show-error --location https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
 ```
 
-The installer places the AppImage under the XDG per-user data directory and
-creates both an application-menu entry and `~/.local/bin/eterx`.
+The default location is `~/Applications/EterX.app`. The same command supports
+Apple Silicon and Intel Macs; no second installer command is needed.
+
+### Linux (Terminal)
+
+Open a terminal and paste this once:
+
+```bash
+curl --fail --silent --show-error --location https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
+```
+
+The installer selects the matching x64 or ARM64 AppImage, places it under the
+per-user XDG data directory, and creates both an application-menu entry and
+`~/.local/bin/eterx`.
+
+The bootstrap accepts a release only after the SHA-256 manifest matches. A
+publisher-signature warning means the release was not code-signed; it is not a
+checksum failure. Do not continue when the checksum verification itself fails.
 
 ### Updates and user data
 

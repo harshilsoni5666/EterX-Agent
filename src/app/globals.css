@@ -7295,7 +7295,9 @@
 }
 
 .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-resize-handle {
-  right: 32px !important;
+  /* Keep the resize hit area in the shell's outer 32px buffer so it never
+     covers the recents scrollbar at the real sidebar edge. */
+  right: 0 !important;
 }
 
 .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {

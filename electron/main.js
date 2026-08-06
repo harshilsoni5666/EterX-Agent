@@ -30,7 +30,7 @@ try {
 
 const http = require('http');
 const https = require('https');
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, safeStorage, Tray } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, Tray } = require('electron');
 
 // The gateway daemon is loaded by Electron's main process before the packaged
 // Next runtime is started. Its production dependencies live in the companion
@@ -174,6 +174,25 @@ const APP_ICON_PATH = app.isPackaged
   : (process.platform === 'win32' && fs.existsSync(path.join(__dirname, '../public/icon.ico'))
     ? path.join(__dirname, '../public/icon.ico')
     : APP_ICON_PNG);
+
+// Native window/taskbar icons follow the operating system theme, not the
+// renderer's own theme preference. This keeps the native chrome responsive
+// when the device appearance changes while EterX is already open.
+function getSystemIconTheme() {
+  // Windows exposes a separate value for system-integrated surfaces such as
+  // the taskbar. Prefer it there so the icon contrasts with the actual bar;
+  // use the regular native theme signal on macOS/Linux.
+  const isDark = process.platform === 'win32'
+    && typeof nativeTheme.shouldUseDarkColorsForSystemIntegratedUI === 'boolean'
+    ? nativeTheme.shouldUseDarkColorsForSystemIntegratedUI
+    : nativeTheme.shouldUseDarkColors;
+  return isDark ? 'dark' : 'light';
+}
+
+function getSystemIconPath(theme = getSystemIconTheme()) {
+  const iconPath = theme === 'dark' ? APP_ICON_DARK : APP_ICON_LIGHT;
+  return fs.existsSync(iconPath) ? iconPath : APP_ICON_PATH;
+}
 
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
 const SECURE_RUNTIME_SETTINGS_FILE = 'eterx-runtime-settings.bin';
@@ -791,7 +810,7 @@ function showMainWindow() {
 function ensureBackgroundTray() {
   if (backgroundTray || !gatewayDaemon?.config?.enabled || !gatewayDaemon?.config?.keepRunningOnClose) return;
   try {
-    backgroundTray = new Tray(APP_ICON_PATH);
+    backgroundTray = new Tray(getSystemIconPath());
     backgroundTray.setToolTip('EterX background companion');
     backgroundTray.setContextMenu(Menu.buildFromTemplate([
       { label: 'Open EterX', click: showMainWindow },
@@ -1229,7 +1248,7 @@ function nativeThemeColors(theme) {
   };
 }
 
-function applyNativeThemeToWindow(targetWindow, colors, theme = readNativeTheme()) {
+function applyNativeThemeToWindow(targetWindow, colors) {
   if (!targetWindow || targetWindow.isDestroyed()) return;
 
   try {
@@ -1237,8 +1256,7 @@ function applyNativeThemeToWindow(targetWindow, colors, theme = readNativeTheme(
     // macOS takes the icon from the signed application bundle. setIcon is
     // intended for Windows/Linux and is unsupported for AppKit windows.
     if (process.platform !== 'darwin' && typeof targetWindow.setIcon === 'function') {
-      const iconPath = normalizeNativeTheme(theme) === 'dark' ? APP_ICON_DARK : APP_ICON_LIGHT;
-      if (fs.existsSync(iconPath)) targetWindow.setIcon(iconPath);
+      targetWindow.setIcon(nativeImage.createFromPath(getSystemIconPath()));
     }
     if (process.platform !== 'darwin' && typeof targetWindow.setTitleBarOverlay === 'function') {
       targetWindow.setTitleBarOverlay({
@@ -1251,6 +1269,39 @@ function applyNativeThemeToWindow(targetWindow, colors, theme = readNativeTheme(
     console.warn('[EterX] Failed to apply native window theme:', error);
   }
 }
+
+function applySystemIconToAllWindows() {
+  const iconPath = getSystemIconPath();
+  const icon = nativeImage.createFromPath(iconPath);
+
+  if (process.platform !== 'darwin' && app.isReady()) {
+    for (const targetWindow of BrowserWindow.getAllWindows()) {
+      if (targetWindow.isDestroyed() || typeof targetWindow.setIcon !== 'function') continue;
+      try {
+        targetWindow.setIcon(icon);
+      } catch (error) {
+        console.warn('[EterX] Failed to update native window icon:', error);
+      }
+    }
+  } else if (process.platform === 'darwin' && app.isReady() && app.dock && typeof app.dock.setIcon === 'function' && !icon.isEmpty()) {
+    // macOS owns the title-bar icon, but the Dock icon can still be updated
+    // while the app is running when the system appearance changes.
+    app.dock.setIcon(iconPath);
+  }
+
+  if (backgroundTray && !backgroundTray.isDestroyed() && !icon.isEmpty()) {
+    try {
+      backgroundTray.setImage(icon);
+    } catch (error) {
+      console.warn('[EterX] Failed to update tray icon:', error);
+    }
+  }
+}
+
+// Electron emits this event when the OS appearance changes while the process
+// is alive. Do not set nativeTheme.themeSource here: the app must continue to
+// follow the device without changing the app's internal theme.
+nativeTheme.on('updated', applySystemIconToAllWindows);
 
 function registerNativeThemedWindow(targetWindow) {
   if (!targetWindow || targetWindow.isDestroyed()) return;
@@ -1265,7 +1316,7 @@ function applyNativeWindowTheme(theme) {
 
   const windows = new Set(nativeThemedWindows);
   if (mainWindow && !mainWindow.isDestroyed()) windows.add(mainWindow);
-  windows.forEach((targetWindow) => applyNativeThemeToWindow(targetWindow, colors, safeTheme));
+  windows.forEach((targetWindow) => applyNativeThemeToWindow(targetWindow, colors));
 
   return safeTheme;
 }
@@ -2149,7 +2200,7 @@ function createWindow() {
     minHeight: 400,
     backgroundColor: initialNativeColors.background,
     title: 'EterX',
-    icon: APP_ICON_PATH,
+    icon: getSystemIconPath(),
     ...windowChrome,
     show: false,
     webPreferences: {
@@ -2158,10 +2209,11 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js')
     }
   });
-  if (process.platform === 'win32' && fs.existsSync(APP_ICON_PATH)) {
-    mainWindow.setIcon(nativeImage.createFromPath(APP_ICON_PATH));
+  if (process.platform !== 'darwin' && fs.existsSync(getSystemIconPath())) {
+    mainWindow.setIcon(nativeImage.createFromPath(getSystemIconPath()));
   }
   registerNativeThemedWindow(mainWindow);
+  applySystemIconToAllWindows();
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if ((input.control && input.shift && input.key.toLowerCase() === 'i') || input.key === 'F12') {
       mainWindow.webContents.toggleDevTools();
@@ -2207,7 +2259,7 @@ function createWindow() {
         minHeight: 620,
         backgroundColor: colors.background,
         title: 'Settings',
-        icon: APP_ICON_PATH,
+        icon: getSystemIconPath(),
         ...childWindowChrome,
         autoHideMenuBar: true,
         webPreferences: {

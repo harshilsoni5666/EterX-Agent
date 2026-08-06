@@ -210,7 +210,7 @@
       "createStartMenuShortcut": true,
       "shortcutName": "EterX",
       "uninstallDisplayName": "EterX ${version}",
-      "runAfterFinish": true,
+      "runAfterFinish": false,
       "deleteAppDataOnUninstall": false,
       "differentialPackage": true,
       "installerIcon": "public/icon.ico",

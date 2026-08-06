@@ -164,8 +164,10 @@ jobs:
             dist/EterX-*.zip
             dist/EterX-*.AppImage
             dist/EterX-*.deb
-            dist/eterx-icon-512.png
           )
+          if [ "${{ matrix.target }}" = "linux" ] && [ -f dist/eterx-icon-512.png ]; then
+            files+=(dist/eterx-icon-512.png)
+          fi
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No native release files were produced." >&2
             exit 1

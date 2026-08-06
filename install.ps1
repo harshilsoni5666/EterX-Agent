@@ -12,10 +12,38 @@ $script:ApiBase = "https://api.github.com/repos/$script:Repository"
 $script:StateRoot = Join-Path $env:LOCALAPPDATA 'EterX\Installer'
 $script:LogFile = Join-Path $script:StateRoot 'install.log'
 $script:TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("eterx-bootstrap-" + [guid]::NewGuid().ToString('N'))
+$script:LockPath = Join-Path $script:StateRoot 'install.lock'
+$script:LockStream = $null
+$script:LockOwned = $false
 
 function Write-Log([string]$Message) {
   New-Item -ItemType Directory -Force -Path $script:StateRoot | Out-Null
   Add-Content -LiteralPath $script:LogFile -Value "[$([DateTime]::UtcNow.ToString('o'))] $Message" -Encoding UTF8
+}
+
+function Acquire-InstallerLock {
+  New-Item -ItemType Directory -Force -Path $script:StateRoot | Out-Null
+  try {
+    $script:LockStream = [IO.File]::Open(
+      $script:LockPath,
+      [IO.FileMode]::OpenOrCreate,
+      [IO.FileAccess]::ReadWrite,
+      [IO.FileShare]::None
+    )
+    $script:LockOwned = $true
+  } catch {
+    throw 'Another EterX installer is already running. Finish it before starting another installation.'
+  }
+}
+
+function Release-InstallerLock {
+  if (-not $script:LockOwned) { return }
+  if ($null -ne $script:LockStream) {
+    $script:LockStream.Dispose()
+    $script:LockStream = $null
+  }
+  Remove-Item -LiteralPath $script:LockPath -Force -ErrorAction SilentlyContinue
+  $script:LockOwned = $false
 }
 
 function Show-Stage([int]$Percent, [string]$Title, [string]$Detail) {
@@ -126,8 +154,28 @@ function Confirm-Checksum([string]$ArtifactPath, [string]$ChecksumsPath) {
   Write-Log "Verified SHA-256 $actual for $artifactName"
 }
 
+function Find-InstalledEterxExecutable {
+  $uninstallRoots = @(
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+  )
+  foreach ($root in $uninstallRoots) {
+    if (-not (Test-Path -LiteralPath $root)) { continue }
+    foreach ($entry in Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue) {
+      $metadata = Get-ItemProperty -LiteralPath $entry.PSPath -ErrorAction SilentlyContinue
+      if (-not $metadata -or [string]$metadata.DisplayName -notlike 'EterX*') { continue }
+      $location = [string]$metadata.InstallLocation
+      if (-not $location) { continue }
+      $candidate = Join-Path $location 'EterX.exe'
+      if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+  }
+  return $null
+}
+
 try {
   if (-not $env:LOCALAPPDATA) { throw 'Windows Local AppData is unavailable for this user.' }
+  Acquire-InstallerLock
   New-Item -ItemType Directory -Force -Path $script:TempRoot | Out-Null
 
   Write-Host ''
@@ -156,16 +204,25 @@ try {
   $signature = Get-AuthenticodeSignature -LiteralPath $installerPath
   if ($signature.Status -eq 'Valid') {
     Write-Host "  Publisher signature: $($signature.SignerCertificate.Subject)" -ForegroundColor Green
-  } elseif ($signature.Status -notin @('NotSigned', 'UnknownError')) {
-    throw "The Windows publisher signature is not valid: $($signature.Status)."
-  } else {
+  } elseif ($signature.Status -eq 'NotSigned') {
     Write-Host '  Publisher signature is not present; SHA-256 verification succeeded.' -ForegroundColor Yellow
     Write-Log 'Installer is not Authenticode-signed.'
+  } else {
+    throw "The Windows publisher signature is not valid: $($signature.Status). SHA-256 was verified, but the installer was not opened."
   }
 
   Show-Stage 84 'Opening the EterX installer' 'Choose the application location and shortcut options'
   $process = Start-Process -FilePath $installerPath -Wait -PassThru
-  if ($process.ExitCode -ne 0) { throw "The native installer exited with code $($process.ExitCode)." }
+  if ($process.ExitCode -ne 0) {
+    $installedExecutable = Find-InstalledEterxExecutable
+    if ($installedExecutable) {
+      Write-Log "Native installer returned $($process.ExitCode), but EterX is installed at $installedExecutable."
+      Write-Host "  The installer reported code $($process.ExitCode), but EterX is installed successfully." -ForegroundColor Yellow
+      Write-Host "  Launch it from the Desktop or Start Menu shortcut." -ForegroundColor Yellow
+    } else {
+      throw "The native installer exited with code $($process.ExitCode). No installed EterX executable was found."
+    }
+  }
 
   Show-Stage 100 'EterX is installed' 'Future updates are downloaded safely inside the app'
   Write-Host ''
@@ -180,6 +237,7 @@ try {
   Write-Host "  No existing EterX user data was changed. Log: $script:LogFile" -ForegroundColor Yellow
   exit 1
 } finally {
+  Release-InstallerLock
   if (Test-Path -LiteralPath $script:TempRoot) {
     Remove-Item -LiteralPath $script:TempRoot -Recurse -Force -ErrorAction SilentlyContinue
   }

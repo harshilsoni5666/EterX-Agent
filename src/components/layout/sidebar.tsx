@@ -343,8 +343,18 @@ const lightweightSidebarCss = `
     bottom: 8px;
     z-index: 60;
     width: 18px;
+    pointer-events: none;
+  }
+
+  .eterx-sidebar-resize-target {
+    position: absolute;
+    top: 0;
+    right: -4px;
+    bottom: 0;
+    width: 8px;
     cursor: col-resize;
     touch-action: none;
+    pointer-events: auto;
     -webkit-app-region: no-drag;
   }
 
@@ -1751,15 +1761,19 @@ export const Sidebar = React.memo<SidebarProps>(({
         </div>
         {!isMobile && (
           <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize sidebar"
-            aria-valuemin={getSidebarViewportMin(viewportWidth)}
-            aria-valuemax={getSidebarViewportMax(viewportWidth)}
-            aria-valuenow={sidebarWidth}
-            onPointerDown={handleSidebarResizePointerDown}
             className={`eterx-sidebar-resize-handle ${ isResizingSidebar ? 'eterx-sidebar-resize-handle-active' : '' }`}
-          />
+          >
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize sidebar"
+              aria-valuemin={getSidebarViewportMin(viewportWidth)}
+              aria-valuemax={getSidebarViewportMax(viewportWidth)}
+              aria-valuenow={sidebarWidth}
+              onPointerDown={handleSidebarResizePointerDown}
+              className="eterx-sidebar-resize-target"
+            />
+          </div>
         )}
       </motion.div>
 
