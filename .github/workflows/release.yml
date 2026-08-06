@@ -204,5 +204,4 @@ jobs:
           gh release edit "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false \
-            --title "EterX $RELEASE_TAG" \
-            --generate-notes
+            --title "EterX $RELEASE_TAG"
