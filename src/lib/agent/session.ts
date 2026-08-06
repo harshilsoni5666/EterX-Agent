@@ -904,6 +904,23 @@ export class SessionStateManager {
 
     if (parts.length === 0) return '';
 
+    // Session state is evidence for a genuine continuation, never an objective
+    // that can override the newest user request.
+    return [
+      '',
+      'SESSION CONTINUITY EVIDENCE',
+      'Use this only when the current request continues or refers to the prior task.',
+      ...parts,
+      '',
+      'CONTINUITY RULES:',
+      '- Treat paths and tool results as prior observations, not guaranteed current state.',
+      '- Continue from the next pending step and avoid exact duplicate calls while evidence remains valid.',
+      '- Re-read or re-verify when correctness depends on current external or filesystem state.',
+      '- The latest user request is authoritative and may replace this prior task entirely.',
+      'END SESSION CONTINUITY',
+    ].join('\n');
+
+    /* Legacy directive-heavy summary retained in history for reference only.
     return [
       '',
       '\u2501\u2501\u2501 AGENT SELF-AWARENESS (ALWAYS ACTIVE — EVERY SINGLE MESSAGE) \u2501\u2501\u2501',
@@ -918,7 +935,7 @@ export class SessionStateManager {
       '  \u2022 Any message (continue/cont/next/go/more) \u2192 resume from LAST PENDING STEP, not from scratch.',
       '  \u2022 NEVER start an unrelated task when active work context exists above.',
       '\u2501\u2501\u2501 END SELF-AWARENESS \u2501\u2501\u2501',
-    ].join('\n');
+    ].join('\n'); */
   }
 
   // ── Backward Compatible Fallbacks (Delegating to Active/Bound Chat) ──

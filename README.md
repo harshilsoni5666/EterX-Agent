@@ -28,8 +28,12 @@ are not required on an end user's computer.
 Open **PowerShell**, paste this command, and press Enter:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex"
+irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex
 ```
+
+Run that command in the PowerShell window you already opened. It avoids
+starting a second `powershell.exe` process, which can be blocked by Windows
+application-control policies. If you are in `cmd.exe`, open PowerShell first.
 
 The native installer lets you choose the app location and Desktop/Start Menu
 shortcuts. EterX is installed per user and does not require administrator access.

@@ -101,6 +101,7 @@ const contextGrowthState = new Map<string, {
   lastUsedTokens: number;
   averageGrowthTokens: number;
 }>();
+const compactionLineageEpoch = new Map<string, number>();
 
 const sanitizeChatId = (chatId: string) =>
   String(chatId || 'chat').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120) || 'chat';
@@ -674,6 +675,38 @@ const readJournal = async (chatId: string): Promise<ContextCompactionJournal> =>
   return journal;
 };
 
+/**
+ * Start a clean compaction lineage when chat-boundary detection identifies a
+ * new task. The old journal is archived rather than deleted, so stale active
+ * objectives cannot be restored while prior state remains recoverable.
+ */
+export const rotateContextCompactionJournal = async (chatId: string): Promise<void> => {
+  compactionLineageEpoch.set(chatId, (compactionLineageEpoch.get(chatId) || 0) + 1);
+  activeCompactions.delete(chatId);
+  journalCache.delete(chatId);
+  retryState.delete(chatId);
+  successfulCompactionState.delete(chatId);
+  contextGrowthState.delete(chatId);
+  lastUsageEvents.delete(chatId);
+  preferredCompactionKey.delete(chatId);
+
+  const sourcePath = journalPathForChat(chatId);
+  if (!(await fs.pathExists(sourcePath))) return;
+  const archiveDir = path.join(CONTEXT_STATE_DIR, 'archive');
+  await fs.ensureDir(archiveDir);
+  const archivePath = path.join(
+    archiveDir,
+    `${sanitizeChatId(chatId)}-${Date.now()}-${sha256(chatId).slice(0, 12)}.json`,
+  );
+  await fs.move(sourcePath, archivePath, { overwrite: false });
+  const ownershipSuffix = `-${sha256(chatId).slice(0, 12)}.json`;
+  const ownedArchives = (await fs.readdir(archiveDir))
+    .filter(name => name.endsWith(ownershipSuffix))
+    .sort()
+    .reverse();
+  await Promise.all(ownedArchives.slice(20).map(name => fs.remove(path.join(archiveDir, name))));
+};
+
 const safeGeminiTailStart = (contents: any[], requested: number) => {
   let start = Math.max(1, Math.min(requested, contents.length));
   for (let index = start; index < contents.length; index += 1) {
@@ -713,6 +746,12 @@ const capsuleCarrierText = (message: any): string | null => {
   return null;
 };
 
+const isGeminiCapsuleAcknowledgement = (message: any): boolean =>
+  message?.role === 'model'
+  && Array.isArray(message?.parts)
+  && message.parts.length === 1
+  && message.parts[0]?.text === 'Context capsule loaded. Continuing the retained active objective.';
+
 const reconcileJournalCapsules = (
   contents: any[],
   journal: ContextCompactionJournal,
@@ -725,7 +764,13 @@ const reconcileJournalCapsules = (
   );
   let hasLatest = false;
   let removedOlder = false;
+  let removedCapsuleBeforeCurrent = false;
   const reconciled = contents.filter(message => {
+    if (removedCapsuleBeforeCurrent && isGeminiCapsuleAcknowledgement(message)) {
+      removedCapsuleBeforeCurrent = false;
+      return false;
+    }
+    removedCapsuleBeforeCurrent = false;
     const text = capsuleCarrierText(message);
     if (!text || !knownMarkers.has(text)) return true;
     if (text === latestMarker && !hasLatest) {
@@ -733,6 +778,7 @@ const reconcileJournalCapsules = (
       return true;
     }
     removedOlder = true;
+    removedCapsuleBeforeCurrent = true;
     return false;
   });
   return { contents: reconciled, hasLatest, removedOlder };
@@ -746,9 +792,17 @@ const stripJournalCapsules = (
     journal.generations.map(generation => capsuleMarker(generation.summary, generation.compactionId)),
   );
   if (knownMarkers.size === 0) return contents;
+  let removedCapsuleBeforeCurrent = false;
   return contents.filter(message => {
+    if (removedCapsuleBeforeCurrent && isGeminiCapsuleAcknowledgement(message)) {
+      removedCapsuleBeforeCurrent = false;
+      return false;
+    }
+    removedCapsuleBeforeCurrent = false;
     const text = capsuleCarrierText(message);
-    return !text || !knownMarkers.has(text);
+    const shouldRemove = Boolean(text && knownMarkers.has(text));
+    removedCapsuleBeforeCurrent = shouldRemove;
+    return !shouldRemove;
   });
 };
 
@@ -762,14 +816,34 @@ const selectGeminiTailStart = (contents: any[], tokenBudget: number) => {
   return safeGeminiTailStart(contents, start);
 };
 
+const stripGeminiRolledHistory = (contents: any[]) => {
+  let removedSummary = false;
+  return contents.filter(message => {
+    const text = Array.isArray(message?.parts) && message.parts.length === 1
+      ? String(message.parts[0]?.text || '')
+      : '';
+    if (message?.role === 'user' && text.startsWith('[SYSTEM - COMPRESSED HISTORY]')) {
+      removedSummary = true;
+      return false;
+    }
+    if (removedSummary && message?.role === 'model' && text.startsWith('Understood. I have the full record of my earlier actions')) {
+      removedSummary = false;
+      return false;
+    }
+    removedSummary = false;
+    return true;
+  });
+};
+
 const injectGeminiCapsule = (
   contents: any[],
   capsule: string,
   compactionId: string,
   tailTokenBudget: number,
 ) => {
-  const start = selectGeminiTailStart(contents, tailTokenBudget);
-  const tail = contents.slice(start);
+  const cleanContents = stripGeminiRolledHistory(contents);
+  const start = selectGeminiTailStart(cleanContents, tailTokenBudget);
+  const tail = cleanContents.slice(start);
   const capsuleTurn = { role: 'user', parts: [{ text: capsuleMarker(capsule, compactionId) }] };
   if (tail[0]?.role === 'user') {
     return [
@@ -810,7 +884,10 @@ const injectProviderCapsule = (
   tailTokenBudget: number,
   provider: MainAgentProvider,
 ) => {
-  const systems = messages.filter(message => message?.role === 'system');
+  const systems = messages.filter(message =>
+    message?.role === 'system'
+    && !(typeof message?.content === 'string' && message.content.startsWith('[SYSTEM - ROLLED EXECUTION HISTORY]'))
+  );
   const conversational = messages.filter(message => message?.role !== 'system');
   const tail = conversational.slice(providerTailStart(conversational, tailTokenBudget));
   if (provider === 'anthropic') {
@@ -842,7 +919,10 @@ const injectProviderCapsuleOnly = (
     }];
   }
   return [
-    ...messages.filter(message => message?.role === 'system'),
+    ...messages.filter(message =>
+      message?.role === 'system'
+      && !(typeof message?.content === 'string' && message.content.startsWith('[SYSTEM - ROLLED EXECUTION HISTORY]'))
+    ),
     { role: 'system', content: capsuleMarker(capsule, compactionId) },
   ];
 };
@@ -868,6 +948,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
   usage: ContextCompactionUsage;
   capsule?: ContextCapsule;
 }> => {
+  const lineageEpoch = compactionLineageEpoch.get(input.chatId) || 0;
   const settings = normalizeContextCompactionSettings(input.rawSettings, input.activeModel);
   const emit = (event: ContextCompactionEvent | ({ type: 'context_usage' } & ContextCompactionUsage & { chatId: string; timestamp: number })) => {
     try {
@@ -1188,6 +1269,9 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
         updatedAt: Date.now(),
         generations: [...journal.generations, capsule].slice(-4),
       };
+      if ((compactionLineageEpoch.get(input.chatId) || 0) !== lineageEpoch) {
+        return { contents: input.contents, compacted: false, usage };
+      }
       await persistJournalBestEffort(statePath, nextJournal);
       journalCache.set(input.chatId, nextJournal);
       retryState.delete(input.chatId);
@@ -1311,6 +1395,9 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
           updatedAt: Date.now(),
           generations: [...recoveryJournal.generations, recoveryCapsule].slice(-4),
         };
+        if ((compactionLineageEpoch.get(input.chatId) || 0) !== lineageEpoch) {
+          return { contents: input.contents, compacted: false, usage };
+        }
         await persistJournalBestEffort(journalPathForChat(input.chatId), nextRecoveryJournal);
         journalCache.set(input.chatId, nextRecoveryJournal);
       } catch {

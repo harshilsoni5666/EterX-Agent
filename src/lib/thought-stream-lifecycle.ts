@@ -169,8 +169,15 @@ const findMergeableThoughtIndex = (logs: any[], incoming: any): number => {
       incomingIsFinal &&
       Boolean(incomingThoughtId) &&
       incomingThoughtId === existingThoughtId;
+    const lateReplayOfClosedStream =
+      !candidateIsOpen &&
+      isOlderThoughtUpdate(candidate, incoming);
 
-    return candidateIsOpen || repeatedFinalForSameId ? index : -1;
+    // A catch-up poll can deliver an older open snapshot after another path
+    // has already committed the final snapshot. Treat it as an update to the
+    // existing stream instead of opening a second thought row. A closed row
+    // with a newer phase anchor still remains a genuinely new stream.
+    return candidateIsOpen || repeatedFinalForSameId || lateReplayOfClosedStream ? index : -1;
   }
 
   return -1;
@@ -225,11 +232,92 @@ const findThoughtIndexForExplicitFinal = (logs: any[], incoming: any): number =>
   return -1;
 };
 
+const getCanonicalThoughtIdentity = (log: any): string => {
+  if (log?.type !== 'thought_stream') return '';
+  const owner = getThoughtStreamOwner(log);
+  const thoughtId = String(log?.thoughtId || '').trim();
+  const start = asFiniteTimestamp(log?.startTime);
+  // Without a phase anchor we cannot safely distinguish two real thoughts
+  // that happen to contain the same text, so leave that record untouched.
+  if (!thoughtId && start === null) return '';
+  return `${ owner }::${ thoughtId || 'start' }::${ start ?? '' }`;
+};
+
+const mergeCanonicalThought = (existing: any, incoming: any): any => {
+  const incomingIsOlder = isOlderThoughtUpdate(existing, incoming);
+  const existingIsClosed = existing?.isStreaming === false || existing?.streamState === 'closed';
+  const incomingIsOpen = !isThoughtFinalEvent(incoming);
+  const previousText = String(existing?.text || '');
+  const incomingText = String(incoming?.text || '');
+  const incomingEnd = getThoughtUpdateTimestamp(incoming);
+  const existingEnd = asFiniteTimestamp(existing?.endTime) ?? asFiniteTimestamp(existing?.timestamp);
+  const preserveExistingState = existingIsClosed || incomingIsOlder;
+  const preferred = preserveExistingState
+    ? existing
+    : { ...existing, ...incoming };
+
+  return {
+    ...preferred,
+    // Thought payloads are cumulative snapshots. Keep the longest snapshot
+    // when recovery delivers an older or shorter copy after the final one.
+    text: incomingText.length >= previousText.length ? incomingText : previousText,
+    startTime: asFiniteTimestamp(existing?.startTime) ?? asFiniteTimestamp(incoming?.startTime) ?? incomingEnd,
+    endTime: preserveExistingState && existingEnd !== null
+      ? existingEnd
+      : Math.max(existingEnd ?? incomingEnd, incomingEnd),
+    timestamp: preserveExistingState && existingEnd !== null
+      ? existingEnd
+      : Math.max(asFiniteTimestamp(existing?.timestamp) ?? incomingEnd, incomingEnd),
+    isStreaming: existingIsClosed
+      ? false
+      : incomingIsOlder
+        ? existing?.isStreaming === true
+        : incomingIsOpen,
+    streamState: existingIsClosed
+      ? 'closed'
+      : incomingIsOlder
+        ? existing?.streamState || (existing?.isStreaming === true ? 'open' : 'closed')
+        : incomingIsOpen ? 'open' : 'closed',
+  };
+};
+
+/**
+ * Collapse duplicate thought snapshots already present in a trace list.
+ * This is ingestion normalization, not a UI visibility filter: the returned
+ * list is the canonical lifecycle state used by persistence and rendering.
+ */
+export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
+  const canonical: any[] = [];
+  const thoughtIndexes = new Map<string, number>();
+
+  for (const log of logs) {
+    if (log?.type === 'user_action') thoughtIndexes.clear();
+    const identity = getCanonicalThoughtIdentity(log);
+    if (!identity) {
+      canonical.push(log);
+      continue;
+    }
+
+    const existingIndex = thoughtIndexes.get(identity);
+    if (existingIndex === undefined) {
+      thoughtIndexes.set(identity, canonical.length);
+      canonical.push(log);
+      continue;
+    }
+
+    canonical[existingIndex] = mergeCanonicalThought(canonical[existingIndex], log);
+  }
+
+  logs.splice(0, logs.length, ...canonical);
+  return logs;
+};
+
 /**
  * Merge a provider-neutral thought event into only the currently open stream.
  * Providers may send cumulative text or deltas and may omit/reuse stream IDs.
  */
 export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
+  canonicalizeThoughtStreamLogs(logs);
   const incomingIsFinal = isThoughtFinalEvent(incoming);
   const explicitFinalIndex = incomingIsFinal
     ? findThoughtIndexForExplicitFinal(logs, incoming)

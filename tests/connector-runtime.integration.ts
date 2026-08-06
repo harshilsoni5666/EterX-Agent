@@ -30,12 +30,19 @@ const {
   readAgentBuilderProfile,
   shouldExposeToolToRuntime,
 } = await import('../src/lib/agent/builder-agent');
+const { requireOutboundApproval, isUserInitiatedCommunicationRequest } = await import('../src/lib/agent/tools/communication/outbound_approval');
+const { isConnectorTrace, resolveConnectorId } = await import('../src/components/chat/agent-icons');
 await import('../src/lib/agent/tools/index');
 assert.equal(globalToolRegistry.getTool('connector_mcp')?.name, 'connector_mcp');
 assert.equal(globalToolRegistry.getTool('gateway_bridge')?.name, 'gateway_bridge');
 assert.equal(isBuilderLiveConnectorToolName('gateway_bridge'), true);
 assert.equal(shouldExposeToolToRuntime('gateway_bridge', true), true);
 assert.equal(shouldExposeToolToRuntime('workspace_write_file', true), false);
+assert.equal(isUserInitiatedCommunicationRequest('Send this reply on Telegram'), true);
+assert.equal(isUserInitiatedCommunicationRequest('Check unread Telegram messages'), false);
+assert.equal(resolveConnectorId('Test data cleaning pipeline'), null);
+assert.equal(isConnectorTrace({ tool: 'workspace_run_command', text: 'Test data cleaning pipeline' }), false);
+assert.equal(isConnectorTrace({ tool: 'gateway_bridge', platform: 'telegram' }), true);
 
 function fsMkdtemp(prefix: string): Promise<string> {
   return import('node:fs/promises').then((fs) => fs.mkdtemp(prefix));
@@ -91,6 +98,9 @@ assert.equal(agentMcpResult.success, true);
 assert.equal(agentMcpResult.results.tools[0].name, 'get_echo');
 const readOnlyMcpResult = await connectorMcpTool.execute({ action: 'call_tool', server_id: 'test-mcp', tool_name: 'get_echo', arguments: { value: 'autonomous' } }, {});
 assert.equal(readOnlyMcpResult.success, true);
+assert.equal(await requireOutboundApproval('EterX Gateway', 'messages_send', {}, { userInitiatedCommunication: true }), null);
+const unrequestedSend = await requireOutboundApproval('EterX Gateway', 'messages_send', {}, {});
+assert.equal(unrequestedSend?.approvalRequired, true);
 
 const builderAttachResult = await agentBuilderAttachConnectorToolsTool.execute({}, {
   agentRuntime: 'agent_builder',

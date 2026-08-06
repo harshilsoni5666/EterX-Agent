@@ -73,6 +73,17 @@ class ToolRegistry {
       parameters: toFunctionParameters(tool),
     }));
   }
+
+  /** Return one portable declaration for deferred tool discovery. */
+  public getFunctionDeclaration(name: string) {
+    const tool = this.getTool(name);
+    if (!tool) return undefined;
+    return {
+      name: tool.name,
+      description: tool.description,
+      parameters: toFunctionParameters(tool),
+    };
+  }
 }
 
 export const globalToolRegistry = new ToolRegistry();

@@ -10,7 +10,6 @@ const MAIN_AGENT_HIDDEN_TOOL_NAMES = new Set([
   'context_manager',
   'desktop_control',
   'screen_agent',
-  'tool_finder',
   'workspace_edit_many_files',
   'workspace_str_replace',
 ]);

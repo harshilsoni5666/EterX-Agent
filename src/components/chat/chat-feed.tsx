@@ -1776,7 +1776,7 @@ const ChatFeedMessageGroup = React.memo(({
                       )}
                       {showTokenCount && answerTokenCount > 0 && (
                         <span className="eterx-professional-number ml-1.5 text-[11px] font-medium leading-none text-[#746F67] select-none whitespace-nowrap">
-                          {formatProviderTokenCount(answerTokenCount)} tokens
+                          {formatProviderTokenCount(answerTokenCount)} processed tokens
                         </span>
                       )}
                     </div>

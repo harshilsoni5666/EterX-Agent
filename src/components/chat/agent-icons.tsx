@@ -248,10 +248,11 @@ export const resolveConnectorId = (...values: unknown[]): string | null => {
     const direct = CONNECTOR_ALIASES[token] || CONNECTOR_TOOL_ALIASES[token];
     if (direct) return direct;
 
-    // Tool names and natural-language trace labels can contain the provider
-    // name (for example "Sending Slack").
+    // Match explicit provider tokens only. Ordinary command text such as
+    // "pipeline" must not turn into the LINE connector.
+    const escapedAlias = (alias: string) => alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     for (const [alias, id] of Object.entries(CONNECTOR_ALIASES).sort((left, right) => right[0].length - left[0].length)) {
-      if (token.includes(alias)) return id;
+      if (new RegExp(`(?:^|_)${ escapedAlias(alias) }(?:_|$)`).test(token)) return id;
     }
   }
   return null;
@@ -273,20 +274,23 @@ export const getConnectorId = (log: any): string | null => {
     log?.channel,
     log?.tool,
     log?.name,
-    log?.text,
-    log?.secondary,
   );
 };
 
 export const isConnectorTrace = (log: any): boolean => {
   const toolName = String(log?.tool || log?.name || '').toLowerCase();
-  const icon = String(log?.iconCategory || log?.icon || '').toLowerCase();
-  return Boolean(
-    getConnectorId(log) ||
-    icon === 'connector' ||
-    toolName === 'gateway_bridge' ||
-    toolName === 'connector_mcp' ||
+  const explicitConnector = Boolean(
+    log?.connectorId || log?.connector_id || log?.toolArgs?.connectorId ||
+    log?.toolArgs?.connector_id || log?.toolArgs?.server_id ||
+    log?.platform || log?.channel || log?.toolArgs?.platform || log?.toolArgs?.channel,
+  );
+  const knownConnectorTool = Boolean(
+    CONNECTOR_TOOL_ALIASES[toolName] !== undefined ||
     /(?:^|_)(?:controller|connector|gateway)(?:$|_)/.test(toolName),
+  );
+  return Boolean(
+    knownConnectorTool ||
+    (String(log?.type || '').toLowerCase() === 'communication' && explicitConnector),
   );
 };
 

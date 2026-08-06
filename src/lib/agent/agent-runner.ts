@@ -41,6 +41,8 @@ import {
   type MainAgentMode,
 } from './model-routing';
 import { mergeStreamingText } from '../streaming-lifecycle';
+import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
+import { splitLeadingParallelToolCalls } from './parallel-tool-calls';
 
 // The standalone builder endpoint can import this runner without importing
 // AgentRegistry first, so ensure the complete builder tool surface is present.
@@ -190,6 +192,7 @@ export class AgentRunner {
   private resolvedTools: ResolvedTool[] = [];
   private toolPrompt = '';
   private runtimeKind: 'custom_agent' | 'agent_builder' = 'custom_agent';
+  private userInitiatedCommunication = false;
   private cancelled = false;
   private cancelController: AbortController | null = null;
 
@@ -309,6 +312,13 @@ Every tool call must include:
 
 Use file_read for reading files, file_create for creating files, file_edit for editing files, terminal for commands, folder_read for directory listing, search for local/code searches, web_search for web lookup, and verification for checks/tests.`);
 
+    parts.push(`
+## Parallel tool execution
+
+- When two or more read-only tasks are independent, emit their function calls in the same model turn so the runtime can execute them concurrently.
+- Keep writes, edits, installs, process control, browser interactions, user questions, and calls that depend on earlier results ordered.
+- Parallel tool calls are different from spawning sub-agents: use the normal attached tools and preserve the evidence from every result.`);
+
     // Completion criteria
     if (this.profile.completionCriteria) {
       parts.push(`\n## Completion Criteria\n${this.profile.completionCriteria}`);
@@ -424,6 +434,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     config: AgentRunnerConfig
   ): AsyncGenerator<AgentRunnerEvent> {
     const isBuilderRuntime = config.runtime === 'agent_builder';
+    this.userInitiatedCommunication = isUserInitiatedCommunicationRequest(
+      messages.filter(message => message.role === 'user').at(-1)?.content || '',
+    );
 
     // 1. Try to load as a Flow first!
     let isFlow = false;
@@ -805,6 +818,14 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           consecutiveErrors = 0; // Reset on success
           let hasToolCalls = false;
           const toolResultParts: any[] = [];
+          type FunctionCallRecord = {
+            part: any;
+            name: string;
+            args: Record<string, unknown>;
+            providerCallId?: string;
+            uiToolCallId: string;
+          };
+          const functionCalls: FunctionCallRecord[] = [];
           const responseHasToolCalls = candidate.content.parts.some((part: any) => !!part.functionCall);
           let visibleTextEmitted = false;
           if (bufferedVisibleText) {
@@ -850,19 +871,44 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                 || `tool_call_${config.agentId}_${iteration + 1}_${totalToolCalls}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
               );
 
+              functionCalls.push({
+                part,
+                name: String(name || ''),
+                args: (args && typeof args === 'object' ? args : {}) as Record<string, unknown>,
+                providerCallId: part.functionCall.id ? String(part.functionCall.id) : undefined,
+                uiToolCallId: toolCallId,
+              });
+            }
+          }
+
+          if (functionCalls.length > 0) {
+            // Publish the complete action group before execution starts so
+            // concurrent calls are visible together in the timeline.
+            for (const call of functionCalls) {
               yield {
                 type: 'tool_call',
-                toolName: name,
-                toolCallId,
-                toolArgs: args as Record<string, unknown>,
+                toolName: call.name,
+                toolCallId: call.uiToolCallId,
+                toolArgs: call.args,
                 agentName,
                 timestamp: Date.now(),
               };
+            }
 
-              // Execute the tool with timeout protection
+            type RunningToolCall = {
+              call: FunctionCallRecord;
+              sideEvents: AgentRunnerEvent[];
+              promise: Promise<void>;
+              isSettled: () => boolean;
+              getResult: () => unknown;
+            };
+            const callResults = new Map<FunctionCallRecord, unknown>();
+
+            const startToolCall = (call: FunctionCallRecord): RunningToolCall => {
+              const sideEvents: AgentRunnerEvent[] = [];
+              let settled = false;
               let result: unknown;
-              try {
-                const sideEvents: AgentRunnerEvent[] = [];
+              const promise = (async () => {
                 const pushSideEvent = (trace: any) => {
                   if (!trace || typeof trace !== 'object') return;
                   sideEvents.push({
@@ -876,67 +922,109 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                 const toolAbortController = new AbortController();
                 const abortTool = () => toolAbortController.abort();
                 runAbortController.signal.addEventListener('abort', abortTool, { once: true });
-                const execPromise = this.executeToolSafe(
-                  name || '',
-                  args || {},
-                  config,
-                  pushSideEvent,
-                  toolAbortController.signal,
-                );
-                const toolTimeoutMs = this.resolveToolTimeoutMs(name || '', args || {}, TOOL_TIMEOUT_MS);
-                let toolSettled: AsyncSettlement<unknown> | null = null;
-                const timeoutHandle = setTimeout(() => {
-                  toolAbortController.abort();
-                  toolSettled = {
-                    status: 'rejected',
-                    error: new Error(`Tool "${name}" timed out after ${toolTimeoutMs / 1000}s`),
-                  };
-                }, toolTimeoutMs);
-                void execPromise.then(
-                  value => {
-                    if (!toolSettled) toolSettled = { status: 'fulfilled', value };
-                  },
-                  error => {
-                    if (!toolSettled) toolSettled = { status: 'rejected', error };
-                  },
-                );
-
+                const toolTimeoutMs = this.resolveToolTimeoutMs(call.name, call.args, TOOL_TIMEOUT_MS);
+                let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
                 try {
-                  while (!toolSettled) {
-                    const pendingEvents = sideEvents.splice(0, sideEvents.length);
-                    for (const event of pendingEvents) yield event;
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                  }
-
-                  const pendingEvents = sideEvents.splice(0, sideEvents.length);
-                  for (const event of pendingEvents) yield event;
-                  const settledTool = toolSettled as AsyncSettlement<unknown>;
-                  if (settledTool.status === 'rejected') throw settledTool.error;
-                  result = settledTool.value;
+                  const execPromise = this.executeToolSafe(
+                    call.name,
+                    call.args,
+                    config,
+                    pushSideEvent,
+                    toolAbortController.signal,
+                  );
+                  const timeoutPromise = new Promise<never>((_, reject) => {
+                    timeoutHandle = setTimeout(() => {
+                      toolAbortController.abort();
+                      reject(new Error(`Tool "${call.name}" timed out after ${toolTimeoutMs / 1000}s`));
+                    }, toolTimeoutMs);
+                  });
+                  result = await Promise.race([execPromise, timeoutPromise]);
+                } catch (err: any) {
+                  result = { error: err?.message || 'Tool execution failed' };
                 } finally {
-                  clearTimeout(timeoutHandle);
+                  if (timeoutHandle) clearTimeout(timeoutHandle);
                   runAbortController.signal.removeEventListener('abort', abortTool);
+                  settled = true;
                 }
-              } catch (err: any) {
-                result = { error: err.message || 'Tool execution failed' };
+              })();
+
+              return {
+                call,
+                sideEvents,
+                promise,
+                isSettled: () => settled,
+                getResult: () => result,
+              };
+            };
+
+            const runBatch = async function* (calls: FunctionCallRecord[]): AsyncGenerator<AgentRunnerEvent> {
+              const running = calls.map(startToolCall);
+              const pending = new Set(running);
+
+              while (pending.size > 0) {
+                for (const run of running) {
+                  for (const event of run.sideEvents.splice(0, run.sideEvents.length)) yield event;
+                }
+
+                await Promise.race([
+                  Promise.race(Array.from(pending, run => run.promise)),
+                  new Promise(resolve => setTimeout(resolve, 50)),
+                ]);
+                for (const run of Array.from(pending)) {
+                  if (run.isSettled()) pending.delete(run);
+                }
               }
 
+              for (const run of running) {
+                for (const event of run.sideEvents.splice(0, run.sideEvents.length)) yield event;
+                callResults.set(run.call, run.getResult());
+              }
+            };
+
+            const askUserCall = functionCalls.find(call => call.name === 'ask_user');
+            if (askUserCall) {
+              // ask_user is blocking and exclusive; defer siblings until the
+              // next model turn has the user's answer.
+              for (const call of functionCalls) {
+                if (call !== askUserCall) {
+                  callResults.set(call, {
+                    success: false,
+                    deferred: true,
+                    error: 'Deferred because ask_user is a blocking user question. Use the user answer before deciding the next tool call.',
+                  });
+                }
+              }
+              for await (const event of runBatch([askUserCall])) yield event;
+            } else {
+              const { parallel, ordered } = splitLeadingParallelToolCalls(functionCalls);
+              if (parallel.length > 1) {
+                console.log(`[AgentRunner] Executing ${parallel.length} independent tools in parallel: ${parallel.map(call => call.name).join(', ')}`);
+              }
+              if (parallel.length > 0) {
+                for await (const event of runBatch(parallel)) yield event;
+              }
+              for (const call of ordered) {
+                for await (const event of runBatch([call])) yield event;
+              }
+            }
+
+            // Keep provider responses in call order even when executions finish
+            // out of order, which preserves Gemini's function-call contract.
+            for (const call of functionCalls) {
+              const result = callResults.get(call);
               yield {
                 type: 'tool_result',
-                toolName: name,
-                toolCallId,
+                toolName: call.name,
+                toolCallId: call.uiToolCallId,
                 toolResult: result,
                 agentName,
                 timestamp: Date.now(),
               };
-
-              // Build function response for next turn
-              const resultStr = serializeToolResult(result, 16000);
               toolResultParts.push({
                 functionResponse: {
-                  name,
-                  response: { result: resultStr },
-                  ...(part.functionCall.id ? { id: part.functionCall.id } : {}),
+                  name: call.name,
+                  response: { result: serializeToolResult(result, 16000) },
+                  ...(call.providerCallId ? { id: call.providerCallId } : {}),
                 },
               });
             }
@@ -1181,6 +1269,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         ? false
         : config.pinnedContext?.allowHostControl === true && config.pinnedContext?.computerUseEnabled !== false,
       allowExternalCommunication: isSandboxRun ? false : config.pinnedContext?.allowExternalCommunication === true,
+      userInitiatedCommunication: this.userInitiatedCommunication,
       allowDynamicCode: isSandboxRun ? false : config.pinnedContext?.allowDynamicCode !== false,
       allowRawCommand: isSandboxRun ? false : config.pinnedContext?.allowRawCommand !== false,
       allowVcs: isSandboxRun ? false : config.pinnedContext?.allowVcs !== false,
