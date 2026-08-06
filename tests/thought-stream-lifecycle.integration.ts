@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  canonicalizeThoughtStreamLogs,
   closeThoughtStreamsForBoundary,
   mergeThoughtStreamTrace,
 } from '../src/lib/thought-stream-lifecycle';
@@ -58,6 +59,56 @@ const thought = (
   assert.equal(logs.length, 2, 'a closed stream must not reopen when a provider reuses its ID');
   assert.equal(logs[0].endTime, 4_000);
   assert.equal(logs[1].startTime, 8_000);
+}
+
+{
+  // Recovery can hydrate the settled snapshot first, then deliver older live
+  // snapshots from the in-memory stream buffer. Those snapshots belong to the
+  // same stream and must not reopen duplicate thought cards.
+  const logs: any[] = [];
+  mergeThoughtStreamTrace(logs, thought('Reasoning complete', 4_000, {
+    isStreaming: false,
+    streamState: 'closed',
+    final: true,
+    _traceIdx: 12,
+  }));
+  mergeThoughtStreamTrace(logs, thought('Reasoning', 2_000, {
+    isStreaming: true,
+    _traceIdx: 4,
+  }));
+
+  assert.equal(logs.length, 1, 'an older replay must update the settled stream in place');
+  assert.equal(logs[0].text, 'Reasoning complete');
+  assert.equal(logs[0].isStreaming, false, 'an older replay must not reopen the stream');
+}
+
+{
+  // Canonicalize lists that were persisted by an older client before the
+  // replay guard existed. The stream anchor is authoritative; transport
+  // indices are delivery records and may differ for every snapshot.
+  const logs: any[] = [
+    thought('Reasoning complete', 4_000, {
+      isStreaming: false,
+      streamState: 'closed',
+      final: true,
+      _traceIdx: 12,
+    }),
+    thought('Reasoning complete', 4_000, {
+      isStreaming: false,
+      streamState: 'closed',
+      _traceIdx: 7,
+    }),
+    thought('Reasoning complete', 4_000, {
+      isStreaming: false,
+      streamState: 'closed',
+      _traceIdx: 4,
+    }),
+  ];
+  canonicalizeThoughtStreamLogs(logs);
+
+  assert.equal(logs.length, 1, 'persisted duplicate snapshots should canonicalize to one row');
+  assert.equal(logs[0].text, 'Reasoning complete');
+  assert.equal(logs[0].isStreaming, false);
 }
 
 {

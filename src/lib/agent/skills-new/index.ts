@@ -19,15 +19,20 @@ export const SKILL_CATALOG = Object.freeze(
     .sort((a, b) => a.id.localeCompare(b.id)),
 );
 
+function compactSkillRoutingDescription(description: string, fallback: string): string {
+  const normalized = String(description || fallback).replace(/\s+/g, ' ').trim();
+  if (normalized.length <= 180) return normalized;
+  const firstSentence = normalized.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim() || normalized;
+  if (firstSentence.length <= 180) return firstSentence;
+  return `${normalized.slice(0, 177).replace(/\s+\S*$/, '').trim()}...`;
+}
+
 export const SKILL_PATHWAYS_PROMPT = [
   'SKILL PATHWAYS',
-  'The isolated local skill catalog is already loaded; do not search the skill folder to discover a skill.',
-  'Decide from the actual deliverable whether a specialist materially applies.',
-  'Load one applicable skill immediately before specialized work and reuse it for the current task.',
-  'If no specialist materially applies, continue with the normal agent workflow.',
+  'The isolated local skill catalog is loaded. Load one applicable skill immediately before specialized work; otherwise use the normal workflow.',
   '',
   'Available skill pathways:',
-  ...SKILL_CATALOG.map(skill => `- ${skill.id}: ${skill.description || skill.name}`),
+  ...SKILL_CATALOG.map(skill => `- ${skill.id}: ${compactSkillRoutingDescription(skill.description, skill.name)}`),
 ].join('\n');
 
 console.log(`[Skills] Loaded ${loadedSkills.length} isolated local skills`);

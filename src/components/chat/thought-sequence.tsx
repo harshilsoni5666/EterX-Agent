@@ -3463,7 +3463,6 @@ const ActionChip = ({
               {connectorAction
                 ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ (connectorId || 'connected service').replace(/_/g, ' ') } connector`} />
                 : <AI isLive={isLiveChip} size={16.5} color={isLiveChip ? ac : '#DAD6CF'} />}
-              {connectorAction && isLiveChip && <span className="ml-[-3px] mt-[-15px] h-1.5 w-1.5 rounded-full bg-[#43E27A] shadow-[0_0_0_2px_#151514,0_0_8px_rgba(67,226,122,0.8)]" aria-label="Live connector activity" />}
             </span>
           );
         })()}
@@ -3892,7 +3891,6 @@ const CollapsibleActionGroup = ({
             >
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${ open ? '' : '-rotate-90' }`} aria-hidden="true" />
               <span className="flex items-center gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-[#43E27A] shadow-[0_0_8px_rgba(67,226,122,0.65)]" />
                 <span>{isActiveGroup ? 'Live activity' : `${ cardLogs.length } action${ cardLogs.length === 1 ? '' : 's' }`}</span>
               </span>
               {connectorIds.length > 0 && (

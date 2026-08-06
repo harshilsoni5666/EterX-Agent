@@ -64,7 +64,7 @@ import {
   type CustomToolActiveTrace,
 } from '../lib/agent/custom-agent-trace-adapter';
 import { formatVisibleWorkNote } from '../lib/agent/work-note';
-import { closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
+import { canonicalizeThoughtStreamLogs, closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
 import { mergeStreamingText } from '../lib/streaming-lifecycle';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 import { isProjectFile, getFileIconPath } from '../lib/utils/file-icon-utils';
@@ -4503,10 +4503,13 @@ function DeepWorkUI() {
       preserveMetadataOnlyChats = false
     ) => {
       if (cancelled) return;
-      const cleanChats = (preserveMetadataOnlyChats
-        ? restoredChats
-        : removeGeneratedEmptyChats(restoredChats))
-        .map(enforceChatTraceOwnership);
+        const cleanChats = (preserveMetadataOnlyChats
+          ? restoredChats
+          : removeGeneratedEmptyChats(restoredChats))
+        .map(chat => enforceChatTraceOwnership({
+          ...chat,
+          traceLogs: canonicalizeClientTraceLogs(chat.traceLogs || []),
+        }));
       setChats(cleanChats);
     };
 
@@ -4660,6 +4663,8 @@ function DeepWorkUI() {
   const isAgentConnectionLog = (log: any) =>
     !!log && (log._connection === true || (log.type === 'work_note' && log.noteId === AGENT_CONNECTION_NOTE_ID));
   const stripAgentConnectionLogs = (logs: any[] = []) => logs.filter(log => !isAgentConnectionLog(log));
+  const canonicalizeClientTraceLogs = (logs: any[] = []) =>
+    canonicalizeThoughtStreamLogs(normalizeBuilderUserActionLogs(logs));
   const getConsoleOutputText = (log: any) => String(log?.output ?? log?.content ?? log?.outputPreview ?? '');
   const findMergeableConsoleOutputIndex = (logs: any[], trace: any) => {
     const streamId = String(trace?.streamId || '');
@@ -4688,7 +4693,7 @@ function DeepWorkUI() {
   const stripChatsForStorage = (chatList: ChatSession[]) =>
     chatList.map(chat => ({
       ...chat,
-      traceLogs: normalizeBuilderUserActionLogs(
+      traceLogs: canonicalizeClientTraceLogs(
         (chat.traceLogs || []).filter(log => !log?.chatId || log.chatId === chat.id),
       ),
     }));
@@ -4893,7 +4898,7 @@ function DeepWorkUI() {
         const rawNextLogs = typeof nextLogsOrUpdater === 'function'
           ? nextLogsOrUpdater(prevLogs)
           : nextLogsOrUpdater;
-        return normalizeBuilderUserActionLogs(rawNextLogs);
+        return canonicalizeClientTraceLogs(rawNextLogs);
       });
     }
 
@@ -4904,7 +4909,7 @@ function DeepWorkUI() {
         const rawNextLogs = typeof nextLogsOrUpdater === 'function'
           ? nextLogsOrUpdater(previousLogs)
           : nextLogsOrUpdater;
-        const nextLogs = normalizeBuilderUserActionLogs(rawNextLogs);
+        const nextLogs = canonicalizeClientTraceLogs(rawNextLogs);
         return {
           ...chat,
           traceLogs: nextLogs,
@@ -4940,18 +4945,21 @@ function DeepWorkUI() {
           : durableChat);
         setChats(currentChats => currentChats.map(currentChat => {
           if (currentChat.id !== chatId) return currentChat;
-          return enforceChatTraceOwnership(
-            mergeCachedChatIntoDurable(hydratedChat, currentChat)
-          );
+          const merged = mergeCachedChatIntoDurable(hydratedChat, currentChat);
+          return enforceChatTraceOwnership({
+            ...merged,
+            traceLogs: canonicalizeClientTraceLogs(merged.traceLogs || []),
+          });
         }));
 
         if (activeChatIdRef.current === chatId) {
           setTraceLogs(currentLogs => {
             if (activeChatIdRef.current !== chatId) return currentLogs;
-            return mergeCachedChatIntoDurable(
+            const merged = mergeCachedChatIntoDurable(
               hydratedChat,
               { ...hydratedChat, traceLogs: currentLogs }
-            ).traceLogs || [];
+            );
+            return canonicalizeClientTraceLogs(merged.traceLogs || []);
           });
           setActiveWorkspacePath(hydratedChat.workspacePath || null);
         }
@@ -4989,7 +4997,7 @@ function DeepWorkUI() {
       setOverflowDropdownOpen(false);
       activeChatIdRef.current = id;
       setActiveChatId(id);
-      setTraceLogs(chat.traceLogs || []);
+      setTraceLogs(canonicalizeClientTraceLogs(chat.traceLogs || []));
       hydrateChatHistory(id);
       setActiveWorkspacePath(chat.workspacePath || null);
       const storedState = composerStates[id];
@@ -5492,7 +5500,9 @@ function DeepWorkUI() {
   };
 
   const processServerTraces = (traces: any[], existingLogs: any[] = []): any[] => {
-    const logs: any[] = normalizeBuilderUserActionLogs(Array.isArray(existingLogs) ? existingLogs : []);
+    const logs: any[] = canonicalizeThoughtStreamLogs(
+      normalizeBuilderUserActionLogs(Array.isArray(existingLogs) ? existingLogs : []),
+    );
     const lastUserIdx = existingLogs.reduceRight((found, l, i) => found === -1 && l.type === 'user_action' ? i : found, -1);
     const currentTurnStart = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
     const incomingRunId = String(
@@ -5863,7 +5873,7 @@ function DeepWorkUI() {
         logs.push(processedLog);
       }
     }
-    return logs;
+    return canonicalizeThoughtStreamLogs(logs);
   };
 
   const canMergeServerRunIntoLatestTurn = (
@@ -6252,7 +6262,9 @@ function DeepWorkUI() {
             // Prevents duplicate action containers by deduplicating on _traceIdx
             // ═══════════════════════════════════════════
             const processTraces = (existingLogs: any[]): any[] => {
-              let logs = normalizeBuilderUserActionLogs(stripAgentConnectionLogs([...existingLogs]));
+              let logs = canonicalizeThoughtStreamLogs(
+                normalizeBuilderUserActionLogs(stripAgentConnectionLogs([...existingLogs])),
+              );
               const activeRunId = serverRunId || expectedRunId || '';
               const latestExistingUser = [...logs].reverse().find((log: any) => log?.type === 'user_action');
               const latestExistingRunId = String(latestExistingUser?.runId || latestExistingUser?.turnId || '').trim();
@@ -6616,7 +6628,7 @@ function DeepWorkUI() {
                   logs.push(timedTrace);
                 }
               }
-              return logs;
+              return canonicalizeThoughtStreamLogs(logs);
             };
 
             if (isActiveChat) {

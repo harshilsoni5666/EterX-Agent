@@ -25,6 +25,7 @@ import { AGENT_BUILDER_RUNTIME, AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCu
 import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
 import { isModelProvider } from './model-selector-store';
 import { getEterxWorkspaceDir } from './storage-paths';
+import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
 
 /**
  * The Enhanced Orchestrator v2
@@ -109,6 +110,7 @@ type RuntimeProjectContext = ProjectContext & {
   sandboxGuard?: any;
   allowRawCommand?: boolean;
   isFocusedWorkspace?: boolean;
+  userInitiatedCommunication?: boolean;
 };
 
 export class AgentOrchestrator {
@@ -370,6 +372,7 @@ export class AgentOrchestrator {
     context.scratchRoot = workspace.getSandboxPath();
     if (userName) context.userName = userName;
     context.userId = userId;
+    context.userInitiatedCommunication = isUserInitiatedCommunicationRequest(userRequest);
     context.runtimeSettings = runtimeSettings || null;
     if (pinnedContext?.agentSessionId) {
       context.agentSessionId = String(pinnedContext.agentSessionId);

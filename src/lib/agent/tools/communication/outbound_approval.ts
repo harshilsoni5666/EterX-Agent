@@ -9,10 +9,20 @@ type OutboundApprovalFailure = {
   approval: Record<string, string | undefined>;
 };
 
+const EXTERNAL_ACTION_PATTERN = /\b(?:send|reply|respond|message|text|email|dm|post|publish|notify|forward|invite|react|comment|upload|create|update)\b/i;
+const EXTERNAL_TARGET_PATTERN = /\b(?:telegram|slack|whatsapp|discord|signal|mattermost|matrix|email|mail|sms|gateway|connector|channel|chat|conversation|message|messages|recipient|contact|github|gitlab|jira|linear|notion|teams|outlook|gmail)\b/i;
+
+/** A direct user request is authorization; avoid a redundant second prompt. */
+export function isUserInitiatedCommunicationRequest(message: unknown): boolean {
+  const text = String(message || '').trim();
+  return Boolean(text && EXTERNAL_ACTION_PATTERN.test(text) && EXTERNAL_TARGET_PATTERN.test(text));
+}
+
 export function hasOutboundApproval(input: any, context: any, actionKey: string): boolean {
   if (process.env[OUTBOUND_SEND_ENV] === '1') return true;
   if (context?.allowExternalCommunicationSend === true) return true;
   if (context?.communicationApproval === true || context?.approval?.externalCommunication === true) return true;
+  if (context?.userInitiatedCommunication === true) return true;
 
   const approved = new Set<string>([
     ...readStringList(context?.approvedActions),

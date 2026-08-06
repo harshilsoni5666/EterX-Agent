@@ -230,7 +230,8 @@ const lightweightSidebarCss = `
   }
 
   .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
-    scrollbar-gutter: auto !important;
+    /* Keep the scrollbar in its own lane so chat rows never sit underneath it. */
+    scrollbar-gutter: stable !important;
   }
 
   .eterx-sidebar-project-filter {
@@ -1557,7 +1558,7 @@ export const Sidebar = React.memo<SidebarProps>(({
               <div
                 ref={scrollContainerRef}
                 onScroll={handleRecentChatsScroll}
-                className="eterx-sidebar-recents-scroll flex-1 overflow-y-auto eterx-scrollbar pl-2 pr-0 mr-0 space-y-0.5 relative z-10"
+                className="eterx-sidebar-recents-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto eterx-scrollbar pl-2 pr-2 space-y-0.5 relative z-10"
                 style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined, overscrollBehavior: 'contain' }}
               >
                 {isProjectPending ? (

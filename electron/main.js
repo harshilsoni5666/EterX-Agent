@@ -31,6 +31,27 @@ try {
 const http = require('http');
 const https = require('https');
 const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, safeStorage, Tray } = require('electron');
+
+// The gateway daemon is loaded by Electron's main process before the packaged
+// Next runtime is started. Its production dependencies live in the companion
+// dependencies.asar, so expose that module tree before requiring the daemon.
+// Without this early setup, a fresh packaged install fails immediately with
+// "Cannot find module 'ws'" even though ws is present in the runtime archive.
+function getPackagedDependencyModuleRoot() {
+  const dependencyArchive = path.join(process.resourcesPath, 'runtime', 'dependencies.asar');
+  if (!fs.existsSync(dependencyArchive)) return null;
+  const nestedNodeModules = path.join(dependencyArchive, 'node_modules');
+  return fs.existsSync(nestedNodeModules) ? nestedNodeModules : dependencyArchive;
+}
+
+const packagedDependencyModuleRoot = getPackagedDependencyModuleRoot();
+if (packagedDependencyModuleRoot) {
+  process.env.NODE_PATH = [packagedDependencyModuleRoot, process.env.NODE_PATH]
+    .filter(Boolean)
+    .join(path.delimiter);
+  require('module').Module._initPaths();
+}
+
 const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig } = require('../src/lib/agent/gateways/daemon.cjs');
 // Disable HTTP Cache globally in development to prevent aggressive cache storage of stylesheets and scripts
 app.commandLine.appendSwitch('disable-http-cache');
@@ -369,13 +390,6 @@ ipcMain.on('desktop-durable-flush-complete', (event, requestId, ok) => {
   clearTimeout(pending.timer);
   pending.resolve(ok !== false);
 });
-
-function getPackagedDependencyModuleRoot() {
-  const dependencyArchive = path.join(process.resourcesPath, 'runtime', 'dependencies.asar');
-  if (!fs.existsSync(dependencyArchive)) return null;
-  const nestedNodeModules = path.join(dependencyArchive, 'node_modules');
-  return fs.existsSync(nestedNodeModules) ? nestedNodeModules : dependencyArchive;
-}
 
 async function performDesktopUpdateCheck() {
   if (!app.isPackaged || !desktopAutoUpdater) return desktopUpdateState;

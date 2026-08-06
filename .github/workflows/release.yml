@@ -19,8 +19,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare-release:
+    name: Prepare draft release
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Create or reset draft release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+            if [ "$is_draft" != "true" ]; then
+              echo "Release $RELEASE_TAG already exists and is published; published releases are immutable." >&2
+              exit 1
+            fi
+            while IFS= read -r asset; do
+              [ -z "$asset" ] || gh release delete-asset "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --yes
+            done < <(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "EterX $RELEASE_TAG" \
+              --notes "Verified native EterX installers are being built."
+          fi
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: prepare-release
     strategy:
       fail-fast: false
       matrix:
@@ -119,22 +149,30 @@ jobs:
       - name: Boot packaged runtime
         run: node scripts/smoke-packaged-runtime.mjs dist
 
-      - name: Upload native artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: EterX-${{ matrix.target }}
-          path: |
-            dist/*.exe
-            dist/*.blockmap
-            dist/*.yml
-            dist/*.yaml
-            dist/*.dmg
-            dist/*.zip
-            dist/*.AppImage
-            dist/*.deb
+      - name: Upload native artifacts to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(
+            dist/EterX-*.exe
+            dist/EterX-*.blockmap
+            dist/latest*.yml
+            dist/EterX-*.dmg
+            dist/EterX-*.zip
+            dist/EterX-*.AppImage
+            dist/EterX-*.deb
             dist/eterx-icon-512.png
-          if-no-files-found: error
-          retention-days: 7
+          )
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No native release files were produced." >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${files[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
 
   publish:
     name: Publish verified release
@@ -145,12 +183,8 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
-      - name: Download packaged artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: EterX-*
-          path: release
-          merge-multiple: true
+      - name: Download packaged release assets
+        run: gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release
 
       - name: Generate SHA-256 manifest
         working-directory: release
@@ -160,14 +194,13 @@ jobs:
             | xargs -0 sha256sum \
             | sed 's#  \./#  #' > SHA256SUMS.txt
 
-      - name: Publish immutable GitHub release assets
+      - name: Upload checksum and publish release
         run: |
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $RELEASE_TAG already exists; published versions are immutable." >&2
-            exit 1
-          fi
-          gh release create "$RELEASE_TAG" release/* \
+          gh release upload "$RELEASE_TAG" release/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --generate-notes \
-            --title "EterX $RELEASE_TAG"
+            --clobber
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --title "EterX $RELEASE_TAG" \
+            --generate-notes

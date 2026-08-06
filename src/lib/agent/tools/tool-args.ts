@@ -11,9 +11,26 @@ function normalizeFilenameArgs(input: any): void {
   if (!input || typeof input !== 'object') return;
   if (input.path && !input.filename) input.filename = input.path;
   if (input.file && !input.filename) input.filename = input.file;
+  if (input.fileName && !input.filename) input.filename = input.fileName;
+  if (input.file_name && !input.filename) input.filename = input.file_name;
+  if (input['file-name'] && !input.filename) input.filename = input['file-name'];
   if (input.filePath && !input.filename) input.filename = input.filePath;
   if (input.filepath && !input.filename) input.filename = input.filepath;
   if (input.file_path && !input.filename) input.filename = input.file_path;
+  if (input.outputPath && !input.filename) input.filename = input.outputPath;
+  if (input.output_path && !input.filename) input.filename = input.output_path;
+  if (input.target && !input.filename) input.filename = input.target;
+  if (input.name && !input.filename) input.filename = input.name;
+}
+
+function normalizeContentArgs(input: any): void {
+  if (!input || typeof input !== 'object' || input.content) return;
+  for (const key of ['text', 'body', 'code', 'source', 'contents', 'textContent', 'data']) {
+    if (typeof input[key] === 'string' && input[key].length > 0) {
+      input.content = input[key];
+      return;
+    }
+  }
 }
 
 function normalizeFileSpec(value: any): any {
@@ -43,6 +60,7 @@ export function normalizeRegistryToolArgs(toolName: string, args: any): any {
   if (name === 'workspace_read_file' || name === 'workspace_write_file' || name === 'workspace_edit_file') {
     normalizeFilenameArgs(input);
   }
+  if (name === 'workspace_write_file') normalizeContentArgs(input);
   if (name === 'workspace_read_many_files' && input.paths && !input.files) {
     input.files = normalizeFileSpecArray(input.paths);
   }
