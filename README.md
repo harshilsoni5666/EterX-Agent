@@ -42,7 +42,7 @@ shortcut it created.
 Open **Terminal**, paste this once, and press Return:
 
 ```bash
-curl --fail --silent --show-error --location https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
+curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect-timeout 60 --max-time 300 https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
 ```
 
 The default location is `~/Applications/EterX.app`. The same command supports
@@ -53,7 +53,7 @@ Apple Silicon and Intel Macs; no second installer command is needed.
 Open a terminal and paste this once:
 
 ```bash
-curl --fail --silent --show-error --location https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
+curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect-timeout 60 --max-time 300 https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
 ```
 
 The installer selects the matching x64 or ARM64 AppImage, places it under the

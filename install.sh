@@ -108,17 +108,86 @@ retry() {
 
 download() {
   url="$1" destination="$2"
+  part="${destination}.part"
+  status_file="${part}.status"
+  error_file="${part}.error"
+  header_file="${part}.headers"
+  # Clear every sidecar from a previous interrupted attempt. A stale status
+  # marker must never make a new download look successful before it starts.
+  rm -f "$part" "$status_file" "$error_file" "$header_file"
+  remote_size=""
+
+  # A HEAD request gives us a real percentage for large GitHub CDN assets. It
+  # is only a display hint; a missing or chunked Content-Length never blocks
+  # the download.
   if command -v curl >/dev/null 2>&1; then
-    retry curl --fail --location --retry 2 --connect-timeout 20 --progress-bar \
+    curl --fail --silent --show-error --location --http1.1 --head \
+      --connect-timeout 60 --max-time 120 \
       --header 'Accept: application/vnd.github+json' \
       --header 'X-GitHub-Api-Version: 2022-11-28' \
-      --user-agent 'EterX-Bootstrap/2' "$url" --output "$destination"
+      --user-agent 'EterX-Bootstrap/3' "$url" > "$header_file" 2>/dev/null || true
+    remote_size="$(awk 'BEGIN { IGNORECASE=1 } /^content-length:/ { gsub("\r", "", $2); value=$2 } END { print value }' "$header_file" 2>/dev/null || true)"
+  fi
+
+  : > "$status_file"
+  if command -v curl >/dev/null 2>&1; then
+    (
+      if retry curl --fail --silent --show-error --location --http1.1 \
+      --retry 5 --retry-delay 3 --retry-max-time 900 \
+      --connect-timeout 60 --max-time 1800 \
+      --header 'Accept: application/vnd.github+json' \
+      --header 'X-GitHub-Api-Version: 2022-11-28' \
+      --user-agent 'EterX-Bootstrap/3' "$url" --output "$part" > /dev/null 2> "$error_file"; then
+        printf '0' > "$status_file"
+      else
+        printf '1' > "$status_file"
+      fi
+    ) &
   elif command -v wget >/dev/null 2>&1; then
-    retry wget --tries=2 --timeout=20 --show-progress --user-agent='EterX-Bootstrap/2' -O "$destination" "$url"
+    (
+      if retry wget --tries=5 --timeout=60 --read-timeout=1800 --quiet \
+        --user-agent='EterX-Bootstrap/3' -O "$part" "$url" > /dev/null 2> "$error_file"; then
+        printf '0' > "$status_file"
+      else
+        printf '1' > "$status_file"
+      fi
+    ) &
   else
     printf '  curl or wget is required to download EterX.\n' >&2
     return 1
   fi
+
+  download_pid=$!
+  spinner='|/-\\'
+  spinner_index=1
+  while [ ! -s "$status_file" ]; do
+    current_bytes=0
+    [ -f "$part" ] && current_bytes="$(wc -c < "$part" | tr -d '[:space:]')"
+    current_mb="$(awk -v bytes="$current_bytes" 'BEGIN { printf "%.1f", bytes / 1048576 }')"
+    if printf '%s' "$remote_size" | grep -Eq '^[0-9]+$' && [ "$remote_size" -gt 0 ]; then
+      percent=$((current_bytes * 100 / remote_size))
+      [ "$percent" -gt 100 ] && percent=100
+      filled=$((percent * 32 / 100))
+      empty=$((32 - filled))
+      bar="$(printf '%*s' "$filled" '' | tr ' ' '#')$(printf '%*s' "$empty" '' | tr ' ' '-')"
+      printf '\r\033[K  [%s] %3s%%  Downloading %s (%s MB)' "$bar" "$percent" "$(basename "$destination")" "$current_mb"
+    else
+      marker="$(printf '%s' "$spinner" | cut -c "$spinner_index")"
+      printf '\r\033[K  [%s]  ...  Downloading %s (%s MB)' "$marker" "$(basename "$destination")" "$current_mb"
+      spinner_index=$((spinner_index % 4 + 1))
+    fi
+    sleep 0.25
+  done
+  wait "$download_pid" 2>/dev/null || true
+  printf '\r\033[K'
+  if [ "$(cat "$status_file")" != "0" ]; then
+    cat "$error_file" >&2 2>/dev/null || true
+    rm -f "$part" "$status_file" "$error_file" "$header_file"
+    printf '  Download failed for %s.\n' "$(basename "$destination")" >&2
+    return 1
+  fi
+  mv -f "$part" "$destination"
+  rm -f "$status_file" "$error_file" "$header_file"
 }
 
 json_asset_url() {

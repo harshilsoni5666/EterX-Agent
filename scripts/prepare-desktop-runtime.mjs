@@ -171,6 +171,15 @@ for (const [index, spec] of targetSpecs.entries()) {
   );
   const installedModules = path.join(dependencyInstallRoot, 'node_modules');
   fs.cpSync(installedModules, stagedModules, dependencyCopyOptions);
+  // These modules are loaded by Electron's main process before the Next
+  // server starts. Fail the build if the production archive would not contain
+  // them; otherwise users receive an installer that crashes on first launch.
+  for (const requiredModule of ['ws']) {
+    const moduleManifest = path.join(stagedModules, requiredModule, 'package.json');
+    if (!fs.existsSync(moduleManifest)) {
+      throw new Error(`Required packaged dependency is missing: ${requiredModule}`);
+    }
+  }
   fs.rmSync(dependencyInstallRoot, { recursive: true, force: true });
 }
 fs.rmSync(path.join(stagingRoot, 'node_modules', '.bin'), { recursive: true, force: true });

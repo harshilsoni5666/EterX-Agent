@@ -35,6 +35,7 @@ const requiredDependencies = [
   'node_modules/next/package.json',
   'node_modules/@swc/helpers/package.json',
   'node_modules/electron-updater/package.json',
+  'node_modules/ws/package.json',
   'node_modules/complex.js/dist/complex.js',
   'node_modules/mathjs/lib/cjs/index.js',
   'node_modules/mathjs/node_modules/fraction.js/fraction.js',
