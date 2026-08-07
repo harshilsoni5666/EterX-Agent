@@ -160,7 +160,8 @@ export const safeReadImageFromClipboard = async (): Promise<string> => {
     if (typeof clipboardApi?.read === 'function') {
       const items = await clipboardApi.read();
       for (const item of items || []) {
-        const imageType = Array.from(item.types || []).find((type: string) => type.startsWith('image/'));
+        const imageTypes = Array.from(item.types || []) as string[];
+        const imageType = imageTypes.find((type) => type.startsWith('image/'));
         if (!imageType) continue;
         const blob = await item.getType(imageType);
         const dataUrl = await clipboardBlobToDataUrl(blob);

@@ -285,7 +285,7 @@ export const LocalFileLinkChip = React.memo(({
     <span
       onClick={openPath}
       onKeyDown={handleKeyboardOpen}
-      className={`eterx-local-file-chip inline-flex min-w-0 max-w-full items-center overflow-hidden align-middle text-left ${ compact ? 'my-0.5' : 'my-1' } rounded-[10px] border border-white/[0.09] bg-[#181817] shadow-[0_7px_20px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-white/[0.14] hover:bg-[#1D1C1B] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`
+      className={`eterx-local-file-chip inline-flex min-w-0 max-w-full items-center overflow-hidden align-middle text-left ${ compact ? 'my-0.5' : 'my-1' } rounded-[10px] border border-white/[0.09] bg-[#181817] shadow-[0_7px_20px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-white/[0.14] hover:bg-[#1D1C1B] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`}
       role="button"
       tabIndex={0}
       aria-label={`Open ${name}`}
