@@ -45,5 +45,18 @@ export function persistScheduledTasks(tasks: ScheduledTaskRecord[]): Promise<boo
 }
 
 export async function flushScheduledTaskWrites(): Promise<boolean> {
-  return writeChain;
+  const committed = await writeChain;
+  if (committed) return true;
+
+  // A transient localhost failure must not poison the queue for the rest of
+  // the session. The current task snapshot is still in AppData-backed memory,
+  // so resubmit that snapshot before an update/quit reports failure.
+  try {
+    const raw = appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY);
+    const tasks = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(tasks)) return false;
+    return await persistScheduledTasks(tasks);
+  } catch {
+    return false;
+  }
 }

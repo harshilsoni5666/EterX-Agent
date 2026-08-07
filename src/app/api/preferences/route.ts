@@ -22,7 +22,7 @@ const preferencesGlobal = globalThis as typeof globalThis & {
   __eterxPreferencesWriteChain?: Promise<void>;
 };
 
-const runSerializedPreferenceWrite = async <T,>(operation: () => T): Promise<T> => {
+const runSerializedPreferenceWrite = async <T,>(operation: () => T | Promise<T>): Promise<T> => {
   const previous = preferencesGlobal.__eterxPreferencesWriteChain || Promise.resolve();
   let release!: () => void;
   preferencesGlobal.__eterxPreferencesWriteChain = new Promise<void>(resolve => {
@@ -30,7 +30,10 @@ const runSerializedPreferenceWrite = async <T,>(operation: () => T): Promise<T> 
   });
   await previous;
   try {
-    return operation();
+    // Keep the serialization lock until an asynchronous atomic replace has
+    // finished. Releasing it when the promise is merely created allows two
+    // writes to race during a desktop update or shutdown.
+    return await operation();
   } finally {
     release();
   }
@@ -57,15 +60,36 @@ const readPreferences = (): Record<string, string> => {
   return {};
 };
 
-const writePreferences = (values: Record<string, string>) => {
+const replaceFileWithRetry = async (temporary: string, target: string) => {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      if (process.platform === 'win32') {
+        fs.rmSync(target, { force: true, maxRetries: 3, retryDelay: 100 });
+      }
+      fs.renameSync(temporary, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 5) await new Promise(resolve => setTimeout(resolve, 80 * (attempt + 1)));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Could not atomically replace preferences.');
+};
+
+const writePreferences = async (values: Record<string, string>) => {
   fs.mkdirSync(PREFERENCES_DIR, { recursive: true });
   const temporary = `${PREFERENCES_FILE}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(temporary, `${JSON.stringify(values, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   if (fs.existsSync(PREFERENCES_FILE)) {
     try { fs.copyFileSync(PREFERENCES_FILE, PREFERENCES_BACKUP_FILE); } catch { }
   }
-  fs.rmSync(PREFERENCES_FILE, { force: true });
-  fs.renameSync(temporary, PREFERENCES_FILE);
+  try {
+    await replaceFileWithRetry(temporary, PREFERENCES_FILE);
+  } catch (error) {
+    try { fs.rmSync(temporary, { force: true }); } catch { }
+    throw error;
+  }
 };
 
 export async function GET() {
@@ -78,7 +102,7 @@ export async function PUT(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
-    await runSerializedPreferenceWrite(() => {
+    await runSerializedPreferenceWrite(async () => {
       const current = readPreferences();
       const values = body?.values && typeof body.values === 'object' && !Array.isArray(body.values)
         ? body.values as Record<string, unknown>
@@ -92,7 +116,7 @@ export async function PUT(req: NextRequest) {
           if (typeof key === 'string') delete current[key];
         });
       }
-      writePreferences(current);
+      await writePreferences(current);
     });
     return NextResponse.json({ ok: true });
   } catch (error: any) {

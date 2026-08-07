@@ -1610,11 +1610,14 @@ export const Sidebar = React.memo<SidebarProps>(({
                           }
                         }}
                         onContextMenu={(e) => {
-                          if (isWorking || isSelectMode) return;
+                          if (isWorking) return;
+                          if (isSelectMode) {
+                            e.preventDefault();
+                            return;
+                          }
                           e.preventDefault();
                           e.stopPropagation();
-                          const dropUp = e.clientY + 220 > window.innerHeight;
-                          setMenuState({ id: chat.id, x: e.clientX, y: dropUp ? e.clientY - 200 : e.clientY, dropUp });
+                          setMenuState({ id: chat.id, x: e.clientX, y: e.clientY, dropUp: e.clientY + 260 > window.innerHeight });
                         }}
                         data-chat-id={chat.id}
                         aria-current={isActive && !isSelectMode ? 'page' : undefined}
@@ -1781,7 +1784,7 @@ export const Sidebar = React.memo<SidebarProps>(({
         <div
           className="fixed inset-0 z-[999999]"
           onClick={(e) => { e.stopPropagation(); setMenuState(null); }}
-          onContextMenu={(e) => { e.stopPropagation(); setMenuState(null); }}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenuState(null); }}
         >
           <AnimatePresence>
             <motion.div
@@ -1790,10 +1793,11 @@ export const Sidebar = React.memo<SidebarProps>(({
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ duration: 0.15, ease: "easeOut" }}
               onClick={(e) => e.stopPropagation()}
+              onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
               style={{
                 position: 'fixed',
-                left: menuState.x - 16,
-                ...(menuState.dropUp ? { bottom: window.innerHeight - menuState.y - 4 } : { top: menuState.y - 32 }),
+                left: Math.max(8, Math.min(menuState.x - 16, window.innerWidth - 216)),
+                top: Math.max(8, Math.min(menuState.dropUp ? menuState.y - 248 : menuState.y - 8, window.innerHeight - 280)),
               }}
               className="eterx-sidebar-menu w-52 bg-[var(--sidebar-menu-bg)] border border-transparent rounded-[12px] p-1.5 flex flex-col gap-0.5"
             >

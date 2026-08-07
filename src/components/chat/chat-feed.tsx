@@ -9,6 +9,7 @@ import { Shimmer } from '../ui/shimmer';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
+import { LocalFileLinkChip, decodeLocalFileHref } from './local-file-link';
 import { isInternalWorkNoteNoise, isTerminalWorkTrace, isTurnWorkActive, shouldRenderContextCompactionEvent } from '../../lib/chat-feed-lifecycle';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 
@@ -2316,7 +2317,11 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                     em: ({ node, ...props }: any) => <em className="italic text-[var(--muted-foreground)]" {...props} />,
                     code: ({ node, inline, ...props }: any) => <code className="rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-[10px] text-[var(--foreground)]" {...props} />,
                     pre: ({ node, children }: any) => <div className="my-1 overflow-hidden rounded bg-[var(--muted)] px-2 py-1 font-mono text-[10px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{children}</div>,
-                    a: ({ node, href, children, ...props }: any) => <a className="text-[#E2765A] underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>,
+                    a: ({ node, href, children, ...props }: any) => {
+                      const localPath = decodeLocalFileHref(href);
+                      if (localPath) return <LocalFileLinkChip filePath={localPath} compact />;
+                      return <a className="text-[#E2765A] underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>;
+                    },
                   }}
                 >
                   {normalizeMarkdownForRendering(String(hoveredTurn.turn.assistantText))}

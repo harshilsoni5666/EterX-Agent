@@ -6,6 +6,7 @@ import './light-theme.enterprise.css';
 import './scrollbars.css';
 import 'katex/dist/katex.min.css';
 import { ThemeBridge } from '../components/theme/theme-bridge';
+import { ClipboardPasteBridge } from '../components/ui/clipboard-paste-bridge';
 
 // Keep the native app and offline development startup independent of Google's
 // font CDN. next/font/google fetches font files during the first Next compile,
@@ -79,6 +80,7 @@ export default function RootLayout({
       <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
         <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <ThemeBridge />
+        <ClipboardPasteBridge />
         {children}
       </body>
     </html>

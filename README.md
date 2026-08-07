@@ -69,7 +69,10 @@ checksum failure. Do not continue when the checksum verification itself fails.
 EterX never changes the installed application automatically. Open **Settings →
 Updates** and choose **Check for updates** when you want to look for a newer
 release; you can then review the version, download it, and choose **Restart and
-install**. This keeps updates fully user-controlled.
+install**. This keeps updates fully user-controlled. Windows NSIS and macOS
+DMG/ZIP installations use the native updater; Linux in-app updates are
+available for the AppImage build. If Linux was installed from a `.deb`, use
+the next `.deb` package through the system package installer.
 
 Application binaries and user-owned data are independent:
 

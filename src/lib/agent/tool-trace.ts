@@ -23,6 +23,103 @@ export type DiffLine = {
   skipped?: number;
 };
 
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  // Canonical workspace names are included as well so provider casing does
+  // not create a second UI identity (for example `Workspace_Read_File`).
+  workspace_list_directory: 'workspace_list_directory',
+  workspace_read_file: 'workspace_read_file',
+  workspace_read_many_files: 'workspace_read_many_files',
+  workspace_write_file: 'workspace_write_file',
+  workspace_edit_file: 'workspace_edit_file',
+  workspace_edit_many_files: 'workspace_edit_many_files',
+  workspace_str_replace: 'workspace_str_replace',
+  workspace_apply_patch: 'workspace_apply_patch',
+  workspace_search_text: 'workspace_search_text',
+  workspace_semantic_search: 'workspace_semantic_search',
+  workspace_find_files: 'workspace_find_files',
+  workspace_file_outline: 'workspace_file_outline',
+  workspace_run_command: 'workspace_run_command',
+  workspace_verify_code: 'workspace_verify_code',
+  tool_finder: 'tool_finder',
+  list_directory: 'workspace_list_directory',
+  listdirectory: 'workspace_list_directory',
+  read_many_files: 'workspace_read_many_files',
+  readmanyfiles: 'workspace_read_many_files',
+  edit_many_files: 'workspace_edit_many_files',
+  editmanyfiles: 'workspace_edit_many_files',
+  str_replace: 'workspace_str_replace',
+  system_shell: 'workspace_run_command',
+  shell_command: 'workspace_run_command',
+  read_file: 'workspace_read_file',
+  readfile: 'workspace_read_file',
+  shortread_file: 'workspace_read_file',
+  shortreadfile: 'workspace_read_file',
+  write_file: 'workspace_write_file',
+  writefile: 'workspace_write_file',
+  shortwrite_file: 'workspace_write_file',
+  shortwritefile: 'workspace_write_file',
+  edit_file: 'workspace_edit_file',
+  editfile: 'workspace_edit_file',
+  shortedit_file: 'workspace_edit_file',
+  shorteditfile: 'workspace_edit_file',
+  search_text: 'workspace_search_text',
+  find_files: 'workspace_find_files',
+  apply_patch: 'workspace_apply_patch',
+};
+
+/** Keep provider aliases and legacy short names from leaking into UI traces. */
+export function normalizeToolTraceName(name: unknown): string {
+  const value = String(name || '').trim();
+  if (!value) return '';
+  const alias = value.toLowerCase().replace(/[\s-]+/g, '_');
+  return TOOL_NAME_ALIASES[alias] || value;
+}
+
+const TOOL_DISPLAY_LABELS: Record<string, string> = {
+  workspace_list_directory: 'Listing directory',
+  workspace_read_file: 'Reading file',
+  workspace_read_many_files: 'Reading files',
+  workspace_write_file: 'Creating file',
+  workspace_edit_file: 'Editing file',
+  workspace_edit_many_files: 'Editing files',
+  workspace_str_replace: 'Editing file',
+  workspace_apply_patch: 'Patching files',
+  workspace_search_text: 'Searching codebase',
+  workspace_semantic_search: 'Searching codebase',
+  workspace_find_files: 'Finding files',
+  workspace_file_outline: 'Outlining file',
+  workspace_run_command: 'Running project command',
+  tool_finder: 'Finding tool',
+};
+
+/** Human label for traces, including provider aliases and unknown custom names. */
+export function getToolDisplayLabel(name: unknown): string {
+  const canonical = normalizeToolTraceName(name);
+  if (!canonical) return 'Tool action';
+  if (TOOL_DISPLAY_LABELS[canonical]) return TOOL_DISPLAY_LABELS[canonical];
+  return canonical
+    .replace(/^workspace_/, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+/** Replace a raw tool identifier leaking into a short trace subtitle. */
+export function normalizeToolTraceText(value: unknown): string {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const match = text.match(/^(.*?\b)([a-z][a-z0-9]*(?:[_-][a-z0-9]+)+)\s*$/i);
+  if (!match) return text;
+  const candidate = normalizeToolTraceName(match[2]);
+  if (!TOOL_DISPLAY_LABELS[candidate] && !/^workspace_/.test(candidate)) return text;
+  const prefix = match[1].trim();
+  // Do not rewrite a real path that merely ends in a tool-shaped filename.
+  if (/[\\/:]/.test(prefix)) return text;
+  if (/^(?:preparing|calling|executing|running|using|invoking|loading)[:\s]*$/i.test(prefix)) {
+    return getToolDisplayLabel(candidate);
+  }
+  return prefix ? `${prefix} ${getToolDisplayLabel(candidate)}` : getToolDisplayLabel(candidate);
+}
+
 const PATH_KEYS = [
   'filename',
   'filepath',
@@ -238,7 +335,7 @@ function collectPathsFromValue(value: unknown, paths: string[], seen: Set<string
 export function collectToolTraceTargets(toolName: string, args: any = {}, result?: any): string[] {
   const paths: string[] = [];
   const seen = new Set<string>();
-  const name = String(toolName || '');
+  const name = normalizeToolTraceName(toolName);
 
   const collect = (value: unknown) => collectPathsFromValue(value, paths, seen);
 
@@ -311,16 +408,17 @@ export function buildToolTraceFields(
   args: any,
   label?: Pick<ToolTraceLabel, 'argKey'>,
 ): ToolTraceFields {
-  const targets = collectToolTraceTargets(toolName, args);
+  const canonicalToolName = normalizeToolTraceName(toolName);
+  const targets = collectToolTraceTargets(canonicalToolName, args);
   const argKey = label?.argKey;
   const argValue = argKey ? args?.[argKey] : undefined;
 
   let secondary = targets.length > 0
     ? summarizePathList(targets)
-    : summarizeTraceValue(argValue ?? args?.path ?? args?.command ?? args?.query ?? args?.action ?? toolName);
+    : summarizeTraceValue(argValue ?? args?.path ?? args?.command ?? args?.query ?? args?.action ?? canonicalToolName);
 
   if (!secondary && argKey) secondary = summarizeTraceValue(args?.[argKey]);
-  if (!secondary) secondary = String(toolName || 'tool');
+  if (!secondary) secondary = String(canonicalToolName || 'tool');
 
   return {
     secondary: secondary.slice(0, 160),

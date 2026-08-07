@@ -1,19 +1,13 @@
 import { ToolDefinition } from '../schemas';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import { normalizeToolTraceName } from '../tool-trace';
 
 type RegisterOptions = {
   allowOverride?: boolean;
 };
 
 export function normalizeRegistryToolName(name: string): string {
-  const value = String(name || '').trim();
-  if (value === 'system_shell') return 'workspace_run_command';
-  if (value === 'read_file') return 'workspace_read_file';
-  if (value === 'search_text') return 'workspace_search_text';
-  if (value === 'find_files') return 'workspace_find_files';
-  if (value === 'apply_patch') return 'workspace_apply_patch';
-  if (value === 'shell_command') return 'workspace_run_command';
-  return value;
+  return normalizeToolTraceName(name);
 }
 
 class ToolRegistry {

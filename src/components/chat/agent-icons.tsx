@@ -8,6 +8,44 @@ export interface IconProps {
 
 const W = '#E8E6E3';
 
+/**
+ * The EterX mark used by task/agent surfaces. Keep both raster variants in
+ * the DOM and let the app's data-theme attribute select the readable one.
+ * This is more reliable than relying on the OS preference or Tailwind's
+ * `dark:` variant while the Electron shell is switching themes at runtime.
+ */
+export const EterxLogo = ({
+  size = 32,
+  className = '',
+  alt = 'EterX',
+}: {
+  size?: number;
+  className?: string;
+  alt?: string;
+}) => (
+  <span
+    className={`eterx-theme-logo inline-flex shrink-0 items-center justify-center ${className}`}
+    style={{ width: size, height: size }}
+    role="img"
+    aria-label={alt}
+  >
+    <img
+      src="/logo-whitetheme.png"
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+      className="eterx-theme-logo-light h-full w-full select-none object-contain"
+    />
+    <img
+      src="/logo-white.png"
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+      className="eterx-theme-logo-dark h-full w-full select-none object-contain"
+    />
+  </span>
+);
+
 const LineIcon = ({
   size = 16,
   color = W,
@@ -498,9 +536,16 @@ export const AGENT_ICONS: Record<string, { Icon: React.FC<IconProps>; color: str
   'Running project command': { Icon: TerminalIcon, color: W },
   'Managing scheduled task': { Icon: ClockIcon, color: W },
   'Reading file': { Icon: FileReadIcon, color: W },
+  'Reading files': { Icon: FileReadIcon, color: W },
   'Reading PDF': { Icon: FileReadIcon, color: W },
   'Scanning directory': { Icon: Folder01Icon, color: W },
+  'Listing directory': { Icon: Folder01Icon, color: W },
+  'Finding files': { Icon: SearchList01Icon, color: W },
+  'Outlining file': { Icon: FileReadIcon, color: W },
+  'Creating file': { Icon: FileAddIcon, color: W },
   'Editing file': { Icon: FileEditIcon, color: W },
+  'Editing files': { Icon: FileEditIcon, color: W },
+  'Patching files': { Icon: FileEditIcon, color: W },
   'Writing artifact': { Icon: ArtifactIcon, color: W },
   'Searching codebase': { Icon: SearchList01Icon, color: W },
   Researching: { Icon: WebSearchIcon, color: W },

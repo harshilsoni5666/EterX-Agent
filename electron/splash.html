@@ -8,7 +8,9 @@
       (function () {
         var params = new URLSearchParams(window.location.search);
         var theme = params.get('theme') === 'dark' ? 'dark' : 'light';
+        var platform = params.get('platform') || 'unknown';
         document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.setAttribute('data-platform', platform);
         document.documentElement.style.colorScheme = theme;
       })();
     </script>
@@ -155,6 +157,14 @@
         border-radius: 4px;
       }
 
+      /* macOS uses a hiddenInset title bar with native traffic lights at the
+         upper-left. Keep the splash Help control on the opposite side so it
+         never collides with those controls during the startup animation. */
+      html[data-platform="macos"] .top-help {
+        left: auto;
+        right: 30px;
+      }
+
       .help-popover {
         position: fixed;
         top: 50px;
@@ -176,6 +186,11 @@
           opacity 150ms ease,
           transform 150ms ease;
         z-index: 2;
+      }
+
+      html[data-platform="macos"] .help-popover {
+        left: auto;
+        right: 28px;
       }
 
       body.help-open .help-popover {

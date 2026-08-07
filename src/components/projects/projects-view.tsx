@@ -37,6 +37,7 @@ import {
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
+import { EterxLogo } from '../chat/agent-icons';
 
 const MODEL_API_KEY_STORAGE_KEY = API_KEY_PRESENCE_STORAGE_KEY;
 const SETTINGS_CHANNEL = 'eterx-settings';
@@ -1022,10 +1023,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                     transition={{ delay: 0.1, duration: 0.3 }}
                     className="mb-5 shrink-0"
                   >
-                    <span className="w-12 h-12 inline-block select-none pointer-events-none">
-                      <img src="/logo-black.png" alt="App Logo" className="w-full h-full object-contain opacity-90 dark:hidden" />
-                      <img src="/logo-white.png" alt="App Logo" className="hidden w-full h-full object-contain opacity-90 dark:block" />
-                    </span>
+                    <EterxLogo size={48} className="select-none pointer-events-none opacity-90" alt="EterX" />
                   </motion.div>
 
                   <motion.p

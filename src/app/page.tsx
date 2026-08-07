@@ -16,6 +16,7 @@ import {
 // @ts-ignore — react-markdown's runtime types vary between desktop bundles.
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from '../components/chat/markdown-renderer';
+import { LocalFileLinkChip, decodeLocalFileHref } from '../components/chat/local-file-link';
 import { Maximize2, Minimize2, AlertTriangle, CheckCircle2, ChevronDown, Sun, Moon, Clock3, Code2, GraduationCap, List, MessageSquare, Pencil, PenTool, SendHorizontal, SquarePen, Search, X, ArrowLeft, ListTodo, ChevronRight, Monitor, GitFork, Terminal, GitBranch, GitCommit, PlusSquare, Check, FileCode, FileText, MoreHorizontal, Sparkles, Pin, PinOff, Archive, Split, Calendar, ExternalLink, Copy, ChevronLeft, History, RefreshCw, Plus, Pause, Play, SlidersHorizontal, ShieldCheck, Minus, ArrowUp, Mic, Power, LifeBuoy, Bug, Mail, Paperclip, Camera } from 'lucide-react';
 import { Tooltip } from '../components/ui/tooltip';
 import { safeCopyTextToClipboard } from '../components/ui/copy-button';
@@ -64,6 +65,7 @@ import {
   type CustomToolActiveTrace,
 } from '../lib/agent/custom-agent-trace-adapter';
 import { formatVisibleWorkNote } from '../lib/agent/work-note';
+import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../lib/agent/tool-trace';
 import { canonicalizeThoughtStreamLogs, closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
 import { mergeStreamingText } from '../lib/streaming-lifecycle';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
@@ -666,9 +668,11 @@ const proxyManagerMarkdownComponents = {
   th: ({ ...props }: any) => <th className="eterx-markdown-th border-b border-r border-white/[0.08] last:border-r-0 px-3 py-2 text-left font-bold text-white text-[12px] bg-white/[0.03]" {...props} />,
   td: ({ ...props }: any) => <td className="eterx-markdown-td border-b border-r border-white/[0.05] last:border-r-0 px-3 py-2 align-top text-white/85 text-[12px] leading-relaxed" {...props} />,
   tr: ({ ...props }: any) => <tr className="eterx-markdown-tr transition-colors hover:bg-white/[0.04] even:bg-white/[0.015]" {...props} />,
-  a: ({ node, href, children, ...props }: any) => (
-    <a className="text-[#E2765A] font-medium underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>
-  ),
+  a: ({ node, href, children, ...props }: any) => {
+    const localPath = decodeLocalFileHref(href);
+    if (localPath) return <LocalFileLinkChip filePath={localPath} compact />;
+    return <a className="text-[#E2765A] font-medium underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>;
+  },
 };
 
 type ProxyLiveTurn = {
@@ -1892,6 +1896,7 @@ function DeepWorkUI() {
   const persistedChatSignaturesRef = useRef<Map<string, string>>(new Map());
   const durableChatWriteChainRef = useRef<Promise<void>>(Promise.resolve());
   const chatSnapshotReadyRef = useRef(false);
+  const requestChatRestoreRef = useRef<(() => void) | null>(null);
   const pendingChatDeletionIdsRef = useRef<Set<string>>(new Set());
   const hydratedChatIdsRef = useRef<Set<string>>(new Set());
   const chatDetailRequestsRef = useRef<Map<string, Promise<void>>>(new Map());
@@ -3278,14 +3283,17 @@ function DeepWorkUI() {
           },
           onAgentActivity: (activity) => {
             if (!isCurrentSession()) return;
+            const liveToolName = normalizeToolTraceName(activity.toolName);
+            const liveLabel = normalizeToolTraceText(activity.label) || getToolDisplayLabel(liveToolName);
+            const liveDetail = normalizeToolTraceText(activity.resultSummary || activity.detail);
             const isActive = activity.phase === 'started' || activity.phase === 'running';
             const activityTurnId = liveTurnIdRef.current || (isActive ? ensureLiveTurnId() : null);
             if (isActive) {
               liveActiveActivityIdRef.current = activity.id;
               setLiveActivityLabel(
                 activity.kind === 'thinking'
-                  ? activity.detail || activity.label
-                  : activity.label
+                  ? liveDetail || liveLabel
+                  : liveLabel
               );
             } else if (liveActiveActivityIdRef.current === activity.id) {
               liveActiveActivityIdRef.current = null;
@@ -3296,11 +3304,11 @@ function DeepWorkUI() {
             if (!activityTurnId) return;
             const trace = {
               type: 'command',
-              text: activity.label,
-              secondary: activity.resultSummary || undefined,
-              tool: activity.toolName,
-              toolName: activity.toolName,
-              iconCategory: activity.toolName === 'manage_scheduled_tasks'
+              text: liveLabel,
+              secondary: liveDetail || undefined,
+              tool: liveToolName,
+              toolName: liveToolName,
+              iconCategory: liveToolName === 'manage_scheduled_tasks'
                 ? 'clock'
                 : activity.kind === 'delegation'
                   ? 'agent'
@@ -3318,8 +3326,8 @@ function DeepWorkUI() {
             upsertLiveMissionEntry({
               id: activity.id,
               kind: activity.kind === 'delegation' ? 'task' : 'step',
-              label: activity.label,
-              detail: activity.resultSummary || activity.detail,
+              label: liveLabel,
+              detail: liveDetail,
               status: isActive
                 ? 'active'
                 : activity.phase === 'completed'
@@ -4573,6 +4581,12 @@ function DeepWorkUI() {
       }
     };
 
+    // The update coordinator can ask for a restore when the app was launched
+    // while the local server was still warming up. Keep that recovery path
+    // explicit instead of making the updater treat an unhydrated chat cache as
+    // a data-loss risk forever.
+    requestChatRestoreRef.current = () => { void restoreChats(true, false); };
+
     const retryRestoreOnFocus = () => { void restoreChats(true); };
     window.addEventListener('focus', retryRestoreOnFocus);
     let chatChannel: BroadcastChannel | null = null;
@@ -4597,6 +4611,7 @@ function DeepWorkUI() {
       }
       window.removeEventListener('focus', retryRestoreOnFocus);
       chatChannel?.close();
+      requestChatRestoreRef.current = null;
     };
   // Chat restoration is a startup operation. It must be safe for React Strict
   // Mode's setup -> cleanup -> setup cycle: the first cancelled request must
@@ -4733,27 +4748,32 @@ function DeepWorkUI() {
     // filesystem writes so an older request cannot finish after a newer one
     // and erase a freshly-created chat.
     const write = async () => {
-      const response = await fetch('/api/chats', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          savedAt,
-          chats: stripped,
-          chatIds,
-          partial: true,
-          deletedChatIds,
-        }),
-        keepalive,
-      }).catch(() => null);
-      const payload = response ? await response.json().catch(() => ({})) : {};
-      const saved = Boolean(response?.ok) && Number(payload?.savedAt) === savedAt;
-      if (saved) {
-        persistedChatSignaturesRef.current = nextSignatures;
-        deletedChatIds.forEach(chatId => pendingChatDeletionIdsRef.current.delete(chatId));
-        notifyDurableChatSync(savedAt);
-        window.dispatchEvent(new CustomEvent('eterx_chats_updated', { detail: { savedAt, durable: true } }));
+      const body = JSON.stringify({
+        savedAt,
+        chats: stripped,
+        chatIds,
+        partial: true,
+        deletedChatIds,
+      });
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const response = await fetch('/api/chats', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          keepalive,
+        }).catch(() => null);
+        const payload = response ? await response.json().catch(() => ({})) : {};
+        const saved = Boolean(response?.ok) && Number(payload?.savedAt) === savedAt;
+        if (saved) {
+          persistedChatSignaturesRef.current = nextSignatures;
+          deletedChatIds.forEach(chatId => pendingChatDeletionIdsRef.current.delete(chatId));
+          notifyDurableChatSync(savedAt);
+          window.dispatchEvent(new CustomEvent('eterx_chats_updated', { detail: { savedAt, durable: true } }));
+          return true;
+        }
+        if (attempt < 2) await new Promise(resolve => window.setTimeout(resolve, 250 * (attempt + 1)));
       }
-      return saved;
+      return false;
     };
     const queuedWrite = durableChatWriteChainRef.current.then(write, write);
     durableChatWriteChainRef.current = queuedWrite.then(() => undefined, () => undefined);
@@ -6011,8 +6031,19 @@ function DeepWorkUI() {
     const desktopApi = (window as any)?.electronAPI;
     if (typeof desktopApi?.onPrepareForQuit !== 'function') return;
     const unregisterDurableFlush = registerDurableFlush(async () => {
+      if (!chatSnapshotReadyRef.current) {
+        requestChatRestoreRef.current?.();
+        const deadline = Date.now() + 10_000;
+        while (!chatSnapshotReadyRef.current && Date.now() < deadline) {
+          await new Promise(resolve => window.setTimeout(resolve, 200));
+        }
+      }
       const flushedChats = flushBackgroundChatUpdates();
-      const chatsSaved = await persistChats(flushedChats, false, true);
+      // The normal chat write queue already tracks every changed/deleted chat.
+      // Do not force a full-history rewrite during an update: a long-lived
+      // workspace can contain a very large trace log and make the renderer
+      // miss the update flush deadline even when no new data is pending.
+      const chatsSaved = await persistChats(flushedChats, false, false);
       const preferencesSaved = await flushAppStorage();
       const scheduledTasksSaved = await flushScheduledTaskWrites();
       return chatsSaved && preferencesSaved && scheduledTasksSaved;
@@ -10316,7 +10347,7 @@ function DeepWorkUI() {
             </DropdownMenu.Root>
           </div>
 
-          {/* Updates */}
+          {/* Updates stays in its existing position after Help. */}
           <button type="button"
             onClick={() => openSettingsWindow('updates')}
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
@@ -10324,8 +10355,11 @@ function DeepWorkUI() {
             Updates
           </button>
         </div>
-        {/* Right drag fill */}
-        <div className="flex-1" />
+        {/* Keep the center draggable while the macOS app title stays at the far right. */}
+        <div className="flex-1 pointer-events-none" />
+        <div className="eterx-global-brand pointer-events-none flex h-full shrink-0 items-center px-3 text-[19px] font-bold tracking-[0.01em] leading-none select-none">
+          EterX
+        </div>
       </div>
       <FloatingPetMonitor
         open={petWidgetOpen && !nativePetAvailable}
@@ -11617,12 +11651,9 @@ function DeepWorkUI() {
                               {/* Message Feed */}
                               <div ref={proxyMessageFeedRef} className="eterx-proxy-message-feed relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 flex flex-col gap-3 eterx-scrollbar overscroll-contain bg-[#171717] [scrollbar-gutter:stable]">
                                 {visibleProxyChatMessages.length === 0 ? (
-                                  <div className="flex-1 flex flex-col items-center justify-center text-center p-4">
-                                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/[0.07] bg-white/[0.035]">
-                                      <Sparkles className="h-4 w-4 text-white/38" />
-                                    </div>
-                                    <span className="mt-3 text-[14px] font-semibold text-white/70">Coordinate the work</span>
-                                    <span className="mt-1 max-w-[250px] text-[10.5px] leading-4 text-white/30">
+                                  <div className="flex flex-1 flex-col items-center justify-center px-5 py-8 text-center">
+                                    <span className="text-[14px] font-semibold leading-5 text-white/72">Coordinate the work</span>
+                                    <span className="mt-2 max-w-[270px] text-[12px] leading-[1.55] text-white/42">
                                       Add a goal, correct the active run, schedule what comes next, or ask for a grounded status update.
                                     </span>
                                   </div>

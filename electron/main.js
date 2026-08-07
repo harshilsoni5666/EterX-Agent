@@ -30,7 +30,7 @@ try {
 
 const http = require('http');
 const https = require('https');
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, Tray } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, Tray, clipboard, utilityProcess } = require('electron');
 
 // The gateway daemon is loaded by Electron's main process before the packaged
 // Next runtime is started. Its production dependencies live in the companion
@@ -135,17 +135,31 @@ let bootFailureCount = 0;
 let packagedRuntimeRoot = null;
 let packagedServer = null;
 let packagedServerUrl = null;
+let packagedServerStopPromise = null;
 let isQuitting = false;
 let desktopAutoUpdater = null;
 let desktopUpdateCheckPromise = null;
+let desktopUpdateDownloadPromise = null;
+let desktopUpdateInstallPromise = null;
 const pendingRendererFlushes = new Map();
 let rendererFlushSequence = 0;
+// electron-updater supports Linux AppImage installations. Debian packages
+// are intentionally handled as normal package downloads because replacing a
+// system-managed .deb from inside the app is not safe or portable.
+const DESKTOP_UPDATES_SUPPORTED = process.platform !== 'linux' || Boolean(process.env.APPIMAGE);
 let desktopUpdateState = {
-  status: app.isPackaged ? 'idle' : 'development',
+  status: app.isPackaged
+    ? (DESKTOP_UPDATES_SUPPORTED ? 'idle' : 'unsupported')
+    : 'development',
   currentVersion: app.getVersion(),
   availableVersion: null,
   percent: 0,
-  message: app.isPackaged ? 'Ready to check for updates' : 'Updates are available in packaged builds',
+  message: app.isPackaged
+    ? (DESKTOP_UPDATES_SUPPORTED
+      ? 'Ready to check for updates'
+      : 'In-app updates require the Linux AppImage package')
+    : 'Updates are available in packaged builds',
+  supported: DESKTOP_UPDATES_SUPPORTED,
   automaticChecks: false,
   manualInstall: true,
   lastCheckedAt: null,
@@ -370,7 +384,7 @@ function publishDesktopUpdateState(patch = {}) {
   return desktopUpdateState;
 }
 
-function requestRendererDurableFlush(timeoutMs = 8000) {
+async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1) {
   const windows = BrowserWindow.getAllWindows().filter((window) => {
     if (window.isDestroyed()) return false;
     if (window === mainWindow) return true;
@@ -384,7 +398,7 @@ function requestRendererDurableFlush(timeoutMs = 8000) {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         pendingRendererFlushes.delete(requestId);
-        logToFile(`[shutdown] Renderer durable flush timed out for window ${targetWindow.id}; continuing with the last committed AppData state.`);
+        logToFile(`[shutdown] Renderer durable flush timed out for window ${targetWindow.id}; the caller will decide whether it is safe to continue.`);
         resolve(false);
       }, timeoutMs);
       pendingRendererFlushes.set(requestId, { resolve, timer, sender: targetWindow.webContents });
@@ -399,7 +413,60 @@ function requestRendererDurableFlush(timeoutMs = 8000) {
     });
   };
 
-  return Promise.all(windows.map(requestWindowFlush)).then(results => results.every(Boolean));
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    const results = await Promise.all(windows
+      .filter(window => !window.isDestroyed())
+      .map(requestWindowFlush));
+    if (results.length === windows.length && results.every(Boolean)) return true;
+    if (attempt < attempts - 1) {
+      logToFile(`[shutdown] Renderer durable flush attempt ${attempt + 1}/${attempts} did not confirm every AppData write; retrying while the app remains connected.`);
+      await delay(350 * (attempt + 1));
+    }
+  }
+  return false;
+}
+
+// Electron does not provide Chromium's browser context menu automatically.
+// Keep editing and selection actions native so right-click behaves like the
+// host operating system in every renderer (including the Settings window).
+function attachNativeContextMenu(targetWindow) {
+  if (!targetWindow?.webContents) return;
+
+  targetWindow.webContents.on('context-menu', (event, params) => {
+    const menuTemplate = [];
+    const hasSelection = Boolean(params?.selectionText && params.selectionText.trim());
+
+    if (params?.isEditable) {
+      menuTemplate.push(
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { type: 'separator' },
+        { role: 'selectAll' },
+      );
+    } else if (hasSelection) {
+      menuTemplate.push(
+        { role: 'copy' },
+        { type: 'separator' },
+        { role: 'selectAll' },
+      );
+    }
+
+    if (params?.linkURL && /^https?:\/\//i.test(params.linkURL)) {
+      if (menuTemplate.length > 0) menuTemplate.push({ type: 'separator' });
+      menuTemplate.push({
+        label: 'Open Link in Browser',
+        click: () => { void shell.openExternal(params.linkURL); },
+      });
+    }
+
+    if (menuTemplate.length === 0) return;
+    event.preventDefault();
+    Menu.buildFromTemplate(menuTemplate).popup({ window: targetWindow });
+  });
 }
 
 ipcMain.on('desktop-durable-flush-complete', (event, requestId, ok) => {
@@ -411,7 +478,7 @@ ipcMain.on('desktop-durable-flush-complete', (event, requestId, ok) => {
 });
 
 async function performDesktopUpdateCheck() {
-  if (!app.isPackaged || !desktopAutoUpdater) return desktopUpdateState;
+  if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
   if (desktopUpdateCheckPromise) return desktopUpdateCheckPromise;
   if (desktopUpdateState.status === 'downloading' || desktopUpdateState.status === 'ready') {
     return desktopUpdateState;
@@ -420,17 +487,45 @@ async function performDesktopUpdateCheck() {
   desktopUpdateCheckPromise = (async () => {
     publishDesktopUpdateState({
       status: 'checking',
+      availableVersion: null,
       percent: 0,
       message: 'Checking for updates...',
     });
     try {
-      await desktopAutoUpdater.checkForUpdates();
-      publishDesktopUpdateState({ lastCheckedAt: new Date().toISOString() });
+      const result = await desktopAutoUpdater.checkForUpdates();
+      const checkedVersion = result?.updateInfo?.version;
+      // electron-updater normally emits update-available/update-not-available
+      // before resolving. Keep a defensive fallback for slower macOS feeds so
+      // the UI can never remain stuck on "checking".
+      if (desktopUpdateState.status === 'checking') {
+        const now = new Date().toISOString();
+        if (checkedVersion && checkedVersion !== app.getVersion()) {
+          publishDesktopUpdateState({
+            status: 'available',
+            availableVersion: checkedVersion,
+            percent: 0,
+            message: `EterX ${checkedVersion} is available`,
+            lastCheckedAt: now,
+          });
+        } else {
+          publishDesktopUpdateState({
+            status: 'current',
+            availableVersion: null,
+            percent: 100,
+            message: 'EterX is up to date',
+            lastCheckedAt: now,
+          });
+        }
+      } else {
+        publishDesktopUpdateState({ lastCheckedAt: new Date().toISOString() });
+      }
     } catch (error) {
       publishDesktopUpdateState({
         status: 'error',
+        availableVersion: null,
+        percent: 0,
         lastCheckedAt: new Date().toISOString(),
-        message: `Update check failed: ${error.message}`,
+        message: `Update check failed: ${error?.message || 'Could not reach the release feed'}`,
       });
     } finally {
       desktopUpdateCheckPromise = null;
@@ -442,6 +537,13 @@ async function performDesktopUpdateCheck() {
 
 function initializeDesktopUpdates() {
   if (!app.isPackaged) return publishDesktopUpdateState();
+  if (!DESKTOP_UPDATES_SUPPORTED) {
+    return publishDesktopUpdateState({
+      status: 'unsupported',
+      supported: false,
+      message: 'In-app updates require the Linux AppImage package. Install the latest .deb manually.',
+    });
+  }
   try {
     try {
       ({ autoUpdater: desktopAutoUpdater } = require('electron-updater'));
@@ -461,14 +563,28 @@ function initializeDesktopUpdates() {
     }
     desktopAutoUpdater.autoDownload = false;
     desktopAutoUpdater.autoInstallOnAppQuit = false;
+    // electron-updater >=7 exposes the more explicit install-event setting;
+    // keep it manual when present while retaining the v6 compatibility flag.
+    if ('autoInstallEvent' in desktopAutoUpdater) {
+      desktopAutoUpdater.autoInstallEvent = 'manual';
+    }
     desktopAutoUpdater.allowDowngrade = false;
     desktopAutoUpdater.allowPrerelease = false;
     desktopAutoUpdater.fullChangelog = true;
 
-    desktopAutoUpdater.on('checking-for-update', () => publishDesktopUpdateState({ status: 'checking', percent: 0, message: 'Checking for a newer EterX release…' }));
-    desktopAutoUpdater.on('update-available', (info) => publishDesktopUpdateState({ status: 'available', availableVersion: info.version, percent: 0, message: `EterX ${info.version} is available` }));
+    desktopAutoUpdater.on('checking-for-update', () => publishDesktopUpdateState({ status: 'checking', availableVersion: null, percent: 0, message: 'Checking for a newer EterX release...' }));
+    desktopAutoUpdater.on('update-available', (info) => publishDesktopUpdateState({
+      status: 'available',
+      availableVersion: info.version,
+      percent: 0,
+      message: `EterX ${info.version} is available`,
+      lastCheckedAt: new Date().toISOString(),
+    }));
     desktopAutoUpdater.on('update-not-available', () => publishDesktopUpdateState({ status: 'current', availableVersion: null, percent: 100, message: 'EterX is up to date', lastCheckedAt: new Date().toISOString() }));
-    desktopAutoUpdater.on('download-progress', (progress) => publishDesktopUpdateState({ status: 'downloading', percent: Math.max(0, Math.min(100, Math.round(progress.percent || 0))), message: `Downloading update — ${Math.round(progress.percent || 0)}%` }));
+    desktopAutoUpdater.on('download-progress', (progress) => {
+      const percent = Math.max(0, Math.min(100, Math.round(Number(progress?.percent) || 0)));
+      publishDesktopUpdateState({ status: 'downloading', percent, message: `Downloading update - ${percent}%` });
+    });
     desktopAutoUpdater.on('update-downloaded', (info) => {
       publishDesktopUpdateState({ status: 'ready', availableVersion: info.version, percent: 100, message: `EterX ${info.version} is ready - restart when convenient` });
       try {
@@ -481,7 +597,15 @@ function initializeDesktopUpdates() {
         }
       } catch {}
     });
-    desktopAutoUpdater.on('error', (error) => publishDesktopUpdateState({ status: 'error', percent: 0, message: `Update failed: ${error?.message || 'unknown error'}` }));
+    desktopAutoUpdater.on('error', (error) => {
+      // A durable-flush failure is represented as error + 100% so the user
+      // can retry installation. Do not let a late updater error event erase
+      // that already-downloaded package and turn the button back into a new
+      // check.
+      if (desktopUpdateState.status === 'ready' ||
+        (desktopUpdateState.availableVersion && desktopUpdateState.percent >= 100)) return;
+      publishDesktopUpdateState({ status: 'error', percent: 0, message: `Update failed: ${error?.message || 'unknown error'}` });
+    });
 
   } catch (error) {
     publishDesktopUpdateState({ status: 'error', message: `Updater unavailable: ${error.message}` });
@@ -686,8 +810,22 @@ function writeSecureRuntimeSettings(raw) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(temporary, safeStorage.encryptString(serialized), { mode: 0o600 });
     if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
-    fs.rmSync(target, { force: true });
-    fs.renameSync(temporary, target);
+    let replaced = false;
+    let lastError = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        // NSIS installs and Windows security scanners can briefly hold the
+        // previous encrypted file. Retry the replace before reporting a save
+        // failure to the renderer's update flush.
+        fs.rmSync(target, { force: true, maxRetries: 3, retryDelay: 100 });
+        fs.renameSync(temporary, target);
+        replaced = true;
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!replaced) throw lastError || new Error('Could not atomically replace secure settings.');
     return { ok: true, available: true, ...settings };
   } catch (error) {
     try { fs.rmSync(temporary, { force: true }); } catch { }
@@ -801,6 +939,9 @@ function publishGatewayEvent(channel, payload) {
 }
 
 function showMainWindow() {
+  if (process.platform === 'darwin' && app.dock && typeof app.dock.show === 'function') {
+    app.dock.show();
+  }
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
   if (mainWindow?.isMinimized()) mainWindow.restore();
   mainWindow?.show();
@@ -1735,6 +1876,7 @@ function pruneOldPackagedRuntimes() {
 
 async function startPackagedServer() {
   if (!app.isPackaged || process.env.ELECTRON_URL) return null;
+  if (packagedServerStopPromise) await packagedServerStopPromise;
   if (packagedServer && !packagedServer.killed) return packagedServerUrl;
 
   const runtimeRoot = preparePackagedRuntime();
@@ -1764,12 +1906,32 @@ async function startPackagedServer() {
   // Use the numeric loopback address so systems that prefer IPv6 localhost do
   // not try ::1 while the bundled server is bound to 127.0.0.1.
   packagedServerUrl = `http://127.0.0.1:${port}`;
-  packagedServer = spawn(process.execPath, [path.join(runtimeRoot, 'server.js')], {
-    cwd: dataRoot,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+  // On macOS, spawning the Electron executable directly can register a
+  // second Dock item for the bundled server (often shown as a stuck
+  // "exec"/helper icon).  Electron's utility process runs the same Node
+  // entrypoint through a headless helper and keeps the runtime owned by the
+  // main EterX app.  Keep the regular child process path on Windows/Linux,
+  // where their native launchers do not have this Dock behavior.
+  if (process.platform === 'darwin' && utilityProcess?.fork) {
+    try {
+      packagedServer = utilityProcess.fork(path.join(runtimeRoot, 'server.js'), [], {
+        cwd: dataRoot,
+        env,
+        stdio: 'pipe',
+        serviceName: 'EterX Runtime',
+      });
+    } catch (error) {
+      logToFile(`[EterX] Utility runtime launch failed; using compatibility launcher: ${error.message || error}`);
+    }
+  }
+  if (!packagedServer) {
+    packagedServer = spawn(process.execPath, [path.join(runtimeRoot, 'server.js')], {
+      cwd: dataRoot,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
 
   packagedServer.stdout.on('data', (chunk) => {
     const message = String(chunk).trim();
@@ -1798,11 +1960,33 @@ async function startPackagedServer() {
   return packagedServerUrl;
 }
 
-function stopPackagedServer() {
-  if (!packagedServer || packagedServer.killed) return;
-  try { packagedServer.kill(); } catch { }
+function stopPackagedServer(timeoutMs = 5000) {
+  if (packagedServerStopPromise) return packagedServerStopPromise;
+  const server = packagedServer;
+  if (!server) return Promise.resolve();
   packagedServer = null;
   packagedServerUrl = null;
+
+  packagedServerStopPromise = new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, Math.max(250, timeoutMs));
+    try {
+      if (typeof server.once === 'function') server.once('exit', finish);
+      if (typeof server.kill === 'function') server.kill();
+      else finish();
+    } catch {
+      finish();
+    }
+  }).finally(() => {
+    packagedServerStopPromise = null;
+  });
+  return packagedServerStopPromise;
 }
 
 function isHttpTarget(target) {
@@ -1932,7 +2116,17 @@ async function showSplashScreen() {
   await mainWindow.loadFile(path.join(__dirname, 'splash.html'), {
     // Keep the query small. Embedding the full PNG as a data URL can create a
     // 60KB+ file:// URL, which Chromium may reject on Windows with ERR_FAILED.
-    query: { theme, icon: getSplashIconUrl(theme) },
+    query: {
+      theme,
+      icon: getSplashIconUrl(theme),
+      platform: process.platform === 'darwin'
+        ? 'macos'
+        : process.platform === 'win32'
+          ? 'windows'
+          : process.platform === 'linux'
+            ? 'linux'
+            : 'unknown',
+    },
   });
   if (!launchInBackground && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     mainWindow.show();
@@ -2220,6 +2414,7 @@ function createWindow() {
       event.preventDefault();
     }
   });
+  attachNativeContextMenu(mainWindow);
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
 
@@ -2273,6 +2468,7 @@ function createWindow() {
 
   mainWindow.webContents.on('did-create-window', (childWindow, details) => {
     registerNativeThemedWindow(childWindow);
+    attachNativeContextMenu(childWindow);
     childWindow.setMenuBarVisibility(false);
     childWindow.setAutoHideMenuBar(true);
     if (isSettingsUrl(details?.url || '')) {
@@ -2287,16 +2483,15 @@ function createWindow() {
     });
   }
 
-  showSplashScreen()
-    .then(() => {
-      if (!launchInBackground && mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
-    })
+  // Serialize the first navigation. Starting bootApp while loadFile(splash)
+  // is still in flight can let the splash finish after the app URL and leave
+  // a visible but non-interactive startup window on slower Macs.
+  void showSplashScreen()
     .catch((error) => {
       console.error('[EterX] Could not load startup screen:', error);
       if (!launchInBackground && mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
-    });
-
-  bootApp({ retryOnFailure: true });
+    })
+    .then(() => bootApp({ retryOnFailure: true }));
 
   mainWindow.webContents.on('did-fail-load', (_event, _errorCode, _errorDescription, validatedURL, isMainFrame) => {
     if (!isMainFrame || !isHttpTarget(validatedURL || getAppTarget())) return;
@@ -2486,6 +2681,52 @@ ipcMain.handle('show-notification', (event, title, body) => {
   }
 });
 
+// Clipboard IPC is the reliable desktop path for packaged WebContents. In
+// particular, macOS can reject navigator.clipboard when the renderer is
+// loaded from a local app URL rather than a secure web origin. Keep text and
+// image access native so renderer copy/paste never depends on Chromium's
+// permission state.
+ipcMain.handle('clipboard-write-text', (_event, value) => {
+  try {
+    clipboard.writeText(String(value ?? ''));
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle('clipboard-write-png', (_event, dataUrl) => {
+  try {
+    const value = String(dataUrl ?? '');
+    if (!value.startsWith('data:image/png;base64,')) return false;
+    clipboard.writeImage(nativeImage.createFromDataURL(value));
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+ipcMain.handle('clipboard-read-text', () => {
+  try {
+    return clipboard.readText();
+  } catch {
+    return '';
+  }
+});
+
+// Chromium may expose an empty ClipboardEvent for images copied from native
+// macOS/Windows/Linux apps. Read the native image here so the composer can
+// turn screenshots and copied images into normal uploadable attachments.
+ipcMain.handle('clipboard-read-image', () => {
+  try {
+    const image = clipboard.readImage();
+    if (!image || image.isEmpty()) return null;
+    return image.toDataURL();
+  } catch {
+    return null;
+  }
+});
+
 // IPC: Open URL in system default browser
 ipcMain.handle('open-path', async (event, rawPath) => {
   try {
@@ -2507,7 +2748,7 @@ ipcMain.handle('open-external', async (event, url) => {
 ipcMain.handle('app-restart', async () => {
   await requestRendererDurableFlush();
   isQuitting = true;
-  stopPackagedServer();
+  await stopPackagedServer();
   app.relaunch();
   app.exit(0);
   return true;
@@ -2522,7 +2763,7 @@ ipcMain.handle('app-close', async () => {
   }
   await requestRendererDurableFlush();
   isQuitting = true;
-  stopPackagedServer();
+  await stopPackagedServer();
   app.quit();
   return { hiddenToTray: false };
 });
@@ -2605,46 +2846,93 @@ ipcMain.handle('gateway-send-message', async (_event, platform, target, text) =>
 ipcMain.handle('desktop-update-get-state', () => desktopUpdateState);
 
 ipcMain.handle('desktop-update-check', async () => {
-  if (!app.isPackaged || !desktopAutoUpdater) return desktopUpdateState;
+  if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
   return performDesktopUpdateCheck();
 });
 
 ipcMain.handle('desktop-update-download', async () => {
-  if (!app.isPackaged || !desktopAutoUpdater || desktopUpdateState.status !== 'available') {
+  const retryableDownload = desktopUpdateState.status === 'error'
+    && Boolean(desktopUpdateState.availableVersion)
+    && desktopUpdateState.percent < 100;
+  if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED ||
+    (desktopUpdateState.status !== 'available' && !retryableDownload)) {
     return desktopUpdateState;
   }
+  if (desktopUpdateDownloadPromise) return desktopUpdateDownloadPromise;
+
   publishDesktopUpdateState({
     status: 'downloading',
     percent: 0,
     message: `Downloading EterX ${desktopUpdateState.availableVersion || 'update'}...`,
   });
-  try {
-    await desktopAutoUpdater.downloadUpdate();
-  } catch (error) {
-    publishDesktopUpdateState({
-      status: 'error',
-      percent: 0,
-      message: `Update download failed: ${error.message}`,
-    });
-  }
-  return desktopUpdateState;
+  desktopUpdateDownloadPromise = (async () => {
+    try {
+      await desktopAutoUpdater.downloadUpdate();
+      // The event is authoritative, but this fallback keeps the manual UI
+      // usable with older electron-updater builds that resolve before sending
+      // update-downloaded.
+      if (desktopUpdateState.status === 'downloading') {
+        publishDesktopUpdateState({
+          status: 'ready',
+          percent: 100,
+          message: `EterX ${desktopUpdateState.availableVersion || 'update'} is ready - restart when convenient`,
+        });
+      }
+    } catch (error) {
+      publishDesktopUpdateState({
+        status: 'error',
+        percent: 0,
+        message: `Update download failed: ${error?.message || 'unknown error'}`,
+      });
+    } finally {
+      desktopUpdateDownloadPromise = null;
+    }
+    return desktopUpdateState;
+  })();
+  return desktopUpdateDownloadPromise;
 });
 
 ipcMain.handle('desktop-update-install', async () => {
-  if (!app.isPackaged || !desktopAutoUpdater || desktopUpdateState.status !== 'ready') return false;
-  const flushed = await requestRendererDurableFlush();
-  if (!flushed) {
-    publishDesktopUpdateState({
-      status: 'error',
-      percent: 100,
-      message: 'Update paused because the latest chats or settings could not be committed to AppData. Retry when the app is connected.',
+  const packageReady = desktopUpdateState.status === 'ready' || (
+    desktopUpdateState.status === 'error' &&
+    Boolean(desktopUpdateState.availableVersion) &&
+    desktopUpdateState.percent >= 100
+  );
+  if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED || !packageReady) return false;
+  if (desktopUpdateInstallPromise) return desktopUpdateInstallPromise;
+
+  desktopUpdateInstallPromise = (async () => {
+    const flushed = await requestRendererDurableFlush(15000, 3);
+    if (!flushed) {
+      publishDesktopUpdateState({
+        status: 'error',
+        percent: 100,
+        message: 'Update paused safely: EterX could not confirm the latest chats or settings were saved. Keep the app open and retry restart and install.',
+      });
+      return false;
+    }
+    isQuitting = true;
+    // Release the local server before handing control to the installer. This
+    // avoids locked runtime files on Windows and a stale helper process on
+    // macOS, while leaving AppData untouched.
+    await stopPackagedServer(8000);
+    setImmediate(() => {
+      try {
+        desktopAutoUpdater.quitAndInstall(false, true);
+      } catch (error) {
+        isQuitting = false;
+        publishDesktopUpdateState({
+          status: 'error',
+          percent: 100,
+          message: `Could not start the installer: ${error?.message || 'unknown error'}`,
+        });
+      }
     });
-    return false;
-  }
-  isQuitting = true;
-  stopPackagedServer();
-  setImmediate(() => desktopAutoUpdater.quitAndInstall(false, true));
-  return true;
+    return true;
+  })().finally(() => {
+    desktopUpdateInstallPromise = null;
+  });
+  return desktopUpdateInstallPromise;
 });
 
 ipcMain.handle('pet-window-open', async (_event, status) => {
@@ -2733,6 +3021,11 @@ app.on('ready', async () => {
   }
 
   await initializeGatewayDaemon();
+  // Login/background launches should stay out of the Dock until the user
+  // explicitly opens EterX from the tray or a second launch request.
+  if (launchInBackground && process.platform === 'darwin' && app.dock && typeof app.dock.hide === 'function') {
+    app.dock.hide();
+  }
   createWindow();
   initializeDesktopUpdates();
 });
@@ -2748,14 +3041,13 @@ app.on('before-quit', (event) => {
     event.preventDefault();
     isQuitting = true;
     void requestRendererDurableFlush().finally(() => {
-      stopPackagedServer();
-      app.quit();
+      void stopPackagedServer().finally(() => app.quit());
     });
     return;
   }
   isQuitting = true;
   void gatewayDaemon?.stop();
-  stopPackagedServer();
+  void stopPackagedServer();
 });
 
 app.on('activate', function () {

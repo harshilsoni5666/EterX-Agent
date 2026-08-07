@@ -40,7 +40,7 @@ import {
   normalizeLiveProvider,
 } from '../../lib/live/live-provider';
 import { getLiveVoiceOptions } from '../../lib/live/voice-catalog';
-import { safeCopyTextToClipboard } from '../ui/copy-button';
+import { safeCopyTextToClipboard, safeReadTextFromClipboard } from '../ui/copy-button';
 import {
   DEFAULT_SEARCH_SETTINGS,
   normalizeSearchSettings,
@@ -523,11 +523,12 @@ type ModelCatalog = Record<string, string[]>;
 type ProviderModelOption = { id: string; label: string; source: 'selected' | 'saved' | 'live' };
 type LiveModelOption = { value: string; label: string; tag?: string; description?: string };
 type DesktopUpdateState = {
-  status: 'idle' | 'development' | 'checking' | 'available' | 'downloading' | 'current' | 'ready' | 'error';
+  status: 'idle' | 'development' | 'unsupported' | 'checking' | 'available' | 'downloading' | 'current' | 'ready' | 'error';
   currentVersion: string;
   availableVersion?: string | null;
   percent: number;
   message: string;
+  supported?: boolean;
   automaticChecks?: boolean;
   manualInstall?: boolean;
   lastCheckedAt?: string | null;
@@ -1539,6 +1540,31 @@ const ApiKeyPoolEditor: React.FC<{
     }
   };
 
+  const handleKeyPaste = async (event: React.ClipboardEvent<HTMLInputElement>, index: number) => {
+    // Apply paste through the controlled value. This avoids a macOS Electron
+    // renderer dropping the native paste event while keeping selection
+    // replacement behavior for a single key and pool expansion for multiline
+    // or comma-separated values.
+    const target = event.currentTarget;
+    const currentValue = target.value || rows[index] || '';
+    const start = Math.max(0, Math.min(target.selectionStart ?? currentValue.length, currentValue.length));
+    const end = Math.max(start, Math.min(target.selectionEnd ?? start, currentValue.length));
+    const eventValue = event.clipboardData.getData('text/plain') || event.clipboardData.getData('text');
+
+    // Cancel before awaiting the native fallback so the renderer cannot also
+    // apply the browser's default paste after this controlled update.
+    event.preventDefault();
+    const pastedValue = eventValue || await safeReadTextFromClipboard();
+    if (!pastedValue) return;
+
+    const pastedKeys = splitApiKeyPool(pastedValue);
+    if (pastedKeys.length > 1) {
+      updateRow(index, pastedValue);
+      return;
+    }
+    updateRow(index, `${currentValue.slice(0, start)}${pastedValue}${currentValue.slice(end)}`);
+  };
+
   const cleanRows = rows.map(row => row.trim());
   const configuredCount = splitApiKeyPool(value).length;
   const acceptedCount = sync?.accepted ? sync.count : 0;
@@ -1633,6 +1659,8 @@ const ApiKeyPoolEditor: React.FC<{
                 <input
                   value={row}
                   onChange={(event) => updateRow(index, event.target.value)}
+                  onPaste={(event) => { void handleKeyPaste(event, index); }}
+                  data-eterx-paste-handler="controlled"
                   type={isVisible ? 'text' : 'password'}
                   spellCheck={false}
                   placeholder={index === 0 ? 'Paste provider API key' : 'Paste another key'}
@@ -2267,6 +2295,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const modelApiKeysRef = useRef<Record<string, string>>({});
   const modelOverridesRef = useRef<ModelOverrides>({});
   const providerBaseURLsRef = useRef<Record<string, string>>({});
+  const runtimeSettingsHydratedRef = useRef(false);
   const settingsRevisionRef = useRef(0);
   const runtimeSettingsWriteRef = useRef<Promise<unknown>>(Promise.resolve());
   const runtimeSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2516,10 +2545,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       ];
       if (typeof desktopApi?.saveSecureRuntimeSettings === 'function') {
         writes.push(
-          desktopApi.saveSecureRuntimeSettings(snapshot).catch((error: unknown) => {
-            saved = false;
-            console.warn('Could not persist encrypted desktop API settings:', error);
-          }),
+          desktopApi.saveSecureRuntimeSettings(snapshot)
+            .then((result: any) => {
+              // OS secure storage is an optional second copy; the encrypted
+              // AppData runtime file remains authoritative on Linux systems
+              // without a keyring. Treat an available-but-failed secure write
+              // as a real durability failure, not an unavailable keyring.
+              if (result?.ok === false && result?.available !== false) {
+                saved = false;
+                console.warn('Could not persist encrypted desktop API settings:', result?.error || 'secure storage unavailable');
+              }
+            })
+            .catch((error: unknown) => {
+              saved = false;
+              console.warn('Could not persist encrypted desktop API settings:', error);
+            }),
         );
       }
       await Promise.all(writes);
@@ -2527,7 +2567,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     };
     const queuedWrite = runtimeSettingsWriteRef.current.then(write, write);
     runtimeSettingsWriteRef.current = queuedWrite;
-    await queuedWrite;
+    return queuedWrite;
   }, []);
 
   const eggQuotes = [
@@ -3081,7 +3121,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         .then(payload => payload?.settings && typeof payload.settings === 'object' ? payload.settings : {})
         .catch(() => ({}));
       const secureSettings = typeof desktopApi?.getSecureRuntimeSettings === 'function'
-        ? await desktopApi.getSecureRuntimeSettings()
+        ? await desktopApi.getSecureRuntimeSettings().catch(() => null)
         : null;
       if (cancelled || settingsRevisionRef.current !== loadRevision) return;
       const secureApiKeys = secureSettings?.available && secureSettings.apiKeys && typeof secureSettings.apiKeys === 'object'
@@ -3274,6 +3314,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         modelOverrides: normalizedModelOverrides,
         modelEntries: resolvedModelEntries,
       }, true);
+      runtimeSettingsHydratedRef.current = true;
       } catch (error) {
         console.warn('Could not load runtime settings:', error);
       }
@@ -3430,17 +3471,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ baseURLs: snapshot }),
       }).then(async response => {
-        if (!response.ok) return;
-        await persistDesktopRuntimeSettings(
+        if (!response.ok) return false;
+        const runtimeSaved = await persistDesktopRuntimeSettings(
           apiKeysRef.current,
           modelApiKeysRef.current,
           modelOverridesRef.current,
           snapshot,
         );
+        if (runtimeSaved === false) return false;
         if (JSON.stringify(providerBaseURLsRef.current) === JSON.stringify(snapshot)) {
           providerBaseURLDirtyRef.current = false;
         }
-      }).catch(() => undefined);
+        return true;
+      }).catch(() => {
+        providerBaseURLDirtyRef.current = true;
+        return false;
+      });
       providerBaseURLSyncChainRef.current = providerBaseURLSyncChainRef.current.then(sync, sync);
     }, 250);
     return () => {
@@ -3455,7 +3501,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const hasPendingTimer = Boolean(providerBaseURLSyncTimerRef.current);
     if (!providerBaseURLDirtyRef.current && !hasPendingTimer) {
       const result = await providerBaseURLSyncChainRef.current;
-      return result !== false;
+      if (result !== false) return true;
+      // A previous failed request must not permanently poison future update
+      // flushes. Mark it dirty and immediately retry the current snapshot.
+      providerBaseURLDirtyRef.current = true;
     }
     if (providerBaseURLSyncTimerRef.current) {
       clearTimeout(providerBaseURLSyncTimerRef.current);
@@ -3468,17 +3517,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       body: JSON.stringify({ baseURLs: snapshot }),
     }).then(async response => {
       if (!response.ok) return false;
-      await persistDesktopRuntimeSettings(
+      const runtimeSaved = await persistDesktopRuntimeSettings(
         apiKeysRef.current,
         modelApiKeysRef.current,
         modelOverridesRef.current,
         snapshot,
       );
+      if (runtimeSaved === false) return false;
       if (JSON.stringify(providerBaseURLsRef.current) === JSON.stringify(snapshot)) {
         providerBaseURLDirtyRef.current = false;
       }
       return true;
-    }).catch(() => false);
+    }).catch(() => {
+      providerBaseURLDirtyRef.current = true;
+      return false;
+    });
     providerBaseURLSyncChainRef.current = providerBaseURLSyncChainRef.current.then(sync, sync);
     const result = await providerBaseURLSyncChainRef.current;
     return result !== false;
@@ -3486,12 +3539,29 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   useEffect(() => {
     return registerDurableFlush(async () => {
+      // Do not write default empty refs while the initial AppData snapshot is
+      // still loading. Once hydrated, always retry a complete current
+      // snapshot; this recovers from an earlier localhost write failure that
+      // would otherwise leave the old rejected promise in the flush chain.
+      if (!runtimeSettingsHydratedRef.current) {
+        const deadline = Date.now() + 10_000;
+        while (!runtimeSettingsHydratedRef.current && Date.now() < deadline) {
+          await new Promise(resolve => window.setTimeout(resolve, 200));
+        }
+      }
+      if (!runtimeSettingsHydratedRef.current) return false;
       await flushRuntimeSync();
+      const currentRuntimeSaved = await persistDesktopRuntimeSettings(
+        apiKeysRef.current,
+        modelApiKeysRef.current,
+        modelOverridesRef.current,
+        providerBaseURLsRef.current,
+      );
       const runtimeSettingsSaved = await runtimeSettingsWriteRef.current;
       const providerURLsSaved = await flushProviderBaseURLSync();
-      return runtimeSettingsSaved !== false && providerURLsSaved;
+      return currentRuntimeSaved !== false && runtimeSettingsSaved !== false && providerURLsSaved;
     });
-  }, [flushProviderBaseURLSync, flushRuntimeSync]);
+  }, [flushProviderBaseURLSync, flushRuntimeSync, persistDesktopRuntimeSettings]);
 
   // Fetch active provider key connection status when panel opens
   useEffect(() => {
@@ -5821,7 +5891,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               </span>
                             </div>
 
-                            {(updateState.status === 'downloading' || updateState.status === 'ready') && (
+                            {(updateState.status === 'downloading' || updateState.status === 'ready' || (
+                              updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.percent >= 100
+                            )) && (
                               <div className="mt-5">
                                 <div className="mb-2 flex justify-between text-[11px] text-[#777]">
                                   <span>{updateState.availableVersion ? `Version ${updateState.availableVersion}` : 'Update package'}</span>
@@ -5835,24 +5907,30 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </div>
 
                           <div className="flex gap-3">
-                            {updateState.status === 'ready' ? (
-                              <SoftButton onClick={() => void (window as any)?.electronAPI?.installUpdate?.()}>Restart and install</SoftButton>
-                            ) : updateState.status === 'available' ? (
+                            {updateState.status === 'ready' || (
+                              updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.percent >= 100
+                            ) ? (
+                              <SoftButton onClick={() => void (window as any)?.electronAPI?.installUpdate?.()}>
+                                {updateState.status === 'error' ? 'Retry restart and install' : 'Restart and install'}
+                              </SoftButton>
+                            ) : updateState.status === 'available' || (
+                              updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.percent < 100
+                            ) ? (
                               <SoftButton onClick={() => void (window as any)?.electronAPI?.downloadUpdate?.()}>
-                                Download EterX {updateState.availableVersion}
+                                {updateState.status === 'error' ? 'Retry download' : `Download EterX ${updateState.availableVersion}`}
                               </SoftButton>
                             ) : (
                               <SoftButton
-                                disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'development'}
+                                disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'development' || updateState.status === 'unsupported'}
                                 onClick={() => void (window as any)?.electronAPI?.checkForUpdates?.()}
                               >
-                                {updateState.status === 'checking' ? 'Checking…' : updateState.status === 'downloading' ? 'Downloading…' : 'Check for updates'}
+                                {updateState.status === 'checking' ? 'Checking…' : updateState.status === 'downloading' ? 'Downloading…' : updateState.status === 'unsupported' ? 'Updates unavailable' : 'Check for updates'}
                               </SoftButton>
                             )}
                           </div>
 
                           <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
-                            Updates are fully manual. Choose Check for updates, then choose Download only if a newer stable release is available. EterX installs only after you choose Restart and install. Your chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory.
+                            Updates are fully manual. Choose Check for updates, then Download only when a newer stable release is available. EterX installs only after Restart and install. Chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory. Linux in-app updates require the AppImage package; .deb installations are updated by downloading the next package.
                           </p>
                           {updateState.lastCheckedAt && (
                             <p className="mt-2 text-[11px] text-[#555]">

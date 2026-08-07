@@ -21,8 +21,38 @@ export const isLocalFilePath = (value: string) =>
 export const encodeLocalFileHref = (filePath: string) =>
   `${ LOCAL_FILE_HREF_PREFIX }${ encodeURIComponent(String(filePath || '').trim()) }`;
 
+const decodeNativeFileUrl = (href: string) => {
+  // Chromium normalizes Windows file URLs differently depending on whether
+  // the path came from a browser, Electron, or a copied markdown response.
+  // Handle drive-letter URLs before URL.pathname so `file://C:/…` does not
+  // become a bogus UNC host named `c:`.
+  const windowsMatch = href.match(/^file:(?:\/){2,3}([A-Za-z]:[\\/][^\r\n]*)$/i);
+  if (windowsMatch) {
+    try {
+      return decodeURIComponent(windowsMatch[1]).replace(/\//g, '\\');
+    } catch {
+      return windowsMatch[1].replace(/\//g, '\\');
+    }
+  }
+
+  try {
+    const parsed = new URL(href);
+    if (parsed.protocol.toLowerCase() !== 'file:') return null;
+    const pathname = decodeURIComponent(parsed.pathname || '');
+    if (parsed.hostname) {
+      return `\\\\${ decodeURIComponent(parsed.hostname) }${ pathname.replace(/\//g, '\\') }`;
+    }
+    // file:///C:/… has a leading slash before the Windows drive.
+    if (/^\/[A-Za-z]:[\\/]/.test(pathname)) return pathname.slice(1).replace(/\//g, '\\');
+    return pathname || null;
+  } catch {
+    return null;
+  }
+};
+
 export const decodeLocalFileHref = (href?: string | null) => {
   if (!href) return null;
+  if (/^file:\/\//i.test(href)) return decodeNativeFileUrl(href);
   const prefix = href.startsWith(LOCAL_FILE_HREF_PREFIX)
     ? LOCAL_FILE_HREF_PREFIX
     : href.startsWith(LEGACY_LOCAL_FILE_HREF_PREFIX)
@@ -229,7 +259,7 @@ export const LocalFileLinkChip = React.memo(({
     await copyTextToClipboard(filePath);
   };
 
-  const openPath = (event: React.MouseEvent) => {
+  const openPath = (event: React.SyntheticEvent) => {
     event.preventDefault();
     event.stopPropagation();
 
@@ -243,29 +273,38 @@ export const LocalFileLinkChip = React.memo(({
       .catch(() => {
         setFailed(true);
         window.setTimeout(() => setFailed(false), 1800);
-      });
+    });
+  };
+
+  const handleKeyboardOpen = (event: React.KeyboardEvent<HTMLSpanElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    openPath(event);
   };
 
   return (
     <span
       onClick={openPath}
-      className={`eterx-local-file-chip inline-flex min-w-0 max-w-full items-center overflow-hidden align-middle text-left ${ compact ? 'my-0.5' : 'my-1' } rounded-[10px] border border-white/[0.09] bg-[#181817] shadow-[0_7px_20px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-white/[0.14] hover:bg-[#1D1C1B] cursor-pointer`}
+      onKeyDown={handleKeyboardOpen}
+      className={`eterx-local-file-chip inline-flex min-w-0 max-w-full items-center overflow-hidden align-middle text-left ${ compact ? 'my-0.5' : 'my-1' } rounded-[10px] border border-white/[0.09] bg-[#181817] shadow-[0_7px_20px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.045)] transition-colors hover:border-white/[0.14] hover:bg-[#1D1C1B] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${name}`}
       title={filePath}
     >
       <span
         className={`inline-flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-l-[10px] ${ compact ? 'px-2 py-1' : 'px-2.5 py-1.5' } text-left`}
       >
         <LocalFileIcon fileName={name} size={compact ? 'sm' : 'md'} />
-        <span className="min-w-0 truncate text-[12.75px] font-semibold leading-tight tracking-normal text-[#E8E6E3]">
+        <span className="eterx-local-file-chip-name min-w-0 truncate text-[12.75px] font-semibold leading-tight tracking-normal text-[#E8E6E3]">
           {failed ? 'Open failed' : name}
         </span>
-        <ExternalLink className="h-3.5 w-3.5 shrink-0 text-[#807A72] opacity-75" strokeWidth={2} />
+        <ExternalLink className="eterx-local-file-chip-icon h-3.5 w-3.5 shrink-0 text-[#807A72] opacity-75" strokeWidth={2} />
       </span>
-      <span className="h-6 w-px shrink-0 bg-white/[0.10]" aria-hidden="true" />
+      <span className="eterx-local-file-chip-divider h-6 w-px shrink-0 bg-white/[0.10]" aria-hidden="true" />
       <button
         type="button"
         onClick={copyPath}
-        className={`inline-flex shrink-0 items-center justify-center rounded-r-[10px] ${ compact ? 'h-8 w-8' : 'h-9 w-9' } text-[#9D968D] transition-colors hover:bg-white/[0.045] hover:text-[#E8E6E3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`}
+        className={`eterx-local-file-chip-copy inline-flex shrink-0 items-center justify-center rounded-r-[10px] ${ compact ? 'h-8 w-8' : 'h-9 w-9' } text-[#9D968D] transition-colors hover:bg-white/[0.045] hover:text-[#E8E6E3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`}
         aria-label={`Copy URL for ${ name }`}
         title="Copy download URL"
       >

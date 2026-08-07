@@ -97,8 +97,15 @@ export function registerDurableFlush(flush: () => Promise<boolean | void> | bool
 }
 
 export async function flushDurableState(): Promise<boolean> {
-  const results = await Promise.allSettled(Array.from(durableFlushers, flush => Promise.resolve().then(flush)));
-  return results.every(result => result.status === 'fulfilled' && result.value !== false);
+  const flushers = Array.from(durableFlushers);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const results = await Promise.allSettled(flushers.map(flush => Promise.resolve().then(flush)));
+    if (results.every(result => result.status === 'fulfilled' && result.value !== false)) return true;
+    if (attempt < 2) {
+      await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
+  return false;
 }
 
 const persist = () => {
@@ -249,8 +256,9 @@ export async function refreshAppStorage(): Promise<boolean> {
     const hadPendingWrites = persistRequestedDuringHydration;
     persistRequestedDuringHydration = false;
     window.dispatchEvent(new CustomEvent(FOLDER_STORAGE_READY_EVENT));
-    if (hadPendingWrites) await enqueuePersist();
-    return true;
+    const pendingWriteSaved = !hadPendingWrites || await enqueuePersist();
+    if (!pendingWriteSaved) persistRequestedDuringHydration = true;
+    return pendingWriteSaved;
   })().finally(() => {
     storageRefreshPromise = null;
   });

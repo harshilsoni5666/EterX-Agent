@@ -18,6 +18,7 @@ import { AgentFace } from './agent-face';
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { isThoughtStreamOpen } from '../../lib/thought-stream-lifecycle';
+import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../../lib/agent/tool-trace';
 
 type SubAgentAssetIndexes = Record<string, number>;
 
@@ -358,8 +359,14 @@ const VERB_MAP: Record<string, string> = {
   'Running command': 'Ran',
   'Running project command': 'Ran',
   'Reading file': 'Read',
+  'Reading files': 'Read',
   'Scanning directory': 'Listed',
+  'Listing directory': 'Listed',
+  'Finding files': 'Found',
+  'Outlining file': 'Outlined',
   'Editing file': 'Edited',
+  'Editing files': 'Edited',
+  'Creating file': 'Created',
   'Writing artifact': 'Created',
   'Searching codebase': 'Searched',
   'Researching': 'Web searched',
@@ -476,7 +483,8 @@ const shouldUseTerminalIcon = (log: any, subtitle = '', preview?: any) => {
   if (iconCategory === 'terminal') return true;
   if (preview?.type === 'console_output') return true;
   if (log?.type === 'console_output') return true;
-  if (['system_shell', 'workspace_run_command', 'terminal_access', 'process_manager'].includes(String(log?.tool || log?.name || ''))) return true;
+  const toolName = normalizeToolTraceName(log?.tool || log?.name);
+  if (['system_shell', 'workspace_run_command', 'terminal_access', 'process_manager'].includes(toolName)) return true;
   return TERMINAL_ACTION_PATTERN.test(combined);
 };
 
@@ -2321,7 +2329,7 @@ const getDiffStats = (preview: any, log: any) => {
 
   // Fallback: extract stats from log tool arguments
   const args = log?.toolArgs || log?.args;
-  const toolName = log?.tool || log?.name || '';
+  const toolName = normalizeToolTraceName(log?.tool || log?.name);
   if (added === 0 && removed === 0 && args && toolName) {
     if (toolName === 'workspace_str_replace') {
       const oldStr = String(args.old_string || '');
@@ -3012,6 +3020,7 @@ const FileChangeTraceCard = ({
   preview,
   isLiveChip,
   displayVerb,
+  iconCategory,
   fileTargets,
   diffStats,
   inCard = false,
@@ -3020,6 +3029,7 @@ const FileChangeTraceCard = ({
   preview?: any;
   isLiveChip: boolean;
   displayVerb: string;
+  iconCategory?: string;
   fileTargets: FileTraceTarget[];
   diffStats: { added: number; removed: number } | null;
   inCard?: boolean;
@@ -3091,7 +3101,7 @@ const FileChangeTraceCard = ({
   const effectiveStats = structuredStats || diffStats;
 
   const canExpand = isPatchWithResult || canPreview || canFetchCreatedFile || canShowFileList;
-  const agentEntry = resolveAgentIcon(displayVerb, log.text, log.iconCategory);
+  const agentEntry = resolveAgentIcon(displayVerb, log.text, iconCategory || log.iconCategory);
   const { Icon: AI, color: ac } = agentEntry;
 
   const activate = (event: React.MouseEvent | React.KeyboardEvent) => {
@@ -3222,8 +3232,17 @@ const ActionChip = ({
   isNested?: boolean, inCard?: boolean
 }) => {
   const isLiveChip = isActiveGroup && isLastChip;
+  const displayToolName = normalizeToolTraceName(log.tool || log.name);
   const isEdit = log.type === 'file_edit' ||
-    ['workspace_write_file', 'workspace_edit_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_many_files', 'replace_file_content', 'multi_replace_file_content', 'write_to_file'].includes(log.tool || log.name);
+    ['workspace_write_file', 'workspace_edit_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_many_files', 'replace_file_content', 'multi_replace_file_content', 'write_to_file'].includes(displayToolName || log.tool || log.name);
+  const isRead = [
+    'workspace_read_file',
+    'workspace_read_many_files',
+    'workspace_view_file',
+  ].includes(displayToolName || log.tool || log.name) || (
+    log.type === 'exploration' &&
+    /\b(?:read(?:ing)?|view(?:ing)?)\s+files?\b/i.test(String(log.text || ''))
+  );
   // workspace_apply_patch logs come in as file_edit with text 'Patching files'
   const isPatch = isEdit && /patch/i.test(String(log.text || ''));
   const { openPanel } = useFilePanelActions();
@@ -3231,7 +3250,7 @@ const ActionChip = ({
   const connectorAction = useMemo(() => isConnectorTrace(log), [log]);
   const logFileTargets = useMemo(() => collectFileTargets(log), [log]);
   // Subtitle: the secondary arg (command string, URL, query, etc.)
-  const subtitle = log.secondary && log.secondary !== log.filename ? String(log.secondary).substring(0, 120) : '';
+  const subtitle = log.secondary && log.secondary !== log.filename ? normalizeToolTraceText(log.secondary).substring(0, 120) : '';
   const preview = useMemo(() => {
     if (log.toolResult !== undefined && log.toolResult !== null) {
       const EXCLUDED_PREVIEW_TOOLS = new Set([
@@ -3239,8 +3258,13 @@ const ActionChip = ({
         'memory_v2', 'desktop_control',
         'browser_control', 'checkpoint', 'computer', 'screen_agent'
       ]);
-      const toolName = log.tool || log.name || '';
-      if (!EXCLUDED_PREVIEW_TOOLS.has(toolName) && !['workspace_read_file', 'workspace_write_file', 'workspace_edit_file', 'system_shell', 'workspace_run_command'].includes(toolName)) {
+      const toolName = displayToolName || log.tool || log.name || '';
+      if (!EXCLUDED_PREVIEW_TOOLS.has(toolName) && ![
+        'workspace_read_file', 'workspace_read_many_files', 'workspace_view_file',
+        'workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files',
+        'workspace_str_replace', 'workspace_apply_patch',
+        'system_shell', 'workspace_run_command',
+      ].includes(toolName)) {
         return {
           id: `inline_result_${ log.id }`,
           type: 'tool_result_preview',
@@ -3298,7 +3322,7 @@ const ActionChip = ({
         ? chooseBestFilePreview(allLogs)
         : null;
     }
-    if (log.type === 'exploration' && (log.text === 'Reading file' || log.text?.toLowerCase().includes('read'))) {
+    if (isRead) {
       const scopedPreview = searchLogs.find((l: any) => filePreviewMatchesTargets(l, logFileTargets));
       if (scopedPreview) return scopedPreview;
       return logFileTargets.length > 0
@@ -3306,7 +3330,7 @@ const ActionChip = ({
         : null;
     }
     return null;
-  }, [allLogs, isEdit, log, logFileTargets]);
+  }, [allLogs, displayToolName, isEdit, isRead, log, logFileTargets]);
   const [isExpanded, setIsExpanded] = useState(false);
   const actionIdentity = `${ getStableActionEventId(log) }|${ getActionLookupIdentity(log) }`;
   useEffect(() => {
@@ -3358,7 +3382,8 @@ const ActionChip = ({
       };
       return { icon: null, verbDone: isCreate ? 'Created' : 'Edited', verbLive: isCreate ? 'Creating' : 'Editing', color: '#E8E6E3' };
     }
-    const base = getToolMeta(log.text, log.type, log.icon);
+    const actionText = normalizeToolTraceText(log.text) || getToolDisplayLabel(displayToolName);
+    const base = getToolMeta(actionText, log.type, log.icon);
     // Map past-tense verbs → live present-tense
     const LIVE_VERBS: Record<string, string> = {
       'Ran': 'Running', 'Read': 'Reading', 'Listed': 'Listing',
@@ -3372,10 +3397,11 @@ const ActionChip = ({
       'Queried': 'Querying', 'Compared': 'Comparing',
     };
     return { ...base, verbDone: base.verb, verbLive: LIVE_VERBS[base.verb] || base.verb };
-  }, [isEdit, log.text, log.type, log.icon, log.iconCategory, preview, previewLooksEdited]);
+  }, [displayToolName, isEdit, log.text, log.type, log.icon, log.iconCategory, preview, previewLooksEdited]);
   const displayVerb = isLiveChip ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
   const cleanVerb = displayVerb.replace(/\s+files?$/i, '').trim();
   const displayVerbLabel = hasFile ? stripTrailingFileName(cleanVerb, fileName) : cleanVerb;
+  const fileDisplayVerb = isRead ? (isLiveChip ? 'Reading' : 'Read') : displayVerbLabel;
   const isTerminalAction = isTerminalActionLike(log, preview);
   if (isTerminalAction) {
     return (
@@ -3414,13 +3440,14 @@ const ActionChip = ({
     );
   }
 
-  if (isEdit) {
+  if (isEdit || isRead) {
     return (
       <FileChangeTraceCard
         log={log}
         preview={preview}
         isLiveChip={isLiveChip}
-        displayVerb={displayVerbLabel}
+        displayVerb={fileDisplayVerb}
+        iconCategory={isRead ? 'file_read' : undefined}
         fileTargets={fileTargets}
         diffStats={diffStats}
         inCard={inCard}
@@ -3654,8 +3681,8 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
 // Inter-agent communication card — shows messages between agents
 const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: SubAgentAssetIndexes }) => {
   const agentName = log.agentName || log.subAgent || 'Sub-agent';
-  const actionText = String(log.text || log.currentAction || log.secondary || 'Working').trim();
-  const detailText = String(log.secondary && log.secondary !== actionText ? log.secondary : log.task || '').trim();
+  const actionText = normalizeToolTraceText(log.text || log.currentAction || log.secondary || 'Working');
+  const detailText = normalizeToolTraceText(log.secondary && log.secondary !== actionText ? log.secondary : log.task || '');
   const stepLabel = log.agentStep ? `Step ${ log.agentStep }` : 'Delegated step';
 
   return (
@@ -3758,6 +3785,7 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
 // Sub-agent error card
 const SubAgentErrorCard = ({ log, assetIndexes }: { log: any; assetIndexes?: SubAgentAssetIndexes }) => {
   const agentName = log.agentName || log.subAgent || 'Agent';
+  const detail = normalizeToolTraceText(log.secondary || '');
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.97 }}
@@ -3767,7 +3795,7 @@ const SubAgentErrorCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Sub
       <SubAgentIdentityIcon name={agentName} status="error" size={36} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="min-w-0 flex-1">
         <span className="block text-[13.5px] font-medium text-[#E5B2AD]">{agentName} {log.errorType === 'cancelled' ? 'stopped' : 'encountered an error'}</span>
-        <span className="block text-[12px] font-medium text-[#A07B76] mt-0.5 truncate">{log.secondary || ''}</span>
+        <span className="block text-[12px] font-medium text-[#A07B76] mt-0.5 truncate">{detail}</span>
       </span>
     </motion.div>
   );

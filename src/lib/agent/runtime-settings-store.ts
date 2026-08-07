@@ -22,6 +22,28 @@ const SETTINGS_DIR = path.join(getEterxDataDir(), 'settings');
 const SETTINGS_FILE = path.join(SETTINGS_DIR, 'runtime-settings.bin');
 const SETTINGS_BACKUP_FILE = path.join(SETTINGS_DIR, 'runtime-settings.backup.bin');
 
+const replaceFileWithRetry = async (temporary: string, target: string) => {
+  let lastError: unknown = null;
+  // Windows can briefly keep the old file open while Defender, indexing, or
+  // the packaged runtime is reading it. Keep the old backup intact and retry
+  // the small replace window instead of failing an otherwise safe update.
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      if (process.platform === 'win32') {
+        fs.rmSync(target, { force: true, maxRetries: 3, retryDelay: 100 });
+      }
+      fs.renameSync(temporary, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 5) {
+        await new Promise(resolve => setTimeout(resolve, 80 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Could not atomically replace runtime settings.');
+};
+
 const fileRevision = (source: string) => {
   try {
     const stat = fs.statSync(source);
@@ -119,6 +141,7 @@ export async function updateStoredRuntimeSettings(patch: StoredRuntimeSettings):
     release = resolve;
   });
   await previous;
+  let temporary: string | null = null;
   try {
     const current = readStoredRuntimeSettings();
     const next = normalizeStoredSettings({ ...current, ...patch });
@@ -135,14 +158,16 @@ export async function updateStoredRuntimeSettings(patch: StoredRuntimeSettings):
       data: encrypted.toString('base64'),
     };
     fs.mkdirSync(SETTINGS_DIR, { recursive: true });
-    const temporary = `${SETTINGS_FILE}.tmp-${process.pid}-${Date.now()}`;
+    temporary = `${SETTINGS_FILE}.tmp-${process.pid}-${Date.now()}`;
     fs.writeFileSync(temporary, `${JSON.stringify(envelope)}\n`, { encoding: 'utf8', mode: 0o600 });
     if (fs.existsSync(SETTINGS_FILE)) {
       try { fs.copyFileSync(SETTINGS_FILE, SETTINGS_BACKUP_FILE); } catch { }
     }
-    fs.rmSync(SETTINGS_FILE, { force: true });
-    fs.renameSync(temporary, SETTINGS_FILE);
+    await replaceFileWithRetry(temporary, SETTINGS_FILE);
   } catch (error) {
+    if (temporary) {
+      try { fs.rmSync(temporary, { force: true }); } catch { }
+    }
     console.warn('[EterX] Could not persist folder-backed runtime settings:', error instanceof Error ? error.message : error);
     throw error;
   } finally {

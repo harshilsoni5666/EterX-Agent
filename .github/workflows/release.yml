@@ -156,15 +156,17 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(
-            dist/EterX-*.exe
-            dist/EterX-*.blockmap
-            dist/latest*.yml
-            dist/EterX-*.dmg
-            dist/EterX-*.zip
-            dist/EterX-*.AppImage
-            dist/EterX-*.deb
-          )
+          case "${{ matrix.target }}" in
+            win)
+              files=(dist/EterX-*.exe dist/EterX-*.blockmap dist/latest.yml)
+              ;;
+            mac)
+              files=(dist/EterX-*.dmg dist/EterX-*.zip dist/latest-mac.yml)
+              ;;
+            linux)
+              files=(dist/EterX-*.AppImage dist/EterX-*.deb dist/latest-linux.yml)
+              ;;
+          esac
           if [ "${{ matrix.target }}" = "linux" ] && [ -f dist/eterx-icon-512.png ]; then
             files+=(dist/eterx-icon-512.png)
           fi

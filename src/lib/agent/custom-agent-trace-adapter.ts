@@ -1,4 +1,10 @@
-import { buildToolTraceFields, summarizeTraceValue } from './tool-trace';
+import {
+  buildToolTraceFields,
+  getToolDisplayLabel,
+  normalizeToolTraceName,
+  normalizeToolTraceText,
+  summarizeTraceValue,
+} from './tool-trace';
 
 type CustomToolLogType = 'command' | 'exploration' | 'file_edit' | 'communication' | 'browser';
 
@@ -21,6 +27,7 @@ export type CustomToolActiveTrace = {
 const randomSuffix = () => Math.random().toString(36).slice(2, 8);
 
 const formatCustomToolLabel = (toolName: string) => {
+  toolName = normalizeToolTraceName(toolName);
   const known: Record<string, string> = {
     system_shell: 'Running command',
     workspace_run_command: 'Running project command',
@@ -51,6 +58,7 @@ const formatCustomToolLabel = (toolName: string) => {
     gateway_bridge: 'Using Gateway channel',
     connector_mcp: 'Using connected service',
     slack_controller: 'Slack operation',
+    tool_finder: 'Finding tool',
   };
   if (known[toolName]) return known[toolName];
   return String(toolName || 'Running tool')
@@ -95,6 +103,7 @@ const getCustomToolLogType = (toolName: string): CustomToolLogType => {
 };
 
 const getCustomToolUi = (toolName: string): CustomToolUi => {
+  toolName = normalizeToolTraceName(toolName);
   const known: Record<string, CustomToolUi> = {
     system_shell: { text: 'Running command', type: 'command', iconCategory: 'terminal', argKeys: ['command'] },
     workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKeys: ['command'] },
@@ -110,6 +119,7 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
     workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['filename', 'filePath', 'file_path', 'path'] },
     workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['edits', 'files'] },
     workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKeys: ['pattern', 'query', 'directory'] },
+    tool_finder: { text: 'Finding tool', type: 'exploration', iconCategory: 'search', argKeys: ['toolName', 'query'] },
     code_intelligence: { text: 'Analyzing code', type: 'exploration', iconCategory: 'search', argKeys: ['target', 'path', 'query'] },
     realtime_verify: { text: 'Verifying output', type: 'command', iconCategory: 'verification', argKeys: ['target', 'mode', 'checkType'] },
     workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKeys: ['checkType', 'filename', 'path'] },
@@ -253,7 +263,7 @@ export const createCustomToolActionLog = (
   agentName: string,
   startedAt = Date.now(),
 ) => {
-  const toolName = String(event?.toolName || 'custom_tool');
+  const toolName = normalizeToolTraceName(event?.toolName || 'custom_tool');
   const args = event?.toolArgs || {};
   const ui = getCustomToolUi(toolName);
   const traceFields = buildToolTraceFields(toolName, args, { argKey: ui.argKeys[0] });
@@ -283,7 +293,10 @@ export const createCustomToolActionLog = (
     'source_path',
   ]);
   const query = getCustomToolArg(args, ['query', 'pattern', 'search', 'goal', 'request']);
-  const secondary = traceFields.secondary || preferredSecondary || command || primaryPath || query;
+  let secondary = normalizeToolTraceText(traceFields.secondary || preferredSecondary || command || primaryPath || query);
+  if (toolName === 'tool_finder') {
+    secondary = getToolDisplayLabel(args?.toolName || args?.query || 'tool_finder');
+  }
   const type = ui.type === 'ask_user' ? 'exploration' : ui.type;
   const shouldLinkFile = ['file_read', 'file_edit', 'file_create'].includes(ui.iconCategory)
     || /workspace_(?:read|write|edit)_file|docx|pdf|csv|markdown|chart|image/i.test(toolName);
@@ -293,7 +306,7 @@ export const createCustomToolActionLog = (
   return {
     id: `custom_tool_${startedAt}_${toolName}_${randomSuffix()}`,
     type,
-    text: cleanActionText(args?.uiActionText, ui.text),
+    text: cleanActionText(normalizeToolTraceText(args?.uiActionText), ui.text),
     secondary,
     filename: linkedFile || undefined,
     files: traceFields.files,

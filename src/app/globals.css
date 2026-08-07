@@ -168,6 +168,25 @@
     color-scheme: dark;
   }
 
+  /* Theme-aware brand mark used by task and agent surfaces. The root
+     data-theme attribute is updated by ThemeBridge at runtime, so this stays
+     correct even when the user changes theme without restarting the shell. */
+  .eterx-theme-logo-light {
+    display: block;
+  }
+
+  .eterx-theme-logo-dark {
+    display: none;
+  }
+
+  :root[data-theme="dark"] .eterx-theme-logo-light {
+    display: none;
+  }
+
+  :root[data-theme="dark"] .eterx-theme-logo-dark {
+    display: block;
+  }
+
   .eterx-app-shell {
     --eterx-native-controls-left: 0px;
     --eterx-native-controls-right: 0px;
@@ -186,6 +205,24 @@
 
   .eterx-app-shell[data-platform="macos"] {
     --eterx-native-controls-left: 78px;
+  }
+
+  /* Native title-bar labels and controls should behave like window chrome,
+     not selectable document content. */
+  .eterx-global-topbar,
+  .eterx-sidebar-topbar {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* EterX is a macOS title-bar label, not a second navigation control. */
+  .eterx-global-brand {
+    display: none;
+    color: var(--sidebar-text);
+  }
+
+  .eterx-app-shell[data-platform="macos"] .eterx-global-brand {
+    display: flex;
   }
 
   .eterx-app-shell[data-platform="linux"] {
@@ -260,6 +297,16 @@
 
   .eterx-app-shell[data-platform="macos"] .eterx-sidebar-topbar {
     padding-left: calc(12px + var(--eterx-native-controls-left));
+  }
+
+  /* The wordmark is rendered in the far-right app title position on macOS;
+     keep only the sidebar toggle at the divider when the sidebar is open. */
+  .eterx-app-shell[data-platform="macos"] .eterx-sidebar-topbar .eterx-sidebar-brand-text {
+    display: none;
+  }
+
+  .eterx-app-shell[data-platform="macos"] .eterx-sidebar-topbar .eterx-sidebar-toggle {
+    margin-left: auto;
   }
 
   .eterx-sidebar-closed-toggle {

@@ -101,7 +101,10 @@ import {
   buildLineDiffPreview,
   buildToolTraceFields,
   collectToolTraceTargets,
+  getToolDisplayLabel,
   languageFromFilename,
+  normalizeToolTraceName,
+  normalizeToolTraceText,
   normalizeTracePath,
 } from './tool-trace';
 import { extractProviderText, mergeStreamingText } from '../streaming-lifecycle';
@@ -1988,6 +1991,7 @@ export class GeminiAgentClient {
   ): Promise<any> {
     const conversationScopeId = this.getConversationScope(context);
     const name = String(toolCall?.function?.name || toolCall?.name || '');
+    const canonicalName = normalizeRegistryToolName(name);
     const args = this.parseMistralToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
     const normalizedSig = this.normalizeCallSignature(name, args);
     const labelMap: Record<string, { text: string; type: string; iconCategory: string; argKey?: string }> = {
@@ -2000,6 +2004,7 @@ export class GeminiAgentClient {
       web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKey: 'query' },
       web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKey: 'url' },
       workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'query' },
+      workspace_list_directory: { text: 'Scanning directory', type: 'exploration', iconCategory: 'folder_read', argKey: 'directory' },
       // Symbol lookup is covered by workspace_file_outline.
       workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKey: 'filename' },
       workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKey: 'glob' },
@@ -2008,22 +2013,25 @@ export class GeminiAgentClient {
       workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKey: 'pattern' },
       workspace_write_file: { text: 'Creating file', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
       workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+      workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'edits' },
+      workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+      workspace_apply_patch: { text: 'Patching files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'patch' },
       tool_finder: { text: 'Finding tool', type: 'exploration', iconCategory: 'search', argKey: 'query' },
       workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
       browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'computer', argKey: 'action' },
       deep_research: { text: 'Deep researching', type: 'exploration', iconCategory: 'web_search', argKey: 'topic' },
       get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
     };
-    const label = labelMap[name] || { text: name || 'Tool call', type: 'command', iconCategory: 'computer', argKey: undefined };
-    const traceFields = buildToolTraceFields(name, args, label);
-    const secondary = name === 'tool_finder'
-      ? (() => {
-          const target = String(args?.toolName || args?.query || '').trim();
-          return target
-            ? `${args?.action === 'execute' ? 'Preparing' : 'Searching'} ${target.substring(0, 80)}`
-            : 'Finding the right capability';
-        })()
-      : (traceFields.secondary || name);
+    const label = labelMap[canonicalName] || {
+      text: getToolDisplayLabel(canonicalName || name),
+      type: 'command',
+      iconCategory: 'computer',
+      argKey: undefined,
+    };
+    const traceFields = buildToolTraceFields(canonicalName, args, label);
+    const secondary = canonicalName === 'tool_finder'
+      ? getToolDisplayLabel(args?.toolName || args?.query || 'tool_finder')
+      : normalizeToolTraceText(traceFields.secondary || canonicalName || name);
 
     if (!name) return { error: 'Mistral returned a tool call without a function name.' };
 
@@ -2059,19 +2067,19 @@ export class GeminiAgentClient {
       }
     }
 
-    const actionTraceId = `tool_${ Date.now() }_${ name }_${ Math.random().toString(36).slice(2, 8) }`;
+    const actionTraceId = `tool_${ Date.now() }_${ canonicalName || name }_${ Math.random().toString(36).slice(2, 8) }`;
     const evt = {
       traceId: actionTraceId,
       type: label.type,
-      text: args?.uiActionText || label.text,
+      text: normalizeToolTraceText(args?.uiActionText || label.text),
       icon: args?.uiIcon,
       iconCategory,
       secondary,
       filename: traceFields.filename || args?.filename || args?.path || 'system',
       files: traceFields.files,
       fileCount: traceFields.fileCount,
-      tool: name,
-      name,
+      tool: canonicalName || name,
+      name: canonicalName || name,
       toolArgs: args,
       add: undefined,
       remove: undefined,
@@ -7616,6 +7624,9 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKey: 'checkType' },
         workspace_write_file: { text: 'Creating file', type: 'file_edit', iconCategory: 'file_create', argKey: 'filename' },
         workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+        workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'edits' },
+        workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKey: 'filename' },
+        workspace_apply_patch: { text: 'Patching files', type: 'file_edit', iconCategory: 'file_edit', argKey: 'patch' },
         tool_finder: { text: 'Finding tool', type: 'exploration', iconCategory: 'search', argKey: 'query' },
         get_skill_guidelines: { text: 'Loading skill', type: 'exploration', iconCategory: 'folder_read', argKey: 'skill_name' },
         git_operations: { text: 'Git operation', type: 'command', iconCategory: 'terminal', argKey: 'operation' },
@@ -7677,6 +7688,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       // Process tools with EterX Cognitive Core Parallel-Sequential hybrid scheduler
       const executeSingleCall = async (call: any, callIndex: number) => {
         const args = call.args as any;
+        const displayToolName = normalizeToolTraceName(call.name);
         const normalizedSig = this.normalizeCallSignature(call.name, args);
         const subAgentName = String((context as any).agentName || (context as any).subAgentName || '').trim();
         const subAgentProjectId = String((context as any).projectId || (context as any).chatId || '').trim();
@@ -7826,15 +7838,13 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         }
 
         // Get label from compact lookup
-        const label = toolLabels[call.name] || { text: call.name, type: 'command', iconCategory: 'computer', argKey: undefined };
-        const traceFields = buildToolTraceFields(call.name, args, label);
-        let secondary = traceFields.secondary || call.name;
+        const label = toolLabels[displayToolName] || { text: getToolDisplayLabel(displayToolName || call.name), type: 'command', iconCategory: 'computer', argKey: undefined };
+        const traceFields = buildToolTraceFields(displayToolName, args, label);
+        let secondary = normalizeToolTraceText(traceFields.secondary || displayToolName || call.name);
 
-        if (call.name === 'tool_finder') {
+        if (displayToolName === 'tool_finder') {
           const target = String(args?.toolName || args?.query || '').trim();
-          secondary = target
-            ? `${args?.action === 'execute' ? 'Preparing' : 'Searching'} ${target.substring(0, 80)}`
-            : 'Finding the right capability';
+          secondary = getToolDisplayLabel(target || 'tool_finder');
         }
 
         // Special: spawn_sub_agent shows agent names + task summaries
@@ -7851,7 +7861,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         // Emit INSTANT UI feedback
         // Use the model's dynamically generated personalized action text if provided
         // Sanitize: strip any numbered prefixes (1., 2., (3), [Step 4], etc.) the model might accidentally output
-        const rawDisplayText = args?.uiActionText || label.text;
+        const rawDisplayText = normalizeToolTraceText(args?.uiActionText || label.text);
         const displayText = String(rawDisplayText)
           .replace(/^(?:step\s+\d+[:\s.]*|\[\s*step\s+\d+\s*\]\s*|\(\s*step\s+\d+\s*\)\s*|\(\s*\d+\s*\)\s*|\[\s*\d+(?:\/\d+)?\s*\]\s*|\d+[.:]\s*)/i, '')
           .trim() || label.text;
@@ -7889,7 +7899,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           }
         }
 
-        const actionTraceId = `tool_${ Date.now() }_${ callIndex }_${ call.name }_${ Math.random().toString(36).slice(2, 8) }`;
+        const actionTraceId = `tool_${ Date.now() }_${ callIndex }_${ displayToolName || call.name }_${ Math.random().toString(36).slice(2, 8) }`;
         const evt = {
           traceId: actionTraceId,
           type: label.type,
@@ -7900,8 +7910,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
           filename: traceFields.filename || args?.filename || args?.path || 'system',
           files: traceFields.files,
           fileCount: traceFields.fileCount,
-          tool: call.name,
-          name: call.name,
+          tool: displayToolName || call.name,
+          name: displayToolName || call.name,
           add: undefined,
           remove: undefined,
           toolArgs: args

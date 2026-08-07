@@ -5,6 +5,7 @@ import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as Fi
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { Shimmer } from '../ui/shimmer';
+import { safeReadImageFromClipboard, safeReadTextFromClipboard } from '../ui/copy-button';
 import { ConnectorsModal } from './connectors-modal';
 import { AgentFace } from '../chat/agent-face';
 import { notifyAgentFaceFiles, notifyAgentFaceInputChange, notifyAgentFaceSend } from '../chat/agent-face-controller';
@@ -343,7 +344,7 @@ interface ChatInputProps {
   thinkingLevel?: MainAgentThinkingLevel;
   onThinkingLevelChange?: (level: MainAgentThinkingLevel) => void;
   pinnedItems?: any[];
-  setPinnedItems?: (items: any[]) => void;
+  setPinnedItems?: React.Dispatch<React.SetStateAction<any[]>>;
   // ═══ Gemini Live Session ═══
   liveState?: 'idle' | 'connecting' | 'connected' | 'listening' | 'thinking' | 'speaking' | 'error';
   hasBackgroundLiveSession?: boolean;
@@ -511,6 +512,20 @@ const getAttachmentName = (file: File) => {
   if (existing) return existing;
   const ext = inferFileExtension(file.type || '');
   return `${ file.type?.startsWith('image/') ? 'pasted-image' : 'pasted-file' }-${ Date.now() }.${ ext }`;
+};
+
+const clipboardDataUrlToFile = async (dataUrl: string, fileName: string): Promise<File | null> => {
+  try {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    if (!blob.size) return null;
+    return new File([blob], fileName, {
+      type: blob.type || 'image/png',
+      lastModified: Date.now(),
+    });
+  } catch {
+    return null;
+  }
 };
 
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -1970,10 +1985,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       setSlashTrigger(null);
       setOpenStatusMenu(null);
     };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setOpenPillDrop(null);
+      setShowPinMenu(false);
+      setSlashTrigger(null);
+      setOpenStatusMenu(null);
+    };
     if (openPillDrop || showPinMenu || slashTrigger || openStatusMenu) {
       window.addEventListener('click', handleClickOutside);
+      window.addEventListener('keydown', handleEscape);
     }
-    return () => window.removeEventListener('click', handleClickOutside);
+    return () => {
+      window.removeEventListener('click', handleClickOutside);
+      window.removeEventListener('keydown', handleEscape);
+    };
   }, [openPillDrop, openStatusMenu, showPinMenu, slashTrigger]);
 
   const syncTextareaOverflow = useCallback(() => {
@@ -2027,20 +2053,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const electronAPI = (window as any).electronAPI;
     if (electronAPI?.isElectron && typeof electronAPI.selectFolder === 'function') {
       const folderPath = await electronAPI.selectFolder();
-      if (folderPath && !pinnedItems.find(i => i.path === folderPath)) {
+      if (folderPath) {
         const sysIcon = typeof electronAPI.getFileIcon === 'function'
           ? await electronAPI.getFileIcon(folderPath).catch(() => null)
           : null;
-        setPinnedItems([
-          ...pinnedItems,
-          {
+        setPinnedItems(prev => {
+          if (prev.some(item => item.path === folderPath)) return prev;
+          return [...prev, {
             id: genId(),
             type: 'folder',
             path: folderPath,
             name: folderPath.split(/[/\\]/).pop() || 'Folder',
-            systemIcon: sysIcon || undefined
-          }
-        ]);
+            systemIcon: sysIcon || undefined,
+          }];
+        });
       }
     } else {
       // Browsers cannot expose real local paths. Import the selected folder
@@ -2055,8 +2081,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (electronAPI?.isElectron && typeof electronAPI.selectFiles === 'function') {
       const filePaths = await electronAPI.selectFiles();
       if (filePaths && filePaths.length > 0) {
-        const newPaths = filePaths.filter((fp: string) => !pinnedItems.find(i => i.path === fp));
-        const newItems = await Promise.all(newPaths.map(async (fp: string) => {
+        const newItems = await Promise.all(filePaths.map(async (fp: string) => {
           const sysIcon = typeof electronAPI.getFileIcon === 'function'
             ? await electronAPI.getFileIcon(fp).catch(() => null)
             : null;
@@ -2070,7 +2095,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         }));
 
         if (newItems.length > 0) {
-          setPinnedItems([...pinnedItems, ...newItems]);
+          setPinnedItems(prev => {
+            const existingPaths = new Set(prev.map(item => item.path));
+            const uniqueItems = newItems.filter(item => {
+              if (existingPaths.has(item.path)) return false;
+              existingPaths.add(item.path);
+              return true;
+            });
+            return uniqueItems.length > 0 ? [...prev, ...uniqueItems] : prev;
+          });
         }
       }
     } else {
@@ -2092,31 +2125,76 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handlePaste = (e: React.ClipboardEvent) => {
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const pastedFiles = Array.from(e.clipboardData.files || []);
     const itemFiles = Array.from(e.clipboardData.items || [])
       .filter(item => item.kind === 'file')
       .map(item => item.getAsFile())
       .filter((file): file is File => !!file);
-    const files = pastedFiles.length > 0 ? pastedFiles : itemFiles;
+    // Some macOS clipboard providers expose a zero-byte placeholder file
+    // before the native image is available. Ignore placeholders so the native
+    // clipboard-image fallback below can handle the real screenshot.
+    const files = (pastedFiles.length > 0 ? pastedFiles : itemFiles)
+      .filter(file => file && file.size > 0);
 
     if (files.length > 0) {
       e.preventDefault();
       addFilesAndUpload(files);
+      return;
     }
+
+    const target = e.currentTarget;
+    const currentValue = target.value || inputValue;
+    const start = Math.max(0, Math.min(target.selectionStart ?? currentValue.length, currentValue.length));
+    const end = Math.max(start, Math.min(target.selectionEnd ?? start, currentValue.length));
+    const eventText = e.clipboardData.getData('text/plain') || e.clipboardData.getData('text');
+
+    // Cancel before the first await. React does not await event handlers, so
+    // waiting first would let the browser perform a second native paste.
+    e.preventDefault();
+    if (!eventText) {
+      const nativeImage = await safeReadImageFromClipboard();
+      if (nativeImage) {
+        const imageFile = await clipboardDataUrlToFile(nativeImage, `pasted-image-${Date.now()}.png`);
+        if (imageFile) {
+          addFilesAndUpload([imageFile]);
+          return;
+        }
+      }
+    }
+    const pastedText = eventText || await safeReadTextFromClipboard();
+    if (!pastedText) return;
+
+    const nextValue = `${currentValue.slice(0, start)}${pastedText}${currentValue.slice(end)}`;
+    setHasDraftInputText(Boolean(nextValue.trim()));
+    notifyAgentFaceInputChange(inputValue, nextValue);
+    setInputValue(nextValue);
+    syncSlashTrigger(nextValue, start + pastedText.length);
+    requestAnimationFrame(() => {
+      if (!target.isConnected) return;
+      target.focus();
+      target.selectionStart = target.selectionEnd = start + pastedText.length;
+    });
   };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (e.dataTransfer.types.includes('Files')) e.dataTransfer.dropEffect = 'copy';
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      addFilesAndUpload(Array.from(e.dataTransfer.files));
-    }
+    const directFiles = Array.from(e.dataTransfer.files || []);
+    const itemFiles = directFiles.length > 0
+      ? []
+      : Array.from(e.dataTransfer.items || [])
+        .filter(item => item.kind === 'file')
+        .map(item => item.getAsFile())
+        .filter((file): file is File => !!file);
+    const files = directFiles.length > 0 ? directFiles : itemFiles;
+    if (files.length > 0) addFilesAndUpload(files);
   };
 
   const removeAttachment = (index: number) => {
@@ -3354,6 +3432,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         syncSlashTrigger(inputValue, e.currentTarget.selectionStart);
                       }}
                       onPaste={handlePaste}
+                      data-eterx-paste-handler="controlled"
                       onDragOver={handleDragOver}
                       onDrop={handleDrop}
                       onScroll={handleTextareaScroll}
@@ -3385,7 +3464,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             <div className="eterx-chat-controls-left">
               <Tooltip text="Attach images, PDFs, Office files, code, audio, or video" side="top">
                 <button
+                  type="button"
                   onClick={() => fileInputRef.current?.click()}
+                  aria-label="Attach files"
                   className={inputControlButton}
                 >
                   <div className={inputControlSheen} />

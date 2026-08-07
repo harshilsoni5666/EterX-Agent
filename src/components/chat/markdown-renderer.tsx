@@ -13,7 +13,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 // @ts-ignore
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Check, ChevronDown, Copy, Download, Globe2, Maximize2, Minimize2, MoreHorizontal, WrapText } from 'lucide-react';
-import { CopyButton, safeCopyTextToClipboard } from '../ui/copy-button';
+import { CopyButton, safeCopyTextToClipboard, safeCopyPngToClipboard } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
 import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, linkifyLocalFilePaths } from './local-file-link';
@@ -1118,9 +1118,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
   const copyPng = async () => {
     if (!svg) return;
     const blob = await svgToPngBlob(svg);
-    const clipboardApi = navigator.clipboard as any;
-    if (clipboardApi?.write && typeof ClipboardItem !== 'undefined') {
-      await clipboardApi.write([new ClipboardItem({ 'image/png': blob })]);
+    if (await safeCopyPngToClipboard(blob)) {
       flashStatus('Copied PNG');
       return;
     }

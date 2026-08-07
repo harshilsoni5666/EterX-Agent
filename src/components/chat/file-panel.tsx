@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { buildFilePreviewUrl } from '../../lib/path-utils';
+import { getPrimaryModifierLabel } from '../../lib/platform';
+import { decodeLocalFileHref, openLocalFilePath } from './local-file-link';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 const DiffEditor = dynamic(
@@ -149,6 +151,22 @@ function buildPreviewUrl(filepath: string) {
   return buildFilePreviewUrl(filepath);
 }
 
+const openEditorForPath = async (filePath: string) => {
+  const normalized = String(filePath || '').replace(/\\/g, '/');
+  if (!normalized) return;
+  const vscodeUrl = 'vscode://file/' + encodeURI(normalized);
+  const desktopApi = typeof window !== 'undefined' ? (window as any).electronAPI : null;
+  try {
+    if (typeof desktopApi?.openExternal === 'function') {
+      await desktopApi.openExternal(vscodeUrl);
+      return;
+    }
+  } catch {
+    // Fall through to the browser protocol handler.
+  }
+  window.open(vscodeUrl, '_blank', 'noopener,noreferrer');
+};
+
 function getPreviewAddress(_file?: PreviewFile | null, fallback = 'http://localhost:3000') {
   return fallback || 'http://localhost:3000';
 }
@@ -182,7 +200,8 @@ function resolvePreviewAddress(input: string) {
 
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
 
-  const filePath = trimmed.replace(/^file:\/\/\//i, '').replace(/^file:\/\//i, '');
+  const filePath = decodeLocalFileHref(trimmed)
+    || trimmed.replace(/^file:\/\/\//i, '').replace(/^file:\/\//i, '');
   if (/^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/')) {
     return buildPreviewUrl(filePath);
   }
@@ -459,7 +478,13 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           {copied ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>}
           {copied ? 'COPIED' : 'COPY'}
         </button>
-        <button onClick={() => window.open(`vscode://file/${normalizedPath}`, '_blank')} title="Open in VS Code" className="p-1.5 rounded-md text-[#555350] hover:text-[#E8E6E3] hover:bg-white/[0.04] transition-all ml-0.5">
+        <button
+          type="button"
+          onClick={() => { void openEditorForPath(normalizedPath); }}
+          title="Open in VS Code"
+          aria-label="Open in VS Code"
+          className="p-1.5 rounded-md text-[#555350] hover:text-[#E8E6E3] hover:bg-white/[0.04] transition-all ml-0.5"
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="10 9 15 4 20 9"></polyline><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path><path d="M8 12v6"></path><path d="M12 12v6"></path><path d="M16 12v6"></path></svg>
         </button>
       </div>
@@ -499,7 +524,13 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
         }} className="p-1.5 rounded-md text-[#555350] hover:text-[#E8E6E3] hover:bg-white/[0.04] transition-all" title="Reload Preview">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
         </button>
-        <button onClick={() => window.open(`file:///${normalizedPath}`, '_blank')} className="p-1.5 rounded-md text-[#555350] hover:text-[#4FC1FF] hover:bg-white/[0.04] transition-all" title="Open in browser">
+        <button
+          type="button"
+          onClick={() => { void openLocalFilePath(normalizedPath); }}
+          className="p-1.5 rounded-md text-[#555350] hover:text-[#4FC1FF] hover:bg-white/[0.04] transition-all"
+          title="Open with system default"
+          aria-label="Open file with system default"
+        >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
         </button>
       </div>
@@ -712,6 +743,7 @@ export const IdePanel = () => {
   const panelCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dockPosition, setDockPosition] = useState<{ left: number; top: number } | null>(null);
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedUiTheme>('light');
+  const [primaryModifierLabel, setPrimaryModifierLabel] = useState('Ctrl');
   const isLightTheme = resolvedTheme === 'light';
   const editorBackground = isLightTheme ? '#FFFFFF' : '#0d0d0f';
   const previewShellBackground = isLightTheme ? '#F7F6F3' : '#262628';
@@ -735,6 +767,10 @@ export const IdePanel = () => {
       observer.disconnect();
       window.removeEventListener('eterx-settings-updated', syncTheme);
     };
+  }, []);
+
+  useEffect(() => {
+    setPrimaryModifierLabel(getPrimaryModifierLabel());
   }, []);
 
   useEffect(() => () => {
@@ -839,8 +875,13 @@ export const IdePanel = () => {
 
   useEffect(() => {
     const handleClick = () => setContextMenu(null);
+    const handleContextMenu = () => setContextMenu(null);
     document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
+    document.addEventListener('contextmenu', handleContextMenu);
+    return () => {
+      document.removeEventListener('click', handleClick);
+      document.removeEventListener('contextmenu', handleContextMenu);
+    };
   }, []);
 
   // Keyboard shortcuts
@@ -1379,7 +1420,7 @@ export const IdePanel = () => {
   );
 
   const panelContent = (
-    <div ref={panelShellRef} className={`eterx-ide-panel-shell flex-1 flex flex-col relative z-10 h-full overflow-hidden transition-opacity duration-150 ease-out ${isPanelClosing ? 'opacity-0' : 'opacity-100'} ${isFullscreen ? 'p-0' : 'pt-1.5 pb-1 pr-3 pl-1.5'}`} onContextMenu={e => e.preventDefault()}>
+    <div ref={panelShellRef} className={`eterx-ide-panel-shell flex-1 flex flex-col relative z-10 h-full overflow-hidden transition-opacity duration-150 ease-out ${isPanelClosing ? 'opacity-0' : 'opacity-100'} ${isFullscreen ? 'p-0' : 'pt-1.5 pb-1 pr-3 pl-1.5'}`}>
       {isFullscreen && activeTabMode !== 'review' && (
       <div className="pointer-events-none absolute inset-x-0 top-2 z-[90] flex justify-center">
         <div className="pointer-events-auto [-webkit-app-region:no-drag]">
@@ -1443,7 +1484,7 @@ export const IdePanel = () => {
                      <div 
                        key={`${f.filepath}-${i}`}
                        onClick={() => setActiveIndex(i)}
-                       onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, index: i }); }}
+                       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setContextMenu({ x: e.clientX, y: e.clientY, index: i }); }}
                        data-active={activeIndex === i ? 'true' : undefined}
                        className={`eterx-ide-open-tab group relative flex h-[30px] max-w-[210px] items-center gap-2 px-2.5 rounded-full text-[12px] cursor-pointer shrink-0 transition-all duration-200 border ${activeIndex === i ? 'bg-white/[0.105] text-white border-white/[0.18] shadow-[inset_0_1px_0_rgba(255,255,255,0.065)]' : 'text-[#74716D] hover:bg-white/[0.055] border-transparent hover:text-[#E8E6E3]'}`}
                      >
@@ -1798,16 +1839,20 @@ export const IdePanel = () => {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.1 }}
-            className="fixed z-[99999] w-48 py-1.5 bg-[#1C1C1F]/90 backdrop-blur-xl border border-white/[0.1] rounded-lg shadow-2xl overflow-hidden"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            className={`fixed z-[99999] w-48 py-1.5 backdrop-blur-xl rounded-lg shadow-2xl overflow-hidden ${isLightTheme ? 'bg-white/95 border border-black/[0.12] text-[#242321]' : 'bg-[#1C1C1F]/95 border border-white/[0.1] text-[#E8E6E3]'}`}
+            style={{
+              left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 200)),
+              top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 112)),
+            }}
           >
-            <button onClick={() => { closePanel(contextMenu.index); setContextMenu(null); }} className="w-full text-left px-3 py-1.5 text-[12px] text-[#E8E6E3] hover:bg-[#4FC1FF]/20 hover:text-[#4FC1FF] transition-colors flex justify-between items-center group">
-              Close <span className="text-[10px] text-[#555350] group-hover:text-[#4FC1FF]/50 font-mono">Ctrl+W</span>
+            <button onClick={() => { closePanel(contextMenu.index); setContextMenu(null); }} className={`w-full text-left px-3 py-1.5 text-[12px] hover:bg-[#4FC1FF]/20 hover:text-[#4FC1FF] transition-colors flex justify-between items-center group ${isLightTheme ? 'text-[#242321]' : 'text-[#E8E6E3]'}`}>
+              Close <span className={`text-[10px] group-hover:text-[#4FC1FF]/50 font-mono ${isLightTheme ? 'text-black/45' : 'text-[#555350]'}`}>{primaryModifierLabel}+W</span>
             </button>
-            <button onClick={() => { handleCloseOthers(contextMenu.index); setContextMenu(null); }} className="w-full text-left px-3 py-1.5 text-[12px] text-[#E8E6E3] hover:bg-[#4FC1FF]/20 hover:text-[#4FC1FF] transition-colors">
+            <button onClick={() => { handleCloseOthers(contextMenu.index); setContextMenu(null); }} className={`w-full text-left px-3 py-1.5 text-[12px] hover:bg-[#4FC1FF]/20 hover:text-[#4FC1FF] transition-colors ${isLightTheme ? 'text-[#242321]' : 'text-[#E8E6E3]'}`}>
               Close Others
             </button>
-            <div className="h-[1px] bg-white/[0.05] my-1" />
+            <div className={`h-[1px] my-1 ${isLightTheme ? 'bg-black/[0.08]' : 'bg-white/[0.05]'}`} />
             <button onClick={() => { handleCloseAll(); setContextMenu(null); }} className="w-full text-left px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/20 transition-colors">
               Close All
             </button>
@@ -1840,7 +1885,7 @@ export const IdePanel = () => {
                 
                 <div onClick={() => { setSidebarOpen(!sidebarOpen); setPaletteOpen(false); }} className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/[0.05] cursor-pointer group">
                   <div className="flex items-center gap-3"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#8C8A88] group-hover:text-[#4FC1FF]"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="12" y1="3" x2="12" y2="21"></line></svg><span className="text-[12px] text-[#E8E6E3]">Toggle Left Sidebar</span></div>
-                  <span className="text-[10px] text-[#555350] font-mono border border-white/[0.05] bg-[#0A0A0C] px-1.5 rounded">Ctrl+B</span>
+                  <span className="text-[10px] text-[#555350] font-mono border border-white/[0.05] bg-[#0A0A0C] px-1.5 rounded">{primaryModifierLabel}+B</span>
                 </div>
 
                 <div onClick={() => { handleCloseAll(); setPaletteOpen(false); }} className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/[0.05] cursor-pointer group">

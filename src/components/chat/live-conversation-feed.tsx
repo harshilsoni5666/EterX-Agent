@@ -5,6 +5,8 @@ import {
   Globe, Terminal, Database, Clock, RefreshCw, Cpu, PhoneOff
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
+import { getToolDisplayLabel, normalizeToolTraceName } from '../../lib/agent/tool-trace';
 
 const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
 
@@ -79,6 +81,8 @@ export const LiveConversationFeed: React.FC<LiveConversationFeedProps> = ({
   const isListening = liveState === 'listening';
   const isThinking = liveState === 'thinking';
   const isConnecting = liveState === 'connecting';
+  const activeToolName = normalizeToolTraceName(liveActiveTool || '');
+  const activeToolLabel = getToolDisplayLabel(activeToolName);
 
   // Filter completed live trace logs for preview
   const liveTurnLogs = normalizeLiveTranscriptLogs(historyTraceLogs).filter(l => l.isLive);
@@ -114,11 +118,11 @@ export const LiveConversationFeed: React.FC<LiveConversationFeedProps> = ({
             >
               <Sparkles className="w-3.5 h-3.5 animate-spin text-amber-400" />
               <span>
-                {liveActiveTool === 'web_search' && 'Searching Web...'}
-                {liveActiveTool === 'run_terminal_command' && 'Running Tool...'}
-                {liveActiveTool === 'store_chat_memory' && 'Updating Memory...'}
-                {liveActiveTool === 'change_voice' && 'Configuring Voice...'}
-                {!['web_search', 'run_terminal_command', 'store_chat_memory', 'change_voice'].includes(liveActiveTool) && `${liveActiveTool}...`}
+                {activeToolName === 'web_search' && 'Searching Web...'}
+                {activeToolName === 'run_terminal_command' && 'Running Tool...'}
+                {activeToolName === 'store_chat_memory' && 'Updating Memory...'}
+                {activeToolName === 'change_voice' && 'Configuring Voice...'}
+                {!['web_search', 'run_terminal_command', 'store_chat_memory', 'change_voice'].includes(activeToolName) && `${activeToolLabel}...`}
               </span>
             </motion.div>
           )}
@@ -196,7 +200,9 @@ export const LiveConversationFeed: React.FC<LiveConversationFeedProps> = ({
                     <span>AI Voice Answer</span>
                   </div>
                   <div className="prose prose-invert text-[13.5px] leading-relaxed">
-                    <ReactMarkdown>{log.text}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>
+                      {normalizeMarkdownForRendering(String(log.text || ''))}
+                    </ReactMarkdown>
                   </div>
                 </div>
               </div>
@@ -235,7 +241,9 @@ export const LiveConversationFeed: React.FC<LiveConversationFeedProps> = ({
                 <span>AI Spoken Response</span>
               </div>
               <div className="prose prose-invert text-[13.5px] leading-relaxed">
-                <ReactMarkdown>{liveSpokenText || liveOutputText}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>
+                  {normalizeMarkdownForRendering(String(liveSpokenText || liveOutputText || ''))}
+                </ReactMarkdown>
               </div>
             </div>
           </motion.div>
