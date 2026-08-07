@@ -9108,17 +9108,18 @@ body.eterx-gateway-view main a {
 .eterx-channel-cta::after {
   content: '›';
   position: absolute;
+  top: 50%;
   right: 1rem;
   display: inline-block;
-  font-size: 1.8rem;
-  font-weight: 500;
+  transform: translateY(-50%);
+  font-size: 1.25rem;
   font-weight: 600;
   line-height: 1;
   transition: transform 160ms ease;
 }
 
 .eterx-channel-cta:hover::after {
-  transform: translateX(3px);
+  transform: translate(3px, -50%);
 }
 
 .eterx-channel-cta {
