@@ -15,6 +15,8 @@ import {
   MODEL_OVERRIDE_STORAGE_KEY,
   MODEL_PROVIDER_MODE,
   MODEL_PROVIDER_ORDER,
+  MODEL_SELECTOR_SCHEMA_STORAGE_KEY,
+  MODEL_SELECTOR_SCHEMA_VERSION,
   MODEL_SELECTOR_STORAGE_KEY,
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
   composeApiKeysForSelections,
@@ -276,6 +278,7 @@ export interface AppSettings {
   workMode: 'specialist' | 'everyday';
   openDestination: 'eterx' | 'workspace' | 'last';
   terminalShell: 'auto' | 'powershell' | 'cmd' | 'git-bash' | 'wsl' | 'zsh' | 'bash' | 'fish' | 'sh';
+  selfImprovementEnabled: boolean;
   requireCtrlEnter: boolean;
   followUpBehavior: 'queue' | 'steer';
   codeReviewMode: 'inline' | 'detached';
@@ -335,6 +338,7 @@ export interface AppSettings {
   liveConvoLatencyMode: 'ultra-low' | 'balanced' | 'high-quality';
   liveConvoAudioInput: boolean;
   liveConvoAudioOutput: boolean;
+  liveConvoAgentId: string;
   liveConvoSystemInstruction: string;
 }
 
@@ -346,6 +350,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   workMode: 'everyday',
   openDestination: 'eterx',
   terminalShell: 'auto',
+  selfImprovementEnabled: true,
   requireCtrlEnter: false,
   followUpBehavior: 'steer',
   codeReviewMode: 'inline',
@@ -399,6 +404,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   liveConvoLatencyMode: 'ultra-low',
   liveConvoAudioInput: true,
   liveConvoAudioOutput: true,
+  liveConvoAgentId: '',
   liveConvoSystemInstruction: '',
 };
 
@@ -430,6 +436,7 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
   // was explicitly selected; old/invalid preference values must not leave the
   // segmented control with no selected option.
   next.followUpBehavior = stored.followUpBehavior === 'queue' ? 'queue' : 'steer';
+  next.selfImprovementEnabled = stored.selfImprovementEnabled !== false;
   next.showTokenCount = stored.showTokenCount !== false;
   return next;
 };
@@ -523,16 +530,40 @@ type ModelCatalog = Record<string, string[]>;
 type ProviderModelOption = { id: string; label: string; source: 'selected' | 'saved' | 'live' };
 type LiveModelOption = { value: string; label: string; tag?: string; description?: string };
 type DesktopUpdateState = {
-  status: 'idle' | 'development' | 'unsupported' | 'checking' | 'available' | 'downloading' | 'current' | 'ready' | 'error';
+  revision?: number;
+  status: 'idle' | 'development' | 'unsupported' | 'checking' | 'available' | 'downloading' | 'current' | 'ready' | 'installing' | 'error';
   currentVersion: string;
   availableVersion?: string | null;
   percent: number;
+  transferred?: number;
+  total?: number;
+  bytesPerSecond?: number;
+  downloadReady?: boolean;
   message: string;
   supported?: boolean;
   automaticChecks?: boolean;
   manualInstall?: boolean;
   lastCheckedAt?: string | null;
-  nextCheckAt?: string | null;
+  platform?: string;
+  architecture?: string;
+  packageType?: string;
+  updateHost?: string;
+  releasePage?: string;
+  releaseName?: string | null;
+  releaseDate?: string | null;
+};
+
+const formatUpdateBytes = (value?: number) => {
+  const bytes = Math.max(0, Number(value) || 0);
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let size = bytes / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && size >= 1024; index += 1) {
+    size /= 1024;
+    unit = units[index];
+  }
+  return `${size >= 100 ? size.toFixed(0) : size.toFixed(1)} ${unit}`;
 };
 
 type RuntimeSettingsSnapshot = {
@@ -594,158 +625,6 @@ const providerKeyLooksValid = (provider: string, key: string) => {
   return value.length >= 12;
 };
 
-export const LIVE_PROVIDER_MODELS: Record<string, Array<{ value: string; label: string; tag?: string; description?: string }>> = {
-  'gemini-live': [
-    { value: 'auto', label: 'Auto (Latest Gemini Live Model)', tag: 'AUTO LATEST', description: 'Automatically routes to newest Gemini Live API' },
-    { value: 'gemini-2.0-flash-exp-live', label: 'Gemini 2.0 Flash Realtime Multimodal', tag: 'FREE TIER', description: 'Low latency WebSockets speech & vision stream' },
-    { value: 'gemini-2.0-flash-thinking-exp-live', label: 'Gemini 2.0 Flash Thinking Live', tag: 'FREE TIER', description: 'Reasoning live voice stream' },
-    { value: 'gemini-1.5-flash-live', label: 'Gemini 1.5 Flash Audio Stream', tag: 'FREE TIER', description: 'Fast stable audio stream' },
-  ],
-  'openai-realtime': [
-    { value: 'auto', label: 'Auto (Latest GPT-4o Realtime Model)', tag: 'AUTO LATEST', description: 'Automatically routes to newest GPT-4o Realtime API' },
-    { value: 'gpt-4o-realtime-preview', label: 'GPT-4o Realtime Audio (WebRTC)', description: 'Full-duplex low-latency speech-to-speech' },
-    { value: 'gpt-4o-mini-realtime-preview', label: 'GPT-4o Mini Realtime Audio', description: 'Fast low-cost speech-to-speech stream' },
-    { value: 'gpt-4o-audio-preview', label: 'GPT-4o Audio Direct Stream', description: 'Direct audio input/output stream' },
-  ],
-  'grok-voice': [
-    { value: 'auto', label: 'Auto (Latest Grok Voice Agent)', tag: 'AUTO LATEST', description: 'Automatically routes to newest xAI Grok voice engine' },
-    { value: 'grok-2-voice', label: 'xAI Grok-2 Voice Agent', description: 'Sub-second native speech-to-speech API' },
-    { value: 'grok-3-realtime', label: 'xAI Grok-3 Realtime Multimodal', description: 'Real-time video & voice stream' },
-  ],
-  'claude-live': [
-    { value: 'auto', label: 'Auto (Latest Claude Live Stream)', tag: 'AUTO LATEST', description: 'Automatically routes to newest Anthropic Claude stream' },
-    { value: 'claude-3-5-sonnet-live', label: 'Claude 3.5 Sonnet Live Audio Stream', description: 'Interactive stream with extended thinking' },
-    { value: 'claude-3-5-haiku-live', label: 'Claude 3.5 Haiku Low-Latency Stream', description: 'Ultra-fast low latency stream' },
-  ],
-  'deepseek-live': [
-    { value: 'auto', label: 'Auto (Latest DeepSeek Live Stream)', tag: 'AUTO LATEST', description: 'Automatically routes to newest DeepSeek V3/R1 model' },
-    { value: 'deepseek-v3-live', label: 'DeepSeek-V3 Live Audio Stream', tag: 'FREE TIER', description: 'Fast 671B MoE streaming agent' },
-    { value: 'deepseek-r1-live', label: 'DeepSeek-R1 Reasoning Stream', tag: 'FREE TIER', description: 'Open reasoning chain-of-thought stream' },
-  ],
-  'elevenlabs': [
-    { value: 'auto', label: 'Auto (Latest ElevenLabs Voice Agent)', tag: 'AUTO LATEST', description: 'Automatically routes to newest ElevenLabs model' },
-    { value: 'eleven_flash_v2_5', label: 'ElevenLabs Flash v2.5 (~75ms Latency)', description: 'Ultra-low latency real-time voice agent' },
-    { value: 'eleven_turbo_v2_5', label: 'ElevenLabs Turbo v2.5 Realtime Voice', description: 'High-speed voice synthesis engine' },
-    { value: 'eleven_multilingual_v2', label: 'ElevenLabs Multilingual v2', description: 'High-fidelity multi-language voice stream' },
-  ],
-  'deepgram': [
-    { value: 'auto', label: 'Auto (Latest Deepgram Aura-2 Pipeline)', tag: 'AUTO LATEST' },
-    { value: 'aura-2-thalia-en', label: 'Deepgram Aura-2 Thalia (STT+TTS)', description: 'Sub-200ms TTFB real-time voice agent' },
-    { value: 'aura-2-asteria-en', label: 'Deepgram Aura-2 Asteria (STT+TTS)', description: 'Conversational female voice agent' },
-    { value: 'aura-2-orpheus-en', label: 'Deepgram Aura-2 Orpheus (STT+TTS)', description: 'Conversational male voice agent' },
-    { value: 'aura-2-helios-en', label: 'Deepgram Aura-2 Helios (STT+TTS)', description: 'Strong clear male voice agent' },
-    { value: 'aura-2-zeus-en', label: 'Deepgram Aura-2 Zeus (STT+TTS)', description: 'Authoritative deep male voice agent' },
-  ],
-  'hume-evi': [
-    { value: 'auto', label: 'Auto (Latest Hume EVI-2 Empathic)', tag: 'AUTO LATEST' },
-    { value: 'evi-2-empathic', label: 'Hume AI EVI-2 Empathic Voice Agent', description: 'Emotion-aware empathic audio stream' },
-  ],
-  'cartesia-sonic': [
-    { value: 'auto', label: 'Auto (Latest Cartesia Sonic Stream)', tag: 'AUTO LATEST' },
-    { value: 'sonic-multilingual', label: 'Cartesia Sonic Sub-200ms Stream', description: 'Ultra-fast low latency voice stream' },
-  ],
-  'playht': [
-    { value: 'auto', label: 'Auto (Latest PlayHT Realtime)', tag: 'AUTO LATEST' },
-    { value: 'playht-2.0-turbo', label: 'PlayHT 2.0 Turbo Realtime Stream', description: 'Realtime streaming conversational voice' },
-  ],
-  'groq-live': [
-    { value: 'auto', label: 'Auto (Latest Groq Realtime LPU)', tag: 'AUTO LATEST' },
-    { value: 'groq-llama-3.3-70b-realtime', label: 'Groq Llama 3.3 70B Realtime', tag: 'FREE TIER', description: 'LPU Engine 500+ tokens/sec stream' },
-    { value: 'groq-whisper-v3-fast', label: 'Groq Fast Speech-to-Speech', tag: 'FREE TIER', description: 'Sub-second audio stream' },
-  ],
-  'cerebras-live': [
-    { value: 'auto', label: 'Auto (Latest Cerebras Wafer Stream)', tag: 'AUTO LATEST' },
-    { value: 'cerebras-llama3.3-70b-realtime', label: 'Cerebras Llama 3.3 70B Instant Stream', tag: 'FREE TIER', description: '2000+ tokens/sec wafer engine stream' },
-  ],
-  'sambanova-live': [
-    { value: 'auto', label: 'Auto (Latest SambaNova Realtime)', tag: 'AUTO LATEST' },
-    { value: 'sambanova-deepseek-r1-voice', label: 'SambaNova DeepSeek R1 Voice Stream', tag: 'FREE TIER', description: 'High-speed reconfigurable dataflow stream' },
-  ],
-  'together-voice': [
-    { value: 'auto', label: 'Auto (Latest Together Voice Pipeline)', tag: 'AUTO LATEST' },
-    { value: 'together-whisper-llama3-tts', label: 'Together AI Audio & Llama 3 Stream', tag: 'FREE CREDIT', description: 'Fast open-source LLM & audio stack' },
-  ],
-  'fireworks-speech': [
-    { value: 'auto', label: 'Auto (Latest Fireworks Speech Pipeline)', tag: 'AUTO LATEST' },
-    { value: 'fireworks-whisper-v3-fast', label: 'Fireworks AI Fast Whisper & Speech', tag: 'FREE CREDIT', description: 'Fast Whisper & open weights stream' },
-  ],
-  'perplexity-live': [
-    { value: 'auto', label: 'Auto (Latest Perplexity Sonar Stream)', tag: 'AUTO LATEST' },
-    { value: 'sonar-reasoning-pro-live', label: 'Perplexity Sonar Reasoning Realtime', description: 'Search-augmented real-time stream' },
-  ],
-  'cohere-live': [
-    { value: 'auto', label: 'Auto (Latest Cohere Command Stream)', tag: 'AUTO LATEST' },
-    { value: 'command-r-plus-live', label: 'Cohere Command R+ Realtime Voice', description: 'Enterprise tool calling voice stream' },
-  ],
-  'openrouter-live': [
-    { value: 'auto', label: 'Auto (Latest OpenRouter Realtime)', tag: 'AUTO LATEST' },
-    { value: 'openrouter-auto-realtime', label: 'OpenRouter Auto Realtime Voice Router', tag: 'FREE MODELS', description: 'Automatic failover live voice router' },
-  ],
-  'ollama-local': [
-    { value: 'auto', label: 'Auto (Latest Ollama Local Voice)', tag: 'FREE (LOCAL)' },
-    { value: 'ollama-local-whisper-llama3', label: 'Ollama Local Whisper & Llama 3 Speech', tag: 'FREE (LOCAL)' },
-  ],
-  'lmstudio-local': [
-    { value: 'auto', label: 'Auto (Latest LM Studio Local Server)', tag: 'FREE (LOCAL)' },
-    { value: 'lmstudio-local-server', label: 'LM Studio Local Desktop Audio Server', tag: 'FREE (LOCAL)' },
-  ],
-  'vllm-local': [
-    { value: 'auto', label: 'Auto (Latest vLLM Production Voice)', tag: 'FREE (OPEN SOURCE)' },
-    { value: 'vllm-openai-compatible-live', label: 'vLLM OpenAI-Compatible Stream', tag: 'FREE (OPEN SOURCE)' },
-  ],
-};
-
-export const LIVE_PROVIDER_VOICES: Record<string, Array<{ value: string; label: string; tag?: string; description?: string }>> = {
-  'gemini-live': [
-    { value: 'auto', label: 'Auto (Latest Google Voice)', tag: 'AUTO LATEST', description: 'Automatically resolves to optimal Gemini voice' },
-    { value: 'Puck', label: 'Puck (Enthusiastic & Natural)', description: 'Upbeat male voice' },
-    { value: 'Charon', label: 'Charon (Deep & Professional)', description: 'Authoritative male voice' },
-    { value: 'Kore', label: 'Kore (Calm & Clear)', description: 'Relaxed female voice' },
-    { value: 'Fenrir', label: 'Fenrir (Warm & Expressive)', description: 'Rich male voice' },
-    { value: 'Aoede', label: 'Aoede (Smooth & Bright)', description: 'Bright female voice' },
-  ],
-  'openai-realtime': [
-    { value: 'auto', label: 'Auto (Latest OpenAI Voice)', tag: 'AUTO LATEST', description: 'Automatically resolves to optimal GPT-4o voice' },
-    { value: 'Alloy', label: 'Alloy (Balanced & Natural)', description: 'Neutral open voice' },
-    { value: 'Echo', label: 'Echo (Soft Male)', description: 'Gentle male voice' },
-    { value: 'Shimmer', label: 'Shimmer (Clear Female)', description: 'Resonant female voice' },
-    { value: 'Ash', label: 'Ash (Expressive Male)', description: 'Dynamic male voice' },
-    { value: 'Ballad', label: 'Ballad (Rich Male)', description: 'Deep storytelling male voice' },
-    { value: 'Coral', label: 'Coral (Smooth Female)', description: 'Warm female voice' },
-    { value: 'Sage', label: 'Sage (Warm Female)', description: 'Calm female voice' },
-  ],
-  'elevenlabs': [
-    { value: 'auto', label: 'Auto (Latest ElevenLabs Voice)', tag: 'AUTO LATEST', description: 'Automatically resolves to your account default voice' },
-    { value: '21m00Tcm4TlvDq8ikWAM', label: 'Rachel (Conversational Female)', description: 'Calm, professional female voice' },
-    { value: 'AZnzlk1XvdvUeBnXmlld', label: 'Domi (Energetic Female)', description: 'High-energy female voice' },
-    { value: 'EXAVITQu4vr4xnSDxMaL', label: 'Bella (Narrative Female)', description: 'Soft narrative female voice' },
-    { value: 'ErXwobaYiN019PkySvjV', label: 'Antoni (Warm Male)', description: 'Versatile warm male voice' },
-    { value: 'TxGEfe70L6mWAfGQfd48', label: 'Josh (Deep Male)', description: 'Resonant deep male voice' },
-  ],
-  'deepgram': [
-    { value: 'auto', label: 'Auto (Latest Deepgram Aura-2 Voice)', tag: 'AUTO LATEST' },
-    { value: 'aura-2-thalia-en', label: 'Aura-2 Thalia (Clear Female)', description: 'Sub-200ms conversational female' },
-    { value: 'aura-2-asteria-en', label: 'Aura-2 Asteria (Natural Female)', description: 'Expressive conversational female' },
-    { value: 'aura-2-orpheus-en', label: 'Aura-2 Orpheus (Warm Male)', description: 'Natural conversational male' },
-    { value: 'aura-2-helios-en', label: 'Aura-2 Helios (Strong Male)', description: 'Strong clear male' },
-    { value: 'aura-2-zeus-en', label: 'Aura-2 Zeus (Deep Male)', description: 'Authoritative deep male' },
-  ],
-  'hume-evi': [
-    { value: 'auto', label: 'Auto (Latest Hume EVI Voice)', tag: 'AUTO LATEST' },
-    { value: 'evi-2-empathic-1', label: 'Empathic Neutral', description: 'Hume AI EVI-2' },
-    { value: 'evi-2-empathic-2', label: 'Empathic Warm', description: 'Hume AI EVI-2' },
-  ],
-  'cartesia-sonic': [
-    { value: 'auto', label: 'Auto (Latest Cartesia Sonic Voice)', tag: 'AUTO LATEST' },
-    { value: 'sonic-female-1', label: 'Sonic Female', description: 'Cartesia Sub-200ms' },
-    { value: 'sonic-male-1', label: 'Sonic Male', description: 'Cartesia Sub-200ms' },
-  ],
-  'ollama-local': [
-    { value: 'auto', label: 'Auto (Local Offline System TTS)', tag: 'FREE (LOCAL)' },
-    { value: 'piper-tts-en', label: 'Piper Local Neural Voice', tag: 'FREE (LOCAL)' },
-    { value: 'coqui-xtts-v2', label: 'Coqui Local XTTS-v2', tag: 'FREE (LOCAL)' },
-  ],
-};
 
 const PROVIDER_LABEL: Record<string, string> = {
   gemini: 'Google Gemini',
@@ -1265,7 +1144,7 @@ const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void; disab
     disabled={disabled}
     onClick={() => !disabled && onChange(!enabled)}
     className={`relative w-[42px] h-[24px] rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] shrink-0 ${ disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
-      } ${ enabled ? 'bg-[#2F8BEF] shadow-[0_0_10px_rgba(47,139,239,0.22)]' : 'bg-white/10 hover:bg-white/15' }`}
+      } ${ enabled ? 'bg-[#2F8BEF] shadow-[0_0_10px_rgba(47,139,239,0.22)]' : 'bg-[#D7D7D2] hover:bg-[#C9C9C2] dark:bg-white/10 dark:hover:bg-white/15' }`}
   >
     <motion.div
       animate={{ x: enabled ? 20 : 2 }}
@@ -1836,9 +1715,9 @@ const MANUAL_GUIDES: Record<string, { title: string; intro: string; steps: Array
   },
   live: {
     title: 'Live conversation and voice',
-    intro: 'Live Convo provides a faster hands-free way to talk with the agent while keeping the same model, provider, and app context controls.',
+    intro: 'Live Convo provides a hands-free way to talk with the agent through the selected provider’s documented native realtime transport while keeping the same app context controls.',
     steps: [
-      ['Configure Live Convo', 'Open the Live Convo settings, choose a provider, add its API key, and select a live model and voice from the available catalog.'],
+      ['Configure Live Convo', 'Open the Live Convo settings, add the selected provider’s dedicated Live key, and select a documented realtime model and voice from the catalog.'],
       ['Check the connection state', 'Wait for the provider catalog and connection status to become ready before starting. If the catalog is unavailable, check the key and endpoint first.'],
       ['Speak in short turns', 'Give one goal at a time, pause between instructions, and ask the agent to repeat important decisions before acting.'],
       ['Use app controls deliberately', 'Live tools can navigate settings, select agents, inspect tasks, and control supported app actions. Confirm consequential actions yourself.'],
@@ -2237,6 +2116,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [manualTopic, setManualTopic] = useState('model-selection');
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [terminalPlatform, setTerminalPlatform] = useState<'unknown' | 'windows' | 'mac' | 'linux'>('unknown');
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setManualOpen(false);
+    setActiveTab(normalizeSettingsTab(initialTab));
+  }, [initialTab, isOpen]);
   const [browserRuntimeStatus, setBrowserRuntimeStatus] = useState<any>(null);
   const [browserRuntimeBusy, setBrowserRuntimeBusy] = useState(false);
   const [searchProbe, setSearchProbe] = useState<{ provider: SearchProvider; status: 'idle' | 'testing' | 'success' | 'failed'; message: string }>({ provider: 'tavily', status: 'idle', message: '' });
@@ -2288,12 +2173,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [gatewayConfig, setGatewayConfig] = useState<any>(null);
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const apiKeysRef = useRef<Record<string, string>>({});
+  const settingsDialogRef = useRef<HTMLDivElement>(null);
+  const previouslyFocusedElementRef = useRef<HTMLElement | null>(null);
   const searchSettingsRef = useRef<SearchSettings>(DEFAULT_SEARCH_SETTINGS);
   const imageSettingsRef = useRef<ImageSettings>(DEFAULT_IMAGE_SETTINGS);
   const videoSettingsRef = useRef<VideoSettings>(DEFAULT_VIDEO_SETTINGS);
   const liveApiKeysRef = useRef<Record<string, string>>({});
   const modelApiKeysRef = useRef<Record<string, string>>({});
   const modelOverridesRef = useRef<ModelOverrides>({});
+  const modelEntriesRef = useRef<ModelSelectorEntry[]>([]);
   const providerBaseURLsRef = useRef<Record<string, string>>({});
   const runtimeSettingsHydratedRef = useRef(false);
   const settingsRevisionRef = useRef(0);
@@ -2302,17 +2190,34 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const runtimeSyncPendingRef = useRef<RuntimeSettingsSnapshot | null>(null);
   const runtimeSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const modelDirectoryRequestChainRef = useRef<Promise<unknown>>(Promise.resolve());
-  const modelDiscoveryVisitRef = useRef(false);
+  const modelDiscoveryVisitRef = useRef<string | null>(null);
   const providerBaseURLSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const providerBaseURLSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const providerBaseURLDirtyRef = useRef(false);
   const [updateState, setUpdateState] = useState<DesktopUpdateState>({
+    revision: 0,
     status: 'development',
     currentVersion: 'development',
     percent: 0,
+    transferred: 0,
+    total: 0,
+    bytesPerSecond: 0,
+    downloadReady: false,
     message: 'Desktop updates are available in the installed application.',
   });
+  const applyDesktopUpdateState = useCallback((incoming: DesktopUpdateState | null | undefined) => {
+    if (!incoming || typeof incoming !== 'object') return;
+    setUpdateState(current => {
+      const incomingRevision = Number(incoming.revision);
+      const currentRevision = Number(current.revision);
+      if (Number.isFinite(incomingRevision) && Number.isFinite(currentRevision) && incomingRevision < currentRevision) {
+        return current;
+      }
+      return incoming;
+    });
+  }, []);
   apiKeysRef.current = apiKeys;
+  modelEntriesRef.current = modelEntries;
   searchSettingsRef.current = searchSettings;
   imageSettingsRef.current = imageSettings;
   videoSettingsRef.current = videoSettings;
@@ -2374,6 +2279,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   useEffect(() => {
     applyUiDensity(settings.fontSize);
   }, [settings.fontSize]);
+
 
   useEffect(() => {
     if (!isOpen || (activeTab !== 'browser' && activeTab !== 'computer')) return;
@@ -2455,11 +2361,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const desktopApi = (window as any)?.electronAPI;
     let unsubscribe: undefined | (() => void);
     if (typeof desktopApi?.getUpdateState === 'function') {
-      desktopApi.getUpdateState().then((state: DesktopUpdateState) => state && setUpdateState(state)).catch(() => {});
-      if (typeof desktopApi.onUpdateState === 'function') unsubscribe = desktopApi.onUpdateState(setUpdateState);
+      // Subscribe before reading the snapshot. The revision guard prevents a
+      // slower IPC response from overwriting a newer progress event.
+      if (typeof desktopApi.onUpdateState === 'function') unsubscribe = desktopApi.onUpdateState(applyDesktopUpdateState);
+      desktopApi.getUpdateState().then(applyDesktopUpdateState).catch(() => {});
     }
     return () => unsubscribe?.();
-  }, [isOpen]);
+  }, [applyDesktopUpdateState, isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -2577,10 +2485,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     { line1: "EMBRACE", line2: "THE VOID." },
     { line1: "LIGHT IS", line2: "FOR THE WEAK." }
   ];
-
-  useEffect(() => {
-    if (isOpen) setActiveTab(normalizeSettingsTab(initialTab));
-  }, [initialTab, isOpen]);
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'context') return;
@@ -2831,7 +2735,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       [AUTO_MODEL_SELECTION, ...modelEntries.map(entry => modelEntryKey(entry.provider, entry.modelId))],
     ),
     overrides: ModelOverrides = modelOverrides,
+    requestedProviders?: MainAgentProvider[],
   ) => {
+    const providers = Array.from(new Set(
+      (requestedProviders?.length
+        ? requestedProviders
+        : MODEL_PROVIDER_ORDER.filter(provider =>
+            provider === selectedConnectionProvider
+            || splitApiKeyPool(keys[provider]).length > 0
+          ))
+        .filter(isModelProvider),
+    ));
     const runDiscovery = async () => {
       setModelDirectoryStatus('loading');
       try {
@@ -2843,12 +2757,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           modelOverrides: overrides,
           baseURLs: providerBaseURLsRef.current,
           replaceRuntimeKeys: true,
+          providers,
         }),
       });
       const payload = await res.json();
       if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
       const nextDirectory = payload.providers || {};
-      setModelDirectory(nextDirectory);
+      setModelDirectory(previous => ({ ...previous, ...nextDirectory }));
       const discoveredThinkingCapabilities: Record<string, ModelThinkingCapabilities> = {};
       Object.values(nextDirectory).forEach((providerValue: any) => {
         const provider = String(providerValue?.provider || '');
@@ -2900,42 +2815,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             }),
         });
       }
-      setModelEntries(previousEntries => {
-        const reconciled = previousEntries.filter(entry => {
-          const providerDirectory = nextDirectory[entry.provider] as ModelDirectoryProvider | undefined;
-          if (!providerDirectory?.connected) return true;
-          if (selectedEntry && modelEntryKey(entry.provider, entry.modelId) === currentSelection) return true;
-          return providerDirectory.models.some(model => model.id === entry.modelId);
-        });
-        if (selectedEntry && !reconciled.some(entry => modelEntryKey(entry.provider, entry.modelId) === currentSelection)) {
-          reconciled.push(selectedEntry);
-        }
-        const discoveredDefaults = MODEL_PROVIDER_ORDER.flatMap(provider => {
-          const providerDirectory = nextDirectory[provider] as ModelDirectoryProvider | undefined;
-          if (!providerDirectory?.connected || providerDirectory.models.length === 0) return [];
-          if (reconciled.some(entry => entry.provider === provider)) return [];
-          const preferred = providerDirectory.models[0];
-          return preferred ? [{ provider, modelId: preferred.id } as ModelSelectorEntry] : [];
-        });
-        const syncedEntries = normalizeModelSelectorEntries([...reconciled, ...discoveredDefaults], {});
-        if (
-          syncedEntries.length === previousEntries.length
-          && syncedEntries.every((entry, index) => modelEntryKey(entry.provider, entry.modelId) === modelEntryKey(previousEntries[index].provider, previousEntries[index].modelId))
-        ) return previousEntries;
-        const nextCatalog = entriesToModelCatalog(syncedEntries) as ModelCatalog;
-        setModelCatalog(nextCatalog);
-        appStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(syncedEntries));
-        appStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(nextCatalog));
-        if (currentSelection && currentSelection !== AUTO_MODEL_SELECTION && !selectedEntry) {
-          appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
-        }
-        broadcastEterxSettingsUpdate({
-          type: 'model-selector-updated',
-          modelEntries: syncedEntries,
-          modelCatalog: nextCatalog,
-        });
-        return syncedEntries;
-      });
+      // Discovery is read-only with respect to the user's chat selector.
+      // A live catalog must never insert a provider default, remove an exact
+      // manually-added model, or change the active chat model by itself.
       const discoveredContextWindows: Record<string, number> = {};
       Object.values(payload.providers || {}).forEach((providerValue: any) => {
         const provider = String(providerValue?.provider || '');
@@ -2946,10 +2828,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           }
         });
       });
-      appStorage.setItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY, JSON.stringify(discoveredContextWindows));
+      let storedContextWindows: Record<string, number> = {};
+      try {
+        storedContextWindows = JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}');
+      } catch { }
+      const nextContextWindows = { ...storedContextWindows, ...discoveredContextWindows };
+      appStorage.setItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY, JSON.stringify(nextContextWindows));
       broadcastEterxSettingsUpdate({
         type: 'model-context-windows-updated',
-        contextWindows: discoveredContextWindows,
+        contextWindows: nextContextWindows,
       });
       setModelDirectoryUpdatedAt(payload.updatedAt || Date.now());
       setModelDirectoryStatus('ready');
@@ -2960,7 +2847,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const queued = modelDirectoryRequestChainRef.current.then(runDiscovery, runDiscovery);
     modelDirectoryRequestChainRef.current = queued;
     await queued;
-  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, persistDesktopRuntimeSettings]);
+  }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, persistDesktopRuntimeSettings, selectedConnectionProvider]);
 
   const syncApiKeys = useCallback(async (keys: Record<string, string>, silent = false, overrides: ModelOverrides = {}) => {
     const cleanKeys = Object.fromEntries(
@@ -2987,6 +2874,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           apiKeys: cleanKeys,
           modelOverrides: cleanModelOverrides,
           baseURLs: providerBaseURLsRef.current,
+          persist: false,
         }),
       });
       const payload = await res.json();
@@ -3100,15 +2988,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const savedModelEntries = appStorage.getItem(MODEL_SELECTOR_STORAGE_KEY);
       const savedThinkingCapabilities = appStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY);
       const savedProviderBaseURLs = appStorage.getItem(PROVIDER_BASE_URLS_STORAGE_KEY);
+      const resetLegacyAutoModels = appStorage.getItem(MODEL_SELECTOR_SCHEMA_STORAGE_KEY) !== MODEL_SELECTOR_SCHEMA_VERSION;
       const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
       const parsedModelCatalog = savedModelCatalog ? JSON.parse(savedModelCatalog) : {};
       const parsedThinkingCapabilities = savedThinkingCapabilities ? JSON.parse(savedThinkingCapabilities) : {};
       const parsedProviderBaseURLs = savedProviderBaseURLs ? JSON.parse(savedProviderBaseURLs) : {};
       const migratedEntries = normalizeModelSelectorEntries(
-        savedModelEntries ? JSON.parse(savedModelEntries) : [],
-        parsedModelCatalog,
+        resetLegacyAutoModels ? [] : (savedModelEntries ? JSON.parse(savedModelEntries) : []),
+        resetLegacyAutoModels ? {} : parsedModelCatalog,
       );
-      Object.entries(parsedModelOverrides as Record<string, unknown>).forEach(([provider, modelId]) => {
+      Object.entries(resetLegacyAutoModels ? {} : parsedModelOverrides as Record<string, unknown>).forEach(([provider, modelId]) => {
         if (isModelProvider(provider) && String(modelId || '').trim()) {
           migratedEntries.push({ provider, modelId: String(modelId).trim() });
         }
@@ -3120,6 +3009,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         .then(response => response.ok ? response.json() : null)
         .then(payload => payload?.settings && typeof payload.settings === 'object' ? payload.settings : {})
         .catch(() => ({}));
+      if (
+        (!saved || !Object.prototype.hasOwnProperty.call(JSON.parse(saved), 'selfImprovementEnabled'))
+        && folderRuntimeSettings?.selfImprovement
+        && typeof folderRuntimeSettings.selfImprovement === 'object'
+      ) {
+        nextSettings.selfImprovementEnabled = folderRuntimeSettings.selfImprovement.enabled !== false;
+      }
       const secureSettings = typeof desktopApi?.getSecureRuntimeSettings === 'function'
         ? await desktopApi.getSecureRuntimeSettings().catch(() => null)
         : null;
@@ -3177,7 +3073,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const parsedApiKeys = { ...folderApiKeys, ...(secureApiKeys || {}) };
       const parsedLiveApiKeys = { ...folderLiveApiKeys, ...(secureLiveApiKeys || {}) };
       const parsedModelApiKeys = { ...folderModelApiKeys, ...(secureModelApiKeys || {}) };
-      const effectiveModelOverrides = Object.keys(folderModelOverrides).length > 0 || Object.keys(secureModelOverrides || {}).length > 0
+      const effectiveModelOverrides = resetLegacyAutoModels
+        ? {}
+        : Object.keys(folderModelOverrides).length > 0 || Object.keys(secureModelOverrides || {}).length > 0
         ? { ...folderModelOverrides, ...(secureModelOverrides || {}) }
         : parsedModelOverrides;
       const normalizedApiKeys = parsedApiKeys && typeof parsedApiKeys === 'object'
@@ -3232,7 +3130,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             .filter(([, value]) => Boolean(value)),
         )
         : {};
-      const normalizedModelApiKeys = parsedModelApiKeys && typeof parsedModelApiKeys === 'object'
+      const normalizedModelApiKeys = !resetLegacyAutoModels && parsedModelApiKeys && typeof parsedModelApiKeys === 'object'
         ? Object.fromEntries(
           Object.entries(parsedModelApiKeys as Record<string, unknown>)
             .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
@@ -3253,7 +3151,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         [...normalizedEntries, ...durableOverrideEntries],
         normalizedCatalog,
       );
-      const storedChatModelSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+      const storedChatModelSelection = resetLegacyAutoModels
+        ? AUTO_MODEL_SELECTION
+        : appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
       const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
       if (parsedStoredChatModel && !resolvedModelEntries.some(entry =>
         modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection
@@ -3286,6 +3186,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       }
       setModelOverrides(normalizedModelOverrides);
       setApiKeys(normalizedApiKeys);
+      modelEntriesRef.current = resolvedModelEntries;
+      modelApiKeysRef.current = normalizedModelApiKeys;
+      modelOverridesRef.current = normalizedModelOverrides;
+      apiKeysRef.current = normalizedApiKeys;
       searchSettingsRef.current = effectiveSearchSettings;
       setSearchSettings(effectiveSearchSettings);
       imageSettingsRef.current = effectiveImageSettings;
@@ -3306,6 +3210,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       providerBaseURLsRef.current = effectiveBaseURLs;
       providerBaseURLDirtyRef.current = folderBaseURLs === null && secureBaseURLs === null && Object.keys(effectiveBaseURLs).length > 0;
       setProviderBaseURLs(effectiveBaseURLs);
+
+      if (resetLegacyAutoModels) {
+        const migrationSaved = await persistDesktopRuntimeSettings(
+          normalizedApiKeys,
+          normalizedModelApiKeys,
+          normalizedModelOverrides,
+          effectiveBaseURLs,
+        );
+        if (migrationSaved !== false) {
+          appStorage.setItem(MODEL_SELECTOR_SCHEMA_STORAGE_KEY, MODEL_SELECTOR_SCHEMA_VERSION);
+        }
+      }
 
       if (cancelled || settingsRevisionRef.current !== loadRevision) return;
       queueRuntimeSyncRef.current({
@@ -3595,6 +3511,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       appStorage.setItem('eterx_settings', JSON.stringify(next));
       if (key === 'theme') transitionEterxTheme(value as AppSettings['theme']);
       broadcastEterxSettingsUpdate(next);
+      if (key === 'selfImprovementEnabled') {
+        void fetch('/api/settings/self-improvement', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: value !== false }),
+        }).catch(error => console.warn('Could not persist self-improvement setting:', error));
+      }
       return next;
     });
     setHasChanges(true);
@@ -3835,7 +3758,47 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     return () => window.removeEventListener('keydown', onKey);
   }, [isOpen, handleClose]);
 
+  useEffect(() => {
+    if (!isOpen || typeof document === 'undefined') return;
+    previouslyFocusedElementRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusFrame = window.requestAnimationFrame(() => {
+      const firstFocusable = settingsDialogRef.current?.querySelector<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      );
+      firstFocusable?.focus();
+    });
+    const handleTab = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(settingsDialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      ) || []).filter(element => element.offsetParent !== null);
+      if (!focusable.length) {
+        event.preventDefault();
+        settingsDialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleTab);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener('keydown', handleTab);
+      previouslyFocusedElementRef.current?.focus();
+      previouslyFocusedElementRef.current = null;
+    };
+  }, [isOpen]);
+
   const activeLiveProvider = getLiveProvider(settings.liveConvoProvider);
+  const activeLiveProviderValue = activeLiveProvider.value;
+  const activeLiveProviderLabel = activeLiveProvider.label;
   const activeLiveProviderKey = activeLiveProvider.provider;
   const liveApiKeyProvider = activeLiveProvider.keyProvider;
   const liveApiKeyLabel = `${activeLiveProvider.label}`;
@@ -3846,10 +3809,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   useEffect(() => {
     if (!isOpen || activeTab !== 'live-convo') return;
     let cancelled = false;
-    const providerValue = activeLiveProvider.value;
+    const providerValue = activeLiveProviderValue;
     const timer = window.setTimeout(async () => {
       setLiveCatalogStatus('loading');
-      setLiveCatalogMessage(`Loading ${activeLiveProvider.label} models and voices…`);
+      setLiveCatalogMessage(`Loading ${activeLiveProviderLabel} models and voices…`);
       try {
         const [modelResponse, voiceResponse] = await Promise.all([
           fetch('/api/live/models', {
@@ -3872,18 +3835,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           value: String(model?.id || '').trim(),
           label: String(model?.name || model?.id || '').trim(),
           tag: String(model?.tag || 'LIVE API'),
-          description: String(model?.description || `Returned by ${activeLiveProvider.label}`),
+          description: String(model?.description || `Returned by ${activeLiveProviderLabel}`),
         })).filter((model: LiveModelOption) => model.value);
         const voices = Array.isArray(voicePayload?.voices) ? voicePayload.voices : [];
         setLiveModelOptionsFromApi(previous => ({ ...previous, [providerValue]: normalizedModels }));
         setLiveVoiceOptionsFromApi(previous => ({ ...previous, [providerValue]: voices }));
-        setLiveCatalogStatus(modelResponse.ok && voiceResponse.ok ? 'ready' : 'error');
+        const catalogReady = modelResponse.ok && Boolean(modelPayload?.ok) && voiceResponse.ok && Boolean(voicePayload?.ok);
+        setLiveCatalogStatus(catalogReady ? 'ready' : 'error');
         const keyState = activeLiveApiKey ? 'key configured' : 'add an API key to connect';
-        setLiveCatalogMessage(`${normalizedModels.length} model${normalizedModels.length === 1 ? '' : 's'} and ${voices.length} voice${voices.length === 1 ? '' : 's'} available · ${keyState}`);
+        const catalogError = String(modelPayload?.error || voicePayload?.error || '').trim();
+        setLiveCatalogMessage(catalogReady
+          ? `${normalizedModels.length} model${normalizedModels.length === 1 ? '' : 's'} and ${voices.length} voice${voices.length === 1 ? '' : 's'} available · ${keyState}`
+          : catalogError || `${normalizedModels.length} model${normalizedModels.length === 1 ? '' : 's'} and ${voices.length} voice${voices.length === 1 ? '' : 's'} available · ${keyState}`);
       } catch {
         if (!cancelled) {
           setLiveCatalogStatus('error');
-          setLiveCatalogMessage(`Could not load the ${activeLiveProvider.label} catalog.`);
+          setLiveCatalogMessage(`Could not load the ${activeLiveProviderLabel} catalog.`);
         }
       }
     }, activeLiveApiKey ? 180 : 0);
@@ -3891,7 +3858,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeLiveApiKey, activeLiveProvider, activeTab, isOpen, settings.liveConvoModel]);
+  }, [activeLiveApiKey, activeLiveProviderLabel, activeLiveProviderValue, activeTab, isOpen, settings.liveConvoModel]);
 
   const activeLiveModelOptions = Array.from(new Map([
     ...getLiveModelOptions(activeLiveProvider.value),
@@ -3970,11 +3937,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   const selectedProviderGuide = OFFICIAL_PROVIDER_GUIDE[selectedConnectionProvider];
   const selectedProviderDirectory = modelDirectory[selectedConnectionProvider];
-  const selectedProviderMode = PROVIDER_MODE[selectedConnectionProvider];
-  const selectedProviderDefaultModel = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === selectedProviderMode)?.modelName || '';
   const selectedProviderModel = modelOverrides[selectedConnectionProvider] || '';
   const selectedProviderModelOptions = getProviderModelOptions(selectedConnectionProvider);
   const selectedProviderKeyCount = providerKeyCount(selectedConnectionProvider);
+  const selectedProviderCanDiscover = isLocalModelProvider(selectedConnectionProvider) || selectedProviderKeyCount > 0;
   const globalSelectorCount = modelEntries.length;
   const selectedContextChat = contextChats.find(chat => chat.id === selectedContextChatId) || null;
   const selectedContextChatBudget = selectedContextChatId
@@ -3986,7 +3952,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const effectiveSelectedChatWindow = effectiveSelectedChatBudget === 'model_max'
     ? selectedContextChat?.reportedWindow || 0
     : Number(effectiveSelectedChatBudget || 0);
-  const selectedProviderStatusText = selectedProviderDirectory
+  const selectedProviderStatusText = !selectedProviderCanDiscover
+    ? `Add a ${ PROVIDER_LABEL[selectedConnectionProvider] || selectedConnectionProvider } API key to load models`
+    : selectedProviderDirectory
     ? (selectedProviderDirectory.connected
       ? `${ selectedProviderDirectory.models.length } agent-compatible models${ selectedProviderDirectory.excludedCount ? ` · ${ selectedProviderDirectory.excludedCount } incompatible hidden` : '' }`
       : selectedProviderDirectory.error || 'Not connected')
@@ -4050,17 +4018,51 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'models') {
-      modelDiscoveryVisitRef.current = false;
+      modelDiscoveryVisitRef.current = null;
       return;
     }
-    if (modelDiscoveryVisitRef.current) return;
-    modelDiscoveryVisitRef.current = true;
-    void refreshModelDirectory();
-  }, [activeTab, isOpen, refreshModelDirectory]);
+    const visitKey = selectedConnectionProvider;
+    if (modelDiscoveryVisitRef.current === visitKey) return;
+    modelDiscoveryVisitRef.current = visitKey;
+
+    let cancelled = false;
+    let discoveryStarted = false;
+    const refreshAfterHydration = async () => {
+      await appStorageReady;
+      const deadline = Date.now() + 10_000;
+      while (!cancelled && !runtimeSettingsHydratedRef.current && Date.now() < deadline) {
+        await new Promise(resolve => window.setTimeout(resolve, 50));
+      }
+      if (cancelled || !runtimeSettingsHydratedRef.current) {
+        if (!cancelled && modelDiscoveryVisitRef.current === visitKey) {
+          modelDiscoveryVisitRef.current = null;
+          setModelDirectoryStatus('error');
+        }
+        return;
+      }
+      const currentEntries = modelEntriesRef.current;
+      const currentKeys = composeApiKeysForSelections(
+        apiKeysRef.current,
+        modelApiKeysRef.current,
+        currentEntries,
+        [AUTO_MODEL_SELECTION, ...currentEntries.map(entry => modelEntryKey(entry.provider, entry.modelId))],
+      );
+      discoveryStarted = true;
+      await refreshModelDirectory(currentKeys, modelOverridesRef.current, [selectedConnectionProvider]);
+    };
+    void refreshAfterHydration();
+    return () => {
+      cancelled = true;
+      if (!discoveryStarted && modelDiscoveryVisitRef.current === visitKey) {
+        modelDiscoveryVisitRef.current = null;
+      }
+    };
+  }, [activeTab, isOpen, refreshModelDirectory, selectedConnectionProvider]);
 
   const saveModelEntries = useCallback((nextEntries: ModelSelectorEntry[]) => {
     const normalizedEntries = normalizeModelSelectorEntries(nextEntries, {});
     const nextCatalog = entriesToModelCatalog(normalizedEntries) as ModelCatalog;
+    modelEntriesRef.current = normalizedEntries;
     setModelEntries(normalizedEntries);
     setModelCatalog(nextCatalog);
     appStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(normalizedEntries));
@@ -4070,6 +4072,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       modelEntries: normalizedEntries,
       modelCatalog: nextCatalog,
     });
+    return normalizedEntries;
   }, []);
 
   const saveModelThinkingCapability = useCallback((provider: MainAgentProvider, modelId: string) => {
@@ -4109,7 +4112,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     keysChangedRef.current = true;
   }, [modelEntries, persistApiKeyPresence, persistDesktopRuntimeSettings, queueRuntimeSync]);
 
-  const selectCatalogModel = useCallback((provider: string, modelId: string) => {
+  const selectCatalogModel = useCallback((provider: string, modelId: string, entriesSnapshot = modelEntriesRef.current) => {
     if (!isModelProvider(provider)) return;
     settingsRevisionRef.current += 1;
     const next = { ...modelOverridesRef.current };
@@ -4133,26 +4136,27 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       apiKeys: apiKeysRef.current,
       modelApiKeys: modelApiKeysRef.current,
       modelOverrides: next,
-      modelEntries,
+      modelEntries: entriesSnapshot,
     }, true);
     const nextMode = PROVIDER_MODE[provider];
     if (nextMode) updateSetting('agentMode', nextMode);
     setHasChanges(true);
     keysChangedRef.current = true;
-  }, [modelEntries, persistDesktopRuntimeSettings, queueRuntimeSync, updateSetting]);
+  }, [persistDesktopRuntimeSettings, queueRuntimeSync, updateSetting]);
 
   const addModelToSelector = useCallback((provider: string, modelId: string, activate = true) => {
     const cleanProvider = String(provider || '').trim();
     const cleanModelId = String(modelId || '').trim();
     if (!isModelProvider(cleanProvider) || !cleanModelId) return;
 
-    const nextEntries = ensureModelSelectorEntry(modelEntries, cleanProvider, cleanModelId);
-    saveModelEntries(nextEntries);
+    const existingEntries = modelEntriesRef.current;
+    const shouldActivateFirstModel = activate && existingEntries.length === 0;
+    const nextEntries = saveModelEntries(ensureModelSelectorEntry(existingEntries, cleanProvider, cleanModelId));
     saveModelThinkingCapability(cleanProvider, cleanModelId);
-    if (activate) selectCatalogModel(cleanProvider, cleanModelId);
+    if (shouldActivateFirstModel) selectCatalogModel(cleanProvider, cleanModelId, nextEntries);
     setHasChanges(true);
     keysChangedRef.current = true;
-  }, [modelEntries, saveModelEntries, saveModelThinkingCapability, selectCatalogModel]);
+  }, [saveModelEntries, saveModelThinkingCapability, selectCatalogModel]);
 
   const removeModelFromSelector = useCallback((provider: string, modelId: string) => {
     const cleanProvider = String(provider || '').trim();
@@ -4160,8 +4164,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!isModelProvider(cleanProvider) || !cleanModelId) return;
 
     const removedKey = modelEntryKey(cleanProvider, cleanModelId);
-    const nextEntries = removeModelSelectorEntry(modelEntries, cleanProvider, cleanModelId);
-    saveModelEntries(nextEntries);
+    const nextEntries = saveModelEntries(removeModelSelectorEntry(modelEntriesRef.current, cleanProvider, cleanModelId));
     setModelThinkingCapabilities(previous => {
       if (!(removedKey in previous)) return previous;
       const next = { ...previous };
@@ -4185,7 +4188,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
     }
     if (modelOverridesRef.current[cleanProvider] === cleanModelId) {
-      selectCatalogModel(cleanProvider, '');
+      selectCatalogModel(cleanProvider, '', nextEntries);
       setExactModelDraft('');
     }
     queueRuntimeSync({
@@ -4202,7 +4205,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     });
     setHasChanges(true);
     keysChangedRef.current = true;
-  }, [modelEntries, persistApiKeyPresence, persistDesktopRuntimeSettings, queueRuntimeSync, saveModelEntries, selectCatalogModel]);
+  }, [persistApiKeyPresence, persistDesktopRuntimeSettings, queueRuntimeSync, saveModelEntries, selectCatalogModel]);
 
   if ((!isOpen && !showBatmanEgg) || typeof document === 'undefined') return null;
 
@@ -4226,7 +4229,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: standalone ? 0 : 10, scale: standalone ? 1 : 0.98 }}
               transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}
-              className={`${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(640px,calc(100vh-40px))] w-[min(900px,calc(100vw-40px))] rounded-[12px] border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-[0_20px_60px_rgba(0,0,0,0.55)]`}
+              className={`eterx-settings-dialog ${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(640px,calc(100vh-40px))] w-[min(900px,calc(100vw-40px))] rounded-[12px] border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-[0_20px_60px_rgba(0,0,0,0.55)]`}
             >
               {/* Glass Background */}
               <div className="absolute inset-0 bg-[#151515]" />
@@ -4427,6 +4430,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 onChange={(value) => updateSetting('terminalShell', value as AppSettings['terminalShell'])}
                                 options={terminalShellOptions}
                               />
+                            </SettingsStackRow>
+                            <SettingsStackRow
+                              title="Self-improvement"
+                              description="Learn a durable model of how you work, plus reusable strategies, failure boundaries, tool affordances, and procedures from completed experience. Turning this off pauses both learning and learned guidance without deleting anything."
+                              info="A restricted reflection model reviews observable task trajectories after a run. Learned policies are scoped, reversible guidance: they cannot rewrite EterX's core prompt, safety rules, permissions, or tools. Re-enable this later to continue from the same accumulated experience."
+                            >
+                              <div className="flex items-center gap-3">
+                                <span className={`text-[11px] font-semibold ${settings.selfImprovementEnabled ? 'text-emerald-400' : 'text-white/35'}`}>
+                                  {settings.selfImprovementEnabled ? 'Learning' : 'Paused'}
+                                </span>
+                                <Toggle
+                                  enabled={settings.selfImprovementEnabled}
+                                  onChange={value => updateSetting('selfImprovementEnabled', value)}
+                                />
+                              </div>
                             </SettingsStackRow>
                             <SettingsStackRow
                               title="Synapse Graph"
@@ -4803,13 +4821,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 <input
                                   type="number"
                                   min={1}
+                                  max={20}
                                   step={1}
                                   value={settings.maxSubAgents}
                                   aria-label="Concurrent sub-agents"
                                   onChange={event => {
                                     const next = Number(event.target.value);
                                     if (Number.isFinite(next) && next >= 1) {
-                                      updateSetting('maxSubAgents', Math.floor(next));
+                                      updateSetting('maxSubAgents', Math.min(20, Math.floor(next)));
                                     }
                                   }}
                                   className="w-24 rounded-md border border-white/10 bg-white/[0.06] px-2 py-1.5 text-right text-[13px] font-mono text-[#DCD8D2] outline-none focus:border-white/25"
@@ -4852,7 +4871,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             </SettingsStackRow>
                             <SettingsStackRow
                               title="Model"
-                              description={selectedProviderModel ? 'Exact model active for the next run.' : `Provider default: ${ selectedProviderDefaultModel || 'not configured' }`}
+                              description={selectedProviderModel
+                                ? 'Exact model active for the next run.'
+                                : selectedProviderCanDiscover
+                                  ? 'Choose a real model returned by the provider.'
+                                  : 'Add an API key first; no default or placeholder model is selected.'}
                               info="The list is built from the provider API and hides embeddings, speech, image, expired, and non-agent models."
                             >
                               <ModernSelect
@@ -4865,7 +4888,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     selectCatalogModel(selectedConnectionProvider, '');
                                   }
                                 }}
-                                placeholder="Select a live model"
+                                placeholder={selectedProviderCanDiscover ? 'Select a live model' : 'Add API key to load models'}
                                 className="w-[360px]"
                                 options={[
                                   ...selectedProviderModelOptions.map(option => ({
@@ -5133,7 +5156,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <SectionHeader
                             title="Live Convo"
                             badge={settings.liveConvoEnabled ? 'Live' : 'Disabled'}
-                            info="Configure the selected model provider, realtime model, voice, and dedicated key pool. No provider is substituted silently."
+                            info="Configure a documented native realtime provider, its model, voice, and dedicated key pool. Client-side speech fallbacks and undocumented provider adapters are not used."
                           />
                           <SettingsStack>
                             <SettingsStackRow
@@ -5148,8 +5171,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                             <SettingsStackRow
                               title="Live Provider"
-                              description="Select the real-time stream provider for active live sessions."
-                              info="Every provider keeps its own API key, model catalog, and voice catalog."
+                              description="Select the native realtime provider for the active Live session."
+                              info="Each provider uses its documented transport and audio protocol. Long-lived keys stay server-side where the provider supports ephemeral browser credentials."
                             >
                               <ModernSelect
                                 value={activeLiveProvider.value}
@@ -5192,6 +5215,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 options={activeLiveVoiceOptions}
                               />
                             </SettingsStackRow>
+
+                            {activeLiveProvider.requiresAgentId && (
+                              <SettingsStackRow
+                                title="Conversational Agent ID"
+                                description="Required by ElevenLabs to identify the configured Conversational AI agent."
+                                info="Create and configure the agent in ElevenLabs, then paste its agent_… ID here. Private agents receive a short-lived signed WebSocket URL from EterX."
+                              >
+                                <input
+                                  value={settings.liveConvoAgentId || ''}
+                                  onChange={(event) => updateSetting('liveConvoAgentId', event.target.value.trim())}
+                                  placeholder="agent_…"
+                                  className="h-9 w-[340px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 font-mono text-[12px] text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                                />
+                              </SettingsStackRow>
+                            )}
 
                             <SettingsStackRow
                               title="Provider catalog status"
@@ -5883,16 +5921,28 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 </div>
                               </div>
                               <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-                                updateState.status === 'ready' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400' :
+                                updateState.status === 'ready' || updateState.status === 'installing' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400' :
                                 updateState.status === 'error' ? 'border-red-500/25 bg-red-500/10 text-red-400' :
                                 'border-white/[0.08] bg-white/[0.04] text-[#B8B8B8]'
                               }`}>
-                                {updateState.status === 'current' ? 'Up to date' : updateState.status === 'ready' ? 'Ready' : updateState.status}
+                                {updateState.status === 'current' ? 'Up to date' :
+                                  updateState.status === 'ready' ? 'Ready' :
+                                  updateState.status === 'installing' ? 'Installing' :
+                                  updateState.status.charAt(0).toUpperCase() + updateState.status.slice(1)}
                               </span>
                             </div>
 
-                            {(updateState.status === 'downloading' || updateState.status === 'ready' || (
-                              updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.percent >= 100
+                            <div className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#666]">
+                              <span>{updateState.updateHost || 'GitHub Releases'}</span>
+                              <span aria-hidden="true">|</span>
+                              <span>{updateState.platform === 'win32' ? 'Windows' : updateState.platform === 'darwin' ? 'macOS' : updateState.platform === 'linux' ? 'Linux' : 'Desktop'} {updateState.architecture || ''}</span>
+                              {updateState.packageType && <><span aria-hidden="true">|</span><span>{updateState.packageType}</span></>}
+                              <span aria-hidden="true">|</span>
+                              <span>Manual checks only</span>
+                            </div>
+
+                            {(updateState.status === 'downloading' || updateState.status === 'ready' || updateState.status === 'installing' || (
+                              updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.percent > 0
                             )) && (
                               <div className="mt-5">
                                 <div className="mb-2 flex justify-between text-[11px] text-[#777]">
@@ -5902,19 +5952,27 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
                                   <div className="h-full rounded-full bg-[#D9D9D9] transition-[width] duration-300" style={{ width: `${Math.max(0, Math.min(100, updateState.percent))}%` }} />
                                 </div>
+                                {Boolean(updateState.transferred || updateState.total || updateState.bytesPerSecond) && (
+                                  <div className="mt-2 flex justify-between text-[11px] text-[#5E5E5E]">
+                                    <span>{formatUpdateBytes(updateState.transferred)}{updateState.total ? ` / ${formatUpdateBytes(updateState.total)}` : ''}</span>
+                                    <span>{updateState.bytesPerSecond ? `${formatUpdateBytes(updateState.bytesPerSecond)}/s` : updateState.status === 'ready' || updateState.status === 'installing' ? 'Download verified' : ''}</span>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
 
                           <div className="flex gap-3">
-                            {updateState.status === 'ready' || (
-                              updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.percent >= 100
+                            {updateState.status === 'installing' ? (
+                              <SoftButton disabled>Installing...</SoftButton>
+                            ) : updateState.status === 'ready' || (
+                              updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.downloadReady
                             ) ? (
                               <SoftButton onClick={() => void (window as any)?.electronAPI?.installUpdate?.()}>
                                 {updateState.status === 'error' ? 'Retry restart and install' : 'Restart and install'}
                               </SoftButton>
                             ) : updateState.status === 'available' || (
-                              updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.percent < 100
+                              updateState.status === 'error' && Boolean(updateState.availableVersion) && !updateState.downloadReady
                             ) ? (
                               <SoftButton onClick={() => void (window as any)?.electronAPI?.downloadUpdate?.()}>
                                 {updateState.status === 'error' ? 'Retry download' : `Download EterX ${updateState.availableVersion}`}
@@ -5930,8 +5988,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </div>
 
                           <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
-                            Updates are fully manual. Choose Check for updates, then Download only when a newer stable release is available. EterX installs only after Restart and install. Chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory. Linux in-app updates require the AppImage package; .deb installations are updated by downloading the next package.
+                            Updates are fully manual. Check for updates reads the stable metadata hosted on GitHub Releases; nothing downloads until you choose Download, and nothing installs until you choose Restart and install. Chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory. Linux in-app updates require the AppImage package; .deb installations are updated through the system package installer.
                           </p>
+                          {updateState.releaseDate && updateState.availableVersion && (
+                            <p className="mt-2 text-[11px] text-[#555]">
+                              Release {updateState.releaseName || `EterX ${updateState.availableVersion}`} published {new Date(updateState.releaseDate).toLocaleString()}
+                            </p>
+                          )}
                           {updateState.lastCheckedAt && (
                             <p className="mt-2 text-[11px] text-[#555]">
                               Last checked {new Date(updateState.lastCheckedAt).toLocaleString()}
@@ -6048,6 +6111,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             appStorage.setItem('eterx_settings', JSON.stringify(DEFAULT_SETTINGS));
                             transitionEterxTheme(DEFAULT_SETTINGS.theme);
                             broadcastEterxSettingsUpdate(DEFAULT_SETTINGS);
+                            void fetch('/api/settings/self-improvement', {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ enabled: DEFAULT_SETTINGS.selfImprovementEnabled }),
+                            }).catch(() => undefined);
                             setHasChanges(false);
                             setShowResetConfirm(false);
                           }}

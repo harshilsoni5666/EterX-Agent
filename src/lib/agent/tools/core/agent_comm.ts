@@ -25,6 +25,10 @@ const formatAgentMessage = (m: any) => ({
   confidence: m.metadata?.confidence,
   subAgentId: m.metadata?.subAgentId,
   subAgentChatId: m.metadata?.subAgentChatId,
+  recipientAgentId: m.metadata?.recipientAgentId,
+  recipientSubAgentChatId: m.metadata?.recipientSubAgentChatId,
+  broadcastRecipientRuns: m.metadata?.broadcastRecipientRuns,
+  broadcast: m.metadata?.broadcast === true || m.to === '*',
   ageSeconds: Math.round((Date.now() - m.timestamp) / 1000),
 });
 
@@ -170,6 +174,7 @@ WHEN TO USE:
             type: input.type as MessageType | undefined,
             from: input.from,
             limit: input.limit || 10,
+            agentId: context?.isSubAgent ? context?.subAgentId : undefined,
           });
           
           // Auto-mark as read by default, but callers can inspect safely.
@@ -192,7 +197,10 @@ WHEN TO USE:
             return { success: false, message: 'Required: replyToId, body' };
           }
           // Find the original message to get the sender
-          const allMsgs = interAgentMailbox.checkMailbox(projectId, myName, { unreadOnly: false });
+          const allMsgs = interAgentMailbox.checkMailbox(projectId, myName, {
+            unreadOnly: false,
+            agentId: context?.isSubAgent ? context?.subAgentId : undefined,
+          });
           const original = allMsgs.find((m: any) => m.id === input.replyToId);
           if (!original) {
             return { success: false, message: `Message ${input.replyToId} not found` };
@@ -313,10 +321,12 @@ WHEN TO USE:
             const disk = diskStatusByName.get(key);
             return {
               agentName,
+              agentId: presence?.agentId || disk?.agentId,
+              subAgentChatId: presence?.subAgentChatId || disk?.subAgentChatId,
               role: presence?.role || (key === 'main' ? 'main' : 'sub_agent'),
-              status: disk?.status || presence?.status || 'registered',
-              task: disk?.task || presence?.task,
-              progress: disk?.progress || presence?.progress,
+              status: presence?.status || disk?.status || 'registered',
+              task: presence?.task || disk?.task,
+              progress: presence?.progress || disk?.progress,
               unreadCount: mailbox?.unreadCount || 0,
               totalMessages: mailbox?.totalCount || 0,
               latestMessage: mailbox?.latestMessage,

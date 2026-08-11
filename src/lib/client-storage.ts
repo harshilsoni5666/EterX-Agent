@@ -19,6 +19,8 @@ let storageHydrated = false;
 let storageLoadFailed = false;
 let persistRequestedDuringHydration = false;
 let storageRefreshPromise: Promise<boolean> | null = null;
+let storageRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let storageRecoveryAttempt = 0;
 const durableFlushers = new Set<() => Promise<boolean | void> | boolean | void>();
 
 const isBrowser = typeof window !== 'undefined';
@@ -156,6 +158,13 @@ export const appStorage = {
   setItem(key: string, value: string) {
     const normalizedKey = String(key);
     const normalizedValue = String(value);
+    // Periodic live-status refreshes often write the same value. Avoid an
+    // unnecessary AppData rewrite, cross-window refresh, and renderer event.
+    if (
+      memory.get(normalizedKey) === normalizedValue
+      && !pendingRemovals.has(normalizedKey)
+      && !pendingMutations.has(normalizedKey)
+    ) return;
     memory.set(normalizedKey, normalizedValue);
     pendingRemovals.delete(normalizedKey);
     pendingMutations.set(normalizedKey, normalizedValue);
@@ -253,6 +262,11 @@ export async function refreshAppStorage(): Promise<boolean> {
     }
     storageLoadFailed = false;
     storageHydrated = true;
+    storageRecoveryAttempt = 0;
+    if (storageRecoveryTimer) {
+      clearTimeout(storageRecoveryTimer);
+      storageRecoveryTimer = null;
+    }
     const hadPendingWrites = persistRequestedDuringHydration;
     persistRequestedDuringHydration = false;
     window.dispatchEvent(new CustomEvent(FOLDER_STORAGE_READY_EVENT));
@@ -266,9 +280,33 @@ export async function refreshAppStorage(): Promise<boolean> {
   return storageRefreshPromise;
 }
 
+const scheduleStorageRecovery = () => {
+  if (!isBrowser || !storageLoadFailed || storageRecoveryTimer) return;
+  const delay = Math.min(15_000, 2_000 * (2 ** storageRecoveryAttempt));
+  storageRecoveryTimer = setTimeout(() => {
+    storageRecoveryTimer = null;
+    void refreshAppStorage().then(ok => {
+      if (ok || !storageLoadFailed) {
+        storageRecoveryAttempt = 0;
+        return;
+      }
+      storageRecoveryAttempt = Math.min(storageRecoveryAttempt + 1, 4);
+      scheduleStorageRecovery();
+    });
+  }, delay);
+};
+
 if (isBrowser) {
   window.addEventListener('focus', () => {
-    if (storageLoadFailed) void refreshAppStorage();
+    if (storageLoadFailed) {
+      storageRecoveryAttempt = 0;
+      void refreshAppStorage().then(ok => {
+        if (!ok) scheduleStorageRecovery();
+      });
+    }
+  });
+  void appStorageReady.then(() => {
+    if (storageLoadFailed) scheduleStorageRecovery();
   });
   if (typeof BroadcastChannel !== 'undefined') {
     try {

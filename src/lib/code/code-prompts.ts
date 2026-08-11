@@ -51,7 +51,6 @@ Final answer:
 
 export function getToolEnhancements(): Record<string, string> {
   return {
-    tool_finder: 'Discover the right available tool when uncertain.',
     workspace_semantic_search: 'Natural-language codebase search with ranked files and line ranges.',
     workspace_file_outline: 'Inspect imports, exports, functions, and classes in one file.',
     workspace_find_files: 'Fast repository file discovery.',

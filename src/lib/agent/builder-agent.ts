@@ -72,7 +72,6 @@ export const AGENT_BUILDER_BASELINE_TOOL_NAMES = [
   'workspace_run_command',
   'workspace_verify_code',
   'csv_data_analyzer',
-  'office_artifact_builder',
 ] as const;
 
 const CUSTOM_AGENT_TRAINING_MARKER = 'CUSTOM AGENT TRAINING STANDARD v1';
@@ -94,11 +93,11 @@ export function getCustomAgentAllowedToolNames(profile: Partial<AgentBuilderProf
   const names = new Set<string>();
   for (const ref of profile?.directMainTools || []) {
     const name = normalizeRegistryToolName(String(ref?.toolName || '').trim());
-    if (name && !isBuilderOnlyToolName(name)) names.add(name);
+    if (name && name !== 'tool_finder' && !isBuilderOnlyToolName(name)) names.add(name);
   }
   for (const tool of profile?.customTools || []) {
     const name = String(tool?.toolName || '').trim();
-    if (name && tool?.safetyStatus !== 'blocked') names.add(name);
+    if (name && name !== 'tool_finder' && tool?.safetyStatus !== 'blocked') names.add(name);
   }
   return names;
 }
@@ -420,14 +419,14 @@ export function validateAgentScopedCode(code: string): { allowed: boolean; notes
 export function buildAgentBuilderRuntimePrompt(agentId: string, agentName?: string): string {
   const mainToolNames = globalToolRegistry.getAllTools()
     .map(tool => tool.name)
-    .filter(name => !isBuilderOnlyToolName(name))
+    .filter(name => !isBuilderOnlyToolName(name) && name !== 'experience_signal')
     .sort()
     .join(', ');
 
   // Group tools by category for the builder to understand what's available
   const toolsByCategory: Record<string, string[]> = {};
   for (const tool of globalToolRegistry.getAllTools()) {
-    if (isBuilderOnlyToolName(tool.name)) continue;
+    if (isBuilderOnlyToolName(tool.name) || tool.name === 'experience_signal') continue;
     const cat = tool.category || 'other';
     if (!toolsByCategory[cat]) toolsByCategory[cat] = [];
     toolsByCategory[cat].push(`${tool.name}: ${tool.description.substring(0, 80)}`);
@@ -757,7 +756,6 @@ TIER 2 — ATTACH BASED ON AGENT TYPE (attach if even slightly relevant):
 TIER 3 — SPECIALIZED (attach when the agent domain requires it):
   • image_generator — For design/creative agents
   • parse_pdf — For research/document agents
-  • office_artifact_builder — For documents, slides, workbooks, PDFs, and spreadsheet charts
 
 ━━━ SOUL RULES FRAMEWORK ━━━
 
@@ -941,15 +939,18 @@ ${toolCatalog || 'No tools loaded yet.'}
 ━━━ LIVE CONNECTOR CAPABILITY ━━━
 
 The builder can inspect the real connector runtime while it configures an agent:
-- gateway_bridge is the live native Gateway path for Telegram, Slack, WhatsApp, Discord, Signal, email, and other Gateway channels. Use it to discover channels or verify the Gateway is actually running.
+- channel_agent is the high-level, on-demand operating layer for sales, support, inbox, lead, and customer-conversation work. Its configured role, channel bindings, send policy, and escalation rules load only when called; do not duplicate the long playbook inside every professionalPrompt. Gateway message sends never require a confirmation prompt; draft-only remains enforced.
+- gateway_bridge is the live native Gateway path for Telegram, Messenger, Slack, WhatsApp, Discord, Signal, email, and other Gateway channels. Use it to discover channels or verify the Gateway is actually running.
 - connector_mcp is the live REST/MCP path for saved connectors and MCP servers. Use it to list saved connectors, verify a supplied connector configuration, discover live MCP tools, and confirm the endpoint before attaching it.
-- Call agent_builder_attach_connector_tools for a connector-capable target. It attaches both bridges with explicit discovery and verification guidance, so the finalized agent can use whichever connector is active.
+- Call agent_builder_attach_connector_tools for a connector-capable target. For Gateway mode it attaches channel_agent plus gateway_bridge; all mode also attaches connector_mcp. Pass channelProfileId when the target has a reviewed sales, support, operations, or custom profile.
 - Keep platform, connector_id, server_id, and target explicit. Never infer that a catalog entry is connected, never invent a connector, and never print tokens or API keys.
 - Do not ask for routine execution permission or repeat a credential request. Continue with safe discovery and verification; only stop when a real missing secret or an irreducible user decision blocks the action.
 
 ━━━ EXECUTION STYLE ━━━
 
 - Be decisive. Don't ask "should I proceed?" — just proceed.
+- Treat the builder room as a durable editor, not a one-shot wizard. On every follow-up, combine chat intent with agent_builder_get_profile, preserve unspecified settings, persist the requested revision, rerun quality checks, and finalize the new version. Ready agents always remain editable.
+- Use replaceCollections=true only when the user intends to replace rules, skills, or notes. Use agent_builder_remove_tool for real tool removal; never claim something was removed when it remains in the persisted profile.
 - Save the profile incrementally. Don't wait until the end.
 - Call agent_builder_save_profile FIRST with the complete deep prompt (including SOUL rules, search protocol, work_note protocol).
 - THEN attach the complete catalog with agent_builder_attach_all_main_tools (or attach the required tools individually). For any agent that may work with external services, also call agent_builder_attach_connector_tools so the target has the live universal connector bridges. THEN add relevant TIER 2/3 tools and exclusions.

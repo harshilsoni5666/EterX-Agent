@@ -67,6 +67,9 @@ export class ToolResultCompactor {
         
         case 'browser_control':
           return this.compactBrowserResult(args, result);
+
+        case 'spawn_sub_agent':
+          return this.compactDelegationResult(result);
         
         default:
           return this.compactGeneric(result);
@@ -305,6 +308,46 @@ export class ToolResultCompactor {
     }
 
     return this.compactGeneric(result);
+  }
+
+  /** Preserve delegation lineage while bounding each worker payload independently. */
+  private compactDelegationResult(result: any): any {
+    if (!result || typeof result !== 'object' || !Array.isArray(result.agents)) return this.compactGeneric(result);
+    const agents = result.agents.map((agent: any) => {
+      const raw = typeof agent?.result === 'string' ? agent.result : '';
+      const bounded = raw.length <= 12_000
+        ? raw
+        : `${raw.slice(0, 9_000)}\n\n...[delegated result compacted; ${raw.length} chars total]...\n\n${raw.slice(-2_000)}`;
+      return {
+        ...agent,
+        result: bounded,
+        traceLog: Array.isArray(agent?.traceLog) ? agent.traceLog.slice(-8) : agent?.traceLog,
+      };
+    });
+    return {
+      ...result,
+      agents,
+      // `usableResults` and the legacy alias duplicate objects already present
+      // in agents; keep identity/quality metadata without repeating payloads.
+      usableResults: Array.isArray(result.usableResults)
+        ? result.usableResults.map((agent: any) => ({
+            name: agent?.name,
+            agentId: agent?.agentId,
+            status: agent?.status,
+            delegationEvidence: agent?.delegationEvidence,
+          }))
+        : result.usableResults,
+      completedResults: Array.isArray(result.completedResults)
+        ? result.completedResults.map((agent: any) => ({
+            name: agent?.name,
+            agentId: agent?.agentId,
+            status: agent?.status,
+            delegationEvidence: agent?.delegationEvidence,
+          }))
+        : result.completedResults,
+      _compacted: true,
+      _compactionStrategy: 'delegation evidence manifest',
+    };
   }
 
   /** Generic compaction — head + tail with size info */

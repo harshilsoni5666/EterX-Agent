@@ -29,6 +29,8 @@ const TASK_STORE_PROCESS_STARTED_AT = Date.now();
 const MAX_TASK_CACHE_ENTRIES = 80;
 const MAX_RUNNING_TRACE_LOGS = 700;
 const MAX_COMPLETED_TRACE_LOGS = 350;
+const MAX_PERSISTED_CONSOLE_CHARS = 120_000;
+const MAX_PERSISTED_CONSOLE_CHUNK_CHARS = 6_000;
 const MAX_PROMPT_CHARS = 12000;
 const MAX_FINAL_ANSWER_CHARS = 100000;
 
@@ -49,6 +51,7 @@ export interface PersistedTask {
 const writeTimers: Map<string, NodeJS.Timeout> = new Map();
 const DEBOUNCE_MS = 500;
 const writeChains: Map<string, Promise<void>> = new Map();
+const pendingWriteSnapshots: Map<string, string> = new Map();
 
 // In-memory cache for fast reads
 const taskCache: Map<string, PersistedTask> = new Map();
@@ -130,12 +133,22 @@ function compactTraceEvent(traceEvent: any): any {
   }
 
   if (traceEvent.type === 'console_output') {
-    const { output, content, ...rest } = traceEvent;
-    const outputText = String(output ?? content ?? '');
+    const { output, content, outputPreview, ...rest } = traceEvent;
+    const outputText = String(output ?? content ?? outputPreview ?? '');
+    const isDelta = traceEvent.isDelta === true;
+    const compactOutput = outputText.length <= MAX_PERSISTED_CONSOLE_CHUNK_CHARS
+      ? outputText
+      : isDelta
+        ? outputText.slice(-MAX_PERSISTED_CONSOLE_CHUNK_CHARS)
+        : `${outputText.slice(0, 1_500)}\n...[terminal output compacted]...\n${outputText.slice(-(MAX_PERSISTED_CONSOLE_CHUNK_CHARS - 1_500))}`;
+    const outputEnd = Number(traceEvent.outputEnd);
     return {
       ...rest,
-      output: outputText.length > 2500 ? `${outputText.substring(0, 2500)}\n...[output compacted]` : outputText,
-      _contentStripped: outputText.length > 2500,
+      output: compactOutput,
+      ...(isDelta && outputText.length > MAX_PERSISTED_CONSOLE_CHUNK_CHARS && Number.isFinite(outputEnd)
+        ? { outputStart: Math.max(0, outputEnd - compactOutput.length) }
+        : {}),
+      _contentStripped: traceEvent._contentStripped === true || outputText.length > compactOutput.length,
     };
   }
 
@@ -151,6 +164,82 @@ function compactTraceEvent(traceEvent: any): any {
   }
 
   return traceEvent;
+}
+
+function getConsoleTraceOutput(trace: any): string {
+  const candidates = [trace?.output, trace?.content, trace?.outputPreview];
+  const value = candidates.find(candidate => candidate !== undefined && candidate !== null && String(candidate).length > 0)
+    ?? candidates.find(candidate => candidate !== undefined && candidate !== null);
+  return String(value ?? '');
+}
+
+/**
+ * Persist one bounded, offset-aware snapshot per terminal stream. Live traces
+ * arrive as deltas; consolidating them here keeps disk polling linear while
+ * retaining enough offset information for reconnects to append idempotently.
+ */
+function mergePersistedConsoleTrace(previous: any, incoming: any): any {
+  const previousText = getConsoleTraceOutput(previous);
+  const incomingText = getConsoleTraceOutput(incoming);
+  const previousStart = Number(previous?.outputStart);
+  const previousEnd = Number(previous?.outputEnd);
+  const incomingStart = Number(incoming?.outputStart);
+  const incomingEnd = Number(incoming?.outputEnd);
+  let mergedOutput = incomingText;
+  let mergedStart = Number.isFinite(incomingStart) ? incomingStart : undefined;
+  const mergedEnd = Number.isFinite(incomingEnd)
+    ? incomingEnd
+    : Number.isFinite(previousEnd)
+      ? previousEnd
+      : undefined;
+
+  if (incoming?.isDelta === true) {
+    if (Number.isFinite(previousEnd) && Number.isFinite(incomingStart) && Number.isFinite(incomingEnd)) {
+      if (incomingEnd <= previousEnd) return previous;
+      if (incomingStart <= previousEnd) {
+        const overlap = Math.max(0, previousEnd - incomingStart);
+        mergedOutput = `${previousText}${incomingText.slice(overlap)}`;
+        mergedStart = Number.isFinite(previousStart)
+          ? previousStart
+          : Math.max(0, previousEnd - previousText.length);
+      }
+      // A real gap means the earlier snapshot is no longer contiguous. Keep
+      // the new range; the client uses outputStart to render a reconnect note.
+    } else {
+      mergedOutput = mergeStreamingText(previousText, incomingText, true);
+      mergedStart = Number.isFinite(previousStart) ? previousStart : mergedStart;
+    }
+  } else {
+    const sameLogicalEnd = Number.isFinite(previousEnd) && Number.isFinite(incomingEnd) && previousEnd === incomingEnd;
+    const incomingWasCompacted = incoming?._contentStripped === true;
+    if (sameLogicalEnd && incomingWasCompacted && previousText.length > incomingText.length) {
+      mergedOutput = previousText;
+      mergedStart = Number.isFinite(previousStart) ? previousStart : mergedStart;
+    } else {
+      mergedOutput = mergeStreamingText(previousText, incomingText, false);
+    }
+  }
+
+  if (mergedOutput.length > MAX_PERSISTED_CONSOLE_CHARS) {
+    const removedChars = mergedOutput.length - MAX_PERSISTED_CONSOLE_CHARS;
+    mergedOutput = mergedOutput.slice(removedChars);
+    mergedStart = typeof mergedStart === 'number' && Number.isFinite(mergedStart)
+      ? mergedStart + removedChars
+      : typeof mergedEnd === 'number' && Number.isFinite(mergedEnd)
+        ? Math.max(0, mergedEnd - mergedOutput.length)
+        : undefined;
+  }
+
+  return {
+    ...previous,
+    ...incoming,
+    output: mergedOutput,
+    content: undefined,
+    outputPreview: undefined,
+    ...(mergedStart !== undefined ? { outputStart: mergedStart } : {}),
+    ...(mergedEnd !== undefined ? { outputEnd: mergedEnd } : {}),
+    startTime: previous.startTime || previous.timestamp || incoming.startTime || incoming.timestamp,
+  };
 }
 
 function trimTask(task: PersistedTask, compactAll = false): void {
@@ -195,12 +284,21 @@ async function flushToDisk(chatId: string): Promise<void> {
   // Serialize once at scheduling time. The old clone-then-writeJson path
   // stringified every long trace history twice per flush.
   const snapshot = JSON.stringify(task);
-  const previousWrite = writeChains.get(chatId) || Promise.resolve();
-  const nextWrite = previousWrite.catch(() => {}).then(async () => {
-    await ensureDir();
-    await writeSerializedJsonAtomic(getTaskPath(chatId), snapshot);
-  });
-  writeChains.set(chatId, nextWrite);
+  // Keep only the newest queued snapshot when disk or antivirus latency is
+  // slower than the live trace cadence. One writer per chat drains this slot.
+  pendingWriteSnapshots.set(chatId, snapshot);
+  let nextWrite = writeChains.get(chatId);
+  if (!nextWrite) {
+    nextWrite = (async () => {
+      while (pendingWriteSnapshots.has(chatId)) {
+        const latest = pendingWriteSnapshots.get(chatId)!;
+        pendingWriteSnapshots.delete(chatId);
+        await ensureDir();
+        await writeSerializedJsonAtomic(getTaskPath(chatId), latest);
+      }
+    })();
+    writeChains.set(chatId, nextWrite);
+  }
 
   try {
     await nextWrite;
@@ -208,6 +306,7 @@ async function flushToDisk(chatId: string): Promise<void> {
     console.warn(`[TaskStore] ⚠️ Failed to persist task for ${chatId}: ${err.message}`);
   } finally {
     if (writeChains.get(chatId) === nextWrite) writeChains.delete(chatId);
+    if (pendingWriteSnapshots.has(chatId) && taskCache.has(chatId)) void flushToDisk(chatId);
   }
 }
 
@@ -292,7 +391,7 @@ export const taskStore = {
   addTrace(chatId: string, traceEvent: any, expectedRunId?: string): void {
     const task = taskCache.get(chatId);
     if (!task) return;
-    if (expectedRunId && task.runId && task.runId !== expectedRunId) return;
+    if (expectedRunId && task.runId !== expectedRunId) return;
 
     const now = Date.now();
     const compactEvent = compactTraceEvent(traceEvent);
@@ -446,7 +545,7 @@ export const taskStore = {
     } else if (timedEvent?.type === 'console_output') {
       const streamId = String(timedEvent.streamId || '').trim();
       const ownerTraceId = String(timedEvent.ownerTraceId || '').trim();
-      const terminalTaskId = String(timedEvent.taskId || '').trim();
+      const terminalTaskId = String(timedEvent.taskId || timedEvent.backgroundTaskId || '').trim();
       let mergeIdx = -1;
 
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
@@ -454,8 +553,10 @@ export const taskStore = {
         if (log?.type === 'user_action') break;
         if (log?.type !== 'console_output') continue;
         const sameStream = streamId && String(log.streamId || '') === streamId;
-        const sameOwner = ownerTraceId && String(log.ownerTraceId || '') === ownerTraceId;
-        const sameTask = terminalTaskId && String(log.taskId || '') === terminalTaskId;
+        const sameOwner = ownerTraceId
+          && String(log.ownerTraceId || '') === ownerTraceId
+          && String(log.command || '') === String(timedEvent.command || '');
+        const sameTask = terminalTaskId && String(log.taskId || log.backgroundTaskId || '') === terminalTaskId;
         if (sameStream || sameOwner || sameTask) {
           mergeIdx = i;
           break;
@@ -464,11 +565,7 @@ export const taskStore = {
 
       if (mergeIdx >= 0) {
         const previous = task.traceLogs[mergeIdx];
-        task.traceLogs[mergeIdx] = {
-          ...previous,
-          ...timedEvent,
-          startTime: previous.startTime || previous.timestamp || timedEvent.startTime || timedEvent.timestamp,
-        };
+        task.traceLogs[mergeIdx] = mergePersistedConsoleTrace(previous, timedEvent);
       } else {
         task.traceLogs.push(timedEvent);
       }
@@ -489,7 +586,7 @@ export const taskStore = {
   async completeTask(chatId: string, finalAnswer: string, success: boolean, statusOverride?: 'completed' | 'failed' | 'stopped', expectedRunId?: string): Promise<void> {
     const task = taskCache.get(chatId);
     if (!task) return;
-    if (expectedRunId && task.runId && task.runId !== expectedRunId) return;
+    if (expectedRunId && task.runId !== expectedRunId) return;
     
     task.status = statusOverride || (success ? 'completed' : 'failed');
     task.finalAnswer = finalAnswer;
@@ -514,7 +611,7 @@ export const taskStore = {
   async stopTask(chatId: string, finalAnswer = 'Stopped by user.', expectedRunId?: string): Promise<void> {
     const task = taskCache.get(chatId);
     if (!task || task.status !== 'running') return;
-    if (expectedRunId && task.runId && task.runId !== expectedRunId) return;
+    if (expectedRunId && task.runId !== expectedRunId) return;
     
     task.status = 'stopped';
     task.finalAnswer = finalAnswer;
@@ -636,7 +733,7 @@ export const taskStore = {
     }
     return {
       cachedTasks: taskCache.size,
-      pendingWrites: writeTimers.size + writeChains.size,
+      pendingWrites: writeTimers.size + writeChains.size + pendingWriteSnapshots.size,
       runningTasks,
       completedTasks,
     };
@@ -679,6 +776,7 @@ export const taskStore = {
               clearTimeout(timer);
               writeTimers.delete(chatId);
             }
+            pendingWriteSnapshots.delete(chatId);
           }
         } catch { /* silent */ }
       }
@@ -695,5 +793,6 @@ export const taskStore = {
       clearTimeout(timer);
       writeTimers.delete(chatId);
     }
+    pendingWriteSnapshots.delete(chatId);
   },
 };

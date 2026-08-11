@@ -528,7 +528,6 @@ export class CognitiveReasoningEngine {
     if (/\b(run|execute|command|shell|terminal|npm|pip|install)\b/i.test(lower)) tools.push('workspace_run_command');
     if (/\b(web|search|google|online|internet|latest)\b/i.test(lower)) tools.push('web_search');
     if (/\b(test|verify|check|lint|build)\b/i.test(lower)) tools.push('workspace_verify_code');
-    if (/\b(chart|graph|visuali|plot)\b/i.test(lower)) tools.push('office_artifact_builder');
     if (/\b(image|picture|photo|logo|illustration)\b/i.test(lower)) tools.push('image_generator');
 
     return tools.filter(t => available.includes(t));

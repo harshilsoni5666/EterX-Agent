@@ -7,11 +7,13 @@
  * desktop-control surface that should not be advertised by the portable Main.
  */
 const MAIN_AGENT_HIDDEN_TOOL_NAMES = new Set([
+  'tool_finder',
   'context_manager',
   'desktop_control',
   'screen_agent',
   'workspace_edit_many_files',
   'workspace_str_replace',
+  'experience_signal',
 ]);
 
 export function shouldExposeMainAgentTool(toolName: string): boolean {

@@ -10,6 +10,9 @@ type ShimmerProps = {
   angle?: number;
   spread?: string;
   color?: string;
+  baseColor?: string;
+  textColor?: string;
+  surfaceColor?: string;
   once?: boolean;
   reverse?: boolean;
 };
@@ -19,9 +22,16 @@ type ShimmerStyle = React.CSSProperties & {
   '--shimmer-angle'?: string;
   '--shimmer-spread'?: string;
   '--shimmer-color'?: string;
+  '--shimmer-base'?: string;
+  '--shimmer-surface'?: string;
 };
 
-/** Thin React wrapper around the shadcn shimmer CSS utility. */
+/**
+ * Thin React wrapper around the shadcn shimmer CSS utility.
+ *
+ * Text color intentionally remains inherited from the call site so status,
+ * accent, and muted labels keep their semantic color in both themes.
+ */
 export const Shimmer = React.memo(({
   children,
   className = '',
@@ -32,6 +42,9 @@ export const Shimmer = React.memo(({
   angle,
   spread,
   color,
+  baseColor,
+  textColor,
+  surfaceColor,
   once = false,
   reverse = false,
 }: ShimmerProps) => {
@@ -48,6 +61,9 @@ export const Shimmer = React.memo(({
     ...(angle !== undefined ? { '--shimmer-angle': `${angle}deg` } : {}),
     ...(spread ? { '--shimmer-spread': spread } : {}),
     ...(color ? { '--shimmer-color': color } : {}),
+    ...(baseColor ? { '--shimmer-base': baseColor } : {}),
+    ...(surfaceColor ? { '--shimmer-surface': surfaceColor } : {}),
+    ...(textColor ? { color: textColor } : {}),
   };
 
   return <Tag className={classes} style={shimmerStyle}>{children}</Tag>;

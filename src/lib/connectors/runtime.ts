@@ -54,12 +54,31 @@ function connectorBaseUrl(record: ConnectorRecord): string {
 
 function authHeaders(record: ConnectorRecord): Record<string, string> {
   const credentials = record.credentials || {};
-  const token = credentials.token || credentials.apiKey || credentials.accessToken || credentials.botToken || credentials.authToken || credentials.apiToken || '';
+  const token = credentials.token
+    || credentials.apiKey
+    || credentials.accessToken
+    || credentials.botToken
+    || credentials.authToken
+    || credentials.apiToken
+    || credentials.bearerToken
+    || credentials.channelAccessToken
+    || credentials.credential
+    || '';
   const defaults = connectorDefaults(record.id);
   const header = record.authHeader || defaults.authHeader || (token ? 'Authorization' : '');
   if (!token || !header) return {};
   const prefix = record.tokenPrefix ?? defaults.tokenPrefix;
   return { [header]: prefix ? `${prefix} ${token}` : token };
+}
+
+function redactCredentialValues(message: string, record: ConnectorRecord): string {
+  let redacted = String(message || 'Connector request failed.');
+  const secrets = Object.values(record.credentials || {})
+    .map(value => String(value || '').trim())
+    .filter(value => value.length >= 4)
+    .sort((left, right) => right.length - left.length);
+  for (const secret of secrets) redacted = redacted.split(secret).join('[redacted]');
+  return redacted.slice(0, 1000);
 }
 
 function parseBody(response: Response, raw: string): unknown {
@@ -121,7 +140,11 @@ export async function testConnectorRecord(record: ConnectorRecord): Promise<{ ok
     const result = await callConnectorApi(record.id, { method: 'GET', path: healthPath }, { allowUnverified: true });
     return { ok: true, status: result.status, message: 'Connection verified.' };
   } catch (error) {
-    return { ok: false, status: 0, message: error instanceof Error ? error.message : String(error) };
+    return {
+      ok: false,
+      status: 0,
+      message: redactCredentialValues(error instanceof Error ? error.message : String(error), record),
+    };
   }
 }
 

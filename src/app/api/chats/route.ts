@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { loadChatById, loadChatSnapshot, patchChatSnapshot, saveChatSnapshot } from '../../../lib/chat-store';
+import { removeChatMedia } from '../../../lib/chat-media-store';
 import { rejectCrossOrigin } from '../agent/_shared';
 
 export const dynamic = 'force-dynamic';
@@ -34,10 +35,14 @@ export async function PUT(req: NextRequest) {
     if (!Number.isFinite(savedAt) || savedAt <= 0) {
       return NextResponse.json({ error: 'savedAt must be a positive number' }, { status: 400, headers: noStoreHeaders });
     }
+    const mutationId = typeof body.mutationId === 'string' ? body.mutationId.trim().slice(0, 200) : '';
     const snapshot = body.partial === true && Array.isArray(body.chatIds)
-      ? await patchChatSnapshot(body.chats, body.chatIds, savedAt, body.deletedChatIds)
-      : await saveChatSnapshot(body.chats, savedAt);
-    return NextResponse.json({ ok: true, savedAt: snapshot.savedAt }, { headers: noStoreHeaders });
+      ? await patchChatSnapshot(body.chats, body.chatIds, savedAt, body.deletedChatIds, mutationId)
+      : await saveChatSnapshot(body.chats, savedAt, mutationId);
+    if (snapshot.applied && body.partial === true && Array.isArray(body.deletedChatIds)) {
+      await removeChatMedia(body.deletedChatIds.filter((id: unknown) => typeof id === 'string'));
+    }
+    return NextResponse.json({ ok: true, applied: snapshot.applied, savedAt: snapshot.savedAt }, { headers: noStoreHeaders });
   } catch (error: any) {
     return NextResponse.json({ error: error?.message || 'Unable to save chats' }, { status: 500, headers: noStoreHeaders });
   }

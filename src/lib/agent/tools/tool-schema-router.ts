@@ -20,6 +20,25 @@ type CapabilityRule = {
 
 const DISCOVERY_TOOL = 'tool_finder';
 const DEFAULT_MAX_DIRECT_TOOLS = 8;
+// These are the stable workspace and orchestration primitives the main agent
+// should be able to call without an intermediate capability-search turn. The
+// sub-agent tool is intentionally always direct: its availability must not
+// depend on whether the user's wording happens to contain "delegate" or
+// "parallel". The rest of the catalog remains routed by intent.
+const ALWAYS_DIRECT_TOOLS = [
+  'workspace_read_file',
+  'workspace_write_file',
+  'workspace_edit_file',
+  'spawn_sub_agent',
+] as const;
+const FALLBACK_DIRECT_TOOLS = [
+  ...ALWAYS_DIRECT_TOOLS,
+  'workspace_search_text',
+  'workspace_find_files',
+  'workspace_list_directory',
+  'workspace_read_many_files',
+  'workspace_run_command',
+] as const;
 
 // These rules describe user goals, not words copied from tool descriptions.
 // Ordering within a rule is the preferred execution order. A future scheduled
@@ -121,22 +140,22 @@ const CAPABILITY_RULES: CapabilityRule[] = [
   {
     intent: 'spreadsheet-data',
     patterns: [/\b(?:csv|xlsx|excel|spreadsheet|tabular dataset)\b/i, /\b(?:clean|analy[sz]e|profile)\b.{0,35}\bdata(?:set)?\b/i],
-    tools: ['csv_data_analyzer', 'workspace_run_command', 'workspace_read_many_files', 'workspace_write_file', 'office_artifact_builder'],
+    tools: ['csv_data_analyzer', 'workspace_run_command', 'workspace_read_many_files', 'workspace_write_file'],
   },
   {
     intent: 'pdf',
     patterns: [/\bpdf\b/i],
-    tools: ['parse_pdf', 'office_artifact_builder'],
+    tools: ['parse_pdf'],
   },
   {
     intent: 'word-document',
     patterns: [/\b(?:docx|word document)\b/i],
-    tools: ['parse_docx', 'docx_generator', 'office_artifact_builder'],
+    tools: ['parse_docx', 'docx_generator'],
   },
   {
     intent: 'presentation',
     patterns: [/\b(?:pptx|powerpoint|slide deck|presentation|slides)\b/i],
-    tools: ['office_artifact_builder'],
+    tools: ['workspace_run_command'],
   },
   {
     intent: 'generate-image',
@@ -180,8 +199,17 @@ const CAPABILITY_RULES: CapabilityRule[] = [
   },
   {
     intent: 'connector',
-    patterns: [/\b(?:mcp|connector|integration)\b/i],
-    tools: ['connector_mcp', 'gateway_bridge'],
+    patterns: [
+      /\b(?:mcp|connector|integration)\b/i,
+      /\b(?:connect|set ?up|configure|authorize|sign in to|use|check|read|search|send|post|sync|update)\b.{0,45}\b(?:gmail|outlook|email|slack|teams|discord|telegram|whatsapp|messenger|notion|hubspot|salesforce|airtable|asana|linear|github|drive|calendar|sharepoint|stripe|supabase|vercel|figma)\b/i,
+      /\b(?:gmail|outlook|slack|teams|discord|telegram|whatsapp|messenger|notion|hubspot|salesforce|airtable|asana|linear|github|google drive|calendar|sharepoint|stripe|supabase|vercel|figma)\b.{0,45}\b(?:connect|set ?up|configure|authorize|use|check|read|search|send|post|sync|update|create|find)\b/i,
+    ],
+    tools: ['connector_mcp', 'gateway_bridge', 'channel_agent'],
+  },
+  {
+    intent: 'channel-agent',
+    patterns: [/\b(?:sales|support|customer|lead|inbox|conversation|channel|messenger|email)\b.{0,55}\b(?:check|inspect|triage|draft|reply|respond|follow[ -]?up|message)\b/i, /\b(?:check|inspect|triage|draft|reply|respond|follow[ -]?up)\b.{0,55}\b(?:sales|support|customer|lead|inbox|conversation|channel|messenger|email)\b/i],
+    tools: ['channel_agent'],
   },
   {
     intent: 'slack',
@@ -243,7 +271,6 @@ const TOOL_ALIASES: Record<string, string[]> = {
   browser_control: ['control browser', 'click website', 'fill web form', 'login website'],
   deep_research: ['deep research', 'research report', 'many sources'],
   csv_data_analyzer: ['analyze csv', 'clean dataset', 'spreadsheet analysis', 'dataframe'],
-  office_artifact_builder: ['create spreadsheet', 'create slides', 'office document'],
   parse_pdf: ['read pdf', 'extract pdf'],
   parse_docx: ['read docx', 'parse word document'],
   docx_generator: ['create docx', 'write word document'],
@@ -301,7 +328,7 @@ function phraseScore(query: string, phrase: string): number {
   return fuzzy >= 0.42 ? Math.round(fuzzy * 70) : 0;
 }
 
-/** Shared human-language capability search for direct routing and tool_finder. */
+/** Shared human-language capability search for the direct routed surface. */
 export function searchToolCapabilities(
   eligibleTools: ToolDefinition[],
   task: string,
@@ -342,28 +369,53 @@ export function searchToolCapabilities(
 
 /**
  * Select a stable, small direct-call surface for the next user goal. Unknown
- * phrasing gets only tool_finder, which uses the same capability catalog.
+ * phrasing gets the core workspace surface instead of a discovery-only turn.
  */
 export function routeToolSchemas(
   eligibleTools: ToolDefinition[],
   task: string,
   options: { preserveFullSurface?: boolean; maxDirectTools?: number } = {},
 ): ToolSchemaRoutingDecision {
-  if (options.preserveFullSurface || process.env.ETERX_DISABLE_DYNAMIC_TOOL_ROUTING === '1' || eligibleTools.length <= 4) {
-    return { tools: eligibleTools, deferredToolNames: [], matchedIntents: [] };
+  if (options.preserveFullSurface) {
+    // Even runtimes that intentionally keep their attached catalog should not
+    // expose the old discovery shim. Attached capabilities must be callable
+    // directly; a search turn only adds latency and another schema payload.
+    return {
+      tools: eligibleTools.filter(tool => tool.name !== DISCOVERY_TOOL),
+      deferredToolNames: [],
+      matchedIntents: [],
+    };
   }
 
-  const byName = new Map(eligibleTools.map(tool => [tool.name, tool]));
-  const limit = Math.max(1, options.maxDirectTools ?? configuredLimit());
-  const { matches, matchedIntents } = searchToolCapabilities(eligibleTools, task, limit);
-  const selectedNames = matches.map(match => match.name);
-  if (byName.has(DISCOVERY_TOOL) && !selectedNames.includes(DISCOVERY_TOOL)) selectedNames.unshift(DISCOVERY_TOOL);
+  // Never put the discovery tool on any model-facing surface. Ordinary work
+  // must use the direct tool schemas that are already attached to the run.
+  const directEligible = eligibleTools.filter(tool => tool.name !== DISCOVERY_TOOL);
+  if (process.env.ETERX_DISABLE_DYNAMIC_TOOL_ROUTING === '1' || directEligible.length <= 4) {
+    return {
+      tools: directEligible,
+      deferredToolNames: [],
+      matchedIntents: [],
+    };
+  }
 
-  const tools = selectedNames.slice(0, limit).map(name => byName.get(name)).filter((tool): tool is ToolDefinition => Boolean(tool));
+  const byName = new Map(directEligible.map(tool => [tool.name, tool]));
+  const limit = Math.max(ALWAYS_DIRECT_TOOLS.length, options.maxDirectTools ?? configuredLimit());
+  const { matches, matchedIntents } = searchToolCapabilities(directEligible, task, limit);
+  const selectedNames: string[] = [];
+  const addSelected = (name: string) => {
+    if (selectedNames.length >= limit || selectedNames.includes(name) || !byName.has(name)) return;
+    selectedNames.push(name);
+  };
+
+  ALWAYS_DIRECT_TOOLS.forEach(addSelected);
+  matches.forEach(match => addSelected(match.name));
+  FALLBACK_DIRECT_TOOLS.forEach(addSelected);
+
+  const tools = selectedNames.map(name => byName.get(name)).filter((tool): tool is ToolDefinition => Boolean(tool));
   const selected = new Set(tools.map(tool => tool.name));
   return {
     tools,
-    deferredToolNames: eligibleTools.filter(tool => !selected.has(tool.name)).map(tool => tool.name),
+    deferredToolNames: directEligible.filter(tool => !selected.has(tool.name)).map(tool => tool.name),
     matchedIntents,
   };
 }

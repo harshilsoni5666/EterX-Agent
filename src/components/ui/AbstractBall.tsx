@@ -1,10 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-
-const ORB_STARTUP_FALLBACK = `
-  radial-gradient(circle at 62% 72%, rgba(255,255,255,0.96) 0 15%, rgba(224,239,255,0.92) 34%, transparent 58%),
-  linear-gradient(180deg, #3158ec 0%, #668ff4 54%, #eef6ff 100%)
-`;
+import {
+  DEFAULT_LIVE_ORB_THEME,
+  liveOrbFallback,
+  type LiveOrbTheme,
+} from './live-orb-theme';
 
 const vertexShaderSource = `varying vec3 vNormal;
 varying vec3 vPosition;
@@ -108,6 +108,11 @@ varying vec3 vLocalPos;
 uniform float time;
 uniform float RGBr;
 uniform float RGBg;
+uniform float RGBb;
+uniform vec3 orbPrimary;
+uniform vec3 orbDeep;
+uniform vec3 orbAccent;
+uniform vec3 orbHighlight;
 
 vec3 mod289(vec3 x) {
   return x - floor(x * (1.0 / 289.0)) * 289.0;
@@ -208,25 +213,19 @@ void main() {
   vec3 p = vLocalPos * 1.6;
   float cloudDensity = fbm(p * RGBr);
 
-  // Dynamic Shifting Dark Blue to Purplish Cloud Palette (NOT LIGHT)
+  // Keep the existing cloud motion and lighting, but source the palette from
+  // the color chosen for this Live session.
   float shadeShift = sin(time * 0.95) * 0.5 + 0.5;
 
-  vec3 deepOceanBlue    = vec3(0.00, 0.28, 0.88); // Rich Deep Royal Blue (#0048E0)
-  vec3 deepIndigoPurple = vec3(0.24, 0.08, 0.62); // Deep Electric Purplish (#3D159E)
-  vec3 darkAzureBlue    = vec3(0.00, 0.45, 0.98); // Vivid Dark Azure (#0073FF)
-
-  vec3 pureCloudWhite   = vec3(1.00, 1.00, 1.00);
-  vec3 softMistTint     = vec3(0.88, 0.96, 1.00);
-
-  vec3 dynamicDarkShade = mix(deepOceanBlue, deepIndigoPurple, shadeShift);
-  vec3 blueCloud        = mix(dynamicDarkShade, darkAzureBlue, cloudDensity * 0.5 + 0.5);
-  vec3 whiteCloud       = mix(pureCloudWhite, softMistTint, cloudDensity * 0.4 + 0.2);
+  vec3 dynamicDarkShade = mix(orbDeep, orbPrimary, shadeShift);
+  vec3 colorCloud       = mix(dynamicDarkShade, orbAccent, cloudDensity * 0.5 + 0.5);
+  vec3 whiteCloud       = mix(orbHighlight, mix(orbHighlight, orbAccent, 0.24), cloudDensity * 0.4 + 0.2);
 
   float normY = vLocalPos.y + cloudDensity * 0.35;
   float splitFactor = smoothstep(-0.45, 0.45, normY);
 
-  // Deep blue above, with the soft cloud bank settling toward the bottom.
-  vec3 baseColor = mix(whiteCloud, blueCloud, splitFactor);
+  // Deep color above, with the soft cloud bank settling toward the bottom.
+  vec3 baseColor = mix(whiteCloud, colorCloud, splitFactor);
 
   vec3 viewDir = normalize(-vPosition);
   float fresnel = pow(1.0 - max(dot(vNormal, viewDir), 0.0), 2.2);
@@ -248,6 +247,7 @@ export interface AbstractBallProps {
   chromaRGBr?: number;
   chromaRGBg?: number;
   chromaRGBb?: number;
+  orbTheme?: LiveOrbTheme;
   cameraSpeedY?: number;
   cameraSpeedX?: number;
   cameraZoom?: number;
@@ -264,6 +264,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     chromaRGBr = 7.5,
     chromaRGBg = 5.0,
     chromaRGBb = 7.0,
+    orbTheme = DEFAULT_LIVE_ORB_THEME,
     cameraSpeedY = 0.3,
     cameraSpeedX = 0.2,
     cameraZoom = 70,
@@ -328,7 +329,11 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       RGBr: { value: chromaRGBr / 10 },
       RGBg: { value: chromaRGBg / 10 },
       RGBb: { value: chromaRGBb / 10 },
-      morph: { value: perlinMorph }
+      morph: { value: perlinMorph },
+      orbPrimary: { value: new THREE.Color(orbTheme.primary) },
+      orbDeep: { value: new THREE.Color(orbTheme.deep) },
+      orbAccent: { value: new THREE.Color(orbTheme.accent) },
+      orbHighlight: { value: new THREE.Color(orbTheme.highlight) },
     };
 
     const material = new THREE.ShaderMaterial({
@@ -349,18 +354,37 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     let disposed = false;
     let firstFramePresented = false;
     let pageVisible = document.visibilityState !== 'hidden';
+    let lastFrameTime: number | null = null;
+    let appliedThemeId = orbTheme.id;
 
-    const animate = () => {
+    const animate = (timestamp: number) => {
       if (disposed) return;
       if (!pageVisible) {
+        lastFrameTime = timestamp;
         animationFrameId = requestAnimationFrame(animate);
         return;
       }
+      const deltaSeconds = lastFrameTime === null
+        ? 1 / 60
+        : Math.min(0.05, Math.max(0, (timestamp - lastFrameTime) / 1000));
+      lastFrameTime = timestamp;
       const p = propsRef.current;
       const curPerlinTime = p.perlinTime ?? 25.0;
       const curPerlinMorph = p.perlinMorph ?? 25.0;
       const state = p.liveState || 'idle';
-      const vol = p.audioVolume || 0;
+      // Live transports report volume on a 0-100 scale. Shader multipliers are
+      // designed for a normalized signal; feeding 60 directly made the orb run
+      // nearly a hundred times faster during ordinary speech.
+      const vol = Math.min(1, Math.max(0, (Number(p.audioVolume) || 0) / 100));
+      const currentTheme = p.orbTheme ?? DEFAULT_LIVE_ORB_THEME;
+
+      if (currentTheme.id !== appliedThemeId) {
+        uniforms.orbPrimary.value.set(currentTheme.primary);
+        uniforms.orbDeep.value.set(currentTheme.deep);
+        uniforms.orbAccent.value.set(currentTheme.accent);
+        uniforms.orbHighlight.value.set(currentTheme.highlight);
+        appliedThemeId = currentTheme.id;
+      }
 
       let speedMult = 1.0;
       let morphBoost = 1.0;
@@ -379,7 +403,9 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
         morphBoost = 1.45 + Math.sin(clock * 1.8) * 0.12;
       }
 
-      clock += (curPerlinTime / 4200) * speedMult;
+      // Preserve the old 60fps visual speed while making the animation
+      // frame-rate independent on 60Hz, 120Hz, and slower displays.
+      clock += (curPerlinTime / 4200) * speedMult * deltaSeconds * 60;
       uniforms.time.value = clock;
       uniforms.morph.value = Math.min(10.0, curPerlinMorph * 0.12 * morphBoost);
 
@@ -414,7 +440,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     const handleContextLost = (event: Event) => {
       event.preventDefault();
       if (fallbackClearTimer !== null) window.clearTimeout(fallbackClearTimer);
-      container.style.background = ORB_STARTUP_FALLBACK;
+      container.style.background = liveOrbFallback(propsRef.current.orbTheme ?? DEFAULT_LIVE_ORB_THEME);
       renderer.domElement.style.opacity = '0';
     };
     const handleContextRestored = () => {
@@ -454,8 +480,8 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     <div
       ref={mountRef}
       style={{
-        background: ORB_STARTUP_FALLBACK,
-        backgroundColor: '#5278ef',
+        background: liveOrbFallback(orbTheme),
+        backgroundColor: orbTheme.primary,
         border: 'none',
         outline: 'none',
         boxShadow: 'none',

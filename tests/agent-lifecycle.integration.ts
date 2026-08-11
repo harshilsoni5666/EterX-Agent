@@ -156,6 +156,27 @@ function testHistoryAndSubAgentIdentityBounds(): void {
   assert.equal(strategy.recommendedAgents.some(agent => Boolean(agent.name)), false, 'strategies must not bind identities to roles');
 }
 
+async function testExpectedRunCannotMutateLegacyTaskWithoutRunIdentity(): Promise<void> {
+  const chatId = `legacy_run_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const taskPath = path.join(getEterxWorkspaceDir('.tasks'), `${chatId}.json`);
+  try {
+    // Older persisted tasks may not have a runId. A caller carrying a newer
+    // run token must not be allowed to mutate that ambiguous legacy state.
+    await taskStore.createTask(chatId, 'legacy task');
+    taskStore.addTrace(chatId, { type: 'answer', text: 'stale trace' }, 'new-run');
+    await taskStore.completeTask(chatId, 'stale completion', true, 'completed', 'new-run');
+    await taskStore.stopTask(chatId, 'stale stop', 'new-run');
+
+    const current = await taskStore.getTask(chatId);
+    assert.equal(current?.status, 'running');
+    assert.equal(current?.finalAnswer, '');
+    assert.equal(current?.traceLogs.length, 0);
+  } finally {
+    taskStore.clearCache(chatId);
+    await fs.remove(taskPath);
+  }
+}
+
 function testProxyTaskHistoryIsolation(): void {
   const baseHistory = [{ role: 'user', parts: [{ text: 'original request' }] }];
   const independent = buildProxyTaskHistory(baseHistory, 'previous proxy prompt', 'previous answer', false);
@@ -171,6 +192,7 @@ function testProxyTaskHistoryIsolation(): void {
 
 async function main(): Promise<void> {
   await testStaleRunCannotCorruptSuccessor();
+  await testExpectedRunCannotMutateLegacyTaskWithoutRunIdentity();
   await testNewTaskResetRemovesTaskContamination();
   testBoundarySeparatesIndependentTurns();
   await testCancellationIsGlobalAndWakesPausedAgents();

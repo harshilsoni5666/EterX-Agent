@@ -7,12 +7,16 @@ const CHAT_STORE_DIR = path.join(getEterxDataDir(), 'chats');
 const CHAT_STORE_PATH = path.join(CHAT_STORE_DIR, 'chats.json');
 const CHAT_STORE_BACKUP_PATH = path.join(CHAT_STORE_DIR, 'chats.backup.json');
 const CHAT_STORE_VERSION = 1;
-const MAX_CHATS = 2000;
 
 export interface PersistedChatSnapshot {
   version: number;
   savedAt: number;
+  lastMutationId?: string;
   chats: unknown[];
+}
+
+export interface ChatSnapshotWriteResult extends PersistedChatSnapshot {
+  applied: boolean;
 }
 
 let cachedSnapshot: PersistedChatSnapshot | null = null;
@@ -40,6 +44,14 @@ function legacyMessageText(message: any): string {
   return '';
 }
 
+function normalizeChatTitle(value: unknown): string {
+  const title = String(value || '').trim();
+  if (!title || /^[*#\-\s]*(?:input\s*:\s*)?current\s+title$/i.test(title)) {
+    return 'New chat';
+  }
+  return title;
+}
+
 function normalizePersistedChat(chat: any): any | null {
   if (!chat || typeof chat !== 'object' || chat.id === undefined || chat.id === null) return null;
 
@@ -65,7 +77,7 @@ function normalizePersistedChat(chat: any): any | null {
   return {
     ...chat,
     id: String(chat.id),
-    title: String(chat.title || chat.name || 'New chat'),
+    title: normalizeChatTitle(chat.title || chat.name),
     updatedAt: Number.isFinite(chat.updatedAt)
       ? chat.updatedAt
       : Number.isFinite(chat.updated_at)
@@ -85,10 +97,12 @@ function normalizeSnapshot(value: any): PersistedChatSnapshot {
   return {
     version: CHAT_STORE_VERSION,
     savedAt: Number.isFinite(value?.savedAt) ? Math.max(0, value.savedAt) : 0,
+    ...(typeof value?.lastMutationId === 'string' && value.lastMutationId
+      ? { lastMutationId: value.lastMutationId.slice(0, 200) }
+      : {}),
     chats: chats
       .map(normalizePersistedChat)
-      .filter(Boolean)
-      .slice(0, MAX_CHATS),
+      .filter(Boolean),
   };
 }
 
@@ -227,17 +241,23 @@ export async function loadChatById(chatId: string): Promise<unknown | null> {
   return (snapshot.chats as any[]).find(chat => chat?.id === chatId) || null;
 }
 
-export async function saveChatSnapshot(chats: unknown[], savedAt: number): Promise<PersistedChatSnapshot> {
-  const requested = normalizeSnapshot({ chats, savedAt });
+export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutationId = ''): Promise<ChatSnapshotWriteResult> {
+  const requested = normalizeSnapshot({ chats, savedAt, lastMutationId: mutationId });
   writeQueue = writeQueue.catch(() => {}).then(async () => {
     const current = await readFromDisk();
-    if (requested.savedAt < current.savedAt) return current;
-    await writeAtomic(requested);
-    cachedSnapshot = requested;
+    if (mutationId && current.lastMutationId === mutationId) return { ...current, applied: true };
+    if (requested.savedAt < current.savedAt) return { ...current, applied: false };
+    const next = normalizeSnapshot({
+      ...requested,
+      savedAt: Math.max(requested.savedAt, current.savedAt + 1),
+      lastMutationId: mutationId,
+    });
+    await writeAtomic(next);
+    cachedSnapshot = next;
     cachedSnapshotFileSignature = null;
-    return requested;
+    return { ...next, applied: true };
   });
-  const stored = await writeQueue as PersistedChatSnapshot;
+  const stored = await writeQueue as ChatSnapshotWriteResult;
   return { ...stored, chats: [...stored.chats] };
 }
 
@@ -246,8 +266,9 @@ export async function patchChatSnapshot(
   chatIds: string[],
   savedAt: number,
   deletedChatIds: unknown[] = [],
-): Promise<PersistedChatSnapshot> {
-  const safeIds = Array.from(new Set(chatIds.filter(id => typeof id === 'string' && id.length > 0))).slice(0, MAX_CHATS);
+  mutationId = '',
+): Promise<ChatSnapshotWriteResult> {
+  const safeIds = Array.from(new Set(chatIds.filter(id => typeof id === 'string' && id.length > 0)));
   const deletedIds = new Set(
     deletedChatIds
       .filter(id => typeof id === 'string' && id.length > 0)
@@ -256,13 +277,15 @@ export async function patchChatSnapshot(
   const changed = normalizeSnapshot({ chats, savedAt }).chats as any[];
   writeQueue = writeQueue.catch(() => {}).then(async () => {
     const current = await readFromDisk();
-    if (savedAt < current.savedAt) return current;
+    if (mutationId && current.lastMutationId === mutationId) return { ...current, applied: true };
+    if (savedAt < current.savedAt) return { ...current, applied: false };
     const byId = new Map((current.chats as any[]).map(chat => [chat.id, chat]));
     for (const chat of changed) byId.set(chat.id, chat);
     deletedIds.forEach(id => byId.delete(id));
     const orderedIds = new Set(safeIds);
     const next = normalizeSnapshot({
-      savedAt,
+      savedAt: Math.max(savedAt, current.savedAt + 1),
+      lastMutationId: mutationId,
       // The client list can be stale while a restore or another tab is in
       // flight. Preserve durable chats omitted by that list; only explicit
       // deletion IDs are allowed to remove existing records.
@@ -274,8 +297,8 @@ export async function patchChatSnapshot(
     await writeAtomic(next);
     cachedSnapshot = next;
     cachedSnapshotFileSignature = null;
-    return next;
+    return { ...next, applied: true };
   });
-  const stored = await writeQueue as PersistedChatSnapshot;
+  const stored = await writeQueue as ChatSnapshotWriteResult;
   return { ...stored, chats: [...stored.chats] };
 }

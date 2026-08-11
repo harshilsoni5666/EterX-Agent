@@ -2,6 +2,7 @@ import { ChildProcess, execFile, spawn } from 'child_process';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs-extra';
+import { StringDecoder } from 'string_decoder';
 import {
   emitRuntimeTrace,
   normalizeCheckInMs,
@@ -47,6 +48,7 @@ export interface TerminalBackgroundTask {
   /** Chat/project owner. Terminal task IDs must not cross chat boundaries. */
   ownerChatId?: string;
   cwd: string;
+  shell?: string;
   pid?: number;
   status: TerminalTaskStatus;
   startedAt: number;
@@ -57,6 +59,11 @@ export interface TerminalBackgroundTask {
   stdout: string;
   stderr: string;
   output: string;
+  /** Output waiting for the next live trace flush. Traces carry deltas so
+   * sustained/parallel commands do not repeatedly copy their full history. */
+  pendingTraceOutput: string;
+  totalOutputChars: number;
+  traceOutputOffset: number;
   droppedOutputChars: number;
   maxOutputChars: number;
   checkInMs: number;
@@ -67,19 +74,26 @@ export interface TerminalBackgroundTask {
   statusFile: string;
   streamId: string;
   process?: ChildProcess;
-  traceContext?: { _onTrace?: (trace: any) => void; chatId?: string; ownerTraceId?: string };
+  traceContext?: {
+    _onTrace?: (trace: any) => void;
+    chatId?: string;
+    ownerTraceId?: string;
+    runId?: string;
+  };
   flushTimer?: NodeJS.Timeout;
   persistTimer?: NodeJS.Timeout;
   checkTimer?: NodeJS.Timeout;
   statusTimer?: NodeJS.Timeout;
+  pendingFileOutput: string;
   outputWrite?: Promise<void>;
   statusWrite?: Promise<void>;
 }
 
 const TASKS_DIR = getEterxWorkspaceDir('background_tasks');
 const DEFAULT_MAX_OUTPUT_CHARS = 10 * 1024 * 1024;
-const MAX_PERSISTED_OUTPUT_CHARS = 25 * 1024 * 1024;
-const DEFAULT_TRACE_THROTTLE_MS = 250;
+const MAX_PERSISTED_OUTPUT_BYTES = 25 * 1024 * 1024;
+const PERSISTED_OUTPUT_RETAIN_BYTES = 16 * 1024 * 1024;
+const DEFAULT_TRACE_THROTTLE_MS = 100;
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -198,6 +212,9 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     stdout: '',
     stderr: '',
     output: '',
+    pendingTraceOutput: '',
+    totalOutputChars: 0,
+    traceOutputOffset: 0,
     droppedOutputChars: 0,
     maxOutputChars: options.maxOutputChars || DEFAULT_MAX_OUTPUT_CHARS,
     checkInMs,
@@ -206,15 +223,17 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     outputFile: resolveUnder(TASKS_DIR, `${id}_output.txt`),
     statusFile: resolveUnder(TASKS_DIR, `${id}_status.json`),
     streamId,
-    traceContext
+    traceContext,
+    pendingFileOutput: '',
   };
 
   terminalTasks.set(id, task);
-  await persistTaskStatus(task);
+  persistTaskStatus(task).catch(() => undefined);
 
   let invocation: ReturnType<typeof buildTerminalShellInvocation>;
   try {
     invocation = buildTerminalShellInvocation(options.command, options.shell);
+    task.shell = invocation.file;
   } catch (error: any) {
     task.status = 'failed';
     task.exitCode = 127;
@@ -247,7 +266,9 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
 
   task.process = child;
   task.pid = child.pid || undefined;
-  await persistTaskStatus(task);
+  // Attach process listeners immediately. Awaiting disk I/O here lets very
+  // short commands exit before their output/close events have subscribers.
+  persistTaskStatus(task).catch(() => undefined);
 
   let resultResolved = false;
   let handoffTimer: NodeJS.Timeout | undefined;
@@ -273,7 +294,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       task.completedAt = Date.now();
       clearTaskTimers(task);
       flushTaskOutput(task, true, exitCode ?? (status === 'completed' ? 0 : 1));
-      await task.outputWrite?.catch(() => undefined);
+      await waitForTaskOutputWrites(task);
       await persistTaskStatus(task);
 
       if (task.handedOff) {
@@ -313,16 +334,27 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       });
     };
 
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    let decodersFlushed = false;
     const onData = (stream: 'stdout' | 'stderr', chunk: Buffer) => {
-      appendTaskOutput(task, stream, chunk.toString());
+      const text = stream === 'stdout' ? stdoutDecoder.write(chunk) : stderrDecoder.write(chunk);
+      appendTaskOutput(task, stream, text);
       scheduleTaskFlush(task, options.traceThrottleMs || DEFAULT_TRACE_THROTTLE_MS);
       scheduleTaskStatusPersist(task);
+    };
+    const flushDecoders = () => {
+      if (decodersFlushed) return;
+      decodersFlushed = true;
+      appendTaskOutput(task, 'stdout', stdoutDecoder.end());
+      appendTaskOutput(task, 'stderr', stderrDecoder.end());
     };
 
     child.stdout?.on('data', (chunk: Buffer) => onData('stdout', chunk));
     child.stderr?.on('data', (chunk: Buffer) => onData('stderr', chunk));
 
     child.on('close', (code: number | null, signal: string | null) => {
+      flushDecoders();
       const status = code === 0 && !task.hardTimedOut ? 'completed' : 'failed';
       finishTask(status, task.hardTimedOut ? 124 : code, signal).catch(() => {
         resolveOnce(buildTerminalResult(task));
@@ -330,6 +362,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     });
 
     child.on('error', (error: Error) => {
+      flushDecoders();
       appendTaskOutput(task, 'stderr', error.message);
       finishTask('failed', 1, null).catch(() => {
         resolveOnce(buildTerminalResult(task));
@@ -346,7 +379,11 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       if (task.status !== 'running') return;
 
       task.handedOff = true;
-      flushTaskOutput(task, true);
+      // Handoff is a live snapshot, not command completion. Marking this
+      // event final makes consumers render a successful exit before the
+      // process has actually exited and before a later check can report the
+      // real status.
+      flushTaskOutput(task, false);
       const note = terminalBackgroundHandoffNote(task.command, task.id, task.checkInMs);
       emitRuntimeTrace(task.traceContext, {
         type: 'timer_expired',
@@ -409,10 +446,13 @@ export async function getTerminalBackgroundTaskStatus(taskId: string, ownerChatI
     terminalTask: true,
     taskId,
     streamId: String(status.streamId || `terminal_${taskId}`),
+    ownerTraceId: status.ownerTraceId,
+    runId: status.runId,
     status: persistedStatus,
     running: persistedStatus === 'running',
     command: status.command,
     cwd: status.cwd,
+    shell: status.shell,
     pid: status.pid,
     exitCode: status.exitCode ?? null,
     startedAt: status.startedAt,
@@ -421,6 +461,8 @@ export async function getTerminalBackgroundTaskStatus(taskId: string, ownerChatI
     stdout: output,
     stderr: status.stderr || '',
     output,
+    totalOutputChars: status.totalOutputChars ?? output.length,
+    droppedOutputChars: status.droppedOutputChars ?? 0,
     message: `Terminal task ${taskId}: ${persistedStatus} | "${status.description || status.command}"`,
     nextActionNote: persistedStatus === 'running'
       ? `Use wait_timer, then background_task mode="check" with taskId="${taskId}". The process was restored from disk, so control may be limited after server restart.`
@@ -461,6 +503,8 @@ export async function listTerminalBackgroundTasks(ownerChatId?: string): Promise
         status: persistedStatus,
         description: status.description || status.command,
         command: status.command,
+        ownerTraceId: status.ownerTraceId,
+        runId: status.runId,
         pid: status.pid,
         cwd: status.cwd,
         exitCode: status.exitCode ?? null,
@@ -490,6 +534,8 @@ export async function killTerminalBackgroundTask(taskId: string, ownerChatId?: s
       task.completedAt = Date.now();
       appendTaskOutput(task, 'stderr', '\nKilled by agent.\n');
       clearTaskTimers(task);
+      flushTaskOutput(task, true, 143);
+      await waitForTaskOutputWrites(task);
       await persistTaskStatus(task);
     }
     return buildStatusResult(task);
@@ -512,23 +558,54 @@ export async function killTerminalBackgroundTask(taskId: string, ownerChatId?: s
 function appendTaskOutput(task: TerminalBackgroundTask, stream: 'stdout' | 'stderr', text: string) {
   if (!text) return;
   task.lastActivityAt = Date.now();
+  task.totalOutputChars += text.length;
+  task.pendingTraceOutput += text;
   task[stream] = trimOutput(task[stream] + text, task.maxOutputChars).text;
 
   const combined = trimOutput(task.output + text, task.maxOutputChars);
   task.output = combined.text;
   task.droppedOutputChars += combined.dropped;
 
-  task.outputWrite = (task.outputWrite || Promise.resolve())
+  task.pendingFileOutput += text;
+  scheduleTaskOutputWrite(task);
+}
+
+function scheduleTaskOutputWrite(task: TerminalBackgroundTask) {
+  if (task.outputWrite || !task.pendingFileOutput) return;
+
+  task.outputWrite = (async () => {
+    await fs.ensureDir(TASKS_DIR);
+    while (task.pendingFileOutput) {
+      const batch = task.pendingFileOutput;
+      task.pendingFileOutput = '';
+      await fs.appendFile(task.outputFile, batch);
+    }
+
+    const stats = await fs.stat(task.outputFile).catch(() => null);
+    if (stats && stats.size > MAX_PERSISTED_OUTPUT_BYTES) {
+      const content = await fs.readFile(task.outputFile);
+      let retainFrom = Math.max(0, content.length - PERSISTED_OUTPUT_RETAIN_BYTES);
+      // Advance past UTF-8 continuation bytes so rotation never begins in the
+      // middle of a character.
+      while (retainFrom < content.length && (content[retainFrom] & 0xC0) === 0x80) retainFrom += 1;
+      // Leave rotation headroom so the next small append does not immediately
+      // trigger another full-file read and rewrite.
+      await fs.writeFile(task.outputFile, content.subarray(retainFrom));
+    }
+  })()
     .catch(() => undefined)
-    .then(async () => {
-      await fs.appendFile(task.outputFile, text);
-      const stats = await fs.stat(task.outputFile).catch(() => null);
-      if (stats && stats.size > MAX_PERSISTED_OUTPUT_CHARS) {
-        const content = await fs.readFile(task.outputFile, 'utf8');
-        await fs.writeFile(task.outputFile, content.slice(-MAX_PERSISTED_OUTPUT_CHARS), 'utf8');
-      }
-    })
-    .catch(() => undefined);
+    .finally(() => {
+      task.outputWrite = undefined;
+      if (task.pendingFileOutput) scheduleTaskOutputWrite(task);
+    });
+}
+
+async function waitForTaskOutputWrites(task: TerminalBackgroundTask): Promise<void> {
+  while (task.outputWrite || task.pendingFileOutput) {
+    if (!task.outputWrite) scheduleTaskOutputWrite(task);
+    const activeWrite = task.outputWrite;
+    if (activeWrite) await activeWrite.catch(() => undefined);
+  }
 }
 
 function trimOutput(text: string, maxChars: number): { text: string; dropped: number } {
@@ -542,7 +619,7 @@ function scheduleTaskFlush(task: TerminalBackgroundTask, throttleMs: number) {
   task.flushTimer = setTimeout(() => {
     task.flushTimer = undefined;
     flushTaskOutput(task);
-  }, throttleMs);
+  }, Math.max(16, throttleMs));
   task.flushTimer.unref?.();
 }
 
@@ -556,18 +633,33 @@ function scheduleTaskStatusPersist(task: TerminalBackgroundTask) {
 }
 
 function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?: number | null) {
-  const output = visibleOutput(task);
-  if (!output.trim() && !final) return;
+  const outputChunk = task.pendingTraceOutput;
+  const outputStart = task.traceOutputOffset;
+  const outputEnd = task.totalOutputChars;
+  if (!outputChunk && !final) return;
+
+  task.pendingTraceOutput = '';
+  task.traceOutputOffset = outputEnd;
+  const output = final ? terminalTraceSnapshotOutput(task) : outputChunk;
   emitTrace(task.traceContext, {
     type: 'console_output',
     command: task.command,
     output,
-    content: output,
     source: task.source,
+    cwd: task.cwd,
+    shell: task.shell,
+    pid: task.pid,
     streamId: task.streamId,
     taskId: task.id,
     ownerTraceId: task.traceContext?.ownerTraceId,
+    runId: task.traceContext?.runId,
+    toolName: task.source,
     isStreaming: !final,
+    isDelta: !final,
+    outputStart: final ? Math.max(0, task.totalOutputChars - task.output.length) : outputStart,
+    outputEnd,
+    totalOutputChars: task.totalOutputChars,
+    droppedOutputChars: task.droppedOutputChars,
     ...(final ? { exitCode: exitCode ?? task.exitCode ?? 0, durationMs: Date.now() - task.startedAt } : {})
   });
 }
@@ -602,14 +694,20 @@ function buildRunningResult(task: TerminalBackgroundTask, note: string): any {
     stdout: task.stdout,
     stderr: task.stderr,
     output: visibleOutput(task),
-    exitCode: 0,
+    exitCode: null,
     executionTimeMs: Date.now() - task.startedAt,
     timedOut: false,
     stillRunning: true,
     backgroundTaskId: task.id,
     taskId: task.id,
     streamId: task.streamId,
+    ownerTraceId: task.traceContext?.ownerTraceId,
+    runId: task.traceContext?.runId,
+    cwd: task.cwd,
+    shell: task.shell,
     pid: task.pid,
+    totalOutputChars: task.totalOutputChars,
+    droppedOutputChars: task.droppedOutputChars,
     status: task.status,
     checkInMs: task.checkInMs,
     hardTimeoutMs: task.hardTimeoutMs,
@@ -632,7 +730,13 @@ function buildTerminalResult(task: TerminalBackgroundTask): any {
     backgroundTaskId: task.handedOff ? task.id : undefined,
     taskId: task.id,
     streamId: task.streamId,
+    ownerTraceId: task.traceContext?.ownerTraceId,
+    runId: task.traceContext?.runId,
+    cwd: task.cwd,
+    shell: task.shell,
     pid: task.pid,
+    totalOutputChars: task.totalOutputChars,
+    droppedOutputChars: task.droppedOutputChars,
     status: task.status,
     timeoutMs: task.checkInMs,
     hardTimeoutMs: task.hardTimeoutMs,
@@ -649,10 +753,13 @@ function buildStatusResult(task: TerminalBackgroundTask): any {
     terminalTask: true,
     taskId: task.id,
     streamId: task.streamId,
+    ownerTraceId: task.traceContext?.ownerTraceId,
+    runId: task.traceContext?.runId,
     status: task.status,
     running: task.status === 'running',
     command: task.command,
     cwd: task.cwd,
+    shell: task.shell,
     pid: task.pid,
     exitCode: task.exitCode ?? null,
     startedAt: task.startedAt,
@@ -661,6 +768,8 @@ function buildStatusResult(task: TerminalBackgroundTask): any {
     stdout: task.stdout,
     stderr: task.stderr,
     output: visibleOutput(task),
+    totalOutputChars: task.totalOutputChars,
+    droppedOutputChars: task.droppedOutputChars,
     message: `Terminal task ${task.id}: ${task.status} | "${task.description}" | Duration: ${(((task.completedAt || Date.now()) - task.startedAt) / 1000).toFixed(1)}s`,
     nextActionNote: task.status === 'running'
       ? `Use wait_timer for ${secondsFromTimeoutMs(task.checkInMs)} seconds, then background_task mode="check" with taskId="${task.id}".`
@@ -687,6 +796,15 @@ function compactTask(task: TerminalBackgroundTask): any {
 function visibleOutput(task: TerminalBackgroundTask): string {
   if (task.droppedOutputChars <= 0) return task.output;
   return `...[${task.droppedOutputChars} earlier chars truncated from terminal buffer]...\n${task.output}`;
+}
+
+function terminalTraceSnapshotOutput(task: TerminalBackgroundTask, maxChars = 1024 * 1024): string {
+  const output = visibleOutput(task);
+  if (output.length <= maxChars) return output;
+  const headChars = Math.floor(maxChars * 0.2);
+  const tailChars = maxChars - headChars;
+  const omitted = output.length - headChars - tailChars;
+  return `${ output.slice(0, headChars) }\n...[${ omitted } terminal output chars omitted from the UI snapshot]...\n${ output.slice(-tailChars) }`;
 }
 
 function clearTaskTimers(task: TerminalBackgroundTask) {
@@ -722,7 +840,10 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
     source: task.source,
     ownerChatId: task.ownerChatId,
     streamId: task.streamId,
+    ownerTraceId: task.traceContext?.ownerTraceId,
+    runId: task.traceContext?.runId,
     cwd: task.cwd,
+    shell: task.shell,
     pid: task.pid,
     status: task.status,
     startedAt: task.startedAt,
@@ -734,6 +855,7 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
     outputFile: task.outputFile,
     statusFile: task.statusFile,
     droppedOutputChars: task.droppedOutputChars,
+    totalOutputChars: task.totalOutputChars,
     checkInMs: task.checkInMs,
     hardTimeoutMs: task.hardTimeoutMs,
     handedOff: task.handedOff,
@@ -752,15 +874,26 @@ async function readOutputTail(filePath: string, maxChars = 12_000): Promise<stri
   }
 }
 
-function createTraceContext(context: any): { _onTrace?: (trace: any) => void; chatId?: string; ownerTraceId?: string } {
+function createTraceContext(context: any): {
+  _onTrace?: (trace: any) => void;
+  chatId?: string;
+  ownerTraceId?: string;
+  runId?: string;
+} {
   return {
     _onTrace: typeof context?._onTrace === 'function' ? context._onTrace : undefined,
     chatId: context?.chatId || context?.projectId,
     ownerTraceId: context?.ownerTraceId,
+    runId: context?.runId || context?.turnId,
   };
 }
 
-function emitTrace(context: { _onTrace?: (trace: any) => void; chatId?: string; ownerTraceId?: string } | undefined, event: any) {
+function emitTrace(context: {
+  _onTrace?: (trace: any) => void;
+  chatId?: string;
+  ownerTraceId?: string;
+  runId?: string;
+} | undefined, event: any) {
   if (typeof context?._onTrace === 'function') {
     context._onTrace(event);
     return;
@@ -769,7 +902,7 @@ function emitTrace(context: { _onTrace?: (trace: any) => void; chatId?: string; 
   if (context?.chatId) {
     try {
       const { taskStore } = require('../../task-store');
-      taskStore.addTrace(context.chatId, event);
+      taskStore.addTrace(context.chatId, event, context.runId);
     } catch {
       // Trace persistence is best-effort.
     }

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import type { CSSProperties } from 'react';
+import { GeistSans } from 'geist/font/sans';
 import './globals.css';
 import './light-theme.generated.css';
 import './light-theme.enterprise.css';
@@ -14,7 +15,7 @@ import { ClipboardPasteBridge } from '../components/ui/clipboard-paste-bridge';
 // unavailable. These system stacks render consistently on Windows, macOS, and
 // Linux without a network request.
 const localFontVariables: CSSProperties = {
-  '--font-sans': 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  '--font-sans': 'var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   '--font-mono': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
   '--font-serif': 'Lora, Georgia, Cambria, "Times New Roman", serif',
 } as CSSProperties;
@@ -76,7 +77,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="light" style={localFontVariables} data-theme="light" suppressHydrationWarning>
+    <html lang="en" className={`light ${ GeistSans.variable }`} style={localFontVariables} data-theme="light" suppressHydrationWarning>
       <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
         <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <ThemeBridge />

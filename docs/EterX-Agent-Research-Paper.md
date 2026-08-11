@@ -91,7 +91,7 @@ The most important folders are listed first.
 | Web/Desktop UI | `src/app/page.tsx`, `src/components/**`, `electron/main.js`, `electron/preload.js` | Provides chat UI, trace feed, file panel, agent room, desktop shell, permissions, splash screen. |
 | API bridge | `src/app/api/**/route.ts` | Exposes agent start, chat SSE, polling, stop, media upload, code, workspace, search, voice, and live-key endpoints. |
 | Telegram bridge | `telegram-bot.ts` | Lets users send tasks and files through Telegram while sharing the same agent registry. |
-| Live voice | `src/lib/live/gemini-live.ts` | Implements WebSocket-based audio conversation, tool calls, transcriptions, volume UI, and voice control. |
+| Live voice | `src/lib/live/agent-live.ts`, `src/lib/live/provider-live.ts`, `src/app/api/live/session/route.ts` | Implements Gemini Live plus provider-specific OpenAI WebRTC, xAI WebSocket, Deepgram Voice Agent, and ElevenLabs Conversational AI transports with ephemeral/signed browser authorization, audio capture, transcription, playback, and mute controls. |
 | Installer and CLI | `setup.js`, `eterx.js`, `install.ps1`, `install.sh`, `setup/**` | Handles installation, provider setup, API keys, health checks, desktop shortcuts, backups, and diagnostics. |
 | Skills | `src/lib/agent/skills/**` | Defines markdown skills and helper contracts used to steer task-specific behavior. |
 
@@ -188,7 +188,7 @@ Representative tool families include:
 | Family | Examples |
 | --- | --- |
 | Core | shell, web search, calculator, API caller, JavaScript runner, system monitor, git, clipboard, notifications, JSON/YAML transform, memory, safety guard, checkpoints. |
-| Workspace | file read/write/edit/list/search, command execution, verification, CSV analysis, DOCX generation, office artifact building, compression, code generation, diffs, markdown to HTML. |
+| Workspace | file read/write/edit/list/search, command execution, verification, CSV analysis, DOCX generation, compression, code generation, diffs, markdown to HTML. |
 | Research | web scraping, PDF parsing, YouTube transcript, RSS, deep research, image asset search. |
 | Automation | scheduler, process manager, file watcher, HTTP server, chain executor, cron-like agent scheduler, connector triggers. |
 | Communication | Telegram, WhatsApp, Slack. |
@@ -232,6 +232,22 @@ EterX-Agent uses one backend execution core across several interfaces:
 - Live voice: a WebSocket audio client that captures microphone audio, streams PCM, plays model audio, handles barge-in, displays transcriptions, tracks volume, can store/read chat memory, and supports voice-control functions.
 
 This multi-interface design is important because it makes the agent more than a local chat page. It can be used from the desktop, a browser, Telegram, or voice while still routing through the same registry and orchestrator.
+
+#### Live provider transport matrix
+
+Live Convo exposes only providers with a documented native realtime voice session. The shared UI contract covers connect/disconnect, microphone mute, speaker mute, text injection, transcription, playback, interruption, and turn completion; each adapter owns the provider-specific wire format.
+
+| Provider | Adapter | Browser authorization | Audio wire | Visual input |
+| --- | --- | --- | --- |
+| Google Gemini Live | `agent-live.ts` | Dedicated API key for Gemini's documented Live WebSocket | 16 kHz mono PCM input, 24 kHz PCM output | Camera and screen frames supported |
+| OpenAI Realtime | `provider-live.ts` | Server-minted ephemeral client secret | WebRTC media track and remote audio track; data channel for events | Audio only |
+| xAI Grok Voice | `provider-live.ts` | Server-minted realtime client secret | 24 kHz PCM base64 WebSocket events | Audio only |
+| Deepgram Voice Agent | `provider-live.ts` | Short-lived grant token from the server | 24 kHz linear16 binary WebSocket frames | Audio only |
+| ElevenLabs Conversational AI | `provider-live.ts` | Server-generated signed WebSocket URL plus agent ID | 16 kHz PCM base64 input and provider audio events | Audio only |
+
+The implementation deliberately does not label ordinary text-only model providers as native Live voice providers. Adding those providers requires a separately documented speech-to-text and text-to-speech bridge, which is a different transport and capability contract.
+
+The adapter choices follow the providers' primary documentation: [Gemini Live API](https://ai.google.dev/gemini-api/docs/live-api), [OpenAI Realtime WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc), [xAI speech-to-speech](https://docs.x.ai/developers/models/speech-to-speech), [Deepgram Voice Agent](https://developers.deepgram.com/docs/build-a-voice-agent), and [ElevenLabs WebSocket conversations](https://elevenlabs.io/docs/eleven-agents/libraries/web-sockets).
 
 ### 5.9 Installer, CLI, and Operational Layer
 
@@ -384,7 +400,7 @@ This appendix summarizes the local evidence used to write the paper.
 | Main UI and polling behavior | `src/app/page.tsx` |
 | Agent API routes | `src/app/api/agent/*.ts`, `src/app/api/chat/route.ts` |
 | Telegram bridge | `telegram-bot.ts` |
-| Live voice client | `src/lib/live/gemini-live.ts` |
+| Live voice clients | `src/lib/live/agent-live.ts`, `src/lib/live/provider-live.ts` |
 | Desktop shell | `electron/main.js` |
 | CLI and setup | `eterx.js`, `setup.js`, `setup/**` |
 

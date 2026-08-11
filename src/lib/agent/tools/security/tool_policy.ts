@@ -52,12 +52,12 @@ const CAPABILITY_BY_TOOL: Record<string, string> = {
   text_to_speech: 'host.audio',
 
   slack_controller: 'communication.external',
+  channel_agent: 'communication.connected',
   gateway_bridge: 'communication.connected',
   connector_mcp: 'communication.connected',
   memory_v2: 'memory.manage',
   file_compression: 'filesystem.write',
   docx_generator: 'filesystem.write',
-  office_artifact_builder: 'filesystem.write',
 };
 
 const DEFAULT_ALLOWED_CAPABILITIES = new Set([

@@ -16,7 +16,7 @@ import { Check, ChevronDown, Copy, Download, Globe2, Maximize2, Minimize2, MoreH
 import { CopyButton, safeCopyTextToClipboard, safeCopyPngToClipboard } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
-import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, linkifyLocalFilePaths } from './local-file-link';
+import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, linkifyLocalFilePaths, normalizeEscapedLocalFileLinks } from './local-file-link';
 
 /** Re-export remark/rehype plugins for use in other components */
 export const remarkPlugins: any[] = [
@@ -70,6 +70,7 @@ const DISPLAY_MATH_ENVIRONMENT_PATTERN = new RegExp(
   `\\\\begin\\{(${DISPLAY_MATH_ENVIRONMENTS})\\*?\\}([\\s\\S]*?)\\\\end\\{\\1\\*?\\}`,
   'g',
 );
+const CURRENCY_AMOUNT_PATTERN = /(?:\\)?\$((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)\$/g;
 
 const slugify = (value: string) =>
   value
@@ -436,7 +437,14 @@ const normalizeUnclosedMarkdownFence = (value: string) => {
 
 const looksLikeStandaloneLatex = (line: string) => {
   const trimmed = line.trim();
-  if (!trimmed || trimmed.includes('$') || trimmed.startsWith('```') || trimmed.startsWith('~~~')) return false;
+  if (
+    !trimmed ||
+    trimmed.includes('$') ||
+    trimmed.includes('`') ||
+    /\[[^\]]+\]\([^)]+\)/.test(trimmed) ||
+    trimmed.startsWith('```') ||
+    trimmed.startsWith('~~~')
+  ) return false;
   if (/^(?:[-+*]|\d{1,2}[.)]|#{1,6})\s/.test(trimmed)) return false;
   const hasLatexCommand = /\\[A-Za-z]+/.test(trimmed);
   const hasMathOperator = /(?:=|\^|_|\\(?:frac|int|sum|cdot|times|approx|infty|sqrt|left|right)\b)/.test(trimmed);
@@ -451,6 +459,16 @@ const normalizeStandaloneLatexOutsideCode = (value: string) =>
       .split('\n')
       .map(line => looksLikeStandaloneLatex(line) ? `$$\n${ line.trim() }\n$$` : line)
       .join('\n');
+  }).join('');
+
+// Single-dollar math is useful, but currency amounts such as `$2,339.12$`
+// are much more common in answers and are not equations. Treat both escaped
+// and unescaped currency forms as literal text before remark-math sees them;
+// otherwise KaTeX can expose a red parser error or a stray backslash.
+const normalizeCurrencyAmountsOutsideCode = (value: string) =>
+  value.split(CODE_FENCE_SPLIT).map((chunk) => {
+    if (/^(```|~~~)/.test(chunk)) return chunk;
+    return chunk.replace(CURRENCY_AMOUNT_PATTERN, (_match, amount) => `\\$${ amount }\\$`);
   }).join('');
 
 const SYSTEM_TAGS = [
@@ -500,10 +518,21 @@ const stripSystemTagsOutsideCode = (value: string) =>
 
 export const normalizeMarkdownForRendering = (value: string) => {
   if (!value) return '';
+  // Provider streams can contain CRLF, a BOM, or a stray NUL character. None
+  // of those are meaningful Markdown and they can make the parser disagree
+  // about fence/table boundaries across platforms.
+  const normalizedInput = String(value)
+    .replace(/^\uFEFF/, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u0000/g, '');
   const normalized = normalizeStandaloneLatexOutsideCode(
-    normalizeLatexOutsideCode(
-      stripSystemTagsOutsideCode(
-        normalizeUnclosedMarkdownFence(unwrapAccidentalMarkdownFence(value)),
+    normalizeCurrencyAmountsOutsideCode(
+      normalizeLatexOutsideCode(
+        stripSystemTagsOutsideCode(
+          normalizeUnclosedMarkdownFence(
+            unwrapAccidentalMarkdownFence(normalizeEscapedLocalFileLinks(normalizedInput)),
+          ),
+        ),
       ),
     ),
   );
@@ -1442,10 +1471,16 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
   );
 }, (prevProps, nextProps) => prevProps.content === nextProps.content && prevProps.language === nextProps.language && prevProps.forceSource === nextProps.forceSource);
 
-const makeHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
+export const makeMarkdownHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
   const Heading = ({ node, children, ...props }: any) => {
     const text = getNodeText(children);
-    const id = props.id || slugify(text);
+    // Keep old/provider-authored decorative emoji from dominating heading
+    // typography. Emoji used naturally in ordinary prose remain untouched.
+    const cleanText = text.replace(/^[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D\s]+/u, '').trimStart();
+    const renderedChildren = cleanText && cleanText !== text ? cleanText : children;
+    const sourceLine = Number(node?.position?.start?.line || 0);
+    const stableSuffix = sourceLine > 0 ? `-${ sourceLine }` : '';
+    const id = props.id || `${ slugify(text) }${ stableSuffix }`;
     return React.createElement(
       Tag,
       {
@@ -1453,7 +1488,7 @@ const makeHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
         id,
         className: `${ className } eterx-md-heading scroll-mt-28`,
       },
-      children,
+      renderedChildren,
     );
   };
   return Heading;
@@ -1508,7 +1543,11 @@ export const markdownComponents = {
       </code>
     );
   },
-  p: ({ ...props }: any) => <p className="mb-3 break-words text-[13.5px] leading-[1.65] text-[#ECEBE6] last:mb-0" {...props} />,
+  // CodeBlock renders its own accessible, scrollable container. ReactMarkdown
+  // otherwise adds a <pre> around it, producing invalid <pre><div> nesting
+  // and browser-dependent layout/scroll behaviour.
+  pre: ({ children }: any) => <>{children}</>,
+  p: ({ ...props }: any) => <p className="eterx-markdown-paragraph mb-3 break-words text-[13.5px] leading-[1.65] last:mb-0" {...props} />,
   a: ({ node, href, children, ...props }: any) => {
     const localPath = decodeLocalFileHref(href);
     if (localPath) {
@@ -1518,18 +1557,18 @@ export const markdownComponents = {
   },
   ul: ({ ...props }: any) => <ul className="eterx-markdown-list mb-3 list-disc space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
   ol: ({ ...props }: any) => <ol className="eterx-markdown-list mb-3 list-decimal space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
-  li: ({ ...props }: any) => <li className="eterx-markdown-list-item leading-[1.6] text-[#E5E3DD] pl-0.5" {...props} />,
+  li: ({ ...props }: any) => <li className="eterx-markdown-list-item leading-[1.6] pl-0.5" {...props} />,
   input: ({ type, ...props }: any) => type === 'checkbox'
     ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-3.5 w-3.5 translate-y-[2px] rounded border-white/20 accent-[#E2765A] cursor-pointer" {...props} />
     : <input type={type} {...props} />,
-  h1: makeHeading('h1', 'eterx-answer-heading-1 mt-5 mb-2.5 font-semibold tracking-tight leading-[1.25] text-[#F4F3EF]'),
-  h2: makeHeading('h2', 'eterx-answer-heading-2 mt-4.5 mb-2 font-semibold tracking-tight leading-[1.3] text-[#F4F3EF]'),
-  h3: makeHeading('h3', 'eterx-answer-heading-3 mt-3.5 mb-1.5 font-semibold tracking-tight leading-[1.35] text-[#ECEBE6]'),
-  h4: makeHeading('h4', 'eterx-answer-heading-4 mt-3 mb-1 font-semibold leading-[1.4] text-[#ECEBE6]'),
-  h5: makeHeading('h5', 'eterx-answer-heading-5 mt-2.5 mb-1 font-semibold leading-snug text-[#D8D6D0]'),
-  h6: makeHeading('h6', 'eterx-answer-heading-6 mt-2 mb-1 font-semibold leading-snug text-[#BEBCB6]'),
-  strong: ({ ...props }: any) => <strong className="font-semibold text-[#FFFFFF] tracking-normal" {...props} />,
-  em: ({ ...props }: any) => <em className="italic text-[#E0DDD7]" {...props} />,
+  h1: makeMarkdownHeading('h1', 'eterx-answer-heading-1 mt-5 mb-2.5 font-semibold tracking-tight leading-[1.25]'),
+  h2: makeMarkdownHeading('h2', 'eterx-answer-heading-2 mt-4.5 mb-2 font-semibold tracking-tight leading-[1.3]'),
+  h3: makeMarkdownHeading('h3', 'eterx-answer-heading-3 mt-3.5 mb-1.5 font-semibold tracking-tight leading-[1.35]'),
+  h4: makeMarkdownHeading('h4', 'eterx-answer-heading-4 mt-3 mb-1 font-semibold leading-[1.4]'),
+  h5: makeMarkdownHeading('h5', 'eterx-answer-heading-5 mt-2.5 mb-1 font-semibold leading-snug'),
+  h6: makeMarkdownHeading('h6', 'eterx-answer-heading-6 mt-2 mb-1 font-semibold leading-snug'),
+  strong: ({ ...props }: any) => <strong className="font-semibold tracking-normal" {...props} />,
+  em: ({ ...props }: any) => <em className="italic" {...props} />,
   blockquote: ({ node, ...props }: any) => {
     const quoteText = getNodeText(node).trim().toLowerCase();
     const callout = quoteText.startsWith('warning:') || quoteText.startsWith('caution:')
@@ -1539,7 +1578,7 @@ export const markdownComponents = {
         : 'quote';
     return (
       <blockquote
-        className="eterx-markdown-callout my-3 rounded-lg border-l-[3px] border-[#E2765A] bg-[#222120]/70 px-3.5 py-2.5 text-[12.5px] leading-relaxed text-[#D8D5D0] shadow-sm backdrop-blur-sm"
+        className="eterx-markdown-callout my-3 rounded-lg border-l-[3px] border-[#E2765A] bg-[#222120]/70 px-3.5 py-2.5 text-[12.5px] leading-relaxed shadow-sm backdrop-blur-sm"
         data-callout={callout}
         {...props}
       />
@@ -1548,7 +1587,7 @@ export const markdownComponents = {
   hr: ({ ...props }: any) => <hr className="eterx-markdown-hr my-4 border-white/[0.08]" {...props} />,
   table: ({ node, ...props }: any) => (
     <div
-      className="eterx-markdown-table-wrap my-4 w-full max-w-full overflow-hidden rounded-lg border border-white/[0.10] bg-[#1A1918]/90 shadow-sm"
+      className="eterx-markdown-table-wrap my-4 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-lg border border-white/[0.10] bg-[#1A1918]/90 shadow-sm"
       role="region"
       aria-label="Data table"
     >
@@ -1561,9 +1600,13 @@ export const markdownComponents = {
   td: ({ node, ...props }: any) => <td className="eterx-markdown-td border-b border-r border-white/[0.04] last:border-r-0 px-3 py-2 align-top text-[#E0DDD7] font-normal" {...props} />,
   tr: ({ node, ...props }: any) => <tr className="eterx-markdown-tr transition-colors hover:bg-white/[0.035] even:bg-white/[0.015]" {...props} />,
   img: ({ alt, ...props }: any) => (
-    <figure className="eterx-markdown-figure my-5">
+    // Images normally arrive as children of a Markdown paragraph. A block
+    // <figure> there creates invalid HTML and causes the browser to reparent
+    // surrounding text. Keep the captioned image inline-safe with a block
+    // span wrapper instead.
+    <span className="eterx-markdown-figure my-5" role="figure">
       <img className="eterx-markdown-image max-w-full rounded-xl border border-white/[0.08] shadow-md" alt={alt || ''} loading="lazy" {...props} />
-      {alt && <figcaption className="mt-2 text-center text-[12px] text-[#7B7770]">{alt}</figcaption>}
-    </figure>
+      {alt && <span className="eterx-markdown-image-caption mt-2 text-center text-[12px]">{alt}</span>}
+    </span>
   ),
 };

@@ -38,27 +38,27 @@ export async function POST(req: NextRequest) {
 
     switch (action) {
       case 'pause': {
-        if (!agentName || !agentId) {
-          return attachAgentApiSessionCookie(jsonError('agentName and agentId are required for pause', 400), session);
+        if (!agentName) {
+          return attachAgentApiSessionCookie(jsonError('agentName is required for pause', 400), session);
         }
-        const result = pauseAgent(projectId, agentName, undefined, agentId);
-        return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'pause', agentName, agentId, paused: result }), session);
+        const result = pauseAgent(projectId, agentName, undefined, agentId || undefined);
+        return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'pause', agentName, agentId: agentId || undefined, paused: result }), session);
       }
 
       case 'resume': {
-        if (!agentName || !agentId) {
-          return attachAgentApiSessionCookie(jsonError('agentName and agentId are required for resume', 400), session);
+        if (!agentName) {
+          return attachAgentApiSessionCookie(jsonError('agentName is required for resume', 400), session);
         }
-        const result = resumeAgent(projectId, agentName, undefined, agentId);
-        return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'resume', agentName, agentId, resumed: result }), session);
+        const result = resumeAgent(projectId, agentName, undefined, agentId || undefined);
+        return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'resume', agentName, agentId: agentId || undefined, resumed: result }), session);
       }
 
       case 'close': {
-        if (!agentName || !agentId) {
-          return attachAgentApiSessionCookie(jsonError('agentName and agentId are required for close', 400), session);
+        if (!agentName) {
+          return attachAgentApiSessionCookie(jsonError('agentName is required for close', 400), session);
         }
-        const result = closeAgent(projectId, agentName, undefined, agentId);
-        return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'close', agentName, agentId, closed: result }), session);
+        const result = closeAgent(projectId, agentName, undefined, agentId || undefined);
+        return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'close', agentName, agentId: agentId || undefined, closed: result }), session);
       }
 
       case 'status': {

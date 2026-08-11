@@ -7,19 +7,31 @@ const ACTION_MAP: Record<string, string> = {
   screenshot: 'see',
   capture_region: 'see_region',
   click_at: 'click',
+  click: 'click',
+  right_click: 'right_click',
+  right_click_at: 'right_click',
+  double_click: 'double_click',
+  double_click_at: 'double_click',
   mouse_move: 'hover',
+  move_mouse: 'hover',
   drag: 'drag',
   type_text: 'type',
   press_key: 'key',
   hotkey: 'key',
   scroll_up: 'scroll',
   scroll_down: 'scroll',
+  scroll: 'scroll',
   list_windows: 'list_apps',
   focus_window: 'focus_app',
   launch_app: 'launch_app',
   open_url: 'open_url',
   clipboard_read: 'clipboard_get',
   clipboard_write: 'clipboard_set',
+  select_all: 'select_all',
+  copy: 'copy',
+  paste: 'paste',
+  save: 'save',
+  undo: 'undo',
   minimize_window: 'minimize',
   maximize_window: 'maximize',
   close_window: 'close_window',
@@ -47,6 +59,10 @@ function mapArgs(action: string, input: any): Record<string, any> {
   }
   if (action === 'scroll_down') {
     mapped.direction = 'down';
+    mapped.amount = input.amount ?? 3;
+  }
+  if (action === 'scroll') {
+    mapped.direction = input.direction === 'up' ? 'up' : 'down';
     mapped.amount = input.amount ?? 3;
   }
   if (input.width != null) mapped.width = input.width;

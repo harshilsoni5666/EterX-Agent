@@ -21,4 +21,12 @@ assert.equal(
   'c:/users/alice/folder',
 );
 
+// POSIX filesystems are case-sensitive; comparison normalization must not
+// collapse distinct Linux/macOS paths.
+assert.equal(
+  normalizePathForComparison('/Users/Alice/Report.csv'),
+  '/Users/Alice/Report.csv',
+);
+assert.equal(normalizePathForComparison('/'), '/');
+
 console.log('path-utils integration tests passed');

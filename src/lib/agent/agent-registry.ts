@@ -11,11 +11,12 @@ import { flushLedgerForChat } from './memory/conversation-ledger';
 import { globalToolRegistry } from './tools/registry';
 import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, setUserProxyModel, getUserProxyManagerSnapshot, deliverUserProxyManagerDirective, type ProxyInterventionLevel, type ProxyManagerDirective } from './autonomy/user-proxy-runtime';
 import { cancelPendingProxyTasks, claimDormantProxyDirectives, claimNextProxyTask, enqueueProxyTask, getPendingProxyTaskCount, readProxyControl, saveDormantProxyDirective, settleProxyTask, updateProxyControl } from './autonomy/proxy-control-plane';
-import { cancelAgent, cancelAllSubAgents, clearCancelState, globalSubAgentSpawner } from './roles/sub_agent';
+import { agentMessageBus, cancelAgent, cancelAllSubAgents, clearCancelState, clearPendingResults, globalSubAgentSpawner } from './roles/sub_agent';
+import { interAgentMailbox } from './roles/inter_agent_comm';
 import { normalizeAttachmentMime } from './attachment-pipeline';
 import { normalizeStreamTimestamp } from '../streaming-lifecycle';
 import { getEterxWorkspaceDir } from './storage-paths';
-import { stableScopeSegment } from './context-scope';
+import { delegationTelemetryFromTrace } from './delegation-evidence';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -71,6 +72,8 @@ interface AgentExecution {
   promise: Promise<void>;      // The running execution
   keyLeaseId: string;          // API key lease identifier
   steeringQueue: SteeringMessage[]; // Live steering messages from user mid-run
+  /** IDs accepted by this run, including messages already drained/applied. */
+  acceptedSteeringIds: Set<string>;
   mode: MainAgentMode;
   // === EXECUTION METRICS (new) ===
   toolCallCount: number;       // Total tool calls in this execution
@@ -89,6 +92,24 @@ interface AgentExecution {
     userName: string;
     runtimeSettings?: ScopedRuntimeSettings | null;
   };
+}
+
+interface QueuedUserFollowUp {
+  id: string;
+  runId: string;
+  chatId: string;
+  prompt: string;
+  mediaAttachments: any[];
+  createdAt: number;
+}
+
+export interface QueuedUserFollowUpSummary {
+  id: string;
+  runId: string;
+  chatId: string;
+  text: string;
+  createdAt: number;
+  attachmentCount: number;
 }
 
 const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
@@ -115,6 +136,7 @@ export const buildProxyTaskHistory = (
 const MAX_TRACE_BUFFER = 2000;          // Max traces kept in memory per chat
 const MAX_COMPLETED_TRACE_BUFFER = 350;
 const MAX_STEERING_QUEUE = 25;
+const MAX_USER_FOLLOW_UP_QUEUE = 50;
 const MAX_COMPLETED_EXECUTIONS = 30;
 const TRACE_COMPACTION_GRACE_MS = 60 * 1000;
 const CLEANUP_INTERVAL = 5 * 60 * 1000; // Cleanup completed agents frequently
@@ -123,16 +145,24 @@ const MAX_COMPLETED_AGE = 2 * 60 * 60 * 1000; // 2 hours max retention for compl
 
 class AgentRegistry {
   private executions: Map<string, AgentExecution> = new Map();
+  private userFollowUpQueues: Map<string, QueuedUserFollowUp[]> = new Map();
+  private userFollowUpReceipts: Map<string, Map<string, QueuedUserFollowUpSummary>> = new Map();
+  private pendingRunCancellations: Map<string, { runId?: string; expiresAt: number }> = new Map();
   private cleanupTimer: NodeJS.Timeout | null = null;
   private lastTaskStoreCleanupAt = 0;
+
+  public getLifecycleVersion(): number {
+    return 3;
+  }
 
   private findExecution(runtimeId: string): AgentExecution | undefined {
     const direct = this.executions.get(runtimeId);
     if (direct) return direct;
-    for (const execution of this.executions.values()) {
-      if (execution.orchestratorProjectId === runtimeId) return execution;
-    }
-    return undefined;
+    const aliases = Array.from(this.executions.values())
+      .filter(execution => execution.orchestratorProjectId === runtimeId);
+    // An alias collision is ambiguous. Failing closed is safer than steering
+    // whichever chat happened to be inserted first.
+    return aliases.length === 1 ? aliases[0] : undefined;
   }
 
   constructor() {
@@ -170,12 +200,23 @@ class AgentRegistry {
     }
 
     if (data.type === 'console_output') {
-      const { output, ...rest } = data;
-      const outputText = String(output || '');
+      const { output, content, outputPreview, ...rest } = data;
+      const outputText = String(output ?? content ?? outputPreview ?? '');
+      const maxChars = 6_000;
+      const isDelta = data.isDelta === true;
+      const compactOutput = outputText.length <= maxChars
+        ? outputText
+        : isDelta
+          ? outputText.slice(-maxChars)
+          : `${ outputText.slice(0, 1_500) }\n...[terminal output compacted]...\n${ outputText.slice(-(maxChars - 1_500)) }`;
+      const outputEnd = Number(data.outputEnd);
       return {
         ...rest,
-        output: outputText.length > 2500 ? `${ outputText.substring(0, 2500) }\n...[output compacted]` : outputText,
-        _contentStripped: outputText.length > 2500,
+        output: compactOutput,
+        ...(isDelta && outputText.length > maxChars && Number.isFinite(outputEnd)
+          ? { outputStart: Math.max(0, outputEnd - compactOutput.length) }
+          : {}),
+        _contentStripped: data._contentStripped === true || outputText.length > compactOutput.length,
       };
     }
 
@@ -246,10 +287,13 @@ class AgentRegistry {
           : {}),
       }
       : traceEvent;
+    const bufferedTrace = normalizedTrace?.type === 'console_output'
+      ? this.compactTracePayload(normalizedTrace)
+      : normalizedTrace;
     const entry: TraceEvent = {
       index: execution.traceCounter++,
       timestamp: now,
-      data: normalizedTrace,
+      data: bufferedTrace,
     };
 
     execution.traceBuffer.push(entry);
@@ -271,7 +315,7 @@ class AgentRegistry {
     }
 
     if (persistToTaskStore) {
-      const compactTrace = this.compactTracePayload(normalizedTrace);
+      const compactTrace = bufferedTrace;
       taskStore.addTrace(
         execution.chatId,
         compactTrace && typeof compactTrace === 'object'
@@ -300,10 +344,38 @@ class AgentRegistry {
     _preferredGeminiApiKey?: string,
     runtimeSettings?: ScopedRuntimeSettings | null,
     requestedRunId?: string,
-  ): { status: 'started' | 'already_running' | 'no_keys'; chatId: string; runId?: string; message: string } {
+  ): { status: 'started' | 'already_running' | 'no_keys' | 'cancelled'; chatId: string; runId?: string; message: string } {
 
     // Check if this chat already has a running agent
     const existing = this.executions.get(chatId);
+    // The caller-provided run ID is an idempotency key. A retried start request
+    // must reconnect to the original run instead of duplicating the task or
+    // accidentally converting the same prompt into live steering.
+    if (existing && requestedRunId && existing.runId === requestedRunId) {
+      return {
+        status: 'started',
+        chatId,
+        runId: existing.runId,
+        message: existing.status === 'running'
+          ? 'Agent run already accepted'
+          : 'Agent run already finished',
+      };
+    }
+    const pendingCancellation = this.pendingRunCancellations.get(chatId);
+    if (pendingCancellation && pendingCancellation.expiresAt <= Date.now()) {
+      this.pendingRunCancellations.delete(chatId);
+    } else if (
+      pendingCancellation &&
+      (!pendingCancellation.runId || pendingCancellation.runId === requestedRunId)
+    ) {
+      this.pendingRunCancellations.delete(chatId);
+      return {
+        status: 'cancelled',
+        chatId,
+        runId: requestedRunId,
+        message: 'This run was stopped before it finished starting.',
+      };
+    }
     if (existing && !existing.settled) {
       return {
         status: 'already_running',
@@ -374,6 +446,7 @@ class AgentRegistry {
       mode,
       promise: Promise.resolve(), // Placeholder, replaced below
       steeringQueue: [],
+      acceptedSteeringIds: new Set<string>(),
       // Execution metrics
       toolCallCount: 0,
       effectiveModel: hasExactPinnedModel
@@ -413,10 +486,19 @@ class AgentRegistry {
           turnId: execution.runId,
         };
       }
-      writeRuntimeTrace('agent_trace', {
-        chatId,
-        event: traceEvent,
-      });
+      const isConsoleTrace = traceEvent?.type === 'console_output';
+      if (!isConsoleTrace || traceEvent?.isStreaming === false) {
+        const runtimeTraceEvent = isConsoleTrace
+          ? (() => {
+            const { output: _output, content: _content, outputPreview: _outputPreview, ...metadata } = traceEvent;
+            return metadata;
+          })()
+          : traceEvent;
+        writeRuntimeTrace('agent_trace', {
+          chatId,
+          event: runtimeTraceEvent,
+        });
+      }
       // Check per-chat cancellation
       if (execution.cancelled) {
         return;
@@ -427,8 +509,28 @@ class AgentRegistry {
       // Enrich custom agent traces
       if (pinnedContext?.agentRuntime === 'custom_agent' && pinnedContext?.customAgentId) {
         if (traceEvent && typeof traceEvent === 'object') {
-          traceEvent.customAgentId = pinnedContext.customAgentId;
-          traceEvent.agentName = 'Main';
+          const customAgentName = String(
+            pinnedContext.customAgentName
+            || pinnedContext.agentName
+            || pinnedContext.customAgentId,
+          ).trim();
+          const traceType = String(traceEvent.type || '');
+          const isRealChildTrace = Boolean(
+            traceEvent.subAgentId
+            || traceEvent.subAgentChatId
+            || traceEvent.auxiliaryRuntime
+            || /^sub_agent_/.test(traceType)
+            || ['inter_agent_comm', 'inter_agent_message'].includes(traceType),
+          );
+          const { subAgent: _ownedSubAgent, ...customTrace } = traceEvent;
+          traceEvent = {
+            ...(isRealChildTrace ? traceEvent : customTrace),
+            customAgentId: pinnedContext.customAgentId,
+            agentRuntime: 'custom_agent',
+            agentName: isRealChildTrace
+              ? String(traceEvent.agentName || traceEvent.subAgent || customAgentName)
+              : customAgentName,
+          };
         }
       }
 
@@ -497,11 +599,7 @@ class AgentRegistry {
           return resolved;
         };
 
-        const safeChatTempName = (value: string) => {
-          return stableScopeSegment(value || 'chat', 120);
-        };
-
-        const mediaFiles: { path: string, mimeType: string, name: string, fileUri?: string }[] = [];
+        const mediaFiles: { id?: string, path: string, mimeType: string, name: string, fileUri?: string }[] = [];
         const usedMediaNames = new Set<string>();
 
         const normalizeMediaName = (value: any) => {
@@ -570,14 +668,14 @@ class AgentRegistry {
               if (sourcePath !== destPath) {
                 await fs.copyFile(sourcePath, destPath);
               }
-              mediaFiles.push({ path: destPath, mimeType, name: safeName });
+              mediaFiles.push({ id: String(att?.id || ''), path: destPath, mimeType, name: safeName });
             } else if (att.data || att.inlineData) {
               const b64 = att.data || (att.inlineData?.data) || att.inlineData;
               if (typeof b64 === 'string') {
                 const safeName = getRunScopedMediaName(att, attachmentIndex);
                 const destPath = resolveUnder(workspaceTemp, safeName);
                 await fs.writeFile(destPath, Buffer.from(b64, 'base64'));
-                mediaFiles.push({ path: destPath, mimeType, name: safeName });
+                mediaFiles.push({ id: String(att?.id || ''), path: destPath, mimeType, name: safeName });
               }
             } else if (att.fileUri) {
               const safeName = getRunScopedMediaName(att, attachmentIndex, att.path);
@@ -587,7 +685,7 @@ class AgentRegistry {
               }
               const filePath = await fs.pathExists(destPath) ? destPath : (att.path || destPath);
               if (await fs.pathExists(filePath)) {
-                mediaFiles.push({ path: filePath, mimeType, name: safeName });
+                mediaFiles.push({ id: String(att?.id || ''), path: filePath, mimeType, name: safeName });
               }
             }
           }
@@ -598,15 +696,10 @@ class AgentRegistry {
         // a path-only fallback here.
         const currentGeminiNativeFiles = [...mediaFiles];
 
-        // Media attachments are current-turn only. Re-attaching earlier images
-        // makes the model see stale screenshots/photos on unrelated later turns.
-        const visualMemoryPath = resolveUnder(workspaceTemp, `${ safeChatTempName(chatId) }_visual_memory.json`);
-        let geminiNativeFiles = [...currentGeminiNativeFiles];
-        try {
-          await fs.remove(visualMemoryPath);
-        } catch (e: any) {
-          console.warn(`[AgentRegistry] Could not clear stale visual memory: ${ e?.message || e }`);
-        }
+        // The chat-media store resolves current and explicitly referenced prior
+        // assets into this list. Keep the original files available to the
+        // provider for the complete selected media context.
+        const geminiNativeFiles = [...currentGeminiNativeFiles];
         if (currentGeminiNativeFiles.length > 0) {
           console.log(`[AgentRegistry] Media context: ${ currentGeminiNativeFiles.length } current attachment(s), 0 recalled`);
         }
@@ -621,14 +714,6 @@ class AgentRegistry {
           const geminiAI = new (require('@google/genai').GoogleGenAI)({ apiKey: lease!.apiKey });
         for (const file of geminiNativeFiles) {
           try {
-            // If the file has a URI from VISUAL MEMORY (previously uploaded with this key ecosystem), reuse it
-            if (file.fileUri && !currentGeminiNativeFiles.some(f => f.name === file.name)) {
-              uploadedImageParts.push({ fileData: { fileUri: file.fileUri, mimeType: file.mimeType } });
-              console.log(`[AgentRegistry] 👁️ Recalled from visual memory: ${ file.name }`);
-              continue;
-            }
-
-            // ALWAYS fresh upload for NEW files using the LEASED key (prevents cross-key 403)
             if (!await fs.pathExists(file.path)) {
               throw new Error(`Attachment file not found: ${ file.path }`);
             }
@@ -654,14 +739,51 @@ class AgentRegistry {
         }
         }
 
-        // Do not persist Files API media URIs between turns. Gemini file URIs are
-        // key scoped, and automatic reuse pollutes future prompts with old images.
+        // The vault persists original bytes, never provider file URIs. A fresh
+        // provider URI is created above for each run's leased key.
+
+        const imageCount = geminiNativeFiles.filter(file => String(file.mimeType || '').startsWith('image/')).length;
+        const videoCount = geminiNativeFiles.filter(file => String(file.mimeType || '').startsWith('video/')).length;
+        const viewedText = imageCount === 1 && videoCount === 0 && geminiNativeFiles.length === 1
+          ? 'Viewed an image'
+          : videoCount === 1 && imageCount === 0 && geminiNativeFiles.length === 1
+            ? 'Viewed a video'
+            : imageCount > 0 && videoCount === 0
+              ? `Viewed ${ imageCount } image${ imageCount === 1 ? '' : 's' }`
+              : `Viewed ${ geminiNativeFiles.length } attachment${ geminiNativeFiles.length === 1 ? '' : 's' }`;
+        if (geminiNativeFiles.length > 0) {
+          const now = Date.now();
+          onTrace({
+            id: `attachment-view-${ execution.runId }`,
+            type: 'tool_call',
+            toolName: 'attachment_view',
+            name: 'attachment_view',
+            text: viewedText,
+            action: viewedText,
+            uiActionText: viewedText,
+            uiIcon: 'image',
+            iconCategory: 'image',
+            toolArgs: {
+              chatId,
+              attachments: geminiNativeFiles.map(file => ({ id: (file as any).id, name: file.name, mimeType: file.mimeType })),
+            },
+            attachments: geminiNativeFiles.map(file => ({
+              id: (file as any).id,
+              name: file.name,
+              mimeType: file.mimeType,
+            })),
+            timestamp: now,
+            startTime: now,
+            endTime: now,
+          });
+        }
 
         // Build enriched prompt with file context
         let enrichedPrompt = '';
         if (geminiNativeFiles.length > 0) {
           const fileList = geminiNativeFiles.map(f => `  • ${ f.name } (${ f.mimeType })${ f.fileUri ? ' [UPLOADED ✓]' : '' }`).join('\n');
           enrichedPrompt += `[USER ATTACHED FILES]\nThe following original files are attached through the selected provider's native file/media input:\n${ fileList }\n\nDo not replace these attachments with extracted text or a local-path fallback. Analyze the native file/media inputs when the user asks about them.\n\n`;
+          enrichedPrompt += `[ATTACHMENT ORDER]\n${ geminiNativeFiles.map((file, index) => `Attachment ${ index + 1 }: ${ file.name }${ (file as any).id ? ` [${ (file as any).id }]` : '' }`).join('\n') }\nUse this order and stable ID when the user refers to a specific earlier asset.\n\n`;
         }
         // If images are present, add explicit analysis instruction
         const attachedImageCount = geminiNativeFiles.filter(f => String(f.mimeType || '').startsWith('image/')).length;
@@ -763,6 +885,9 @@ class AgentRegistry {
         terminalStatus = wasCancelledByResponse ? 'stopped' : responseFailed ? 'failed' : 'completed';
         execution.finalAnswer = responseText;
         if (responseFailed) execution.error = responseText;
+        // Guidance that was not drained before the terminal response belongs
+        // to this run and must not survive into a later turn.
+        execution.steeringQueue = [];
         // Publish the terminal state before task/key/sub-agent cleanup. A new
         // user follow-up must never be steered into a run that has already
         // produced its final response and is only unwinding resources.
@@ -800,6 +925,7 @@ class AgentRegistry {
         terminalStatus = wasCancelled ? 'stopped' : 'failed';
         execution.error = error.message;
         execution.finalAnswer = wasCancelled ? 'Stopped by user.' : `Agent Error: ${ error.message }`;
+        execution.steeringQueue = [];
         // API failures (including exhausted/rate-limited keys) are terminal
         // immediately. Cleanup still runs below, but the registry must stop
         // advertising this execution as steerable while it is unwinding.
@@ -874,7 +1000,7 @@ class AgentRegistry {
         if (execution.status === 'running') execution.status = terminalStatus;
         execution.completedAt = execution.completedAt || Date.now();
         if (terminalStatus !== 'stopped') {
-          queueMicrotask(() => void this.startNextProxyTask(chatId));
+          queueMicrotask(() => void this.startNextQueuedWork(chatId));
         }
       }
     })();
@@ -899,6 +1025,8 @@ class AgentRegistry {
     completedAt?: number;
     error?: string;
     pendingProxyTaskCount: number;
+    pendingFollowUpCount: number;
+    queuedFollowUps: QueuedUserFollowUpSummary[];
   } {
     const execution = this.executions.get(chatId);
 
@@ -910,6 +1038,8 @@ class AgentRegistry {
         maxIndex: -1,
         finalAnswer: '',
         pendingProxyTaskCount: getPendingProxyTaskCount(chatId),
+        pendingFollowUpCount: this.getQueuedFollowUps(chatId).length,
+        queuedFollowUps: this.getQueuedFollowUps(chatId),
       };
     }
     this.compactExecutionForRetention(execution);
@@ -951,6 +1081,8 @@ class AgentRegistry {
       completedAt: execution.completedAt,
       error: execution.error,
       pendingProxyTaskCount: getPendingProxyTaskCount(chatId),
+      pendingFollowUpCount: this.getQueuedFollowUps(chatId).length,
+      queuedFollowUps: this.getQueuedFollowUps(chatId),
     };
   }
 
@@ -965,11 +1097,24 @@ class AgentRegistry {
     expectedRunId?: string,
   ): boolean {
     const execution = this.executions.get(chatId);
-    if (expectedRunId && execution?.runId !== expectedRunId) return false;
+    if (expectedRunId && !execution) {
+      // Stop can beat a slow start request to the registry. Keep a short-lived
+      // run-scoped tombstone so that delayed request cannot create a zombie run
+      // after the UI has already confirmed cancellation.
+      this.pendingRunCancellations.set(chatId, {
+        runId: expectedRunId,
+        expiresAt: Date.now() + 15 * 60 * 1000,
+      });
+    } else if (expectedRunId && execution && execution.runId !== expectedRunId) {
+      return false;
+    }
+    const cancelledQueuedFollowUps = !metadata?._autonomyProxy
+      ? this.clearQueuedFollowUps(chatId)
+      : 0;
     const cancelledQueuedTasks = !metadata?._autonomyProxy
       ? cancelPendingProxyTasks(chatId)
       : 0;
-    if (!execution) return cancelledQueuedTasks > 0;
+    if (!execution) return Boolean(expectedRunId) || cancelledQueuedTasks > 0 || cancelledQueuedFollowUps > 0;
 
     // Registry owns the whole run lifecycle. This must happen here (rather than
     // only in an HTTP route) so Proxy, Telegram, shutdown, and tests all stop the
@@ -980,10 +1125,12 @@ class AgentRegistry {
     if (execution.status !== 'running') {
       // Still set cancel flag in case sub-agents are lingering
       execution.cancelled = true;
-      return cancelledQueuedTasks > 0;
+      execution.steeringQueue = [];
+      return true;
     }
 
     execution.cancelled = true;
+    execution.steeringQueue = [];
     execution.abortController.abort(new Error('CANCELLED_BY_USER'));
     execution.status = 'stopped';
     execution.completedAt = Date.now();
@@ -1018,7 +1165,12 @@ class AgentRegistry {
     metadata?: Record<string, any>,
     expectedRunId?: string,
   ): boolean {
-    const execution = this.findExecution(chatId);
+    // API callers address the registry by the authoritative chat key. Do not
+    // resolve the orchestrator's runtime alias here: Telegram and other
+    // runtimes may use a different project ID, and alias lookup could steer a
+    // different chat when IDs happen to overlap. Runtime aliases are resolved
+    // only by the execution loop when it drains its own queue.
+    const execution = this.executions.get(chatId);
     if (
       !execution ||
       execution.status !== 'running' ||
@@ -1031,6 +1183,10 @@ class AgentRegistry {
     const trimmedMessage = message.trim().substring(0, 8000);
     if (!trimmedMessage) return false;
     const resolvedId = steeringId || `steer_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`;
+    // Treat retries with the same client ID as idempotent. In particular, do
+    // not rewrite a queued message after it has already been acknowledged and
+    // do not emit a second received event after the original was applied.
+    if (execution.acceptedSteeringIds.has(resolvedId)) return true;
     // Provenance is derived from the trusted proxy flags, never from a
     // caller-provided display source. Normal typing-bar guidance therefore
     // cannot accidentally inherit a Proxy-Agent label.
@@ -1047,13 +1203,6 @@ class AgentRegistry {
       runId: execution.runId,
       turnId: execution.runId,
     };
-    const duplicate = execution.steeringQueue.find(item => item.id === resolvedId);
-    if (duplicate) {
-      duplicate.text = trimmedMessage;
-      duplicate.updatedAt = Date.now();
-      duplicate.metadata = normalizedMetadata;
-      return true;
-    }
     if (execution.steeringQueue.length >= MAX_STEERING_QUEUE) {
       console.warn(`[AgentRegistry] Steering queue full for chat ${ chatId.substring(0, 8) }...; rejecting new guidance so the client can retain it.`);
       return false;
@@ -1064,6 +1213,7 @@ class AgentRegistry {
       createdAt: Date.now(),
       metadata: normalizedMetadata,
     };
+    execution.acceptedSteeringIds.add(resolvedId);
     execution.steeringQueue.push(queuedMessage);
     // Completion-boundary Proxy guidance is revealed when it is applied on
     // the next loop boundary. Emitting it here would place the Proxy message
@@ -1091,7 +1241,16 @@ class AgentRegistry {
    */
   public getAndClearSteeringQueue(chatId: string): SteeringMessage[] {
     const execution = this.findExecution(chatId);
-    if (!execution || execution.steeringQueue.length === 0) return [];
+    // A stop/finish can race with the next model-boundary callback. Never
+    // release guidance from a run that is no longer eligible to execute it.
+    if (
+      !execution ||
+      execution.status !== 'running' ||
+      execution.settled ||
+      Boolean(execution.completedAt) ||
+      execution.abortController.signal.aborted ||
+      execution.steeringQueue.length === 0
+    ) return [];
     const messages = [...execution.steeringQueue];
     execution.steeringQueue = [];
     return messages;
@@ -1116,7 +1275,14 @@ class AgentRegistry {
    */
   public consumeSteeringQueue(chatId: string, count: number): void {
     const execution = this.findExecution(chatId);
-    if (!execution || count <= 0) return;
+    if (
+      !execution ||
+      execution.status !== 'running' ||
+      execution.settled ||
+      Boolean(execution.completedAt) ||
+      execution.abortController.signal.aborted ||
+      count <= 0
+    ) return;
     execution.steeringQueue.splice(0, count);
   }
 
@@ -1180,6 +1346,153 @@ class AgentRegistry {
       runtimeSettings: settings,
     });
     return true;
+  }
+
+  public getQueuedFollowUps(chatId: string): QueuedUserFollowUpSummary[] {
+    return (this.userFollowUpQueues.get(chatId) || []).map(item => ({
+      id: item.id,
+      runId: item.runId,
+      chatId: item.chatId,
+      text: item.prompt,
+      createdAt: item.createdAt,
+      attachmentCount: item.mediaAttachments.length,
+    }));
+  }
+
+  public queueUserFollowUp(
+    chatId: string,
+    prompt: string,
+    mediaAttachments: any[] = [],
+    requestedId?: string,
+  ): {
+    accepted: boolean;
+    status: 'queued' | 'starting' | 'not_found' | 'queue_full';
+    item?: QueuedUserFollowUpSummary;
+    message: string;
+  } {
+    const priorReceipt = this.userFollowUpReceipts.get(chatId)?.get(requestedId || '');
+    if (priorReceipt) {
+      return {
+        accepted: true,
+        status: 'queued',
+        item: priorReceipt,
+        message: 'Follow-up was already accepted.',
+      };
+    }
+    const execution = this.executions.get(chatId);
+    if (!execution) {
+      return { accepted: false, status: 'not_found', message: 'No agent run exists for this chat.' };
+    }
+    if (execution.status === 'stopped' || execution.cancelled) {
+      return { accepted: false, status: 'not_found', message: 'The run was stopped, so the follow-up was not queued.' };
+    }
+
+    const queue = this.userFollowUpQueues.get(chatId) || [];
+    const id = requestedId || randomUUID();
+    const duplicate = queue.find(item => item.id === id);
+    if (duplicate) {
+      const item = this.getQueuedFollowUps(chatId).find(entry => entry.id === duplicate.id);
+      return { accepted: true, status: 'queued', item, message: 'Follow-up was already queued.' };
+    }
+    if (queue.length >= MAX_USER_FOLLOW_UP_QUEUE) {
+      return { accepted: false, status: 'queue_full', message: 'The follow-up queue is full.' };
+    }
+
+    const item: QueuedUserFollowUp = {
+      id,
+      runId: `queued_${randomUUID()}`,
+      chatId,
+      prompt: String(prompt || '').trim().substring(0, 50_000),
+      mediaAttachments: Array.isArray(mediaAttachments) ? [...mediaAttachments] : [],
+      createdAt: Date.now(),
+    };
+    queue.push(item);
+    this.userFollowUpQueues.set(chatId, queue);
+
+    const summary = this.getQueuedFollowUps(chatId).find(entry => entry.id === id);
+    if (summary) {
+      const receipts = this.userFollowUpReceipts.get(chatId) || new Map<string, QueuedUserFollowUpSummary>();
+      receipts.set(id, summary);
+      while (receipts.size > 200) receipts.delete(receipts.keys().next().value!);
+      this.userFollowUpReceipts.set(chatId, receipts);
+    }
+    if (execution.settled) queueMicrotask(() => void this.startNextQueuedWork(chatId));
+    return {
+      accepted: true,
+      status: execution.settled ? 'starting' : 'queued',
+      item: summary,
+      message: execution.settled ? 'Follow-up is starting.' : 'Follow-up queued after the active run.',
+    };
+  }
+
+  public removeQueuedFollowUp(chatId: string, id: string): boolean {
+    const queue = this.userFollowUpQueues.get(chatId);
+    if (!queue) return false;
+    const next = queue.filter(item => item.id !== id);
+    if (next.length === queue.length) return false;
+    if (next.length > 0) this.userFollowUpQueues.set(chatId, next);
+    else this.userFollowUpQueues.delete(chatId);
+    return true;
+  }
+
+  public prioritizeQueuedFollowUp(chatId: string, id: string): boolean {
+    const queue = this.userFollowUpQueues.get(chatId);
+    if (!queue) return false;
+    const index = queue.findIndex(item => item.id === id);
+    if (index < 0) return false;
+    if (index > 0) {
+      const [item] = queue.splice(index, 1);
+      queue.unshift(item);
+    }
+    const execution = this.executions.get(chatId);
+    if (!execution || execution.settled) queueMicrotask(() => void this.startNextQueuedWork(chatId));
+    return true;
+  }
+
+  public clearQueuedFollowUps(chatId: string): number {
+    const count = this.userFollowUpQueues.get(chatId)?.length || 0;
+    this.userFollowUpQueues.delete(chatId);
+    return count;
+  }
+
+  private async startNextQueuedWork(chatId: string): Promise<void> {
+    const current = this.executions.get(chatId);
+    if (current && (current.status === 'running' || !current.settled)) return;
+
+    const queue = this.userFollowUpQueues.get(chatId);
+    const next = queue?.[0];
+    if (next) {
+      const runtimeSettings = current?.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
+      const history = current ? [...current.launchSpec.history] : [];
+      if (current) {
+        history.push({ role: 'user', parts: [{ text: getVisibleRunPrompt(current.prompt) }] });
+        if (current.finalAnswer) history.push({ role: 'model', parts: [{ text: current.finalAnswer }] });
+      }
+
+      const result = this.startAgent(
+        chatId,
+        next.prompt || 'Please review the attached file or media and help me with it.',
+        history.slice(-24),
+        current?.launchSpec.mode || 'think',
+        current?.launchSpec.userId || 'default_user',
+        current?.launchSpec.pinnedContext || {},
+        next.mediaAttachments,
+        current?.launchSpec.userName || 'Developer',
+        runtimeSettings.preferredGeminiApiKey,
+        runtimeSettings,
+        next.runId,
+      );
+      if (result.status === 'started') {
+        queue!.shift();
+        if (queue!.length === 0) this.userFollowUpQueues.delete(chatId);
+        return;
+      }
+
+      console.warn(`[AgentRegistry] Queued follow-up could not start for ${chatId.substring(0, 8)}...: ${result.message}`);
+      return;
+    }
+
+    await this.startNextProxyTask(chatId);
   }
 
   public queueProxyTask(
@@ -1272,19 +1585,23 @@ class AgentRegistry {
     const proxyControl = readProxyControl(chatId);
     const proxySnapshot = getUserProxyManagerSnapshot(projectId);
     if (proxySnapshot) proxySnapshot.interventionLevel = proxyControl.intervention;
-    const visibleTypes = new Set(['task_plan', 'plan', 'work_note', 'tool_call', 'tool_result', 'file_preview', 'evidence', 'error', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'answer', 'done']);
+    const visibleTypes = new Set(['task_plan', 'plan', 'work_note', 'tool_call', 'tool_result', 'tool_result_preview', 'file_preview', 'evidence', 'error', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'sub_agent_spawn', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_message', 'answer', 'done']);
     const activity = (execution?.traceBuffer || [])
       .map(entry => ({ ...entry.data, timestamp: entry.timestamp }))
       .filter(trace => visibleTypes.has(String(trace?.type || '')))
       .slice(-36)
-      .map(trace => ({
-        type: String(trace.type || ''),
-        text: String(trace.text || trace.data || trace.output || trace.error || '').replace(/\s+/g, ' ').trim().slice(0, 1400),
-        tool: String(trace.tool || trace.toolName || trace.name || '').slice(0, 120),
-        success: trace.success,
-        phase: trace.phase,
-        timestamp: trace.timestamp,
-      }));
+      .map(trace => {
+        const delegation = delegationTelemetryFromTrace(trace);
+        return {
+          type: String(trace.type || ''),
+          text: String(delegation?.summary || trace.text || trace.data || trace.output || trace.result || trace.error || '').replace(/\s+/g, ' ').trim().slice(0, 2400),
+          tool: String(trace.tool || trace.toolName || trace.name || '').slice(0, 120),
+          success: trace.success,
+          phase: trace.phase,
+          delegation: delegation || undefined,
+          timestamp: trace.timestamp,
+        };
+      });
     return {
       chatId,
       run: execution ? {
@@ -1330,6 +1647,7 @@ class AgentRegistry {
     const groups = new Map<string, string[]>();
     const relevant: Array<{ name: string; category: string; capability: string; recentlyUsed: boolean }> = [];
     for (const tool of globalToolRegistry.getAllTools()) {
+      if (tool.name === 'experience_signal') continue;
       const category = String(tool.category || 'support');
       const items = groups.get(category) || [];
       items.push(tool.name);
@@ -1407,15 +1725,30 @@ class AgentRegistry {
     const now = Date.now();
     let cleaned = 0;
     const completedExecutions: Array<[string, AgentExecution]> = [];
+    const cleanedProjectIds = new Set<string>();
+
+    for (const [chatId, cancellation] of this.pendingRunCancellations.entries()) {
+      if (cancellation.expiresAt <= now) this.pendingRunCancellations.delete(chatId);
+    }
 
     for (const [chatId, execution] of this.executions.entries()) {
       if (execution.status !== 'running' && execution.completedAt) {
+        if ((this.userFollowUpQueues.get(chatId)?.length || 0) > 0) {
+          // A queued user turn is live work, not retention data. Retry its
+          // handoff instead of compacting/deleting the predecessor it needs for
+          // history and runtime settings.
+          void this.startNextQueuedWork(chatId);
+          continue;
+        }
         this.compactExecutionForRetention(execution);
         completedExecutions.push([chatId, execution]);
 
         if (now - execution.completedAt > MAX_COMPLETED_AGE) {
           this.executions.delete(chatId);
+          this.userFollowUpReceipts.delete(chatId);
           cleaned++;
+          cleanedProjectIds.add(chatId);
+          if (execution.orchestratorProjectId) cleanedProjectIds.add(execution.orchestratorProjectId);
         }
       }
     }
@@ -1426,8 +1759,18 @@ class AgentRegistry {
 
     while (retainedCompleted.length > MAX_COMPLETED_EXECUTIONS) {
       const [chatId] = retainedCompleted.shift()!;
+      const execution = this.executions.get(chatId);
       this.executions.delete(chatId);
+      this.userFollowUpReceipts.delete(chatId);
       cleaned++;
+      cleanedProjectIds.add(chatId);
+      if (execution?.orchestratorProjectId) cleanedProjectIds.add(execution.orchestratorProjectId);
+    }
+
+    for (const projectId of cleanedProjectIds) {
+      interAgentMailbox.clearProject(projectId).catch(() => { });
+      clearPendingResults(projectId);
+      void agentMessageBus.clearAll(projectId).catch(() => { });
     }
 
     if (now - this.lastTaskStoreCleanupAt > TASK_STORE_CLEANUP_INTERVAL) {
@@ -1447,12 +1790,15 @@ class AgentRegistry {
    */
   public stopAll(): void {
     cancelAllSubAgents();
+    this.userFollowUpQueues.clear();
+    this.pendingRunCancellations.clear();
     for (const [chatId, execution] of this.executions.entries()) {
       if (execution.status === 'running') {
         execution.cancelled = true;
         execution.abortController.abort(new Error('CANCELLED_BY_USER'));
         execution.status = 'stopped';
         execution.completedAt = Date.now();
+        execution.steeringQueue = [];
         taskStore.stopTask(chatId, 'Stopped by user.', execution.runId).catch(() => { });
         if (execution.orchestratorProjectId) {
           try { stopUserProxyRuntime(execution.orchestratorProjectId); } catch { }
@@ -1473,6 +1819,11 @@ const globalForAgentRegistry = globalThis as typeof globalThis & {
   __eterxAgentRegistry?: AgentRegistry;
 };
 
+const existingAgentRegistry = globalForAgentRegistry.__eterxAgentRegistry;
 export const agentRegistry =
-  globalForAgentRegistry.__eterxAgentRegistry ||
-  (globalForAgentRegistry.__eterxAgentRegistry = new AgentRegistry());
+  existingAgentRegistry &&
+  typeof existingAgentRegistry.getQueuedFollowUps === 'function' &&
+  typeof existingAgentRegistry.getLifecycleVersion === 'function' &&
+  existingAgentRegistry.getLifecycleVersion() === 3
+    ? existingAgentRegistry
+    : (globalForAgentRegistry.__eterxAgentRegistry = new AgentRegistry());

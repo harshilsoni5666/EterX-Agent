@@ -75,11 +75,10 @@ const INTENT_TOOL_MAP: Array<{ pattern: RegExp; tools: string[]; priority: numbe
   // Analysis
   { pattern: /\b(analyze|examine|inspect|review|audit)\b/i, tools: ['workspace_semantic_search', 'workspace_search_text', 'workspace_file_outline'], priority: 2 },
   // Documents
-  { pattern: /\b(document|docx|pdf|report|presentation|pptx|xlsx)\b/i, tools: ['docx_generator', 'office_artifact_builder'], priority: 1 },
+  { pattern: /\b(document|docx|pdf|report|presentation|pptx|xlsx)\b/i, tools: ['docx_generator'], priority: 1 },
   // Images/visual
   { pattern: /\b(image|photo|logo|illustration|picture|visual)\b/i, tools: ['image_generator', 'image_asset_search'], priority: 1 },
   // Charts/data viz
-  { pattern: /\b(chart|graph|plot|visualize|dashboard)\b/i, tools: ['office_artifact_builder'], priority: 1 },
   // Git operations
   // Browser
   { pattern: /\b(browse|website|url|navigate|click|screenshot|open\s*link)\b/i, tools: ['browser_control'], priority: 1 },

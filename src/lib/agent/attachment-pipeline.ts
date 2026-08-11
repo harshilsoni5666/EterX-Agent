@@ -74,3 +74,16 @@ export function providerAcceptsDirectImage(provider: string, modelName: string):
   }
   return providerModelSupportsVision(provider as any, modelName);
 }
+
+/**
+ * Video is intentionally narrower than image support. Gemini's native media
+ * API accepts video files; OpenRouter can expose video-capable Gemini models
+ * through its compatible route. Other providers receive the stable filename
+ * context but no unsupported video content part.
+ */
+export function providerAcceptsDirectVideo(provider: string, modelName: string): boolean {
+  const model = String(modelName || '').toLowerCase();
+  if (provider === 'gemini') return true;
+  if (provider === 'openrouter') return /gemini|video|veo/.test(model);
+  return false;
+}

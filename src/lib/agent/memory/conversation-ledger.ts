@@ -578,13 +578,8 @@ export class ConversationLedger {
 
       // ── Files created ──
       if (includeFiles) {
-        const fileCreates = sourceEntries
-          .filter(e => e.type === 'file_create')
-          .sort((a, b) => b.importance - a.importance || b.ts - a.ts);
-
-        const fileEdits = sourceEntries
-          .filter(e => e.type === 'file_edit')
-          .sort((a, b) => b.ts - a.ts);
+        const fileCreates = sourceEntries.filter(e => e.type === 'file_create');
+        const fileEdits = sourceEntries.filter(e => e.type === 'file_edit');
 
         if (fileCreates.length > 0 || fileEdits.length > 0) {
           const fileLines: string[] = [];
@@ -592,7 +587,12 @@ export class ConversationLedger {
           // Deduplicate: show latest action per file path
           const seenFiles = new Set<string>();
 
-          for (const entry of [...fileCreates, ...fileEdits]) {
+          // The previous implementation concatenated importance-sorted creates
+          // before edits, so an old create could hide the file's newer state.
+          // Temporal order is authoritative when selecting the latest action.
+          const latestFileActions = [...fileCreates, ...fileEdits]
+            .sort((a, b) => b.ts - a.ts || b.importance - a.importance);
+          for (const entry of latestFileActions) {
             const filename = String(
               entry.argsDigest.filename || entry.resultDigest.filePaths[0] || ''
             );

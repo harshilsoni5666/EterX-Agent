@@ -19,6 +19,13 @@ async function main(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 8));
   assert.equal(timeoutGovernor.isTimedOut(), true);
   assert.equal(timeoutGovernor.beforeTool('workspace_read_file', { filename: 'x' }).allowed, false);
+
+  const firstAttempt = new ExecutionGovernor({ maxToolCalls: 5 });
+  firstAttempt.recordTool('workspace_run_command', args, { success: false, error: 'first failure' });
+  const resumed = new ExecutionGovernor({ maxToolCalls: 5, state: firstAttempt.exportState() });
+  assert.equal(resumed.snapshot().toolCalls, 1);
+  resumed.recordTool('workspace_run_command', args, { success: false, error: 'second failure' });
+  assert.equal(resumed.beforeTool('workspace_run_command', args).allowed, false, 'retry restoration must preserve anti-loop evidence');
   console.log('Execution governor integration checks passed.');
 }
 

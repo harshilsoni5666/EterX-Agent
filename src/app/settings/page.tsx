@@ -21,6 +21,7 @@ type SettingsTab =
   | 'worktrees'
   | 'browser'
   | 'computer'
+  | 'updates'
   | 'archives';
 
 const TAB_ALIASES: Record<string, SettingsTab> = {
@@ -49,6 +50,7 @@ const VALID_TABS = new Set<SettingsTab>([
   'worktrees',
   'browser',
   'computer',
+  'updates',
   'archives',
 ]);
 

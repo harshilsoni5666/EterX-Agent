@@ -26,6 +26,16 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      - name: Require a public updater host
+        shell: bash
+        run: |
+          set -euo pipefail
+          visibility="$(gh repo view "$GITHUB_REPOSITORY" --json visibility --jq '.visibility')"
+          if [ "$visibility" != "PUBLIC" ]; then
+            echo "EterX desktop clients use an unauthenticated GitHub Releases feed; repository visibility is $visibility, not PUBLIC." >&2
+            exit 1
+          fi
+
       - name: Create or reset draft release
         shell: bash
         run: |
@@ -94,11 +104,34 @@ jobs:
         shell: bash
         run: |
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          LOCK_VERSION="$(node -p "require('./package-lock.json').version")"
           TAG_VERSION="${RELEASE_TAG#v}"
           if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
             echo "package.json version $PACKAGE_VERSION does not match tag $RELEASE_TAG" >&2
             exit 1
           fi
+          if [ "$LOCK_VERSION" != "$TAG_VERSION" ]; then
+            echo "package-lock.json version $LOCK_VERSION does not match tag $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Require production signing for native updates
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            win)
+              [ -n "${CSC_LINK:-}" ] || { echo 'WINDOWS_CSC_LINK is required for a production update release.' >&2; exit 1; }
+              [ -n "${CSC_KEY_PASSWORD:-}" ] || { echo 'WINDOWS_CSC_KEY_PASSWORD is required for a production update release.' >&2; exit 1; }
+              ;;
+            mac)
+              [ -n "${CSC_LINK:-}" ] || { echo 'MACOS_CSC_LINK is required for a production update release.' >&2; exit 1; }
+              [ -n "${CSC_KEY_PASSWORD:-}" ] || { echo 'MACOS_CSC_KEY_PASSWORD is required for a production update release.' >&2; exit 1; }
+              [ -n "${APPLE_ID:-}" ] || { echo 'APPLE_ID is required to notarize a production update release.' >&2; exit 1; }
+              [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] || { echo 'APPLE_APP_SPECIFIC_PASSWORD is required to notarize a production update release.' >&2; exit 1; }
+              [ -n "${APPLE_TEAM_ID:-}" ] || { echo 'APPLE_TEAM_ID is required to notarize a production update release.' >&2; exit 1; }
+              ;;
+          esac
 
       - name: Install locked dependencies
         run: npm ci --legacy-peer-deps --no-audit --fund=false
@@ -158,15 +191,27 @@ jobs:
           shopt -s nullglob
           case "${{ matrix.target }}" in
             win)
+              required_patterns=(dist/latest.yml 'dist/EterX-*-win-x64.exe' 'dist/EterX-*-win-arm64.exe')
               files=(dist/EterX-*.exe dist/EterX-*.blockmap dist/latest.yml)
               ;;
             mac)
+              required_patterns=(dist/latest-mac.yml 'dist/EterX-*-mac-x64.zip' 'dist/EterX-*-mac-arm64.zip')
               files=(dist/EterX-*.dmg dist/EterX-*.zip dist/latest-mac.yml)
               ;;
             linux)
-              files=(dist/EterX-*.AppImage dist/EterX-*.deb dist/latest-linux.yml)
+              # electron-updater requests latest-linux.yml on x64 and an
+              # architecture-suffixed file such as latest-linux-arm64.yml on
+              # ARM64. Upload every generated Linux channel file.
+              required_patterns=(dist/latest-linux.yml dist/latest-linux-arm64.yml 'dist/EterX-*-linux-x64.AppImage' 'dist/EterX-*-linux-arm64.AppImage')
+              files=(dist/EterX-*.AppImage dist/EterX-*.deb dist/latest-linux*.yml)
               ;;
           esac
+          for pattern in "${required_patterns[@]}"; do
+            if ! compgen -G "$pattern" >/dev/null; then
+              echo "Required release asset is missing: $pattern" >&2
+              exit 1
+            fi
+          done
           if [ "${{ matrix.target }}" = "linux" ] && [ -f dist/eterx-icon-512.png ]; then
             files+=(dist/eterx-icon-512.png)
           fi
@@ -207,3 +252,20 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --draft=false \
             --title "EterX $RELEASE_TAG"
+
+      - name: Verify the public updater feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_version="${RELEASE_TAG#v}"
+          for asset in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml SHA256SUMS.txt; do
+            url="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/$asset"
+            destination="release/public-$asset"
+            curl --fail --silent --show-error --location \
+              --retry 6 --retry-delay 5 --retry-all-errors \
+              "$url" --output "$destination"
+            if [[ "$asset" == latest*.yml ]] && ! grep -Fq "version: $expected_version" "$destination"; then
+              echo "$asset does not advertise EterX $expected_version" >&2
+              exit 1
+            fi
+          done

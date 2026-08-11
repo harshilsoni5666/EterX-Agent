@@ -26,7 +26,11 @@ export function getEterxDataDir(): string {
 }
 
 export function getEterxWorkspaceDir(...segments: string[]): string {
-  return path.resolve(getEterxDataDir(), '.workspaces', ...segments);
+  const configuredWorkspaceRoot = String(process.env.ETERX_WORKSPACE_ROOT || '').trim();
+  const workspaceRoot = configuredWorkspaceRoot
+    ? path.resolve(configuredWorkspaceRoot)
+    : path.join(getEterxDataDir(), '.workspaces');
+  return path.resolve(workspaceRoot, ...segments);
 }
 
 export function getEterxAppRoot(): string {

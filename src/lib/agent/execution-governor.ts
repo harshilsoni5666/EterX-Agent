@@ -14,6 +14,8 @@
  *   - Mutation/verification evidence tracking
  */
 
+import { classifyToolSemantics, toolResultSucceeded } from './tool-semantics';
+
 export type ExecutionGovernorDecision = {
   allowed: boolean;
   reason?: string;
@@ -39,9 +41,11 @@ export type ExecutionGovernorOptions = {
   softTimeoutMs?: number;
   /** Hard timeout in ms — forces completion. Default: 20 minutes. */
   hardTimeoutMs?: number;
+  /** Restore run-local control state after a provider/key retry. */
+  state?: ExecutionGovernorState | null;
 };
 
-type ToolAttempt = {
+export type ExecutionGovernorAttempt = {
   signature: string;
   toolName: string;
   mutationEpoch: number;
@@ -49,10 +53,20 @@ type ToolAttempt = {
   materialProgress: boolean;
 };
 
+export type ExecutionGovernorState = {
+  attempts: ExecutionGovernorAttempt[];
+  mutationEpoch: number;
+  consecutiveFailures: number;
+  consecutiveNoProgress: number;
+  hasMutation: boolean;
+  hasVerification: boolean;
+  startedAt: number;
+  softTimeoutFired: boolean;
+};
+
 const MUTATION_TOOLS = new Set([
   'workspace_write_file',
   'workspace_edit_file',
-  'office_artifact_builder',
   'docx_generator',
   'image_generator',
   'video_generator',
@@ -170,13 +184,13 @@ function outputHasArtifact(output: any): boolean {
  * refresh-sensitive reads and all mutations remain available to the planner.
  */
 export class ExecutionGovernor {
-  private readonly attempts: ToolAttempt[] = [];
+  private readonly attempts: ExecutionGovernorAttempt[] = [];
   private mutationEpoch = 0;
   private consecutiveFailures = 0;
   private consecutiveNoProgress = 0;
   private hasMutation = false;
   private hasVerification = false;
-  private readonly startTime = Date.now();
+  private readonly startTime: number;
   private readonly maxToolCalls: number;
   private readonly softTimeoutMs: number;
   private readonly hardTimeoutMs: number;
@@ -187,6 +201,16 @@ export class ExecutionGovernor {
     this.maxToolCalls = options.maxToolCalls ?? 120;
     this.softTimeoutMs = options.softTimeoutMs ?? 10 * 60 * 1000; // 10 min
     this.hardTimeoutMs = options.hardTimeoutMs ?? 20 * 60 * 1000; // 20 min
+    this.startTime = options.state?.startedAt || Date.now();
+    if (options.state) {
+      this.attempts.push(...options.state.attempts.map(attempt => ({ ...attempt })));
+      this.mutationEpoch = Math.max(0, options.state.mutationEpoch || 0);
+      this.consecutiveFailures = Math.max(0, options.state.consecutiveFailures || 0);
+      this.consecutiveNoProgress = Math.max(0, options.state.consecutiveNoProgress || 0);
+      this.hasMutation = Boolean(options.state.hasMutation);
+      this.hasVerification = Boolean(options.state.hasVerification);
+      this.softTimeoutFired = Boolean(options.state.softTimeoutFired);
+    }
   }
 
   public beforeTool(toolName: string, args: Record<string, any> = {}): ExecutionGovernorDecision {
@@ -211,7 +235,8 @@ export class ExecutionGovernor {
       };
     }
 
-    if (!normalizedName || MUTATION_TOOLS.has(normalizedName) || REFRESH_SENSITIVE_TOOLS.has(normalizedName)) {
+    const semantics = classifyToolSemantics(normalizedName, args);
+    if (!normalizedName || semantics.isMutation || semantics.isRefreshSensitive) {
       return { allowed: true };
     }
 
@@ -239,11 +264,11 @@ export class ExecutionGovernor {
     const normalizedName = String(toolName || '').trim();
     if (!normalizedName) return;
 
-    const success = outputSucceeded(output);
-    const isMutation = MUTATION_TOOLS.has(normalizedName);
-    const isVerification = VERIFICATION_TOOLS.has(normalizedName) ||
-      (normalizedName === 'workspace_run_command' && commandLooksLikeVerification(args));
-    const materialProgress = success && (isMutation || isVerification || outputHasArtifact(output));
+    const success = toolResultSucceeded(output);
+    const semantics = classifyToolSemantics(normalizedName, args);
+    const isMutation = semantics.isMutation;
+    const isVerification = semantics.isVerification;
+    const materialProgress = success && (semantics.materialOnSuccess || outputHasArtifact(output));
 
     this.attempts.push({
       signature: this.signature(normalizedName, args),
@@ -324,6 +349,19 @@ export class ExecutionGovernor {
       mutationEpoch: this.mutationEpoch,
       elapsedMs: Date.now() - this.startTime,
       budgetRemaining: this.maxToolCalls - this.attempts.length,
+    };
+  }
+
+  public exportState(): ExecutionGovernorState {
+    return {
+      attempts: this.attempts.map(attempt => ({ ...attempt })),
+      mutationEpoch: this.mutationEpoch,
+      consecutiveFailures: this.consecutiveFailures,
+      consecutiveNoProgress: this.consecutiveNoProgress,
+      hasMutation: this.hasMutation,
+      hasVerification: this.hasVerification,
+      startedAt: this.startTime,
+      softTimeoutFired: this.softTimeoutFired,
     };
   }
 

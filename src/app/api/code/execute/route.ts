@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
 
-    const { command, cwd, terminalShell, background, timeoutSeconds, timeoutMs, checkInSeconds, checkInMs, hardTimeoutSeconds, hardTimeoutMs } = await req.json();
+    const { command, cwd, terminalShell, background, timeoutSeconds, timeoutMs, checkInSeconds, checkInMs, hardTimeoutSeconds, hardTimeoutMs, chatId, ownerTraceId, runId } = await req.json();
 
     if (!command) {
       return NextResponse.json({ error: 'command is required' }, { status: 400 });
@@ -62,14 +62,22 @@ export async function POST(req: NextRequest) {
       checkInMs: checkInTimeoutMs ?? timeoutSeconds ?? timeoutMs,
       hardTimeoutMs: hardTimeoutValueMs,
       maxOutputChars: 10 * 1024 * 1024,
-      traceThrottleMs: 150,
+      traceThrottleMs: 100,
       immediateHandoff: background === true,
       surviveRunSettlement: background === true,
+      context: {
+        chatId: typeof chatId === 'string' ? chatId : undefined,
+        projectId: typeof chatId === 'string' ? chatId : undefined,
+        ownerTraceId: typeof ownerTraceId === 'string' ? ownerTraceId : undefined,
+        runId: typeof runId === 'string' ? runId : undefined,
+        abortSignal: req.signal,
+      },
     });
 
     return NextResponse.json({
       command,
       cwd: workingDir,
+      shell: result.shell || resolvedShell,
       stdout: result.output || result.stdout,
       stderr: result.stderr,
       exitCode: result.exitCode,
@@ -79,6 +87,10 @@ export async function POST(req: NextRequest) {
       taskId: result.taskId,
       streamId: result.streamId,
       pid: result.pid,
+      status: result.status,
+      durationMs: result.executionTimeMs,
+      totalOutputChars: result.totalOutputChars,
+      droppedOutputChars: result.droppedOutputChars,
       nextActionNote: result.nextActionNote,
     });
   } catch (error: any) {

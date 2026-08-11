@@ -19,6 +19,7 @@ import {
   isLocalModelProvider,
 } from '../../../../lib/agent/provider-runtime';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -262,10 +263,18 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
 
 async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKeyValues('openrouter')[0];
+  if (!apiKey) {
+    return {
+      provider: 'openrouter',
+      connected: false,
+      source: 'unavailable',
+      models: [],
+      error: 'Add an OpenRouter API key to load models',
+    };
+  }
 
   try {
-    const headers: Record<string, string> = {};
-    if (apiKey) headers.Authorization = `Bearer ${ apiKey }`;
+    const headers: Record<string, string> = { Authorization: `Bearer ${ apiKey }` };
     const baseUrl = getProviderBaseURL('openrouter');
     const res = await withTimeout(fetch(`${baseUrl}/models?output_modalities=all`, {
       cache: 'no-store',
@@ -670,6 +679,8 @@ async function fetchCompatibleModels(provider: MainAgentProvider): Promise<Provi
 
 
 export async function POST(req: NextRequest) {
+  const originError = rejectCrossOrigin(req);
+  if (originError) return originError;
   hydrateServerRuntimeSettings();
   const body = await req.json().catch(() => ({}));
   if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'apiKeys')) {

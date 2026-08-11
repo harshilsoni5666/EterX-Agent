@@ -73,6 +73,22 @@ const parseObject = (value: unknown): Record<string, unknown> | undefined => {
   return undefined;
 };
 
+export const agentBuilderGetProfileTool: ToolDefinition = {
+  name: 'agent_builder_get_profile',
+  description: 'Load the complete persisted target profile and its current quality report before revising it. Builder-only and read-only.',
+  category: 'automation',
+  inputSchema: z.object({
+    agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
+  }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string(), profile: z.any().optional(), quality: z.any().optional() }),
+  execute: async (args: any, context: any) => {
+    const runtime = requireBuilderContext(context, args.agentId);
+    if (!runtime.ok) return { success: false, message: runtime.error };
+    const profile = applyAgentBuilderDefaults(await readAgentBuilderProfile(runtime.agentId));
+    return { success: true, message: `Loaded current profile for ${runtime.agentId}.`, profile, quality: evaluateAgentBuilderProfile(profile) };
+  },
+};
+
 export const agentBuilderSaveProfileTool: ToolDefinition = {
   name: 'agent_builder_save_profile',
   description: 'Save or update the target custom agent profile. Builder-only. Stores the professional system prompt, mission, behavior rules, safety rules, skills, and completion criteria under the target agent only.',
@@ -89,6 +105,7 @@ export const agentBuilderSaveProfileTool: ToolDefinition = {
     toolUsePolicy: z.string().optional().describe('When and how the target agent should use tools.'),
     completionCriteria: z.string().optional().describe('How the target agent knows it is done.'),
     notes: z.array(z.string()).optional().describe('Builder notes for future revisions.'),
+    replaceCollections: z.boolean().optional().describe('During an explicit revision, replace behaviorRules, safetyRules, skills, and notes instead of extending their persisted values.'),
   }),
   outputSchema: z.object({ success: z.boolean(), profilePath: z.string().optional(), message: z.string(), profile: z.any().optional() }),
   execute: async (args: any, context: any) => {
@@ -101,12 +118,12 @@ export const agentBuilderSaveProfileTool: ToolDefinition = {
       mission: args.mission || profile.mission,
       professionalPrompt: args.professionalPrompt || profile.professionalPrompt,
       responseStyle: args.responseStyle || profile.responseStyle,
-      behaviorRules: uniqueStrings([...(profile.behaviorRules || []), ...(args.behaviorRules || [])]),
-      safetyRules: uniqueStrings([...(profile.safetyRules || []), ...(args.safetyRules || [])]),
-      skills: uniqueStrings([...(profile.skills || []), ...(args.skills || [])]),
+      behaviorRules: args.replaceCollections ? uniqueStrings(args.behaviorRules || []) : uniqueStrings([...(profile.behaviorRules || []), ...(args.behaviorRules || [])]),
+      safetyRules: args.replaceCollections ? uniqueStrings(args.safetyRules || []) : uniqueStrings([...(profile.safetyRules || []), ...(args.safetyRules || [])]),
+      skills: args.replaceCollections ? uniqueStrings(args.skills || []) : uniqueStrings([...(profile.skills || []), ...(args.skills || [])]),
       toolUsePolicy: args.toolUsePolicy || profile.toolUsePolicy,
       completionCriteria: args.completionCriteria || profile.completionCriteria,
-      notes: uniqueStrings([...(profile.notes || []), ...(args.notes || [])]),
+      notes: args.replaceCollections ? uniqueStrings(args.notes || []) : uniqueStrings([...(profile.notes || []), ...(args.notes || [])]),
       status: 'draft',
     }));
 
@@ -174,6 +191,45 @@ export const agentBuilderAttachMainTool: ToolDefinition = {
   },
 };
 
+export const agentBuilderRemoveToolTool: ToolDefinition = {
+  name: 'agent_builder_remove_tool',
+  description: 'Detach a previously attached direct or custom tool from the target during an explicit revision. Builder-only; shared/global tool code is never deleted.',
+  category: 'automation',
+  inputSchema: z.object({
+    agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
+    toolName: z.string().describe('Exact persisted tool name to detach.'),
+    scope: z.enum(['any', 'direct', 'custom']).optional().describe('Where to remove it. Defaults to any.'),
+  }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string(), removed: z.boolean(), profile: z.any().optional() }),
+  execute: async (args: any, context: any) => {
+    const runtime = requireBuilderContext(context, args.agentId);
+    if (!runtime.ok) return { success: false, message: runtime.error, removed: false };
+    const requested = String(args.toolName || '').trim();
+    const toolName = normalizeRegistryToolName(requested) || sanitizeAgentToolName(requested);
+    const scope = String(args.scope || 'any');
+    let removed = false;
+    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => {
+      const directMainTools = scope === 'custom' ? profile.directMainTools : profile.directMainTools.filter(tool => {
+        const keep = tool.toolName !== toolName;
+        if (!keep) removed = true;
+        return keep;
+      });
+      const customTools = scope === 'direct' ? profile.customTools : profile.customTools.filter(tool => {
+        const keep = tool.toolName !== toolName;
+        if (!keep) removed = true;
+        return keep;
+      });
+      return { ...profile, directMainTools, customTools, status: removed ? 'draft' : profile.status };
+    });
+    return {
+      success: removed,
+      removed,
+      message: removed ? `Detached ${toolName} from ${runtime.agentId}.` : `Tool ${toolName} is not attached to ${runtime.agentId}.`,
+      profile: saved.profile,
+    };
+  },
+};
+
 export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
   name: 'agent_builder_attach_all_main_tools',
   description: 'Attach the complete current main-agent tool catalog to the target custom agent in one operation. Builder-only. Builder orchestration tools remain excluded.',
@@ -194,7 +250,7 @@ export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
 
     const excluded = new Set((Array.isArray(args.excludeToolNames) ? args.excludeToolNames : []).map((name: unknown) => String(name || '').trim()));
     const availableTools = globalToolRegistry.getAllTools()
-      .filter(tool => !isBuilderOnlyToolName(tool.name))
+      .filter(tool => !isBuilderOnlyToolName(tool.name) && tool.name !== 'experience_signal')
       .filter(tool => !excluded.has(tool.name));
     const availableNames = new Set(availableTools.map(tool => tool.name));
     const skippedToolNames = Array.from(excluded).map(String).filter(name => name.length > 0 && !availableNames.has(name));
@@ -226,13 +282,14 @@ export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
 
 export const agentBuilderAttachConnectorToolsTool: ToolDefinition = {
   name: 'agent_builder_attach_connector_tools',
-  description: 'Attach the universal live connector bridges to the target custom agent. This grants Gateway channel access through gateway_bridge and saved REST/MCP access through connector_mcp, without copying connector implementation code or secrets into the agent profile.',
+  description: 'Attach on-demand Channel Agent guidance plus the live Gateway and REST/MCP bridges to a custom agent. The full channel playbook stays in Gateway configuration and is loaded only when channel_agent is called.',
   category: 'automation',
   inputSchema: z.object({
     agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
     mode: z.enum(['all', 'gateway', 'mcp']).optional().describe('Attach both connector paths, only native Gateway channels, or only saved REST/MCP connectors. Defaults to all.'),
     connectorId: z.string().optional().describe('Optional connector ID to mention in the target guidance. The credential itself is never stored in the profile.'),
     platform: z.string().optional().describe('Optional native platform to mention in the target guidance, such as telegram or slack.'),
+    channelProfileId: z.string().optional().describe('Optional Channel Agent profile ID, such as sales or support. The profile policy is loaded on demand and is not copied into the agent prompt.'),
   }),
   outputSchema: z.object({
     success: z.boolean(),
@@ -246,35 +303,44 @@ export const agentBuilderAttachConnectorToolsTool: ToolDefinition = {
 
     const mode = String(args.mode || 'all');
     const toolNames = mode === 'gateway'
-      ? ['gateway_bridge']
+      ? ['channel_agent', 'gateway_bridge']
       : mode === 'mcp'
         ? ['connector_mcp']
-        : ['gateway_bridge', 'connector_mcp'];
+        : ['channel_agent', 'gateway_bridge', 'connector_mcp'];
     const missing = toolNames.filter(toolName => !globalToolRegistry.getTool(toolName));
     if (missing.length > 0) {
       return { success: false, message: `Connector tools are not registered: ${missing.join(', ')}.` };
     }
 
-    const scope = [args.platform ? `platform=${String(args.platform).trim()}` : '', args.connectorId ? `connector_id=${String(args.connectorId).trim()}` : '']
+    const scope = [args.channelProfileId ? `profile=${String(args.channelProfileId).trim()}` : '', args.platform ? `platform=${String(args.platform).trim()}` : '', args.connectorId ? `connector_id=${String(args.connectorId).trim()}` : '']
       .filter(Boolean)
       .join(', ');
     const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => {
       const existing = new Map(profile.directMainTools.map(tool => [tool.toolName, tool]));
       for (const toolName of toolNames) {
         const isGateway = toolName === 'gateway_bridge';
+        const isChannelAgent = toolName === 'channel_agent';
         existing.set(toolName, {
           toolName,
-          purpose: isGateway
+          purpose: isChannelAgent
+            ? `Load the configured channel workflow on demand${scope ? ` (${scope})` : ''}.`
+            : isGateway
             ? `Operate live native Gateway channels${scope ? ` (${scope})` : ''}.`
             : `Operate saved REST and MCP connectors${scope ? ` (${scope})` : ''}.`,
-          whenToUse: isGateway
+          whenToUse: isChannelAgent
+            ? 'Call first for sales, support, inbox, lead, customer-message, drafting, or replying work across connected channels.'
+            : isGateway
             ? 'First discover live Gateway channels, then use the explicit platform, conversation, and message identifiers for the requested action.'
-            : 'First list or verify the named connector or MCP server, discover its live tools, then call the exact connector or server action required by the request.',
-          inputPolicy: isGateway
+            : 'Call guide first, then list or verify the named connector or MCP server, discover its live tools, and call the exact live action required by the request.',
+          inputPolicy: isChannelAgent
+            ? `Use the saved profile ID when configured${args.channelProfileId ? `: ${String(args.channelProfileId).trim()}` : ''}; otherwise omit it to use the default. Start with guide, status, or inbox.`
+            : isGateway
             ? 'Keep platform, conversation_id, target, and action explicit. Never invent a connected channel.'
             : 'Keep connector_id, server_id, tool_name, method, and path explicit. Never put secrets in visible notes or responses.',
-          outputPolicy: 'Treat the connector result as authoritative evidence. If the runtime returns an error, report the actual failure and recover with a bounded alternative; never claim success without the result.',
-          promptInjection: 'This is a real external integration. Execute directly when the user requested the action. Do not ask for routine permission or connector discovery; only stop for a genuinely missing secret, required outbound approval, or an irreducible user decision.',
+          outputPolicy: isChannelAgent
+            ? 'Follow the returned operating guide and send policy. Gateway message sends execute without a confirmation prompt; draft-only profiles never send. Never claim delivery unless send_reply succeeds.'
+            : 'Treat the connector result as authoritative evidence. If the runtime returns an error, report the actual failure and recover with a bounded alternative; never claim success without the result.',
+          promptInjection: isChannelAgent ? undefined : 'This is a real external integration. Execute directly when the user requested the action. Do not ask for routine permission or connector discovery; only stop for a genuinely missing secret, required outbound approval, or an irreducible user decision.',
           attachedAt: new Date().toISOString(),
         });
       }
@@ -1058,8 +1124,10 @@ Follow with a detailed explanation of why, and suggest specific corrections if r
 };
 
 export const agentBuilderTools = [
+  agentBuilderGetProfileTool,
   agentBuilderSaveProfileTool,
   agentBuilderAttachMainTool,
+  agentBuilderRemoveToolTool,
   agentBuilderAttachAllMainToolsTool,
   agentBuilderAttachConnectorToolsTool,
   agentBuilderDefineTool,

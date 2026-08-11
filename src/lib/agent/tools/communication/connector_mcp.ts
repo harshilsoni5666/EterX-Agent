@@ -34,23 +34,10 @@ function isLikelyReadOnlyMcpTool(toolName: unknown): boolean {
 
 export const connectorMcpTool: ToolDefinition = {
   name: 'connector_mcp',
-  description: `Use a connector the user has actually connected.
-
-The tool is registered for every saved connector and MCP server. It exposes:
-- list_connectors: see connected connector IDs and their verified status.
-- configure_connector: save and verify a connector after the user supplies its API credential.
-- disconnect_connector: remove one saved connector credential.
-- list_mcp_servers: see configured MCP servers.
-- register_mcp_server: save and verify a live MCP HTTP or stdio server.
-- disconnect_mcp_server: remove one MCP server.
-- list_tools: discover the live tools from one MCP server.
-- call_tool: call a live tool on the selected MCP server with its configured permissions.
-- api_request: make an authenticated REST request against a connected connector's configured API origin.
-
-The agent never receives raw credentials. Authentication is added by the local runtime. A connector's access is exactly the account/token scopes the user configured.`,
+  description: 'Discover, set up, and operate verified external-app, REST, and MCP connectors from ordinary chat requests. Call action=guide first; the full connection and manual-setup playbook loads only when needed.',
   category: 'communication',
   inputSchema: z.object({
-    action: z.enum(['list_connectors', 'configure_connector', 'disconnect_connector', 'list_mcp_servers', 'register_mcp_server', 'disconnect_mcp_server', 'list_tools', 'call_tool', 'api_request']),
+    action: z.enum(['guide', 'list_connectors', 'configure_connector', 'disconnect_connector', 'list_mcp_servers', 'register_mcp_server', 'disconnect_mcp_server', 'list_tools', 'call_tool', 'api_request']),
     server_id: z.string().optional(),
     connector_id: z.string().optional(),
     base_url: z.string().optional(),
@@ -79,6 +66,38 @@ The agent never receives raw credentials. Authentication is added by the local r
     const decision = enforceToolCapability('connector_mcp', input, context);
     if (!decision.allowed) return { success: false, status: decision.reason || 'Connector access is not allowed.' };
     try {
+      if (input.action === 'guide') {
+        return {
+          success: true,
+          status: 'Connector operating guide loaded.',
+          results: {
+            workflow: [
+              'Treat a natural request naming an external app as connector intent even when the user never says connector, integration, tool, API, or MCP.',
+              'List connectors and MCP servers before assuming anything is connected.',
+              'When a matching connection is live, continue the requested read or action without sending the user through setup again.',
+              'For MCP, list live tools before call_tool; use the exact returned server_id, tool_name, and schema.',
+              'For REST, use only the saved connector_id and its configured origin; begin with a safe read or health path.',
+              'If the user already supplied the required endpoint and credentials, configure and verify the connection yourself without echoing secrets.',
+              'If authorization or a secret is missing, do not invent it or claim the app is unavailable. Explain exactly what is missing and direct the user to the matching EterX setup surface.',
+              'Inspect every result and report actual errors; never claim an external action succeeded without a successful result.',
+            ],
+            actions: {
+              discovery: ['list_connectors', 'list_mcp_servers', 'list_tools'],
+              setup: ['configure_connector', 'register_mcp_server'],
+              execution: ['api_request', 'call_tool'],
+              removal: ['disconnect_connector', 'disconnect_mcp_server'],
+            },
+            authentication: 'Credentials are injected locally and are not returned to the model.',
+            manualSetup: {
+              nativeMessaging: 'Open Channels → Communication, choose the service, enter the requested credentials, enable it, and Save.',
+              channelWorkflow: 'Open Channels → Channel Agents to create or select the sales, support, operations, or custom operating profile.',
+              restOrMcp: 'Open Channels → MCP for an MCP server, or Channels → Communication for a catalog/REST connection; enter only values supplied by the service, verify, and Save.',
+              customAgentAccess: 'Open Agents → the custom agent → Agent Builder and attach Channels, Connectors, or All integration scope. Main Agent can use available connectors directly.',
+            },
+            responseRule: 'Give manual setup directions only after live discovery shows the connection or authorization is missing. Name the exact EterX screen and missing value; never give a vague “configure it first” response.',
+          },
+        };
+      }
       if (input.action === 'list_connectors') {
         return { success: true, status: 'Connected connectors loaded.', results: listConnectorRecords().map((record) => ({
           id: record.id,

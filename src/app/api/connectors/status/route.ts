@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { DEFAULT_CONNECTOR_ENDPOINTS, testConnectorRecord } from '../../../../lib/connectors/runtime';
 import {
   listConnectorRecords,
+  getConnectorRecord,
   redactConnector,
   removeConnectorRecord,
   saveConnectorRecord,
   type ConnectorRecord,
 } from '../../../../lib/connectors/store';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,12 +29,18 @@ export async function GET() {
 
 /** Save and verify a connector profile. A profile is connected only after its health request succeeds. */
 export async function POST(request: NextRequest) {
+  const originError = rejectCrossOrigin(request);
+  if (originError) return originError;
   try {
     const body = await request.json().catch(() => ({}));
     const id = String(body.id || body.platform || '').trim().toLowerCase();
     if (!id || !/^[a-z0-9][a-z0-9_.-]{0,80}$/.test(id)) return NextResponse.json({ error: 'A valid connector id is required.' }, { status: 400 });
     const defaults = DEFAULT_CONNECTOR_ENDPOINTS[id] || {};
-    const credentials = cleanCredentials(body.credentials);
+    const previous = getConnectorRecord(id);
+    const submittedCredentials = cleanCredentials(body.credentials);
+    const credentials = body.replaceCredentials === true
+      ? submittedCredentials
+      : { ...(previous?.credentials || {}), ...submittedCredentials };
     for (const [key, value] of Object.entries({ token: body.token, apiKey: body.apiKey, accessToken: body.accessToken, botToken: body.botToken })) {
       if (typeof value === 'string' && value.trim()) credentials[key] = value.trim();
     }
@@ -65,6 +73,8 @@ export async function POST(request: NextRequest) {
 
 /** Disconnect and remove the encrypted credential profile. */
 export async function DELETE(request: NextRequest) {
+  const originError = rejectCrossOrigin(request);
+  if (originError) return originError;
   try {
     const body = await request.json().catch(() => ({}));
     const id = String(body.id || body.platform || '').trim().toLowerCase();

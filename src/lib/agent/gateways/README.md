@@ -9,9 +9,12 @@ The gateway is a desktop-owned, always-on messaging ingress and MCP control plan
 - `POST /control/call` (authenticated native EterX bridge)
 - `POST /webhooks/telegram`
 - `GET|POST /webhooks/whatsapp`
+- `GET|POST /webhooks/messenger`
 - `POST /webhooks/discord`
 - `POST /webhooks/signal`
 - `POST /webhooks/generic`
+
+Email runs as a first-class polling adapter over IMAP and replies over SMTP. Use a dedicated mailbox, an app password, and an allowlist or pairing policy before enabling automatic replies.
 
 The listener binds to `127.0.0.1` by default. Use a TLS reverse proxy or tunnel for public webhooks. Never expose a route without its platform signature or webhook secret.
 

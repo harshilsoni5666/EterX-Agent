@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { interAgentMailbox, type MessageType } from '@/lib/agent/roles/inter_agent_comm';
+import { agentMessageBus } from '@/lib/agent/roles/sub_agent';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -84,6 +85,8 @@ function buildMetadata(body: Record<string, any>, fallback?: {
     deliverAfter: deliverAt ?? deliverAfterMs,
     subAgentId: cleanString(body.subAgentId, 240) || undefined,
     subAgentChatId: cleanString(body.subAgentChatId, 360) || undefined,
+    recipientAgentId: cleanString(body.recipientAgentId, 240) || undefined,
+    recipientSubAgentChatId: cleanString(body.recipientSubAgentChatId, 360) || undefined,
   };
 }
 
@@ -111,7 +114,42 @@ function formatMessage(message: any) {
     confidence: message.metadata?.confidence,
     subAgentId: message.metadata?.subAgentId,
     subAgentChatId: message.metadata?.subAgentChatId,
+    recipientAgentId: message.metadata?.recipientAgentId,
+    recipientSubAgentChatId: message.metadata?.recipientSubAgentChatId,
+    broadcastRecipientRuns: message.metadata?.broadcastRecipientRuns,
+    broadcast: message.metadata?.broadcast === true || message.to === '*',
   };
+}
+
+function messageMatchesAgentRun(message: any, agentName: string, subAgentIdentity: string): boolean {
+  if (!subAgentIdentity) return true;
+  const normalizedAgentName = agentName.toLowerCase();
+  const requestedIds = new Set([
+    subAgentIdentity,
+    subAgentIdentity.includes('::sub-agent::') ? subAgentIdentity.split('::sub-agent::').pop() : '',
+  ].filter(Boolean));
+  const senderIds = [message.metadata?.subAgentId, message.metadata?.subAgentChatId].filter(Boolean);
+  const recipientIds = [message.metadata?.recipientAgentId, message.metadata?.recipientSubAgentChatId].filter(Boolean);
+  const matches = (values: string[]) => values.some(value => requestedIds.has(String(value)));
+
+  if (message.to === '*' || message.metadata?.broadcast === true) {
+    const recipients = Array.isArray(message.metadata?.broadcastRecipientRuns)
+      ? message.metadata.broadcastRecipientRuns
+      : [];
+    if (recipients.length === 0) return true;
+    return recipients.some((recipient: any) =>
+      String(recipient?.agentName || '').toLowerCase() === normalizedAgentName &&
+      matches([recipient?.agentId, recipient?.subAgentChatId].filter(Boolean))
+    );
+  }
+
+  if (String(message.from || '').toLowerCase() === normalizedAgentName) {
+    return senderIds.length === 0 || matches(senderIds);
+  }
+  if (String(message.to || '').toLowerCase() === normalizedAgentName) {
+    return recipientIds.length === 0 || matches(recipientIds);
+  }
+  return matches(senderIds) || matches(recipientIds);
 }
 
 export async function GET(request: NextRequest) {
@@ -135,22 +173,31 @@ export async function GET(request: NextRequest) {
     if (action === 'status') {
       const summaries = interAgentMailbox.getMailboxSummaries(projectId);
       const team = interAgentMailbox.getTeamSnapshot(projectId);
+      const diskStatuses = await agentMessageBus.readAllStatuses(projectId);
+      const diskStatusByName = new Map<string, any>();
+      for (const [name, status] of Object.entries(diskStatuses) as Array<[string, any]>) {
+        diskStatusByName.set(String(status?.agentName || name).toLowerCase(), status);
+      }
       const mailboxByName = new Map(summaries.map(summary => [summary.agentName.toLowerCase(), summary]));
       const rosterNames = new Set<string>([
         ...team.map(agent => agent.agentName),
         ...summaries.map(summary => summary.agentName),
+        ...Array.from(diskStatusByName.values()).map(status => status?.agentName).filter(Boolean),
       ]);
       const agents = Array.from(rosterNames).map(agentName => {
         const presence = team.find(agent => agent.agentName.toLowerCase() === agentName.toLowerCase());
         const mailbox = mailboxByName.get(agentName.toLowerCase());
+        const diskStatus = diskStatusByName.get(agentName.toLowerCase());
         return {
           agentName,
+          agentId: presence?.agentId || diskStatus?.agentId,
+          subAgentChatId: presence?.subAgentChatId || diskStatus?.subAgentChatId,
           role: presence?.role || (agentName.toLowerCase() === 'main' ? 'main' : 'sub_agent'),
-          status: presence?.status || 'registered',
-          task: presence?.task,
-          progress: presence?.progress,
-          registeredAt: presence?.registeredAt,
-          updatedAt: presence?.updatedAt,
+          status: presence?.status || diskStatus?.status || 'registered',
+          task: presence?.task || diskStatus?.task,
+          progress: presence?.progress || diskStatus?.progress,
+          registeredAt: presence?.registeredAt || diskStatus?.startedAt,
+          updatedAt: presence?.updatedAt || diskStatus?.updatedAt || diskStatus?.completedAt,
           unreadCount: mailbox?.unreadCount || 0,
           totalMessages: mailbox?.totalCount || 0,
           latestMessage: mailbox?.latestMessage,
@@ -170,8 +217,14 @@ export async function GET(request: NextRequest) {
       const limit = Math.max(1, Math.min(100, parseInteger(searchParams.get('limit'), 20)));
       const messages = interAgentMailbox.checkMailbox(projectId, agentName, {
         unreadOnly,
-        limit,
-      }).filter(message => !subAgentChatId || message.metadata?.subAgentChatId === subAgentChatId);
+        // Filter by child thread after reading the bounded mailbox window so
+        // another worker's recent traffic cannot hide this worker's messages.
+        limit: subAgentChatId ? 200 : limit,
+      // Older Main messages and broadcasts do not carry child-thread
+      // metadata. The mailbox query is already scoped to this agent, so keep
+      // those visible instead of making the selected worker's history appear
+      // one-sided after a reconnect.
+      }).filter(message => messageMatchesAgentRun(message, agentName, subAgentChatId)).slice(-limit);
       return respond({
         success: true,
         agentName,
@@ -191,8 +244,9 @@ export async function GET(request: NextRequest) {
         type,
         from: from || undefined,
         to: to || undefined,
-        limit,
-      }).filter(message => !subAgentChatId || message.metadata?.subAgentChatId === subAgentChatId);
+        // Apply the child-thread filter before the public page limit.
+        limit: subAgentChatId ? 1000 : limit,
+      }).filter(message => messageMatchesAgentRun(message, agentName, subAgentChatId)).slice(-limit);
       return respond({
         success: true,
         agentName: agentName || undefined,
@@ -212,7 +266,7 @@ export async function GET(request: NextRequest) {
           message.to === '*' ||
           message.from.toLowerCase() === normalizedAgent ||
           message.to.toLowerCase() === normalizedAgent)
-        .filter(message => !subAgentChatId || message.metadata?.subAgentChatId === subAgentChatId);
+        .filter(message => messageMatchesAgentRun(message, agentName, subAgentChatId));
       return respond({
         success: true,
         messageId,

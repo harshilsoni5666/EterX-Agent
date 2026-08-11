@@ -1,6 +1,5 @@
 /** Focused coding-agent tool surface — advanced Cursor-class primitives */
 export const CODE_AGENT_TOOLS = [
-  'tool_finder',
   'workspace_semantic_search',
   'workspace_file_outline',
   'workspace_find_files',
@@ -32,7 +31,6 @@ export const CODE_AGENT_TOOLS = [
 export type CodeAgentToolName = typeof CODE_AGENT_TOOLS[number];
 
 const STATELESS_TOOLS = new Set<string>([
-  'tool_finder',
   'workspace_semantic_search',
   'workspace_file_outline',
   'workspace_find_files',

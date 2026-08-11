@@ -21,11 +21,13 @@ import {
 } from './model-routing';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
+import { MAX_SUB_AGENTS } from './sub-agent-settings';
 import { AGENT_BUILDER_RUNTIME, AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile } from './builder-agent';
 import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
 import { isModelProvider } from './model-selector-store';
 import { getEterxWorkspaceDir } from './storage-paths';
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
+import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
 
 /**
  * The Enhanced Orchestrator v2
@@ -57,6 +59,7 @@ type RuntimeProjectContext = ProjectContext & {
   disableMemoryHydration?: boolean;
   disableLongTermMemory?: boolean;
   synapseGraphEnabled?: boolean;
+  selfImprovementEnabled?: boolean;
   disableSessionPersistence?: boolean;
   disableSharedCache?: boolean;
   disableWorkspaceContext?: boolean;
@@ -217,10 +220,9 @@ export class AgentOrchestrator {
     }
 
     const memoryDir = getEterxWorkspaceDir('.memory');
-    const adaptivePath = getEterxWorkspaceDir('learning', 'adaptive_data.json');
 
     // ALL reads in parallel — no sequential I/O blocking
-    const [prefsResult, errorsResult, storeResult, adaptiveResult] = await Promise.allSettled([
+    const [prefsResult, errorsResult, storeResult] = await Promise.allSettled([
       fs.pathExists(path.join(memoryDir, 'user_preferences.json')).then(exists =>
         exists ? fs.readJson(path.join(memoryDir, 'user_preferences.json')) : null
       ),
@@ -229,9 +231,6 @@ export class AgentOrchestrator {
       ),
       fs.pathExists(path.join(memoryDir, 'memory_store.json')).then(exists =>
         exists ? fs.readJson(path.join(memoryDir, 'memory_store.json')) : null
-      ),
-      fs.pathExists(adaptivePath).then(exists =>
-        exists ? fs.readJson(adaptivePath) : null
       ),
     ]);
 
@@ -265,23 +264,6 @@ export class AgentOrchestrator {
       }
     }
 
-    // 4. Adaptive learning tool patterns
-    if (adaptiveResult.status === 'fulfilled' && adaptiveResult.value) {
-      const data = adaptiveResult.value;
-      if (data.records && Array.isArray(data.records)) {
-        const successfulRecords = data.records
-          .filter((r: any) => r.success && r.toolSequence?.length > 0)
-          .slice(-3);
-        if (successfulRecords.length > 0) {
-          context.userPreferences = context.userPreferences || {};
-          context.userPreferences['_adaptive_tool_patterns'] = successfulRecords.map((r: any) => ({
-            task: r.taskSignature?.substring(0, 80),
-            tools: r.toolSequence,
-            duration: r.duration,
-          }));
-        }
-      }
-    }
     // Cache the result for this project
     this._hydrateCache.set(projectId, {
       context: this.buildHydrateCachePayload(context),
@@ -309,10 +291,18 @@ export class AgentOrchestrator {
   ): Promise<AgentResponse> {
     const shouldHydrateMemory = !pinnedContext?.disableMemoryHydration;
     const shouldPersistLongTermMemory = !pinnedContext?.disableLongTermMemory;
+    const selfImprovementEnabled = shouldPersistLongTermMemory
+      && resolveSelfImprovementEnabled(pinnedContext?.selfImprovementEnabled);
     const shouldPersistSession = pinnedContext?.persistSession !== false;
     const shouldExportTranscript = pinnedContext?.exportTranscript !== false;
     const shouldInitializeMemory = shouldHydrateMemory || shouldPersistLongTermMemory;
     const shouldInitializeWorkspace = shouldExportTranscript || !pinnedContext?.disableWorkspaceInit;
+    const experienceTrace: any[] = [];
+    const upstreamTrace = onTrace;
+    onTrace = (trace: any) => {
+      if (experienceTrace.length < 600) experienceTrace.push(trace);
+      upstreamTrace?.(trace);
+    };
 
     // Inject pinned context into standard prompt if it exists
     let effectiveRequest = userRequest;
@@ -373,6 +363,7 @@ export class AgentOrchestrator {
     if (userName) context.userName = userName;
     context.userId = userId;
     context.userInitiatedCommunication = isUserInitiatedCommunicationRequest(userRequest);
+    context.selfImprovementEnabled = selfImprovementEnabled;
     context.runtimeSettings = runtimeSettings || null;
     if (pinnedContext?.agentSessionId) {
       context.agentSessionId = String(pinnedContext.agentSessionId);
@@ -480,7 +471,7 @@ export class AgentOrchestrator {
       context.contextCompaction = pinnedContext.contextCompaction;
       const configuredMaxSubAgents = Number(pinnedContext.maxSubAgents);
       if (Number.isFinite(configuredMaxSubAgents)) {
-        context.maxSubAgents = Math.max(1, Math.floor(configuredMaxSubAgents));
+        context.maxSubAgents = Math.min(MAX_SUB_AGENTS, Math.max(1, Math.floor(configuredMaxSubAgents)));
       }
       const configuredMaxRetries = Number(pinnedContext.maxRetries);
       if (Number.isFinite(configuredMaxRetries)) {
@@ -621,8 +612,7 @@ export class AgentOrchestrator {
       // ═══════════════════════════════════════════════════════
       if (
         context.agentRuntime === AGENT_BUILDER_RUNTIME &&
-        context.agentId &&
-        modelConfig.provider === 'gemini'
+        context.agentId
       ) {
         // Builder chats use a separate draft-aware runtime. The normal Agent
         // loop is intentionally not used here: it exposes the main agent's
@@ -631,6 +621,8 @@ export class AgentOrchestrator {
         const builderAnswerParts: string[] = [];
         let builderError = '';
         const builderAgentName = String(context.agentName || context.agentId);
+        const builderModelName = resolveModelName('think', runtimeSettings);
+        const builderTurnId = String(context.agentSessionId || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
         const builderMessages = [
           ...history
             .filter((turn: any) => turn && typeof turn === 'object')
@@ -646,9 +638,9 @@ export class AgentOrchestrator {
           agentId: String(context.agentId),
           runtime: 'agent_builder',
           mode: 'think',
-          model: modelConfig.modelName,
-          apiKey: leasedApiKey || undefined,
-          preferredGeminiApiKey: leasedApiKey || undefined,
+          model: builderModelName,
+          apiKey: modelConfig.provider === 'gemini' ? leasedApiKey || undefined : undefined,
+          preferredGeminiApiKey: modelConfig.provider === 'gemini' ? leasedApiKey || undefined : undefined,
           runtimeSettings,
           chatId: projectId,
           agentSessionId: context.agentSessionId,
@@ -662,6 +654,18 @@ export class AgentOrchestrator {
           },
         })) {
           const eventAgentName = String(event.agentName || builderAgentName);
+          const eventType = String(event.type || '');
+          const hasRealChildIdentity = Boolean(
+            event.subAgentId
+            || event.subAgentChatId
+            || event.auxiliaryRuntime
+            || /^sub_agent_/.test(eventType)
+            || ['inter_agent_comm', 'inter_agent_message'].includes(eventType),
+          );
+          const { subAgent: _ownedSubAgent, ...builderEvent } = event as any;
+          const traceIdentity = hasRealChildIdentity
+            ? String(event.agentName || event.subAgent || eventAgentName)
+            : eventAgentName;
           if (event.type === 'text') {
             const text = String(event.text || '').trim();
             if (!text) continue;
@@ -669,28 +673,32 @@ export class AgentOrchestrator {
             onTrace?.({
               type: 'answer',
               text,
-              agentName: eventAgentName,
-              answerId: `builder_answer_${projectId}`,
+              agentName: traceIdentity,
+              agentRuntime: AGENT_BUILDER_RUNTIME,
+              agentId: String(context.agentId),
+              answerId: `builder_answer_${projectId}_${builderTurnId}`,
               isDelta: false,
               isStreaming: false,
               timestamp: Date.now(),
             });
           } else if (event.type === 'thought_stream') {
             onTrace?.({
-              ...event,
+              ...(hasRealChildIdentity ? event : builderEvent),
               type: 'thought_stream',
-              agentName: eventAgentName,
-              subAgent: eventAgentName,
+              agentName: traceIdentity,
+              agentRuntime: AGENT_BUILDER_RUNTIME,
+              agentId: String(context.agentId),
               timestamp: Date.now(),
             });
-          } else if (event.type === 'status') {
+          } else if (event.type === 'status' || event.type === 'work_note') {
             const text = String(event.text || '').trim();
             if (!text) continue;
             onTrace?.({
               type: 'work_note',
               text,
-              agentName: eventAgentName,
-              subAgent: eventAgentName,
+              agentName: traceIdentity,
+              agentRuntime: AGENT_BUILDER_RUNTIME,
+              agentId: String(context.agentId),
               noteId: `builder_note_${projectId}_${Date.now()}`,
               isDelta: false,
               isStreaming: false,
@@ -701,7 +709,9 @@ export class AgentOrchestrator {
               type: 'tool_call',
               toolName: event.toolName,
               toolArgs: event.toolArgs || {},
-              agentName: eventAgentName,
+              agentName: traceIdentity,
+              agentRuntime: AGENT_BUILDER_RUNTIME,
+              agentId: String(context.agentId),
               timestamp: Date.now(),
             });
           } else if (event.type === 'tool_result') {
@@ -710,17 +720,27 @@ export class AgentOrchestrator {
               toolName: event.toolName,
               toolArgs: event.toolArgs || {},
               toolResult: event.toolResult,
-              agentName: eventAgentName,
+              agentName: traceIdentity,
+              agentRuntime: AGENT_BUILDER_RUNTIME,
+              agentId: String(context.agentId),
               timestamp: Date.now(),
             });
           } else if (event.type === 'model_usage' || event.type === 'ask_user') {
-            onTrace?.({ ...event, timestamp: Date.now() });
+            onTrace?.({
+              ...event,
+              agentName: traceIdentity,
+              agentRuntime: AGENT_BUILDER_RUNTIME,
+              agentId: String(context.agentId),
+              timestamp: Date.now(),
+            });
           } else if (event.type === 'error') {
             builderError = String(event.text || 'Agent Builder failed.');
             onTrace?.({
               type: 'error',
               text: builderError,
-              agentName: eventAgentName,
+              agentName: traceIdentity,
+              agentRuntime: AGENT_BUILDER_RUNTIME,
+              agentId: String(context.agentId),
               timestamp: Date.now(),
             });
           }
@@ -817,14 +837,6 @@ export class AgentOrchestrator {
           }).catch(() => undefined);
         }
 
-        // TRIGGER NEURAL PLASTICITY (AGI Feature)
-        // Synthesize a permanent rule to avoid this error in the future
-        if (shouldPersistLongTermMemory) {
-          try {
-            const { neuralPlasticity } = require('./adaptive');
-            await neuralPlasticity.synthesizeNewRule(userRequest, error.message);
-          } catch { /* silent */ }
-        }
       }
     }
 
@@ -880,21 +892,59 @@ export class AgentOrchestrator {
       await globalMemoryManager.flush();
     }
 
-    console.log(`[Orchestrator] ✅ Pipeline complete in ${ executionTime }ms (complexity: ${ complexity }, mode: ${ effectiveMode })`);
-
-    // Record performance for adaptive learning
-    if (shouldPersistLongTermMemory) {
+    if (selfImprovementEnabled && finalAnswer !== 'Stopped by user.') {
       try {
-        const { adaptiveLearning } = require('./adaptive');
-        adaptiveLearning.recordExecution({
-          taskSignature: userRequest.substring(0, 100),
-          complexity,
-          mode: effectiveMode,
-          duration: executionTime,
+        await adaptiveExperience.queueReflection({
+          enabled: true,
+          userId,
+          projectId,
+          chatId: projectId,
+          workspacePath: context.workspacePath || context.workspaceRoot,
+          agentRuntime: context.agentRuntime || 'main',
+          task: userRequest,
+          history,
+          finalAnswer,
           success,
+          durationMs: executionTime,
+          artifacts: artifactsGenerated,
+          trace: experienceTrace,
+          mode: routedMode,
+          selectedModel: { provider: modelConfig.provider, modelId: modelConfig.modelName },
+          runtimeSettings,
         });
-      } catch { /* adaptive learning is optional */ }
+        const proxyExperienceTrace = experienceTrace.filter(event => {
+          const type = String(event?.type || '').toLowerCase();
+          return type.includes('proxy')
+            || type.includes('steering')
+            || type.includes('completion_review')
+            || type.includes('intervention');
+        });
+        if (proxyExperienceTrace.length > 0) {
+          await adaptiveExperience.queueReflection({
+            enabled: true,
+            userId,
+            projectId,
+            chatId: projectId,
+            workspacePath: context.workspacePath || context.workspaceRoot,
+            agentRuntime: 'user_proxy',
+            task: userRequest,
+            history,
+            finalAnswer,
+            success,
+            durationMs: executionTime,
+            artifacts: artifactsGenerated,
+            trace: proxyExperienceTrace,
+            mode: routedMode,
+            selectedModel: { provider: modelConfig.provider, modelId: modelConfig.modelName },
+            runtimeSettings,
+          });
+        }
+      } catch (error) {
+        console.warn('[SelfImprovement] Could not queue experience review:', error instanceof Error ? error.message : error);
+      }
     }
+
+    console.log(`[Orchestrator] ✅ Pipeline complete in ${ executionTime }ms (complexity: ${ complexity }, mode: ${ effectiveMode })`);
 
     return {
       taskId: crypto.randomUUID(),

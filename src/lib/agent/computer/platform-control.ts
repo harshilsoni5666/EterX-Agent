@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { getPlatformShortcut } from './platform-shortcuts';
 
 const execFileAsync = promisify(execFile);
 
@@ -116,7 +117,7 @@ async function runMac(action: string, input: any): Promise<PlatformActionResult 
       return { success: true, result: `Typed ${text.length} characters.`, provider };
     }
     if (action === 'key' || ['select_all', 'copy', 'paste', 'save', 'undo', 'close_window'].includes(action)) {
-      const key = action === 'key' ? String(input.text || 'enter') : ({ select_all: 'cmd+a', copy: 'cmd+c', paste: 'cmd+v', save: 'cmd+s', undo: 'cmd+z', close_window: 'cmd+w' } as Record<string, string>)[action];
+      const key = action === 'key' ? String(input.text || 'enter') : getPlatformShortcut(action as 'select_all' | 'copy' | 'paste' | 'save' | 'undo' | 'close_window', 'darwin');
       const parts = key.toLowerCase().split('+');
       const base = parts[parts.length - 1];
       const keyCode = MAC_KEY_CODES[base];
@@ -207,7 +208,7 @@ async function runLinux(action: string, input: any): Promise<PlatformActionResul
       return { success: true, result: `Typed ${text.length} characters.`, provider };
     }
     if (action === 'key' || ['select_all', 'copy', 'paste', 'save', 'undo', 'close_window'].includes(action)) {
-      const key = action === 'key' ? String(input.text || 'enter') : ({ select_all: 'ctrl+a', copy: 'ctrl+c', paste: 'ctrl+v', save: 'ctrl+s', undo: 'ctrl+z', close_window: 'alt+F4' } as Record<string, string>)[action];
+      const key = action === 'key' ? String(input.text || 'enter') : getPlatformShortcut(action as 'select_all' | 'copy' | 'paste' | 'save' | 'undo' | 'close_window', 'linux');
       const mapped = key.split('+').map(part => LINUX_KEY_MAP[part.toLowerCase()] || part).join('+');
       await xdo('key', '--clearmodifiers', mapped);
       return { success: true, result: `Pressed ${key}.`, provider };

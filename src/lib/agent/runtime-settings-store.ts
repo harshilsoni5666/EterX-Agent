@@ -16,6 +16,9 @@ export type StoredRuntimeSettings = {
   search?: SearchSettings;
   image?: ImageSettings;
   video?: VideoSettings;
+  selfImprovement?: {
+    enabled: boolean;
+  };
 };
 
 const SETTINGS_DIR = path.join(getEterxDataDir(), 'settings');
@@ -103,6 +106,9 @@ const normalizeStoredSettings = (value: unknown): StoredRuntimeSettings => {
       : undefined,
     video: source.video && typeof source.video === 'object' && !Array.isArray(source.video)
       ? normalizeVideoSettings(source.video)
+      : undefined,
+    selfImprovement: source.selfImprovement && typeof source.selfImprovement === 'object' && !Array.isArray(source.selfImprovement)
+      ? { enabled: (source.selfImprovement as Record<string, unknown>).enabled !== false }
       : undefined,
   };
 };

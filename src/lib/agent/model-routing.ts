@@ -596,6 +596,7 @@ export function normalizeThinkingLevelForModel(
   return (discovered?.defaultLevel && options.some(option => option.id === discovered.defaultLevel) ? discovered.defaultLevel : undefined)
     || options.find(option => option.id === 'medium')?.id
     || options.find(option => option.id === 'low')?.id
+    || options.find(option => option.id !== 'off')?.id
     || options[0]?.id
     || requested;
 }
@@ -661,6 +662,6 @@ export function normalizeMainAgentThinkingLevel(value: unknown): MainAgentThinki
   if (value === 'high' || value === 'enterprise' || value === 'extended') return 'high';
   if (value === 'xhigh' || value === 'extra-high' || value === 'extra_high') return 'xhigh';
   if (value === 'max' || value === 'full') return 'max';
-  if (value === 'low' || value === 'minimal') return 'low';
+  if (value === 'low') return 'low';
   return 'medium';
 }

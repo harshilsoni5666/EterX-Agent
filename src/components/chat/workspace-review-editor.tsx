@@ -120,6 +120,49 @@ const EMPTY_SUBAGENTS: WorkspaceReviewSubagent[] = [];
 const EMPTY_TASKS: WorkspaceReviewBackgroundTask[] = [];
 const MAX_REVIEW_ROWS_PER_FILE = 520;
 const MAX_CODE_LINES = 1600;
+
+const REVIEW_KEYWORDS = new Set([
+  'if', 'else', 'elif', 'for', 'while', 'switch', 'case', 'break', 'continue',
+  'return', 'try', 'catch', 'finally', 'throw', 'raise', 'with', 'match', 'do',
+  'const', 'let', 'var', 'function', 'class', 'async', 'await', 'import', 'export',
+  'from', 'as', 'type', 'interface', 'enum', 'extends', 'implements', 'static',
+  'abstract', 'override', 'def', 'lambda', 'pass', 'yield', 'del', 'require', 'fn',
+  'pub', 'use', 'struct',
+]);
+const REVIEW_VALUES = new Set([
+  'true', 'false', 'null', 'undefined', 'None', 'True', 'False', 'NaN', 'Infinity', 'void',
+  'this', 'self', 'super', 'new', 'typeof', 'instanceof', 'in', 'of', 'is', 'not', 'and',
+  'or', 'delete', 'readonly', 'keyof', 'number', 'string', 'boolean', 'object', 'any', 'never',
+]);
+
+function highlightReviewSyntax(code: string): string {
+  if (!code) return '';
+  const escaped = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const tokenPattern = /(\/\/[^\n]*|#[^!\n][^\n]*|\/\*[\s\S]*?\*\/)|(["'`])(?:(?!\2)[^\\]|\\.)*\2|(0x[0-9A-Fa-f]+|\b\d+\.?\d*(?:e[+-]?\d+)?\b)|([A-Z][a-zA-Z0-9_]*)|([a-z_][a-zA-Z0-9_]*)|(--?[a-zA-Z][a-zA-Z0-9-]*)/g;
+  let output = '';
+  let lastIndex = 0;
+
+  for (const match of escaped.matchAll(tokenPattern)) {
+    const [full, comment, , number, typeName, identifier, flag] = match;
+    output += escaped.slice(lastIndex, match.index!);
+    lastIndex = match.index! + full.length;
+
+    if (comment) output += `<span class="eterx-syntax-comment">${full}</span>`;
+    else if (match[2]) output += `<span class="eterx-syntax-string">${full}</span>`;
+    else if (number) output += `<span class="eterx-syntax-number">${full}</span>`;
+    else if (typeName) output += `<span class="eterx-syntax-type">${full}</span>`;
+    else if (identifier) {
+      if (REVIEW_KEYWORDS.has(identifier)) output += `<span class="eterx-syntax-keyword eterx-syntax-declaration">${full}</span>`;
+      else if (REVIEW_VALUES.has(identifier)) output += `<span class="eterx-syntax-value">${full}</span>`;
+      else output += escaped.slice(lastIndex).trimStart().startsWith('(')
+        ? `<span class="eterx-syntax-function">${full}</span>`
+        : full;
+    } else if (flag) output += `<span class="eterx-syntax-flag">${full}</span>`;
+    else output += full;
+  }
+
+  return output + escaped.slice(lastIndex);
+}
 const MIN_VISIBLE_TAB_WIDTH = 94;
 const MAX_TAB_RAIL_WIDTH_BEFORE_SCROLL = 520;
 const SECTION_SCROLL_CLASS = 'eterx-review-scrollbar max-h-[min(34vh,340px)] overflow-y-auto overflow-x-hidden overscroll-contain rounded-[14px] border border-white/[0.045] bg-white/[0.014] py-1.5 pr-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)] [scrollbar-gutter:stable]';
@@ -778,7 +821,7 @@ function ReviewPanel({
                             <div
                               key={row.key}
                               className={cx(
-                                'grid grid-cols-[44px_44px_22px_minmax(0,1fr)] gap-0 px-3',
+                                'eterx-review-diff-row grid grid-cols-[44px_44px_22px_minmax(0,1fr)] gap-0 px-3',
                                 isAdded && 'bg-[#20361F]',
                                 isRemoved && 'bg-[#441A1A]'
                               )}
@@ -788,7 +831,10 @@ function ReviewPanel({
                               <span className={cx('select-none text-center', isAdded ? 'text-[#75D990]' : isRemoved ? 'text-[#FF7A70]' : 'text-white/20')}>
                                 {isAdded ? '+' : isRemoved ? '-' : ''}
                               </span>
-                              <span className="min-w-0 whitespace-pre-wrap break-words text-[#D6D3CC]">{line.content || ' '}</span>
+                              <span
+                                className="eterx-review-diff-content min-w-0 whitespace-pre-wrap break-words text-[#D6D3CC]"
+                                dangerouslySetInnerHTML={{ __html: highlightReviewSyntax(line.content || ' ') }}
+                              />
                             </div>
                           );
                         })
@@ -892,7 +938,10 @@ function CodePanel({
           visibleLines.map((line, index) => (
             <div key={`${index}-${line.slice(0, 20)}`} className="grid grid-cols-[48px_minmax(0,1fr)] gap-4">
               <span className="select-none text-right text-[#6F7890]">{startLine + index}</span>
-              <span className="min-w-0 whitespace-pre-wrap break-words text-[#D6D3CC]">{line || ' '}</span>
+              <span
+                className="eterx-review-code-content min-w-0 whitespace-pre-wrap break-words text-[#D6D3CC]"
+                dangerouslySetInnerHTML={{ __html: highlightReviewSyntax(line || ' ') }}
+              />
             </div>
           ))
         ) : isLoading ? (

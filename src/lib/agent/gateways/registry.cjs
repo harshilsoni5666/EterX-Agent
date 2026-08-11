@@ -10,7 +10,7 @@ const { normalizeGatewayPayload } = require('./normalizers.cjs');
 class GatewayAdapterRegistry {
   constructor() {
     this.adapters = new Map();
-    for (const id of ['telegram', 'whatsapp', 'discord', 'signal', 'generic']) {
+    for (const id of ['telegram', 'whatsapp', 'messenger', 'email', 'discord', 'signal', 'generic']) {
       this.register({ id, normalize: (payload) => normalizeGatewayPayload(id, payload) });
     }
   }

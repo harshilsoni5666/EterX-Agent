@@ -4,7 +4,7 @@ EterX owns messaging connections in the Electron main process instead of a visib
 
 ## Architecture
 
-1. A platform adapter receives a webhook, Telegram polling update, Discord Gateway dispatch, or compatible `signal-cli` bridge event.
+1. A platform adapter receives a webhook, Telegram polling update, Discord Gateway dispatch, compatible `signal-cli` bridge event, or an IMAP email.
 2. The adapter produces a `GatewayAgentInput` with stable platform, conversation, actor, message, attachment, and reply-target fields.
 3. The authorization layer applies open, allowlist, or pairing policy before a message enters the agent. Pairing is the secure default for built-in messaging transports.
 4. The durable store rejects duplicate platform event IDs, appends accepted events to JSONL, and assigns a monotonic cursor.
@@ -27,12 +27,14 @@ Available tools:
 - `channels_list`
 - `permissions_list_open` and `permissions_respond`
 
-The EterX agent also registers a native `gateway_bridge` tool that calls the same control plane. This gives agent workflows one consistent interface whether a conversation came from Telegram, WhatsApp, Discord, Signal, or a custom webhook.
+The EterX agent also registers a native `gateway_bridge` tool that calls the same control plane. This gives agent workflows one consistent interface whether a conversation came from Telegram, Messenger, WhatsApp, Discord, Signal, email, or a custom webhook.
 
 ## Platform notes
 
 - **Telegram:** polling is suitable for an always-on desktop and avoids requiring a public URL. Webhook normalization is also supported. Telegram update IDs provide deduplication.
 - **WhatsApp Cloud:** expose `/webhooks/whatsapp` through a TLS reverse proxy or tunnel. Configure the callback verification token, Meta app secret, access token, and phone-number ID. POST bodies are verified using `X-Hub-Signature-256`.
+- **Messenger:** expose `/webhooks/messenger` through a TLS reverse proxy or tunnel. Configure the Page access token, Page ID, verify token, and Meta app secret. Webhook bodies are verified using `X-Hub-Signature-256`; outbound replies use the Page Graph API.
+- **Email:** use a dedicated mailbox with an app password. The adapter polls IMAP for new messages, ignores self/automated mail, caches safe attachments locally, applies allowlist or pairing policy, and replies through SMTP with `In-Reply-To` and `References` headers. Existing unread mail is marked seen at first startup so enabling the channel does not trigger a historical reply storm.
 - **Discord:** the daemon implements Gateway v10 Hello, jittered heartbeat, sequence tracking, reconnect, and session resume. Enable the Message Content privileged intent when the bot requires guild message bodies. Interaction webhooks verify Ed25519 signatures when a public key is configured.
 - **Signal:** Signal has no official bot API. This integration targets an optional loopback bridge that exposes `signal-cli` JSON-RPC and an SSE event stream. Keep `signal-cli` current and do not expose the bridge publicly.
 - **Custom:** POST normalized or near-normalized JSON to `/webhooks/generic` with either `Authorization: Bearer <secret>` or an HMAC SHA-256 digest in `X-EterX-Signature`.
@@ -47,7 +49,6 @@ The listener defaults to `127.0.0.1:47821`. Loopback is the safe default. Public
 
 ## Main files
 
-- `src/lib/agent/gateways/types.ts` - normalized contracts
 - `src/lib/agent/gateways/registry.cjs` - pluggable adapter registry
 - `src/lib/agent/gateways/normalizers.cjs` - built-in platform normalizers
 - `src/lib/agent/gateways/session.cjs` - deterministic session keys and serialized lanes

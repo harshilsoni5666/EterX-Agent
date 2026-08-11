@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Camera, CameraOff, Monitor, X } from 'lucide-react';
 import { PremiumMic, PremiumMicOff, PremiumVolume2, PremiumVolumeX } from '../ui/premium-icons';
 import AbstractBall from '../ui/AbstractBall';
+import { useLiveOrbTheme } from '../ui/live-orb-theme';
 
 export interface FloatingLiveWidgetProps {
   liveState: string;
@@ -44,8 +45,11 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   const [mounted, setMounted] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [nativeOverlayFailed, setNativeOverlayFailed] = useState(false);
+  const isLiveActive = liveState !== 'idle' && liveState !== 'error';
+  const orbTheme = useLiveOrbTheme(isLiveActive);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const nativeReopenTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const nativeVolumeFrameRef = useRef<number | null>(null);
   const liveStateRef = useRef(liveState);
   const nativeStatusRef = useRef<Record<string, unknown> | null>(null);
   liveStateRef.current = liveState;
@@ -57,6 +61,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
     return () => {
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
       if (nativeReopenTimeoutRef.current) clearTimeout(nativeReopenTimeoutRef.current);
+      if (nativeVolumeFrameRef.current !== null) cancelAnimationFrame(nativeVolumeFrameRef.current);
     };
   }, []);
 
@@ -87,6 +92,8 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
           isSpeakerMuted,
           isCameraEnabled,
           isScreenSharing,
+          micVolume: liveMicVolume,
+          modelVolume: liveModelVolume,
         };
         nativeStatusRef.current = nativeStatus;
         Promise.resolve((window as any).electronAPI.openPetWindow(nativeStatus))
@@ -98,6 +105,27 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
       }
     }
   }, [liveState, liveActiveTool, liveActivityLabel, isElectron, isMicMuted, isSpeakerMuted, isCameraEnabled, isScreenSharing]);
+
+  useEffect(() => {
+    if (!isElectron || !isLiveActive || !(window as any).electronAPI?.updatePetWindow) return;
+    if (nativeVolumeFrameRef.current !== null) return;
+    nativeVolumeFrameRef.current = requestAnimationFrame(() => {
+      nativeVolumeFrameRef.current = null;
+      const baseStatus = nativeStatusRef.current;
+      if (!baseStatus || !isLiveActive) return;
+      const nextStatus = {
+        ...baseStatus,
+        micVolume: Number.isFinite(liveMicVolume)
+          ? Math.min(100, Math.max(0, liveMicVolume))
+          : 0,
+        modelVolume: Array.isArray(liveModelVolume)
+          ? liveModelVolume.slice(0, 8).map(value => Math.min(100, Math.max(0, Number(value) || 0)))
+          : Math.min(100, Math.max(0, Number(liveModelVolume) || 0)),
+      };
+      nativeStatusRef.current = nextStatus;
+      (window as any).electronAPI.updatePetWindow(nextStatus);
+    });
+  }, [isElectron, isLiveActive, liveMicVolume, liveModelVolume]);
 
   useEffect(() => {
     if (!isElectron) return;
@@ -166,7 +194,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   let currentVol = 0;
   if (isSpeaking) {
     const avgVol = Array.isArray(liveModelVolume)
-      ? liveModelVolume.reduce((a, b) => a + b, 0) / 4
+      ? liveModelVolume.reduce((a, b) => a + (Number(b) || 0), 0) / Math.max(1, liveModelVolume.length)
       : Number(liveModelVolume);
     currentVol = avgVol;
     volumeScale = 1 + (avgVol / 100) * 0.12;
@@ -269,6 +297,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
             style={{ width: '100%', height: '100%', borderRadius: '50%', clipPath: 'circle(50% at 50% 50%)', WebkitClipPath: 'circle(50% at 50% 50%)', pointerEvents: 'none', border: 'none', boxShadow: 'none', outline: 'none' }}
             liveState={liveState as any}
             audioVolume={currentVol}
+            orbTheme={orbTheme}
           />
 
           {/* PLAIN GRAY SHIMMER TEXT — Smooth Continuous 1-Pass Linear Shimmer */}
@@ -280,7 +309,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
                   fontWeight: 600,
                   maxWidth: 104,
                   overflowWrap: 'break-word',
-                  backgroundImage: 'linear-gradient(90deg, #09090b 0%, #e4e4e7 50%, #09090b 100%)',
+                  backgroundImage: `linear-gradient(90deg, ${orbTheme.statusStart} 0%, ${orbTheme.statusMid} 50%, ${orbTheme.statusEnd} 100%)`,
                   backgroundSize: '200% 100%',
                   animation: 'eterx-shimmer-anim 3.5s linear infinite',
                   filter: 'none'
@@ -296,7 +325,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
             className="absolute inset-0 rounded-full pointer-events-none z-30"
             style={{
               boxSizing: 'border-box',
-              border: '1px solid rgba(255, 255, 255, 0.62)',
+              border: `1px solid ${orbTheme.border}`,
               transform: 'translateZ(0)',
             }}
           />
@@ -347,6 +376,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
               className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"
               style={{ color: isSpeakerMuted ? '#ef4444' : '#374151', pointerEvents: 'auto' }}
               title={isSpeakerMuted ? "Unmute Audio" : "Mute Audio"}
+              aria-pressed={isSpeakerMuted}
             >
               {isSpeakerMuted
                 ? <PremiumVolumeX className="w-3.5 h-3.5 text-red-500 pointer-events-none" />
@@ -361,7 +391,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
                 onToggleScreenShare();
               }}
               className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"
-              style={{ color: isScreenSharing ? '#1688EE' : '#374151', pointerEvents: 'auto' }}
+              style={{ color: isScreenSharing ? orbTheme.primary : '#374151', pointerEvents: 'auto' }}
               title={isScreenSharing ? 'Stop sharing screen' : 'Share screen with Live'}
               aria-pressed={isScreenSharing}
             >
@@ -376,7 +406,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
                 onToggleCamera();
               }}
               className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"
-              style={{ color: isCameraEnabled ? '#1688EE' : '#374151', pointerEvents: 'auto' }}
+              style={{ color: isCameraEnabled ? orbTheme.primary : '#374151', pointerEvents: 'auto' }}
               title={isCameraEnabled ? 'Stop Camera' : 'Start Camera'}
               aria-pressed={isCameraEnabled}
             >
@@ -395,6 +425,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
               className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"
               style={{ color: isMicMuted ? '#ef4444' : '#374151', pointerEvents: 'auto' }}
               title={isMicMuted ? "Unmute Microphone" : "Mute Microphone"}
+              aria-pressed={isMicMuted}
             >
               {isMicMuted
                 ? <PremiumMicOff className="w-3.5 h-3.5 text-red-500 pointer-events-none" />
@@ -410,8 +441,8 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
               }}
               className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:brightness-105 pointer-events-auto cursor-pointer"
               style={{
-                background: 'linear-gradient(145deg, #39A9FF, #1688EE)',
-                color: '#ffffff',
+                background: orbTheme.controlGradient,
+                color: orbTheme.controlText,
                 boxShadow: 'none',
                 pointerEvents: 'auto',
               }}

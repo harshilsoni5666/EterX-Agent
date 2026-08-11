@@ -19,6 +19,7 @@ import { videoGenTool } from './core/videogen';
 import { imageAssetSearchTool } from './core/image_asset_search';
 import { taskDecomposerTool } from './core/task_decomposer';
 import { memoryV2Tool } from './core/memory_v2';
+import { experienceSignalTool } from './core/experience_signal';
 import { contextManagerTool } from './core/context_manager';
 import { realTimeVerifierTool } from './core/realtime_verify';
 import { spawnSubAgentTool } from './core/spawn_sub_agent';
@@ -61,7 +62,6 @@ import { workspaceSemanticSearchTool } from './workspace/semantic_search';
 import { workspaceFileOutlineTool } from './workspace/coding_intel';
 import { csvAnalyzerTool } from './workspace/data';
 import { docxGeneratorTool } from './workspace/docx';
-import { officeArtifactBuilderTool } from './workspace/office_artifacts';
 import { compressionTool } from './workspace/compression';
 
 // Content research.
@@ -75,6 +75,7 @@ import { rssFeedTool } from './research/rss';
 import { processManagerTool } from './automation/process_manager';
 import { slackControllerTool } from './communication/slack';
 import { gatewayBridgeTool } from './communication/gateway_bridge';
+import { channelAgentTool } from './communication/channel_agent';
 import { connectorMcpTool } from './communication/connector_mcp';
 import { agentBuilderTools } from './automation/agent_builder';
 import { isExecutableAvailable } from './core/shell_resolver';
@@ -140,6 +141,7 @@ const BUILTIN_TOOLS = [
   imageAssetSearchTool,
   taskDecomposerTool,
   memoryV2Tool,
+  experienceSignalTool,
   contextManagerTool,
   realTimeVerifierTool,
   spawnSubAgentTool,
@@ -170,7 +172,6 @@ const BUILTIN_TOOLS = [
   workspaceFileOutlineTool,
   csvAnalyzerTool,
   docxGeneratorTool,
-  officeArtifactBuilderTool,
   compressionTool,
 
   webScraperTool,
@@ -181,6 +182,7 @@ const BUILTIN_TOOLS = [
 
   processManagerTool,
   slackControllerTool,
+  channelAgentTool,
   gatewayBridgeTool,
   connectorMcpTool,
 

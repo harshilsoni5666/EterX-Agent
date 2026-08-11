@@ -1,5 +1,5 @@
 /**
- * Gemini Live API — Real-time WebSocket Client
+ * Agent Live — Gemini native real-time WebSocket adapter
  * 
  * Handles bidirectional audio streaming with Gemini 3.1 Flash Live Preview.
  * 
@@ -108,6 +108,25 @@ export interface LiveSessionCallbacks {
   onScreenShareStateChange?: (enabled: boolean) => void;
 }
 
+/** Common surface used by the Live UI across provider-specific transports. */
+export interface LiveSession {
+  connect(): Promise<void>;
+  disconnect(): void;
+  setMicMuted(muted: boolean): void;
+  isMicMuted(): boolean;
+  setSpeakerMuted(muted: boolean): void;
+  isSpeakerMuted(): boolean;
+  announceSystemEvent(event: LiveSystemEvent): boolean;
+  sendText(text: string, options?: { internal?: boolean }): boolean;
+  isCameraEnabled(): boolean;
+  startCamera(facingMode?: 'user' | 'environment'): Promise<{ success: boolean; message: string }>;
+  stopCamera(): void;
+  isScreenShareEnabled(): boolean;
+  startScreenShare(): Promise<{ success: boolean; message: string }>;
+  stopScreenShare(): void;
+  getState(): LiveSessionState;
+}
+
 export interface LiveSessionOptions {
   /** Gemini 3.1 Live native reasoning depth. */
   thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
@@ -116,6 +135,10 @@ export interface LiveSessionOptions {
   /** Legacy Gemini 2.5 Live token budget. */
   thinkingBudget?: number;
   includeThoughts?: boolean;
+  /** Native provider id used by the provider adapter factory. */
+  provider?: string;
+  /** Provider-specific setup value, such as an ElevenLabs agent id. */
+  agentId?: string;
   model?: string;
   voice?: string;
   audioInputEnabled?: boolean;
@@ -139,12 +162,63 @@ const getVisibleLiveHistoryText = (value: unknown): string => {
   return match ? String(match[1] || '').trim() : text;
 };
 
-export class GeminiLiveSession {
+const LEAKED_THOUGHT_MARKER_PATTERN = /(?:^|\n)\s*(?:native\s+thought\s+summary|thought\s+summary|chain\s+of\s+thought|hidden\s+thoughts?|internal\s+reasoning|analysis|reasoning)\s*:\s*/i;
+
+/**
+ * Keep provider thought metadata out of the user-facing Live answer.
+ *
+ * Gemini normally marks thought parts with `thought: true`, but a few Live
+ * responses have surfaced the summary as ordinary text. If a real answer was
+ * already emitted, keep that answer and discard the leaked suffix. If the
+ * marker starts the turn, only keep a sentence that looks like an actual
+ * response; otherwise render nothing instead of exposing internal reasoning.
+ */
+const sanitizeLiveAnswerText = (value: unknown): string => {
+  const text = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return '';
+
+  const marker = text.match(LEAKED_THOUGHT_MARKER_PATTERN);
+  if (!marker || marker.index === undefined) return text;
+
+  const visiblePrefix = text.slice(0, marker.index).trim();
+  if (visiblePrefix) return visiblePrefix;
+
+  const leakedRemainder = text.slice(marker.index + marker[0].length).trim();
+  if (!leakedRemainder) return '';
+
+  const answer = leakedRemainder.match(
+    /(?:^|[.!?]\s+)((?:I'm|I’m|I can|I cannot|I can't|Here(?:'s| is)|Would you|Let me know|Sure\b|The (?:answer|result|status) is|No problem|Got it|Okay|Alright)\b[\s\S]*)$/i,
+  );
+  return answer?.[1]?.trim() || '';
+};
+
+/** Merge incremental Live transcript chunks without echoing cumulative text. */
+const appendTranscriptChunk = (currentValue: string, nextValue: string): string => {
+  const current = String(currentValue || '');
+  const next = String(nextValue || '');
+  if (!current) return next;
+  if (!next) return current;
+  if (next === current || current.endsWith(next)) return current;
+  if (next.startsWith(current)) return next;
+  if (current.startsWith(next)) return current;
+  if (next.length >= 8 && current.includes(next)) return current;
+
+  const maxOverlap = Math.min(current.length, next.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    if (current.slice(-overlap) === next.slice(0, overlap)) {
+      return `${ current }${ next.slice(overlap) }`;
+    }
+  }
+  return `${ current }${ next }`;
+};
+
+export class AgentLiveSession implements LiveSession {
   private ws: WebSocket | null = null;
   private captureContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
   private scriptProcessor: ScriptProcessorNode | null = null;
   private sourceNode: MediaStreamAudioSourceNode | null = null;
+  private captureSink: GainNode | null = null;
   private playbackContext: AudioContext | null = null;
   private nextPlayTime = 0;
   private state: LiveSessionState = 'idle';
@@ -170,6 +244,7 @@ export class GeminiLiveSession {
   private lastThoughtActivityEmitAt = 0;
   private toolActivityStarts = new Map<string, number>();
   private cancelledToolCallIds = new Set<string>();
+  private toolAbortControllers = new Map<string, AbortController>();
   private systemEventQueue: LiveSystemEvent[] = [];
   private queuedSystemEventIds = new Set<string>();
   private deliveredSystemEventIds = new Set<string>();
@@ -186,12 +261,14 @@ export class GeminiLiveSession {
   private cameraFrameTimer: ReturnType<typeof setInterval> | null = null;
   private cameraEnabled = false;
   private cameraFacingMode: 'user' | 'environment' = 'user';
+  private cameraRequestId = 0;
   private resumeCameraAfterReconnect = false;
   private screenStream: MediaStream | null = null;
   private screenVideo: HTMLVideoElement | null = null;
   private screenCanvas: HTMLCanvasElement | null = null;
   private screenFrameTimer: ReturnType<typeof setInterval> | null = null;
   private screenShareEnabled = false;
+  private screenRequestId = 0;
   private visualWatch: LiveVisualWatch | null = null;
   private interactionPolicy: LiveInteractionPolicy = {
     notificationLevel: 'important',
@@ -203,10 +280,26 @@ export class GeminiLiveSession {
   private resumptionHandle: string | null = null;
   private resumeRequested = false;
   private manualDisconnect = false;
+  private connectPromise: Promise<void> | null = null;
+  private connectionWaiter: {
+    socket: WebSocket;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
+  private pendingTextTurns: Array<{ text: string; internal: boolean }> = [];
+  private pendingTurnCompletion: {
+    userText: string;
+    modelText: string;
+    metadata?: LiveTurnMetadata;
+  } | null = null;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   // AGI: Audio timing for true karaoke sync
   private turnAudioStartTime: number | null = null;
   private turnAudioDuration: number = 0;
+  private playbackCharCount = 0;
 
   private chatId: string;
 
@@ -273,13 +366,77 @@ export class GeminiLiveSession {
   }
 
   setMicMuted(muted: boolean) {
+    const changed = this.micMuted !== muted;
     this.micMuted = muted;
+    this.bargeInCandidateFrames = 0;
     this.mediaStream?.getAudioTracks().forEach(track => {
       track.enabled = !muted;
     });
+    // Gemini's Live protocol has an explicit end-of-audio marker. Sending it
+    // keeps server-side activity detection from treating a muted stream as an
+    // indefinitely open turn; the next audio chunk reopens the stream.
+    if (changed && muted && this.ws?.readyState === WebSocket.OPEN) {
+      this.sendAudioStreamEnd();
+    }
     if (muted && this.callbacks.onMicVolume) {
       this.callbacks.onMicVolume(0);
     }
+  }
+
+  isMicMuted(): boolean {
+    return this.micMuted;
+  }
+
+  private sendAudioStreamEnd(): void {
+    this.sendSocketPayload({ realtimeInput: { audioStreamEnd: true } });
+  }
+
+  private sendSocketPayload(payload: Record<string, unknown>, socket = this.ws): boolean {
+    if (!socket || socket !== this.ws || socket.readyState !== WebSocket.OPEN || this.manualDisconnect) {
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify(payload));
+      return true;
+    } catch {
+      // The transport can close between readyState and send. Its close handler
+      // owns recovery; callers receive false so they do not report fake work.
+      return false;
+    }
+  }
+
+  private createConnectionWaiter(socket: WebSocket): Promise<void> {
+    if (this.connectionWaiter) {
+      clearTimeout(this.connectionWaiter.timer);
+      this.connectionWaiter.reject(new Error('Live connection attempt was superseded.'));
+      this.connectionWaiter = null;
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.connectionWaiter?.socket !== socket) return;
+        this.connectionWaiter = null;
+        reject(new Error('Gemini Live did not become ready within 20 seconds.'));
+      }, 20_000);
+      this.connectionWaiter = { socket, resolve, reject, timer };
+    });
+  }
+
+  private resolveConnectionReady(socket: WebSocket): boolean {
+    const waiter = this.connectionWaiter;
+    if (!waiter || waiter.socket !== socket) return false;
+    clearTimeout(waiter.timer);
+    this.connectionWaiter = null;
+    waiter.resolve();
+    return true;
+  }
+
+  private rejectConnectionReady(socket: WebSocket, error: Error): boolean {
+    const waiter = this.connectionWaiter;
+    if (!waiter || waiter.socket !== socket) return false;
+    clearTimeout(waiter.timer);
+    this.connectionWaiter = null;
+    waiter.reject(error);
+    return true;
   }
 
   private emitActivity(activity: LiveAgentActivity): void {
@@ -375,6 +532,27 @@ export class GeminiLiveSession {
     this.thinkingActivityStartedAt = null;
     this.nativeThoughtSummary = '';
     this.lastThoughtActivityEmitAt = 0;
+  }
+
+  private finalizeCompletedTurn(): void {
+    const completion = this.pendingTurnCompletion;
+    if (!completion || this.activeSources.length > 0) return;
+    this.pendingTurnCompletion = null;
+    this.callbacks.onTurnComplete(completion.userText, completion.modelText, completion.metadata);
+    const wasInternal = this.internalTextTurn;
+    this.internalTextTurn = false;
+    this.finishThinking();
+    if (!wasInternal) this.checkVoiceEndRequest(completion.userText);
+    this.turnInputTranscript = '';
+    this.turnOutputTranscript = '';
+    this.playbackCharCount = 0;
+    this.activeObjective = null;
+    this.setState('listening');
+    this.resetSilenceTimer();
+    queueMicrotask(() => {
+      if (this.pendingTextTurns.length > 0) this.flushPendingTextTurns();
+      else this.drainSystemEventQueue();
+    });
   }
 
   private summarizeToolResult(toolName: string, value: unknown, failed = false): string {
@@ -482,7 +660,7 @@ export class GeminiLiveSession {
   private isSafeToRetryTool(toolName: string, args: Record<string, any>, response: any): boolean {
     const error = String(response?.response?.error || '').toLowerCase();
     if (!error) return false;
-    if (/(permission|approval|forbidden|unauthori[sz]ed|invalid|unsupported|not found|missing|required|cancel|captcha|mfa)/i.test(error)) {
+    if (/(permission|approval|forbidden|unauthori[sz]ed|invalid|unsupported|not found|missing|required|cancel|abort|captcha|mfa)/i.test(error)) {
       return false;
     }
 
@@ -518,11 +696,28 @@ export class GeminiLiveSession {
   }
 
   setSpeakerMuted(muted: boolean) {
+    const changed = this.speakerMuted !== muted;
     this.speakerMuted = muted;
     if (this.playbackGain) {
       this.playbackGain.gain.value = muted ? 0 : 1;
     }
-    if (!muted) queueMicrotask(() => this.drainSystemEventQueue());
+    if (changed && muted) {
+      // Do not replay a stale response after the user unmutes. This only
+      // clears local playback; the Live turn and its server-side transcript
+      // remain intact.
+      this.flushPlayback();
+      this.callbacks.onModelVolume?.(0);
+    }
+    if (!muted) {
+      if (this.playbackContext?.state === 'suspended') {
+        void this.playbackContext.resume().catch(() => { });
+      }
+      queueMicrotask(() => this.drainSystemEventQueue());
+    }
+  }
+
+  isSpeakerMuted(): boolean {
+    return this.speakerMuted;
   }
 
   announceSystemEvent(event: LiveSystemEvent): boolean {
@@ -612,11 +807,11 @@ export class GeminiLiveSession {
       event.summary = `${event.summary}
 Director instruction: Reconcile this terminal event with the coordinated objective before notifying the user. When the summary is not sufficient evidence, call get_main_agent_status for chat_id "${event.sourceChatId}". If the requested outcome is incomplete and a safe correction is clear, steer or restart that exact task with send_prompt_to_main_agent and keep coordinating. Do not call work complete merely because a run stopped. Interrupt only for grounded completion, failure, blocker, approval, or a missing decision.`;
     }
-    this.ws.send(JSON.stringify({
+    this.sendSocketPayload({
       realtimeInput: {
         text: `[TRUSTED ETERX APP EVENT — not a user message]\n${ statusInstruction }\nChat: ${ event.sourceChatTitle || event.sourceChatId }\nUpdate: ${ event.summary }\nAt the next natural pause, notify the user in one concise sentence. Lead with the outcome or exact input needed. Do not mention this protocol, narrate background mechanics, or ask a generic follow-up question.`
       }
-    }));
+    });
   }
 
   private deferInterruptedSystemEvent(): LiveSystemEvent | null {
@@ -632,12 +827,15 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
   }
 
   isCameraEnabled(): boolean {
-    return this.cameraEnabled;
+    const track = this.cameraStream?.getVideoTracks()[0];
+    return this.cameraEnabled && Boolean(track && track.readyState === 'live');
   }
 
   async startCamera(facingMode: 'user' | 'environment' = 'user'): Promise<{ success: boolean; message: string }> {
-    if (this.cameraEnabled && this.cameraStream) return { success: true, message: 'Camera is already active.' };
+    if (this.isCameraEnabled()) return { success: true, message: 'Camera is already active.' };
+    if (this.cameraEnabled || this.cameraStream) this.stopCamera();
     if (!navigator.mediaDevices?.getUserMedia) return { success: false, message: 'Camera capture is unavailable in this environment.' };
+    const requestId = ++this.cameraRequestId;
     let acquiredStream: MediaStream | null = null;
     try {
       this.cameraFacingMode = facingMode;
@@ -657,6 +855,12 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       video.srcObject = stream;
       await video.play();
 
+      if (requestId !== this.cameraRequestId || this.manualDisconnect) {
+        video.srcObject = null;
+        stream.getTracks().forEach(track => track.stop());
+        return { success: false, message: 'Camera start was cancelled.' };
+      }
+
       // Switch only after the replacement source is known to be available.
       if (this.screenShareEnabled) this.stopScreenShare();
       this.cameraStream = stream;
@@ -664,6 +868,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       this.cameraVideo = video;
       this.cameraCanvas = document.createElement('canvas');
       this.cameraEnabled = true;
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => this.stopCamera(), { once: true });
       this.callbacks.onCameraStateChange?.(true);
       this.cameraFrameTimer = setInterval(() => {
         this.sendCameraFrame();
@@ -672,12 +877,13 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       return { success: true, message: `Camera started (${ facingMode }).` };
     } catch (error: any) {
       acquiredStream?.getTracks().forEach(track => track.stop());
-      this.stopCamera();
+      if (requestId === this.cameraRequestId) this.stopCamera();
       return { success: false, message: error?.message || 'Camera permission was denied or the camera is unavailable.' };
     }
   }
 
   stopCamera(): void {
+    this.cameraRequestId += 1;
     if (this.visualWatch?.source === 'camera') {
       this.stopVisualWatch('Camera source ended');
     }
@@ -714,16 +920,19 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
   }
 
   isScreenShareEnabled(): boolean {
-    return this.screenShareEnabled;
+    const track = this.screenStream?.getVideoTracks()[0];
+    return this.screenShareEnabled && Boolean(track && track.readyState === 'live');
   }
 
   async startScreenShare(): Promise<{ success: boolean; message: string }> {
-    if (this.screenShareEnabled && this.screenStream) {
+    if (this.isScreenShareEnabled()) {
       return { success: true, message: 'Screen sharing is already active.' };
     }
+    if (this.screenShareEnabled || this.screenStream) this.stopScreenShare();
     if (!navigator.mediaDevices?.getDisplayMedia) {
       return { success: false, message: 'Screen sharing is unavailable in this environment.' };
     }
+    const requestId = ++this.screenRequestId;
     let acquiredStream: MediaStream | null = null;
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -747,6 +956,12 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       video.srcObject = stream;
       await video.play();
 
+      if (requestId !== this.screenRequestId || this.manualDisconnect) {
+        video.srcObject = null;
+        stream.getTracks().forEach(track => track.stop());
+        return { success: false, message: 'Screen sharing start was cancelled.' };
+      }
+
       // Switch only after the replacement source is known to be available.
       if (this.cameraEnabled) this.stopCamera();
       this.screenStream = stream;
@@ -764,7 +979,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       return { success: true, message: `Screen sharing started${ label }.` };
     } catch (error: any) {
       acquiredStream?.getTracks().forEach(track => track.stop());
-      this.stopScreenShare();
+      if (requestId === this.screenRequestId) this.stopScreenShare();
       const denied = error?.name === 'NotAllowedError';
       return {
         success: false,
@@ -776,6 +991,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
   }
 
   stopScreenShare(): void {
+    this.screenRequestId += 1;
     if (this.visualWatch?.source === 'screen') {
       this.stopVisualWatch('Screen source ended');
     }
@@ -812,13 +1028,12 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
   }
 
   private sendVisualFrame(data: string, mimeType: 'image/jpeg' | 'image/png'): boolean {
-    if (!data || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
-    this.ws.send(JSON.stringify({
+    if (!data) return false;
+    return this.sendSocketPayload({
       realtimeInput: {
         video: { data, mimeType }
       }
-    }));
-    return true;
+    });
   }
 
   private captureVisualSignature(source: 'screen' | 'camera'): number[] | null {
@@ -923,11 +1138,11 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       if (source === 'screen') this.sendScreenFrame();
       else this.sendCameraFrame();
       if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({
+        this.sendSocketPayload({
           realtimeInput: {
             text: `[TRUSTED VISUAL WATCH EVENT — not a user message]\nThe authorized ${source} changed materially.\nWatch goal: ${watch.goal}\nInspect the freshest frame against this goal. Stay silent if the change is irrelevant. If the condition is met, blocked, risky, or needs an action, respond naturally and use the appropriate tool. Never claim a visual fact you cannot verify in the current frame.`
           }
-        }));
+        });
       }
     }, 2000);
 
@@ -962,6 +1177,18 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
    * Connect to the Gemini Live API and start the audio session.
    */
   async connect(): Promise<void> {
+    if (this.connectPromise) return this.connectPromise;
+    if (this.state !== 'idle' && this.state !== 'connecting') return;
+    const operation = this.openConnection();
+    this.connectPromise = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.connectPromise === operation) this.connectPromise = null;
+    }
+  }
+
+  private async openConnection(): Promise<void> {
     // Resumable reconnects deliberately keep the public state at connecting
     // so the orb remains mounted. Accept that internal reconnect state here.
     if (this.state !== 'idle' && this.state !== 'connecting') return;
@@ -980,10 +1207,12 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       const url = `${ LIVE_WS_URL }?key=${ this.apiKey }`;
       const socket = new WebSocket(url);
       this.ws = socket;
+      const readyPromise = this.createConnectionWaiter(socket);
 
       socket.onopen = () => {
         if (this.ws !== socket) return;
         console.log('[GeminiLive] WebSocket opened, sending setup/config...');
+        try {
 
         const systemText = this.buildSystemInstructionText();
 
@@ -1516,18 +1745,30 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
           }
         };
 
-        this.ws!.send(JSON.stringify(setupMessage));
+        if (!this.sendSocketPayload(setupMessage, socket)) {
+          this.rejectConnectionReady(socket, new Error('Gemini Live setup could not be sent.'));
+        }
+        } catch (error: any) {
+          this.rejectConnectionReady(
+            socket,
+            new Error(error?.message || 'Gemini Live setup could not be created.'),
+          );
+          try { socket.close(); } catch { }
+        }
       };
 
       socket.onmessage = (event) => {
         if (this.ws !== socket) return;
-        this.handleMessage(event);
+        void this.handleMessage(event, socket);
       };
 
       socket.onerror = () => {
         if (this.ws !== socket) return;
         console.error('[GeminiLive] WebSocket error');
         if (!this.manualDisconnect && this.resumptionHandle) return;
+        if (this.rejectConnectionReady(socket, new Error('WebSocket connection error. Check your API key and network.'))) {
+          return;
+        }
         this.callbacks.onError('WebSocket connection error. Check your API key and network.');
         this.cleanup();
         this.setState('error');
@@ -1537,18 +1778,36 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         if (this.ws !== socket) return;
         console.log('[GeminiLive] WebSocket closed:', event.code, event.reason);
         if (!this.manualDisconnect && this.resumptionHandle && (this.resumeRequested || event.code !== 1000)) {
+          // A failed resumption attempt is an internal retry, not a user-visible
+          // session failure. Resolve its local waiter so the next attempt can
+          // acquire the single-flight connection slot.
+          this.resolveConnectionReady(socket);
           this.resumeRequested = false;
+          this.reconnectAttempts += 1;
+          const reconnectDelay = Math.min(5_000, 350 * (2 ** Math.min(4, this.reconnectAttempts - 1)));
+          if (this.reconnectAttempts >= 3) {
+            // A stale resumption handle can make every retry fail. Fall back to
+            // one clean Live setup while retaining the local conversation and
+            // authorized visual streams.
+            this.resumptionHandle = null;
+          }
           this.resumeCameraAfterReconnect = this.cameraEnabled;
           // Keep the user-authorized camera/screen stream alive while the Live
           // WebSocket resumes. Re-requesting display capture would open another
           // picker and make visual context appear to be forgotten.
           this.cleanup(true);
           this.setState('connecting');
-          setTimeout(() => {
-            void this.connect();
-          }, 350);
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            void this.connect().catch(() => { });
+          }, reconnectDelay);
           return;
         }
+        const closedBeforeReady = this.rejectConnectionReady(
+          socket,
+          new Error(`Gemini Live closed before it became ready (${event.code}${event.reason ? `: ${event.reason}` : ''}).`),
+        );
+        if (closedBeforeReady) return;
         if (event.code !== 1000 && event.code !== 1005) {
           if (this.state !== 'error') {
             this.callbacks.onError(`API Disconnected (${ event.code }): ${ event.reason || 'Check console.' }`);
@@ -1563,18 +1822,21 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         }
       };
 
+      await readyPromise;
+
     } catch (error: any) {
       console.error('[GeminiLive] Connection error:', error);
       this.callbacks.onError(error.message || 'Failed to connect');
       this.cleanup();
       this.setState('error');
+      throw error instanceof Error ? error : new Error(error?.message || 'Failed to connect');
     }
   }
 
   /**
    * Handle incoming WebSocket messages from Gemini Live API.
    */
-  private async handleMessage(event: MessageEvent) {
+  private async handleMessage(event: MessageEvent, sourceSocket: WebSocket | null = this.ws) {
     try {
       let data: any;
       if (typeof event.data === 'string') {
@@ -1585,6 +1847,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       } else {
         return;
       }
+      if (!sourceSocket || this.ws !== sourceSocket || this.manualDisconnect) return;
 
       // ═══ Setup Complete ═══
       if (data.setupComplete) {
@@ -1593,11 +1856,28 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         // finishes, so clear the connecting UI immediately.
         this.setState('connected');
         if (this.options?.audioInputEnabled !== false) {
-          await this.startAudioCapture();
+          let audioStarted = false;
+          try {
+            audioStarted = await this.startAudioCapture(sourceSocket);
+          } catch (error: any) {
+            this.rejectConnectionReady(
+              sourceSocket,
+              new Error(error?.message || 'Microphone capture could not start.'),
+            );
+            return;
+          }
+          if (!audioStarted || this.state === 'error' || this.ws !== sourceSocket) {
+            this.rejectConnectionReady(sourceSocket, new Error('Live connected, but microphone capture could not start.'));
+            return;
+          }
+          if (this.micMuted) this.sendAudioStreamEnd();
         } else {
           this.callbacks.onMicVolume?.(0);
         }
         this.setState('listening');
+        this.reconnectAttempts = 0;
+        this.resolveConnectionReady(sourceSocket);
+        this.flushPendingTextTurns();
         this.playConnectionSound();
         this.resetSilenceTimer();
         if (this.resumeCameraAfterReconnect) {
@@ -1619,6 +1899,8 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         if (content.interrupted || content.modelTurn?.interrupted) {
           console.log('[GeminiLive] Gemini server confirmed interruption');
           this.isInterruptedThisTurn = true;
+          this.internalTextTurn = false;
+          this.pendingTurnCompletion = null;
           this.flushPlayback();
           this.turnInputTranscript = '';
           this.turnOutputTranscript = '';
@@ -1649,7 +1931,10 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
             if (part.thought === true) {
               const summaryChunk = typeof part.text === 'string' ? part.text : '';
               if (summaryChunk) {
-                this.nativeThoughtSummary = `${ this.nativeThoughtSummary }${ summaryChunk }`.slice(-1200);
+                this.nativeThoughtSummary = appendTranscriptChunk(
+                  this.nativeThoughtSummary,
+                  summaryChunk,
+                ).slice(-1200);
               }
               this.beginThinking(this.nativeThoughtSummary.trim() || 'Native model reasoning in progress');
               continue;
@@ -1658,16 +1943,17 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
               this.finishThinking();
               if (this.state !== 'speaking') {
                 this.setState('speaking');
-                this.turnAudioStartTime = null;
-                this.turnAudioDuration = 0;
+                 this.turnAudioStartTime = null;
+                 this.turnAudioDuration = 0;
+                 this.playbackCharCount = 0;
               }
               this.enqueueAudio(part.inlineData.data);
             }
             if (part.text) {
               this.finishThinking();
-              this.turnOutputTranscript += part.text;
-              this.outputTranscript += part.text;
-              this.callbacks.onOutputTranscription(this.turnOutputTranscript);
+              this.turnOutputTranscript = appendTranscriptChunk(this.turnOutputTranscript, part.text);
+              this.outputTranscript = appendTranscriptChunk(this.outputTranscript, part.text);
+              this.callbacks.onOutputTranscription(sanitizeLiveAnswerText(this.turnOutputTranscript));
             }
           }
         }
@@ -1675,9 +1961,15 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         // Output transcription (model's spoken words as text)
         if (content.outputTranscription?.text) {
           this.finishThinking();
-          this.turnOutputTranscript += content.outputTranscription.text;
-          this.outputTranscript += content.outputTranscription.text;
-          this.callbacks.onOutputTranscription(this.turnOutputTranscript);
+          this.turnOutputTranscript = appendTranscriptChunk(
+            this.turnOutputTranscript,
+            content.outputTranscription.text,
+          );
+          this.outputTranscript = appendTranscriptChunk(
+            this.outputTranscript,
+            content.outputTranscription.text,
+          );
+          this.callbacks.onOutputTranscription(sanitizeLiveAnswerText(this.turnOutputTranscript));
         }
 
         // Input transcription (user's spoken words as text)
@@ -1687,8 +1979,14 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
           // Internal control prompts must never become visible voice input or
           // a persisted user_action row.
           if (!this.internalTextTurn) {
-            this.turnInputTranscript += content.inputTranscription.text;
-            this.inputTranscript += content.inputTranscription.text;
+            this.turnInputTranscript = appendTranscriptChunk(
+              this.turnInputTranscript,
+              content.inputTranscription.text,
+            );
+            this.inputTranscript = appendTranscriptChunk(
+              this.inputTranscript,
+              content.inputTranscription.text,
+            );
             const objective = this.ensureObjective();
             objective.userText = this.turnInputTranscript.trim();
             this.callbacks.onInputTranscription(this.turnInputTranscript);
@@ -1700,28 +1998,20 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
           this.isInterruptedThisTurn = false;
           const completedSystemEvent = this.activeSystemEvent;
           this.activeSystemEvent = null;
-          this.callbacks.onTurnComplete(
-            this.turnInputTranscript,
-            this.turnOutputTranscript,
-            (completedSystemEvent || this.internalTextTurn)
+          this.pendingTurnCompletion = {
+            userText: this.turnInputTranscript,
+            modelText: sanitizeLiveAnswerText(this.turnOutputTranscript),
+            metadata: (completedSystemEvent || this.internalTextTurn)
               ? {
                 ...(completedSystemEvent ? { systemEvent: completedSystemEvent } : {}),
                 ...(this.internalTextTurn ? { internalEvent: true } : {}),
               }
               : undefined,
-          );
-          this.internalTextTurn = false;
+          };
           this.finishThinking();
-          // Check if user asked to end the call via voice
-          this.checkVoiceEndRequest(this.turnInputTranscript);
-          // Reset per-turn transcripts for next exchange
-          this.turnInputTranscript = '';
-          this.turnOutputTranscript = '';
-          this.activeObjective = null;
-          this.setState('listening');
+          if (this.activeSources.length === 0) this.finalizeCompletedTurn();
+          else this.setState('speaking');
           // Reset silence timer — conversation is active
-          this.resetSilenceTimer();
-          queueMicrotask(() => this.drainSystemEventQueue());
         }
       }
 
@@ -1733,10 +2023,18 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         this.playToolCallSound();
         if (this.callbacks.onToolCallActive) this.callbacks.onToolCallActive(data.toolCall.functionCalls?.[0]?.name || 'tool');
         if (data.toolCall.functionCalls) {
+          // Tool execution is asynchronous. Bind the whole response batch to
+          // the socket that delivered it so a reconnect cannot send an old
+          // tool result into a new Live session/run.
+          const toolSocket = this.ws;
           (async () => {
             try {
               const responses: any[] = [];
               for (const fc of data.toolCall.functionCalls) {
+                this.callbacks.onToolCallActive?.(fc.name || 'tool');
+                const toolCallId = String(fc.id || '');
+                const toolAbortController = new AbortController();
+                if (toolCallId) this.toolAbortControllers.set(toolCallId, toolAbortController);
                 const activityId = `live_tool_${ fc.id || Date.now() }`;
                 const actionVerb = this.compactActivityDetail(String(fc.args?.action_verb || 'Working'), 'Working').slice(0, 32);
                 const actionTarget = this.compactActivityDetail(
@@ -1756,6 +2054,13 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                   startedAt: activityStartedAt,
                 });
                 const executeToolCall = async () => (async () => {
+                if (toolCallId && this.cancelledToolCallIds.has(toolCallId)) {
+                  return {
+                    id: fc.id,
+                    name: fc.name,
+                    response: { error: 'Tool call cancelled before execution.' },
+                  };
+                }
                 // Handle end_call function
                 if (fc.name === 'end_call') {
                   console.log('[GeminiLive] AI initiated call end:', fc.args?.reason);
@@ -1943,6 +2248,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     const res = await fetch('/api/live/tool', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
+                      signal: toolAbortController.signal,
                       body: JSON.stringify({
                         chatId: this.chatId,
                         toolName,
@@ -1975,6 +2281,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     const res = await fetch('/api/search', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
+                      signal: toolAbortController.signal,
                       body: JSON.stringify({ query })
                     });
                     const json = await res.json().catch(() => ({}));
@@ -1998,7 +2305,13 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     const res = await fetch('/api/code/execute', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ command: cmd, terminalShell })
+                      signal: toolAbortController.signal,
+                      body: JSON.stringify({
+                        command: cmd,
+                        terminalShell,
+                        chatId: this.chatId,
+                        ownerTraceId: activityId,
+                      })
                     });
                     const json = await res.json().catch(() => ({}));
                     if (!res.ok || json?.success === false) {
@@ -2031,7 +2344,9 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     const verb = fc.args?.action_verb || 'Reading';
                     const target = fc.args?.action_target || filePath.split(/[/\\]/).pop() || 'file';
                     if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
-                    const res = await fetch(`/api/code/files?filePath=${encodeURIComponent(filePath)}`);
+                    const res = await fetch(`/api/code/files?filePath=${encodeURIComponent(filePath)}`, {
+                      signal: toolAbortController.signal,
+                    });
                     const json = await res.json().catch(() => ({}));
                     if (!res.ok || json?.success === false) {
                       throw new Error(json?.error || `File read failed (${res.status})`);
@@ -2051,6 +2366,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     const res = await fetch('/api/code/write', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
+                      signal: toolAbortController.signal,
                       body: JSON.stringify({ filePath, content })
                     });
                     const json = await res.json().catch(() => ({}));
@@ -2130,7 +2446,18 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                 }
                   return { id: fc.id, name: fc.name, response: { error: `Unsupported live tool: ${fc.name}` } };
                 })();
-                let response = await executeToolCall();
+                const runToolCallSafely = async () => {
+                  try {
+                    return await executeToolCall();
+                  } catch (error: any) {
+                    return {
+                      id: fc.id,
+                      name: fc.name,
+                      response: { error: error?.message || `Live tool ${fc.name} failed unexpectedly.` },
+                    };
+                  }
+                };
+                let response = await runToolCallSafely();
                 for (let retryAttempt = 1; retryAttempt <= 2; retryAttempt += 1) {
                   if (!this.isSafeToRetryTool(fc.name, fc.args || {}, response)) break;
                   const retryReason = String(response?.response?.error || 'Transient tool failure');
@@ -2145,10 +2472,16 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     startedAt: activityStartedAt,
                   });
                   await this.waitForRetry(retryAttempt);
-                  response = await executeToolCall();
+                  response = await runToolCallSafely();
                 }
-                if (this.cancelledToolCallIds.delete(String(fc.id || ''))) {
+                if (this.cancelledToolCallIds.delete(toolCallId)) {
                   this.toolActivityStarts.delete(activityId);
+                  if (toolCallId) this.toolAbortControllers.delete(toolCallId);
+                  responses.push({
+                    id: fc.id,
+                    name: fc.name,
+                    response: { error: 'Tool call cancelled by the Live session.' },
+                  });
                   continue;
                 }
                 const agentContext = this.recordObjectiveToolStep(fc.name, response, fc.args || {});
@@ -2177,12 +2510,19 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                   completedAt: Date.now(),
                 });
                 this.toolActivityStarts.delete(activityId);
+                if (toolCallId) this.toolAbortControllers.delete(toolCallId);
               }
 
-              if (responses.length > 0) {
-                this.ws?.send(JSON.stringify({
+              if (
+                responses.length > 0 &&
+                toolSocket &&
+                this.ws === toolSocket &&
+                toolSocket.readyState === WebSocket.OPEN &&
+                !this.manualDisconnect
+              ) {
+                this.sendSocketPayload({
                   toolResponse: { functionResponses: responses }
-                }));
+                }, toolSocket);
               }
             } catch (err) {
               console.error('[GeminiLive] Tool execution failed:', err);
@@ -2200,8 +2540,10 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       // ═══ GoAway ═══
       if (data.toolCallCancellation?.ids) {
         for (const callId of data.toolCallCancellation.ids) {
-          this.cancelledToolCallIds.add(String(callId));
-          const activityId = `live_tool_${ callId }`;
+          const normalizedCallId = String(callId);
+          this.cancelledToolCallIds.add(normalizedCallId);
+          this.toolAbortControllers.get(normalizedCallId)?.abort();
+          const activityId = `live_tool_${ normalizedCallId }`;
           this.emitActivity({
             id: activityId,
             kind: 'tool',
@@ -2376,12 +2718,30 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
   /**
    * Start capturing microphone audio and streaming it to Gemini.
    */
-  private async startAudioCapture(): Promise<void> {
+  private audioToPcm16(input: Float32Array, sourceRate: number, targetRate = 16000): Int16Array {
+    const safeSourceRate = Number.isFinite(sourceRate) && sourceRate > 0 ? sourceRate : targetRate;
+    const outputLength = Math.max(1, Math.round(input.length * targetRate / safeSourceRate));
+    const output = new Int16Array(outputLength);
+    const ratio = safeSourceRate / targetRate;
+    for (let index = 0; index < outputLength; index += 1) {
+      const sourceIndex = index * ratio;
+      const left = Math.min(input.length - 1, Math.floor(sourceIndex));
+      const right = Math.min(input.length - 1, left + 1);
+      const fraction = sourceIndex - left;
+      const sample = (input[left] || 0) * (1 - fraction) + (input[right] || 0) * fraction;
+      const clamped = Math.max(-1, Math.min(1, sample));
+      output[index] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
+    }
+    return output;
+  }
+
+  private async startAudioCapture(expectedSocket: WebSocket | null = this.ws): Promise<boolean> {
     try {
+      if (this.mediaStream && this.captureContext && this.scriptProcessor) return true;
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error('Microphone capture is unavailable in this browser or desktop runtime.');
       }
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: 16000,
           channelCount: 1,
@@ -2390,6 +2750,11 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
           autoGainControl: true,
         }
       });
+      if (!expectedSocket || this.ws !== expectedSocket || this.manualDisconnect) {
+        stream.getTracks().forEach(track => track.stop());
+        return false;
+      }
+      this.mediaStream = stream;
       this.mediaStream.getAudioTracks().forEach(track => {
         track.enabled = !this.micMuted;
       });
@@ -2443,7 +2808,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
           if (confirmedBargeIn) {
             console.log('[GeminiLive] Instant voice barge-in triggered (volume:', normalizedVolume, ')');
             this.bargeInCandidateFrames = 0;
+            this.pendingTurnCompletion = null;
             this.flushPlayback();
+            this.internalTextTurn = false;
             this.turnInputTranscript = '';
             this.turnOutputTranscript = '';
             const interruptedSystemEvent = this.deferInterruptedSystemEvent();
@@ -2470,12 +2837,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
           this.callbacks.onMicVolume(normalizedVolume);
         }
 
-        // Convert Float32 [-1, 1] to Int16 PCM
-        const pcmData = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          const s = Math.max(-1, Math.min(1, inputData[i]));
-          pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
+        // Browsers do not guarantee the requested AudioContext rate. Resample
+        // the actual device rate before labelling the payload as 16 kHz.
+        const pcmData = this.audioToPcm16(inputData, this.captureContext?.sampleRate || 16000);
 
         // Convert to base64 safely (can't use spread for large arrays)
         const uint8 = new Uint8Array(pcmData.buffer);
@@ -2486,28 +2850,30 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
         const base64 = btoa(binary);
 
         // Stream to Gemini
-        this.ws.send(JSON.stringify({
+        this.sendSocketPayload({
           realtimeInput: {
             audio: {
               data: base64,
               mimeType: 'audio/pcm;rate=16000'
             }
           }
-        }));
+        });
       };
 
       this.sourceNode.connect(this.scriptProcessor);
-      this.scriptProcessor.connect(this.captureContext.destination);
+      this.captureSink = this.captureContext.createGain();
+      this.captureSink.gain.value = 0;
+      this.scriptProcessor.connect(this.captureSink);
+      this.captureSink.connect(this.captureContext.destination);
 
       console.log('[GeminiLive] Audio capture started at', this.captureContext.sampleRate, 'Hz');
-
+      return true;
     } catch (error: any) {
       console.error('[GeminiLive] Audio capture error:', error);
       const message = String(error?.message || '').toLowerCase().includes('permission')
         ? 'Microphone access denied. Please grant microphone permission and try again.'
         : error?.message || 'Microphone capture is unavailable in this environment.';
-      this.callbacks.onError(message);
-      this.disconnect();
+      throw new Error(message);
     }
   }
 
@@ -2515,6 +2881,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
    * Enqueue received audio for gapless sequential playback at 24kHz.
    */
   private enqueueAudio(base64Data: string): void {
+    // Muted output is intentionally dropped rather than queued. This keeps
+    // unmute responsive and prevents a stale audio backlog from replaying.
+    if (this.speakerMuted) return;
     try {
       if (!this.playbackContext) {
         this.playbackContext = new (window.AudioContext || (window as any).webkitAudioContext)({
@@ -2532,6 +2901,10 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
         this.playbackGain.connect(this.playbackContext.destination);
 
         this.startModelVolumeLoop();
+
+        if (this.playbackContext.state === 'suspended') {
+          void this.playbackContext.resume().catch(() => { });
+        }
 
         this.nextPlayTime = this.playbackContext.currentTime;
       }
@@ -2575,6 +2948,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
       this.activeSources.push(source);
       source.onended = () => {
         this.activeSources = this.activeSources.filter(s => s !== source);
+        if (this.activeSources.length === 0 && this.pendingTurnCompletion) {
+          queueMicrotask(() => this.finalizeCompletedTurn());
+        }
       };
 
     } catch (error) {
@@ -2586,8 +2962,14 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
    * Monitor AI speech volume for perfect UI frequency syncing.
    */
   private startModelVolumeLoop(): void {
+    if (this.modelVolumeLoopId) cancelAnimationFrame(this.modelVolumeLoopId);
     let lastUpdateMs = 0;
     const checkVolume = () => {
+      if (!this.playbackAnalyser || this.manualDisconnect || this.state === 'idle' || this.state === 'error') {
+        this.modelVolumeLoopId = 0;
+        this.callbacks.onModelVolume?.(0);
+        return;
+      }
       if (this.playbackAnalyser && this.state === 'speaking') {
         const dataArray = new Uint8Array(this.playbackAnalyser.frequencyBinCount);
         this.playbackAnalyser.getByteFrequencyData(dataArray);
@@ -2624,8 +3006,14 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
           if (progress > 1) progress = 1;
 
           if (this.callbacks.onOutputPlaybackProgress) {
-            const spokenChars = Math.floor(progress * this.turnOutputTranscript.length);
-            const spokenText = this.turnOutputTranscript.substring(0, spokenChars);
+            const spokenChars = Math.max(
+              this.playbackCharCount,
+              Math.floor(progress * this.turnOutputTranscript.length),
+            );
+            this.playbackCharCount = spokenChars;
+            const spokenText = sanitizeLiveAnswerText(
+              this.turnOutputTranscript.substring(0, spokenChars),
+            );
             this.callbacks.onOutputPlaybackProgress(spokenText);
           }
         }
@@ -2648,41 +3036,79 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
 
     this.turnAudioStartTime = null;
     this.turnAudioDuration = 0;
+    this.playbackCharCount = 0;
 
     if (this.playbackContext) {
       this.nextPlayTime = this.playbackContext.currentTime;
+    }
+    if (this.pendingTurnCompletion) {
+      queueMicrotask(() => this.finalizeCompletedTurn());
     }
   }
 
   /**
    * Send a text update during the live session using Gemini 3.1 realtimeInput.
    */
-  sendText(text: string, options: { internal?: boolean } = {}): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    if (!text || !text.trim()) return;
-
+  sendText(text: string, options: { internal?: boolean } = {}): boolean {
+    if (!text || !text.trim()) return false;
     const trimmed = text.trim();
     const isInternal = options.internal === true;
+    if (
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN ||
+      this.state === 'connecting' ||
+      this.state === 'connected'
+    ) {
+      if (this.state !== 'connecting' && this.state !== 'connected') return false;
+      if (this.pendingTextTurns.length >= 8) {
+        const internalIndex = this.pendingTextTurns.findIndex(turn => turn.internal);
+        this.pendingTextTurns.splice(internalIndex >= 0 ? internalIndex : 0, 1);
+      }
+      this.pendingTextTurns.push({ text: trimmed, internal: isInternal });
+      return true;
+    }
+    return this.sendTextNow(trimmed, isInternal);
+  }
+
+  private flushPendingTextTurns(): void {
+    if (
+      this.pendingTextTurns.length === 0 ||
+      this.ws?.readyState !== WebSocket.OPEN ||
+      this.state === 'connecting' ||
+      this.state === 'connected'
+    ) return;
+    const turn = this.pendingTextTurns.shift()!;
+    if (!this.sendTextNow(turn.text, turn.internal)) {
+      this.pendingTextTurns.unshift(turn);
+    }
+  }
+
+  private sendTextNow(trimmed: string, isInternal: boolean): boolean {
     console.log('[GeminiLive] Sending real-time text prompt over WebSocket:', trimmed);
+
+    if (!this.sendSocketPayload({ realtimeInput: { text: trimmed } })) return false;
 
     // Instant Interruption: flush active AI speech playback immediately when user sends text
     if (this.state === 'speaking' || this.activeSources.length > 0) {
       console.log('[GeminiLive] Interrupted AI speech via text prompt');
+      this.pendingTurnCompletion = null;
       this.flushPlayback();
-      this.activeSystemEvent = null;
-      this.callbacks.onInterrupted();
+      const interruptedSystemEvent = this.deferInterruptedSystemEvent();
+      this.callbacks.onInterrupted(
+        interruptedSystemEvent ? { systemEvent: interruptedSystemEvent } : undefined,
+      );
     }
 
     this.internalTextTurn = isInternal;
     this.turnInputTranscript = isInternal ? '' : trimmed;
     this.turnOutputTranscript = '';
+    if (!isInternal) {
+      this.activeObjective = null;
+      const objective = this.ensureObjective();
+      objective.userText = trimmed;
+    }
     if (!isInternal) this.callbacks.onInputTranscription(trimmed);
-
-    this.ws.send(JSON.stringify({
-      realtimeInput: {
-        text: trimmed
-      }
-    }));
+    return true;
   }
 
   /**
@@ -2705,12 +3131,24 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
   private cleanup(preserveVisualCapture = false): void {
     this.finishThinking();
     this.internalTextTurn = false;
+    if (this.ws) {
+      this.rejectConnectionReady(this.ws, new Error('Live connection ended before becoming ready.'));
+    }
     if (!preserveVisualCapture) {
       this.stopCamera();
       this.stopScreenShare();
+      this.pendingTextTurns = [];
+      this.reconnectAttempts = 0;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
     }
     this.toolActivityStarts.clear();
+    this.toolAbortControllers.forEach(controller => controller.abort());
+    this.toolAbortControllers.clear();
     this.cancelledToolCallIds.clear();
+    this.callbacks.onToolCallActive?.(null);
     this.bargeInCandidateFrames = 0;
     this.lastBargeInCandidateAt = 0;
     if (preserveVisualCapture) {
@@ -2734,6 +3172,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
       this.systemEventDrainTimer = null;
     }
     cancelAnimationFrame(this.modelVolumeLoopId);
+    this.modelVolumeLoopId = 0;
+    this.callbacks.onMicVolume?.(0);
+    this.callbacks.onModelVolume?.(0);
     // Stop audio capture
     if (this.scriptProcessor) {
       this.scriptProcessor.disconnect();
@@ -2742,6 +3183,10 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
     if (this.sourceNode) {
       this.sourceNode.disconnect();
       this.sourceNode = null;
+    }
+    if (this.captureSink) {
+      this.captureSink.disconnect();
+      this.captureSink = null;
     }
     if (this.captureContext) {
       this.captureContext.close().catch(() => { });
@@ -2752,12 +3197,16 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
       this.mediaStream = null;
     }
 
-    // Stop playback
+    // Stop playback without finalizing a half-finished turn during teardown.
+    this.pendingTurnCompletion = null;
     this.flushPlayback();
     if (this.playbackContext) {
       this.playbackContext.close().catch(() => { });
       this.playbackContext = null;
     }
+    this.playbackAnalyser = null;
+    this.playbackGain = null;
+    this.nextPlayTime = 0;
 
     // Close WebSocket
     if (this.ws) {

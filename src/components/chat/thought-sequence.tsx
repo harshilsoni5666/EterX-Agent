@@ -14,10 +14,9 @@ import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins, WebsiteLink } from './markdown-renderer';
 import { LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath } from './local-file-link';
 import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon, SubAgentIdentityIcon, ConnectorIcon, getConnectorId, isConnectorTrace } from './agent-icons';
-import { AgentFace } from './agent-face';
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
-import { isThoughtStreamOpen } from '../../lib/thought-stream-lifecycle';
+import { isThoughtStreamOpen, shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../../lib/agent/tool-trace';
 
 type SubAgentAssetIndexes = Record<string, number>;
@@ -448,6 +447,17 @@ const VERB_MAP: Record<string, string> = {
   'Vault operation': 'Vault',
   'Managing environment': 'Env',
   'Scheduled task': 'Scheduled',
+  'Planning agent work': 'Planned agent work',
+  'Starting agents': 'Started agents',
+  'Checking agent status': 'Checked agent status',
+  'Collecting agent results': 'Collected agent results',
+  'Clearing agent history': 'Cleared agent history',
+  'Running agent consensus': 'Ran agent consensus',
+  'Running agent debate': 'Ran agent debate',
+  'Running specialist agent': 'Ran specialist agent',
+  'Pausing agent': 'Paused agent',
+  'Resuming agent': 'Resumed agent',
+  'Closing agent': 'Closed agent',
 };
 
 // getToolMeta — verb extraction only; icon is always resolved by resolveAgentIcon
@@ -507,8 +517,6 @@ const asTimestamp = (value: unknown) => {
 };
 
 const LIVE_ACTION_SETTLE_MS = 1400;
-const LIVE_FACE_REGULAR_DELAY_MS = 8500;
-const LIVE_FACE_DEEP_WORK_DELAY_MS = 2400;
 const THOUGHT_ELAPSED_TICK_MS = 1000;
 
 const isLiveThoughtFresh = (log: any) => {
@@ -516,23 +524,6 @@ const isLiveThoughtFresh = (log: any) => {
   if (log.type === 'thought_stream') return isThoughtStreamOpen(log);
   if (log.isStreaming === false || log.isLiveTyping === false || log.streamState === 'closed') return false;
   return log.isStreaming === true || log.isLiveTyping === true || log.streamState === 'open';
-};
-
-const isDeepWorkLog = (log: any) => {
-  if (!log) return false;
-  if (['command', 'file_edit', 'file_preview', 'console_output', 'browser'].includes(log.type)) return true;
-  const raw = [
-    log.type,
-    log.text,
-    log.secondary,
-    log.filename,
-    log.command,
-    log.cmd,
-    log.tool,
-    log.name,
-  ].filter(Boolean).join(' ').toLowerCase();
-
-  return /\b(code|coding|write|writing|file|edit|patch|apply|create|generat|render|build|compile|lint|test|terminal|command|execute|run|npm|npx|tsx|tsc|python|powershell|analyz|inspect|read|understand|refactor)\b/.test(raw);
 };
 
 const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) => {
@@ -680,12 +671,6 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
   const professionalMarkdownComponents = useMemo(() => ({
     ...markdownComponents,
     p: ({ node, ...props }: any) => <p className={`eterx-answer-paragraph mb-2.5 last:mb-0 break-words tracking-normal ${ isNote ? 'leading-[1.58]' : 'leading-[1.72]' }`} {...props} />,
-    h1: ({ node, ...props }: any) => <h1 className="eterx-answer-heading eterx-answer-heading-1 mt-5 first:mt-0 mb-3 font-semibold leading-[1.25]" {...props} />,
-    h2: ({ node, ...props }: any) => <h2 className="eterx-answer-heading eterx-answer-heading-2 mt-4.5 first:mt-0 mb-2.5 font-semibold leading-[1.3]" {...props} />,
-    h3: ({ node, ...props }: any) => <h3 className="eterx-answer-heading eterx-answer-heading-3 mt-4 first:mt-0 mb-2 font-semibold leading-[1.35]" {...props} />,
-    h4: ({ node, ...props }: any) => <h4 className="eterx-answer-heading eterx-answer-heading-4 mt-3.5 first:mt-0 mb-1.5 font-semibold leading-[1.4]" {...props} />,
-    h5: ({ node, ...props }: any) => <h5 className="eterx-answer-heading eterx-answer-heading-5 eterx-answer-heading-muted mt-4 first:mt-0 mb-2 font-semibold leading-tight" {...props} />,
-    h6: ({ node, ...props }: any) => <h6 className="eterx-answer-heading eterx-answer-heading-6 eterx-answer-heading-muted mt-3 first:mt-0 mb-2 font-semibold leading-tight" {...props} />,
     ul: ({ node, ...props }: any) => <ul className="eterx-answer-list my-3 list-disc space-y-1.5 pl-6" {...props} />,
     ol: ({ node, ...props }: any) => <ol className="eterx-answer-list my-3 list-decimal space-y-1.5 pl-6" {...props} />,
     li: ({ node, ...props }: any) => <li className="eterx-answer-list-item pl-1.5 leading-[1.68]" {...props} />,
@@ -693,7 +678,10 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
     em: ({ node, ...props }: any) => <em className="eterx-answer-em italic" {...props} />,
     a: ({ node, href, children, ...props }: any) => {
       const localPath = decodeLocalFileHref(href);
-      if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact={isNote} />;
+      // File references are inline answer content. Always use the compact
+      // chip so a long filename cannot create a 36px line box or overlap the
+      // surrounding sentence/list item.
+      if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact />;
       return <WebsiteLink href={href} {...props}>{children}</WebsiteLink>;
     },
   }), [isNote]);
@@ -763,11 +751,7 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
   }
 
   return (
-    <motion.div
-      layout={false}
-      initial={isNote ? { opacity: 0, y: 3 } : false}
-      animate={isNote ? { opacity: 1, y: 0 } : undefined}
-      transition={isNote ? { duration: 0.18, ease: [0.22, 1, 0.36, 1] } : undefined}
+    <div
       className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#D98B6A]/20 select-text tracking-normal ${ progressive.isRevealing ? 'eterx-reveal-active' : '' } ${ isNote ? 'eterx-professional-note py-0.5 text-[13.5px] leading-[1.5] text-[#D2CECA]' : 'eterx-professional-answer text-[13.5px] leading-[1.56] text-[#F2F0EC]' }`}
     >
       {revealEnabled ? (
@@ -778,11 +762,7 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
         renderProfessionalMarkdown(markdownText)
       )}
       {suffix}
-      <style>{`
-        .professional-thought > :first-child { margin-top: 0 !important; }
-        .professional-thought > p:last-child { display: inline; }
-      `}</style>
-    </motion.div>
+    </div>
   );
 });
 
@@ -925,8 +905,7 @@ const IconCopyButton = ({ content, label = 'Copy content' }: { content: string, 
 const ansiToHtml = (text: string): string => {
   if (!text) return '';
   const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const ANSI: Record<string, string> = {
-    '0': '', '1': 'font-weight:700',
+  const ANSI_COLORS: Record<string, string> = {
     '31': 'color:var(--terminal-red, #f85149)',
     '32': 'color:var(--terminal-green, #3fb950)',
     '33': 'color:var(--terminal-yellow, #d29922)',
@@ -942,13 +921,70 @@ const ansiToHtml = (text: string): string => {
     '95': 'color:var(--terminal-light-magenta, #d2a8ff)',
     '96': 'color:var(--terminal-light-cyan, #76e3ea)',
   };
-  return esc.replace(/\x1B\[([0-9;]*)m/g, (_, p) => {
-    const style = p.split(';').map((c: string) => ANSI[c] || '').filter(Boolean).join(';');
-    return style ? `<span style="${ style }">` : '</span>';
+  let bold = false;
+  let color = '';
+  let spanOpen = false;
+  const converted = esc.replace(/\x1B\[([0-9;]*)m/g, (_, params) => {
+    const codes = String(params || '0').split(';');
+    for (const code of codes) {
+      if (code === '0') {
+        bold = false;
+        color = '';
+      } else if (code === '1') {
+        bold = true;
+      } else if (code === '22') {
+        bold = false;
+      } else if (code === '39') {
+        color = '';
+      } else if (ANSI_COLORS[code]) {
+        color = ANSI_COLORS[code];
+      }
+    }
+
+    const close = spanOpen ? '</span>' : '';
+    const style = [bold ? 'font-weight:700' : '', color].filter(Boolean).join(';');
+    spanOpen = Boolean(style);
+    return `${ close }${ style ? `<span style="${ style }">` : '' }`;
   });
+  return `${ converted }${ spanOpen ? '</span>' : '' }`;
 };
 
-const InlineConsole = ({ command, content, exitCode, durationMs, flush = false }: { command: string, content: string, exitCode?: number, durationMs?: number, flush?: boolean }) => {
+const applyTerminalBackspaces = (value: string): string => value
+  .split('\n')
+  .map(line => {
+    if (!line.includes('\b')) return line;
+    const characters: string[] = [];
+    for (const character of line) {
+      if (character === '\b') characters.pop();
+      else characters.push(character);
+    }
+    return characters.join('');
+  })
+  .join('\n');
+
+const normalizeTerminalOutputForDisplay = (value: unknown): string => {
+  let output = applyTerminalBackspaces(String(value ?? '').replace(/\r\n/g, '\n'))
+    // OSC/DCS sequences control terminal windows and links, not transcript
+    // content. Remove them consistently across PowerShell, zsh, and bash.
+    .replace(/\x1B\][\s\S]*?(?:\x07|\x1B\\)/g, '')
+    .replace(/\x1BP[\s\S]*?\x1B\\/g, '')
+    // Keep SGR color codes for ansiToHtml; discard cursor/erase controls that
+    // otherwise render as visible garbage in a browser.
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, sequence => sequence.endsWith('m') ? sequence : '')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1A\x1C-\x1F\x7F]/g, '');
+
+  // CLI progress reporters rewrite one physical line with carriage returns.
+  // The transcript should show the newest state once, not every overwritten
+  // frame as another line or an embedded control character.
+  output = output
+    .split('\n')
+    .map(line => line.includes('\r') ? line.split('\r').slice(-1)[0] || '' : line)
+    .join('\n');
+
+  return output;
+};
+
+const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid, flush = false }: { command: string, content: string, exitCode?: number, durationMs?: number, cwd?: string, shell?: string, pid?: number, flush?: boolean }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldFollowOutputRef = useRef(exitCode === undefined);
   const previousContentLengthRef = useRef((content || '').length);
@@ -979,12 +1015,19 @@ const InlineConsole = ({ command, content, exitCode, durationMs, flush = false }
       setAtBottom(nearBottom);
     }
   };
-  const lines = content ? content.split(/\r?\n/) : [];
-  const lineCount = lines.length;
-  const commandLines = command ? command.split(/\r?\n/) : [];
-  const isMultiLineCommand = commandLines.length > 1;
+  const displayContent = useMemo(() => normalizeTerminalOutputForDisplay(content), [content]);
+  const renderedOutput = useMemo(() => ansiToHtml(displayContent), [displayContent]);
+  const hasManyLines = useMemo(() => {
+    let newlineCount = 0;
+    for (let index = 0; index < displayContent.length && newlineCount < 8; index += 1) {
+      if (displayContent.charCodeAt(index) === 10) newlineCount += 1;
+    }
+    return newlineCount >= 8;
+  }, [displayContent]);
   const isRunning = exitCode === undefined;
   const success = exitCode === 0 || isRunning;
+  const shellLabel = String(shell || '').split(/[\\/]/).pop()?.replace(/\.exe$/i, '') || '';
+  const executionLabel = [shellLabel, cwd, isRunning && pid ? `PID ${ pid }` : ''].filter(Boolean).join(' · ');
 
   const consolePanel = (
     <div className={`eterx-terminal-console flex flex-col font-mono text-[#D8D1C8] ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#141413] shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)]' }`}>
@@ -1011,14 +1054,14 @@ const InlineConsole = ({ command, content, exitCode, durationMs, flush = false }
         >
           <div className="min-w-0 pr-1">
             <div className="eterx-terminal-console-body whitespace-pre-wrap break-words text-[#CDC5BB]">
-              {content
-                ? <span dangerouslySetInnerHTML={{ __html: ansiToHtml(content) }} />
+              {displayContent
+                ? <span dangerouslySetInnerHTML={{ __html: renderedOutput }} />
                 : <span className="text-[#8D867C] italic">{isRunning ? 'Waiting for output...' : '(no output)'}</span>
               }
             </div>
           </div>
         </div>
-        {!atBottom && lineCount > 8 && (
+        {!atBottom && hasManyLines && (
           <button type="button" aria-label="Scroll output to bottom" onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-[0_6px_18px_rgba(0,0,0,0.26)] transition-colors hover:bg-[#333331] hover:text-[#F0EAE0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20">
             <ChevronDown className="h-3.5 w-3.5" />
           </button>
@@ -1026,20 +1069,21 @@ const InlineConsole = ({ command, content, exitCode, durationMs, flush = false }
       </div>
 
       {/* Terminal footer status bar */}
-      <div className="eterx-terminal-console-footer flex items-center justify-end border-t border-white/[0.045] bg-white/[0.015] px-3.5 py-1.5 text-[11px] font-medium text-[#A9A196]">
+      <div className="eterx-terminal-console-footer flex items-center justify-between gap-3 border-t border-white/[0.045] bg-white/[0.015] px-3.5 py-1.5 text-[11px] font-medium text-[#A9A196]">
+        <span className="min-w-0 truncate text-[#777168]" title={executionLabel || undefined}>{executionLabel}</span>
         <div className="flex items-center gap-2.5">
           {durationMs !== undefined && durationMs > 0 && (
             <span className="text-[#807970]">{durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(1)}s`}</span>
           )}
           <span className={`inline-flex items-center gap-1.5 ${ success ? 'text-[#BDB8AF]' : 'text-red-300' }`}>
             {isRunning ? (
-              <span className="h-2 w-2 rounded-full bg-[#3EE06F] shadow-[0_0_10px_rgba(62,224,111,0.5)] animate-pulse" />
+              <Terminal className="h-3.5 w-3.5 text-[#67C58A]" />
             ) : success ? (
               <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
             ) : (
               <CornerDownLeft className="h-3.5 w-3.5 text-red-300" />
             )}
-            {isRunning ? <Shimmer>Running</Shimmer> : success ? 'Success' : `Exit ${ exitCode }`}
+            {isRunning ? 'Running' : success ? 'Success' : `Exit ${ exitCode }`}
           </span>
         </div>
       </div>
@@ -2653,7 +2697,7 @@ const compactActionKeyPart = (value: unknown) =>
 
 const normalizeActionTypeForKey = (type: unknown) => {
   const value = String(type || '');
-  return value === 'sub_agent_action' ? 'command' : value;
+  return value === 'sub_agent_action' || value === 'tool_call' ? 'command' : value;
 };
 
 const getActionIdentity = (log: any, fallbackIndex: number) => {
@@ -2680,8 +2724,98 @@ const getActionLookupIdentity = (log: any) => [
 ].join('|');
 
 const getStableActionEventId = (log: any) => {
-  const value = log?.traceId ?? log?.id ?? log?._traceIdx ?? null;
+  const value = log?.traceId ?? log?.id ?? log?._traceIdx ?? log?.toolCallId ?? log?.streamId ?? log?.taskId ?? log?.backgroundTaskId ?? null;
   return value === null || value === undefined ? '' : String(value);
+};
+
+const ACTION_EVENT_TYPES = new Set([
+  'command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser',
+  'communication', 'sub_agent_action',
+]);
+
+const isLiveActionEvent = (log: any) => Boolean(
+  log?.isLive === true ||
+  log?.isStreaming === true ||
+  log?.isLiveTyping === true ||
+  log?.streamState === 'open' ||
+  ['running', 'working', 'pending'].includes(String(log?.status || '').toLowerCase())
+);
+
+/**
+ * Live polling and the settled transcript briefly overlap during hand-off.
+ * Build several transport identities so the UI can replace that overlap in
+ * place without collapsing two genuine repeated actions.
+ */
+const getActionEventIdentityKeys = (log: any): string[] => {
+  if (!ACTION_EVENT_TYPES.has(String(log?.type || ''))) return [];
+
+  const scope = compactActionKeyPart(
+    log?.runId || log?.turnId || log?.ownerChatId || log?.chatId || 'current',
+  );
+  const actionType = normalizeActionTypeForKey(log?.type);
+  const keys = new Set<string>();
+  const addEventKey = (value: unknown) => {
+    const normalized = compactActionKeyPart(value);
+    if (normalized) keys.add(`${ scope }:${ actionType }:event:${ normalized }`);
+  };
+
+  addEventKey(log?.traceId);
+  addEventKey(log?.id);
+  addEventKey(log?.toolCallId);
+  addEventKey(log?.streamId);
+  addEventKey(log?.taskId);
+  addEventKey(log?.backgroundTaskId);
+  addEventKey(log?._liveCommitKey);
+
+  if (log?._traceIdx !== undefined && log?._traceIdx !== null) {
+    keys.add(`${ scope }:${ actionType }:trace:${ String(log._traceIdx) }`);
+  }
+
+  const semanticIdentity = getActionLookupIdentity(log);
+  const timeAnchor = log?.startTime ?? log?.timestamp ?? log?.endTime;
+  if (timeAnchor !== undefined && timeAnchor !== null && String(timeAnchor).trim()) {
+    keys.add(`${ scope }:semantic:${ semanticIdentity }:${ String(timeAnchor) }`);
+  }
+  if (keys.size === 0) keys.add(`${ scope }:semantic:${ semanticIdentity }`);
+
+  return Array.from(keys);
+};
+
+const reconcileLiveActionLogs = (settledLogs: any[], liveLogs: any[]): any[] => {
+  const reconciled = [...settledLogs];
+  const identityIndexes = new Map<string, number>();
+
+  reconciled.forEach((log, index) => {
+    getActionEventIdentityKeys(log).forEach(key => identityIndexes.set(key, index));
+  });
+
+  liveLogs.forEach((liveLog) => {
+    const keys = getActionEventIdentityKeys(liveLog);
+    const existingIndex = keys.reduce<number | undefined>(
+      (found, key) => found ?? identityIndexes.get(key),
+      undefined,
+    );
+
+    if (existingIndex === undefined) {
+      const nextIndex = reconciled.length;
+      reconciled.push(liveLog);
+      keys.forEach(key => identityIndexes.set(key, nextIndex));
+      return;
+    }
+
+    const existing = reconciled[existingIndex];
+    // A settled trace is authoritative over the final live-poll snapshot. If
+    // both are still live, keep the newest payload in the same visible row.
+    if (!isLiveActionEvent(existing) && isLiveActionEvent(liveLog)) return;
+    reconciled[existingIndex] = {
+      ...existing,
+      ...liveLog,
+      startTime: existing?.startTime ?? liveLog?.startTime,
+    };
+    getActionEventIdentityKeys(reconciled[existingIndex]).forEach(key => identityIndexes.set(key, existingIndex));
+  });
+
+  return reconciled;
 };
 
 const getStreamRowIdentity = (log: any, fallbackIndex: number) => {
@@ -2789,12 +2923,9 @@ const isActionContextLog = (log: any) =>
   Boolean(log && (ACTION_CONTEXT_TYPES.has(String(log.type || '')) || isTerminalActionLike(log)));
 
 const shouldRenderThoughtSegment = (log: any, flowLogs: any[], idx: number) => {
-  const text = normalizeTimelineText(log?.text);
-  // Some transports use the existing thought card as a visual lifecycle
-  // container without exposing synthetic reasoning text. Keep that shell
-  // renderable while continuing to suppress genuinely empty thought events.
-  if (!text && log?.uiOnly !== true) return false;
-  return true;
+  // Keep the same visibility contract as the primary chat feed. In
+  // particular, a closed empty direct-chat shell is not a thought card.
+  return shouldRenderThoughtStream(log);
 };
 
 const isTimerAction = (log: any, command: string = '') => {
@@ -2888,7 +3019,21 @@ const TerminalTraceCard = ({
   const stdout = resultObject ? String(resultObject.stdout ?? resultObject.output ?? resultObject.content ?? '') : '';
   const stderr = resultObject ? String(resultObject.stderr ?? resultObject.error ?? '') : '';
   const resultText = typeof rawResult === 'string' ? rawResult : [stdout, stderr].filter(Boolean).join('\n');
-  const output = String(preview?.output ?? preview?.content ?? preview?.outputPreview ?? resultText ?? log?.output ?? log?.content ?? log?.outputPreview ?? '');
+  const outputCandidates = [
+    preview?.output,
+    preview?.content,
+    preview?.outputPreview,
+    log?.output,
+    log?.content,
+    log?.outputPreview,
+    resultObject?.output,
+    resultText,
+  ];
+  const output = String(
+    outputCandidates.find(value => value !== undefined && value !== null && String(value).length > 0)
+    ?? outputCandidates.find(value => value !== undefined && value !== null)
+    ?? ''
+  );
   const exitCode = typeof preview?.exitCode === 'number'
     ? preview.exitCode
     : typeof resultObject?.exitCode === 'number'
@@ -2907,6 +3052,10 @@ const TerminalTraceCard = ({
     : typeof log?.durationMs === 'number'
       ? log.durationMs
       : undefined;
+  const cwd = String(preview?.cwd ?? resultObject?.cwd ?? log?.cwd ?? log?.toolArgs?.cwd ?? log?.args?.cwd ?? '');
+  const shell = String(preview?.shell ?? resultObject?.shell ?? log?.shell ?? '');
+  const pidValue = Number(preview?.pid ?? resultObject?.pid ?? log?.pid);
+  const pid = Number.isFinite(pidValue) && pidValue > 0 ? pidValue : undefined;
   const explicitlyRunning = Boolean(
     preview?.isStreaming ||
     log?.isStreaming ||
@@ -2916,11 +3065,33 @@ const TerminalTraceCard = ({
   );
   const hasCompletionSignal = exitCode !== undefined || (rawResult !== undefined && rawResult !== null && !explicitlyRunning);
   const isStreaming = explicitlyRunning || (isLiveChip && !hasCompletionSignal);
-  const displayedExitCode = exitCode ?? (isStreaming ? undefined : 0);
-  const isFailed = exitCode !== undefined && exitCode !== 0;
+  const displayedExitCode = isStreaming ? undefined : exitCode ?? 0;
+  const isFailed = !isStreaming && exitCode !== undefined && exitCode !== 0;
   const durationLabel = formatTerminalMetaDuration(durationMs);
   
   const isTimer = isTimerAction(log, command);
+  const [isExpanded, setIsExpanded] = useState(() => isStreaming && Boolean(output));
+  const userSetExpansionRef = useRef(false);
+  const commandIdentity = [
+    log?.streamId ?? preview?.streamId
+      ?? log?.taskId ?? log?.backgroundTaskId ?? preview?.taskId ?? preview?.backgroundTaskId
+      ?? log?.ownerTraceId ?? preview?.ownerTraceId
+      ?? log?.traceId ?? log?.id ?? log?._traceIdx ?? '',
+    command,
+  ].join('|');
+  const lastCommandIdentityRef = useRef(commandIdentity);
+
+  useEffect(() => {
+    if (commandIdentity !== lastCommandIdentityRef.current) {
+      lastCommandIdentityRef.current = commandIdentity;
+      userSetExpansionRef.current = false;
+      setIsExpanded(false);
+    }
+  }, [commandIdentity]);
+
+  useEffect(() => {
+    if (isStreaming && output && !userSetExpansionRef.current) setIsExpanded(true);
+  }, [isStreaming, output]);
 
   // If this is a timer/schedule log, render an unopenable static status row with seconds/mins
   if (isTimer) {
@@ -2934,7 +3105,7 @@ const TerminalTraceCard = ({
       <div className={`eterx-terminal-trace w-full ${ inCard ? '' : `${ ACTION_CARD_CLASS } my-1.5` }`}>
         <div className={`eterx-terminal-trace-row flex min-h-[33px] w-full items-center gap-2 py-1 text-left ${ inCard ? 'px-1.5' : 'px-3' }`}>
           <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
-            {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#3EE06F] animate-spin' : 'text-[#A39B91]' }`} strokeWidth={2.1} />}
+            {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#67C58A]' : 'text-[#A39B91]' }`} strokeWidth={2.1} />}
           </span>
           <Shimmer active={isStreaming} className="min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
             {headerLabel}
@@ -2948,23 +3119,6 @@ const TerminalTraceCard = ({
       </div>
     );
   }
-
-  const [isExpanded, setIsExpanded] = useState(false);
-  const commandIdentity = [
-    log?._traceIdx ?? '',
-    log?.traceId ?? '',
-    log?.id ?? '',
-    command,
-  ].join('|');
-
-  const lastCommandIdentityRef = useRef(commandIdentity);
-
-  useEffect(() => {
-    if (commandIdentity !== lastCommandIdentityRef.current) {
-      lastCommandIdentityRef.current = commandIdentity;
-      setIsExpanded(false);
-    }
-  }, [commandIdentity]);
 
   const title = inCard
     ? (isStreaming ? 'Running' : isFailed ? 'Failed' : 'Ran')
@@ -2982,6 +3136,7 @@ const TerminalTraceCard = ({
         type="button"
         onClick={(event) => {
           event.stopPropagation();
+          userSetExpansionRef.current = true;
           setIsExpanded(open => !open);
         }}
         aria-expanded={isExpanded}
@@ -3000,17 +3155,18 @@ const TerminalTraceCard = ({
         )}
         <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#898176] transition-transform ${ isExpanded ? 'rotate-90 text-[#C8C1B8]' : '' }`} />
       </button>
-      <AnimatePresence initial={false}>
-        {isExpanded && (
-          <InlineConsole
-            command={command}
-            content={output}
-            exitCode={displayedExitCode}
-            durationMs={durationMs}
-            flush={true}
-          />
-        )}
-      </AnimatePresence>
+      {isExpanded && (
+        <InlineConsole
+          command={command}
+          content={output}
+          exitCode={displayedExitCode}
+          durationMs={durationMs}
+          cwd={cwd}
+          shell={shell}
+          pid={pid}
+          flush={true}
+        />
+      )}
     </div>
   );
 };
@@ -3021,6 +3177,7 @@ const FileChangeTraceCard = ({
   isLiveChip,
   displayVerb,
   iconCategory,
+  lineContext,
   fileTargets,
   diffStats,
   inCard = false,
@@ -3030,6 +3187,7 @@ const FileChangeTraceCard = ({
   isLiveChip: boolean;
   displayVerb: string;
   iconCategory?: string;
+  lineContext?: string;
   fileTargets: FileTraceTarget[];
   diffStats: { added: number; removed: number } | null;
   inCard?: boolean;
@@ -3059,6 +3217,16 @@ const FileChangeTraceCard = ({
   const targetLabel = /^(?:file|files?)$/i.test(rawTargetLabel) ? '' : rawTargetLabel;
   const previewFilePath = preview?.filepath || primaryTarget?.filepath || '';
   const previewContent = getPreviewContent(preview);
+  const previewStartLine = preview?.startLine
+    ?? preview?.lineStart
+    ?? log.toolArgs?.startLine
+    ?? log.args?.startLine
+    ?? log.startLine;
+  const previewEndLine = preview?.endLine
+    ?? preview?.lineEnd
+    ?? log.toolArgs?.endLine
+    ?? log.args?.endLine
+    ?? log.endLine;
   const hasDiffPreview = Array.isArray(preview?.diffLines) && preview.diffLines.length > 0;
   const isEditPreview = resultSaysEdit;
   const isCreateAction = /^(?:creat|generat|scaffold|writ)/i.test(displayVerb);
@@ -3129,6 +3297,8 @@ const FileChangeTraceCard = ({
       showExpand={false}
       filepath={previewFilePath || primaryTarget?.filepath || ''}
       fetchFull
+      startLine={previewStartLine}
+      endLine={previewEndLine}
       created={isCreateAction}
       flush
     />
@@ -3157,6 +3327,8 @@ const FileChangeTraceCard = ({
       showExpand={false}
       filepath={previewFilePath || primaryTarget?.filepath || ''}
       fetchFull
+      startLine={previewStartLine}
+      endLine={previewEndLine}
       created={isCreateAction}
       flush
     />
@@ -3196,6 +3368,11 @@ const FileChangeTraceCard = ({
               <span className="eterx-file-change-filename min-w-0 overflow-wrap-anywhere break-words text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors group-hover:text-white">{targetLabel}</span>
             </span>
           ) : null}
+          {lineContext && (
+            <span className="eterx-file-change-lines shrink-0 text-[12px] font-medium leading-tight text-[#857E73]">
+              {lineContext}
+            </span>
+          )}
           <ChangeStats stats={effectiveStats} />
         </span>
         {canExpand ? (
@@ -3250,7 +3427,11 @@ const ActionChip = ({
   const connectorAction = useMemo(() => isConnectorTrace(log), [log]);
   const logFileTargets = useMemo(() => collectFileTargets(log), [log]);
   // Subtitle: the secondary arg (command string, URL, query, etc.)
-  const subtitle = log.secondary && log.secondary !== log.filename ? normalizeToolTraceText(log.secondary).substring(0, 120) : '';
+  const subtitle = (isEdit || isRead)
+    ? ''
+    : log.secondary && log.secondary !== log.filename
+      ? normalizeToolTraceText(log.secondary).substring(0, 120)
+      : '';
   const preview = useMemo(() => {
     if (log.toolResult !== undefined && log.toolResult !== null) {
       const EXCLUDED_PREVIEW_TOOLS = new Set([
@@ -3278,7 +3459,15 @@ const ActionChip = ({
 
     const directIdx = allLogs.indexOf(log);
     const exactIdentity = log?._traceIdx ?? log?.traceId ?? log?.id ?? null;
-    const ownerIdentities = [log?.traceId, log?.id, log?._traceIdx]
+    const ownerIdentities = [
+      log?.traceId,
+      log?.id,
+      log?._traceIdx,
+      log?.toolCallId,
+      log?.streamId,
+      log?.taskId,
+      log?.backgroundTaskId,
+    ]
       .filter(value => value !== null && value !== undefined)
       .map(value => String(value));
     const lookupIdentity = getActionLookupIdentity(log);
@@ -3292,11 +3481,17 @@ const ActionChip = ({
       });
     const searchLogs = myIdx !== -1 ? allLogs.slice(myIdx) : allLogs;
     const findOwnerPreview = (items: any[]) => {
-      const candidates = items.filter((item: any) =>
-        (item?.type === 'file_preview' || item?.type === 'tool_result_preview' || item?.type === 'console_output') &&
-        ownerIdentities.length > 0 &&
-        ownerIdentities.includes(String(item.ownerTraceId || ''))
-      );
+      const candidates = items.filter((item: any) => {
+        if (item?.type !== 'file_preview' && item?.type !== 'tool_result_preview' && item?.type !== 'console_output') return false;
+        const itemIdentities = [
+          item?.ownerTraceId,
+          item?.toolCallId,
+          item?.streamId,
+          item?.taskId,
+          item?.backgroundTaskId,
+        ].filter(value => value !== null && value !== undefined).map(String);
+        return ownerIdentities.some(identity => itemIdentities.includes(identity));
+      });
       return candidates.find((item: any) => item?.type === 'file_preview' && Array.isArray(item?.diffLines) && item.diffLines.length > 0)
         || candidates.find((item: any) => item?.type === 'file_preview' && item?.isEdit)
         || [...candidates].reverse().find((item: any) => item?.type === 'console_output' && (item?.exitCode !== undefined || item?.isStreaming === false))
@@ -3305,7 +3500,7 @@ const ActionChip = ({
     };
     const ownerPreview = findOwnerPreview(searchLogs) || findOwnerPreview(allLogs);
     if (ownerPreview) return ownerPreview;
-    if (log.type === 'command') {
+    if (log.type === 'command' && !isRead) {
       return null;
     }
     if (isEdit) {
@@ -3344,10 +3539,31 @@ const ActionChip = ({
   // Resolve the full path for IDE link
   const fullPath = rawPath || preview?.filepath || preview?.filename || '';
   const getLineContextRange = () => {
-    const start = log.toolArgs?.startLine ?? log.args?.startLine ?? preview?.startLine;
-    const end = log.toolArgs?.endLine ?? log.args?.endLine ?? preview?.endLine;
-    if (start !== undefined && end !== undefined) {
-      return `#L${ start }-${ end }`;
+    const toLineNumber = (value: unknown) => {
+      if (value === undefined || value === null || String(value).trim() === '') return null;
+      const number = Number(value);
+      return Number.isInteger(number) && number > 0 ? number : null;
+    };
+    const start = log.toolArgs?.startLine
+      ?? log.args?.startLine
+      ?? log.startLine
+      ?? preview?.startLine
+      ?? preview?.lineStart;
+    const end = log.toolArgs?.endLine
+      ?? log.args?.endLine
+      ?? log.endLine
+      ?? preview?.endLine
+      ?? preview?.lineEnd;
+    const startNumber = toLineNumber(start);
+    const endNumber = toLineNumber(end);
+    if (startNumber !== null && endNumber !== null) {
+      return `#L${ startNumber }-${ endNumber }`;
+    }
+    if (startNumber !== null) {
+      return `#L${ startNumber }`;
+    }
+    if (endNumber !== null) {
+      return `#L${ endNumber }`;
     }
     return hasFile ? getLineContext(subtitle, fileName) : '';
   };
@@ -3392,7 +3608,17 @@ const ActionChip = ({
       'Researched': 'Researching', 'Analyzed': 'Analyzing',
       'Refactored': 'Refactoring', 'Verified': 'Verifying',
       'Scaffolded': 'Scaffolding', 'Loaded': 'Loading',
-      'Patched': 'Patching',
+  'Patched': 'Patching',
+      'Started agents': 'Starting agents',
+      'Checked agent status': 'Checking agent status',
+      'Collected agent results': 'Collecting agent results',
+      'Cleared agent history': 'Clearing agent history',
+      'Ran agent consensus': 'Running agent consensus',
+      'Ran agent debate': 'Running agent debate',
+      'Ran specialist agent': 'Running specialist agent',
+      'Paused agent': 'Pausing agent',
+      'Resumed agent': 'Resuming agent',
+      'Closed agent': 'Closing agent',
       'Called API': 'Calling API', 'Generated': 'Generating',
       'Queried': 'Querying', 'Compared': 'Comparing',
     };
@@ -3448,6 +3674,7 @@ const ActionChip = ({
         isLiveChip={isLiveChip}
         displayVerb={fileDisplayVerb}
         iconCategory={isRead ? 'file_read' : undefined}
+        lineContext={lineContext}
         fileTargets={fileTargets}
         diffStats={diffStats}
         inCard={inCard}
@@ -3574,21 +3801,36 @@ const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpen
   const [open, setOpen] = useState(false);
   const agentName = log.agentName || log.subAgent || log.secondary || 'Sub-agent';
   const isComplete = log.type === 'sub_agent_complete' || log.agentStatus === 'completed' || log.status === 'done';
-  const isFailed = log.type === 'sub_agent_error' || log.agentStatus === 'failed' || log.status === 'error';
-  const isWorking = !isComplete && !isFailed && (log.type === 'sub_agent_action' || log.agentStatus === 'running');
+  const isClosed = log.type === 'sub_agent_close' || log.agentStatus === 'closed' || log.status === 'closed';
+  const isPaused = log.type === 'sub_agent_pause' || log.agentStatus === 'paused' || log.status === 'paused';
+  const isFailed = !isClosed && !isPaused && (log.type === 'sub_agent_error' || log.agentStatus === 'failed' || log.status === 'error');
+  const isWorking = !isComplete && !isFailed && !isClosed && !isPaused && (
+    log.type === 'sub_agent_action' ||
+    log.type === 'sub_agent_resume' ||
+    log.agentStatus === 'running' ||
+    log.agentStatus === 'working'
+  );
   const identityStatus = isComplete ? 'completed' : isFailed ? 'error' : isWorking ? 'working' : 'idle';
   const durationLabel = log.durationMs ? `${ Math.round(log.durationMs / 1000) }s` : null;
   const stepLabel = log.stepCount ? `${ log.stepCount } steps` : null;
-  const metaText = [durationLabel, stepLabel].filter(Boolean).join(' · ') || (isWorking ? 'Working...' : 'Parallel worker');
+  const metaText = isClosed
+    ? 'Closed by control'
+    : isPaused
+      ? 'Paused at a safe boundary'
+      : [durationLabel, stepLabel].filter(Boolean).join(' · ') || (isWorking ? 'Working...' : 'Parallel worker');
   const displayText = log.taskSummary || log.result || log.content || log.text || '';
 
   const statusBadge = isComplete
     ? { bg: 'bg-emerald-500/8 border-emerald-500/15', text: 'text-emerald-400', label: 'Done' }
     : isFailed
       ? { bg: 'bg-red-500/8 border-red-500/15', text: 'text-red-400', label: 'Error' }
-      : isWorking
-        ? { bg: 'bg-amber-500/8 border-amber-500/15', text: 'text-amber-400', label: 'Working' }
-        : { bg: 'bg-white/[0.035] border-white/[0.07]', text: 'text-[#AFA79C]', label: 'Agent' };
+      : isClosed
+        ? { bg: 'bg-white/[0.035] border-white/[0.10]', text: 'text-[#AFA79C]', label: 'Closed' }
+        : isPaused
+          ? { bg: 'bg-amber-500/8 border-amber-500/15', text: 'text-amber-300', label: 'Paused' }
+          : isWorking
+            ? { bg: 'bg-amber-500/8 border-amber-500/15', text: 'text-amber-400', label: 'Working' }
+            : { bg: 'bg-white/[0.035] border-white/[0.07]', text: 'text-[#AFA79C]', label: 'Agent' };
   return (
     <div className="my-1.5 overflow-hidden">
       <div className={`w-full flex min-h-[50px] items-center gap-2 rounded-[12px] px-3 py-2.5 transition-colors border ${ open ? 'bg-[#181817]/80 border-white/[0.10]' : 'bg-white/[0.012] border-white/[0.045] hover:bg-white/[0.024] hover:border-white/[0.075]' }`}>
@@ -3605,12 +3847,11 @@ const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpen
             <span className="flex items-center gap-2">
               <span className="truncate text-[13px] font-medium tracking-normal text-[#D8D1C8]">{agentName}</span>
               <span className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] ${ statusBadge.bg } ${ statusBadge.text }`}>
-                {isWorking && <span className="eterx-agent-live-rail !h-[6px] !w-[22px]" aria-hidden="true" />}
                 {isWorking ? <Shimmer>{statusBadge.label}</Shimmer> : statusBadge.label}
               </span>
             </span>
             <span className={`mt-0.5 block truncate text-[11px] font-medium ${ isWorking ? 'text-[#BDB5AA]' : 'text-[#7E766C]' }`}>
-              {isWorking ? <Shimmer>{metaText}</Shimmer> : metaText}
+              {metaText}
             </span>
           </span>
 
@@ -3644,24 +3885,28 @@ const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpen
 const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpenAgentTeam?: (name?: string) => void; assetIndexes?: SubAgentAssetIndexes }) => {
   const agents = log.agentDetails || log.spawnedAgents || [];
   const agentList = Array.isArray(agents)
-    ? agents.map((a: any) => typeof a === 'string' ? a : a.name).filter(Boolean)
+    ? agents.map((agent: any) => typeof agent === 'string'
+      ? { name: agent, identity: agent }
+      : {
+          name: agent?.name,
+          identity: agent?.subAgentChatId || agent?.subAgentId || agent?.agentId || agent?.name,
+        }).filter((agent: any) => agent.name)
     : [];
   // If single agent spawn (from spawnAgent), use the direct name
   const singleName = log.agentName || log.subAgent || '';
-  const displayList = agentList.length > 0 ? agentList : (singleName ? [singleName] : ['Agent']);
+  const displayList = agentList.length > 0
+    ? agentList
+    : [{ name: singleName || 'Agent', identity: log.subAgentChatId || log.subAgentId || log.agentId || singleName || 'Agent' }];
 
   return (
     <>
-      {displayList.map((name: string, index: number) => {
+      {displayList.map((agent: { name: string; identity: string }, index: number) => {
+        const { name, identity } = agent;
         return (
-          <div key={name} className="my-1">
+          <div key={identity} className="my-1">
             <button
               type="button"
-              onClick={() => onOpenAgentTeam?.(
-                displayList.length === 1
-                  ? log.subAgentChatId || log.subAgentId || name
-                  : name
-              )}
+              onClick={() => onOpenAgentTeam?.(identity)}
               className={`w-full flex min-h-[33px] items-center gap-2.5 rounded-[9px] px-3 py-1 bg-white/[0.015] border border-white/[0.045] text-left transition-all hover:bg-white/[0.024] hover:border-white/[0.075] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ ACTION_CARD_CLASS }`}
               aria-label={`View agent ${ name }`}
             >
@@ -3686,11 +3931,7 @@ const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Su
   const stepLabel = log.agentStep ? `Step ${ log.agentStep }` : 'Delegated step';
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 4 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
+    <div
       className={`my-1.5 flex min-h-[46px] items-center gap-3 px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
     >
       <SubAgentIdentityIcon name={agentName} status="working" size={32} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
@@ -3700,7 +3941,6 @@ const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Su
           <span className="shrink-0 rounded-full border border-white/[0.07] bg-white/[0.028] px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-[#8F877C]">
             {stepLabel}
           </span>
-          <span className="eterx-agent-live-rail shrink-0" aria-hidden="true" />
         </span>
         <span className="mt-0.5 block min-w-0 truncate text-[13px] font-medium leading-5 text-[#C8C1B8]">
           {actionText}
@@ -3709,7 +3949,7 @@ const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Su
           <span className="mt-0.5 block truncate text-[11px] text-[#7E766C]">{detailText}</span>
         )}
       </span>
-    </motion.div>
+    </div>
   );
 };
 
@@ -3724,6 +3964,7 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
   const preview = body && body !== subject ? body : '';
   const deliverAfter = Number(log.deliverAfter || 0) || undefined;
   const isScheduled = log.scheduled === true || (deliverAfter ? deliverAfter > Date.now() : false);
+  const isSending = log.optimistic === true;
   const focusAgent = fromAgent === 'Main'
     ? (toAgent && toAgent !== '*' ? toAgent : undefined)
     : fromAgent;
@@ -3773,6 +4014,12 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
                 scheduled
               </span>
             )}
+            {isSending && (
+              <span className="inline-flex items-center gap-1 rounded-[6px] border border-sky-300/16 bg-sky-400/[0.055] px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-sky-100/85">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-200/80" />
+                sending
+              </span>
+            )}
           </span>
           {subject && <span className="mt-1 block truncate text-[12px] font-medium text-[#BDB5AB]">{subject}</span>}
           {preview && <span className="mt-0.5 block truncate text-[11px] text-[#817970]">{preview}</span>}
@@ -3787,9 +4034,7 @@ const SubAgentErrorCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Sub
   const agentName = log.agentName || log.subAgent || 'Agent';
   const detail = normalizeToolTraceText(log.secondary || '');
   return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.97 }}
-      animate={{ opacity: 1, scale: 1 }}
+    <div
       className={`my-1.5 flex min-h-[46px] items-center gap-3 rounded-[12px] px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
     >
       <SubAgentIdentityIcon name={agentName} status="error" size={36} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
@@ -3797,7 +4042,7 @@ const SubAgentErrorCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Sub
         <span className="block text-[13.5px] font-medium text-[#E5B2AD]">{agentName} {log.errorType === 'cancelled' ? 'stopped' : 'encountered an error'}</span>
         <span className="block text-[12px] font-medium text-[#A07B76] mt-0.5 truncate">{detail}</span>
       </span>
-    </motion.div>
+    </div>
   );
 };
 
@@ -3885,40 +4130,33 @@ const CollapsibleActionGroup = ({
 }: {
   logs: any[], isActiveGroup: boolean, isLast: boolean, allLogs: any[]
 }) => {
+  const [open, setOpen] = useState(true);
   const visibleLogs = logs.filter(Boolean);
   if (visibleLogs.length === 0) return null;
 
   const progressLogs = visibleLogs.filter(l => l?.type === 'progress');
   const cardLogs = visibleLogs.filter(l => l?.type !== 'progress');
 
-  const [open, setOpen] = useState(true);
   const terminalOnly = cardLogs.length === 1 && isTerminalActionLike(cardLogs[0]);
   const fileChangeOnly = cardLogs.length === 1 && cardLogs[0]?.type === 'file_edit';
   const useStandaloneRows = terminalOnly || fileChangeOnly;
-  const connectorIds = useMemo(
-    () => Array.from(new Set(cardLogs.map(log => getConnectorId(log)).filter(Boolean))) as string[],
-    [cardLogs],
-  );
+  const connectorIds = Array.from(new Set(cardLogs.map(log => getConnectorId(log)).filter(Boolean))) as string[];
 
   return (
     <div className="w-full">
       {cardLogs.length > 0 && (
-        <motion.div
-          layout
-          initial={{ opacity: 0, y: 5 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-          className={useStandaloneRows ? 'w-full' : ACTION_CARD_CLASS}
+        <div
+          className={useStandaloneRows ? 'w-full' : `${ ACTION_CARD_CLASS } eterx-action-group`}
         >
           {!useStandaloneRows && cardLogs.length > 1 && (
             <button
               type="button"
               aria-expanded={open}
               onClick={() => setOpen(value => !value)}
-              className="flex w-full items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-left text-[12px] font-medium text-white/60 transition-colors hover:bg-white/[0.035] hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+              className="eterx-action-group-header flex min-h-[36px] w-full items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-left text-[12px] font-medium text-white/60 hover:bg-white/[0.035] hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
             >
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${ open ? '' : '-rotate-90' }`} aria-hidden="true" />
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-1.5">
                 <span>{isActiveGroup ? 'Live activity' : `${ cardLogs.length } action${ cardLogs.length === 1 ? '' : 's' }`}</span>
               </span>
               {connectorIds.length > 0 && (
@@ -3934,14 +4172,9 @@ const CollapsibleActionGroup = ({
               <span className={`${ connectorIds.length === 0 ? 'ml-auto' : '' } text-[10px] text-white/35`}>{open ? 'Hide' : 'Show'}</span>
             </button>
           )}
-          <AnimatePresence initial={false}>
-            {(open || useStandaloneRows || cardLogs.length === 1) && cardLogs.map((log, i) => (
-              <motion.div
+          {(open || useStandaloneRows || cardLogs.length === 1) && cardLogs.map((log, i) => (
+              <div
                 key={getActionIdentity(log, i)}
-                initial={{ opacity: 0, x: -4 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.18, delay: i * 0.03, ease: 'easeOut' }}
                 className={i > 0 ? ACTION_ROW_DIVIDER_CLASS : ''}
               >
                 <ActionChip
@@ -3952,18 +4185,14 @@ const CollapsibleActionGroup = ({
                   isNested={i > 0}
                   inCard={!useStandaloneRows}
                 />
-              </motion.div>
+              </div>
             ))}
-          </AnimatePresence>
-        </motion.div>
+        </div>
       )}
 
       {progressLogs.map((log, i) => (
-        <motion.div
+        <div
           key={getActionIdentity(log, i)}
-          initial={{ opacity: 0, y: 3 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.18, ease: 'easeOut' }}
           className="w-full"
         >
           <ActionChip
@@ -3974,7 +4203,7 @@ const CollapsibleActionGroup = ({
             isNested={false}
             inCard={false}
           />
-        </motion.div>
+        </div>
       ))}
     </div>
   );
@@ -3984,7 +4213,7 @@ const CollapsibleActionGroup = ({
 // 3 modes: thinking (visible note last), acting (real action last), idle (between)
 
 const THINKING_PHRASES = [
-  { text: 'Starting', dur: 0 },
+  { text: 'Working', dur: 0 },
 ];
 
 const IDLE_PHRASES = [
@@ -4007,7 +4236,7 @@ function makeShuffledQueue<T>(arr: T[], exclude?: T): T[] {
 const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   // Derive real-time state from the last log
   const getLogState = (ls: any[]): { mode: 'thinking' | 'acting' | 'idle'; label: string | null } => {
-    if (ls.length === 0) return { mode: 'thinking', label: 'Starting' };
+    if (ls.length === 0) return { mode: 'thinking', label: 'Working' };
     const last = ls[ls.length - 1];
     if (last.type === 'thought_stream' || last.type === 'work_note') {
       return isLiveThoughtFresh(last)
@@ -4037,7 +4266,6 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   };
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const transitionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const modeRef = useRef<'thinking' | 'acting' | 'idle'>('idle');
   const queueRef = useRef<{ text: string; dur: number }[]>([]);
   const lastLabelRef = useRef<string>('');
@@ -4061,18 +4289,10 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
     const s = getLogState(logs);
     return s.label || (s.mode === 'thinking' ? THINKING_PHRASES[0].text : IDLE_PHRASES[0].text);
   });
-  const [faceReady, setFaceReady] = useState(false);
-  const mountedAtRef = useRef(Date.now());
-  const hasDeepWork = useMemo(() => logs.some(isDeepWorkLog), [logs]);
-
   const doTransition = (nextText: string, nextDur: number) => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
-    transitionTimerRef.current = setTimeout(() => {
-      setLabel(nextText);
-      lastLabelRef.current = nextText;
-      transitionTimerRef.current = null;
-    }, 260);
+    setLabel(nextText);
+    lastLabelRef.current = nextText;
     if (nextDur > 0) timerRef.current = setTimeout(() => advancePhrase(modeRef.current), nextDur);
   };
 
@@ -4099,7 +4319,6 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
     }
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
-      if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current);
     };
   }, []);
 
@@ -4142,14 +4361,6 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
     return () => window.clearTimeout(timeout);
   }, [logSignature]);
 
-  useEffect(() => {
-    if (faceReady) return;
-    const delay = hasDeepWork ? LIVE_FACE_DEEP_WORK_DELAY_MS : LIVE_FACE_REGULAR_DELAY_MS;
-    const remaining = Math.max(0, delay - (Date.now() - mountedAtRef.current));
-    const timeout = window.setTimeout(() => setFaceReady(true), remaining);
-    return () => window.clearTimeout(timeout);
-  }, [faceReady, hasDeepWork]);
-
   const hideDuringFreshThought = !!latestLog
     && (latestLog.type === 'thought_stream' || latestLog.type === 'work_note')
     && isLiveThoughtFresh(latestLog);
@@ -4158,43 +4369,16 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
     && logs.length > 0
     && Date.now() - signatureSeenAtRef.current.at <= LIVE_ACTION_SETTLE_MS;
   const shouldUseNeutralLabel = hideDuringFreshThought || isRecentAction;
-  const faceMode = modeRef.current === 'acting' ? 'working' : modeRef.current === 'thinking' ? 'thinking' : 'idle';
   const displayLabel = shouldUseNeutralLabel
     ? 'Working'
     : label;
 
-  if (!faceReady) return null;
-
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, x: -6, y: 2, scale: 0.99, filter: 'blur(3px)' }}
-      animate={{ opacity: 1, x: 0, y: 0, scale: 1, filter: 'blur(0px)' }}
-      exit={{ opacity: 0, x: -4, y: 2, scale: 0.99, filter: 'blur(3px)', transition: { duration: 0.26, ease: 'easeInOut' } }}
-      transition={{ duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
-      className="mt-1 mb-2 flex min-h-[38px] w-fit max-w-full items-center gap-2 overflow-visible py-0.5"
-    >
-      <AgentFace
-        size="work"
-        mode={faceMode}
-        actionKey={`live-${ faceMode }`}
-        interactive
-        syncWithController={false}
-        ariaLabel="EterX active agent face"
-      />
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.span
-          key={`label-${ displayLabel }`}
-          initial={{ opacity: 0, x: -4 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: -4 }}
-          transition={{ duration: 0.18, ease: 'easeOut' }}
-          className="min-w-0 truncate pb-[2px] text-[13.5px] font-medium leading-[1.35] tracking-normal"
-        >
-          <Shimmer>{displayLabel}</Shimmer>
-        </motion.span>
-      </AnimatePresence>
-    </motion.div>
+    <div className="mt-1 mb-2 flex min-h-[32px] w-fit max-w-full items-center py-0.5">
+      <Shimmer className="min-w-0 truncate pb-[2px] text-[13.5px] font-medium leading-[1.35] tracking-normal">
+        {displayLabel}
+      </Shimmer>
+    </div>
   );
 };
 
@@ -4619,17 +4803,38 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
+  const isInternalToolDiscovery = (l: any) => {
+    const rawName = String(l?.tool || l?.name || l?.toolName || '').trim();
+    const label = String(l?.text || l?.label || '').trim();
+    return normalizeToolTraceName(rawName) === 'tool_finder' ||
+      /^(?:finding|searching)\s+tools?$/i.test(rawName) ||
+      /^(?:finding|searching)\s+tools?$/i.test(label);
+  };
 
-  const isFlowLog = (l: any) =>
-    ['thought_stream', 'work_note', 'command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'steering_received', 'autonomy_proxy_status', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'inter_agent_message', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
+  const isFlowLog = (l: any) => {
+    const subAgentOwned = Boolean(l?.subAgentId || l?.subAgentChatId || l?.subAgent) && String(l?.agentName || '').toLowerCase() !== 'main';
+    const highLevelSubAgentTypes = new Set([
+      'work_note', 'progress', 'sub_agent_spawn', 'sub_agent_complete', 'sub_agent_error',
+      'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close', 'inter_agent_comm', 'inter_agent_message',
+    ]);
+    // Detailed worker actions belong to the selected worker tab. Keeping them
+    // out of Main prevents a parallel run from looking like Main performed
+    // every delegated file read, shell call, and thought stream.
+    if (!isSubAgentTab && subAgentOwned && !highLevelSubAgentTypes.has(String(l?.type || ''))) return false;
+    const redundantAgentNarration = l?.type === 'work_note' && !isSubAgentTab &&
+      /\b(?:I\s+(?:will|'ll)|let me)\s+(?:spawn|create|collect|check|poll|wait for)\b.{0,100}\b(?:sub-?agent|agent(?:'s)?\s+(?:status|result|report))/i.test(String(l?.text || ''));
+    return ['thought_stream', 'work_note', 'command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'steering_received', 'autonomy_proxy_status', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close', 'inter_agent_comm', 'inter_agent_message', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
+    !redundantAgentNarration &&
+    !isInternalToolDiscovery(l) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
     !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')) && !isApiKeyTrace(String(l.text || ''))) &&
     !(l.type === 'work_note' && (l._connection || String(l.text || '').endsWith('is starting'))) &&
     // Filter out spawning announcement commands that have spawnedAgents (shown separately as agent cards)
     !(l.spawnedAgents && Array.isArray(l.spawnedAgents) && l.spawnedAgents.length > 0 && l.type === 'command');
+  };
   const flowLogs = logs.filter(isFlowLog);
   const liveFlowLogs = liveLogs.filter(isFlowLog);
-  const timelineLogs = [...flowLogs, ...liveFlowLogs];
+  const timelineLogs = reconcileLiveActionLogs(flowLogs, liveFlowLogs);
   const statusLogs = timelineLogs;
   const segs: any[] = []; let aBuf: any[] = []; let aBufFirstIdx = -1;
   const SPEC = new Set(['file_preview', 'console_output', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'safety_warning', 'tool_result_preview']);
@@ -4638,21 +4843,23 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       const unique: any[] = [];
       const identityIndexes = new Map<string, number>();
       aBuf.forEach((log) => {
-        const stableEventId = getStableActionEventId(log);
-        const identity = stableEventId
-          ? `event:${stableEventId}`
-          : `action:${getActionLookupIdentity(log)}`;
-        const existingIndex = identityIndexes.get(identity);
+        const identities = getActionEventIdentityKeys(log);
+        const existingIndex = identities.reduce<number | undefined>(
+          (found, identity) => found ?? identityIndexes.get(identity),
+          undefined,
+        );
         if (existingIndex !== undefined) {
           const previous = unique[existingIndex];
           unique[existingIndex] = {
             ...previous,
             ...log,
-            occurrenceCount: Math.max(1, Number(previous.occurrenceCount || 1)) + Math.max(1, Number(log.occurrenceCount || 1)),
+            occurrenceCount: Math.max(1, Number(previous.occurrenceCount || 1), Number(log.occurrenceCount || 1)),
           };
+          getActionEventIdentityKeys(unique[existingIndex]).forEach(identity => identityIndexes.set(identity, existingIndex));
           return;
         }
-        identityIndexes.set(identity, unique.length);
+        const nextIndex = unique.length;
+        identities.forEach(identity => identityIndexes.set(identity, nextIndex));
         unique.push({ ...log, occurrenceCount: Math.max(1, Number(log.occurrenceCount || 1)) });
       });
       segs.push({ kind: 'action_group', logs: unique, firstIdx: aBufFirstIdx === -1 ? idx : aBufFirstIdx, lastIdx: idx });
@@ -4664,16 +4871,22 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     if (aBuf.length === 0) aBufFirstIdx = idx;
     aBuf.push(log);
   };
-  // Build set of agent names already covered by team-spawn events so individual
-  // spawn logs for those same agents are not rendered a second time.
-  const teamSpawnedNames = new Set<string>();
+  // Group and individual lifecycle events can arrive in either order. Reconcile
+  // by immutable run ID first so reused task names never collapse distinct runs.
+  const groupedSpawnRunIds = new Set<string>();
+  const groupedLegacyNames = new Set<string>();
   timelineLogs.forEach((log: any) => {
-    if (log.type === 'sub_agent_spawn' && Array.isArray(log.spawnedAgents) && log.spawnedAgents.length > 1) {
+    if (log.type === 'sub_agent_spawn' && (Array.isArray(log.agentDetails) || Array.isArray(log.spawnedAgents))) {
       const details = log.agentDetails || log.spawnedAgents || [];
-      const names: string[] = Array.isArray(details)
-        ? details.map((a: any) => typeof a === 'string' ? a : a.name).filter(Boolean)
-        : [];
-      names.forEach(n => teamSpawnedNames.add(String(n).toLowerCase().trim()));
+      if (Array.isArray(details)) details.forEach((agent: any) => {
+        if (typeof agent === 'string') {
+          groupedLegacyNames.add(agent.toLowerCase().trim());
+          return;
+        }
+        const runId = String(agent?.agentId || agent?.subAgentId || agent?.subAgentChatId || '').trim();
+        if (runId) groupedSpawnRunIds.add(runId);
+        else if (agent?.name) groupedLegacyNames.add(String(agent.name).toLowerCase().trim());
+      });
     }
   });
 
@@ -4700,10 +4913,15 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       }
     }
     else if (log.type === 'sub_agent_spawn') {
-      // Skip individual single-agent spawn events whose name was already covered by a team spawn
+      // Skip the per-worker event when its exact run is already represented by
+      // the group event. Name fallback is only for legacy events without IDs.
       const singleName = String(log.agentName || log.subAgent || '').toLowerCase().trim();
-      const isTeamEvent = Array.isArray(log.spawnedAgents) && log.spawnedAgents.length > 1;
-      const isDuplicate = !isTeamEvent && singleName && teamSpawnedNames.has(singleName);
+      const singleRunId = String(log.subAgentId || log.agentId || log.subAgentChatId || '').trim();
+      const isTeamEvent = Array.isArray(log.agentDetails) || Array.isArray(log.spawnedAgents);
+      const isDuplicate = !isTeamEvent && (
+        (singleRunId && groupedSpawnRunIds.has(singleRunId)) ||
+        (!singleRunId && singleName && groupedLegacyNames.has(singleName))
+      );
       if (!isDuplicate) {
         flush(idx - 1);
         segs.push({ kind: 'subagent_spawn', log, idx });
@@ -4713,6 +4931,12 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       if (isSubAgentTab) {
         flush(idx - 1);
         segs.push({ kind: 'subagent_error', log, idx });
+      }
+    }
+    else if (['sub_agent_pause', 'sub_agent_resume', 'sub_agent_close'].includes(log.type)) {
+      if (isSubAgentTab) {
+        flush(idx - 1);
+        segs.push({ kind: 'subagent_status', log, idx });
       }
     }
     else if (log.type === 'sub_agent_action') {
@@ -4765,12 +4989,8 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
           const firstIdx = nextSeg.firstIdx ?? nextSeg.lastIdx ?? i;
           const groupKey = `phase-g-${ firstIdx }-${ getActionIdentity(nextSeg.logs[0], firstIdx) }`;
           return (
-            <motion.div
+            <div
               key={`phase-${ getStreamRowIdentity(seg.log, seg.idx) }-${ groupKey }`}
-              layout={false}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.14, ease: 'easeOut' }}
               className="eterx-phase-block w-full"
             >
               <WorkNoteBlock text={seg.log.text} isActive={phaseIsActive} isProxyStatus={seg.log.type === 'autonomy_proxy_status'} />
@@ -4782,7 +5002,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
                   allLogs={timelineLogs}
                 />
               </div>
-            </motion.div>
+            </div>
           );
         }
         if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1} isProxyStatus={seg.log.type === 'autonomy_proxy_status'} />;
@@ -4802,6 +5022,9 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'subagent_error') {
           return isSubAgentTab ? <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} assetIndexes={assetIndexes} /> : null;
         }
+        if (seg.kind === 'subagent_status') {
+          return isSubAgentTab ? <SubAgentCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} /> : null;
+        }
         if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === segs.length - 1 && !seg.log.answeredWith} />;
         if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ seg.idx }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === segs.length - 1} />;
         if (seg.kind === 'action_group' && prevSeg?.kind === 'note') return null;
@@ -4810,9 +5033,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         const groupKey = `g-${ firstIdx }-${ getActionIdentity(seg.logs[0], firstIdx) }`;
         return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1} isLast={isLast} allLogs={timelineLogs} />;
       })}
-      <AnimatePresence>
-        {showLiveIndicator && isThinking && isLast && segs.length === 0 && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
-      </AnimatePresence>
+      {showLiveIndicator && isThinking && isLast && segs.length === 0 && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
     </div>
   );
 };

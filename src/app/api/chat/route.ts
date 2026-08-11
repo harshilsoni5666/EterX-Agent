@@ -29,6 +29,7 @@ import {
   requireChatOwner,
 } from '../agent/_shared';
 import { MODEL_PROVIDER_MODE, isModelProvider } from '../../../lib/agent/model-selector-store';
+import { resolveChatMediaForRequest } from '../../../lib/chat-media-store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -91,6 +92,15 @@ export async function POST(req: NextRequest) {
       return attachAgentApiSessionCookie(ownerError, session);
     }
 
+    // Register the originals before the background run starts. Later turns in
+    // this chat can resolve the same media by stable attachment id, even when
+    // the renderer no longer has the original File object.
+    const chatMediaAttachments = await resolveChatMediaForRequest(
+      chatId,
+      prompt,
+      safeMediaAttachments,
+    );
+
     const safeMode = normalizeMainAgentMode(mode);
     const safeUserId = cleanString(userId, 120) || 'default_user';
     const safeUserName = cleanString(userName, 120) || 'Developer';
@@ -127,14 +137,8 @@ export async function POST(req: NextRequest) {
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
     const selectedRuntimeId = typeof customAgentId === 'string' ? customAgentId.trim() : '';
     const isCustomAgentRun = !isBuilderChat && selectedRuntimeId.length > 0;
-    const isAutonomousRun = safePinnedContext?.agentRuntime === 'autonomy_v1';
-    const isGeneralRun = !isBuilderChat && !isCustomAgentRun && !isAutonomousRun;
     let effectivePinnedContext: Record<string, any> = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
-      ...(isGeneralRun ? {
-        disableSubAgents: true,
-        allowAgentSpawning: false,
-      } : {}),
       thinkingLevel: safeThinkingLevel,
       ...(exactModelName ? {
         selectedModelName: exactModelName,
@@ -194,7 +198,7 @@ export async function POST(req: NextRequest) {
       effectiveMode,
       safeUserId,
       effectivePinnedContext,
-      safeMediaAttachments,
+      chatMediaAttachments,
       safeUserName,
       runtimeSettings.preferredGeminiApiKey,
       runtimeSettings,
@@ -205,6 +209,9 @@ export async function POST(req: NextRequest) {
       return attachAgentApiSessionCookie(jsonError('All API keys are in use. Try again shortly.', 503, startResult), session);
     }
     if (startResult.status === 'already_running') {
+      return attachAgentApiSessionCookie(jsonError(startResult.message, 409, startResult), session);
+    }
+    if (startResult.status === 'cancelled') {
       return attachAgentApiSessionCookie(jsonError(startResult.message, 409, startResult), session);
     }
 
@@ -269,7 +276,11 @@ export async function POST(req: NextRequest) {
                   artifactsGenerated: []
                 }});
               } else if (result.status === 'failed') {
-                sendEvent({ type: 'error', data: result.error || 'Agent failed' });
+                const errorText = result.error || 'Agent failed';
+                // Keep both fields for older SSE consumers and the current
+                // event envelope. The renderer normally learns this through
+                // polling, but API clients may rely on the stream directly.
+                sendEvent({ type: 'error', error: errorText, data: errorText });
               } else if (result.status === 'stopped') {
                 sendEvent({ type: 'done', data: { 
                   success: false, 
@@ -303,7 +314,7 @@ export async function POST(req: NextRequest) {
 
     return attachAgentApiSessionCookie(new Response(stream, {
       headers: {
-        'Content-Type': 'text/event-stream',
+        'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no', // Disable nginx/proxy buffering

@@ -120,7 +120,23 @@ export const AgentsView = React.memo(({
   // Modal state
   const [isCreating, setIsCreating] = useState(false);
   const [newAgentName, setNewAgentName] = useState("");
+  const [newAgentPurpose, setNewAgentPurpose] = useState("");
+  const [newAgentTemplate, setNewAgentTemplate] = useState<'general' | 'sales' | 'support' | 'operations' | 'research' | 'coding'>('general');
+  const [newAgentIntegration, setNewAgentIntegration] = useState<'none' | 'channels' | 'connectors' | 'all'>('none');
+  const [newAgentChannelProfile, setNewAgentChannelProfile] = useState('');
+  const [channelProfiles, setChannelProfiles] = useState<Array<{ id: string; name: string; role: string }>>([]);
   const [generatedId, setGeneratedId] = useState("");
+
+  useEffect(() => {
+    if (!isCreating) return;
+    const desktopApi = (window as any)?.electronAPI;
+    void desktopApi?.getGatewayState?.().then((state: any) => {
+      const profiles = Array.isArray(state?.config?.channelAgent?.profiles) ? state.config.channelAgent.profiles : [];
+      setChannelProfiles(profiles.map((item: any) => ({ id: String(item.id), name: String(item.name || item.id), role: String(item.role || 'custom') })));
+      const defaultId = String(state?.config?.channelAgent?.defaultProfileId || profiles[0]?.id || '');
+      if (defaultId) setNewAgentChannelProfile(defaultId);
+    }).catch(() => {});
+  }, [isCreating]);
 
   // Download, Import & Setup Notice state
   const [setupNoticeAgent, setSetupNoticeAgent] = useState<{ id: string; name: string } | null>(null);
@@ -357,6 +373,10 @@ export const AgentsView = React.memo(({
     // Reset modal state after animation completes
     setTimeout(() => {
       setNewAgentName("");
+      setNewAgentPurpose("");
+      setNewAgentTemplate('general');
+      setNewAgentIntegration('none');
+      setNewAgentChannelProfile('');
       setGeneratedId("");
     }, 300);
   };
@@ -374,11 +394,18 @@ export const AgentsView = React.memo(({
     if (!newAgentName.trim()) return;
     const builderId = getOrCreateBuilderId();
     const name = newAgentName.trim();
+    const purpose = newAgentPurpose.trim() || `Create a professional ${newAgentTemplate === 'general' ? 'custom' : newAgentTemplate} agent named ${name}.`;
+    const attachChannels = newAgentIntegration === 'channels' || newAgentIntegration === 'all';
+    const attachConnectors = newAgentIntegration === 'connectors' || newAgentIntegration === 'all';
+    const attachedTools = [
+      ...(attachChannels ? [{ toolName: 'channel_agent', purpose: 'Load the configured channel workflow on demand.', whenToUse: 'Call first for inbox, customer, lead, sales, support, drafting, or reply work across connected channels.', inputPolicy: newAgentChannelProfile ? `Use profile_id=${newAgentChannelProfile}.` : 'Omit profile_id to use the default Channel Agent profile.', outputPolicy: 'Follow the returned send and escalation policy; never claim delivery unless send_reply succeeds.', attachedAt: new Date().toISOString() }, { toolName: 'gateway_bridge', purpose: 'Use low-level native Gateway operations when the high-level channel tool cannot express the requested action.', whenToUse: 'Use after channel_agent when explicit conversation, event, attachment, pairing, or target control is required.', inputPolicy: 'Use only identifiers returned by Gateway tools.', outputPolicy: 'Treat live results and errors as authoritative.', attachedAt: new Date().toISOString() }] : []),
+      ...(attachConnectors ? [{ toolName: 'connector_mcp', purpose: 'Operate saved REST and MCP integrations.', whenToUse: 'Discover and call a configured external service required by the mission.', inputPolicy: 'Discover the connector and exact live tool before calling it; never expose secrets.', outputPolicy: 'Verify the connector result before claiming success.', attachedAt: new Date().toISOString() }] : []),
+    ];
     setAgents(previous => [
       {
         id: builderId,
         name,
-        description: 'Custom agent being configured.',
+        description: purpose,
         accessType: 'Agent Decides',
         isSetup: false,
         builderMessages: [],
@@ -397,9 +424,10 @@ export const AgentsView = React.memo(({
       body: JSON.stringify({
         agentId: builderId,
         name,
-        mission: 'Custom agent being configured.',
-        description: 'Custom agent being configured.',
-        professionalPrompt: `You are ${name}. Configure this agent according to the builder conversation.`,
+        mission: purpose,
+        description: purpose,
+        professionalPrompt: `You are ${name}. Your mission is: ${purpose}\n\nThis is a draft. Agent Builder must complete the operating prompt, behavior, safety, tools, evidence rules, failure recovery, and completion criteria before finalization.`,
+        directMainTools: attachedTools,
       }),
       });
     } catch {
@@ -698,7 +726,7 @@ export const AgentsView = React.memo(({
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.95, y: 20 }}
               transition={{ type: "spring", damping: 25, stiffness: 300 }}
-              className="bg-[#0A0A0A] border border-white/10 rounded-[28px] p-6 w-full max-w-[500px] shadow-2xl flex flex-col gap-6 max-h-[90vh]"
+              className="bg-[#0A0A0A] border border-white/10 rounded-[28px] p-6 w-full max-w-[680px] shadow-2xl flex flex-col gap-6 max-h-[90vh] overflow-y-auto eterx-scrollbar"
             >
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-white tracking-tight">Agent Builder</h2>
@@ -726,6 +754,36 @@ export const AgentsView = React.memo(({
                     }}
                     className="w-full bg-[#111111] border border-white/10 rounded-xl px-4 py-3 text-[14px] text-white outline-none focus:border-white/20 transition-all font-sans placeholder:text-[#555350]"
                   />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[13px] font-semibold text-[#8C8A88]">Role template</label>
+                    <select value={newAgentTemplate} onChange={(event) => setNewAgentTemplate(event.target.value as typeof newAgentTemplate)} className="h-11 rounded-xl border border-white/10 bg-[#111111] px-3 text-[13px] text-white outline-none focus:border-white/20">
+                      <option value="general">General</option><option value="sales">Sales</option><option value="support">Support</option><option value="operations">Operations</option><option value="research">Research</option><option value="coding">Coding</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[13px] font-semibold text-[#8C8A88]">Integrations</label>
+                    <select value={newAgentIntegration} onChange={(event) => setNewAgentIntegration(event.target.value as typeof newAgentIntegration)} className="h-11 rounded-xl border border-white/10 bg-[#111111] px-3 text-[13px] text-white outline-none focus:border-white/20">
+                      <option value="none">None yet</option><option value="channels">Channels</option><option value="connectors">REST / MCP</option><option value="all">Channels + connectors</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-[13px] font-semibold text-[#8C8A88]">What should this agent accomplish?</label>
+                  <textarea rows={4} value={newAgentPurpose} onChange={(event) => setNewAgentPurpose(event.target.value)} placeholder="Example: Qualify inbound leads, answer from approved product information, draft concise follow-ups, and escalate pricing or security questions." className="w-full resize-none rounded-xl border border-white/10 bg-[#111111] px-4 py-3 text-[13px] leading-5 text-white outline-none transition-all placeholder:text-[#555350] focus:border-white/20" />
+                </div>
+                {(newAgentIntegration === 'channels' || newAgentIntegration === 'all') && (
+                  <div className="flex flex-col gap-2 rounded-xl border border-[#1d8cff]/20 bg-[#1d8cff]/[0.06] p-3">
+                    <div className="flex items-center justify-between gap-3"><div><label className="text-[13px] font-semibold text-[#b9dcff]">Channel Agent profile</label><p className="mt-1 text-[11px] leading-4 text-[#8C8A88]">The workflow loads only when needed, keeping normal prompts smaller.</p></div><span className="rounded-full bg-[#1d8cff]/15 px-2 py-1 text-[9px] font-semibold text-[#9dceff]">On demand</span></div>
+                    <select value={newAgentChannelProfile} onChange={(event) => setNewAgentChannelProfile(event.target.value)} className="h-10 rounded-lg border border-white/10 bg-[#111111] px-3 text-[12px] text-white outline-none">
+                      <option value="">Default Gateway profile</option>{channelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.role}</option>)}
+                    </select>
+                    {channelProfiles.length === 0 && <p className="text-[10px] text-amber-300/80">No custom Channel Agent profiles found. The Gateway default will be used; profiles can be added under Channels → Channel Agents.</p>}
+                  </div>
+                )}
+                <div className="grid grid-cols-3 gap-2">
+                  {[['1', 'Describe', 'Mission + role'], ['2', 'Build', 'Prompt + tools'], ['3', 'Verify', 'Quality + finalize']].map(([step, title, detail]) => <div key={step} className="rounded-xl border border-white/[0.07] bg-white/[0.025] p-2.5"><div className="text-[9px] font-bold text-[#9dceff]">STEP {step}</div><div className="mt-1 text-[11px] font-semibold text-white">{title}</div><div className="mt-0.5 text-[9px] text-[#706e6b]">{detail}</div></div>)}
                 </div>
               </div>
 

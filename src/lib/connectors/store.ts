@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getEterxWorkspaceDir } from '../agent/storage-paths';
+import { getEterxDataDir, getEterxWorkspaceDir } from '../agent/storage-paths';
 
 export type ConnectorKind = 'rest' | 'oauth' | 'native';
 
@@ -42,9 +42,14 @@ type ConnectorStoreData = {
 };
 
 const ENCRYPTED_FILE = '.connectors.enc.json';
+const ENCRYPTED_BACKUP_FILE = '.connectors.backup.enc.json';
 const LEGACY_FILE = '.connectors.json';
 
 function storePath(fileName: string): string {
+  return path.join(getEterxDataDir(), 'settings', fileName);
+}
+
+function oldWorkspaceStorePath(fileName: string): string {
   return path.join(getEterxWorkspaceDir(), fileName);
 }
 
@@ -105,25 +110,51 @@ function decrypt(raw: string): ConnectorStoreData {
 }
 
 function readStore(): ConnectorStoreData {
-  try {
-    if (fs.existsSync(storePath(ENCRYPTED_FILE))) return decrypt(fs.readFileSync(storePath(ENCRYPTED_FILE), 'utf8'));
-  } catch (error) {
-    console.warn('[connectors] encrypted store could not be read:', error instanceof Error ? error.message : error);
+  const encryptedSources = [
+    storePath(ENCRYPTED_FILE),
+    storePath(ENCRYPTED_BACKUP_FILE),
+    oldWorkspaceStorePath(ENCRYPTED_FILE),
+  ];
+  for (const source of encryptedSources) {
+    try {
+      if (!fs.existsSync(source)) continue;
+      const data = decrypt(fs.readFileSync(source, 'utf8'));
+      if (source === oldWorkspaceStorePath(ENCRYPTED_FILE)) writeStore(data);
+      return data;
+    } catch (error) {
+      console.warn('[connectors] encrypted store could not be read:', error instanceof Error ? error.message : error);
+    }
   }
-  try {
-    if (fs.existsSync(storePath(LEGACY_FILE))) return normalizeLegacy(JSON.parse(fs.readFileSync(storePath(LEGACY_FILE), 'utf8')));
-  } catch (error) {
-    console.warn('[connectors] legacy store could not be read:', error instanceof Error ? error.message : error);
+  for (const source of [storePath(LEGACY_FILE), oldWorkspaceStorePath(LEGACY_FILE)]) {
+    try {
+      if (!fs.existsSync(source)) continue;
+      const data = normalizeLegacy(JSON.parse(fs.readFileSync(source, 'utf8')));
+      writeStore(data);
+      try { fs.rmSync(source, { force: true }); } catch { }
+      return data;
+    } catch (error) {
+      console.warn('[connectors] legacy store could not be read:', error instanceof Error ? error.message : error);
+    }
   }
   return emptyStore();
 }
 
 function writeStore(data: ConnectorStoreData): void {
   const target = storePath(ENCRYPTED_FILE);
+  const backup = storePath(ENCRYPTED_BACKUP_FILE);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  const temporary = `${target}.tmp-${process.pid}`;
+  const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(temporary, encrypt(data), { encoding: 'utf8', mode: 0o600 });
-  fs.renameSync(temporary, target);
+  try {
+    if (fs.existsSync(target)) {
+      try { fs.copyFileSync(target, backup); } catch { }
+      if (process.platform === 'win32') fs.rmSync(target, { force: true, maxRetries: 3, retryDelay: 100 });
+    }
+    fs.renameSync(temporary, target);
+  } catch (error) {
+    try { fs.rmSync(temporary, { force: true }); } catch { }
+    throw error;
+  }
 }
 
 export function listConnectorRecords(): ConnectorRecord[] {
@@ -177,6 +208,11 @@ export function redactConnector(record: ConnectorRecord | McpServerRecord): Reco
   delete value.credentials;
   delete value.headers;
   delete value.env;
+  if (value.metadata && typeof value.metadata === 'object' && !Array.isArray(value.metadata)) {
+    value.metadata = Object.fromEntries(
+      Object.entries(value.metadata as Record<string, unknown>)
+        .filter(([key]) => !/token|secret|password|api.?key|authorization|cookie|credential/i.test(key)),
+    );
+  }
   return value;
 }
-

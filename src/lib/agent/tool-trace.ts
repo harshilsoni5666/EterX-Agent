@@ -89,6 +89,7 @@ const TOOL_DISPLAY_LABELS: Record<string, string> = {
   workspace_find_files: 'Finding files',
   workspace_file_outline: 'Outlining file',
   workspace_run_command: 'Running project command',
+  spawn_sub_agent: 'Managing agent work',
   tool_finder: 'Finding tool',
 };
 

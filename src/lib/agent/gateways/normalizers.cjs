@@ -86,6 +86,47 @@ function normalizeWhatsApp(payload) {
   return output;
 }
 
+function normalizeMessenger(payload) {
+  const output = [];
+  for (const entry of payload.entry || []) for (const event of entry.messaging || []) {
+    const message = event.message || {};
+    if (!event.sender?.id || message.is_echo || (!message.text && !Array.isArray(message.attachments))) continue;
+    const attachments = (message.attachments || []).map((item) => ({
+      id: clean(item.payload?.url || item.payload?.sticker_id || item.type),
+      type: attachmentType(item.type),
+      url: clean(item.payload?.url) || undefined,
+    }));
+    output.push(base('messenger', message.mid || event.timestamp, event.sender.id, {
+      id: event.sender.id,
+      displayName: event.sender.name,
+    }, message.text, Number(event.timestamp) || Date.now(), {
+      threadId: message.reply_to?.mid,
+      attachments,
+      replyTarget: { recipientId: clean(event.sender.id), pageId: clean(entry.id), messageId: clean(message.mid) },
+      metadata: { pageId: clean(entry.id), recipientId: clean(event.recipient?.id), isEcho: Boolean(message.is_echo) },
+    }));
+  }
+  return output;
+}
+
+function normalizeEmail(payload) {
+  const message = payload.message || payload;
+  const from = message.actor || {};
+  const subject = clean(message.metadata?.subject || message.subject);
+  const conversationId = message.conversationId || `email:${clean(from.id)}:${subject.toLowerCase() || '(no subject)'}`;
+  return [base('email', message.id || message.messageId, conversationId, {
+    id: from.id || message.from,
+    displayName: from.displayName || message.from,
+    username: from.username || message.from,
+    isBot: false,
+  }, message.text || message.content, message.timestamp ? Date.parse(message.timestamp) || Number(message.timestamp) : Date.now(), {
+    threadId: message.metadata?.inReplyTo || message.inReplyTo,
+    attachments: Array.isArray(message.attachments) ? message.attachments : [],
+    replyTarget: message.replyTarget || { to: message.from, subject },
+    metadata: { ...message.metadata, subject },
+  })];
+}
+
 function normalizeDiscord(payload) {
   const event = payload.d || payload;
   const eventName = clean(payload.t || payload.type).toUpperCase();
@@ -148,6 +189,8 @@ function normalizeGatewayPayload(platform, payload) {
   if (!payload || typeof payload !== 'object') return [];
   if (platform === 'telegram') return normalizeTelegram(payload);
   if (platform === 'whatsapp') return normalizeWhatsApp(payload);
+  if (platform === 'messenger') return normalizeMessenger(payload);
+  if (platform === 'email') return normalizeEmail(payload);
   if (platform === 'discord') return normalizeDiscord(payload);
   if (platform === 'signal') return normalizeSignal(payload);
   return normalizeGeneric(payload);

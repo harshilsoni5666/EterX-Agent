@@ -3,7 +3,9 @@ import {
   isInternalWorkNoteNoise,
   isTerminalWorkTrace,
   isTurnWorkActive,
+  orderFeedTimelineLogs,
   shouldRenderContextCompactionEvent,
+  shouldShowWorkflowSequence,
 } from '../src/lib/chat-feed-lifecycle';
 
 assert.equal(
@@ -18,6 +20,10 @@ assert.equal(
 );
 
 const action = { type: 'command', text: 'Running tests' };
+
+assert.equal(shouldShowWorkflowSequence(0), false, 'a simple send must not show an empty work sequence');
+assert.equal(shouldShowWorkflowSequence(1), true, 'the first real action should reveal the work sequence');
+assert.equal(shouldShowWorkflowSequence(2), true, 'later actions should keep the work sequence visible');
 
 assert.equal(isTurnWorkActive(true, false, [action]), true, 'an active turn should keep timing');
 assert.equal(isTurnWorkActive(false, false, [action]), false, 'a cleared running flag should stop timing');
@@ -73,6 +79,30 @@ assert.equal(
   'a main-agent done trace should be terminal',
 );
 
+assert.equal(
+  isTerminalWorkTrace({ type: 'thought', subAgent: 'Researcher', text: 'Agent stopped: provider failed' }),
+  false,
+  'terminal-looking worker text must not stop the main turn counter',
+);
+
+assert.equal(
+  isTerminalWorkTrace({ type: 'thought', agentName: 'Worker', text: 'Generation stopped by user.' }),
+  false,
+  'terminal-looking delegated text must remain scoped to its worker',
+);
+
+assert.equal(
+  isTerminalWorkTrace({ type: 'work_note', subAgent: 'Researcher', text: 'Agent stopped: provider failed' }),
+  false,
+  'terminal-looking delegated work-note text must not stop the main turn counter',
+);
+
+assert.equal(
+  isTerminalWorkTrace({ type: 'agent_status', status: 'failed', agentName: 'Main' }),
+  true,
+  'explicit Main terminal status should remain terminal even when agentName is present',
+);
+
 const compacting = { type: 'context_compaction', phase: 'compacting', compactionId: 'ctx-a' };
 const compacted = { type: 'context_compaction', phase: 'compacted', compactionId: 'ctx-a' };
 assert.equal(
@@ -100,5 +130,53 @@ assert.equal(
   true,
   'a completed compaction remains as the single settled lifecycle row',
 );
+
+{
+  // Polling may deliver a previous run's action after the newer run has
+  // already painted. It must be restored to its owning user turn.
+  const ordered = orderFeedTimelineLogs([
+    { type: 'user_action', text: 'First request', runId: 'run-a', turnId: 'run-a', _traceIdx: 0, timestamp: 1000 },
+    { type: 'command', text: 'First answer-building action', runId: 'run-a', turnId: 'run-a', _traceIdx: 1 },
+    { type: 'user_action', text: 'Second request', runId: 'run-b', turnId: 'run-b', _traceIdx: 0, timestamp: 2000 },
+    { type: 'answer', text: 'Second answer', runId: 'run-b', turnId: 'run-b', _traceIdx: 1 },
+    { type: 'command', text: 'Late first action', runId: 'run-a', _traceIdx: 2, timestamp: 1500 },
+  ]);
+
+  assert.deepEqual(
+    ordered.map(log => log.text),
+    ['First request', 'First answer-building action', 'Late first action', 'Second request', 'Second answer'],
+    'late traces must not be interleaved into a newer answer turn',
+  );
+
+  const withLateBoundary = orderFeedTimelineLogs([
+    { type: 'user_action', text: 'Newer request', runId: 'run-new', turnId: 'run-new', timestamp: 2000 },
+    { type: 'answer', text: 'Newer answer', runId: 'run-new', turnId: 'run-new', timestamp: 2100 },
+    { type: 'user_action', text: 'Delayed older request', runId: 'run-old', turnId: 'run-old', timestamp: 1000 },
+    { type: 'command', text: 'Older action', runId: 'run-old', turnId: 'run-old', timestamp: 1100 },
+  ]);
+
+  assert.deepEqual(
+    withLateBoundary.map(log => log.text),
+    ['Delayed older request', 'Older action', 'Newer request', 'Newer answer'],
+    'a delayed user boundary must not create a new turn after the current answer',
+  );
+}
+
+{
+  // A single run can contain multiple Proxy user boundaries. When no explicit
+  // turn ID is present, the monotonic trace index selects the correct boundary.
+  const ordered = orderFeedTimelineLogs([
+    { type: 'user_action', text: 'Proxy request one', runId: 'run-proxy', _traceIdx: 0 },
+    { type: 'user_action', text: 'Proxy request two', runId: 'run-proxy', _traceIdx: 3 },
+    { type: 'command', text: 'Second request action', runId: 'run-proxy', _traceIdx: 4 },
+    { type: 'command', text: 'First request action', runId: 'run-proxy', _traceIdx: 1 },
+  ]);
+
+  assert.deepEqual(
+    ordered.map(log => log.text),
+    ['Proxy request one', 'First request action', 'Proxy request two', 'Second request action'],
+    'same-run Proxy boundaries must keep their own action sequences',
+  );
+}
 
 console.log('Chat feed lifecycle integration checks passed.');

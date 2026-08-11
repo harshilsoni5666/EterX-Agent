@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
     if (hasExplicitApiKeys) persistedPatch.apiKeys = body.apiKeys;
     if (hasModelOverrides) persistedPatch.modelOverrides = body.modelOverrides;
     if (hasBaseURLs) persistedPatch.baseURLs = body.baseURLs;
-    if (Object.keys(persistedPatch).length > 0) {
+    if (body?.persist !== false && Object.keys(persistedPatch).length > 0) {
       await updateStoredRuntimeSettings(persistedPatch as any);
     }
 

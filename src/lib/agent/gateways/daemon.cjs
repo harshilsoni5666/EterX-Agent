@@ -9,8 +9,9 @@ const { GatewayStore } = require('./store.cjs');
 const { GatewayAdapterRegistry } = require('./registry.cjs');
 const { buildGatewaySessionKey, GatewaySessionLanes } = require('./session.cjs');
 const { GatewayHookBus } = require('./hooks.cjs');
+const { EmailGatewayAdapter, sendEmailMessage } = require('./email.cjs');
 
-const PLATFORMS = ['telegram', 'whatsapp', 'discord', 'signal', 'generic'];
+const PLATFORMS = ['telegram', 'whatsapp', 'messenger', 'email', 'discord', 'signal', 'generic'];
 const DEFAULT_CONFIG = Object.freeze({
   enabled: false,
   keepRunningOnClose: true,
@@ -19,12 +20,32 @@ const DEFAULT_CONFIG = Object.freeze({
   launchAtLogin: false,
   host: '127.0.0.1',
   port: 47821,
-  autoDispatch: true,
+  autoDispatch: false,
   busyInputMode: 'queue',
   mcpBridgeEnabled: true,
+  channelAgent: {
+    enabled: true,
+    defaultProfileId: 'channel-operator',
+    profiles: [{
+      id: 'channel-operator',
+      name: 'Channel operator',
+      role: 'custom',
+      objective: 'Help the user inspect and act on connected conversations when asked.',
+      instructions: '',
+      channels: [],
+      operatingMode: 'manual',
+      readPolicy: 'on-demand',
+      sendPolicy: 'direct',
+      escalationRules: 'Escalate pricing commitments, legal or security issues, angry customers, and anything outside the configured objective.',
+      responseStyle: 'Clear, concise, human, and appropriate for the channel.',
+      pollIntervalMinutes: 5,
+    }],
+  },
   platforms: {
     telegram: { enabled: false, mode: 'polling', accessPolicy: 'pairing', groupSessionsPerUser: true, allowlist: [] },
     whatsapp: { enabled: false, mode: 'webhook', apiVersion: 'v23.0', accessPolicy: 'pairing', groupSessionsPerUser: true, allowlist: [] },
+    messenger: { enabled: false, mode: 'webhook', apiVersion: 'v23.0', accessPolicy: 'pairing', groupSessionsPerUser: true, allowlist: [] },
+    email: { enabled: false, mode: 'polling', accessPolicy: 'pairing', groupSessionsPerUser: false, allowlist: [], imapPort: 993, smtpPort: 587, pollInterval: 15, imapSecure: true, smtpSecure: false },
     discord: { enabled: false, mode: 'gateway', accessPolicy: 'pairing', groupSessionsPerUser: true, allowlist: [] },
     signal: { enabled: false, mode: 'bridge', endpoint: 'http://127.0.0.1:8080', accessPolicy: 'pairing', groupSessionsPerUser: true, allowlist: [] },
     generic: { enabled: false, mode: 'webhook', accessPolicy: 'allowlist', groupSessionsPerUser: true, allowlist: [] },
@@ -42,7 +63,38 @@ const MCP_TOOLS = [
   ['channels_list', 'List configured messaging transports and their connection state.', {}],
   ['permissions_list_open', 'List pending gateway pairing approvals.', {}],
   ['permissions_respond', 'Approve or deny a pending pairing request.', { identity_id: { type: 'string' }, approved: { type: 'boolean' } }, ['identity_id', 'approved']],
+  ['agent_profile_get', 'Load an on-demand channel-agent profile and its operating policy.', { profile_id: { type: 'string' }, platform: { type: 'string' } }],
 ].map(([name, description, properties, required]) => ({ name, description, inputSchema: { type: 'object', properties, ...(required ? { required } : {}), additionalProperties: false } }));
+
+function normalizeChannelAgent(raw = {}) {
+  const profiles = (Array.isArray(raw.profiles) ? raw.profiles : DEFAULT_CONFIG.channelAgent.profiles).slice(0, 50).map((item, index) => {
+    const fallback = DEFAULT_CONFIG.channelAgent.profiles[0];
+    const id = String(item?.id || `channel-agent-${index + 1}`).trim().replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 80) || `channel-agent-${index + 1}`;
+    return {
+      id,
+      name: String(item?.name || id).trim().slice(0, 120),
+      role: ['sales', 'support', 'operations', 'custom'].includes(item?.role) ? item.role : 'custom',
+      objective: String(item?.objective || fallback.objective).trim().slice(0, 4000),
+      instructions: String(item?.instructions || '').trim().slice(0, 12000),
+      channels: Array.isArray(item?.channels) ? [...new Set(item.channels.map((value) => String(value).trim().toLowerCase()).filter((value) => PLATFORMS.includes(value)))].slice(0, PLATFORMS.length) : [],
+      operatingMode: ['manual', 'assist', 'autonomous'].includes(item?.operatingMode) ? item.operatingMode : 'manual',
+      readPolicy: ['on-demand', 'unread', 'all'].includes(item?.readPolicy) ? item.readPolicy : 'on-demand',
+      // Older ask-before-send profiles migrate to direct sending. Pairing
+      // approval remains separate from message delivery authorization.
+      sendPolicy: item?.sendPolicy === 'draft-only' ? 'draft-only' : item?.sendPolicy === 'autonomous' ? 'autonomous' : 'direct',
+      escalationRules: String(item?.escalationRules || fallback.escalationRules).trim().slice(0, 4000),
+      responseStyle: String(item?.responseStyle || fallback.responseStyle).trim().slice(0, 2000),
+      pollIntervalMinutes: Math.max(1, Math.min(1440, Number(item?.pollIntervalMinutes) || 5)),
+    };
+  });
+  const safeProfiles = profiles.length ? profiles : DEFAULT_CONFIG.channelAgent.profiles.map((item) => ({ ...item }));
+  const requestedDefault = String(raw.defaultProfileId || '').trim();
+  return {
+    enabled: raw.enabled !== false,
+    defaultProfileId: safeProfiles.some((item) => item.id === requestedDefault) ? requestedDefault : safeProfiles[0].id,
+    profiles: safeProfiles,
+  };
+}
 
 function mergeConfig(raw = {}) {
   const port = Number(raw.port);
@@ -54,9 +106,13 @@ function mergeConfig(raw = {}) {
     keepActiveChatsOnClose: raw.keepActiveChatsOnClose !== false,
     runScheduledTasksInBackground: raw.runScheduledTasksInBackground !== false,
     launchAtLogin: Boolean(raw.launchAtLogin),
-    autoDispatch: raw.autoDispatch !== false,
+    autoDispatch: raw.autoDispatch === true,
     busyInputMode: ['queue', 'steer', 'interrupt'].includes(raw.busyInputMode) ? raw.busyInputMode : 'queue',
     mcpBridgeEnabled: raw.mcpBridgeEnabled !== false,
+    // Connector credentials have their own encrypted AppData vault. Never
+    // duplicate them into gateway configuration or return them to a renderer.
+    connectorProfiles: {},
+    channelAgent: normalizeChannelAgent(raw.channelAgent || {}),
     controlToken: typeof raw.controlToken === 'string' && raw.controlToken.length >= 32 ? raw.controlToken : crypto.randomBytes(32).toString('hex'),
     host: raw.host === '0.0.0.0' || raw.host === '::' ? raw.host : '127.0.0.1',
     port: Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : DEFAULT_CONFIG.port,
@@ -164,6 +220,7 @@ class GatewayDaemon {
     this.lastError = null;
     this.pollAbort = null;
     this.telegramPollingTask = null;
+    this.emailAdapter = null;
     this.telegramLockFd = null;
     this.telegramLockPath = null;
     this.configureTail = Promise.resolve();
@@ -199,16 +256,24 @@ class GatewayDaemon {
       platforms[id] = {
         enabled: source.enabled,
         mode: source.mode,
-        configured: Boolean(source.token || source.webhookSecret || source.publicKey || source.endpoint),
+        configured: Boolean(source.token || source.webhookSecret || source.publicKey || source.endpoint || source.emailAddress),
         accountId: source.accountId || '',
         apiVersion: source.apiVersion || '',
         endpoint: id === 'signal' ? source.endpoint || '' : '',
+        emailAddress: id === 'email' ? source.emailAddress || '' : '',
+        imapHost: id === 'email' ? source.imapHost || '' : '',
+        smtpHost: id === 'email' ? source.smtpHost || '' : '',
+        imapPort: id === 'email' ? Number(source.imapPort) || 993 : undefined,
+        smtpPort: id === 'email' ? Number(source.smtpPort) || 587 : undefined,
+        pollInterval: id === 'email' ? Number(source.pollInterval) || 15 : undefined,
+        imapSecure: id === 'email' ? source.imapSecure !== false : undefined,
+        smtpSecure: id === 'email' ? source.smtpSecure === true : undefined,
         accessPolicy: source.accessPolicy || 'open',
         allowlist: source.allowlist || [],
         groupSessionsPerUser: source.groupSessionsPerUser !== false,
       };
     }
-    const { controlToken, ...publicSettings } = this.config;
+    const { controlToken, connectorProfiles, ...publicSettings } = this.config;
     return { ...publicSettings, mcpConfigured: Boolean(controlToken), platforms };
   }
 
@@ -298,6 +363,24 @@ class GatewayDaemon {
         this.publishStatus();
       });
     }
+    if (this.config.platforms.email.enabled && this.config.platforms.email.mode === 'polling') {
+      const emailSettings = this.config.platforms.email;
+      const emailPassword = emailSettings.password || emailSettings.appPassword || emailSettings.emailPassword;
+      if (!emailSettings.emailAddress || !emailPassword || !emailSettings.imapHost || !emailSettings.smtpHost) {
+        this.platformState.email = { state: 'needs-configuration', lastError: 'Email address, app password, IMAP host, and SMTP host are required.' };
+      } else {
+      this.emailAdapter = new EmailGatewayAdapter({
+        dataDir: this.dataDir,
+        settings: emailSettings,
+        onMessage: async (payload) => this.accept('email', payload),
+        onState: (state) => { this.platformState.email = state; this.publishStatus(); },
+      });
+      void this.emailAdapter.start().catch((error) => {
+        this.platformState.email = { state: 'retrying', lastError: error?.message || String(error) };
+        this.publishStatus();
+      });
+      }
+    }
     if (this.config.platforms.discord.enabled && this.config.platforms.discord.mode === 'gateway') void this.startDiscordGateway();
     if (this.config.platforms.signal.enabled && this.config.platforms.signal.mode === 'bridge') void this.startSignalBridge();
     this.deliveryTimer = setInterval(() => void this.retryDeliveries(), 15000);
@@ -318,10 +401,13 @@ class GatewayDaemon {
     }
     this.externalRunning = false;
     const pollingTask = this.telegramPollingTask;
+    const emailAdapter = this.emailAdapter;
+    this.emailAdapter = null;
     this.pollAbort?.abort();
     this.pollAbort = null;
     this.signalAbort?.abort();
     this.signalAbort = null;
+    if (emailAdapter) await emailAdapter.stop();
     clearInterval(this.deliveryTimer);
     this.deliveryTimer = null;
     clearInterval(this.discordHeartbeat);
@@ -434,6 +520,10 @@ class GatewayDaemon {
       const expected = `sha256=${crypto.createHmac('sha256', settings.appSecret).update(rawBody).digest('hex')}`;
       return safeEqual(headers['x-hub-signature-256'], expected);
     }
+    if (platform === 'messenger' && settings.appSecret) {
+      const expected = `sha256=${crypto.createHmac('sha256', settings.appSecret).update(rawBody).digest('hex')}`;
+      return safeEqual(headers['x-hub-signature-256'], expected);
+    }
     if (platform === 'discord' && settings.publicKey) {
       try {
         const signature = Buffer.from(String(headers['x-signature-ed25519'] || ''), 'hex');
@@ -483,6 +573,24 @@ class GatewayDaemon {
     }
     if (name === 'messages_send') return this.deliverMessage(String(args.platform || ''), args.target || {}, String(args.text || ''), { source: 'mcp' });
     if (name === 'channels_list') return PLATFORMS.map((id) => ({ id, ...this.status().platforms[id] }));
+    if (name === 'agent_profile_get') {
+      const hasExplicitProfile = Boolean(String(args.profile_id || '').trim());
+      const requested = String(args.profile_id || this.config.channelAgent.defaultProfileId || '').trim();
+      const platform = String(args.platform || '').trim().toLowerCase();
+      const requestedProfile = this.config.channelAgent.profiles.find((item) => item.id === requested);
+      const matchingProfile = platform
+        ? this.config.channelAgent.profiles.find((item) => Array.isArray(item.channels) && item.channels.includes(platform))
+        : null;
+      const profile = hasExplicitProfile
+        ? (requestedProfile && (!platform || requestedProfile.channels.length === 0 || requestedProfile.channels.includes(platform)) ? requestedProfile : null)
+        : (matchingProfile || requestedProfile || this.config.channelAgent.profiles[0] || null);
+      return {
+        enabled: this.config.channelAgent.enabled,
+        defaultProfileId: this.config.channelAgent.defaultProfileId,
+        profile,
+        availableProfiles: this.config.channelAgent.profiles.map((item) => ({ id: item.id, name: item.name, role: item.role, channels: item.channels })),
+      };
+    }
     if (name === 'permissions_list_open') return this.store.listApprovals().filter((item) => item.status === 'pending');
     if (name === 'permissions_respond') return { resolved: this.store.resolveApproval(String(args.identity_id || ''), Boolean(args.approved)) };
     throw new Error(`Unknown gateway bridge tool: ${name}`);
@@ -525,13 +633,14 @@ class GatewayDaemon {
         response.setHeader('mcp-protocol-version', '2025-06-18');
         return send(200, result);
       }
-      if (request.method === 'GET' && url.pathname === '/webhooks/whatsapp') {
-        const valid = url.searchParams.get('hub.mode') === 'subscribe' && safeEqual(url.searchParams.get('hub.verify_token'), this.config.platforms.whatsapp.webhookSecret);
+      if (request.method === 'GET' && (url.pathname === '/webhooks/whatsapp' || url.pathname === '/webhooks/messenger')) {
+        const platform = url.pathname.endsWith('messenger') ? 'messenger' : 'whatsapp';
+        const valid = url.searchParams.get('hub.mode') === 'subscribe' && safeEqual(url.searchParams.get('hub.verify_token'), this.config.platforms[platform].webhookSecret);
         response.writeHead(valid ? 200 : 403, { 'content-type': 'text/plain' });
         response.end(valid ? url.searchParams.get('hub.challenge') || '' : 'Forbidden');
         return;
       }
-      const match = url.pathname.match(/^\/webhooks\/(telegram|whatsapp|discord|signal|generic)$/);
+      const match = url.pathname.match(/^\/webhooks\/(telegram|whatsapp|messenger|discord|signal|generic)$/);
       if (request.method !== 'POST' || !match) return send(404, { error: 'Not found' });
       const platform = match[1];
       if (!this.config.platforms[platform].enabled) return send(409, { error: `${platform} is disabled` });
@@ -753,6 +862,12 @@ class GatewayDaemon {
       const response = await fetch(`https://graph.facebook.com/${version}/${target.phoneNumberId || settings.accountId}/messages`, { method: 'POST', headers: { authorization: `Bearer ${settings.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ messaging_product: 'whatsapp', to: target.to, type: 'text', text: { body: text } }) });
       return readPlatformResponse(response, 'WhatsApp');
     }
+    if (platform === 'messenger') {
+      const version = settings.apiVersion || 'v23.0';
+      const response = await fetch(`https://graph.facebook.com/${version}/me/messages`, { method: 'POST', headers: { authorization: `Bearer ${settings.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ recipient: { id: target.recipientId || target.to }, message: { text } }) });
+      return readPlatformResponse(response, 'Messenger');
+    }
+    if (platform === 'email') return sendEmailMessage(target, text, settings);
     if (platform === 'discord') {
       const response = await fetch(`https://discord.com/api/v10/channels/${target.channelId}/messages`, { method: 'POST', headers: { authorization: `Bot ${settings.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ content: text, message_reference: target.messageId ? { message_id: target.messageId } : undefined }) });
       return readPlatformResponse(response, 'Discord');

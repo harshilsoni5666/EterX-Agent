@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 function getMimeType(filename: string) {
   const ext = path.extname(filename).toLowerCase();
@@ -24,6 +25,10 @@ function getMimeType(filename: string) {
     '.webp': 'image/webp',
     '.avif': 'image/avif',
     '.bmp': 'image/bmp',
+    '.tif': 'image/tiff',
+    '.tiff': 'image/tiff',
+    '.heic': 'image/heic',
+    '.heif': 'image/heif',
     '.svg': 'image/svg+xml',
     '.ico': 'image/x-icon',
     '.wav': 'audio/wav',
@@ -32,14 +37,20 @@ function getMimeType(filename: string) {
     '.m4a': 'audio/mp4',
     '.flac': 'audio/flac',
     '.mp4': 'video/mp4',
+    '.m4v': 'video/x-m4v',
     '.webm': 'video/webm',
     '.mov': 'video/quicktime',
+    '.mkv': 'video/x-matroska',
     '.doc': 'application/msword',
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.docm': 'application/vnd.ms-word.document.macroEnabled.12',
     '.ppt': 'application/vnd.ms-powerpoint',
     '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.pptm': 'application/vnd.ms-powerpoint.presentation.macroEnabled.12',
     '.xls': 'application/vnd.ms-excel',
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.xlsm': 'application/vnd.ms-excel.sheet.macroEnabled.12',
+    '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
     '.zip': 'application/zip',
   };
   return mimes[ext] || 'application/octet-stream';
@@ -52,12 +63,21 @@ function inlineFileNameHeader(filename: string) {
 
 export async function GET(req: NextRequest, { params }: { params: { path: string[] } }) {
   try {
+    const originError = rejectCrossOrigin(req);
+    if (originError) return originError;
+
     // New callers send the complete native path in a query parameter. This
     // keeps roots and special characters intact on Windows, macOS, and Linux.
     // Keep the catch-all route as a backwards-compatible fallback for older
     // renderer bundles and previously stored links.
     const queryPath = req.nextUrl.searchParams.get('path');
-    const parts = params.path.map(p => decodeURIComponent(p));
+    const parts = params.path.map((part) => {
+      try {
+        return decodeURIComponent(part);
+      } catch {
+        return part;
+      }
+    });
     let absolutePath = queryPath?.trim() || '';
 
     if (!absolutePath) {

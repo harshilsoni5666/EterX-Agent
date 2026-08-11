@@ -10,6 +10,7 @@
 # 🔹 Build & Framework
 # =========================
 /.next/
+/.next-dev-*/
 /out/
 /dist
 /build

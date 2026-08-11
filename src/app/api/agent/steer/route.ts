@@ -59,7 +59,20 @@ export async function POST(req: NextRequest) {
     }
 
     const currentRun = agentRegistry.getTraces(chatId, -1);
-    if (cleanRunId && currentRun.runId !== cleanRunId) {
+    if (currentRun.status !== 'running' || !currentRun.runId) {
+      return attachAgentApiSessionCookie(jsonError(
+        'No running agent found for this chat. The message was not queued.',
+        409,
+        { reason: 'No running agent found for this chat. The message was not queued.' },
+      ), session);
+    }
+
+    // Bind even legacy callers that omit runId to the run observed in this
+    // request. addSteeringMessage re-checks this identity synchronously, so a
+    // finish/restart between the read above and admission cannot redirect the
+    // message into a successor run.
+    const admissionRunId = cleanRunId || currentRun.runId;
+    if (currentRun.runId !== admissionRunId) {
       return attachAgentApiSessionCookie(jsonError(
         'The active run changed before this steering message could be delivered.',
         409,
@@ -67,7 +80,7 @@ export async function POST(req: NextRequest) {
       ), session);
     }
 
-    const queued = agentRegistry.addSteeringMessage(chatId, cleanMessage, cleanId, undefined, cleanRunId);
+    const queued = agentRegistry.addSteeringMessage(chatId, cleanMessage, cleanId, undefined, admissionRunId);
 
     if (!queued) {
       const stillRunning = agentRegistry.isRunning(chatId);

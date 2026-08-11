@@ -88,7 +88,6 @@ const BASE_PLANNER_TOOLS = new Set([
   'rss_feed_reader',
   'get_skill_guidelines',
   'docx_generator',
-  'office_artifact_builder',
   'csv_data_analyzer',
   'image_generator',
   'video_generator',
@@ -128,6 +127,7 @@ const DISALLOWED_PLANNER_TOOLS = new Set([
 const EXTERNAL_COMMS_TOOLS = new Set([
   'slack_controller',
   'gateway_bridge',
+  'channel_agent',
   'connector_mcp',
 ]);
 
@@ -184,7 +184,7 @@ Rules:
    browser_control, realtime_verify,
    web_search, web_scraper, deep_research, parse_pdf, youtube_transcript, rss_feed_reader,
    get_skill_guidelines,
-   docx_generator, office_artifact_builder, csv_data_analyzer,
+   docx_generator, csv_data_analyzer,
    image_generator, video_generator, image_asset_search, api_caller, ask_user.
 
 Return ONLY valid JSON:
@@ -241,7 +241,7 @@ function getRegisteredToolNames(): Set<string> {
   const names = new Set(BASE_PLANNER_TOOLS);
   try {
     for (const tool of globalToolRegistry.getAllTools()) {
-      if (tool?.name) names.add(tool.name);
+      if (tool?.name && tool.name !== 'experience_signal') names.add(tool.name);
     }
   } catch {
     // Registry may not be bootstrapped during isolated tests.
@@ -495,7 +495,7 @@ function inferTools(type: PlannerStepType, task: string, context = ''): string[]
       return ['workspace_edit_file'];
     case 'create':
       if (profile.isDocument) return ['docx_generator', 'workspace_write_file'];
-      if (profile.isData) return ['csv_data_analyzer', 'office_artifact_builder'];
+      if (profile.isData) return ['csv_data_analyzer'];
       return ['workspace_write_file'];
     case 'run':
       return ['workspace_run_command'];

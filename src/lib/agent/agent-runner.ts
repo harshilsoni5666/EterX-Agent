@@ -41,8 +41,10 @@ import {
   type MainAgentMode,
 } from './model-routing';
 import { mergeStreamingText } from '../streaming-lifecycle';
+import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
 import { splitLeadingParallelToolCalls } from './parallel-tool-calls';
+import { compactContextAtBoundary } from './resilience/context-compaction';
 
 // The standalone builder endpoint can import this runner without importing
 // AgentRegistry first, so ensure the complete builder tool surface is present.
@@ -53,7 +55,7 @@ import './tools/index';
 // ═══════════════════════════════════════════════════════════════
 
 export interface AgentRunnerEvent {
-  type: 'text' | 'thought_stream' | 'tool_call' | 'tool_result' | 'console_output' | 'status' | 'error' | 'done' | 'ask_user' | 'model_usage';
+  type: 'text' | 'thought_stream' | 'work_note' | 'tool_call' | 'tool_result' | 'console_output' | 'status' | 'error' | 'done' | 'ask_user' | 'model_usage' | 'context_compaction' | 'context_usage';
   text?: string;
   toolName?: string;
   toolCallId?: string;
@@ -252,18 +254,39 @@ export class AgentRunner {
     if (!this.profile) throw new Error('Agent not loaded');
 
     if (this.runtimeKind === 'agent_builder') {
+      const persistedSnapshot = JSON.stringify({
+        status: this.profile.status,
+        name: this.profile.name,
+        mission: this.profile.mission,
+        professionalPrompt: this.profile.professionalPrompt,
+        responseStyle: this.profile.responseStyle,
+        behaviorRules: this.profile.behaviorRules,
+        safetyRules: this.profile.safetyRules,
+        skills: this.profile.skills,
+        toolUsePolicy: this.profile.toolUsePolicy,
+        completionCriteria: this.profile.completionCriteria,
+        directMainTools: this.profile.directMainTools,
+        customTools: this.profile.customTools,
+        notes: this.profile.notes,
+      }, null, 2);
       return `${buildAgentBuilderRuntimePrompt(
         this.profile.agentId,
         this.profile.name,
       )}
 
+## Current persisted target profile
+This snapshot is the authoritative configuration at the start of this turn. Chat history explains user intent; this persisted state identifies what currently exists. A ready profile remains fully editable.
+${persistedSnapshot}
+
 ## Builder execution protocol
 - Use the builder function tools to persist every profile change; do not merely describe changes in text.
+- This is a persistent multi-turn editing room. Treat each follow-up as a revision to the same target, use agent_builder_get_profile whenever the latest state needs confirmation, preserve all unspecified fields, and never imply that finalization closed the conversation.
+- For an explicit replacement of rules, skills, or notes, use agent_builder_save_profile with replaceCollections=true. For a tool removal, use agent_builder_remove_tool. Do not simulate removal by changing prose only.
 - Start with agent_builder_save_profile when the target profile needs identity, mission, or instructions.
 - Use agent_builder_attach_main_tool or agent_builder_attach_all_main_tools for target capabilities.
-- Use agent_builder_attach_connector_tools for any target that must operate connected services; it attaches gateway_bridge and connector_mcp with explicit live-discovery guidance.
+- Use agent_builder_attach_connector_tools for any target that must operate connected services; it attaches the on-demand channel_agent layer and the required Gateway/REST/MCP bridges with explicit live-discovery guidance.
 - When connector setup or verification is part of the request, use gateway_bridge or connector_mcp directly to inspect the live runtime. Do not report a connector as ready from the UI catalog alone.
-- Use agent_builder_define_tool for target-scoped custom tools, then agent_builder_finalize only after the profile is complete.
+- Use agent_builder_define_tool for target-scoped custom tools. After a material revision, run the quality check and finalize again only when the updated profile is complete.
 - Use agent_tool_load and agent_tool_unload only when the builder itself needs a temporary registered capability.
 - Report the result of each builder operation clearly, and continue until the requested setup is complete.`;
     }
@@ -299,6 +322,19 @@ export class AgentRunner {
       parts.push(`\n${this.toolPrompt}`);
     }
 
+    const availableToolNames = new Set(this.resolvedTools.map(tool => tool.name));
+    if (availableToolNames.has('channel_agent') || availableToolNames.has('connector_mcp') || availableToolNames.has('gateway_bridge')) {
+      parts.push(`
+## Connected-service behavior
+- A normal request naming an external app is connector intent even if the user does not say connector, API, tool, integration, or MCP.
+- Use channel_agent first for inbox, sales, support, lead, customer-message, and reply work when available. Gateway and Channel Agent message sends execute directly without another approval; draft-only means never send. Use connector_mcp action=guide first for REST/MCP or general external-app work when available, then discover live state before making claims.
+- Continue immediately when the connection is ready. If the user supplied the required setup values, configure and verify them without echoing secrets. If authorization is genuinely missing, name the exact missing value and direct the user to Channels → Communication, Channels → MCP, or Channels → Channel Agents as appropriate.`);
+    } else {
+      parts.push(`
+## Connected-service boundary
+- If a request requires an external app, do not pretend connector access exists. Explain that this agent has no connector tool attached and direct the user to Agents → open this agent → Agent Builder to attach Channels, Connectors, or All integration scope.`);
+    }
+
     parts.push(`
 ## UI Trace Protocol
 
@@ -311,6 +347,20 @@ Every tool call must include:
 - uiIcon: exactly one of computer, agent, terminal, image, file_read, file_create, file_edit, folder_read, folder_create, search, web_search, verification, connector. Use connector for a connected external service and keep connector_id, platform, or channel in the tool arguments when available.
 
 Use file_read for reading files, file_create for creating files, file_edit for editing files, terminal for commands, folder_read for directory listing, search for local/code searches, web_search for web lookup, and verification for checks/tests.`);
+
+    parts.push(`
+## Final response format
+
+- Lead with the answer, completed outcome, or most important finding. Do not start with a decorative title or repeat the request as a heading.
+- Match structure to complexity. Simple results need no heading; use short sentence-case H2/H3 headings only for genuinely separate sections.
+- Do not use emojis, decorative icons, ornamental Unicode, all-caps headings, congratulatory filler, or executive-report language.
+- Prefer concise prose and compact bullets. Do not turn every fact, file, or step into its own section.
+- Use tables only for compact repeated-field comparisons. If a cell would need multiple sentences, a procedure, code, or a long formula, use prose or bullets instead.
+- Use Mermaid only when three or more related components, branches, or state transitions become materially clearer visually. Skip it for simple steps or decorative summaries, and never repeat the same content in a diagram and table.
+- Use bold for short labels or key results and inline code only for commands, identifiers, short values, and code.
+- Link a known local deliverable once with a descriptive filename using [filename](#eterx-local-file:<URL-encoded-absolute-path>). Never expose a raw absolute path as a standalone line, wrap it in code, use file://, or repeat it in multiple sections.
+- Mention verification and limitations only where they help the user use or trust the result. Do not automatically add Summary, Overview, Delivered Files, Evidence, Next Steps, or Conclusion sections.
+- End after communicating the requested outcome. Do not append a generic offer to do more.`);
 
     parts.push(`
 ## Parallel tool execution
@@ -516,7 +566,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           });
         } else if (trace?.type === 'work_note' || trace?.type === 'progress') {
           eventQueue.push({
-            type: 'status',
+            type: 'work_note',
             text: trace.text || 'Working on the flow',
             agentName: trace.agentName || agentName,
             timestamp: Date.now(),
@@ -622,9 +672,48 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
     try {
       const ai = new GoogleGenAI({ apiKey: effectiveApiKey });
-      const systemInstruction = this.buildSystemInstruction();
+      let systemInstruction = this.buildSystemInstruction();
       let funcDecls = this.buildFunctionDeclarations();
       const resolvedModel = resolveGeminiRunnerModel(config);
+      const explicitConversationScope = String(
+        config.pinnedContext?.memoryScopeId || config.pinnedContext?.conversationScopeId || '',
+      ).trim();
+      const compactionScopeId = explicitConversationScope || [
+        'agent-runner',
+        config.chatId || 'standalone',
+        isBuilderRuntime ? 'builder' : 'custom',
+        config.agentId,
+      ].join(':');
+      const selfImprovementEnabled = this.runtimeKind !== 'agent_builder'
+        && resolveSelfImprovementEnabled(config.pinnedContext?.selfImprovementEnabled);
+      if (selfImprovementEnabled) {
+        try {
+          const currentRequest = [...messages].reverse().find(item => item.role === 'user')?.content || '';
+          const learnedContext = await adaptiveExperience.getExecutionContext({
+            enabled: true,
+            userId: 'user',
+            projectId: config.chatId || config.agentId,
+            workspaceKey: String(config.pinnedContext?.workspacePath || config.pinnedContext?.paths?.[0] || ''),
+            agentRuntime: this.runtimeKind === 'agent_builder' ? 'agent_builder' : `custom_agent:${config.agentId}`,
+            role: 'custom',
+            request: currentRequest,
+            mode: config.mode,
+            selectedModel: { provider: 'gemini', modelId: resolvedModel },
+            runtimeSettings: config.runtimeSettings || null,
+          });
+          if (learnedContext) systemInstruction = `${systemInstruction}\n\n${learnedContext}`;
+          const signalTool = globalToolRegistry.getTool('experience_signal');
+          if (signalTool && !funcDecls.some(declaration => declaration.name === 'experience_signal')) {
+            const { zodToJsonSchema } = require('zod-to-json-schema');
+            const cleaned = cleanSchemaForGemini(zodToJsonSchema(signalTool.inputSchema));
+            funcDecls = [...funcDecls, {
+              name: signalTool.name,
+              description: signalTool.description.substring(0, 420),
+              ...(cleaned?.properties && Object.keys(cleaned.properties).length > 0 ? { parameters: cleaned } : {}),
+            }];
+          }
+        } catch { /* learned experience is advisory */ }
+      }
 
       // Format conversation history
       let contents = normalizeConversationTurns(messages.map(m => ({
@@ -637,7 +726,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       // Trim old tool result payloads while keeping first + last turns
       // ═══════════════════════════════════════════════════════════════
       const MAX_CONTEXT_TURNS = 40;
-      if (contents.length > MAX_CONTEXT_TURNS) {
+      // Legacy lossy trimming is disabled. Durable compaction below owns all
+      // history reduction and always emits a restorable continuation capsule.
+      if (false && contents.length > MAX_CONTEXT_TURNS) {
         const keepFirst = 4; // Keep first 4 turns (original request context)
         const keepLast = 20; // Keep last 20 turns (recent context)
         const trimStart = keepFirst;
@@ -678,6 +769,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       const maxTransientRetries = Number.isFinite(configuredRetries)
         ? Math.max(0, Math.min(5, Math.floor(configuredRetries)))
         : 2;
+      let lastObservedContextInputTokens = 0;
 
       // ReAct loop
       for (let iteration = 0; iteration < maxIter; iteration++) {
@@ -694,6 +786,35 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           // the initial tool list.
           funcDecls = this.buildFunctionDeclarations();
 
+          const contextEvents: any[] = [];
+          try {
+            const compacted = await compactContextAtBoundary({
+              chatId: compactionScopeId,
+              kind: 'gemini',
+              contents,
+              systemInstruction,
+              tools: funcDecls,
+              activeModel: { provider: 'gemini', modelId: resolvedModel },
+              rawSettings: config.pinnedContext?.contextCompaction,
+              contextWindowOverride: config.pinnedContext?.contextCompaction?.activeContextWindow,
+              runtimeSettings: config.runtimeSettings,
+              providerReportedInputTokens: lastObservedContextInputTokens,
+              abortSignal: runAbortController.signal,
+              semanticBoundary: 'safe',
+              onEvent: event => contextEvents.push(event),
+            });
+            if (compacted.compacted) {
+              contents = normalizeConversationTurns(compacted.contents);
+              lastObservedContextInputTokens = compacted.usage.usedTokens;
+            }
+          } catch {
+            // The request can continue with the original history. The durable
+            // compactor already retains recovery archives for failed attempts.
+          }
+          for (const event of contextEvents) {
+            yield { ...event, agentId: config.agentId, agentName } as AgentRunnerEvent;
+          }
+
           generateConfig = {
             model: resolvedModel,
             contents,
@@ -701,7 +822,6 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               systemInstruction,
               temperature: config.temperature ?? 0.4,
               abortSignal: runAbortController.signal,
-              httpOptions: { timeout: 120_000 },
             },
           };
 
@@ -782,6 +902,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           };
           if (latestUsageMetadata) {
             const normalizedUsage = normalizeProviderCacheUsage('gemini', latestUsageMetadata);
+            lastObservedContextInputTokens = Number(
+              normalizedUsage.inputTokens || latestUsageMetadata.promptTokenCount || lastObservedContextInputTokens,
+            );
             if (Number(normalizedUsage.totalTokens || 0) > 0) {
               yield {
                 type: 'model_usage',
@@ -832,7 +955,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             visibleTextEmitted = true;
             yield responseHasToolCalls
               ? {
-                  type: 'status',
+                  type: 'work_note',
                   text: bufferedVisibleText.substring(0, 500),
                   agentName,
                   timestamp: Date.now(),
@@ -843,6 +966,20 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                   agentName,
                   timestamp: Date.now(),
                 };
+          }
+
+          if (responseHasToolCalls && !bufferedVisibleText.trim()) {
+            const calls = candidate.content.parts.filter((part: any) => part?.functionCall).map((part: any) => part.functionCall);
+            const labels = calls.map((call: any) => String(call?.args?.uiActionText || '').trim()).filter(Boolean);
+            const fallback = labels.length > 0
+              ? `I’m ${labels.slice(0, 2).map((label: string) => label.charAt(0).toLowerCase() + label.slice(1)).join(labels.length > 1 ? ' and ' : '')}.`
+              : 'I’m moving into the next concrete action now and will check the result before continuing.';
+            yield {
+              type: 'work_note',
+              text: fallback,
+              agentName,
+              timestamp: Date.now(),
+            };
           }
 
           for (const part of candidate.content.parts) {
@@ -885,6 +1022,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             // Publish the complete action group before execution starts so
             // concurrent calls are visible together in the timeline.
             for (const call of functionCalls) {
+              if (normalizeRegistryToolName(call.name) === 'experience_signal') continue;
               yield {
                 type: 'tool_call',
                 toolName: call.name,
@@ -1010,16 +1148,18 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
             // Keep provider responses in call order even when executions finish
             // out of order, which preserves Gemini's function-call contract.
-            for (const call of functionCalls) {
-              const result = callResults.get(call);
-              yield {
-                type: 'tool_result',
-                toolName: call.name,
-                toolCallId: call.uiToolCallId,
-                toolResult: result,
-                agentName,
-                timestamp: Date.now(),
-              };
+              for (const call of functionCalls) {
+                const result = callResults.get(call);
+              if (normalizeRegistryToolName(call.name) !== 'experience_signal') {
+                yield {
+                  type: 'tool_result',
+                  toolName: call.name,
+                  toolCallId: call.uiToolCallId,
+                  toolResult: result,
+                  agentName,
+                  timestamp: Date.now(),
+                };
+              }
               toolResultParts.push({
                 functionResponse: {
                   name: call.name,
@@ -1270,6 +1410,8 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         : config.pinnedContext?.allowHostControl === true && config.pinnedContext?.computerUseEnabled !== false,
       allowExternalCommunication: isSandboxRun ? false : config.pinnedContext?.allowExternalCommunication === true,
       userInitiatedCommunication: this.userInitiatedCommunication,
+      userId: 'user',
+      selfImprovementEnabled: resolveSelfImprovementEnabled(config.pinnedContext?.selfImprovementEnabled),
       allowDynamicCode: isSandboxRun ? false : config.pinnedContext?.allowDynamicCode !== false,
       allowRawCommand: isSandboxRun ? false : config.pinnedContext?.allowRawCommand !== false,
       allowVcs: isSandboxRun ? false : config.pinnedContext?.allowVcs !== false,

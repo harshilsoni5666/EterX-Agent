@@ -39,7 +39,9 @@ import {
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
+import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { buildFilePreviewUrl, getNativeFilePath } from '../../lib/path-utils';
+import { getFileIconPath } from '../../lib/utils/file-icon-utils';
 
 const MODEL_API_KEY_STORAGE_KEY = API_KEY_PRESENCE_STORAGE_KEY;
 const SETTINGS_CHANNEL = 'eterx-settings';
@@ -319,6 +321,7 @@ interface QueuedFollowUpItem {
   chatId?: string;
   text: string;
   attachments?: unknown[];
+  attachmentCount?: number;
 }
 
 interface ChatInputProps {
@@ -382,6 +385,7 @@ interface ChatInputProps {
   onRunLocationChange?: (location: 'local' | 'sandbox') => void;
   chatModelSelection?: string;
   onModelSelectionChange?: (selection: string) => void;
+  onOpenSettingsTab?: (tab: 'api' | 'models') => void;
   contextUsage?: {
     usedTokens: number;
     contextWindow: number;
@@ -390,7 +394,9 @@ interface ChatInputProps {
   } | null;
   queuedFollowUps?: QueuedFollowUpItem[];
   onSendQueuedFollowUp?: (item: QueuedFollowUpItem) => Promise<boolean> | boolean;
-  onRemoveQueuedFollowUp?: (id: string) => void;
+  onRemoveQueuedFollowUp?: (id: string) => void | Promise<boolean>;
+  showScrollBottom?: boolean;
+  onScrollToBottom?: () => void;
 }
 
 const formatContextTokenCount = (value: number) => {
@@ -398,102 +404,6 @@ const formatContextTokenCount = (value: number) => {
   if (safeValue < 1_000) return safeValue.toLocaleString();
   if (safeValue >= 1_000_000) return `${(safeValue / 1_000_000).toFixed(safeValue >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
   return `${(safeValue / 1_000).toFixed(safeValue >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`;
-};
-
-const getFileIconPath = (filepath: string) => {
-  const ext = filepath.split('.').pop()?.toLowerCase();
-  const filename = filepath.split(/[/\\]/).pop()?.toLowerCase() || '';
-
-  if (filename.startsWith('.git') || filename.includes('git')) {
-    return '/icons/files/git.svg';
-  }
-  if (filename.includes('eslint')) {
-    return '/icons/files/eslint.svg';
-  }
-  if (filename.includes('prettier')) {
-    return '/icons/files/prettier.svg';
-  }
-  if (filename.includes('tsconfig')) {
-    return '/icons/files/tsconfig.svg';
-  }
-  if (filename === 'package.json') {
-    return '/icons/files/npm.svg';
-  }
-  if (filename === 'yarn.lock') {
-    return '/icons/files/yarn.svg';
-  }
-  if (filename === 'pnpm-lock.yaml') {
-    return '/icons/files/pnpm.svg';
-  }
-  if (filename.includes('next.config')) {
-    return '/icons/files/next.svg';
-  }
-  if (filename.includes('vite.config')) {
-    return '/icons/files/vite.svg';
-  }
-  if (filename.includes('webpack.config')) {
-    return '/icons/files/webpack.svg';
-  }
-  if (filename.startsWith('.env') || filename === 'settings.json') {
-    return '/icons/files/settings.svg';
-  }
-
-  switch (ext) {
-    case 'tsx':
-    case 'jsx':
-      return '/icons/files/react.svg';
-    case 'ts':
-      return '/icons/files/typescript.svg';
-    case 'js':
-      return '/icons/files/javascript.svg';
-    case 'py':
-      return '/icons/files/python.svg';
-    case 'html':
-      return '/icons/files/html.svg';
-    case 'css':
-      return '/icons/files/css.svg';
-    case 'json':
-      return '/icons/files/json.svg';
-    case 'go':
-      return '/icons/files/go.svg';
-    case 'md':
-      return '/icons/files/markdown.svg';
-    case 'sh':
-    case 'bash':
-    case 'zsh':
-      return '/icons/files/console.svg';
-    case 'svg':
-      return '/icons/files/svg.svg';
-    case 'yaml':
-    case 'yml':
-      return '/icons/files/yaml.svg';
-    case 'dockerfile':
-      return '/icons/files/docker.svg';
-    case 'png':
-    case 'jpg':
-    case 'jpeg':
-    case 'gif':
-    case 'webp':
-    case 'ico':
-      return '/icons/files/image.svg';
-    case 'pdf':
-      return '/icons/files/pdf.svg';
-    case 'zip':
-    case 'tar':
-    case 'gz':
-    case 'rar':
-      return '/icons/files/zip.svg';
-    case 'lock':
-      return '/icons/files/lock.svg';
-    case 'sql':
-    case 'db':
-      return '/icons/files/database.svg';
-    case 'sass':
-    case 'scss':
-      return '/icons/files/sass.svg';
-    default:
-      return '/icons/files/document.svg';
-  }
 };
 
 const inferFileExtension = (mimeType: string) => {
@@ -710,7 +620,7 @@ const VoiceWaveform = React.memo(({ volume, isProcessing, cancelVoice, acceptVoi
   );
 });
 
-const inputControlButton = "eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out active:bg-[#333333] hover:text-white hover:bg-[#333333] hover:border-transparent group relative overflow-hidden";
+const inputControlButton = "eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.07] bg-[#2D2D2D] text-white shadow-[0_3px_10px_rgba(0,0,0,0.14),inset_0_1px_0_rgba(255,255,255,0.035)] transition-[background-color,border-color,box-shadow,color] duration-120 ease-out active:bg-[#2F2F2F] active:shadow-[inset_0_1px_4px_rgba(0,0,0,0.16)] hover:text-white hover:bg-[#333333] hover:border-white/[0.10] hover:shadow-[0_4px_12px_rgba(0,0,0,0.16),inset_0_1px_0_rgba(255,255,255,0.045)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/15 group relative overflow-hidden";
 const inputControlSheen = "hidden";
 
 type SlashTrigger = {
@@ -1141,10 +1051,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onRunLocationChange,
   chatModelSelection: propChatModelSelection,
   onModelSelectionChange,
+  onOpenSettingsTab,
   contextUsage = null,
   queuedFollowUps = [],
   onSendQueuedFollowUp,
   onRemoveQueuedFollowUp,
+  showScrollBottom = false,
+  onScrollToBottom = () => { },
 }) => {
   const isAgentBuilder = Boolean(buildingAgentId || activeChatId?.startsWith('agent_builder_') || activeChatId?.includes('agent_builder'));
   const isLiveActive = liveState !== 'idle' && liveState !== 'error';
@@ -1166,7 +1079,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [isAtBottom, setIsAtBottom] = useState(false);
   const [isLogoHovered, setIsLogoHovered] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
-  const [hasDraftInputText, setHasDraftInputText] = useState(() => Boolean(inputValue.trim()));
+  const stopRequestRef = useRef<Promise<void> | null>(null);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
   const [showAgentMenu, setShowAgentMenu] = useState(false);
@@ -1184,6 +1097,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const thinkingTimeoutRef = useRef<any>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<{ url: string; name?: string } | null>(null);
   const [zoomScale, setZoomScale] = useState(1);
   const [panPos, setPanPos] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -1246,11 +1160,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       setPreviewImage(detail.previewUrl);
     };
 
+    const handlePreviewMedia = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail?.previewUrl || detail.kind !== 'video') return;
+      setPreviewVideo({ url: detail.previewUrl, name: detail.fileName });
+    };
+
     window.addEventListener('eterx-preview-document', handlePreviewDoc);
     window.addEventListener('eterx-preview-image', handlePreviewImage);
+    window.addEventListener('eterx-preview-media', handlePreviewMedia);
     return () => {
       window.removeEventListener('eterx-preview-document', handlePreviewDoc);
       window.removeEventListener('eterx-preview-image', handlePreviewImage);
+      window.removeEventListener('eterx-preview-media', handlePreviewMedia);
     };
   }, []);
 
@@ -1286,6 +1208,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     thinkingCapabilities: {},
     chatModelSelection: AUTO_MODEL_SELECTION,
   }));
+  const activeConfiguredChatModel = useMemo(() => {
+    const selection = propChatModelSelection !== undefined
+      ? propChatModelSelection
+      : storedModelSettings.chatModelSelection;
+    const entry = parseModelEntryKey(selection);
+    if (!entry) return null;
+    const exists = storedModelSettings.modelEntries.some(candidate =>
+      modelEntryKey(candidate.provider, candidate.modelId) === selection
+    );
+    const hasCredential = isLocalModelProvider(entry.provider)
+      || Boolean(storedModelSettings.apiKeys[entry.provider])
+      || Boolean(storedModelSettings.modelApiKeys[selection]);
+    return exists && hasCredential ? entry : null;
+  }, [propChatModelSelection, storedModelSettings.apiKeys, storedModelSettings.chatModelSelection, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
   const connectors = useConnectors();
   const [localRunLocation, setLocalRunLocation] = useState<'local' | 'sandbox'>('local');
   useEffect(() => {
@@ -1391,6 +1327,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     setOpenStatusMenu(null);
   }, [handleWorkspacePathChange]);
+
   const refreshStoredModelSettings = useCallback(() => {
     const loaded = readStoredModelSettings();
     const cleanOverrides = Object.fromEntries(
@@ -1546,9 +1483,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (!isThinking && !canStop) setIsStopping(false);
   }, [canStop, isThinking]);
 
-  useEffect(() => {
-    setHasDraftInputText(Boolean(inputValue.trim()));
-  }, [inputValue]);
   useEffect(() => {
     if (isModelLocked) {
       setShowThinkingLevels(false);
@@ -1898,7 +1832,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           mimeType: getAttachmentMimeType(displayName, file.type),
           size: file.size,
           localPath: filePath,
-          preview: getAttachmentMimeType(displayName, file.type).startsWith('image/') ? buildLocalFilePreviewUrl(filePath) : att.preview,
+          preview: /^(?:image|video)\//.test(getAttachmentMimeType(displayName, file.type)) ? buildLocalFilePreviewUrl(filePath) : att.preview,
         } : att));
         return;
       }
@@ -1925,7 +1859,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       setAttachments(prev => prev.map(att => {
         if (att.id !== attachmentId) return att;
         const mimeType = getAttachmentMimeType(displayName, data.mimeType || file.type);
-        const nextPreview = mimeType.startsWith('image/') && data.localPath
+        const nextPreview = /^(?:image|video)\//.test(mimeType) && data.localPath
           ? buildLocalFilePreviewUrl(data.localPath)
           : att.preview;
         if (nextPreview !== att.preview) revokeObjectPreview(att.preview);
@@ -1954,14 +1888,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       const displayName = getAttachmentName(file);
       const localPath = getNativeFilePath(file);
       const mimeType = getAttachmentMimeType(displayName, file.type);
-      const isImage = mimeType.startsWith('image/');
+      const isVisualMedia = /^(?:image|video)\//.test(mimeType);
       return {
         id: `${ Date.now() }-${ index }-${ Math.random().toString(36).slice(2) }`,
         file,
         name: displayName,
         mimeType,
         size: file.size,
-        preview: isImage
+        preview: isVisualMedia
           ? (localPath ? buildLocalFilePreviewUrl(localPath) : URL.createObjectURL(file))
           : '',
         uploadStatus: localPath ? 'done' as const : 'uploading' as const,
@@ -2166,7 +2100,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (!pastedText) return;
 
     const nextValue = `${currentValue.slice(0, start)}${pastedText}${currentValue.slice(end)}`;
-    setHasDraftInputText(Boolean(nextValue.trim()));
     notifyAgentFaceInputChange(inputValue, nextValue);
     setInputValue(nextValue);
     syncSlashTrigger(nextValue, start + pastedText.length);
@@ -2208,7 +2141,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   const hasPreparingAttachments = attachments.some(att => att.uploadStatus === 'uploading');
   const hasErroredAttachments = attachments.some(att => att.uploadStatus === 'error');
-  const hasPromptText = hasDraftInputText || Boolean(inputValue.trim());
+  const hasPromptText = Boolean(inputValue.trim());
   const hasComposerPayload = hasPromptText || attachments.length > 0;
   // Capability validation belongs to the provider adapter. The composer must
   // never drop or block a real file just because a model catalogue entry uses
@@ -2216,10 +2149,36 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // original binary and returns its native validation error if necessary.
   const getAttachmentCompatibilityIssue = useCallback((): { title: string; message: string } | null => null, []);
 
+  const handleStopClick = useCallback(() => {
+    if (stopRequestRef.current) return;
+
+    setIsStopping(true);
+    const stopPromise = (async () => {
+      try {
+        const accepted = await handleStop();
+        if (accepted === false) {
+          showComposerNotice('Stop request was not accepted', 'The run may already have finished. Try again if it is still active.');
+        }
+      } catch (error: unknown) {
+        showComposerNotice('Could not stop the run', String(error instanceof Error ? error.message : error || 'Please try again.').slice(0, 180));
+      } finally {
+        stopRequestRef.current = null;
+        setIsStopping(false);
+      }
+    })();
+
+    stopRequestRef.current = stopPromise;
+  }, [handleStop, showComposerNotice]);
+
   useEffect(() => {
     if (!queuedSendRef.current || hasPreparingAttachments || hasErroredAttachments) return;
     if (!inputValue.trim() && attachments.length === 0) return;
     if (isNetworkPaused) return;
+    if (!isThinking && !activeConfiguredChatModel) {
+      queuedSendRef.current = false;
+      showComposerNotice('No model configured', 'Add an API key in Settings > API, then choose a live model in Settings > Models.');
+      return;
+    }
     queuedSendRef.current = false;
     const attachmentIssue = getAttachmentCompatibilityIssue();
     if (attachmentIssue) {
@@ -2232,7 +2191,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     notifyAgentFaceSend();
     handleSend();
-  }, [attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, showComposerNotice]);
+  }, [activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, showComposerNotice]);
 
   const submitPrompt = useCallback(() => {
     if (isNetworkPaused) {
@@ -2258,7 +2217,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       const textToSubmit = inputValue.trim();
       if (textToSubmit) {
         setInputValue('');
-        setHasDraftInputText(false);
         onLiveSendText?.(textToSubmit);
       }
       return;
@@ -2270,14 +2228,23 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       }
       return;
     }
+    if (!activeConfiguredChatModel) {
+      showComposerNotice('No model configured', 'Add an API key in Settings > API, then choose a live model in Settings > Models.');
+      return;
+    }
     // Never invoke the send handler for an empty composer. This can happen
     // when Enter is pressed while the UI is transitioning between states.
     if (!hasComposerPayload) return;
     notifyAgentFaceSend();
     handleSend();
-  }, [attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
+  }, [activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter also finalizes IME composition. Do not submit while the browser is
+    // still composing a character (keyCode 229 covers browsers that omit the
+    // native isComposing flag).
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+
     if (slashTrigger) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -2451,26 +2418,31 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const inputSidePadding = isCompressed ? 'px-11' : 'px-11 sm:px-14';
   const composerRadius = isCompressed ? 'rounded-[24px]' : 'rounded-[26px]';
   const modelOptions = useMemo<ChatModelOption[]>(() => {
-    return storedModelSettings.modelEntries.map(entry => {
-      const mode = MODEL_PROVIDER_MODE[entry.provider];
-      return {
-        optionKey: modelEntryKey(entry.provider, entry.modelId),
-        id: mode,
-        provider: entry.provider,
-        label: entry.modelId,
-        compactLabel: entry.modelId,
-        modelName: entry.modelId,
-        modelId: entry.modelId,
-      };
-    });
-  }, [storedModelSettings.modelEntries]);
+    return storedModelSettings.modelEntries
+      .filter(entry =>
+        isLocalModelProvider(entry.provider)
+        || Boolean(storedModelSettings.apiKeys[entry.provider])
+        || Boolean(storedModelSettings.modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
+      )
+      .map(entry => {
+        const mode = MODEL_PROVIDER_MODE[entry.provider];
+        return {
+          optionKey: modelEntryKey(entry.provider, entry.modelId),
+          id: mode,
+          provider: entry.provider,
+          label: entry.modelId,
+          compactLabel: entry.modelId,
+          modelName: entry.modelId,
+          modelId: entry.modelId,
+        };
+      });
+  }, [storedModelSettings.apiKeys, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
   const getModelOptionLabel = useCallback((option: ChatModelOption) => option.label, []);
   // Only show models that came from the persisted model directory/settings.
   // The static agent mode config is for request routing; it is not a real
   // selectable model and must never be rendered as one by the composer.
-  const defaultModelOption = useMemo<ChatModelOption | null>(() => modelOptions[0] || null, [modelOptions]);
   const activeModelSelection = propChatModelSelection !== undefined ? propChatModelSelection : storedModelSettings.chatModelSelection;
-  const selectedModel = modelOptions.find(option => option.optionKey === activeModelSelection) || defaultModelOption;
+  const selectedModel = modelOptions.find(option => option.optionKey === activeModelSelection) || null;
   
   const getThinkingTarget = useCallback((option: ChatModelOption | null) => option ? ({
     provider: option.provider,
@@ -2507,7 +2479,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       ? activeThinkingOptions.find(option => option.id === normalizedActiveThinkingLevel) || activeThinkingOptions[0]
       : undefined;
   }, [activeThinkingOptions, normalizedActiveThinkingLevel]);
-  const modelDisplayLabel = selectedModel ? getModelOptionLabel(selectedModel) : 'No model configured';
+  const modelDisplayLabel = selectedModel ? getModelOptionLabel(selectedModel) : 'Add API to load models';
 
   // A level belongs to the concrete model, not to the provider or the
   // previous model. Reconcile the persisted value as soon as the selector
@@ -2607,10 +2579,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   useEffect(() => {
     if (isModelLocked) return;
     if (modelOptions.some(option => option.optionKey === activeModelSelection)) return;
-    if (!defaultModelOption) return;
-    if (activeModelSelection === defaultModelOption.optionKey) return;
-    selectChatModelOption(defaultModelOption);
-  }, [isModelLocked, modelOptions, activeModelSelection, defaultModelOption, selectChatModelOption]);
+    const nextSelection = modelOptions.length === 1
+      ? modelOptions[0].optionKey
+      : AUTO_MODEL_SELECTION;
+    if (activeModelSelection === nextSelection) return;
+    appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, nextSelection);
+    setStoredModelSettings(previous => ({ ...previous, chatModelSelection: nextSelection }));
+    onModelSelectionChange?.(nextSelection);
+    emitModelSettingsUpdate({ type: 'model-selection-reconciled', chatModelSelection: nextSelection });
+  }, [isModelLocked, modelOptions, activeModelSelection, onModelSelectionChange]);
   const controlPopoutVerticalClass = 'bottom-[calc(100%+8px)]';
   const selectorPopoutVerticalClass = isNewChatHome ? 'top-[calc(100%+10px)]' : 'bottom-[calc(100%+10px)]';
   const selectorMenuOffset = 8;
@@ -2628,16 +2605,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       onDragStart={handleComposerDragStart}
     >
 
-      <AnimatePresence>
-        {traceLogsLength === 0 && !isThinking && liveState === 'idle' && (
-          <motion.div
-            initial={{ opacity: 1, scale: 1, filter: 'blur(0px)', x: "-50%" }}
-            animate={{ opacity: 1, scale: 1, filter: 'blur(0px)', x: "-50%" }}
-            exit={{ opacity: 0, scale: 0.95, filter: 'blur(10px)', y: -20, x: "-50%" }}
-            transition={{ duration: 0.4, ease: "easeOut" }}
-            className={`absolute bottom-full left-1/2 flex flex-col items-center w-full pointer-events-none ${ isCompressed ? 'mb-4 max-w-[460px]' : 'mb-6 max-w-[660px]' }`}
+      {traceLogsLength === 0 && !isThinking && liveState === 'idle' && (
+          <div
+            className={`absolute bottom-full left-1/2 -translate-x-1/2 flex flex-col items-center w-full pointer-events-none ${ isCompressed ? 'mb-4 max-w-[460px]' : 'mb-6 max-w-[660px]' }`}
           >
-            <div className={`flex items-center ${ isCompressed ? 'gap-3' : 'gap-5 -translate-x-[32px]' }`}>
+            <div className={`flex items-center ${ isCompressed ? 'gap-3' : 'gap-5'}`}>
               <div
                 className={`${ isCompressed ? 'h-[44px] w-[44px]' : 'h-[56px] w-[56px]' } shrink-0 relative group cursor-pointer pointer-events-auto transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-105`}
                 onMouseEnter={() => {
@@ -2672,13 +2644,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   )}
                 </AnimatePresence>
               </div>
-              <h1 className={`eterx-home-greeting select-none font-sans tracking-tight leading-[1.2] pb-1 font-medium text-transparent bg-clip-text bg-gradient-to-r from-[#A3A19E] via-[#E8E6E3] to-[#8C8A88] drop-shadow-[0_2px_12px_rgba(255,255,255,0.05)] bg-transparent shadow-none border-none ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap'}`}>
+              <h1 className={`eterx-home-greeting select-none font-sans tracking-tight leading-[1.2] pb-1 font-medium text-[var(--foreground)] bg-transparent shadow-none border-none ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap'}`}>
                 {greeting}
               </h1>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </div>
+      )}
 
       {!isEmptyHome && queuedFollowUps.length > 0 && (
         <div
@@ -2699,7 +2670,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             </div>
             <div className="max-h-[132px] space-y-1 overflow-y-auto overscroll-contain px-0.5 pb-0.5 eterx-scrollbar">
               {queuedFollowUps.map((message, index) => {
-                const attachmentCount = message.attachments?.length || 0;
+                const attachmentCount = message.attachments?.length || message.attachmentCount || 0;
                 const fallbackLabel = `${ attachmentCount } attachment${ attachmentCount === 1 ? '' : 's' }`;
                 const isSending = sendingQueuedFollowUpId === message.id;
                 return (
@@ -2724,14 +2695,23 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         }
                       }}
                       className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white/42 transition-colors hover:bg-white/[0.08] hover:text-white/90 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
-                      aria-label="Send queued follow-up"
-                      title="Send"
+                      aria-label="Run this queued follow-up next"
+                      title="Run next"
                     >
                       <ArrowUpRight className="h-3.5 w-3.5" strokeWidth={2.05} />
                     </button>
                     <button
                       type="button"
-                      onClick={() => onRemoveQueuedFollowUp?.(message.id)}
+                      disabled={isSending}
+                      onClick={async () => {
+                        if (!onRemoveQueuedFollowUp || isSending) return;
+                        setSendingQueuedFollowUpId(message.id);
+                        try {
+                          await onRemoveQueuedFollowUp(message.id);
+                        } finally {
+                          setSendingQueuedFollowUpId(null);
+                        }
+                      }}
                       className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white/32 transition-colors hover:bg-white/[0.08] hover:text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
                       aria-label="Remove queued follow-up"
                       title="Remove"
@@ -2755,6 +2735,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
          data-typing={hasPromptText ? 'true' : undefined}
          onDragStart={handleComposerDragStart}
       >
+        {showScrollBottom && traceLogsLength > 0 && !isEmptyHome && (
+          <button
+            type="button"
+            aria-label="Jump to latest message"
+            onClick={onScrollToBottom}
+            className="eterx-composer-scroll-latest absolute -top-10 right-[-40px] z-[70] flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#252525]/95 text-white/70 shadow-[0_8px_20px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all hover:bg-[#333333] hover:text-white hover:scale-105 active:scale-95 cursor-pointer"
+          >
+            <ChevronDown className="h-4 w-4" />
+          </button>
+        )}
+
         <TaskTrackerDock
           tracker={taskTracker}
           isThinking={isThinking}
@@ -2989,12 +2980,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   value={inputValue}
                   onChange={(e) => {
                     const nextValue = e.target.value;
-                    setHasDraftInputText(Boolean(nextValue.trim()));
                     setInputValue(nextValue);
                     e.target.style.height = 'auto';
                     e.target.style.height = `${Math.min(e.target.scrollHeight, 150)}px`;
                   }}
                   onKeyDown={(e) => {
+                    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       if (inputValue.trim()) {
@@ -3012,6 +3003,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 type="button"
                 onClick={submitPrompt}
                 disabled={liveState === 'connecting' || !inputValue.trim()}
+                aria-label="Send live message"
                 className={`w-[34px] h-[34px] mb-0.5 shrink-0 flex items-center justify-center rounded-full transition-all duration-200 ${
                   liveState !== 'connecting' && inputValue.trim()
                     ? 'bg-[#F2EFEA] text-black hover:bg-white shadow-[0_4px_14px_rgba(242,239,234,0.25)] active:scale-95 cursor-pointer'
@@ -3291,13 +3283,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                       {/* File Attachments (Uploaded) */}
                       {attachments.map((att, i) => {
-                        const isImage = !!att.preview;
+                        const mimeType = String(att.mimeType || att.file?.type || '').toLowerCase();
+                        const isImage = mimeType.startsWith('image/');
+                        const isVideo = mimeType.startsWith('video/');
                         const displayName = att.name || att.file.name || 'file';
                         const extension = displayName.split('.').pop()?.toUpperCase() || 'FILE';
                         const isPreparing = att.uploadStatus === 'uploading';
                         const isErrored = att.uploadStatus === 'error';
 
-                        if (isImage) {
+                        if (isImage || isVideo) {
                           return (
                             <div
                               key={att.id || i}
@@ -3307,15 +3301,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                 if (att.preview) {
                                   setZoomScale(1);
                                   setPanPos({ x: 0, y: 0 });
-                                  setPreviewImage(att.preview);
+                                  if (isVideo) setPreviewVideo({ url: att.preview, name: displayName });
+                                  else setPreviewImage(att.preview);
                                 }
                               }}
                             >
-                              <img
-                                src={att.preview}
-                                alt={displayName}
-                                className={`w-full h-full object-cover rounded-[12px] ${ isErrored ? 'opacity-40 grayscale' : 'opacity-100' }`}
-                              />
+                              {isVideo ? (
+                                <video src={att.preview} muted playsInline preload="metadata" className={`h-full w-full rounded-[12px] object-cover ${ isErrored ? 'opacity-40 grayscale' : 'opacity-100' }`} />
+                              ) : (
+                                <img
+                                  src={att.preview}
+                                  alt={displayName}
+                                  className={`w-full h-full object-cover rounded-[12px] ${ isErrored ? 'opacity-40 grayscale' : 'opacity-100' }`}
+                                />
+                              )}
                               {isPreparing && (
                                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-[12px] bg-black/25">
                                   <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white/85" />
@@ -3420,7 +3419,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       value={inputValue}
                       onChange={(e) => {
                         const nextValue = e.target.value;
-                        setHasDraftInputText(Boolean(nextValue.trim()));
                         notifyAgentFaceInputChange(inputValue, nextValue);
                         setInputValue(nextValue);
                         syncSlashTrigger(nextValue, e.target.selectionStart);
@@ -3470,7 +3468,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   className={inputControlButton}
                 >
                   <div className={inputControlSheen} />
-                  <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white transition-transform duration-200 ease-out group-hover:scale-[1.04]" strokeWidth={1.85} />
+                  <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white" strokeWidth={1.85} />
                 </button>
               </Tooltip>
               <div className="relative">
@@ -3491,7 +3489,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     <img
                       src="/icons/agent-ui/pin.png"
                       alt="Pin"
-                      className={`eterx-composer-control-icon h-[23px] w-[23px] object-contain opacity-100 invert brightness-200 transition-transform duration-200 ease-out group-hover:scale-[1.04] ${ showPinMenu ? '-rotate-12' : '' }`}
+                      className={`eterx-composer-control-icon h-[23px] w-[23px] object-contain opacity-100 invert brightness-200 ${ showPinMenu ? '-rotate-12' : '' }`}
                     />
                   </button>
                 </Tooltip>
@@ -3616,16 +3614,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       onClick={(e) => {
                         e.stopPropagation();
                       }}
-                      className="eterx-selector-chevron-wrapper w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-[#F0F0F0] hover:text-white transition-all duration-150"
-                    >
-                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-all duration-200 text-[#F0F0F0] group-hover:text-white ${ showAgentMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                    className="eterx-selector-chevron-wrapper w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/[0.055] active:bg-white/[0.08] text-[#F0F0F0] hover:text-white transition-colors duration-100 ease-out"
+                  >
+                      <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-transform duration-150 text-[#F0F0F0] group-hover:text-white ${ showAgentMenu ? 'rotate-180' : '' }`} strokeWidth={2.1} />
                     </div>
                   </div>
 
                   {showAgentMenu && (
                     <div
                       style={{ transform: `translateX(${ agentMenuX })` }}
-                      className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-h-[280px] overflow-y-auto eterx-scrollbar max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
+                      className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-h-[280px] overflow-y-auto max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)]`}
                       role="dialog"
                        aria-label="Chat and agent selection"
                     >
@@ -3681,18 +3679,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                       {/* Coding */}
                       <button
-                        onClick={() => {
-                          onAgentChange?.('coding', 'Coding', false);
-                          setShowAgentMenu(false);
-                        }}
-                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ selectedAgent === 'coding'
-                          ? 'bg-white/[0.08] text-white font-medium shadow-sm'
-                          : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
-                          }`}
+                        type="button"
+                        disabled
+                        aria-disabled="true"
+                        title="Coding agent coming soon"
+                        className="flex w-full cursor-not-allowed items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[#8C8A88] opacity-75"
                       >
-                        <span className="text-[12px] font-normal text-[#E8E6E3] flex-1">Coding</span>
+                        <span className="flex-1 text-[12px] font-normal">Coding</span>
                         <div className="flex items-center gap-1.5 shrink-0">
-                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#E2765A]/8 border border-[#E2765A]/15 text-[#E2765A]/80 leading-none font-semibold uppercase tracking-wider scale-95 origin-right">Coming soon</span>
+                          <span className="rounded bg-[#E2765A]/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase leading-none tracking-wider text-[#E2765A]/80 border border-[#E2765A]/15 scale-95 origin-right">Coming soon</span>
                           {selectedAgent === 'coding' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
                         </div>
                       </button>
@@ -3742,10 +3737,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </div>
               )}
 
-              {/* Model selector */}
-              <div ref={modelSelectorRef} className="eterx-model-selector relative min-w-0">
+              {/* Builder owns a stable specialist runtime; normal chats keep the model selector. */}
+              {!isAgentBuilder && <div ref={modelSelectorRef} className="eterx-model-selector relative min-w-0">
                 <div
                   onClick={() => {
+                    if (allModelOptions.length === 0) {
+                      setShowModelMenu(false);
+                      onOpenSettingsTab?.('api');
+                      return;
+                    }
                     setShowModelMenu(prev => !prev);
                     setModelSearch('');
                   }}
@@ -3773,9 +3773,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     onClick={(e) => {
                       e.stopPropagation();
                     }}
-                    className="eterx-selector-chevron-wrapper w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/10 active:bg-white/15 text-[#F0F0F0] hover:text-white transition-all duration-150"
+                    className="eterx-selector-chevron-wrapper w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/[0.055] active:bg-white/[0.08] text-[#F0F0F0] hover:text-white transition-colors duration-100 ease-out"
                   >
-                    <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
+                    <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-transform duration-150 group-hover:text-white ${ showModelMenu ? 'rotate-180' : '' }`} strokeWidth={2.1} />
                   </div>
                 </div>
 
@@ -3842,7 +3842,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       )}
                       {allModelOptions.length === 0 && (
                         <div className="px-2.5 py-4 text-center text-[11.5px] text-[#A3A19E]">
-                          No models configured
+                          Add an API key in Settings &gt; API, then choose a live model in Settings &gt; Models.
                         </div>
                       )}
                     </div>
@@ -3913,10 +3913,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     )}
                   </div>
                 )}
-              </div>
+              </div>}
 
                <Tooltip text="Voice dictation" side="top">
-                <button onClick={toggleSpeech} className={`eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse !bg-[#3A2823] !border-transparent' : '' }`}>
+                <button type="button" onClick={toggleSpeech} className={`eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse !bg-[#3A2823] !border-transparent' : '' }`}>
                   <PremiumMic className="eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out" strokeWidth={1.85} />
                 </button>
               </Tooltip>
@@ -3936,7 +3936,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               {liveState !== 'idle' && liveState !== 'error' ? (
                 null /* Cancel/Stop is already rendered in the live overlay above */
               ) : (
-                <AnimatePresence mode="wait">
+                <>
+                  {(isThinking || canStop) && hasComposerPayload && !isStopping && !isNetworkPaused && (
+                    <Tooltip text="Stop agent" side="top">
+                      <button
+                        type="button"
+                        onClick={handleStopClick}
+                        aria-label="Stop agent"
+                        className="eterx-control-button eterx-composer-stop-secondary h-[38px] w-[38px] shrink-0 rounded-full border border-white/[0.08] bg-[#2D2D2D] text-white/82 transition-all duration-150 hover:bg-[#373737] hover:text-white active:scale-[0.96]"
+                      >
+                        <span className="mx-auto block h-[11px] w-[11px] rounded-[2.5px] bg-current" aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  )}
+                  <AnimatePresence mode="wait">
                   {isNetworkPaused ? (
                     <motion.div key="network-paused"
                       initial={{ opacity: 0, scale: 0.8 }}
@@ -3957,7 +3970,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         </button>
                       </Tooltip>
                     </motion.div>
-                  ) : isThinking || canStop ? (
+                  ) : isStopping || ((isThinking || canStop) && !hasComposerPayload) ? (
                     /* ── STOP button (agent running, draft or empty) ── */
                     <motion.div key="stop"
                       initial={{ opacity: 0, scale: 0.8 }}
@@ -3967,13 +3980,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     >
                       <Tooltip text={isStopping ? "Stopping agent" : "Stop agent"} side="top">
                         <button
+                          type="button"
                           disabled={isStopping}
-                          onClick={() => {
-                            if (isStopping) return;
-                            setIsStopping(true);
-                            Promise.resolve(handleStop())
-                              .finally(() => setIsStopping(false));
-                          }}
+                          onClick={handleStopClick}
+                          aria-label={isStopping ? 'Stopping agent' : 'Stop agent'}
+                          aria-busy={isStopping}
                           className={`eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black transition-all duration-200 shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] group overflow-hidden relative ${ isStopping ? 'cursor-wait' : 'cursor-pointer hover:bg-[#F2EFEA] active:scale-[0.96]' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
@@ -3993,9 +4004,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       exit={{ opacity: 0, scale: 0.7 }}
                        transition={hasPromptText ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
                     >
-                      <Tooltip text={hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : "Send message"} side="top">
+                      <Tooltip text={hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : isThinking ? "Queue or steer follow-up" : "Send message"} side="top">
                         <button
+                          type="button"
                           onClick={submitPrompt}
+                          aria-label={isThinking ? 'Send follow-up' : 'Send message'}
                           className={`eterx-control-button eterx-composer-send-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-[0_8px_22px_rgba(242,239,234,0.15),inset_0_1px_0_rgba(255,255,255,0.82)] active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
@@ -4023,7 +4036,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       </Tooltip>
                     </motion.div>
                   )}
-                </AnimatePresence>
+                  </AnimatePresence>
+                </>
               )}
             </div>
           </div>
@@ -4075,7 +4089,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           }}
                         >
                           <CircleSlash className="eterx-status-menu-icon" strokeWidth={1.95} />
-                          <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">Don't work in project</span>
+                          <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">Don&apos;t work in project</span>
                           {!activeWorkspacePath && <Check className="h-4 w-4 shrink-0 text-emerald-500 dark:text-emerald-400" strokeWidth={2.35} />}
                         </button>
                         {looksLikePath && (
@@ -4448,6 +4462,22 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           </div>
         </div>,
         document.body
+      )}
+
+      {previewVideo && typeof window !== 'undefined' && createPortal(
+        <div
+          onClick={() => setPreviewVideo(null)}
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/90 p-5 backdrop-blur-md"
+        >
+          <div onClick={event => event.stopPropagation()} className="relative w-full max-w-[980px] overflow-hidden rounded-[18px] border border-white/10 bg-[#0d0d0d] shadow-[0_24px_80px_rgba(0,0,0,0.8)]">
+            <video src={previewVideo.url} controls autoPlay playsInline className="max-h-[78vh] w-full bg-black object-contain" />
+            <div className="flex items-center justify-between gap-3 border-t border-white/10 px-4 py-3 text-[12px] text-white/65">
+              <span className="truncate">{previewVideo.name || 'Video preview'}</span>
+              <button type="button" onClick={() => setPreviewVideo(null)} className="rounded-full border border-white/10 px-3 py-1 text-white/80 transition-colors hover:bg-white/10 hover:text-white">Close</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
 
       {/* Global Document Preview Modal */}

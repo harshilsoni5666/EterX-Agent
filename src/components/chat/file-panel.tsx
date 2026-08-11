@@ -10,7 +10,7 @@ import {
   Download, Settings, ChevronDown, ChevronRight, Folder, FolderOpen, Plus
 } from 'lucide-react';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
-import { buildFilePreviewUrl } from '../../lib/path-utils';
+import { buildFilePreviewUrl, isAbsolutePathLike, normalizePathForComparison } from '../../lib/path-utils';
 import { getPrimaryModifierLabel } from '../../lib/platform';
 import { decodeLocalFileHref, openLocalFilePath } from './local-file-link';
 
@@ -202,7 +202,7 @@ function resolvePreviewAddress(input: string) {
 
   const filePath = decodeLocalFileHref(trimmed)
     || trimmed.replace(/^file:\/\/\//i, '').replace(/^file:\/\//i, '');
-  if (/^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/')) {
+  if (isAbsolutePathLike(filePath)) {
     return buildPreviewUrl(filePath);
   }
 
@@ -210,12 +210,18 @@ function resolvePreviewAddress(input: string) {
 }
 
 function normalizeWorkspacePath(filepath?: string) {
-  return (filepath || '').replace(/\\/g, '/').replace(/^([A-Za-z])\//, '$1:/');
+  return String(filepath || '').replace(/\\/g, '/').replace(/^([A-Za-z])\//, '$1:/');
 }
 
 function getDirname(filepath?: string) {
   const normalized = normalizeWorkspacePath(filepath);
-  return normalized.split('/').slice(0, -1).join('/');
+  const separatorIndex = normalized.lastIndexOf('/');
+  if (separatorIndex < 0) return '';
+
+  const parent = normalized.slice(0, separatorIndex) || (normalized.startsWith('/') ? '/' : '');
+  // Keep a Windows drive root absolute. `path.resolve('C:')` is drive-
+  // relative on Windows and can otherwise make the file tree jump folders.
+  return /^[A-Za-z]:$/.test(parent) ? `${parent}/` : parent;
 }
 
 function flattenFileEntries(entries: FileEntry[] = []): PreviewFile[] {
@@ -233,7 +239,7 @@ function flattenFileEntries(entries: FileEntry[] = []): PreviewFile[] {
 function findConnectedHtmlFile(activeFile: PreviewFile | null, openFiles: PreviewFile[], workspaceFiles: PreviewFile[]) {
   const candidates = [...openFiles, ...workspaceFiles]
     .filter(file => /\.(html|htm)$/i.test(file.filename))
-    .filter((file, index, all) => all.findIndex(next => normalizeWorkspacePath(next.filepath) === normalizeWorkspacePath(file.filepath)) === index);
+    .filter((file, index, all) => all.findIndex(next => normalizePathForComparison(next.filepath) === normalizePathForComparison(file.filepath)) === index);
 
   if (!candidates.length) return null;
   if (!activeFile?.filepath) return candidates[0];
@@ -268,6 +274,56 @@ function readResolvedUiTheme(): ResolvedUiTheme {
   return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
 }
 
+const configureEterxMonacoTheme = (monaco: any) => {
+  monaco.editor.defineTheme('eterx-light', {
+    base: 'vs',
+    inherit: true,
+    rules: [
+      { token: 'comment', foreground: '6A737D', fontStyle: 'italic' },
+      { token: 'string', foreground: '0A3069' },
+      { token: 'number', foreground: '0550AE' },
+      { token: 'keyword', foreground: 'CF222E', fontStyle: 'bold' },
+      { token: 'type', foreground: '953800' },
+      { token: 'type.identifier', foreground: '953800' },
+      { token: 'class', foreground: '8250DF' },
+      { token: 'class.identifier', foreground: '8250DF' },
+      { token: 'function', foreground: '8250DF' },
+      { token: 'function.call', foreground: '8250DF' },
+      { token: 'variable', foreground: '24292F' },
+      { token: 'constant', foreground: '0550AE' },
+      { token: 'operator', foreground: '57606A' },
+      { token: 'delimiter', foreground: '57606A' },
+      { token: 'tag', foreground: '0969DA' },
+      { token: 'attribute.name', foreground: '8250DF' },
+      { token: 'attribute.value', foreground: '0A3069' },
+      { token: 'regexp', foreground: '116329' },
+    ],
+    colors: {
+      'editor.background': '#F8FAFC',
+      'editor.foreground': '#24292F',
+      'editorLineNumber.foreground': '#8A94A6',
+      'editorLineNumber.activeForeground': '#57606A',
+      'editorGutter.background': '#F8FAFC',
+      'editor.selectionBackground': '#BBD7F5',
+      'editor.inactiveSelectionBackground': '#DCEBFA',
+      'editor.lineHighlightBackground': '#F1F5F9',
+      'editorCursor.foreground': '#57606A',
+      'editorIndentGuide.background': '#E2E8F0',
+      'editorIndentGuide.activeBackground': '#CBD5E1',
+      'editorOverviewRuler.border': '#E2E8F0',
+      'scrollbarSlider.background': '#CBD5E1AA',
+      'scrollbarSlider.hoverBackground': '#94A3B8AA',
+      'scrollbarSlider.activeBackground': '#64748BAA',
+      'diffEditor.insertedTextBackground': '#DDF6E3',
+      'diffEditor.removedTextBackground': '#FFE6E6',
+      'diffEditor.insertedLineBackground': '#EAF7EE',
+      'diffEditor.removedLineBackground': '#FFF0F0',
+      'diffEditorGutter.insertedLineBackground': '#B7E3C2',
+      'diffEditorGutter.removedLineBackground': '#F2B8B8',
+    },
+  });
+};
+
 type TabMode = 'code' | 'diff' | 'preview';
 
 export interface FilePanelProps {
@@ -301,6 +357,22 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
   const [tab, setTab] = useState<TabMode>(activeTabMode || (isEdit && diffLines?.length ? 'diff' : 'code'));
   const [fullscreen, setFullscreen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedUiTheme>(() => readResolvedUiTheme());
+  const isLightTheme = resolvedTheme === 'light';
+  const editorSurface = isLightTheme ? '#F8FAFC' : '#07070A';
+
+  useEffect(() => {
+    const syncTheme = () => setResolvedTheme(readResolvedUiTheme());
+    syncTheme();
+    const root = document.documentElement;
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme', 'class'] });
+    window.addEventListener('eterx-settings-updated', syncTheme);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('eterx-settings-updated', syncTheme);
+    };
+  }, []);
 
   useEffect(() => {
     if (activeTabMode) setTab(activeTabMode);
@@ -382,11 +454,12 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
     const editorLang = languageMap[langKey] || 'plaintext';
 
     return (
-      <div className="flex-1 w-full h-full relative bg-[#07070A]">
+      <div className="flex-1 w-full h-full relative" style={{ background: editorSurface }}>
         <Editor
           height="100%"
           language={editorLang}
-          theme="vs-dark"
+          theme={isLightTheme ? 'eterx-light' : 'vs-dark'}
+          beforeMount={configureEterxMonacoTheme}
           value={localContent}
           onChange={(value) => setLocalContent(value || '')}
           options={{
@@ -427,11 +500,12 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
     const modified = useMemo(() => (diffLines || []).filter((l: any) => l.type !== 'removed').map((l: any) => l.content).join('\n'), [diffLines]);
 
     return (
-      <div className="flex-1 w-full h-full relative bg-[#07070A]">
+      <div className="flex-1 w-full h-full relative" style={{ background: editorSurface }}>
         <DiffEditor
           height="100%"
           language={editorLang}
-          theme="vs-dark"
+          theme={isLightTheme ? 'eterx-light' : 'vs-dark'}
+          beforeMount={configureEterxMonacoTheme}
           original={original}
           modified={modified}
           options={{
@@ -675,8 +749,9 @@ const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick 
   onFileClick: (path: string, name: string) => void;
 }) => {
   const [expanded, setExpanded] = useState(depth < 1);
-  const isActive = node.path === activeFilePath;
-  const isOpen = openFilePaths.has(node.path);
+  const normalizedNodePath = normalizePathForComparison(node.path);
+  const isActive = normalizedNodePath === activeFilePath;
+  const isOpen = openFilePaths.has(normalizedNodePath);
 
   if (node.type === 'directory') {
     return (
@@ -745,7 +820,7 @@ export const IdePanel = () => {
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedUiTheme>('light');
   const [primaryModifierLabel, setPrimaryModifierLabel] = useState('Ctrl');
   const isLightTheme = resolvedTheme === 'light';
-  const editorBackground = isLightTheme ? '#FFFFFF' : '#0d0d0f';
+  const editorBackground = isLightTheme ? '#F8FAFC' : '#0d0d0f';
   const previewShellBackground = isLightTheme ? '#F7F6F3' : '#262628';
   const previewToolbarStyle = isLightTheme
     ? { background: 'linear-gradient(180deg,#FFFFFF 0%,#F0EFEB 100%)', borderBottom: '1px solid rgba(31,31,29,0.10)' }
@@ -814,12 +889,11 @@ export const IdePanel = () => {
     if (openFiles.length === 0) return;
     const firstPath = openFiles[0].filepath;
     if (!firstPath) return;
-    const parts = firstPath.replace(/\\/g, '/').split('/');
-    // Use the immediate parent directory of the file as the workspace root
-    const rootParts = parts.slice(0, Math.max(1, parts.length - 1));
-    const root = rootParts.join('/').replace(/^([A-Za-z])\//, '$1:/');
+    // Use the immediate parent directory of the file as the workspace root.
+    // Keep drive roots and UNC shares intact on Windows.
+    const root = getDirname(firstPath);
     setWorkspaceRoot(root);
-    setWorkspaceName(rootParts[rootParts.length - 1] || 'Workspace');
+    setWorkspaceName(root.split('/').filter(Boolean).pop() || 'Workspace');
   }, [openFiles[0]?.filepath]);
 
   // Fetch real file tree from workspace root
@@ -995,10 +1069,10 @@ export const IdePanel = () => {
   }, [activeTabMode, previewKind, previewTarget?.filepath, previewContent]);
 
   const openFilePaths = useMemo(
-    () => new Set(openFiles.map(f => f.filepath.replace(/\\/g, '/'))),
+    () => new Set(openFiles.map(f => normalizePathForComparison(f.filepath))),
     [openFiles]
   );
-  const activeFilePath = useMemo(() => activeFile?.filepath.replace(/\\/g, '/') || '', [activeFile?.filepath]);
+  const activeFilePath = useMemo(() => normalizePathForComparison(activeFile?.filepath), [activeFile?.filepath]);
   const activeFileKind = activeFile ? getPreviewKind(activeFile.filename) : 'unknown';
   const activeFileIsTextReadable = ['text', 'markdown', 'data', 'code'].includes(activeFileKind);
   const activeFileIsLoading = !!activeFile && activeFileIsTextReadable && activeFile.content === undefined && !activeFile.loadError;
@@ -1012,7 +1086,7 @@ export const IdePanel = () => {
   useEffect(() => {
     if (activeTabMode !== 'code' || !activeFile || !activeFileIsTextReadable) return;
     if (activeFile.content !== undefined || activeFile.loadError) return;
-    if (fileReadPathRef.current && normalizeWorkspacePath(fileReadPathRef.current) === normalizeWorkspacePath(activeFile.filepath)) return;
+    if (fileReadPathRef.current && normalizePathForComparison(fileReadPathRef.current) === normalizePathForComparison(activeFile.filepath)) return;
 
     autoFileReadAbortRef.current?.abort();
     const controller = new AbortController();
@@ -1187,8 +1261,11 @@ export const IdePanel = () => {
   };
 
   const handleOpenPreviewFile = () => {
-    if (previewFileUrl) window.open(previewFileUrl, '_blank');
-    else if (previewUrl) window.open(previewUrl, '_blank');
+    if (previewTarget?.filepath) {
+      void openLocalFilePath(previewTarget.filepath);
+      return;
+    }
+    if (previewUrl) window.open(previewUrl, '_blank', 'noopener,noreferrer');
   };
 
   const canGoBack = iframeHistoryIndex > 0;
@@ -1610,7 +1687,8 @@ export const IdePanel = () => {
                       const map: Record<string,string> = { ts:'typescript',tsx:'typescript',js:'javascript',jsx:'javascript',html:'html',css:'css',scss:'scss',json:'json',md:'markdown',py:'python',go:'go',rs:'rust',sh:'shell' };
                       return map[ext] || 'plaintext';
                     })()}
-                    theme={isLightTheme ? 'vs-light' : 'vs-dark'}
+                    theme={isLightTheme ? 'eterx-light' : 'vs-dark'}
+                    beforeMount={configureEterxMonacoTheme}
                     options={{
                       readOnly: true,
                       minimap: { enabled: false },

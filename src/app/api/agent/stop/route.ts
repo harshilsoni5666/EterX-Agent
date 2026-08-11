@@ -45,11 +45,27 @@ export async function POST(req: NextRequest) {
       if (body.runId !== undefined && !expectedRunId) {
         return attachAgentApiSessionCookie(jsonError('runId must be a valid string when provided.', 400), session);
       }
+      const beforeStop = agentRegistry.getTraces(chatId, -1);
+      if (expectedRunId && beforeStop.runId && beforeStop.runId !== expectedRunId) {
+        return attachAgentApiSessionCookie(jsonError(
+          'The active run changed before the stop request was applied.',
+          409,
+          { success: false, status: 'run_changed', chatId, runId: beforeStop.runId },
+        ), session);
+      }
       // Per-chat stop
       const stopped = agentRegistry.stopAgent(chatId, 'Stopped by user.', undefined, expectedRunId);
       if (stopped) cancelAgent(chatId); // Also set per-chat cancel flag for sub-agents
+      const afterStop = agentRegistry.getTraces(chatId, -1);
+      const success = stopped || afterStop.status !== 'running';
       console.log(`[API] 🛑 Stop requested for chat ${chatId.substring(0, 8)}... — ${stopped ? 'stopped' : 'not running'}`);
-      return attachAgentApiSessionCookie(NextResponse.json({ success: stopped, chatId, message: stopped ? 'Agent stopped' : 'No running agent found' }), session);
+      return attachAgentApiSessionCookie(NextResponse.json({
+        success,
+        chatId,
+        runId: afterStop.runId,
+        status: stopped ? 'stopping' : 'already_stopped',
+        message: stopped ? 'Agent stopped' : 'Agent was already stopped',
+      }), session);
     }
 
     if (body.all !== true || body.confirm !== 'STOP_ALL_AGENTS') {

@@ -40,9 +40,9 @@ export function resolveTerminalShell(preference?: unknown): string {
       throw new Error(`The selected terminal shell "${selected}" is not available on Windows. Use PowerShell, cmd, Git Bash, or WSL.`);
     }
     return requireExecutable([
+      'pwsh.exe',
       'powershell.exe',
       path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-      'pwsh.exe',
     ], selected);
   }
 
@@ -117,17 +117,17 @@ export function buildTerminalShellInvocation(
     if (shellName === 'powershell' || shellName === 'powershell.exe' || shellName === 'pwsh' || shellName === 'pwsh.exe') {
       return {
         file: resolvedShell,
-        args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', command],
+        args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-InputFormat', 'Text', '-OutputFormat', 'Text', '-Command', command],
         shell: false,
       };
     }
     if (shellName === 'wsl' || shellName === 'wsl.exe') {
-      return { file: resolvedShell, args: ['--', 'sh', '-lc', command], shell: false };
+      return { file: resolvedShell, args: ['--', 'sh', '-c', command], shell: false };
     }
-    return { file: resolvedShell, args: [shellName === 'fish' ? '-c' : '-lc', command], shell: false };
+    return { file: resolvedShell, args: ['-c', command], shell: false };
   }
 
-  return { file: resolvedShell, args: [shellName === 'fish' ? '-c' : '-lc', command], shell: false };
+  return { file: resolvedShell, args: ['-c', command], shell: false };
 }
 
 export function platformDefaultTerminalShell(): TerminalShellPreference {
@@ -148,9 +148,9 @@ function defaultPosixShell(): string {
 
 function defaultWindowsShell(): string {
   return requireExecutable([
+    'pwsh.exe',
     'powershell.exe',
     path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    'pwsh.exe',
     process.env.ComSpec || 'cmd.exe',
     'cmd.exe',
   ], 'auto');

@@ -2,7 +2,11 @@
   "compilerOptions": {
     "target": "es2018",
     "downlevelIteration": true,
-    "lib": ["dom", "dom.iterable", "esnext"],
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
@@ -20,10 +24,38 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": [
+        "./src/*"
+      ]
     }
   },
-  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    "./.next/types/**/*.ts",
+    ".next-dev-3000-12168/types/**/*.ts",
+    ".next-dev-3000-17860/types/**/*.ts",
+    ".next-dev-3000-6168/types/**/*.ts",
+    ".next-dev-3000-42436/types/**/*.ts",
+    ".next-dev-3000-39392/types/**/*.ts",
+    ".next-dev-3000-40516/types/**/*.ts",
+    ".next-dev-3000-40552/types/**/*.ts",
+    ".next-dev-3000-28572/types/**/*.ts",
+    ".next-dev-3000-5860/types/**/*.ts",
+    ".next-dev-3000-39928/types/**/*.ts",
+    ".next-dev-3000-34464/types/**/*.ts",
+    ".next-dev-3000-33476/types/**/*.ts",
+    ".next-dev-3000-47408/types/**/*.ts",
+    ".next-dev-3000-36532/types/**/*.ts",
+    ".next-dev-3000-20828/types/**/*.ts",
+    ".next-dev-3000-15164/types/**/*.ts",
+    ".next-dev-3000-13588/types/**/*.ts",
+    ".next-dev-3000-50000/types/**/*.ts",
+    ".next-dev-3000-7848/types/**/*.ts",
+    ".next-dev-3000-49552/types/**/*.ts"
+  ],
   "exclude": [
     "node_modules",
     ".git",

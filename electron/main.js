@@ -115,6 +115,7 @@ Menu.setApplicationMenu(null);
 
 let mainWindow;
 let petWindow;
+let petWindowReadyPromise = null;
 let backgroundTray;
 let gatewayDaemon;
 let latestPetStatus = null;
@@ -135,25 +136,42 @@ let bootFailureCount = 0;
 let packagedRuntimeRoot = null;
 let packagedServer = null;
 let packagedServerUrl = null;
+let resolvedDevAppTarget = null;
 let packagedServerStopPromise = null;
 let isQuitting = false;
 let desktopAutoUpdater = null;
 let desktopUpdateCheckPromise = null;
 let desktopUpdateDownloadPromise = null;
 let desktopUpdateInstallPromise = null;
+let desktopUpdateRevision = 0;
 const pendingRendererFlushes = new Map();
 let rendererFlushSequence = 0;
 // electron-updater supports Linux AppImage installations. Debian packages
 // are intentionally handled as normal package downloads because replacing a
 // system-managed .deb from inside the app is not safe or portable.
 const DESKTOP_UPDATES_SUPPORTED = process.platform !== 'linux' || Boolean(process.env.APPIMAGE);
+const DESKTOP_UPDATE_RELEASE_PAGE = 'https://github.com/harshilsoni5666/EterX-Agent/releases/latest';
+const DESKTOP_UPDATE_PACKAGE_TYPE = !app.isPackaged
+  ? 'development'
+  : process.platform === 'win32'
+    ? 'NSIS'
+    : process.platform === 'darwin'
+      ? 'ZIP/DMG'
+      : process.env.APPIMAGE
+        ? 'AppImage'
+        : 'system package';
 let desktopUpdateState = {
+  revision: desktopUpdateRevision,
   status: app.isPackaged
     ? (DESKTOP_UPDATES_SUPPORTED ? 'idle' : 'unsupported')
     : 'development',
   currentVersion: app.getVersion(),
   availableVersion: null,
   percent: 0,
+  transferred: 0,
+  total: 0,
+  bytesPerSecond: 0,
+  downloadReady: false,
   message: app.isPackaged
     ? (DESKTOP_UPDATES_SUPPORTED
       ? 'Ready to check for updates'
@@ -163,6 +181,13 @@ let desktopUpdateState = {
   automaticChecks: false,
   manualInstall: true,
   lastCheckedAt: null,
+  platform: process.platform,
+  architecture: process.arch,
+  packageType: DESKTOP_UPDATE_PACKAGE_TYPE,
+  updateHost: 'GitHub Releases',
+  releasePage: DESKTOP_UPDATE_RELEASE_PAGE,
+  releaseName: null,
+  releaseDate: null,
 };
 const launchInBackground = process.argv.includes('--background');
 
@@ -220,6 +245,9 @@ const SECURE_RUNTIME_SETTINGS_PROVIDERS = new Set([
   'novita', 'qwen', 'mimo', 'tokenhub', 'zai', 'kimi', 'stepfun', 'minimax',
   'ollamacloud', 'arcee', 'gmi', 'kilo', 'opencode', 'upstage', 'custom',
   'tavily', 'github',
+  // Dedicated Live/voice credentials use the same encrypted AppData file.
+  // Keep these even though they are not main chat-model providers.
+  'elevenlabs', 'deepgram', 'hume', 'cartesia', 'playht',
 ]);
 const SECURE_RUNTIME_MODEL_PROVIDERS = new Set([
   ...SECURE_RUNTIME_SETTINGS_PROVIDERS,
@@ -229,7 +257,7 @@ const SECURE_RUNTIME_SEARCH_PROVIDERS = new Set([
 ]);
 const SECURE_RUNTIME_SEARCH_SERVICES = new Set(['search', 'read', 'crawl', 'map', 'research']);
 const SECURE_RUNTIME_IMAGE_PROVIDERS = new Set(['deepinfra', 'fal', 'krea', 'openai', 'openrouter', 'xai', 'freepik']);
-const SECURE_RUNTIME_VIDEO_PROVIDERS = new Set(['google', 'openai', 'runway', 'luma', 'minimax', 'fal', 'replicate', 'xai']);
+const SECURE_RUNTIME_VIDEO_PROVIDERS = new Set(['google', 'openai', 'runway', 'luma', 'minimax', 'volcengine', 'fal', 'replicate', 'xai']);
 const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'GEMINI_API_KEY',
   'MISTRAL_API_KEY',
@@ -376,21 +404,59 @@ const NATIVE_FRAME_HEIGHT = 38;
 const nativeThemedWindows = new Set();
 
 function publishDesktopUpdateState(patch = {}) {
-  desktopUpdateState = { ...desktopUpdateState, ...patch, currentVersion: app.getVersion() };
+  desktopUpdateRevision += 1;
+  desktopUpdateState = {
+    ...desktopUpdateState,
+    ...patch,
+    revision: desktopUpdateRevision,
+    currentVersion: app.getVersion(),
+  };
   for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send('desktop-update-state', desktopUpdateState);
+    if (window.isDestroyed() || window.webContents.isDestroyed()) continue;
+    try {
+      window.webContents.send('desktop-update-state', desktopUpdateState);
+    } catch (error) {
+      logToFile(`[update] Could not publish state to window ${window.id}: ${error?.message || error}`);
+    }
   }
   logToFile(`[update] ${desktopUpdateState.status}: ${desktopUpdateState.message || ''}`);
   return desktopUpdateState;
 }
 
+function desktopUpdateInfoPatch(info) {
+  return {
+    availableVersion: info?.version || null,
+    releaseName: typeof info?.releaseName === 'string' ? info.releaseName : null,
+    releaseDate: typeof info?.releaseDate === 'string' ? info.releaseDate : null,
+  };
+}
+
+function describeDesktopUpdateError(error, operation = 'Update') {
+  const detail = String(error?.message || error || 'unknown error').trim();
+  if (/ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|latest(?:-mac|-linux(?:-arm64)?)?\.yml|\b404\b/i.test(detail)) {
+    const expectedMetadata = process.platform === 'darwin'
+      ? 'latest-mac.yml'
+      : process.platform === 'linux' && process.arch !== 'x64'
+        ? `latest-linux-${process.arch}.yml`
+        : process.platform === 'linux'
+          ? 'latest-linux.yml'
+          : 'latest.yml';
+    return `${operation} failed: GitHub Releases does not expose ${expectedMetadata} for this device.`;
+  }
+  if (/ERR_INTERNET_DISCONNECTED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|network|internet/i.test(detail)) {
+    return `${operation} failed: the release host could not be reached. Check the internet connection and try again.`;
+  }
+  return `${operation} failed: ${detail}`;
+}
+
 async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1) {
-  const windows = BrowserWindow.getAllWindows().filter((window) => {
-    if (window.isDestroyed()) return false;
-    if (window === mainWindow) return true;
-    const url = window.webContents.getURL();
-    return isHttpTarget(url) && !/\/live-overlay(?:[/?#]|$)/i.test(url);
-  });
+  // The main renderer owns chats, preferences, and scheduled-task persistence.
+  // Auxiliary Settings and Live windows do not register that durability
+  // contract and must never block a native update waiting for an ACK they
+  // cannot send.
+  const windows = mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()
+    ? [mainWindow]
+    : [];
   if (windows.length === 0) return Promise.resolve(true);
 
   const requestWindowFlush = (targetWindow) => {
@@ -455,8 +521,26 @@ function attachNativeContextMenu(targetWindow) {
       );
     }
 
+    if (params?.hasImageContents && params?.mediaType === 'image') {
+      if (menuTemplate.length > 0) menuTemplate.push({ type: 'separator' });
+      menuTemplate.push({
+        label: 'Copy Image',
+        click: () => { targetWindow.webContents.copyImageAt(params.x, params.y); },
+      });
+    } else if (params?.mediaType === 'video' && typeof targetWindow.webContents.copyVideoFrameAt === 'function') {
+      if (menuTemplate.length > 0) menuTemplate.push({ type: 'separator' });
+      menuTemplate.push({
+        label: 'Copy Video Frame',
+        click: () => { targetWindow.webContents.copyVideoFrameAt(params.x, params.y); },
+      });
+    }
+
     if (params?.linkURL && /^https?:\/\//i.test(params.linkURL)) {
       if (menuTemplate.length > 0) menuTemplate.push({ type: 'separator' });
+      menuTemplate.push({
+        label: 'Copy Link Address',
+        click: () => { clipboard.writeText(params.linkURL); },
+      });
       menuTemplate.push({
         label: 'Open Link in Browser',
         click: () => { void shell.openExternal(params.linkURL); },
@@ -467,6 +551,21 @@ function attachNativeContextMenu(targetWindow) {
     event.preventDefault();
     Menu.buildFromTemplate(menuTemplate).popup({ window: targetWindow });
   });
+}
+
+function configureApplicationMenu() {
+  // Keep the custom frameless chrome on Windows/Linux. macOS still needs the
+  // native application/Edit/Window menus for standard services and editing
+  // behavior such as Cmd+C/Cmd+V in every WebContents.
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: 'appMenu' },
+    { role: 'editMenu' },
+    { role: 'windowMenu' },
+  ]));
 }
 
 ipcMain.on('desktop-durable-flush-complete', (event, requestId, ok) => {
@@ -480,7 +579,10 @@ ipcMain.on('desktop-durable-flush-complete', (event, requestId, ok) => {
 async function performDesktopUpdateCheck() {
   if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
   if (desktopUpdateCheckPromise) return desktopUpdateCheckPromise;
-  if (desktopUpdateState.status === 'downloading' || desktopUpdateState.status === 'ready') {
+  if (desktopUpdateState.status === 'downloading' ||
+    desktopUpdateState.status === 'ready' ||
+    desktopUpdateState.status === 'installing' ||
+    desktopUpdateState.downloadReady) {
     return desktopUpdateState;
   }
 
@@ -489,6 +591,12 @@ async function performDesktopUpdateCheck() {
       status: 'checking',
       availableVersion: null,
       percent: 0,
+      transferred: 0,
+      total: 0,
+      bytesPerSecond: 0,
+      downloadReady: false,
+      releaseName: null,
+      releaseDate: null,
       message: 'Checking for updates...',
     });
     try {
@@ -499,10 +607,10 @@ async function performDesktopUpdateCheck() {
       // the UI can never remain stuck on "checking".
       if (desktopUpdateState.status === 'checking') {
         const now = new Date().toISOString();
-        if (checkedVersion && checkedVersion !== app.getVersion()) {
+        if (result?.isUpdateAvailable && checkedVersion) {
           publishDesktopUpdateState({
             status: 'available',
-            availableVersion: checkedVersion,
+            ...desktopUpdateInfoPatch(result.updateInfo),
             percent: 0,
             message: `EterX ${checkedVersion} is available`,
             lastCheckedAt: now,
@@ -524,8 +632,12 @@ async function performDesktopUpdateCheck() {
         status: 'error',
         availableVersion: null,
         percent: 0,
+        transferred: 0,
+        total: 0,
+        bytesPerSecond: 0,
+        downloadReady: false,
         lastCheckedAt: new Date().toISOString(),
-        message: `Update check failed: ${error?.message || 'Could not reach the release feed'}`,
+        message: describeDesktopUpdateError(error, 'Update check'),
       });
     } finally {
       desktopUpdateCheckPromise = null;
@@ -571,22 +683,72 @@ function initializeDesktopUpdates() {
     desktopAutoUpdater.allowDowngrade = false;
     desktopAutoUpdater.allowPrerelease = false;
     desktopAutoUpdater.fullChangelog = true;
+    desktopAutoUpdater.logger = {
+      info: (message) => logToFile(`[update:client] ${String(message ?? '')}`),
+      warn: (message) => logToFile(`[update:client:warn] ${String(message ?? '')}`),
+      error: (message) => logToFile(`[update:client:error] ${String(message ?? '')}`),
+      debug: (message) => logToFile(`[update:client:debug] ${String(message ?? '')}`),
+    };
 
-    desktopAutoUpdater.on('checking-for-update', () => publishDesktopUpdateState({ status: 'checking', availableVersion: null, percent: 0, message: 'Checking for a newer EterX release...' }));
+    desktopAutoUpdater.on('checking-for-update', () => publishDesktopUpdateState({
+      status: 'checking',
+      availableVersion: null,
+      percent: 0,
+      transferred: 0,
+      total: 0,
+      bytesPerSecond: 0,
+      downloadReady: false,
+      releaseName: null,
+      releaseDate: null,
+      message: 'Checking GitHub Releases for a newer EterX version...',
+    }));
     desktopAutoUpdater.on('update-available', (info) => publishDesktopUpdateState({
       status: 'available',
-      availableVersion: info.version,
+      ...desktopUpdateInfoPatch(info),
       percent: 0,
+      transferred: 0,
+      total: Number(info?.files?.[0]?.size) || 0,
+      bytesPerSecond: 0,
+      downloadReady: false,
       message: `EterX ${info.version} is available`,
       lastCheckedAt: new Date().toISOString(),
     }));
-    desktopAutoUpdater.on('update-not-available', () => publishDesktopUpdateState({ status: 'current', availableVersion: null, percent: 100, message: 'EterX is up to date', lastCheckedAt: new Date().toISOString() }));
+    desktopAutoUpdater.on('update-not-available', () => publishDesktopUpdateState({
+      status: 'current',
+      availableVersion: null,
+      percent: 100,
+      transferred: 0,
+      total: 0,
+      bytesPerSecond: 0,
+      downloadReady: false,
+      releaseName: null,
+      releaseDate: null,
+      message: 'EterX is up to date',
+      lastCheckedAt: new Date().toISOString(),
+    }));
     desktopAutoUpdater.on('download-progress', (progress) => {
-      const percent = Math.max(0, Math.min(100, Math.round(Number(progress?.percent) || 0)));
-      publishDesktopUpdateState({ status: 'downloading', percent, message: `Downloading update - ${percent}%` });
+      const rawPercent = Number(progress?.percent);
+      const percent = Math.max(0, Math.min(100, Number.isFinite(rawPercent) ? rawPercent : 0));
+      publishDesktopUpdateState({
+        status: 'downloading',
+        percent,
+        transferred: Math.max(0, Number(progress?.transferred) || 0),
+        total: Math.max(0, Number(progress?.total) || 0),
+        bytesPerSecond: Math.max(0, Number(progress?.bytesPerSecond) || 0),
+        downloadReady: false,
+        message: `Downloading update - ${Math.round(percent)}%`,
+      });
     });
     desktopAutoUpdater.on('update-downloaded', (info) => {
-      publishDesktopUpdateState({ status: 'ready', availableVersion: info.version, percent: 100, message: `EterX ${info.version} is ready - restart when convenient` });
+      publishDesktopUpdateState({
+        status: 'ready',
+        ...desktopUpdateInfoPatch(info),
+        percent: 100,
+        transferred: desktopUpdateState.total || desktopUpdateState.transferred,
+        bytesPerSecond: 0,
+        downloadReady: true,
+        message: `EterX ${info.version} is ready - restart when convenient`,
+      });
       try {
         const { Notification } = require('electron');
         if (Notification.isSupported()) {
@@ -597,18 +759,50 @@ function initializeDesktopUpdates() {
         }
       } catch {}
     });
+    desktopAutoUpdater.on('update-cancelled', (info) => publishDesktopUpdateState({
+      status: 'available',
+      ...desktopUpdateInfoPatch(info),
+      percent: 0,
+      transferred: 0,
+      bytesPerSecond: 0,
+      downloadReady: false,
+      message: `Download cancelled. EterX ${info.version} is still available.`,
+    }));
     desktopAutoUpdater.on('error', (error) => {
-      // A durable-flush failure is represented as error + 100% so the user
-      // can retry installation. Do not let a late updater error event erase
-      // that already-downloaded package and turn the button back into a new
-      // check.
-      if (desktopUpdateState.status === 'ready' ||
-        (desktopUpdateState.availableVersion && desktopUpdateState.percent >= 100)) return;
-      publishDesktopUpdateState({ status: 'error', percent: 0, message: `Update failed: ${error?.message || 'unknown error'}` });
+      // A late native-installer error must remain visible without discarding
+      // the already verified package, so the user can retry installation.
+      if (desktopUpdateState.downloadReady) {
+        publishDesktopUpdateState({
+          status: 'error',
+          percent: 100,
+          bytesPerSecond: 0,
+          downloadReady: true,
+          message: describeDesktopUpdateError(error, desktopUpdateState.status === 'installing' ? 'Update installation' : 'Update'),
+        });
+        return;
+      }
+      const operation = desktopUpdateState.status === 'checking'
+        ? 'Update check'
+        : desktopUpdateState.status === 'downloading'
+          ? 'Update download'
+          : 'Update';
+      publishDesktopUpdateState({
+        status: 'error',
+        bytesPerSecond: 0,
+        message: describeDesktopUpdateError(error, operation),
+      });
+    });
+
+    publishDesktopUpdateState({
+      status: 'idle',
+      supported: true,
+      automaticChecks: false,
+      manualInstall: true,
+      message: 'Ready for a manual update check',
     });
 
   } catch (error) {
-    publishDesktopUpdateState({ status: 'error', message: `Updater unavailable: ${error.message}` });
+    publishDesktopUpdateState({ status: 'error', message: describeDesktopUpdateError(error, 'Updater initialization') });
   }
   return desktopUpdateState;
 }
@@ -1768,6 +1962,8 @@ function getAppTarget() {
 
   if (app.isPackaged && packagedServerUrl) return packagedServerUrl;
 
+  if (!app.isPackaged && resolvedDevAppTarget) return resolvedDevAppTarget;
+
   const port = process.env.ETERX_PORT || process.env.PORT || '3000';
   return `http://127.0.0.1:${port}`;
 }
@@ -2001,8 +2197,32 @@ function requestTarget(target, timeoutMs = 5000) {
   return new Promise((resolve) => {
     const client = target.startsWith('https:') ? https : http;
     const req = client.get(target, (res) => {
-      res.resume();
-      resolve(res.statusCode && res.statusCode < 500);
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        if (body.length < 256_000) body += chunk;
+      });
+      res.on('end', async () => {
+        // A Next.js server can answer with its temporary 404 recovery page or
+        // stale HTML while the app components are still compiling. Treat that
+        // as not ready instead of navigating into an unstyled error screen.
+        if (!(res.statusCode && res.statusCode >= 200 && res.statusCode < 400)) {
+          resolve(false);
+          return;
+        }
+
+        const assets = [...body.matchAll(/(?:src|href)=["'](\/_next\/(?:static|webpack)[^"']+)["']/g)]
+          .map((match) => match[1])
+          .filter((asset, index, values) => values.indexOf(asset) === index)
+          .slice(0, 6);
+        if (assets.length === 0) {
+          resolve(true);
+          return;
+        }
+
+        const assetResults = await Promise.all(assets.map((asset) => requestAsset(new URL(asset, target).toString(), Math.min(timeoutMs, 1500))));
+        resolve(assetResults.every(Boolean));
+      });
     });
 
     req.setTimeout(timeoutMs, () => {
@@ -2012,6 +2232,36 @@ function requestTarget(target, timeoutMs = 5000) {
 
     req.on('error', () => resolve(false));
   });
+}
+
+function requestAsset(target, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    const client = target.startsWith('https:') ? https : http;
+    const req = client.get(target, (res) => {
+      res.resume();
+      resolve(Boolean(res.statusCode && res.statusCode >= 200 && res.statusCode < 400));
+    });
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.on('error', () => resolve(false));
+  });
+}
+
+async function resolveDevAppTarget() {
+  if (app.isPackaged || process.env.ELECTRON_URL) return getAppTarget();
+
+  const configuredPort = Number(process.env.ETERX_PORT || process.env.PORT || 3000);
+  const startPort = Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 3000;
+  for (let port = startPort; port < startPort + 40; port += 1) {
+    const candidate = `http://127.0.0.1:${port}`;
+    if (await requestTarget(candidate, 1200)) {
+      resolvedDevAppTarget = candidate;
+      return candidate;
+    }
+  }
+  throw new Error(`No healthy local EterX server found from port ${startPort} to ${startPort + 39}.`);
 }
 
 async function waitForHttpTarget(target) {
@@ -2161,6 +2411,17 @@ function isSettingsUrl(url = '') {
 }
 
 function sendPetStatus(status) {
+  const normalizeVolume = (value, fallback = 0) => {
+    if (Array.isArray(value)) {
+      return value
+        .slice(0, 8)
+        .map((entry) => Math.min(100, Math.max(0, Number(entry) || 0)));
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.min(100, Math.max(0, value));
+    }
+    return fallback;
+  };
   latestPetStatus = {
     title: String(status?.title || 'EterX agent').slice(0, 160),
     text: String(status?.text ?? latestPetStatus?.text ?? '').slice(0, 500),
@@ -2182,6 +2443,8 @@ function sendPetStatus(status) {
     liveState: typeof status?.liveState === 'string'
       ? status.liveState
       : latestPetStatus?.liveState || 'listening',
+    micVolume: normalizeVolume(status?.micVolume, latestPetStatus?.micVolume || 0),
+    modelVolume: normalizeVolume(status?.modelVolume, latestPetStatus?.modelVolume || 0),
   };
 
   if (petWindow && !petWindow.isDestroyed()) {
@@ -2217,7 +2480,42 @@ function getRoundedRectShape(width, height, radius = 24) {
 }
 
 function applyPetWindowShape(width, height) {
-  return; // Disabled setShape to preserve 100% per-pixel DWM alpha transparency
+  if (!petWindow || petWindow.isDestroyed() || typeof petWindow.setShape !== 'function') return;
+  try {
+    const orbSize = Math.min(132, width, height);
+    const radius = orbSize / 2;
+    const orbLeft = Math.round((width - orbSize) / 2);
+    const orbTop = Math.round((height - orbSize) / 2);
+    const shape = [];
+    for (let row = 0; row < orbSize; row += 1) {
+      const y = row + 0.5 - radius;
+      const halfWidth = Math.sqrt(Math.max(0, (radius * radius) - (y * y)));
+      const inset = Math.max(0, Math.floor(radius - halfWidth));
+      shape.push({
+        x: orbLeft + inset,
+        y: orbTop + row,
+        width: Math.max(1, orbSize - (inset * 2)),
+        height: 1,
+      });
+    }
+
+    // The hover controls overlap the lower orb and extend slightly past it.
+    // Include that compact pill while leaving the rest of the transparent
+    // always-on-top window click-through at the OS level.
+    const pillWidth = Math.min(width, 148);
+    const pillHeight = Math.min(34, Math.max(1, height - (orbTop + 107)));
+    const pillLeft = Math.round((width - pillWidth) / 2);
+    const pillTop = Math.min(height - pillHeight, orbTop + 107);
+    shape.push(...getRoundedRectShape(pillWidth, pillHeight, 17).map((rect) => ({
+      ...rect,
+      x: rect.x + pillLeft,
+      y: rect.y + pillTop,
+    })));
+    petWindow.setShape(shape);
+  } catch {
+    // macOS and older Electron builds may not support setShape. The per-pixel
+    // transparent window remains functional and interactive without it.
+  }
 }
 
 function resizePetWindow(options = {}) {
@@ -2252,7 +2550,11 @@ async function openPetWindow(status) {
   sendPetStatus(status);
 
   if (petWindow && !petWindow.isDestroyed()) {
-    petWindow.show();
+    if (petWindowReadyPromise) await petWindowReadyPromise;
+    if (!petWindow || petWindow.isDestroyed()) {
+      throw new Error('Live overlay became unavailable while opening.');
+    }
+    petWindow.showInactive();
     petWindow.setAlwaysOnTop(true, 'screen-saver');
     sendPetStatus(latestPetStatus);
     return;
@@ -2292,6 +2594,9 @@ async function openPetWindow(status) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      // The hidden renderer owns durable gateway-to-agent dispatch. Keep its
+      // reconciliation and run pollers active while EterX is in the tray.
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.js')
     }
   });
@@ -2299,14 +2604,10 @@ async function openPetWindow(status) {
   petWindow.setAlwaysOnTop(true, 'screen-saver');
   petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   petWindow.setBackgroundColor('#00000000');
-  petWindow.setIgnoreMouseEvents(true, { forward: true });
-  petWindow.loadURL(`${getAppTarget()}/live-overlay`);
-
-  petWindow.webContents.once('did-finish-load', () => {
-    if (!petWindow || petWindow.isDestroyed()) return;
-    sendPetStatus(latestPetStatus);
-    petWindow.showInactive();
-  });
+  // `forward: true` only forwards mouse movement on macOS. Click-through mode
+  // here made the Live controls unreachable on Windows and Linux.
+  petWindow.setIgnoreMouseEvents(false);
+  applyPetWindowShape(windowWidth, windowHeight);
 
   petWindow.on('closed', () => {
     petWindow = null;
@@ -2314,6 +2615,24 @@ async function openPetWindow(status) {
       mainWindow.webContents.send('pet-window-closed');
     }
   });
+
+  const openingWindow = petWindow;
+  const readyPromise = openingWindow.loadURL(`${getAppTarget()}/live-overlay`);
+  petWindowReadyPromise = readyPromise;
+  try {
+    await readyPromise;
+    if (petWindow !== openingWindow || openingWindow.isDestroyed()) {
+      throw new Error('Live overlay closed before it finished loading.');
+    }
+    sendPetStatus(latestPetStatus);
+    openingWindow.showInactive();
+  } catch (error) {
+    if (!openingWindow.isDestroyed()) openingWindow.destroy();
+    if (petWindow === openingWindow) petWindow = null;
+    throw error;
+  } finally {
+    if (petWindowReadyPromise === readyPromise) petWindowReadyPromise = null;
+  }
 }
 
 function closePetWindow() {
@@ -2321,6 +2640,7 @@ function closePetWindow() {
     petWindow.close();
   }
   petWindow = null;
+  petWindowReadyPromise = null;
 }
 
 async function bootApp(options = {}) {
@@ -2339,7 +2659,7 @@ async function bootApp(options = {}) {
       await startPackagedServer();
     }
 
-    const target = getAppTarget();
+    const target = await resolveDevAppTarget();
 
     if (isHttpTarget(target)) {
       await waitForHttpTarget(target);
@@ -2393,13 +2713,19 @@ function createWindow() {
     minWidth: 400,
     minHeight: 400,
     backgroundColor: initialNativeColors.background,
-    title: 'EterX',
+    // macOS keeps the native title in the hidden title bar. Windows/Linux
+    // render their own sidebar branding; a zero-width native title prevents
+    // Electron/Chromium from falling back to the app name beside the controls.
+    title: process.platform === 'darwin' ? 'EterX' : '\u200B',
     icon: getSystemIconPath(),
     ...windowChrome,
     show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      // Gateway dispatch and agent polling must continue while the main
+      // window is hidden to the background tray.
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.js')
     }
   });
@@ -2414,6 +2740,12 @@ function createWindow() {
       event.preventDefault();
     }
   });
+  if (process.platform !== 'darwin') {
+    mainWindow.on('page-title-updated', (event) => {
+      event.preventDefault();
+      mainWindow.setTitle('\u200B');
+    });
+  }
   attachNativeContextMenu(mainWindow);
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
@@ -2795,8 +3127,8 @@ ipcMain.handle('gateway-save-config', async (_event, raw) => {
   const current = readGatewaySettings();
   const incoming = raw && typeof raw === 'object' ? raw : {};
   const merged = { ...current, ...incoming, platforms: {} };
-  const secretFields = ['token', 'webhookSecret', 'appSecret', 'publicKey'];
-  for (const platform of ['telegram', 'whatsapp', 'discord', 'signal', 'generic']) {
+  const secretFields = ['token', 'webhookSecret', 'appSecret', 'publicKey', 'password', 'appPassword', 'emailPassword'];
+  for (const platform of ['telegram', 'whatsapp', 'messenger', 'email', 'discord', 'signal', 'generic']) {
     const previous = current.platforms?.[platform] || {};
     const next = incoming.platforms?.[platform] || {};
     merged.platforms[platform] = { ...previous, ...next };
@@ -2853,7 +3185,7 @@ ipcMain.handle('desktop-update-check', async () => {
 ipcMain.handle('desktop-update-download', async () => {
   const retryableDownload = desktopUpdateState.status === 'error'
     && Boolean(desktopUpdateState.availableVersion)
-    && desktopUpdateState.percent < 100;
+    && !desktopUpdateState.downloadReady;
   if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED ||
     (desktopUpdateState.status !== 'available' && !retryableDownload)) {
     return desktopUpdateState;
@@ -2863,6 +3195,9 @@ ipcMain.handle('desktop-update-download', async () => {
   publishDesktopUpdateState({
     status: 'downloading',
     percent: 0,
+    transferred: 0,
+    bytesPerSecond: 0,
+    downloadReady: false,
     message: `Downloading EterX ${desktopUpdateState.availableVersion || 'update'}...`,
   });
   desktopUpdateDownloadPromise = (async () => {
@@ -2875,14 +3210,18 @@ ipcMain.handle('desktop-update-download', async () => {
         publishDesktopUpdateState({
           status: 'ready',
           percent: 100,
+          transferred: desktopUpdateState.total || desktopUpdateState.transferred,
+          bytesPerSecond: 0,
+          downloadReady: true,
           message: `EterX ${desktopUpdateState.availableVersion || 'update'} is ready - restart when convenient`,
         });
       }
     } catch (error) {
       publishDesktopUpdateState({
         status: 'error',
-        percent: 0,
-        message: `Update download failed: ${error?.message || 'unknown error'}`,
+        bytesPerSecond: 0,
+        downloadReady: false,
+        message: describeDesktopUpdateError(error, 'Update download'),
       });
     } finally {
       desktopUpdateDownloadPromise = null;
@@ -2893,15 +3232,19 @@ ipcMain.handle('desktop-update-download', async () => {
 });
 
 ipcMain.handle('desktop-update-install', async () => {
-  const packageReady = desktopUpdateState.status === 'ready' || (
-    desktopUpdateState.status === 'error' &&
-    Boolean(desktopUpdateState.availableVersion) &&
-    desktopUpdateState.percent >= 100
+  const packageReady = Boolean(desktopUpdateState.downloadReady) && (
+    desktopUpdateState.status === 'ready' || desktopUpdateState.status === 'error'
   );
   if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED || !packageReady) return false;
   if (desktopUpdateInstallPromise) return desktopUpdateInstallPromise;
 
   desktopUpdateInstallPromise = (async () => {
+    publishDesktopUpdateState({
+      status: 'installing',
+      percent: 100,
+      bytesPerSecond: 0,
+      message: 'Saving chats and settings before installation...',
+    });
     const flushed = await requestRendererDurableFlush(15000, 3);
     if (!flushed) {
       publishDesktopUpdateState({
@@ -2912,6 +3255,11 @@ ipcMain.handle('desktop-update-install', async () => {
       return false;
     }
     isQuitting = true;
+    publishDesktopUpdateState({
+      status: 'installing',
+      percent: 100,
+      message: 'Starting the native installer...',
+    });
     // Release the local server before handing control to the installer. This
     // avoids locked runtime files on Windows and a stale helper process on
     // macOS, while leaving AppData untouched.
@@ -2993,7 +3341,7 @@ app.on('ready', async () => {
   if (!hasSingleInstanceLock) return;
 
   const { session } = require('electron');
-  Menu.setApplicationMenu(null);
+  configureApplicationMenu();
 
   migrateLegacyUserData();
 

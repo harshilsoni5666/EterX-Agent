@@ -1,8 +1,30 @@
 import assert from 'node:assert/strict';
 import {
   deriveContextCompactionPolicy,
+  shouldDeferContextCompaction,
   type ContextCompactionUsage,
 } from '../src/lib/agent/resilience/context-compaction';
+
+assert.equal(shouldDeferContextCompaction({
+  isHardBlocked: false,
+  forecastRequiresCompaction: false,
+  semanticBoundary: 'unsafe',
+}), true, 'mid-derivation soft compaction must be deferred');
+assert.equal(shouldDeferContextCompaction({
+  isHardBlocked: false,
+  forecastRequiresCompaction: false,
+  semanticBoundary: 'neutral',
+}), true, 'ordinary soft compaction waits for a resolved semantic boundary');
+assert.equal(shouldDeferContextCompaction({
+  isHardBlocked: false,
+  forecastRequiresCompaction: true,
+  semanticBoundary: 'neutral',
+}), false, 'forecast overflow may compact at a neutral boundary');
+assert.equal(shouldDeferContextCompaction({
+  isHardBlocked: true,
+  forecastRequiresCompaction: false,
+  semanticBoundary: 'unsafe',
+}), false, 'hard context recovery remains available');
 
 const usage = (
   contextWindow: number,

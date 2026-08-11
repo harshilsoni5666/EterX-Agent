@@ -19,7 +19,7 @@ export const getLatestPetMonitorText = (logs: any[], isThinking: boolean) => {
 
 export const PetThinkingLabel = ({ className = '' }: { className?: string }) => (
   <span className={`eterx-pet-thinking-label inline-flex items-baseline gap-[3px] ${ className }`}>
-    <Shimmer>Thinking</Shimmer>
+    <Shimmer className="text-[var(--eterx-ui-working-text)]">Thinking</Shimmer>
     <span className="eterx-pet-thinking-dots inline-flex w-[22px] items-baseline justify-start gap-[2px]" aria-hidden="true">
       <span />
       <span />

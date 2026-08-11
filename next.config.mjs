@@ -1,5 +1,22 @@
+import path from 'node:path';
+
 /** @type {import('next').NextConfig} */
+const repositoryRoot = path.resolve(process.cwd());
+const tracingPath = (...segments) => path.join(repositoryRoot, ...segments).replaceAll('\\', '/');
+const runtimeDataExcludes = [
+  tracingPath('.workspaces'),
+  tracingPath('.workspaces', '**'),
+  tracingPath('.workspaces', '**', '*'),
+  tracingPath('.temp'),
+  tracingPath('.temp', '**'),
+  tracingPath('dist'),
+  tracingPath('dist', '**'),
+];
+
 const nextConfig = {
+  // Desktop development sessions get an isolated output directory so a
+  // second local Next server cannot overwrite the first server's asset map.
+  distDir: process.env.ETERX_DEV_DIST_DIR || './.next',
   // Electron starts the generated server directly in production.  A standalone
   // build keeps the desktop installer self-contained instead of requiring a
   // system Node.js installation or a separate `next start` process.
@@ -12,6 +29,7 @@ const nextConfig = {
     // inputs, so file tracing must not traverse them during install/update.
     outputFileTracingExcludes: {
       '*': [
+        ...runtimeDataExcludes,
         '**/.workspaces/**',
         '**\\.workspaces\\**',
         '**/.temp/**',

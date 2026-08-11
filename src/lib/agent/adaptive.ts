@@ -905,12 +905,10 @@ export function initializeAdaptiveIntelligence(): Promise<void> {
   if (_adaptiveInitialized) return Promise.resolve();
   if (_adaptiveInitPromise) return _adaptiveInitPromise;
   _adaptiveInitPromise = (async () => {
-    console.log('[AdaptiveIntel] Initializing self-improving intelligence layer...');
-    await Promise.all([
-      adaptiveLearning.load(),
-      sessionPersistence.load(),
-      neuralPlasticity.load(),
-    ]);
+    console.log('[SessionContinuity] Initializing persisted session state...');
+    // Behavioral learning is owned exclusively by the governed experience
+    // graph. This legacy entry point now initializes session continuity only.
+    await sessionPersistence.load();
     _adaptiveInitialized = true;
     console.log('[AdaptiveIntel] ✅ All systems ready');
   })();

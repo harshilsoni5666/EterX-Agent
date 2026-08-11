@@ -6,6 +6,19 @@ import { interAgentMailbox } from './inter_agent_comm';
 import { getEterxWorkspaceDir } from '../storage-paths';
 import { stableScopeSegment } from '../context-scope';
 import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider, type MainAgentThinkingLevel } from '../model-routing';
+import { MAX_SUB_AGENTS } from '../sub-agent-settings';
+import { assessDelegatedAgent, type DelegatedAgentEvidence } from '../delegation-evidence';
+
+function boundedHandoffPayload(value: string, maxChars = 20_000): { body: string; truncated: boolean } {
+  if (value.length <= maxChars) return { body: value, truncated: false };
+  const marker = '\n\n[... middle omitted from automatic handoff; collect by run ID for retained payload ...]\n\n';
+  const headChars = Math.floor((maxChars - marker.length) * 0.72);
+  const tailChars = maxChars - marker.length - headChars;
+  return {
+    body: `${value.slice(0, headChars)}${marker}${value.slice(-tailChars)}`,
+    truncated: true,
+  };
+}
 
 /**
  * Sub-Agent Spawner v5 — Parallel API Keys, Fire-and-Forget, Non-Blocking
@@ -21,13 +34,54 @@ import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider, ty
  * - Global cancellation flag: user "stop" kills all sub-agents immediately.
  */
 
-const AGENT_NAMES = [
-  'Einstein', 'Heisenberg', 'Sam', 'Dario', 'Elon',
-  'Tesla', 'Newton', 'Turing',
-  'Ada', 'Curie',
-  'Feynman', 'Darwin', 'Hawking', 'Galileo', 'DaVinci',
-  'Aristotle', 'Oppenheimer', 'Gates', 'Jobs', 'Pascal'
-] as const;
+const TASK_NAME_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'do', 'for', 'from', 'in',
+  'into', 'is', 'it', 'of', 'on', 'or', 'our', 'that', 'the', 'their', 'this',
+  'to', 'use', 'with', 'work', 'working', 'task', 'agent', 'subagent', 'sub-agent',
+  'analyze', 'audit', 'check', 'create', 'deep', 'do', 'ensure', 'file', 'files',
+  'fix', 'focus', 'implement', 'inspect', 'make', 'perform', 'read', 'review',
+  'source', 'update', 'verify', 'src', 'lib', 'app',
+]);
+const TASK_NAME_SHORT_TERMS = new Set(['ai', 'api', 'db', 'qa', 'ui', 'ux']);
+
+const taskNameHash = (value: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).slice(0, 6).toUpperCase();
+};
+
+const toAgentNameSegment = (value: string): string => {
+  if (/^[A-Z0-9]{2,6}$/.test(value)) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+};
+
+const normalizeAgentName = (value: string): string => {
+  const segments = String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .match(/[A-Za-z0-9]+/g)
+    ?.filter(Boolean)
+    .slice(0, 6) || [];
+  return segments.map(toAgentNameSegment).join('-').slice(0, 64).replace(/-+$/g, '');
+};
+
+const buildTaskAgentName = (task: string): string => {
+  const words = String(task || '')
+    .replace(/\[[^\]]+\]/g, ' ')
+    .match(/[A-Za-z][A-Za-z0-9]*/g) || [];
+  const meaningful: string[] = [];
+  for (const word of words) {
+    const normalized = word.toLowerCase();
+    if ((normalized.length < 3 && !TASK_NAME_SHORT_TERMS.has(normalized)) || TASK_NAME_STOP_WORDS.has(normalized) || meaningful.includes(normalized)) continue;
+    meaningful.push(normalized);
+    if (meaningful.length === 3) break;
+  }
+  const workName = normalizeAgentName(meaningful.join(' '));
+  return workName || `Task-${taskNameHash(task)}`;
+};
 
 export type SubAgentName = string;
 export type SubAgentTaskSpec = {
@@ -43,19 +97,25 @@ const MAX_PENDING_RESULTS_PER_PROJECT = 100;
 const MAX_PENDING_RESULTS_TOTAL = 1000;
 const DEFAULT_MAX_SUB_AGENTS = 5;
 
-const limitConfiguredTasks = (tasks: SubAgentTaskSpec[], context: ProjectContext): SubAgentTaskSpec[] => {
+const getConfiguredSubAgentLimit = (context: ProjectContext): number => {
   const configured = Number((context as any)?.maxSubAgents);
-  const limit = Number.isFinite(configured)
-    ? Math.max(1, Math.floor(configured))
+  return Number.isFinite(configured)
+    ? Math.min(MAX_SUB_AGENTS, Math.max(1, Math.floor(configured)))
     : DEFAULT_MAX_SUB_AGENTS;
-  return tasks.slice(0, limit);
+};
+
+const limitConfiguredTasks = (tasks: SubAgentTaskSpec[], context: ProjectContext): SubAgentTaskSpec[] => {
+  return tasks.slice(0, getConfiguredSubAgentLimit(context));
 };
 
 const AGENTS_DIR = getEterxWorkspaceDir('agents');
 const MAX_SUB_AGENT_TRACE_LOGS = 400;
 const SUB_AGENT_STATUS_WRITE_INTERVAL_MS = 1000;
-const LEGACY_NON_SCIENTIST_AGENT_NAMES = new Set([
+const LEGACY_PRE_TASK_AGENT_NAMES = new Set([
   'dave', 'nova', 'mira', 'leo', 'kai', 'zara', 'sage',
+  'einstein', 'heisenberg', 'sam', 'dario', 'elon', 'tesla', 'newton', 'turing',
+  'ada', 'curie', 'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
+  'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal',
 ]);
 let legacyAgentStatusCleanupPromise: Promise<void> | null = null;
 
@@ -118,16 +178,43 @@ function resolveProjectId(projectId: string): string {
   return projectId;
 }
 
+function isSameProjectScope(leftProjectId: string, rightProjectId: string): boolean {
+  return leftProjectId === rightProjectId || resolveProjectId(leftProjectId) === resolveProjectId(rightProjectId);
+}
+
+function getRegistryExecution(projectId: string): any | undefined {
+  const registry = (globalThis as any).__eterxAgentRegistry;
+  if (!registry?.executions) return undefined;
+  const resolvedProjectId = resolveProjectId(projectId);
+  return registry.executions.get(projectId) || registry.executions.get(resolvedProjectId);
+}
+
 function agentKey(projectId: string, agentName: string, agentId?: string): string {
   return `${resolveProjectId(projectId)}:${agentId || agentName}`;
+}
+
+function resolveControlKey(projectId: string, agentName: string, agentId?: string): string {
+  if (agentId) return agentKey(projectId, agentName, agentId);
+  const resolvedProjectId = resolveProjectId(projectId);
+  const active = globalSubAgentSpawner.getAgentStatus().find(agent =>
+    agent.projectId === resolvedProjectId &&
+    agent.name.toLowerCase() === agentName.toLowerCase() &&
+    !['completed', 'failed', 'cancelled'].includes(agent.status)
+  );
+  if (active) return agentKey(projectId, agentName, active.id);
+  for (const [key, controlledName] of controlAgentNames.entries()) {
+    if (key.startsWith(`${resolvedProjectId}:`) && controlledName.toLowerCase() === agentName.toLowerCase()) return key;
+  }
+  return agentKey(projectId, agentName);
 }
 
 /**
  * Pause a specific sub-agent. Its execution loop will suspend at the next trace callback.
  */
 export function pauseAgent(projectId: string, agentName: string, onTrace?: (trace: any) => void, expectedAgentId?: string): boolean {
-  if (expectedAgentId && !globalSubAgentSpawner.matchesActiveAgent(projectId, agentName, expectedAgentId)) return false;
-  const key = agentKey(projectId, agentName, expectedAgentId);
+  const activeAgentId = expectedAgentId || globalSubAgentSpawner.findActiveAgentId(projectId, agentName);
+  if (!activeAgentId || !globalSubAgentSpawner.matchesActiveAgent(projectId, agentName, activeAgentId)) return false;
+  const key = agentKey(projectId, agentName, activeAgentId);
   controlAgentNames.set(key, agentName);
   const existing = agentPauseStates.get(key);
   if (existing?.paused) return false; // already paused
@@ -146,8 +233,8 @@ export function pauseAgent(projectId: string, agentName: string, onTrace?: (trac
     text: `${agentName} paused`,
     subAgent: agentName,
     agentName: agentName,
-    subAgentId: expectedAgentId,
-    subAgentChatId: expectedAgentId ? `${projectId}::sub-agent::${expectedAgentId}` : undefined,
+    subAgentId: activeAgentId,
+    subAgentChatId: `${projectId}::sub-agent::${activeAgentId}`,
     agentStatus: 'paused',
   };
 
@@ -155,7 +242,7 @@ export function pauseAgent(projectId: string, agentName: string, onTrace?: (trac
     onTrace(traceEvent);
   } else {
     const registry = (globalThis as any).__eterxAgentRegistry;
-    const exec = registry?.executions?.get(projectId);
+    const exec = getRegistryExecution(projectId);
     if (exec) {
       registry.appendTrace(exec, traceEvent, !exec.pinnedContext?.disableTaskStore);
     }
@@ -167,8 +254,9 @@ export function pauseAgent(projectId: string, agentName: string, onTrace?: (trac
  * Resume a previously paused sub-agent.
  */
 export function resumeAgent(projectId: string, agentName: string, onTrace?: (trace: any) => void, expectedAgentId?: string): boolean {
-  if (expectedAgentId && !globalSubAgentSpawner.matchesActiveAgent(projectId, agentName, expectedAgentId)) return false;
-  const key = agentKey(projectId, agentName, expectedAgentId);
+  const activeAgentId = expectedAgentId || globalSubAgentSpawner.findActiveAgentId(projectId, agentName);
+  if (!activeAgentId || !globalSubAgentSpawner.matchesActiveAgent(projectId, agentName, activeAgentId)) return false;
+  const key = agentKey(projectId, agentName, activeAgentId);
   const state = agentPauseStates.get(key);
   if (!state?.paused) return false; // not paused
 
@@ -187,8 +275,8 @@ export function resumeAgent(projectId: string, agentName: string, onTrace?: (tra
     text: `${agentName} resumed`,
     subAgent: agentName,
     agentName: agentName,
-    subAgentId: expectedAgentId,
-    subAgentChatId: expectedAgentId ? `${projectId}::sub-agent::${expectedAgentId}` : undefined,
+    subAgentId: activeAgentId,
+    subAgentChatId: `${projectId}::sub-agent::${activeAgentId}`,
     agentStatus: 'working',
   };
 
@@ -196,7 +284,7 @@ export function resumeAgent(projectId: string, agentName: string, onTrace?: (tra
     onTrace(traceEvent);
   } else {
     const registry = (globalThis as any).__eterxAgentRegistry;
-    const exec = registry?.executions?.get(projectId);
+    const exec = getRegistryExecution(projectId);
     if (exec) {
       registry.appendTrace(exec, traceEvent, !exec.pinnedContext?.disableTaskStore);
     }
@@ -208,11 +296,12 @@ export function resumeAgent(projectId: string, agentName: string, onTrace?: (tra
  * Close (terminate) a specific sub-agent without cancelling the whole chat.
  */
 export function closeAgent(projectId: string, agentName: string, onTrace?: (trace: any) => void, expectedAgentId?: string): boolean {
-  if (expectedAgentId && !globalSubAgentSpawner.matchesActiveAgent(projectId, agentName, expectedAgentId)) return false;
-  const key = agentKey(projectId, agentName, expectedAgentId);
+  const activeAgentId = expectedAgentId || globalSubAgentSpawner.findActiveAgentId(projectId, agentName);
+  if (!activeAgentId || !globalSubAgentSpawner.matchesActiveAgent(projectId, agentName, activeAgentId)) return false;
+  const key = agentKey(projectId, agentName, activeAgentId);
   controlAgentNames.set(key, agentName);
   agentCloseFlags.set(key, true);
-  globalSubAgentSpawner.abortAgent(projectId, agentName, expectedAgentId);
+  globalSubAgentSpawner.abortAgent(projectId, agentName, activeAgentId);
 
   // If it's paused, also resume it so it can see the close flag and exit
   const pauseState = agentPauseStates.get(key);
@@ -233,8 +322,8 @@ export function closeAgent(projectId: string, agentName: string, onTrace?: (trac
     text: `${agentName} closed`,
     subAgent: agentName,
     agentName: agentName,
-    subAgentId: expectedAgentId,
-    subAgentChatId: expectedAgentId ? `${projectId}::sub-agent::${expectedAgentId}` : undefined,
+    subAgentId: activeAgentId,
+    subAgentChatId: `${projectId}::sub-agent::${activeAgentId}`,
     agentStatus: 'closed',
   };
 
@@ -242,7 +331,7 @@ export function closeAgent(projectId: string, agentName: string, onTrace?: (trac
     onTrace(traceEvent);
   } else {
     const registry = (globalThis as any).__eterxAgentRegistry;
-    const exec = registry?.executions?.get(projectId);
+    const exec = getRegistryExecution(projectId);
     if (exec) {
       registry.appendTrace(exec, traceEvent, !exec.pinnedContext?.disableTaskStore);
     }
@@ -254,14 +343,14 @@ export function closeAgent(projectId: string, agentName: string, onTrace?: (trac
  * Check if a specific agent is paused.
  */
 export function isAgentPaused(projectId: string, agentName: string, agentId?: string): boolean {
-  return agentPauseStates.get(agentKey(projectId, agentName, agentId))?.paused === true;
+  return agentPauseStates.get(resolveControlKey(projectId, agentName, agentId))?.paused === true;
 }
 
 /**
  * Check if a specific agent has been closed (terminated).
  */
 export function isAgentClosed(projectId: string, agentName: string, agentId?: string): boolean {
-  return agentCloseFlags.get(agentKey(projectId, agentName, agentId)) === true;
+  return agentCloseFlags.get(resolveControlKey(projectId, agentName, agentId)) === true;
 }
 
 /**
@@ -425,7 +514,7 @@ class AgentMessageBus {
           const filePath = resolveUnder(AGENTS_DIR, file);
           try {
             const status = await fs.readJson(filePath);
-            if (LEGACY_NON_SCIENTIST_AGENT_NAMES.has(String(status?.agentName || '').toLowerCase())) {
+            if (LEGACY_PRE_TASK_AGENT_NAMES.has(String(status?.agentName || '').toLowerCase())) {
               await fs.remove(filePath);
             }
           } catch { }
@@ -444,6 +533,8 @@ class AgentMessageBus {
   async writeAgentStatus(agentName: string, data: {
     status: string;
     task: string;
+    agentId?: string;
+    subAgentChatId?: string;
     progress?: string;
     result?: string;
     traceLog?: string[];
@@ -523,13 +614,26 @@ interface SubAgentInstance {
 }
 
 // === RESULT QUEUE: Sub-agent results are silently queued here ===
-type PendingSubAgentResult = { projectId: string, name: SubAgentName, result: string, success: boolean, durationMs: number };
+type PendingSubAgentResult = {
+  projectId: string;
+  agentId: string;
+  subAgentChatId: string;
+  name: SubAgentName;
+  task: string;
+  result: string;
+  success: boolean;
+  status: 'completed' | 'failed' | 'cancelled';
+  delegationEvidence: DelegatedAgentEvidence;
+  durationMs: number;
+  completedAt: number;
+  collectedAt?: number;
+};
 type BackgroundSubAgentRun = { projectId: string, name: SubAgentName, promise: Promise<any> };
 
 const pendingResults: Map<string, PendingSubAgentResult> = new Map();
 
 function queuePendingResult(result: PendingSubAgentResult) {
-  const runKey = `${ result.projectId }:${ result.name }:${ Date.now() }:${ Math.random().toString(36).slice(2) }`;
+  const runKey = `${ result.projectId }:${ result.agentId }`;
   pendingResults.set(runKey, result);
   const projectEntries = Array.from(pendingResults.entries())
     .filter(([, queued]) => queued.projectId === result.projectId);
@@ -544,22 +648,33 @@ function queuePendingResult(result: PendingSubAgentResult) {
   }
 }
 
-export function getPendingResults(projectId?: string, agentName?: string): Array<{ name: SubAgentName, result: string, success: boolean, durationMs: number }> {
+export function getPendingResults(projectId?: string, agentName?: string, agentId?: string): Array<Omit<PendingSubAgentResult, 'projectId'>> {
   const entries = Array.from(pendingResults.entries())
-    .filter(([, value]) => (!projectId || value.projectId === projectId) && (!agentName || value.name === agentName));
-  for (const [key] of entries) pendingResults.delete(key);
-  const results = entries.map(([, value]) => ({
-    name: value.name,
-    result: value.result,
-    success: value.success,
-    durationMs: value.durationMs
-  }));
+    .filter(([, value]) =>
+      (!projectId || value.projectId === projectId) &&
+      (!agentName || value.name.toLowerCase() === agentName.toLowerCase()) &&
+      (!agentId || value.agentId === agentId)
+    );
+  const collectedAt = Date.now();
+  for (const [, value] of entries) value.collectedAt = value.collectedAt || collectedAt;
+  const results = entries.map(([, value]) => {
+    const { projectId: _projectId, ...result } = value;
+    return result;
+  });
   return results;
 }
 
 export function hasPendingResults(projectId?: string): boolean {
-  if (!projectId) return pendingResults.size > 0;
-  return Array.from(pendingResults.values()).some((value) => value.projectId === projectId);
+  if (!projectId) return Array.from(pendingResults.values()).some(value => !value.collectedAt);
+  return Array.from(pendingResults.values()).some((value) => value.projectId === projectId && !value.collectedAt);
+}
+
+export function clearPendingResults(projectId?: string): number {
+  const keys = Array.from(pendingResults.entries())
+    .filter(([, value]) => !projectId || value.projectId === projectId)
+    .map(([key]) => key);
+  keys.forEach(key => pendingResults.delete(key));
+  return keys.length;
 }
 
 
@@ -567,40 +682,42 @@ export class SubAgentSpawner {
   private activeAgents: Map<string, SubAgentInstance> = new Map();
   private backgroundPromises: Map<string, BackgroundSubAgentRun> = new Map();
 
-  private isAgentName(name?: string): name is SubAgentName {
-    return typeof name === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(name);
-  }
-
   private isNameBusy(projectId: string, name: SubAgentName, reservedNames?: Set<SubAgentName>): boolean {
-    if (reservedNames?.has(name)) return true;
+    const normalizedName = name.toLowerCase();
+    if (Array.from(reservedNames || []).some(reserved => reserved.toLowerCase() === normalizedName)) return true;
+    if (interAgentMailbox.getTeamSnapshot(projectId).some(agent =>
+      agent.role !== 'main' && agent.agentName.toLowerCase() === normalizedName
+    )) return true;
     const activeNameMatch = Array.from(this.activeAgents.values())
-      .some(agent => agent.projectId === projectId && agent.name === name && agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'cancelled');
+      .some(agent => isSameProjectScope(agent.projectId, projectId) && agent.name.toLowerCase() === normalizedName && agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'cancelled');
     if (activeNameMatch) return true;
     return Array.from(this.backgroundPromises.values())
-      .some(run => run.projectId === projectId && run.name === name);
+      .some(run => isSameProjectScope(run.projectId, projectId) && run.name.toLowerCase() === normalizedName);
   }
 
-  private pickRandomName(projectId: string, reservedNames?: Set<SubAgentName>): SubAgentName {
-    const availableNames = AGENT_NAMES.filter(name => !this.isNameBusy(projectId, name, reservedNames));
-    if (availableNames.length > 0) {
-      return availableNames[Math.floor(Math.random() * availableNames.length)];
-    }
-    let suffix = AGENT_NAMES.length + 1;
-    while (this.isNameBusy(projectId, `Worker-${suffix}`, reservedNames)) suffix++;
-    return `Worker-${suffix}`;
+  private resolveAgentName(projectId: string, task: string, preferredName?: string, reservedNames?: Set<SubAgentName>): SubAgentName {
+    const customName = normalizeAgentName(preferredName || '');
+    const taskName = buildTaskAgentName(task);
+    const requestedName = customName || taskName;
+    const baseName = requestedName.toLowerCase() === 'main'
+      ? `${taskName.slice(0, 52)}-${taskNameHash(task)}`
+      : requestedName;
+    if (!this.isNameBusy(projectId, baseName, reservedNames)) return baseName;
+    let suffix = 2;
+    const compactBase = baseName.slice(0, 60).replace(/-+$/g, '');
+    while (this.isNameBusy(projectId, `${compactBase}-${suffix}`, reservedNames)) suffix++;
+    return `${compactBase}-${suffix}`;
   }
 
-  private resolveAgentName(projectId: string, preferredName?: string, reservedNames?: Set<SubAgentName>): SubAgentName {
-    const preferred = this.isAgentName(preferredName) ? preferredName : undefined;
-    if (preferred && !this.isNameBusy(projectId, preferred, reservedNames)) return preferred;
-    return this.pickRandomName(projectId, reservedNames);
+  private createAgentId(projectId: string, name: string): string {
+    return `${safeAgentSegment(projectId, 'project')}_${safeAgentSegment(name, 'agent')}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   }
 
   public abortAgent(projectId: string, agentName: string, agentId?: string): boolean {
     const resolvedProjectId = resolveProjectId(projectId);
     const instance = Array.from(this.activeAgents.values()).find(agent =>
-      agent.projectId === resolvedProjectId &&
-      agent.name === agentName &&
+      isSameProjectScope(agent.projectId, resolvedProjectId) &&
+      agent.name.toLowerCase() === agentName.toLowerCase() &&
       (!agentId || agent.id === agentId)
     );
     if (!instance || instance.abortController.signal.aborted) return false;
@@ -611,7 +728,7 @@ export class SubAgentSpawner {
   public abortProject(projectId: string): void {
     const resolvedProjectId = resolveProjectId(projectId);
     for (const instance of this.activeAgents.values()) {
-      if (instance.projectId === resolvedProjectId && !instance.abortController.signal.aborted) {
+      if (isSameProjectScope(instance.projectId, resolvedProjectId) && !instance.abortController.signal.aborted) {
         instance.abortController.abort(new Error('CANCELLED_BY_USER'));
       }
     }
@@ -649,7 +766,7 @@ export class SubAgentSpawner {
       ? `\nTEAM - Other agents planned or running:\n${otherAgents}\nUse agent_communicate action="status" to inspect team state and action="send" or "broadcast" to coordinate.\n`
       : '';
     const controlSection = `\nUNIFIED CONTROL:\n- Use agent_communicate with to="Main" when you need clarification, approval, a merge decision, or user-facing escalation.\n- Check your mailbox before major decisions and after long tool runs.\n- Broadcast only blockers or discoveries that affect other agents.\n- Handoff concise partial results to Main when your lane is complete.\n`;
-    return `━━━ ${agentName} — Sub-Agent Task ━━━\n🎯 You are ${agentName}, a parallel sub-agent.\n\n${task}\n${teamSection}\nRULES:\n1. Full tool access. Work deeply — no shortcuts.\n2. NEVER call task_decomposer or spawn_sub_agent.\n3. VERIFY your work before finishing.\n4. You are ONE of multiple parallel agents.\n\nINTER-AGENT COMMUNICATION (agent_communicate tool):\n- check: See messages from other agents\n- send: Send info/question/alert to a specific agent\n- broadcast: Alert ALL agents\n- handoff: Pass results to Main agent\n${controlSection}\n## ${agentName} — Report Format\n**Task:** [what you did]\n**Files:** [paths]\n**Key Results:** [findings]\n**Verified:** [yes/no]\n\n${parentContext ? `CONTEXT: ${parentContext}\n` : ''}EXECUTE NOW.`;
+    return `━━━ ${agentName} — Sub-Agent Task ━━━\n🎯 You are ${agentName}, a parallel sub-agent.\n\n${task}\n${teamSection}\nRULES:\n1. Full tool access. Work deeply — no shortcuts.\n2. NEVER call task_decomposer or spawn_sub_agent.\n3. VERIFY your work before finishing.\n4. You are ONE of multiple parallel agents.\n\nINTER-AGENT COMMUNICATION (agent_communicate tool):\n- status: See every planned/running/paused/completed teammate and current progress\n- check: Read Main or teammate instructions\n- send: Send information, questions, answers, or coordination to any named teammate\n- broadcast: Share a blocker or discovery with the whole active team\n- ask_main: Ask Main for clarification or a decision at any time\n- handoff_main: Pass partial or final results to Main\n${controlSection}\n## ${agentName} — Report Format\n**Task:** [what you did]\n**Files:** [paths]\n**Key Results:** [findings]\n**Verified:** [yes/no]\n\n${parentContext ? `CONTEXT: ${parentContext}\n` : ''}EXECUTE NOW.`;
   }
 
   /** Spawn a single sub-agent with its own API key. */
@@ -661,15 +778,18 @@ export class SubAgentSpawner {
     onTrace?: (trace: any) => void,
     customName?: SubAgentName,
     modelOverride?: Omit<SubAgentTaskSpec, 'task' | 'name'>,
+    customAgentId?: string,
   ): Promise<{ agentId: string, name: SubAgentName, result: string, success: boolean, durationMs: number, traceLog: string[] }> {
-    const name = customName || this.resolveAgentName(context.projectId);
-    const agentId = `${safeAgentSegment(context.projectId, 'project')}_${safeAgentSegment(name, 'agent')}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const name = customName || this.resolveAgentName(context.projectId, task);
+    const agentId = customAgentId || this.createAgentId(context.projectId, name);
     const subAgentChatId = `${context.projectId}::sub-agent::${agentId}`;
     if (isCancelled(context.projectId)) {
       return { agentId, name, result: 'Cancelled by user', success: false, durationMs: 0, traceLog: ['Cancelled before start'] };
     }
     // Register agents in inter-agent mailbox
     interAgentMailbox.registerAgent(context.projectId, name, {
+      agentId,
+      subAgentChatId,
       role: 'sub_agent',
       task,
       status: 'running',
@@ -697,6 +817,16 @@ export class SubAgentSpawner {
       subAgentName: name,
       parentAgentName: 'Main',
       isSubAgent: true,
+      // A worker may use the parent's normal workspace, browser, research,
+      // and communication tools, but delegation is intentionally a root-only
+      // capability. Enforce this in the runtime context as well as the brief;
+      // inherited allowedCapabilities previously made recursive spawning
+      // possible despite the prompt rule.
+      disableSubAgents: true,
+      allowAgentSpawning: false,
+      allowedCapabilities: Array.isArray((context as any).allowedCapabilities)
+        ? (context as any).allowedCapabilities.filter((capability: unknown) => String(capability) !== 'agent.spawn')
+        : undefined,
       subAgentId: agentId,
       subAgentChatId,
       // Parent projectId remains the routing/coordination scope. All
@@ -723,9 +853,9 @@ export class SubAgentSpawner {
     if (modelOverride?.thinkingLevel) {
       subAgentContext.selectedThinkingLevel = modelOverride.thinkingLevel;
     }
-    // Main owns delegation. Forward its task verbatim instead of layering a
-    // personality, specialty, or redundant role prompt onto the sub-agent.
-    const deepBrief = task;
+    // Keep the delegated task intact while adding the live team roster and the
+    // communication/control contract needed for real parallel coordination.
+    const deepBrief = this.buildDeepBrief(task, name, context.projectId, parentContext);
     const traceLog: string[] = [];
     let traceEventCount = 0;
     let lastStatusWriteAt = 0;
@@ -735,7 +865,7 @@ export class SubAgentSpawner {
     };
     this.activeAgents.set(agentId, instance);
     void agentMessageBus.writeAgentStatus(name, {
-      status: 'running', task,
+      status: 'running', task, agentId, subAgentChatId,
       progress: 'Starting execution...',
       startedAt: instance.startedAt
     }, context.projectId).catch(() => { });
@@ -765,8 +895,18 @@ export class SubAgentSpawner {
 
     try {
       // Import createIsolatedClient dynamically to avoid circular deps
-      const subAgentMode = (context as any).selectedModelMode || 'fast';
-      const subAgentProvider = getMainAgentModelConfig(subAgentMode, (context as any).runtimeSettings).provider;
+      // A per-task mode must win over the parent's mode. The previous code
+      // only copied the override into the child context, while constructing
+      // the isolated client from the parent mode, so { mode: 'think' } was
+      // silently ignored for workers without an exact provider/model pair.
+      const requestedProvider = modelOverride?.provider && modelOverride?.model
+        ? modelOverride.provider
+        : undefined;
+      const subAgentMode: MainAgentMode = requestedProvider && requestedProvider !== 'gemini'
+        ? requestedProvider
+        : modelOverride?.mode || (requestedProvider === 'gemini' ? 'fast' : (context as any).selectedModelMode || 'fast');
+      const subAgentProvider = requestedProvider
+        || getMainAgentModelConfig(subAgentMode, (context as any).runtimeSettings).provider;
       // Gemini sub-agents use the isolated Gemini pool. External and local
       // providers use their own runtime settings and must not be blocked by a
       // missing Gemini lease.
@@ -823,7 +963,7 @@ export class SubAgentSpawner {
               progress: trace.text || 'Working...',
             });
             agentMessageBus.writeAgentStatus(name, {
-              status: instance.status === ('paused' as any) ? 'paused' : 'running',
+              status: instance.status === ('paused' as any) ? 'paused' : 'running', agentId, subAgentChatId,
               task,
               progress: trace.text || 'Working...',
               traceLog: traceLog.slice(-10),
@@ -871,7 +1011,7 @@ export class SubAgentSpawner {
         progress: 'Done',
       });
       await agentMessageBus.writeAgentStatus(name, {
-        status: 'completed',
+        status: 'completed', agentId, subAgentChatId,
         task,
         progress: 'Done',
         result: result.text,
@@ -882,8 +1022,54 @@ export class SubAgentSpawner {
 
       console.log(`[${ name }] ✅ Done ${ (durationMs / 1000).toFixed(1) }s`);
 
+      const delegationEvidence = assessDelegatedAgent({
+        agentId,
+        subAgentChatId,
+        name,
+        task,
+        status: 'completed',
+        result: result.text,
+        success: true,
+        completedAt: instance.completedAt,
+      }, false);
+
       // Queue result silently — main agent picks it up via 'collect'
-      queuePendingResult({ projectId: context.projectId, name, result: result.text, success: true, durationMs });
+      queuePendingResult({
+        projectId: context.projectId,
+        agentId,
+        subAgentChatId,
+        name,
+        task,
+        result: result.text,
+        success: true,
+        status: 'completed',
+        delegationEvidence,
+        durationMs,
+        completedAt: instance.completedAt,
+      });
+      const handoffPayload = boundedHandoffPayload(result.text);
+      interAgentMailbox.send({
+        from: name,
+        to: 'Main',
+        projectId: context.projectId,
+        type: 'handoff',
+        subject: `${name} completed its assignment`.substring(0, 100),
+        body: handoffPayload.body,
+        metadata: {
+          priority: 'normal',
+          deliveryMode: 'defer',
+          requiresResponse: false,
+          tags: ['automatic-handoff', 'sub-agent-result'],
+          subAgentId: agentId,
+          subAgentChatId,
+          resultChars: delegationEvidence.resultChars,
+          resultHash: delegationEvidence.resultHash,
+          resultUsability: delegationEvidence.resultUsability,
+          evidenceReady: delegationEvidence.evidenceReady,
+          verificationStatus: delegationEvidence.verificationStatus,
+          payloadTruncated: handoffPayload.truncated,
+        },
+      });
       apiKeyPool.reportSuccess(`${context.projectId}_sub_${name}`);
 
       if (onTrace) {
@@ -896,7 +1082,17 @@ export class SubAgentSpawner {
           subAgentChatId,
           agentName: name,
           agentStatus: 'completed',
-          taskSummary: result.text.substring(0, 300),
+          task: task.substring(0, 1200),
+          taskSummary: delegationEvidence.resultSummary,
+          resultSummary: delegationEvidence.resultSummary,
+          resultAvailable: delegationEvidence.resultAvailable,
+          resultUsability: delegationEvidence.resultUsability,
+          evidenceReady: delegationEvidence.evidenceReady,
+          verificationStatus: delegationEvidence.verificationStatus,
+          resultHash: delegationEvidence.resultHash,
+          resultChars: delegationEvidence.resultChars,
+          collected: false,
+          delegationEvidence,
           durationMs,
           stepCount: traceEventCount,
           traceLog: traceLog.slice(-5)
@@ -918,6 +1114,16 @@ export class SubAgentSpawner {
       instance.result = wasCancelled ? 'Cancelled by user' : error.message;
       instance.completedAt = Date.now();
       instance.durationMs = durationMs;
+      const delegationEvidence = assessDelegatedAgent({
+        agentId,
+        subAgentChatId,
+        name,
+        task,
+        status: instance.status,
+        result: instance.result,
+        success: false,
+        completedAt: instance.completedAt,
+      }, false);
 
       interAgentMailbox.updateAgentPresence(context.projectId, name, {
         status: wasCancelled ? 'cancelled' : 'failed',
@@ -925,7 +1131,7 @@ export class SubAgentSpawner {
         progress: wasCancelled ? 'Cancelled' : `Failed: ${ error.message }`,
       });
       await agentMessageBus.writeAgentStatus(name, {
-        status: wasCancelled ? 'cancelled' : 'failed',
+        status: wasCancelled ? 'cancelled' : 'failed', agentId, subAgentChatId,
         task,
         progress: wasCancelled ? 'Cancelled' : `Failed: ${ error.message }`,
         result: instance.result,
@@ -933,6 +1139,45 @@ export class SubAgentSpawner {
         startedAt: instance.startedAt,
         completedAt: instance.completedAt
       }, context.projectId);
+
+      queuePendingResult({
+        projectId: context.projectId,
+        agentId,
+        subAgentChatId,
+        name,
+        task,
+        result: instance.result!,
+        success: false,
+        status: wasCancelled ? 'cancelled' : 'failed',
+        delegationEvidence,
+        durationMs,
+        completedAt: instance.completedAt,
+      });
+      if (!wasCancelled) {
+        const handoffPayload = boundedHandoffPayload(String(error.message || 'Unknown sub-agent failure'));
+        interAgentMailbox.send({
+          from: name,
+          to: 'Main',
+          projectId: context.projectId,
+          type: 'alert',
+          subject: `${name} could not complete its assignment`.substring(0, 100),
+          body: handoffPayload.body,
+          metadata: {
+            priority: 'high',
+            deliveryMode: 'interrupt',
+            requiresResponse: true,
+            tags: ['automatic-handoff', 'sub-agent-failure'],
+            subAgentId: agentId,
+            subAgentChatId,
+            resultChars: delegationEvidence.resultChars,
+            resultHash: delegationEvidence.resultHash,
+            resultUsability: delegationEvidence.resultUsability,
+            evidenceReady: false,
+            verificationStatus: delegationEvidence.verificationStatus,
+            payloadTruncated: handoffPayload.truncated,
+          },
+        });
+      }
 
       if (onTrace && !wasCancelled) {
         // Emit sub_agent_error (hidden from main feed) instead of safety_warning
@@ -946,6 +1191,16 @@ export class SubAgentSpawner {
           subAgentChatId,
           agentName: name,
           agentStatus: 'error',
+          task: task.substring(0, 1200),
+          resultSummary: delegationEvidence.resultSummary,
+          resultAvailable: delegationEvidence.resultAvailable,
+          resultUsability: delegationEvidence.resultUsability,
+          evidenceReady: false,
+          verificationStatus: delegationEvidence.verificationStatus,
+          resultHash: delegationEvidence.resultHash,
+          resultChars: delegationEvidence.resultChars,
+          collected: false,
+          delegationEvidence,
         });
       }
 
@@ -953,6 +1208,11 @@ export class SubAgentSpawner {
     } finally {
       parentAbortSignal?.removeEventListener('abort', abortFromParent);
       if (lease) apiKeyPool.releaseSubAgentKey(context.projectId, name);
+      const completedControlKey = agentKey(context.projectId, name, agentId);
+      agentPauseStates.get(completedControlKey)?.resolver?.();
+      agentPauseStates.delete(completedControlKey);
+      agentCloseFlags.delete(completedControlKey);
+      controlAgentNames.delete(completedControlKey);
       this.activeAgents.delete(agentId);
     }
   }
@@ -968,14 +1228,32 @@ export class SubAgentSpawner {
     context: ProjectContext,
     parentContext?: string,
     onTrace?: (trace: any) => void
-  ): { agentNames: string[], message: string } {
-    const activeTasks = limitConfiguredTasks(tasks, context);
+  ): {
+    agentNames: string[];
+    agents: Array<{ agentId: string; subAgentChatId: string; name: string; task: string }>;
+    notStartedTasks: SubAgentTaskSpec[];
+    message: string;
+  } {
+    const configuredTasks = limitConfiguredTasks(tasks, context);
+    const occupiedSlots = this.getOccupiedSlotCount(context.projectId);
+    const availableSlots = Math.max(0, getConfiguredSubAgentLimit(context) - occupiedSlots);
+    const activeTasks = configuredTasks.slice(0, availableSlots);
     const teamSize = activeTasks.length;
     const reservedNames = new Set<SubAgentName>();
     const agentNames = activeTasks.map((t) => {
-      const name = this.resolveAgentName(context.projectId, t.name, reservedNames);
+      const name = this.resolveAgentName(context.projectId, t.task, t.name, reservedNames);
       reservedNames.add(name);
       return name;
+    });
+    const agentPlans = activeTasks.map((taskItem, index) => {
+      const name = agentNames[index];
+      const agentId = this.createAgentId(context.projectId, name);
+      return {
+        agentId,
+        subAgentChatId: `${context.projectId}::sub-agent::${agentId}`,
+        name,
+        task: taskItem.task,
+      };
     });
 
     interAgentMailbox.registerAgent(context.projectId, 'Main', {
@@ -985,6 +1263,8 @@ export class SubAgentSpawner {
     });
     activeTasks.forEach((taskItem, index) => {
       interAgentMailbox.registerAgent(context.projectId, agentNames[index], {
+        agentId: agentPlans[index].agentId,
+        subAgentChatId: agentPlans[index].subAgentChatId,
         role: 'sub_agent',
         task: taskItem.task,
         status: 'planned',
@@ -1000,6 +1280,9 @@ export class SubAgentSpawner {
           spawnedAgents: agentNames,
           agentDetails: activeTasks.map((t, i) => ({
             name: agentNames[i],
+            agentId: agentPlans[i].agentId,
+            subAgentId: agentPlans[i].agentId,
+            subAgentChatId: agentPlans[i].subAgentChatId,
             task: t.task.substring(0, 100),
             status: 'running'
           }))
@@ -1009,7 +1292,8 @@ export class SubAgentSpawner {
     // Launch all agents in parallel — each with a staggered start and different API key
     activeTasks.forEach((t, index) => {
       const name = agentNames[index];
-      const runKey = `${ context.projectId }:${ name }:${ Date.now() }:${ index }`;
+      const plan = agentPlans[index];
+      const runKey = `${ context.projectId }:${ plan.agentId }`;
 
       // Fire-and-forget: start without awaiting
       const promise = (async () => {
@@ -1023,7 +1307,7 @@ export class SubAgentSpawner {
         }
         
         // Minimal stagger: 500ms (was 2s) — each agent has its own key, minimal collision risk
-        await this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t);
+        await this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t, plan.agentId);
       })()
         .catch((error) => {
           console.error(`[SubAgent] Background run failed for ${ name }:`, error);
@@ -1040,7 +1324,11 @@ export class SubAgentSpawner {
 
     return {
       agentNames,
-      message: `${ teamSize } agents spawned and working in background. Continue YOUR work now. Call spawn_sub_agent with mode="collect" when you need their results.`
+      agents: agentPlans,
+      notStartedTasks: configuredTasks.slice(availableSlots),
+      message: teamSize > 0
+        ? `${ teamSize } task-named agents spawned and working in background. ${availableSlots < configuredTasks.length ? `${configuredTasks.length - availableSlots} task(s) were not started because the configured concurrent-agent limit is already in use; spawn them after a slot opens. ` : ''}Continue YOUR work now. Results are automatically handed to Main and remain available through mode="collect".`
+        : `No agent slot is available. ${occupiedSlots} agent(s) are already running at the configured concurrent limit.`
     };
   }
 
@@ -1063,7 +1351,7 @@ export class SubAgentSpawner {
     const activeTasks = limitConfiguredTasks(tasks, context);
     const reservedNames = new Set<SubAgentName>();
     const agentNames = activeTasks.map((t) => {
-      const name = this.resolveAgentName(context.projectId, t.name, reservedNames);
+      const name = this.resolveAgentName(context.projectId, t.task, t.name, reservedNames);
       reservedNames.add(name);
       return name;
     });
@@ -1093,14 +1381,12 @@ export class SubAgentSpawner {
 
     const promises = activeTasks.map((t, index) => {
       const name = agentNames[index];
-      return new Promise<any>(async (resolve) => {
+      return Promise.resolve().then(async () => {
         if (isCancelled(context.projectId)) {
-          resolve({ agentId: '', name, result: 'Cancelled', success: false, durationMs: 0, traceLog: [] });
-          return;
+          return { agentId: '', name, result: 'Cancelled', success: false, durationMs: 0, traceLog: [] };
         }
         // Minimal stagger: 500ms (was 2s) — each agent has its own key now
-        const result = await this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t);
-        resolve(result);
+        return this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t);
       });
     });
 
@@ -1143,12 +1429,12 @@ export class SubAgentSpawner {
    */
   public async waitForAll(projectId?: string): Promise<void> {
     const entries = Array.from(this.backgroundPromises.entries())
-      .filter(([, run]) => !projectId || run.projectId === projectId);
+      .filter(([, run]) => !projectId || isSameProjectScope(run.projectId, projectId));
 
     await Promise.allSettled(entries.map(([, run]) => run.promise));
 
     for (const [runKey, run] of entries) {
-      if (!projectId || run.projectId === projectId) {
+      if (!projectId || isSameProjectScope(run.projectId, projectId)) {
         this.backgroundPromises.delete(runKey);
       }
     }
@@ -1160,19 +1446,45 @@ export class SubAgentSpawner {
   public getBackgroundCount(projectId?: string): number {
     if (!projectId) return this.backgroundPromises.size;
     return Array.from(this.backgroundPromises.values())
-      .filter(run => run.projectId === projectId).length;
+      .filter(run => isSameProjectScope(run.projectId, projectId)).length;
+  }
+
+  public getOccupiedSlotCount(projectId: string): number {
+    const resolvedProjectId = resolveProjectId(projectId);
+    const occupiedNames = new Set<string>();
+    for (const agent of this.activeAgents.values()) {
+      if (isSameProjectScope(agent.projectId, resolvedProjectId) && !['completed', 'failed', 'cancelled'].includes(agent.status)) {
+        occupiedNames.add(agent.name.toLowerCase());
+      }
+    }
+    for (const run of this.backgroundPromises.values()) {
+      if (isSameProjectScope(run.projectId, resolvedProjectId)) occupiedNames.add(run.name.toLowerCase());
+    }
+    return occupiedNames.size;
   }
 
   public matchesActiveAgent(projectId: string, agentName: string, agentId: string): boolean {
     const resolvedProjectId = resolveProjectId(projectId);
     return Array.from(this.activeAgents.values()).some(agent =>
       agent.id === agentId &&
-      agent.projectId === resolvedProjectId &&
-      agent.name === agentName &&
+      isSameProjectScope(agent.projectId, resolvedProjectId) &&
+      agent.name.toLowerCase() === agentName.toLowerCase() &&
       agent.status !== 'completed' &&
       agent.status !== 'failed' &&
       agent.status !== 'cancelled'
     );
+  }
+
+  public findActiveAgentId(projectId: string, agentName: string): string | undefined {
+    const resolvedProjectId = resolveProjectId(projectId);
+    const normalizedName = agentName.toLowerCase();
+    return Array.from(this.activeAgents.values()).find(agent =>
+      isSameProjectScope(agent.projectId, resolvedProjectId) &&
+      agent.name.toLowerCase() === normalizedName &&
+      agent.status !== 'completed' &&
+      agent.status !== 'failed' &&
+      agent.status !== 'cancelled'
+    )?.id;
   }
 
   public getAgentStatus(): SubAgentInstance[] {
@@ -1180,7 +1492,7 @@ export class SubAgentSpawner {
   }
 
   public getAgentNames(): readonly string[] {
-    return AGENT_NAMES;
+    return ['Task-Research', 'Runtime-Control', 'Interface-Review'];
   }
 
   public clearCompleted(): void {
@@ -1194,10 +1506,7 @@ export class SubAgentSpawner {
   /**
    * MULTI-AGENT CONSENSUS MODE
    * 
-   * Spawns 3 agents with different cognitive "lenses" to approach the SAME task:
-   * - Feynman (Optimist): Focuses on opportunities, best-case scenarios, positive outcomes
-   * - Heisenberg (Skeptic): Focuses on risks, edge cases, what could go wrong
-   * - Aristotle (Realist): Focuses on practical execution, real constraints, balanced view
+   * Spawns 3 task-named agents with different cognitive lenses to approach the same task.
    * 
    * The main agent then synthesizes their outputs into a consensus answer,
    * eliminating hallucination and single-perspective bias.
@@ -1214,14 +1523,14 @@ export class SubAgentSpawner {
     totalDurationMs: number
   }> {
     const reservedNames = new Set<SubAgentName>();
-    const nextIdentity = () => {
-      const name = this.resolveAgentName(context.projectId, undefined, reservedNames);
+    const nextIdentity = (lens: string) => {
+      const name = this.resolveAgentName(context.projectId, `${lens} analysis: ${task}`, `${buildTaskAgentName(task)}-${lens}`, reservedNames);
       reservedNames.add(name);
       return name;
     };
-    const optimistName = nextIdentity();
-    const skepticName = nextIdentity();
-    const realistName = nextIdentity();
+    const optimistName = nextIdentity('Opportunities');
+    const skepticName = nextIdentity('Risk-Review');
+    const realistName = nextIdentity('Practical-Plan');
     const perspectives = [
       {
         name: optimistName,
@@ -1336,9 +1645,10 @@ Do NOT just list what each agent said. SYNTHESIZE into a cohesive analysis.`;
     const startTime = Date.now();
     const rounds: Array<{ round: number; results: Array<{ agent: string; result: string }> }> = [];
     const reservedNames = new Set<SubAgentName>();
-    const firstDebater = this.resolveAgentName(context.projectId, undefined, reservedNames);
+    const debateBase = buildTaskAgentName(task);
+    const firstDebater = this.resolveAgentName(context.projectId, task, `${debateBase}-Analysis-A`, reservedNames);
     reservedNames.add(firstDebater);
-    const secondDebater = this.resolveAgentName(context.projectId, undefined, reservedNames);
+    const secondDebater = this.resolveAgentName(context.projectId, task, `${debateBase}-Analysis-B`, reservedNames);
 
     if (onTrace) {
       onTrace({
@@ -1550,7 +1860,11 @@ OUTPUT: Research report with cited sources, confidence levels per claim, and are
 
     const profile = specialistProfiles[role];
     if (!profile) throw new Error(`Unknown specialist role: ${role}`);
-    const specialistName = this.resolveAgentName(context.projectId);
+    const specialistName = this.resolveAgentName(
+      context.projectId,
+      task,
+      `${buildTaskAgentName(task)}-${role.replace(/_/g, '-')}`,
+    );
 
     const specialistBrief = task;
 

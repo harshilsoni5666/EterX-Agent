@@ -8,6 +8,8 @@ import type { MainAgentMode, MainAgentProvider } from '../model-routing';
 import { getEterxWorkspaceDir } from '../storage-paths';
 import { taskStore } from '../task-store';
 import { readProxyControl } from './proxy-control-plane';
+import { adaptiveExperience, resolveSelfImprovementEnabled } from '../self-improvement/engine';
+import { delegationTelemetryFromTrace } from '../delegation-evidence';
 
 export type ProxyManagerChatMessage = {
   id: string;
@@ -36,7 +38,9 @@ type ManagerDecision = {
   instruction: string;
   intent: 'goal' | 'constraint' | 'correction' | 'preference' | 'follow_up';
   rationale: string;
-  confidence: number;
+  evidenceQuality: 'none' | 'contextual' | 'direct' | 'explicit_user';
+  counterfactualImpact: 'none' | 'minor' | 'material' | 'critical';
+  coordinationCost: 'low' | 'medium' | 'high';
   urgency: 'low' | 'normal' | 'high' | 'critical';
   activationCondition: string;
   scope: 'current_step' | 'current_task' | 'next_task' | 'persistent_mandate';
@@ -140,7 +144,7 @@ function writeStore(store: ManagerStore): void {
 function extractDecision(raw: string): ManagerDecision {
   const cleaned = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [], stateUpdate: { ...EMPTY_COORDINATION_MODEL } };
+  if (!match) return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', evidenceQuality: 'none', counterfactualImpact: 'none', coordinationCost: 'low', urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [], stateUpdate: { ...EMPTY_COORDINATION_MODEL } };
   try {
     const parsed = JSON.parse(match[0]);
     const operations = new Set<ProxyManagerOperation>(['none', 'brief_proxy', 'guide_adaptively', 'watch_condition', 'before_completion', 'queue_after_current', 'start_main', 'schedule_workflow', 'replace_queued_task', 'interrupt_main', 'stop_main']);
@@ -153,7 +157,9 @@ function extractDecision(raw: string): ManagerDecision {
       instruction: compact(parsed.instruction, 2400),
       intent: intents.has(parsed.intent) ? parsed.intent : 'preference',
       rationale: compact(parsed.rationale, 1200),
-      confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)),
+      evidenceQuality: new Set(['none', 'contextual', 'direct', 'explicit_user']).has(parsed.evidenceQuality) ? parsed.evidenceQuality : 'none',
+      counterfactualImpact: new Set(['none', 'minor', 'material', 'critical']).has(parsed.counterfactualImpact) ? parsed.counterfactualImpact : 'none',
+      coordinationCost: new Set(['low', 'medium', 'high']).has(parsed.coordinationCost) ? parsed.coordinationCost : 'medium',
       urgency: new Set(['low', 'normal', 'high', 'critical']).has(parsed.urgency) ? parsed.urgency : 'normal',
       activationCondition: compact(parsed.activationCondition, 1200),
       scope: new Set(['current_step', 'current_task', 'next_task', 'persistent_mandate']).has(parsed.scope) ? parsed.scope : 'current_task',
@@ -173,7 +179,7 @@ function extractDecision(raw: string): ManagerDecision {
       },
     };
   } catch {
-    return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', confidence: 0, urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [], stateUpdate: { ...EMPTY_COORDINATION_MODEL } };
+    return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', evidenceQuality: 'none', counterfactualImpact: 'none', coordinationCost: 'low', urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [], stateUpdate: { ...EMPTY_COORDINATION_MODEL } };
   }
 }
 
@@ -262,18 +268,37 @@ async function runProxyManagerTurn(input: {
         finalAnswer: compact(persisted.finalAnswer, 5000),
       };
       live.activity = (persisted.traceLogs || []).filter((trace: any) =>
-        ['task_plan', 'plan', 'work_note', 'tool_call', 'tool_result', 'file_preview', 'evidence', 'error', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'answer', 'done'].includes(String(trace?.type || '')),
-      ).slice(-36).map((trace: any) => ({
-        type: String(trace.type || ''),
-        text: compact(trace.text || trace.data || trace.output || trace.error, 1400),
-        tool: compact(trace.tool || trace.toolName || trace.name, 120),
-        success: trace.success,
-        phase: trace.phase,
-        timestamp: trace.timestamp,
-      }));
+        ['task_plan', 'plan', 'work_note', 'tool_call', 'tool_result', 'tool_result_preview', 'file_preview', 'evidence', 'error', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'sub_agent_spawn', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_message', 'answer', 'done'].includes(String(trace?.type || '')),
+      ).slice(-36).map((trace: any) => {
+        const delegation = delegationTelemetryFromTrace(trace);
+        return {
+          type: String(trace.type || ''),
+          text: compact(delegation?.summary || trace.text || trace.data || trace.output || trace.result || trace.error, 2400),
+          tool: compact(trace.tool || trace.toolName || trace.name, 120),
+          success: trace.success,
+          phase: trace.phase,
+          delegation: delegation || undefined,
+          timestamp: trace.timestamp,
+        };
+      });
     }
   }
   const recentConversation = store.messages.slice(-24).map(item => `${item.role === 'user' ? 'USER' : 'PROXY MANAGER'}: ${item.text}`).join('\n');
+  const resolved = resolveModel(input.model);
+  const learnedOperatingModel = resolveSelfImprovementEnabled()
+    ? await adaptiveExperience.getExecutionContext({
+      enabled: true,
+      userId: 'user',
+      projectId: input.chatId,
+      workspaceKey: String(live?.workspace?.path || ''),
+      agentRuntime: 'proxy_manager',
+      role: 'proxy_manager',
+      request: input.message,
+      mode: resolved.mode,
+      selectedModel: { provider: resolved.provider, modelId: resolved.modelId },
+      runtimeSettings: resolved.settings,
+    }).catch(() => '')
+    : '';
   const prompt = [
     'You are Proxy Manager, the persistent user-facing coordination agent beside a separate runtime User Proxy and Main execution agent. You remain useful whether Main is running, finishing, idle, stopped, or between goals. You converse naturally and turn user intent into durable, precisely routed work without mixing independent objectives.',
     'ROLE SEPARATION: Main executes tasks and owns tools. Runtime User Proxy silently supervises one active Main task. You own the side conversation, intent interpretation, temporal routing, durable future work, and wake-up decisions. Never pretend to be Main, never perform its work in chat, and never collapse these three roles into one.',
@@ -287,13 +312,19 @@ async function runProxyManagerTurn(input: {
     'If the user corrects a task that is visibly still pending in proxyControl.taskQueue, use replace_queued_task with its exact id in supersedesTaskId. Never replace a task already starting or started; route that as current guidance or a later corrective task according to live status.',
     'Use none for ordinary conversation, explanations, status questions, brainstorming, or when the user has not actually authorized an instruction. Do not claim delivery unless an operation is selected; the server reports final delivery state.',
     'Treat the runtime snapshot as incomplete operational telemetry. Never expose private chain-of-thought. You may summarize visible plans, actions, gaps, and status. Respect explicit user boundaries and never silently weaken them.',
+    'Delegation lineage is first-class evidence. Inspect activity.delegation and proxy.delegationModel, not just lifecycle text. Spawned/running/completed describe orchestration only; they do not prove that Main received a semantic payload. Distinguish result available, result usable, and result collected. If a worker completed with empty/failed evidence or its usable payload remains uncollected, state that gap plainly and never describe its findings as integrated.',
+    'When answering delegation status, report the evidence transition precisely: assignment started -> payload produced or failed -> payload collected -> payload actually usable. Never collapse these stages into "the sub-agent handled it." Route a correction only when the missing lineage materially affects the active outcome; otherwise explain the gap without disrupting Main.',
     'Your operations are: brief_proxy (change what the supervisor watches), guide_adaptively (ask it to decide how/when to guide the current task), watch_condition (activate only if a semantic condition becomes relevant), before_completion (enforce a requirement at final review without distracting current work), queue_after_current (create one separate successor task), start_main (wake idle Main with one task), schedule_workflow (queue two or more ordered isolated tasks and wake Main when idle), replace_queued_task (replace one pending task), interrupt_main (urgent reorientation), and stop_main (explicit stop or critical active violation). Choose at most one.',
     'Represent temporal intent precisely. A request may apply only to the current step, the whole current task, the next task, or a persistent supervisory mandate. Use activationCondition for dependencies such as after an artifact exists, if the current strategy fails, before a destructive action, or once Main reaches verification. If the user revises an earlier unsettled directive, set supersedesDirectiveId instead of leaving contradictory instructions alive.',
     'Route by consequence, not excitement: interrupt_main is the narrow direct path for a current, time-sensitive correction where waiting for the runtime Proxy review would cause concrete harm, irreversible action, or substantial rework. It reaches Main at the next model boundary and is mirrored to the runtime Proxy. Ordinary improvements, preferences, and non-urgent corrections must use guide_adaptively. Unrelated/new work must use queue_after_current so it cannot dilute the current task.',
+    'Do not output a numeric confidence. Classify evidenceQuality (none/contextual/direct/explicit_user), counterfactualImpact if no operation occurs (none/minor/material/critical), and coordinationCost (low/medium/high). These are situation semantics, not decaying scores. Choose an operation only when its evidence and counterfactual value justify its disruption.',
     'Wake-up doctrine: use start_main only when the snapshot says Main is not running, the message is an executable request rather than discussion, and the user has authorized action. Use queue_after_current when Main is running or settling. Do not wake Main for a status question, hypothetical idea, or unresolved choice. The instruction for start_main or queue_after_current must be a complete Main-ready task prompt with required context, constraints, deliverables, and dependency results that are already known.',
     'Every instruction or task prompt you route becomes a real user turn in Main\'s conversation. Write it as a direct human request that stands on its own. Never include routing narration such as “tell Main”, “Main should”, “the agent is failing”, “Proxy-Agent noticed”, internal component names, or commentary about who sent it.',
     'The capability map summarizes all registered Main tools and recent usage. Use it to suggest viable approaches when a real gap exists, but never prescribe tools routinely and never imply that you executed them. Tool availability is context, not a reason to intervene.',
     'Read proxy.coordinationEvents and managerDirectives as messages back from the runtime supervisor: acknowledgements, deferrals, deliveries, rejections, stops, and observed outcomes. Incorporate them naturally when answering status questions and do not resend already settled instructions.',
+    learnedOperatingModel
+      ? `SHARED LEARNED USER + COLLABORATION MODEL:\n${learnedOperatingModel}\nUse this durable model to interpret shorthand, choose a useful level of initiative, form messages in the user's preferred working style, and predict whether guidance would help or merely interrupt. Current explicit intent, safety, authority, and the active task contract always take priority.`
+      : '',
     'Professional response doctrine: lead with what is understood or what changed. State an operational action only if one was actually selected. Keep ordinary replies concise and calm; use a short structured list only for multiple goals, constraints, or queued stages. Never use hype, filler, fake certainty, or generic phrases such as "I will handle everything." If clarification is necessary, explain the exact decision it blocks in one sentence.',
     'Conversation-mode discipline: for a greeting, acknowledgement, thanks, or casual message, reply naturally in one short sentence and choose none—do not introduce yourself, summarize Main, list capabilities, or ask a broad follow-up. For a status question, answer only the requested status in at most three short points. For an authorized action, confirm the concrete routing result without repeating the full task. For a complex workflow, summarize only the stage boundaries and dependencies that help the user understand what will happen.',
     'Do not end every response with a question. Ask one only when a specific unresolved decision blocks safe routing. Never respond to "hi" with workspace history or a long menu of possibilities.',
@@ -304,16 +335,16 @@ async function runProxyManagerTurn(input: {
       ? `USER-PROVIDED ATTACHMENT CONTEXT FOR THIS TURN:\n${compact(input.attachmentContext, 24000)}`
       : '',
     'Return exactly one JSON object with no markdown:',
-    '{"reply":"natural professional answer","operation":"none|brief_proxy|guide_adaptively|watch_condition|before_completion|queue_after_current|start_main|schedule_workflow|replace_queued_task|interrupt_main|stop_main","target":"proxy|main|both","instruction":"standalone directive for single-task operations, blank for none or schedule_workflow","intent":"goal|constraint|correction|preference|follow_up","rationale":"short private routing reason","confidence":0.0,"urgency":"low|normal|high|critical","activationCondition":"semantic activation condition or blank","scope":"current_step|current_task|next_task|persistent_mandate","supersedesDirectiveId":"prior directive id or blank","supersedesTaskId":"pending task id for replacement or blank","tasks":[{"prompt":"complete Main-ready task","dependency":"what this consumes from the prior task, blank if independent","rationale":"why this is a separate stage"}],"stateUpdate":{"activeIntent":"current durable user intent","constraints":[],"dependencies":[],"openDecisions":[],"durableOutcomes":[]}}',
+    '{"reply":"natural professional answer","operation":"none|brief_proxy|guide_adaptively|watch_condition|before_completion|queue_after_current|start_main|schedule_workflow|replace_queued_task|interrupt_main|stop_main","target":"proxy|main|both","instruction":"standalone directive for single-task operations, blank for none or schedule_workflow","intent":"goal|constraint|correction|preference|follow_up","rationale":"short private routing reason","evidenceQuality":"none|contextual|direct|explicit_user","counterfactualImpact":"none|minor|material|critical","coordinationCost":"low|medium|high","urgency":"low|normal|high|critical","activationCondition":"semantic activation condition or blank","scope":"current_step|current_task|next_task|persistent_mandate","supersedesDirectiveId":"prior directive id or blank","supersedesTaskId":"pending task id for replacement or blank","tasks":[{"prompt":"complete Main-ready task","dependency":"what this consumes from the prior task, blank if independent","rationale":"why this is a separate stage"}],"stateUpdate":{"activeIntent":"current durable user intent","constraints":[],"dependencies":[],"openDecisions":[],"durableOutcomes":[]}}',
   ].join('\n\n');
 
-  const resolved = resolveModel(input.model);
   const client = createIsolatedClient(resolved.apiKey, resolved.mode, resolved.settings);
   const context: any = {
     projectId: `${input.chatId}::proxy-manager`,
     agentRuntime: 'proxy_manager',
     isUserProxy: true,
     isProxyManager: true,
+    selfImprovementEnabled: false,
     disableSubAgents: true,
     disableLongTermMemory: true,
     disableSessionPersistence: true,
@@ -401,11 +432,18 @@ async function runProxyManagerTurn(input: {
 
   let delivery: ProxyManagerChatMessage['delivery'] = 'none';
   let wakeRequested = false;
-  const operationThreshold = decision.operation === 'stop_main' || decision.operation === 'interrupt_main' ? 0.82 : 0.6;
   const hasOperationPayload = decision.operation === 'schedule_workflow'
     ? decision.tasks.length >= 2
     : Boolean(decision.instruction);
-  if (decision.operation !== 'none' && hasOperationPayload && decision.confidence >= operationThreshold) {
+  const highDisruption = decision.operation === 'stop_main' || decision.operation === 'interrupt_main';
+  const categoricalGrounding = decision.evidenceQuality !== 'none'
+    && decision.counterfactualImpact !== 'none'
+    && (!highDisruption || (
+      ['direct', 'explicit_user'].includes(decision.evidenceQuality)
+      && ['material', 'critical'].includes(decision.counterfactualImpact)
+    ))
+    && !(decision.coordinationCost === 'high' && decision.counterfactualImpact === 'minor');
+  if (decision.operation !== 'none' && hasOperationPayload && categoricalGrounding) {
     input.onProgress?.({
       type: 'status',
       text: decision.operation === 'schedule_workflow'
@@ -493,6 +531,28 @@ async function runProxyManagerTurn(input: {
   }
   store.messages.push(proxyMessage);
   writeStore(store);
+  if (resolveSelfImprovementEnabled()) {
+    await adaptiveExperience.queueReflection({
+      enabled: true,
+      userId: 'user',
+      projectId: input.chatId,
+      chatId: input.chatId,
+      workspacePath: live?.workspace?.path || input.chatId,
+      agentRuntime: 'proxy_manager',
+      task: input.message,
+      history: store.messages.slice(-24).map(message => ({
+        role: message.role === 'user' ? 'user' : 'assistant',
+        content: message.text,
+      })),
+      finalAnswer: groundedReply,
+      success: delivery !== 'unavailable',
+      durationMs: 0,
+      trace: response.trace,
+      mode: resolved.mode,
+      selectedModel: { provider: resolved.provider, modelId: resolved.modelId },
+      runtimeSettings: resolved.settings,
+    }).catch(() => undefined);
+  }
   return {
     message: proxyMessage,
     history: store.messages.slice(-MAX_MESSAGES),

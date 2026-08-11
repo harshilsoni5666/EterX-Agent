@@ -18,6 +18,7 @@ import { readAgentFlowProfile } from '../../../../lib/agent/builder-agent';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { resolveModelName, normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
+import { adaptiveExperience, resolveSelfImprovementEnabled } from '../../../../lib/agent/self-improvement/engine';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -120,6 +121,10 @@ export async function POST(req: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         let closed = false;
+        const startedAt = Date.now();
+        const experienceTrace: any[] = [];
+        const answerParts: string[] = [];
+        let runFailed = false;
         const abortRun = () => {
           closed = true;
           runner.cancel();
@@ -156,15 +161,40 @@ export async function POST(req: NextRequest) {
               break;
             }
 
+            if (experienceTrace.length < 500) experienceTrace.push(event);
+            if (event?.type === 'text' && String(event?.text || '').trim()) answerParts.push(String(event.text).trim());
+            if (event?.type === 'error') runFailed = true;
+
             if (!writeEvent(event)) break;
           }
         } catch (err: any) {
+          runFailed = true;
           writeEvent({
             type: 'error',
             text: err.message || 'Agent runner failed',
             timestamp: Date.now(),
           });
         } finally {
+          if (!req.signal.aborted && resolveSelfImprovementEnabled(pinnedContext?.selfImprovementEnabled)) {
+            const lastUserMessage = [...normalized.messages!].reverse().find(item => item.role === 'user')?.content || '';
+            await adaptiveExperience.queueReflection({
+              enabled: true,
+              userId: 'user',
+              projectId: chatId,
+              chatId,
+              workspacePath: String(pinnedContext?.workspacePath || pinnedContext?.paths?.[0] || ''),
+              agentRuntime: selectedFlow ? `agent_flow:${agentId}` : `custom_agent:${agentId}`,
+              task: lastUserMessage,
+              history: normalized.messages,
+              finalAnswer: answerParts.join('\n\n'),
+              success: !runFailed && answerParts.length > 0,
+              durationMs: Date.now() - startedAt,
+              trace: experienceTrace,
+              mode: geminiRunnerMode,
+              selectedModel: { provider: 'gemini', modelId: safeModel },
+              runtimeSettings,
+            }).catch(() => undefined);
+          }
           req.signal.removeEventListener('abort', abortRun);
           closed = true;
           try { controller.close(); } catch { }

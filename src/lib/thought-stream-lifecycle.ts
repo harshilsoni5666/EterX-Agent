@@ -101,6 +101,47 @@ export const isThoughtStreamOpen = (trace: any): boolean => {
 };
 
 /**
+ * Direct Chat uses an empty UI-only thought row as a live lifecycle shell.
+ * Once that shell closes it has no user-visible content and must not become a
+ * historical thought card. Keep this rule shared by both feed renderers.
+ */
+export const shouldRenderThoughtStream = (trace: any): boolean => {
+  if (!trace || trace.type !== 'thought_stream') return false;
+  const text = String(trace.text || '').replace(/<\/?(?:thought|work_note)>/gi, '').trim();
+  return Boolean(text) || (trace.uiOnly === true && isThoughtStreamOpen(trace));
+};
+
+const getThoughtStreamChatId = (trace: any): string => String(
+  trace?.chatId || trace?.ownerChatId || ''
+).trim();
+
+const getThoughtStreamRunId = (trace: any): string => String(
+  trace?.runId || trace?.turnId || trace?.originRunId || ''
+).trim();
+
+const hasThoughtStreamScope = (trace: any): boolean => Boolean(
+  getThoughtStreamChatId(trace) || getThoughtStreamRunId(trace)
+);
+
+const thoughtStreamScopesMatch = (left: any, right: any): boolean => {
+  if (getThoughtStreamOwner(left) !== getThoughtStreamOwner(right)) return false;
+
+  const leftChatId = getThoughtStreamChatId(left);
+  const rightChatId = getThoughtStreamChatId(right);
+  if (leftChatId || rightChatId) {
+    if (!leftChatId || !rightChatId || leftChatId !== rightChatId) return false;
+  }
+
+  const leftRunId = getThoughtStreamRunId(left);
+  const rightRunId = getThoughtStreamRunId(right);
+  if (leftRunId || rightRunId) {
+    if (!leftRunId || !rightRunId || leftRunId !== rightRunId) return false;
+  }
+
+  return true;
+};
+
+/**
  * Close reasoning at a real lifecycle boundary. Provider final payloads may
  * arrive after the visible boundary; mergeThoughtStreamTrace keeps those
  * payloads in the already-closed row so the timer stays frozen and text is
@@ -113,6 +154,7 @@ export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void
   const closeOwner = isThoughtClosingBoundary(boundary);
   if (!closeAll && !closeOwner) return;
   const boundaryOwner = getThoughtStreamOwner(boundary);
+  const boundaryHasScope = hasThoughtStreamScope(boundary);
   const endedAt = getTraceTimestamp(boundary);
   const ownersClosed = new Set<string>();
 
@@ -124,6 +166,7 @@ export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void
     if (log.type === 'user_action') break;
 
     const owner = getThoughtStreamOwner(log);
+    if (boundary.type !== 'user_action' && boundaryHasScope && !thoughtStreamScopesMatch(log, boundary)) continue;
     if (!closeAll && owner !== boundaryOwner) continue;
     if (ownersClosed.has(owner)) continue;
 
@@ -145,7 +188,7 @@ const findMergeableThoughtIndex = (logs: any[], incoming: any): number => {
     const candidate = logs[index];
     if (!candidate) continue;
     if (candidate.type === 'user_action') break;
-    if (getThoughtStreamOwner(candidate) !== owner) continue;
+    if (!thoughtStreamScopesMatch(candidate, incoming) || getThoughtStreamOwner(candidate) !== owner) continue;
 
     // Provider stream IDs (or their stable start timestamp fallback) remain
     // authoritative even when tool/answer traces are delivered in between.
@@ -214,7 +257,8 @@ const findThoughtIndexForExplicitFinal = (logs: any[], incoming: any): number =>
     if (candidate.type === 'user_action') break;
     if (
       candidate.type === 'thought_stream' &&
-      getThoughtStreamOwner(candidate) === owner &&
+      thoughtStreamScopesMatch(candidate, incoming) &&
+       getThoughtStreamOwner(candidate) === owner &&
       (
         (thoughtId && String(candidate.thoughtId || '').trim() === thoughtId) ||
         (
@@ -235,12 +279,14 @@ const findThoughtIndexForExplicitFinal = (logs: any[], incoming: any): number =>
 const getCanonicalThoughtIdentity = (log: any): string => {
   if (log?.type !== 'thought_stream') return '';
   const owner = getThoughtStreamOwner(log);
+  const chatIdentity = getThoughtStreamChatId(log);
+  const runIdentity = getThoughtStreamRunId(log);
   const thoughtId = String(log?.thoughtId || '').trim();
   const start = asFiniteTimestamp(log?.startTime);
   // Without a phase anchor we cannot safely distinguish two real thoughts
   // that happen to contain the same text, so leave that record untouched.
   if (!thoughtId && start === null) return '';
-  return `${ owner }::${ thoughtId || 'start' }::${ start ?? '' }`;
+  return `${ chatIdentity || 'legacy-chat' }::${ runIdentity || 'legacy-run' }::${ owner }::${ thoughtId || 'start' }::${ start ?? '' }`;
 };
 
 const mergeCanonicalThought = (existing: any, incoming: any): any => {
@@ -287,10 +333,17 @@ const mergeCanonicalThought = (existing: any, incoming: any): any => {
  * list is the canonical lifecycle state used by persistence and rendering.
  */
 export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
+  const source = Array.isArray(logs) ? logs : [];
   const canonical: any[] = [];
   const thoughtIndexes = new Map<string, number>();
 
-  for (const log of logs) {
+  for (const log of source) {
+    if (
+      log?.type === 'thought_stream' &&
+      log?.uiOnly === true &&
+      !String(log.text || '').trim() &&
+      !isThoughtStreamOpen(log)
+    ) continue;
     if (log?.type === 'user_action') thoughtIndexes.clear();
     const identity = getCanonicalThoughtIdentity(log);
     if (!identity) {
@@ -308,8 +361,7 @@ export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
     canonical[existingIndex] = mergeCanonicalThought(canonical[existingIndex], log);
   }
 
-  logs.splice(0, logs.length, ...canonical);
-  return logs;
+  return canonical;
 };
 
 /**
@@ -317,7 +369,10 @@ export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
  * Providers may send cumulative text or deltas and may omit/reuse stream IDs.
  */
 export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
-  canonicalizeThoughtStreamLogs(logs);
+  const canonical = canonicalizeThoughtStreamLogs(logs);
+  if (canonical.length !== logs.length || canonical.some((log, index) => log !== logs[index])) {
+    logs.splice(0, logs.length, ...canonical);
+  }
   const incomingIsFinal = isThoughtFinalEvent(incoming);
   const explicitFinalIndex = incomingIsFinal
     ? findThoughtIndexForExplicitFinal(logs, incoming)
@@ -378,6 +433,10 @@ export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
     subAgentId: incoming?.subAgentId,
     subAgent: incoming?.subAgent,
     agentName: incoming?.agentName,
+    chatId: incoming?.chatId,
+    ownerChatId: incoming?.ownerChatId,
+    runId: incoming?.runId,
+    turnId: incoming?.turnId,
     startTime: startedAt,
     timestamp: startedAt,
     endTime: startedAt,

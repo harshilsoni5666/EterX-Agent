@@ -35,20 +35,24 @@ export const isInternalWorkNoteNoise = (value: unknown): boolean => {
 export const isTerminalWorkTrace = (log: any): boolean => {
   if (!log) return false;
 
+  const agentName = String(log.agentName || '').trim().toLowerCase();
+  const isMainAgentTrace = !log.subAgent &&
+    !log.subAgentId &&
+    !log.subAgentChatId &&
+    !log.terminalTask &&
+    (!agentName || agentName === 'main');
   const status = String(log.status || '').trim().toLowerCase();
   if (
     TERMINAL_WORK_STATUSES.has(status) &&
-    !log.subAgent &&
-    !log.agentName &&
-    !log.terminalTask &&
+    isMainAgentTrace &&
     (log.mainTurnTerminal === true || ['done', 'error', 'agent_status', 'run_status'].includes(String(log.type || '').toLowerCase()))
   ) return true;
 
   const type = String(log.type || '').trim().toLowerCase();
-  if (TERMINAL_WORK_TYPES.has(type) && !log.subAgent && !log.agentName) return true;
+  if (TERMINAL_WORK_TYPES.has(type) && isMainAgentTrace) return true;
 
   const text = String(log.text || log.message || '').trim();
-  return TERMINAL_WORK_TEXT.test(text);
+  return isMainAgentTrace && TERMINAL_WORK_TEXT.test(text);
 };
 
 /**
@@ -64,6 +68,13 @@ export const isTurnWorkActive = (
   if (!running || hasFinalAnswer) return false;
   return !turnLogs.some(isTerminalWorkTrace);
 };
+
+/**
+ * Keep simple sends and direct answers visually quiet. The expandable work
+ * sequence begins only after the agent has produced a real workflow action.
+ */
+export const shouldShowWorkflowSequence = (stepCount: number): boolean =>
+  Number.isFinite(stepCount) && stepCount > 0;
 
 /**
  * Context compaction is a replace-in-place lifecycle. Only the newest phase
@@ -95,4 +106,157 @@ export const shouldRenderContextCompactionEvent = (
     candidate?.type !== 'context_usage' &&
     candidate?.type !== 'context_compaction'
   );
+};
+
+type TimelineEntry = {
+  log: any;
+  sourceIndex: number;
+  boundaryIndex: number;
+};
+
+const timelineIdentity = (log: any): string => String(
+  log?.turnId || log?.runId || ''
+).trim();
+
+const timelineTraceIndex = (log: any): number | null => {
+  const value = Number(log?._traceIdx);
+  return Number.isFinite(value) ? value : null;
+};
+
+const timelineTimestamp = (log: any): number | null => {
+  const value = Number(log?.startTime ?? log?.timestamp ?? log?.endTime);
+  return Number.isFinite(value) && value > 0 ? value : null;
+};
+
+const compareTimelineEntries = (left: TimelineEntry, right: TimelineEntry): number => {
+  const leftIndex = timelineTraceIndex(left.log);
+  const rightIndex = timelineTraceIndex(right.log);
+  if (leftIndex !== null && rightIndex !== null && leftIndex !== rightIndex) {
+    return leftIndex - rightIndex;
+  }
+
+  const leftTime = timelineTimestamp(left.log);
+  const rightTime = timelineTimestamp(right.log);
+  if (leftTime !== null && rightTime !== null && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  // Unindexed optimistic/live rows must retain transport order relative to
+  // another unindexed row. They do not have enough information to be safely
+  // placed by timestamp alone.
+  return left.sourceIndex - right.sourceIndex;
+};
+
+const compareTimelinePositions = (left: any, right: any): number => {
+  const leftIndex = timelineTraceIndex(left);
+  const rightIndex = timelineTraceIndex(right);
+  if (leftIndex !== null && rightIndex !== null && leftIndex !== rightIndex) {
+    return leftIndex - rightIndex;
+  }
+  const leftTime = timelineTimestamp(left);
+  const rightTime = timelineTimestamp(right);
+  if (leftTime !== null && rightTime !== null && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  return 0;
+};
+
+/**
+ * Restore trace order after polling/reconnects deliver an older event late.
+ *
+ * Trace indices are scoped to a server run, so sorting the whole conversation
+ * by `_traceIdx` would scramble historical turns. First partition by the
+ * visible user boundary that owns each trace, then order only within that
+ * boundary. This keeps actions, thought updates, and answer snapshots in one
+ * deterministic turn without letting a late event leak into the newest turn.
+ */
+export const orderFeedTimelineLogs = (logs: any[]): any[] => {
+  const source = Array.isArray(logs) ? logs : [];
+  if (source.length < 2) return source.slice();
+
+  const boundaries = source
+    .map((log, sourceIndex) => ({ log, sourceIndex }))
+    .filter(entry => entry.log?.type === 'user_action');
+
+  if (boundaries.length === 0) {
+    return source
+      .map((log, sourceIndex) => ({ log, sourceIndex, boundaryIndex: 0 }))
+      .sort(compareTimelineEntries)
+      .map(entry => entry.log);
+  }
+
+  const boundaryEntries: TimelineEntry[] = boundaries.map((entry, boundaryIndex) => ({
+    log: entry.log,
+    sourceIndex: entry.sourceIndex,
+    boundaryIndex,
+  }));
+  const entriesByBoundary = boundaryEntries.map(entry => [entry] as TimelineEntry[]);
+  const preamble: TimelineEntry[] = [];
+
+  const findOwnerBoundary = (log: any, sourceIndex: number): number => {
+    const identity = timelineIdentity(log);
+    if (!identity) return -1;
+
+    const exactTurnMatches = boundaryEntries.filter(boundary =>
+      String(boundary.log?.turnId || '').trim() === String(log?.turnId || '').trim() &&
+      String(log?.turnId || '').trim() !== '' &&
+      timelineIdentity(boundary.log) === identity
+    );
+    if (exactTurnMatches.length > 0) {
+      return exactTurnMatches[exactTurnMatches.length - 1].boundaryIndex;
+    }
+
+    const runMatches = boundaryEntries.filter(boundary => timelineIdentity(boundary.log) === identity);
+    if (runMatches.length === 0) return -1;
+    if (runMatches.length === 1) return runMatches[0].boundaryIndex;
+
+    // Proxy-backed runs can contain multiple user boundaries under one run
+    // ID. Use the trace/timestamp position to select the most recent boundary
+    // that precedes this event; otherwise transport order wins.
+    const preceding = runMatches.filter(boundary => {
+      const position = compareTimelinePositions(boundary.log, log);
+      return position <= 0 && boundary.sourceIndex <= sourceIndex;
+    });
+    return (preceding.length > 0 ? preceding : runMatches)[
+      (preceding.length > 0 ? preceding : runMatches).length - 1
+    ].boundaryIndex;
+  };
+
+  source.forEach((log, sourceIndex) => {
+    if (!log || log.type === 'user_action') return;
+    const boundaryIndex = findOwnerBoundary(log, sourceIndex);
+    const entry = { log, sourceIndex, boundaryIndex };
+    if (boundaryIndex >= 0) entriesByBoundary[boundaryIndex].push(entry);
+    else if (sourceIndex < boundaryEntries[0].sourceIndex) preamble.push(entry);
+    else {
+      // Truly unscoped helper rows stay with their original neighboring turn.
+      // They are not safe to move across a user boundary.
+      const nearestBoundary = boundaryEntries.reduce((nearest, boundary) =>
+        boundary.sourceIndex <= sourceIndex ? boundary : nearest,
+      boundaryEntries[0]);
+      entriesByBoundary[nearestBoundary.boundaryIndex].push(entry);
+    }
+  });
+
+  const orderedBoundaryEntries = boundaryEntries.slice().sort((left, right) => {
+    const sameIdentity = Boolean(timelineIdentity(left.log)) &&
+      timelineIdentity(left.log) === timelineIdentity(right.log);
+    if (sameIdentity) return compareTimelineEntries(left, right);
+
+    const leftTime = timelineTimestamp(left.log);
+    const rightTime = timelineTimestamp(right.log);
+    if (leftTime !== null && rightTime !== null && leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    return left.sourceIndex - right.sourceIndex;
+  });
+
+  const ordered: any[] = [...preamble.sort(compareTimelineEntries).map(entry => entry.log)];
+  orderedBoundaryEntries.forEach(boundaryEntry => {
+    const entries = entriesByBoundary[boundaryEntry.boundaryIndex];
+    const boundary = entries[0];
+    const rest = entries.slice(1).sort(compareTimelineEntries);
+    ordered.push(boundary.log, ...rest.map(entry => entry.log));
+  });
+  return ordered;
 };

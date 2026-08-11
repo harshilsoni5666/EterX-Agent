@@ -1,205 +1,253 @@
-import React, { useDeferredValue, useState, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Bot, Maximize2, Command } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Search, X } from 'lucide-react';
 
 interface ChatSession {
   id: string;
   title: string;
   updatedAt: number;
   traceLogs?: any[];
+  workspacePath?: string | null;
+}
+
+interface SearchResult extends ChatSession {
+  snippet?: string;
+  matchLabel?: string;
 }
 
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
-  createNewChat: () => void;
   chats: ChatSession[];
   loadChat: (id: string) => void;
+  runningChats?: Set<string>;
+  activeChatId?: string | null;
 }
 
-export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose, createNewChat, chats, loadChat }) => {
-  const [searchQuery, setSearchQuery] = useState("");
-  const deferredSearchQuery = useDeferredValue(searchQuery);
+const textFromValue = (value: unknown): string => {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(textFromValue).filter(Boolean).join(' ');
+  if (!value || typeof value !== 'object') return '';
 
-  const filteredChats = useMemo(() => {
-    const trimmedQuery = deferredSearchQuery.trim();
-    if (!trimmedQuery) return chats.slice(0, 6);
-    const query = trimmedQuery.toLowerCase();
-    const searchableChats = chats.slice(0, 120);
+  const record = value as Record<string, unknown>;
+  const preferredKeys = [
+    'text', 'output', 'content', 'message', 'query', 'title', 'name', 'description',
+    'summary', 'detail', 'command', 'result', 'value', 'url', 'path', 'status',
+  ];
+  const preferredText = preferredKeys.map(key => textFromValue(record[key])).filter(Boolean).join(' ');
+  return preferredText || Object.values(record).map(textFromValue).filter(Boolean).join(' ');
+};
 
-    const results: any[] = [];
+const getWorkspaceName = (workspacePath?: string | null) => {
+  const normalized = String(workspacePath || '').replace(/[\\/]+$/, '');
+  return normalized.split(/[\\/]/).filter(Boolean).pop() || '';
+};
 
-    searchableChats.forEach(chat => {
-      if (chat.title.toLowerCase().includes(query)) {
-        results.push({ ...chat, matchType: 'title' });
-        return;
-      }
+const getMatchLabel = (log: any) => {
+  const type = String(log?.type || log?.kind || '').toLowerCase();
+  if (/thought|thinking|plan|reason|deep/.test(type)) return 'Deep work';
+  if (/tool|command|browser|computer|shell|search|action/.test(type)) return 'Agent work';
+  if (/user|prompt|request/.test(type)) return 'Message';
+  if (/answer|assistant|model|response/.test(type)) return 'Agent answer';
+  return 'Conversation';
+};
 
-      if (query.length < 2) return;
+const makeSnippet = (value: string, query: string) => {
+  const text = value.replace(/\s+/g, ' ').trim();
+  const index = text.toLowerCase().indexOf(query.toLowerCase());
+  if (index < 0) return text.slice(0, 120);
 
-      const matchingLog = chat.traceLogs?.slice(-80).find(log => {
-        if (!log.text || typeof log.text !== 'string') return false;
-        return log.text.slice(0, 6000).toLowerCase().includes(query);
-      });
+  const start = Math.max(0, index - 42);
+  const end = Math.min(text.length, index + query.length + 70);
+  return `${start > 0 ? '…' : ''}${text.slice(start, end).trim()}${end < text.length ? '…' : ''}`;
+};
 
-      if (matchingLog) {
-        const text = String(matchingLog.text || '').slice(0, 6000);
-        const index = text.toLowerCase().indexOf(query);
-        const start = Math.max(0, index - 30);
-        const end = Math.min(text.length, index + 50);
-        let snippet = text.substring(start, end).replace(/\n/g, ' ');
-        if (start > 0) snippet = '...' + snippet;
-        if (end < text.length) snippet = snippet + '...';
+const formatDate = (timestamp: number) => {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+  try {
+    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(timestamp);
+  } catch {
+    return '';
+  }
+};
 
-        results.push({ ...chat, matchType: 'content', snippet });
-      }
-    });
+export const CommandPalette: React.FC<CommandPaletteProps> = ({
+  isOpen,
+  onClose,
+  chats,
+  loadChat,
+  runningChats = new Set<string>(),
+  activeChatId = null,
+}) => {
+  const [query, setQuery] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
 
-    return results.sort((a, b) => {
-      if (a.matchType === 'title' && b.matchType === 'content') return -1;
-      if (a.matchType === 'content' && b.matchType === 'title') return 1;
-      return b.updatedAt - a.updatedAt;
-    }).slice(0, 10);
-  }, [chats, deferredSearchQuery]);
+  const results = useMemo<SearchResult[]>(() => {
+    const search = query.trim().toLowerCase();
+    if (!search) return chats.slice(0, 18);
 
-  const formatDate = (timestamp: number) => {
-    try {
-      return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(timestamp);
-    } catch (e) {
-      return "";
-    }
-  };
+    return chats
+      .flatMap(chat => {
+        const title = String(chat.title || 'Untitled chat');
+        if (title.toLowerCase().includes(search)) return [{ ...chat, matchLabel: 'Chat title' }];
+
+        const logs = Array.isArray(chat.traceLogs) ? chat.traceLogs : [];
+        for (let index = logs.length - 1; index >= 0; index -= 1) {
+          const text = textFromValue(logs[index]).replace(/\s+/g, ' ').trim();
+          if (!text.toLowerCase().includes(search)) continue;
+          return [{
+            ...chat,
+            matchLabel: getMatchLabel(logs[index]),
+            snippet: makeSnippet(text, query.trim()),
+          }];
+        }
+        return [];
+      })
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+      .slice(0, 24);
+  }, [chats, query]);
 
   useEffect(() => {
-    if (isOpen) setSearchQuery("");
+    if (!isOpen) return;
+    setQuery('');
+    window.requestAnimationFrame(() => inputRef.current?.focus());
   }, [isOpen]);
 
-  useEffect(() => {
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleEsc);
-    return () => window.removeEventListener('keydown', handleEsc);
-  }, [onClose]);
+  if (!isOpen) return null;
+
+  const openChat = (chatId: string) => {
+    loadChat(chatId);
+    onClose();
+  };
 
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 pointer-events-none">
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-            className="fixed inset-0 bg-[#050505]/80 backdrop-blur-[10px] pointer-events-auto"
-          />
-          <motion.div
-            initial={{ opacity: 0, scale: 0.98, y: 8, filter: 'blur(12px)' }}
-            animate={{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }}
-            exit={{ opacity: 0, scale: 0.98, y: 8, filter: 'blur(12px)' }}
-            transition={{ type: "spring", stiffness: 500, damping: 35 }}
-            className="w-full max-w-[540px] bg-[#0A0A0A]/90 backdrop-blur-[32px] border border-white/10 rounded-[24px] shadow-[0_32px_128px_-16px_rgba(0,0,0,1)] z-50 overflow-hidden flex flex-col pointer-events-auto ring-1 ring-white/5"
-          >
-            {/* Header Search */}
-            <div className="flex items-center px-5 py-4 border-b border-white/5 relative group">
-              <div className="bg-white/5 p-1.5 rounded-lg border border-white/10 mr-3 shrink-0 transition-colors group-focus-within:border-white/20">
-                <Search className="w-4 h-4 text-[#8C8A88]" />
-              </div>
-              <input
-                type="text"
-                placeholder="Find anything..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-transparent text-[#E8E6E3] placeholder:text-[#555350] outline-none text-[15px] font-medium font-sans tracking-tight"
-                autoFocus
-              />
-              <div className="flex items-center gap-1.5 px-1.5 py-1 rounded bg-white/5 border border-white/10 shrink-0">
-                <Command className="w-2.5 h-2.5 text-[#555350]" />
-                <span className="text-[9px] text-[#555350] font-bold tracking-tighter">K</span>
-              </div>
-            </div>
+    <div className="fixed inset-0 z-[100] pointer-events-none">
+      <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: commandRunningIndicatorStyles }} />
+      <button
+        type="button"
+        aria-label="Close chat search"
+        onClick={onClose}
+        className="absolute inset-0 pointer-events-auto cursor-default bg-transparent"
+      />
 
-            <div className="p-2 overflow-y-auto max-h-[420px] eterx-scrollbar flex flex-col gap-4">
-              {/* Actions Section */}
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between px-3 mb-1">
-                  <span className="text-[10px] font-bold text-[#555350] uppercase tracking-[0.15em]">Quick Actions</span>
-                </div>
-                <button
-                  onClick={() => { onClose(); createNewChat(); }}
-                  className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-white/5 rounded-xl transition-all duration-150 active:scale-[0.985] group group"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-7 h-7 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center group-hover:bg-white/10 group-hover:border-white/20 transition-all shadow-inner">
-                      <Bot className="w-3.5 h-3.5 text-[#A3A19E] group-hover:text-white" />
-                    </div>
-                    <span className="text-[14px] font-medium text-[#A3A19E] group-hover:text-white transition-colors">Create New Private Chat</span>
-                  </div>
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                    <span className="text-[9px] text-[#555350] font-mono border border-white/5 px-1.5 py-0.5 rounded bg-white/[0.02]">ENTER</span>
-                  </div>
-                </button>
-              </div>
-
-              {/* Filtering Results Section */}
-              <div className="flex flex-col gap-0.5 pb-2">
-                <div className="px-3 mb-1">
-                  <span className="text-[10px] font-bold text-[#555350] uppercase tracking-[0.15em]">
-                    {searchQuery ? 'Results' : 'Recents'}
-                  </span>
-                </div>
-                <div className="flex flex-col gap-[1px]">
-                  {filteredChats.length > 0 ? (
-                    filteredChats.map((chat) => (
-                      <div
-                        key={chat.id}
-                        onClick={() => { loadChat(chat.id); onClose(); }}
-                        className="w-full flex flex-col px-3 py-2.5 hover:bg-white/[0.03] rounded-xl transition-all cursor-pointer group active:scale-[0.99]"
-                      >
-                        <div className="flex items-center justify-between w-full">
-                          <span className="text-[14px] font-medium text-[#A3A19E] group-hover:text-[#E8E6E3] transition-colors truncate pr-4">
-                            {chat.title}
-                          </span>
-                          <span className="text-[10px] text-[#32312F] group-hover:text-[#555350] whitespace-nowrap tabular-nums">
-                            {formatDate(chat.updatedAt)}
-                          </span>
-                        </div>
-                        {chat.matchType === 'content' && chat.snippet && (
-                          <div className="text-[11px] text-[#555350] group-hover:text-[#8C8A88] mt-1.5 line-clamp-1 italic font-light opacity-80 pl-1 border-l border-white/10 ml-0.5">
-                            {chat.snippet}
-                          </div>
-                        )}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="px-4 py-10 text-center flex flex-col items-center gap-2">
-                       <div className="w-10 h-10 rounded-full bg-white/[0.02] border border-white/5 flex items-center justify-center mb-1">
-                          <Search className="w-4 h-4 text-[#1A1A1A]" />
-                       </div>
-                       <span className="text-[#32312F] text-[13px] font-medium italic">No matches found for "{searchQuery}"</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Footer */}
-            <div className="px-5 py-2.5 border-t border-white/5 flex justify-between items-center bg-[#070708]/40">
-               <div className="flex items-center gap-3 text-[9px] text-[#32312F] font-bold tracking-widest uppercase">
-                  <div className="flex items-center gap-1.5 bg-white/5 px-2 py-0.5 rounded border border-white/5">
-                     <span className="text-[10px]">⏎</span>
-                     <span>Select</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 bg-white/5 px-2 py-0.5 rounded border border-white/5">
-                     <span className="text-[10px] scale-90">⎋</span>
-                     <span>Close</span>
-                  </div>
-               </div>
-               <Maximize2 className="w-3 h-3 text-[#32312F] rotate-45 hover:text-[#555350] transition-colors cursor-pointer" />
-            </div>
-          </motion.div>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search chats"
+        className="eterx-command-palette-dialog absolute left-1/2 top-1/2 flex max-h-[calc(100dvh-48px)] w-[calc(100%-48px)] max-w-[640px] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-white/[0.13] bg-[#252525]/[0.98] py-1 text-[#E8E6E3] shadow-[0_22px_64px_rgba(0,0,0,0.46)] backdrop-blur-[22px] pointer-events-auto dark:bg-[#252525]/[0.98]"
+      >
+        <div className="shrink-0 px-[20px] pb-1 pt-[15px]">
+          <div className="flex items-center gap-2">
+            <Search className="eterx-command-search-icon h-[17px] w-[17px] text-[#A6A3A0]" strokeWidth={1.8} aria-hidden="true" />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              placeholder="Search chats"
+              aria-label="Search chats"
+              className="eterx-command-search-input min-w-0 flex-1 bg-transparent text-[16px] font-normal tracking-[-0.018em] text-[#E8E6E3] outline-none placeholder:text-[#A3A19E]"
+            />
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => { setQuery(''); inputRef.current?.focus(); }}
+              className={`eterx-command-clear-button flex h-7 w-7 items-center justify-center rounded-[8px] text-[#8E8B87] transition hover:bg-white/[0.08] hover:text-white ${query ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+            >
+              <X className="h-4 w-4" strokeWidth={1.8} />
+            </button>
+          </div>
         </div>
-      )}
-    </AnimatePresence>
+
+        <div className="eterx-command-search-section px-[20px] pb-1 pt-2 text-[13px] font-medium tracking-[-0.01em] text-[#A6A3A0]">
+          Chats
+        </div>
+
+        <div className="max-h-[300px] min-h-0 overflow-y-auto px-1.5 pb-2 eterx-scrollbar">
+          {results.length > 0 ? results.map((chat, index) => {
+            const isWorking = runningChats.has(chat.id);
+            const isActive = activeChatId === chat.id;
+            const workspaceName = getWorkspaceName(chat.workspacePath);
+            return (
+              <button
+                type="button"
+                key={`${chat.id}-${index}`}
+                onClick={() => openChat(chat.id)}
+                className={`eterx-command-chat-row group flex min-h-[35px] w-full items-center gap-3 rounded-[10px] px-[14px] py-[4px] text-left transition-[background-color,color,transform] duration-150 hover:bg-white/[0.085] hover:text-[#F2F0ED] active:scale-[0.992] active:bg-white/[0.12] focus-visible:bg-white/[0.10] focus-visible:outline-none ${isActive ? 'bg-white/[0.105] text-[#F2F0ED]' : 'text-[#C7C5C2]'}`}
+              >
+                <span className="eterx-command-chat-title min-w-0 flex-1 truncate text-[13px] font-normal tracking-[-0.005em] group-hover:text-[#F2F0ED]">
+                  {chat.title || 'Untitled chat'}
+                  {chat.snippet && <span className="eterx-command-chat-match ml-2 text-[12px] text-[#888581]">{chat.matchLabel}</span>}
+                </span>
+                {workspaceName && <span className="eterx-command-chat-meta hidden shrink-0 max-w-[140px] truncate text-[10px] text-[#878480] sm:block">{workspaceName}</span>}
+                <span className="eterx-command-chat-date shrink-0 text-[10px] tabular-nums text-[#8B8884]">{formatDate(chat.updatedAt)}</span>
+                {isWorking && <span className="eterx-splash-spinner eterx-command-running-indicator shrink-0" role="status" aria-label="Agent working" />}
+              </button>
+            );
+          }) : (
+            <div className="eterx-command-empty flex flex-col items-center justify-center px-6 py-20 text-center text-[#8D8985]">
+              <Search className="mb-3 h-6 w-6" strokeWidth={1.6} />
+              <p className="text-[15px]">No chats found</p>
+            </div>
+          )}
+        </div>
+
+      </section>
+    </div>
   );
 };
+
+// Keep palette-only layout/theme rules here; the shared splash ring lives in
+// globals.css so the sidebar, palette, and thread switcher stay identical.
+const commandRunningIndicatorStyles = `
+  .eterx-command-palette-dialog .eterx-command-running-indicator {
+    width: 14px;
+    height: 14px;
+  }
+  :root[data-theme="light"] .eterx-command-palette-dialog {
+    background: rgba(255, 255, 255, 0.97) !important;
+    border-color: rgba(31, 31, 29, 0.11) !important;
+    color: #262421 !important;
+    box-shadow: 0 22px 64px rgba(31, 31, 29, 0.16) !important;
+  }
+  :root[data-theme="light"] .eterx-command-search-icon {
+    color: #77736C !important;
+  }
+  :root[data-theme="light"] .eterx-command-search-input {
+    color: #262421 !important;
+  }
+  :root[data-theme="light"] .eterx-command-search-input::placeholder {
+    color: #8C8983 !important;
+  }
+  :root[data-theme="light"] .eterx-command-clear-button:hover {
+    background: rgba(31, 31, 29, 0.07) !important;
+    color: #262421 !important;
+  }
+  :root[data-theme="light"] .eterx-command-search-section {
+    color: #77736C !important;
+  }
+  :root[data-theme="light"] .eterx-command-chat-row:hover,
+  :root[data-theme="light"] .eterx-command-chat-row:focus-visible {
+    background: rgba(31, 31, 29, 0.065) !important;
+    color: #1F1F1D !important;
+  }
+  :root[data-theme="light"] .eterx-command-chat-row:active,
+  :root[data-theme="light"] .eterx-command-chat-row.bg-white\/\[0\.105\] {
+    background: rgba(31, 31, 29, 0.095) !important;
+    color: #1F1F1D !important;
+  }
+  :root[data-theme="light"] .eterx-command-chat-title {
+    color: #4B4945 !important;
+  }
+  :root[data-theme="light"] .eterx-command-chat-row:hover .eterx-command-chat-title,
+  :root[data-theme="light"] .eterx-command-chat-row:focus-visible .eterx-command-chat-title {
+    color: #1F1F1D !important;
+  }
+  :root[data-theme="light"] .eterx-command-chat-match,
+  :root[data-theme="light"] .eterx-command-chat-meta,
+  :root[data-theme="light"] .eterx-command-chat-date {
+    color: #77736C !important;
+  }
+  :root[data-theme="light"] .eterx-command-empty {
+    color: #77736C !important;
+  }
+`;

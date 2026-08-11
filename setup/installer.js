@@ -4,8 +4,7 @@
 const { execFileSync, execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { ok, warn, fail, info, line, c, spinner } = require('./banner');
-const { getProjectRoot } = require('./detect');
+const { ok, warn, fail, c } = require('./banner');
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -276,95 +275,6 @@ async function buildApplication(projectRoot, options = {}) {
 }
 
 /**
- * Install extra provider packages that aren't in package.json
- */
-async function installProviderPackages(selectedProviders, projectRoot) {
-  // Collect npm packages from selected providers
-  const existingPkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
-  const existingDeps = { ...existingPkg.dependencies, ...existingPkg.devDependencies };
-
-  const needed = [];
-  for (const provider of selectedProviders) {
-    if (!provider.npm) continue;
-    for (const pkg of provider.npm) {
-      if (!existingDeps[pkg] && !needed.includes(pkg)) {
-        needed.push(pkg);
-      }
-    }
-  }
-
-  if (needed.length === 0) {
-    ok('All provider packages already in package.json');
-    return true;
-  }
-
-  const installed = await runNpm(['install', '--save', ...needed], projectRoot);
-  if (installed) return true;
-
-  warn('Provider package install failed. Retrying with --legacy-peer-deps.');
-  return runNpm(['install', '--save', '--legacy-peer-deps', ...needed], projectRoot);
-}
-
-/**
- * Generate .env.local from collected keys
- */
-function generateEnvFile(config, projectRoot) {
-  const lines = [
-    '# ═══════════════════════════════════════════════════════',
-    '# EterX Agent — Environment Configuration',
-    `# Generated: ${new Date().toISOString()}`,
-    '# ═══════════════════════════════════════════════════════',
-    '',
-  ];
-
-  // Model provider keys
-  lines.push('# ══ MODEL PROVIDERS ══');
-  for (const [providerId, data] of Object.entries(config.providers || {})) {
-    lines.push(`\n# --- ${data.name || providerId} ---`);
-    if (data.keys && typeof data.keys === 'object') {
-      for (const [envKey, value] of Object.entries(data.keys)) {
-        if (value) lines.push(`${envKey}=${value}`);
-      }
-    }
-    if (data.multiKeys && Array.isArray(data.multiKeys)) {
-      data.multiKeys.forEach((key, i) => {
-        if (key) lines.push(`${data.envPrefix}${i + 1}=${key}`);
-      });
-    }
-    if (data.endpoint) {
-      const urlKey = data.endpointEnvKey || `${providerId.toUpperCase()}_API_URL`;
-      lines.push(`${urlKey}=${data.endpoint}`);
-    }
-  }
-
-  // Service keys
-  lines.push('\n# ══ SERVICES & INTEGRATIONS ══');
-  for (const [serviceId, data] of Object.entries(config.services || {})) {
-    lines.push(`\n# --- ${data.name || serviceId} ---`);
-    if (data.keys && typeof data.keys === 'object') {
-      for (const [envKey, value] of Object.entries(data.keys)) {
-        if (value) lines.push(`${envKey}=${value}`);
-      }
-    }
-    if (data.multiKeys && Array.isArray(data.multiKeys)) {
-      data.multiKeys.forEach((key, i) => {
-        if (key) lines.push(`${data.envPrefix}${i + 1}=${key}`);
-      });
-    }
-  }
-
-  // App config
-  lines.push('\n# ══ APP CONFIG ══');
-  lines.push(`NEXT_PUBLIC_APP_URL=http://localhost:${config.port || 3000}`);
-  lines.push('');
-
-  const envPath = path.join(projectRoot, '.env.local');
-  fs.writeFileSync(envPath, lines.join('\n'), 'utf8');
-  ok(`.env.local written (${lines.length} lines)`);
-  return envPath;
-}
-
-/**
  * Create local storage directories
  */
 function setupLocalStorage(projectRoot) {
@@ -451,8 +361,6 @@ module.exports = {
   installDependencies,
   buildApplication,
   stopRunningApplication,
-  installProviderPackages,
-  generateEnvFile,
   setupLocalStorage,
   createDesktopShortcut,
 };

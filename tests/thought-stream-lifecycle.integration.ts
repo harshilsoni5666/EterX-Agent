@@ -3,6 +3,7 @@ import {
   canonicalizeThoughtStreamLogs,
   closeThoughtStreamsForBoundary,
   mergeThoughtStreamTrace,
+  shouldRenderThoughtStream,
 } from '../src/lib/thought-stream-lifecycle';
 
 const thought = (
@@ -19,6 +20,36 @@ const thought = (
   isStreaming: true,
   ...overrides,
 });
+
+{
+  assert.equal(
+    shouldRenderThoughtStream({
+      type: 'thought_stream',
+      text: '',
+      uiOnly: true,
+      isStreaming: false,
+      streamState: 'closed',
+    }),
+    false,
+    'closed empty UI-only shells must not render as historical thought cards',
+  );
+  assert.equal(
+    shouldRenderThoughtStream({
+      type: 'thought_stream',
+      text: '',
+      uiOnly: true,
+      isStreaming: true,
+      streamState: 'open',
+    }),
+    true,
+    'an open UI-only shell should remain available while a direct turn is live',
+  );
+  assert.equal(
+    shouldRenderThoughtStream({ type: 'thought_stream', text: 'Reasoning', isStreaming: false }),
+    true,
+    'closed thoughts with real text remain visible',
+  );
+}
 
 {
   const logs: any[] = [];
@@ -104,11 +135,21 @@ const thought = (
       _traceIdx: 4,
     }),
   ];
-  canonicalizeThoughtStreamLogs(logs);
+  const originalLogs = logs.slice();
+  const canonical = canonicalizeThoughtStreamLogs(logs);
 
-  assert.equal(logs.length, 1, 'persisted duplicate snapshots should canonicalize to one row');
-  assert.equal(logs[0].text, 'Reasoning complete');
-  assert.equal(logs[0].isStreaming, false);
+  assert.equal(canonical.length, 1, 'persisted duplicate snapshots should canonicalize to one row');
+  assert.equal(canonical[0].text, 'Reasoning complete');
+  assert.equal(canonical[0].isStreaming, false);
+  assert.deepEqual(logs, originalLogs, 'canonicalization must not mutate a caller-owned trace array');
+}
+
+{
+  const logs: any[] = [
+    { type: 'thought_stream', text: '', uiOnly: true, thoughtId: 'same', runId: 'run-a', startTime: 1_000, isStreaming: false, streamState: 'closed' },
+    { type: 'thought_stream', text: '', uiOnly: true, thoughtId: 'same', runId: 'run-b', startTime: 1_000, isStreaming: false, streamState: 'closed' },
+  ];
+  assert.equal(canonicalizeThoughtStreamLogs(logs).length, 0, 'closed empty UI-only shells should be pruned from canonical history');
 }
 
 {
@@ -129,6 +170,40 @@ const thought = (
 
   assert.equal(logs[0].isStreaming, true, 'a worker boundary must not close the main thought');
   assert.equal(logs[1].isStreaming, false, 'a worker boundary must close that worker thought');
+}
+
+{
+  const logs: any[] = [];
+  mergeThoughtStreamTrace(logs, thought('Run A reasoning', 1_000, {
+    chatId: 'chat-1',
+    runId: 'run-a',
+  }));
+  mergeThoughtStreamTrace(logs, thought('Run B reasoning', 1_000, {
+    chatId: 'chat-1',
+    runId: 'run-b',
+  }));
+
+  assert.equal(logs.length, 2, 'same thought IDs from different runs must not merge');
+  assert.equal(logs[0].text, 'Run A reasoning');
+  assert.equal(logs[1].text, 'Run B reasoning');
+  assert.equal(logs[0].isStreaming, true, 'a new run must not close the previous run implicitly');
+}
+
+{
+  const logs: any[] = [
+    thought('Run A reasoning', 1_000, { chatId: 'chat-1', runId: 'run-a' }),
+    thought('Run B reasoning', 2_000, { chatId: 'chat-1', runId: 'run-b' }),
+  ];
+  closeThoughtStreamsForBoundary(logs, {
+    type: 'run_status',
+    status: 'failed',
+    chatId: 'chat-1',
+    runId: 'run-b',
+    timestamp: 3_000,
+  });
+
+  assert.equal(logs[0].isStreaming, true, 'a terminal event must not close a thought from another run');
+  assert.equal(logs[1].isStreaming, false, 'the matching run thought must close at its terminal event');
 }
 
 {

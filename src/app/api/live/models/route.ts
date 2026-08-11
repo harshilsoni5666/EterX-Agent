@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
-import { getProviderBaseURL } from '../../../../lib/agent/provider-runtime';
 import { rejectCrossOrigin } from '../../agent/_shared';
 import {
   DEFAULT_GEMINI_LIVE_MODEL,
@@ -38,19 +37,21 @@ const readKey = (providerKey: string, override?: unknown): string => {
   return firstKey(stored.liveApiKeys?.[providerKey]);
 };
 
-const staticModels = (providerValue: string) => getLiveModelOptions(providerValue)
-  .map(model => ({
+const staticModels = (providerValue: string) => {
+  const provider = normalizeLiveProvider(providerValue);
+  return getLiveModelOptions(providerValue).map(model => ({
     id: model.value,
     name: model.label,
     description: model.description,
     tag: model.tag,
-    capabilities: ['audio', 'voice'],
+    capabilities: [
+      'audio',
+      'voice',
+      ...(provider.supportsVision ? ['video'] : []),
+      provider.transport,
+    ],
   }));
-
-const compatibleModelProviders = new Set([
-  'openai', 'grok', 'deepseek', 'groq', 'cerebras', 'sambanova', 'together',
-  'fireworks', 'perplexity', 'openrouter', 'ollama', 'lmstudio', 'vllm',
-]);
+};
 
 const responseFor = (
   providerValue: string,
@@ -67,6 +68,35 @@ const responseFor = (
   ...(error ? { error } : {}),
   updatedAt: Date.now(),
 }, { status });
+
+const validateProviderKey = async (providerValue: string, apiKey: string): Promise<void> => {
+  const provider = normalizeLiveProvider(providerValue);
+  if (provider.provider === 'openai') {
+    const response = await withTimeout(fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      cache: 'no-store',
+    }));
+    if (!response.ok) throw new Error(`OpenAI credential check failed (${response.status}).`);
+  } else if (provider.provider === 'grok') {
+    const response = await withTimeout(fetch('https://api.x.ai/v1/tts/voices', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      cache: 'no-store',
+    }));
+    if (!response.ok) throw new Error(`xAI credential check failed (${response.status}).`);
+  } else if (provider.provider === 'deepgram') {
+    const response = await withTimeout(fetch('https://api.deepgram.com/v1/projects', {
+      headers: { Authorization: `Token ${apiKey}` },
+      cache: 'no-store',
+    }));
+    if (!response.ok) throw new Error(`Deepgram credential check failed (${response.status}).`);
+  } else if (provider.provider === 'elevenlabs') {
+    const response = await withTimeout(fetch('https://api.elevenlabs.io/v1/user', {
+      headers: { 'xi-api-key': apiKey },
+      cache: 'no-store',
+    }));
+    if (!response.ok) throw new Error(`ElevenLabs credential check failed (${response.status}).`);
+  }
+};
 
 export async function POST(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
@@ -125,42 +155,18 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Providers that expose an OpenAI-compatible model directory get their
-  // real model ids. The provider selection remains authoritative; a failed
-  // directory request preserves only that provider's local catalog.
-  if (compatibleModelProviders.has(provider.provider)) {
-    try {
-      const baseURL = getProviderBaseURL(provider.provider as any);
-      if (baseURL) {
-        const response = await withTimeout(fetch(`${baseURL.replace(/\/$/, '')}/models`, {
-          headers: { Authorization: `Bearer ${apiKey}` },
-          cache: 'no-store',
-        }), 8_000);
-        if (body?.testOnly && !response.ok) {
-          return responseFor(provider.value, false, models, `${provider.label} rejected this API key (${response.status}).`, 502);
-        }
-        if (response.ok) {
-          const payload = await response.json();
-          const discovered = (Array.isArray(payload?.data) ? payload.data : [])
-            .map((model: any) => {
-              const id = String(model?.id || '').trim();
-              return id ? {
-                id,
-                name: String(model?.name || id),
-                description: String(model?.description || `Returned by ${provider.label}`),
-                capabilities: ['audio', 'voice'],
-              } : null;
-            })
-            .filter(Boolean) as Array<Record<string, unknown>>;
-          if (discovered.length) return responseFor(provider.value, true, discovered);
-        }
-      }
-    } catch {
-      // The selected provider still returns its local catalog below.
-    }
+  try {
+    await validateProviderKey(provider.value, apiKey);
+    return responseFor(provider.value, true, models);
+  } catch (error) {
+    return responseFor(
+      provider.value,
+      false,
+      models,
+      error instanceof Error ? error.message : String(error || 'Provider credential check failed'),
+      502,
+    );
   }
-
-  return responseFor(provider.value, true, models);
 }
 
 export async function GET(req: NextRequest) {

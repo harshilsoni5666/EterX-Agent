@@ -44,7 +44,7 @@ export const ProjectContextSchema = z.object({
   errorHistory: z.array(z.string()).optional(),
   userName: z.string().optional(),
   allowAgentSpawning: z.boolean().optional(),
-  maxSubAgents: z.number().int().min(1).optional(),
+  maxSubAgents: z.number().int().min(1).max(20).optional(),
   maxRetries: z.number().int().min(0).max(5).optional(),
 });
 export type ProjectContext = z.infer<typeof ProjectContextSchema>;
@@ -128,7 +128,7 @@ export type HeartbeatTask = z.infer<typeof HeartbeatTaskSchema>;
 // ==========================================
 export const SubAgentSchema = z.object({
   id: z.string(),
-  role: z.string(),  // Named agent identity (Einstein, Curie, etc.)
+  role: z.string(),  // Custom task-based agent identity
   task: z.string(),
   status: z.enum(['idle', 'spawning', 'running', 'completed', 'failed']),
   result: z.string().optional(),

@@ -626,7 +626,7 @@ function ActivityCard({
           {event && (
             <div className="mt-0.5 flex items-center gap-2 text-[11px] text-white/36">
               <span>{formatElapsed(event.ts)}</span>
-              {status === 'Thinking' ? <Shimmer>{status}</Shimmer> : <span>{status}</span>}
+              {status === 'Thinking' ? <Shimmer className="text-[var(--eterx-ui-working-text)]">{status}</Shimmer> : <span>{status}</span>}
             </div>
           )}
         </div>

@@ -16,6 +16,7 @@ import {
   MAX_PROMPT_CHARS,
 } from '../../agent/_shared';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
+import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -43,6 +44,8 @@ export async function POST(req: NextRequest) {
       mediaAttachments = [],
       projectId = 'default_project',
       mode = 'think',
+      thinkingLevel = 'low',
+      modelThinkingCapability = null,
       selectedModel = null,
       runId = '',
     } = await readJsonObject(req);
@@ -60,6 +63,12 @@ export async function POST(req: NextRequest) {
     const ownerError = requireChatOwner(chatId, session.sessionId);
     if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
 
+    const chatMediaAttachments = await resolveChatMediaForRequest(
+      chatId,
+      prompt,
+      safeMediaAttachments,
+    );
+
     if (selectedModel !== null && selectedModel !== undefined) {
       const provider = String(selectedModel?.provider || '').trim();
       const modelId = String(selectedModel?.modelId || selectedModel?.modelName || '').trim();
@@ -73,39 +82,73 @@ export async function POST(req: NextRequest) {
 
     const encoder = new TextEncoder();
     const streamAbortController = new AbortController();
+    const normalizedRunId = String(runId || '').trim().slice(0, 160) || undefined;
+    let streamClosed = false;
     const forwardAbort = () => streamAbortController.abort();
     req.signal.addEventListener('abort', forwardAbort, { once: true });
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
+        const close = () => {
+          if (streamClosed) return;
+          streamClosed = true;
+          try { controller.close(); } catch { }
+        };
         const send = (event: Record<string, unknown>) => {
-          if (streamAbortController.signal.aborted) return;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          if (streamAbortController.signal.aborted || streamClosed) return false;
+          try {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+            return true;
+          } catch {
+            streamClosed = true;
+            return false;
+          }
         };
 
         void streamDirectChat({
           prompt,
           history: normalizeHistory(history),
-          mediaAttachments: safeMediaAttachments,
+          mediaAttachments: chatMediaAttachments,
           mode,
+          thinkingLevel: String(thinkingLevel || 'low'),
+          modelThinkingCapability,
           selectedModel,
-          runId: String(runId || '').trim().slice(0, 160) || undefined,
+          runId: normalizedRunId,
           runtimeSettings: buildScopedRuntimeSettings(),
         }, trace => send({ type: 'trace', data: trace }), streamAbortController.signal)
           .then(result => {
             send({ type: 'done', data: { success: true, ...result } });
-            controller.close();
+            close();
           })
           .catch(error => {
             if (!streamAbortController.signal.aborted) {
+              // Close any answer that was already rendered before a provider
+              // failed. Otherwise the feed can remain permanently in a live
+              // typing state even though the request has ended.
+              if (normalizedRunId) {
+                send({
+                  type: 'trace',
+                  data: {
+                    type: 'answer',
+                    text: '',
+                    isDelta: false,
+                    isStreaming: false,
+                    isLiveTyping: false,
+                    streamState: 'closed',
+                    final: true,
+                    runId: normalizedRunId,
+                    turnId: normalizedRunId,
+                    timestamp: Date.now(),
+                  },
+                });
+              }
               send({ type: 'error', error: String(error?.message || error || 'Direct chat failed.') });
-              controller.close();
-            } else {
-              try { controller.close(); } catch { }
             }
+            close();
           })
           .finally(() => req.signal.removeEventListener('abort', forwardAbort));
       },
       cancel() {
+        streamClosed = true;
         streamAbortController.abort();
         req.signal.removeEventListener('abort', forwardAbort);
       },

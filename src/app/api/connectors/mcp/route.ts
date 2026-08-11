@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { listConnectedMcpTools } from '../../../../lib/connectors/runtime';
 import {
   listMcpServerRecords,
+  getMcpServerRecord,
   redactConnector,
   removeMcpServerRecord,
   saveMcpServerRecord,
   type McpServerRecord,
 } from '../../../../lib/connectors/store';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +21,8 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  const originError = rejectCrossOrigin(request);
+  if (originError) return originError;
   try {
     const body = await request.json().catch(() => ({}));
     const id = String(body.id || body.name || '').trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, '-');
@@ -27,6 +31,7 @@ export async function POST(request: NextRequest) {
     if (!id || !name) return NextResponse.json({ ok: false, error: 'MCP server name is required.' }, { status: 400 });
     if (transport === 'streamable-http' && !String(body.endpoint || '').trim()) return NextResponse.json({ ok: false, error: 'An MCP HTTP endpoint is required.' }, { status: 400 });
     if (transport === 'stdio' && !String(body.command || '').trim()) return NextResponse.json({ ok: false, error: 'A stdio MCP command is required.' }, { status: 400 });
+    const previous = getMcpServerRecord(id);
     const record: McpServerRecord = {
       id,
       name,
@@ -34,8 +39,12 @@ export async function POST(request: NextRequest) {
       endpoint: transport === 'streamable-http' ? String(body.endpoint).trim() : undefined,
       command: transport === 'stdio' ? String(body.command).trim() : undefined,
       args: transport === 'stdio' ? (Array.isArray(body.args) ? body.args.map(String).slice(0, 100) : String(body.args || '').split(/\s+/).filter(Boolean).slice(0, 100)) : undefined,
-      headers: body.headers && typeof body.headers === 'object' ? Object.fromEntries(Object.entries(body.headers).map(([key, value]) => [String(key), String(value)])) : undefined,
-      env: body.env && typeof body.env === 'object' ? Object.fromEntries(Object.entries(body.env).map(([key, value]) => [String(key), String(value)])) : undefined,
+      headers: body.headers && typeof body.headers === 'object'
+        ? Object.fromEntries(Object.entries(body.headers).map(([key, value]) => [String(key), String(value)]))
+        : previous?.headers,
+      env: body.env && typeof body.env === 'object'
+        ? Object.fromEntries(Object.entries(body.env).map(([key, value]) => [String(key), String(value)]))
+        : previous?.env,
       enabled: body.enabled !== false,
       connectedAt: Date.now(),
     };
@@ -43,8 +52,8 @@ export async function POST(request: NextRequest) {
     let tools: unknown = undefined;
     if (body.verify !== false) {
       try { tools = await listConnectedMcpTools(saved.id); } catch (error) {
-        saveMcpServerRecord({ ...saved, enabled: false, lastCheckedAt: Date.now(), lastError: error instanceof Error ? error.message : String(error) });
-        return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : String(error), server: redactConnector(saved) }, { status: 422 });
+        const failed = saveMcpServerRecord({ ...saved, enabled: false, lastCheckedAt: Date.now(), lastError: error instanceof Error ? error.message : String(error) });
+        return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : String(error), server: redactConnector(failed) }, { status: 422 });
       }
     }
     const verified = saveMcpServerRecord({ ...saved, enabled: true, lastCheckedAt: Date.now(), lastError: undefined });
@@ -55,6 +64,8 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  const originError = rejectCrossOrigin(request);
+  if (originError) return originError;
   const body = await request.json().catch(() => ({}));
   const id = String(body.id || '').trim().toLowerCase();
   if (!id) return NextResponse.json({ ok: false, error: 'MCP server id is required.' }, { status: 400 });

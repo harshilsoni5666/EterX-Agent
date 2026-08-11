@@ -437,12 +437,13 @@ export function resolveAgentTools(profile: AgentBuilderProfile): {
 } {
   const tools: ResolvedTool[] = [];
   const promptParts: string[] = ['## Your Tools\n'];
+  const isDiscoveryShim = (toolName: string) => normalizeRegistryToolName(toolName) === 'tool_finder';
 
   // Resolve direct main tools
   const seenToolNames = new Set<string>();
   for (const ref of profile.directMainTools) {
     const resolved = resolveDirectTool(ref);
-    if (resolved && !seenToolNames.has(resolved.name)) {
+    if (resolved && !isDiscoveryShim(resolved.name) && !seenToolNames.has(resolved.name)) {
       seenToolNames.add(resolved.name);
       tools.push(resolved);
       promptParts.push(resolved.promptGuidance);
@@ -452,7 +453,7 @@ export function resolveAgentTools(profile: AgentBuilderProfile): {
   // Resolve custom tools
   for (const custom of profile.customTools) {
     const resolved = resolveCustomTool(custom);
-    if (resolved && !seenToolNames.has(resolved.name)) {
+    if (resolved && !isDiscoveryShim(resolved.name) && !seenToolNames.has(resolved.name)) {
       seenToolNames.add(resolved.name);
       tools.push(resolved);
       promptParts.push(resolved.promptGuidance);
@@ -481,6 +482,9 @@ export const agentToolLoadTool: ToolDefinition = {
       return { success: false, message: 'Dynamic tool loading is only supported during active custom agent executions.' };
     }
     const name = normalizeRegistryToolName(args.toolName);
+    if (name === 'tool_finder') {
+      return { success: false, message: 'Tool discovery is disabled; attach or call the required tool directly.' };
+    }
     if (isBuilderOnlyToolName(name)) {
       return { success: false, message: `Tool "${name}" is reserved for Agent Builder and cannot be loaded by a finalized custom agent.` };
     }

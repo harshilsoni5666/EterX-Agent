@@ -11,6 +11,7 @@ const PREFERENCES_DIR = path.join(getEterxDataDir(), 'settings');
 const PREFERENCES_FILE = path.join(PREFERENCES_DIR, 'preferences.json');
 const PREFERENCES_BACKUP_FILE = path.join(PREFERENCES_DIR, 'preferences.backup.json');
 const RESERVED_KEYS = new Set(['eterx_api_keys', 'eterx_model_api_keys']);
+const MAX_PREFERENCE_VALUE_BYTES = 10 * 1024 * 1024;
 
 const preserveCorruptPreferences = (source: string) => {
   if (source !== PREFERENCES_FILE || !fs.existsSync(source)) return;
@@ -51,7 +52,7 @@ const readPreferences = (): Record<string, string> => {
       return Object.fromEntries(
         Object.entries(parsed)
           .filter(([key, value]) => !RESERVED_KEYS.has(key) && typeof value === 'string')
-          .map(([key, value]) => [key, String(value).slice(0, 500_000)]),
+          .map(([key, value]) => [key, String(value)]),
       );
     } catch {
       preserveCorruptPreferences(source);
@@ -102,14 +103,26 @@ export async function PUT(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
+    const submittedValues = body?.values && typeof body.values === 'object' && !Array.isArray(body.values)
+      ? body.values as Record<string, unknown>
+      : {};
+    const oversizedKey = Object.entries(submittedValues).find(([key, value]) => (
+      !RESERVED_KEYS.has(key)
+      && typeof value === 'string'
+      && Buffer.byteLength(value, 'utf8') > MAX_PREFERENCE_VALUE_BYTES
+    ));
+    if (oversizedKey) {
+      return NextResponse.json(
+        { ok: false, error: `Preference ${oversizedKey[0]} is too large to save safely.` },
+        { status: 413 },
+      );
+    }
     await runSerializedPreferenceWrite(async () => {
       const current = readPreferences();
-      const values = body?.values && typeof body.values === 'object' && !Array.isArray(body.values)
-        ? body.values as Record<string, unknown>
-        : {};
+      const values = submittedValues;
       for (const [key, value] of Object.entries(values)) {
         if (RESERVED_KEYS.has(key) || key.length > 180 || typeof value !== 'string') continue;
-        current[key] = value.slice(0, 500_000);
+        current[key] = value;
       }
       if (Array.isArray(body?.remove)) {
         body.remove.slice(0, 500).forEach((key: unknown) => {

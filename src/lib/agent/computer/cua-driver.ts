@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
+import { getPlatformShortcut, normalizeShortcutForPlatform } from './platform-shortcuts';
 
 const execFileAsync = promisify(execFile);
 
@@ -210,16 +211,32 @@ async function captureCuaScreen(): Promise<{ data: string; mimeType: 'image/png'
   }
 }
 
+function didCuaActionSucceed(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return true;
+  const value = result as Record<string, unknown>;
+  if (typeof value.success === 'boolean') return value.success;
+  if (typeof value.ok === 'boolean') return value.ok;
+  if (value.error || value.errors) return false;
+  const status = String(value.status || value.state || '').trim().toLowerCase();
+  if (['error', 'failed', 'failure', 'denied'].includes(status)) return false;
+  return true;
+}
+
 async function withDesktopVision(result: unknown): Promise<CuaActionResult> {
   const vision = await captureCuaScreen();
-  return { success: true, result, provider: PROVIDER, vision: vision ? { inlineData: vision } : null };
+  return { success: didCuaActionSucceed(result), result, provider: PROVIDER, vision: vision ? { inlineData: vision } : null };
 }
 
 function actionCoordinates(input: any): Record<string, unknown> {
+  const x = Number(input?.x);
+  const y = Number(input?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new Error('x and y coordinates are required for this desktop action.');
+  }
   return {
     scope: 'desktop',
-    x: Number(input.x),
-    y: Number(input.y),
+    x,
+    y,
   };
 }
 
@@ -301,57 +318,75 @@ export async function executeCuaScreenAction(action: string, input: any): Promis
     }
 
     if (action === 'click' || action === 'right_click' || action === 'double_click') {
-      const tool = action === 'right_click' ? 'right_click' : action === 'double_click' ? 'double_click' : 'click';
-      const result = await callCuaTool(tool, actionCoordinates(input));
-      return withDesktopVision(result?.message || `${action} dispatched through Cua Driver.`);
+      const coordinates = actionCoordinates(input);
+      // The Windows driver exposes right/double clicks as the `button` and
+      // `count` options on its desktop-scoped click endpoint. Its dedicated
+      // right_click endpoint is window/PID scoped, so using it here makes
+      // screen coordinates fail even though ordinary clicks work.
+      const useWindowsClickOptions = process.platform === 'win32';
+      const tool = useWindowsClickOptions || action === 'click'
+        ? 'click'
+        : action === 'right_click' ? 'right_click' : 'double_click';
+      const payload = useWindowsClickOptions
+        ? { ...coordinates, ...(action === 'right_click' ? { button: 'right' } : {}), ...(action === 'double_click' ? { count: 2 } : {}) }
+        : coordinates;
+      const result = await callCuaTool(tool, payload);
+      return withDesktopVision(result || `${action} dispatched through Cua Driver.`);
     }
 
     if (action === 'drag') {
+      const x2 = Number(input.x2);
+      const y2 = Number(input.y2);
+      if (!Number.isFinite(x2) || !Number.isFinite(y2)) {
+        throw new Error('x2 and y2 coordinates are required for drag.');
+      }
       const result = await callCuaTool('drag', {
-        from_x: Number(input.x), from_y: Number(input.y), to_x: Number(input.x2), to_y: Number(input.y2), scope: 'desktop',
+        from_x: Number(input.x), from_y: Number(input.y), to_x: x2, to_y: y2, scope: 'desktop',
       });
-      return withDesktopVision(result?.message || 'Drag dispatched through Cua Driver.');
+      return withDesktopVision(result || 'Drag dispatched through Cua Driver.');
     }
 
     if (action === 'type') {
       if (!String(input.text || '')) return { success: false, result: 'No text provided.', provider: PROVIDER, vision: null };
       const target = input.x != null && input.y != null ? actionCoordinates(input) : { scope: 'desktop' };
       const result = await callCuaTool('type_text', { ...target, text: String(input.text) });
-      return withDesktopVision(result?.message || `Typed ${String(input.text).length} characters through Cua Driver.`);
+      return withDesktopVision(result || `Typed ${String(input.text).length} characters through Cua Driver.`);
     }
 
     if (action === 'key') {
-      const raw = String(input.text || 'enter').split('+').map(normalizeKey);
+      const shortcut = normalizeShortcutForPlatform(String(input.text || 'enter'));
+      const raw = shortcut.split('+').map(normalizeKey);
       const result = raw.length > 1
         ? await callCuaTool('hotkey', { keys: raw, scope: 'desktop' })
         : await callCuaTool('press_key', { key: raw[0], scope: 'desktop' });
-      return withDesktopVision(result?.message || `Key ${String(input.text || 'enter')} dispatched through Cua Driver.`);
+      return withDesktopVision(result || `Key ${String(input.text || 'enter')} dispatched through Cua Driver.`);
     }
 
     if (action === 'scroll') {
       const result = await callCuaTool('scroll', {
         ...actionCoordinates(input), direction: input.direction === 'up' ? 'up' : 'down', amount: Math.max(1, Math.min(50, Number(input.amount || 3))), scope: 'desktop',
       });
-      return withDesktopVision(result?.message || 'Scroll dispatched through Cua Driver.');
+      return withDesktopVision(result || 'Scroll dispatched through Cua Driver.');
     }
 
     if (action === 'hover') {
       const result = await callCuaTool('move_cursor', actionCoordinates(input));
-      return withDesktopVision(result?.message || 'Cursor moved through Cua Driver.');
+      return withDesktopVision(result || 'Cursor moved through Cua Driver.');
     }
 
     if (action === 'get_cursor') {
-      return { success: true, result: await callCuaTool('get_cursor_position', {}), provider: PROVIDER, vision: null };
+      const result = await callCuaTool('get_cursor_position', {});
+      return { success: didCuaActionSucceed(result), result, provider: PROVIDER, vision: null };
     }
 
     if (action === 'clipboard_get' || action === 'clipboard_set') {
       const result = await callCuaTool(action === 'clipboard_get' ? 'clipboard_read' : 'clipboard_write', action === 'clipboard_get' ? { include_text: true } : { text: String(input.text || '') });
-      return { success: true, result, provider: PROVIDER, vision: null };
+      return { success: didCuaActionSucceed(result), result, provider: PROVIDER, vision: null };
     }
 
     if (action === 'list_apps') {
       const result = await callCuaTool('list_apps', {});
-      return { success: true, result: result?.apps || result, provider: PROVIDER, vision: null };
+      return { success: didCuaActionSucceed(result), result: result?.apps || result, provider: PROVIDER, vision: null };
     }
 
     if (action === 'find' || action === 'read') {
@@ -397,32 +432,29 @@ export async function executeCuaScreenAction(action: string, input: any): Promis
       const target = await resolveWindow(String(input.text || ''));
       if (!target?.pid) return { success: false, result: `Window not found: ${String(input.text || '')}`, provider: PROVIDER, vision: null };
       const result = await callCuaTool('bring_to_front', { pid: target.pid, window_id: target.window_id });
-      return withDesktopVision(result?.message || `Focused ${String(input.text || '')}.`);
+      return withDesktopVision(result || `Focused ${String(input.text || '')}.`);
     }
 
     if (action === 'launch_app') {
       const needle = String(input.text || '').trim().toLowerCase();
       const apps = (await callCuaTool('list_apps', {}))?.apps || [];
       const app = apps.find((candidate: any) => String(candidate?.name || '').toLowerCase().includes(needle));
-      if (!app?.bundle_id) return { success: false, result: `Installed app not found: ${String(input.text || '')}`, provider: PROVIDER, vision: null };
-      const result = await callCuaTool('launch_app', { bundle_id: app.bundle_id });
-      return withDesktopVision(result?.message || `Launched ${String(input.text || '')}.`);
+      if (!app) return { success: false, result: `Installed app not found: ${String(input.text || '')}`, provider: PROVIDER, vision: null };
+      const launchInput = {
+        ...(app.bundle_id ? { bundle_id: app.bundle_id } : {}),
+        ...(app.name ? { name: app.name } : {}),
+        ...(app.path ? { path: app.path } : {}),
+        ...(app.launch_path ? { launch_path: app.launch_path } : {}),
+      };
+      const result = await callCuaTool('launch_app', launchInput);
+      return withDesktopVision(result || `Launched ${String(input.text || '')}.`);
     }
 
-    const shortcutByAction: Record<string, string[]> = {
-      select_all: ['ctrl', 'a'],
-      copy: ['ctrl', 'c'],
-      paste: ['ctrl', 'v'],
-      save: ['ctrl', 's'],
-      undo: ['ctrl', 'z'],
-      close_window: ['alt', 'f4'],
-    };
-    if (shortcutByAction[action]) {
-      const keys = process.platform === 'darwin' && shortcutByAction[action][0] === 'ctrl'
-        ? ['cmd', shortcutByAction[action][1]]
-        : shortcutByAction[action];
+    const shortcutActions = new Set(['select_all', 'copy', 'paste', 'save', 'undo', 'close_window']);
+    if (shortcutActions.has(action)) {
+      const keys = getPlatformShortcut(action as 'select_all' | 'copy' | 'paste' | 'save' | 'undo' | 'close_window').split('+');
       const result = await callCuaTool('hotkey', { keys, scope: 'desktop' });
-      return withDesktopVision(result?.message || `${action} dispatched through Cua Driver.`);
+      return withDesktopVision(result || `${action} dispatched through Cua Driver.`);
     }
 
     return null;

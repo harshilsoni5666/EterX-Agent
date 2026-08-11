@@ -1,8 +1,8 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'framer-motion';
-import { X, ChevronRight, ChevronDown, Check, Folder } from 'lucide-react';
-import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumSearch, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { X, ChevronRight, ChevronDown, Check, Folder, Search } from 'lucide-react';
+import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { appStorage, appStorageReady } from '../../lib/client-storage';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
@@ -17,29 +17,44 @@ const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 const CHAT_RENDER_BATCH = 160;
 
-const getSidebarViewportMax = (viewportWidth: number) => {
-  // Keep the existing mobile/tablet sizing untouched; this adaptive scale is
-  // intentionally limited to desktop-class viewports.
-  if (viewportWidth < 769) return SIDEBAR_MAX_WIDTH;
-  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(viewportWidth * 0.28)));
-};
+const getSidebarViewportMax = (_viewportWidth: number) => SIDEBAR_MAX_WIDTH;
 
 const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isFavorite?: boolean }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const textViewportRef = React.useRef<HTMLDivElement>(null);
   const textRef = React.useRef<HTMLSpanElement>(null);
   const [overflowDistance, setOverflowDistance] = React.useState(0);
   const [isHovered, setIsHovered] = React.useState(false);
+  const reduceMotion = useReducedMotion();
+
+  const measureOverflow = React.useCallback(() => {
+    const viewport = textViewportRef.current;
+    const text = textRef.current;
+    if (!viewport || !text) return;
+
+    const diff = text.scrollWidth - viewport.clientWidth;
+    const nextDistance = diff > 4 ? Math.ceil(diff) : 0;
+    setOverflowDistance(current => current === nextDistance ? current : nextDistance);
+  }, []);
 
   React.useEffect(() => {
+    measureOverflow();
+    const viewport = textViewportRef.current;
     const container = containerRef.current;
-    const text = textRef.current;
-    if (container && text) {
-      const diff = text.scrollWidth - container.clientWidth;
-      setOverflowDistance(diff > 4 ? diff : 0);
-    }
-  }, [title]);
+    if (!viewport || typeof ResizeObserver === 'undefined') return;
 
-  const marqueeDuration = Math.max(8, Math.min(22, overflowDistance * 0.22));
+    const observer = new ResizeObserver(measureOverflow);
+    observer.observe(viewport);
+    if (container) observer.observe(container);
+    return () => observer.disconnect();
+  }, [isFavorite, measureOverflow, title]);
+
+  React.useEffect(() => {
+    window.addEventListener('resize', measureOverflow);
+    return () => window.removeEventListener('resize', measureOverflow);
+  }, [measureOverflow]);
+
+  const marqueeDuration = Math.max(6, Math.min(18, 4.5 + overflowDistance * 0.16));
 
   return (
     <div
@@ -49,26 +64,26 @@ const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isF
       className="eterx-sidebar-chat-title-wrap flex min-w-0 flex-1 items-center overflow-hidden relative z-10"
     >
       {isFavorite && <PremiumStar className="eterx-sidebar-favorite-icon w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0" />}
-      <motion.span
-        ref={textRef}
-        animate={(overflowDistance > 0 && isHovered) ? { x: [0, -overflowDistance, -overflowDistance, 0] } : { x: 0 }}
-        transition={(overflowDistance > 0 && isHovered) ? {
-          duration: marqueeDuration,
-          ease: [0.25, 1, 0.5, 1],
-          repeat: Infinity,
-          repeatDelay: 2.8,
-        } : { duration: 0.3 }}
-        className="eterx-sidebar-chat-title text-current leading-normal whitespace-nowrap"
-      >
-        {title}
-      </motion.span>
+      <div ref={textViewportRef} className="min-w-0 flex-1 overflow-hidden">
+        <motion.span
+          ref={textRef}
+          animate={(overflowDistance > 0 && isHovered && !reduceMotion) ? { x: [0, -overflowDistance, -overflowDistance, 0] } : { x: 0 }}
+          transition={(overflowDistance > 0 && isHovered && !reduceMotion) ? {
+            duration: marqueeDuration,
+            ease: [0.25, 1, 0.5, 1],
+            repeat: Infinity,
+            repeatDelay: 2.8,
+          } : { duration: 0.12, ease: 'easeOut' }}
+          className="eterx-sidebar-chat-title text-current leading-normal whitespace-nowrap"
+        >
+          {title}
+        </motion.span>
+      </div>
     </div>
   );
-});;
+});
 
-const getSidebarViewportMin = (viewportWidth: number) => {
-  if (viewportWidth >= 3200) return 320;
-  if (viewportWidth >= 2200) return 280;
+const getSidebarViewportMin = (_viewportWidth: number) => {
   return SIDEBAR_MIN_WIDTH;
 };
 const clampSidebarWidth = (width: number) => {
@@ -77,12 +92,7 @@ const clampSidebarWidth = (width: number) => {
   const responsiveMax = getSidebarViewportMax(viewportWidth);
   return Math.min(responsiveMax, Math.max(responsiveMin, Math.round(width)));
 };
-const getAdaptiveSidebarDefault = (viewportWidth: number) => {
-  if (viewportWidth < 769) return SIDEBAR_DEFAULT_WIDTH;
-  if (viewportWidth >= 3200) return 360;
-  if (viewportWidth >= 2200) return 320;
-  if (viewportWidth >= 1600) return 280;
-  if (viewportWidth < 1200) return 232;
+const getAdaptiveSidebarDefault = (_viewportWidth: number) => {
   return SIDEBAR_DEFAULT_WIDTH;
 };
 
@@ -137,20 +147,35 @@ const SidebarToggleIcon = ({ isOpen, isHovered, sizeClass = "w-[18px] h-[18px]" 
   );
 };
 
-const lightweightSidebarVars = {
-  width: 'var(--eterx-shell-sidebar-width)',
-} as React.CSSProperties;
+const handleMenuKeyboardNavigation = (event: React.KeyboardEvent<HTMLElement>) => {
+  const items = Array.from(
+    event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="menuitem"], button[role="menuitemradio"]'),
+  ).filter(item => !item.disabled);
+  if (items.length === 0) return;
+
+  const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+  let nextIndex = currentIndex;
+  if (event.key === 'ArrowDown') nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+  if (event.key === 'ArrowUp') nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+  if (event.key === 'Home') nextIndex = 0;
+  if (event.key === 'End') nextIndex = items.length - 1;
+  if (nextIndex === currentIndex || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+
+  event.preventDefault();
+  items[nextIndex]?.focus();
+};
 
 const lightweightSidebarCss = `
   :root[data-theme="dark"] .eterx-sidebar-shell {
     --sidebar-hover-bg: rgba(255, 255, 255, 0.07);
     --sidebar-toggle-hover-bg: rgba(255, 255, 255, 0.07);
-    --sidebar-active-bg: rgba(255, 255, 255, 0.105);
+    --sidebar-active-bg: #262626;
     --sidebar-toggle-active-bg: rgba(255, 255, 255, 0.105);
+    --sidebar-active-border: rgba(255, 255, 255, 0.08);
     --sidebar-active-fade: rgba(15, 15, 15, 0.96);
     --sidebar-menu-bg: #121212;
     --sidebar-menu-border: transparent;
-    --sidebar-active-shadow: none;
+    --sidebar-active-shadow: 0 4px 12px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.035);
     --sidebar-unread-dot: #77BCFF;
     --sidebar-unread-dot-ring: rgba(119, 188, 255, 0.18);
     --sidebar-time-text: rgba(210, 206, 197, 0.56);
@@ -160,31 +185,23 @@ const lightweightSidebarCss = `
   }
 
   :root[data-theme="light"] .eterx-sidebar-shell {
-    --sidebar-hover-bg: #F1F1EE;
-    --sidebar-toggle-hover-bg: #F1F1EE;
-    --sidebar-active-bg: #E8E7E2;
-    --sidebar-toggle-active-bg: #E8E7E2;
-    --sidebar-active-fade: #E8E7E2;
-    --sidebar-menu-bg: #F7F7F4;
+    --sidebar-hover-bg: #F2F2EF;
+    --sidebar-toggle-hover-bg: #F2F2EF;
+    --sidebar-active-bg: #EBEBE8;
+    --sidebar-toggle-active-bg: #EBEBE8;
+    --sidebar-active-border: rgba(31, 31, 29, 0.09);
+    --sidebar-active-fade: #EBEBE8;
+    --sidebar-menu-bg: #FFFFFF;
     --sidebar-menu-border: transparent;
-    --sidebar-active-shadow: none;
+    --sidebar-active-shadow: 0 3px 10px rgba(31, 31, 29, 0.055), inset 0 1px 0 rgba(255, 255, 255, 0.58);
     --sidebar-unread-dot: #228BE6;
     --sidebar-unread-dot-ring: rgba(34, 139, 230, 0.16);
-    --sidebar-time-text: rgba(80, 91, 104, 0.62);
+    --sidebar-time-text: rgba(75, 73, 69, 0.62);
     --sidebar-running-track: rgba(39, 49, 63, 0.18);
     --sidebar-running-head: rgba(39, 49, 63, 0.82);
-    background:
-      linear-gradient(90deg, rgba(255, 255, 255, 0.36), rgba(255, 255, 255, 0.36)),
-      radial-gradient(ellipse at 72% 22%, rgba(239, 194, 214, 0.07) 0%, rgba(239, 194, 214, 0.022) 30%, transparent 62%),
-      radial-gradient(ellipse at 38% 40%, rgba(250, 228, 173, 0.12) 0%, rgba(250, 228, 173, 0.038) 32%, transparent 64%),
-      radial-gradient(ellipse at 70% 54%, rgba(239, 210, 181, 0.11) 0%, rgba(239, 210, 181, 0.038) 32%, transparent 64%),
-      radial-gradient(ellipse at 44% 66%, rgba(190, 199, 229, 0.12) 0%, rgba(190, 199, 229, 0.040) 34%, transparent 66%),
-      radial-gradient(ellipse at 76% 80%, rgba(207, 188, 224, 0.12) 0%, rgba(207, 188, 224, 0.038) 36%, transparent 68%),
-      radial-gradient(ellipse at 34% 92%, rgba(246, 196, 188, 0.09) 0%, rgba(246, 196, 188, 0.026) 36%, transparent 68%),
-      var(--sidebar-bg) !important;
-    background-size: 100% 100%, 132% 100%, 126% 100%, 138% 100%, 132% 100%, 138% 100%, 132% 100%, 100% 100% !important;
-    animation: lightSidebarShellCycle 16s ease-in-out infinite !important;
-    will-change: background-position;
+    background: linear-gradient(180deg, #FFFFFF 0%, var(--sidebar-bg) 72%, #F7F7F5 100%) !important;
+    animation: none !important;
+    will-change: auto;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-sheen,
@@ -223,15 +240,63 @@ const lightweightSidebarCss = `
   .eterx-sidebar-shell .eterx-sidebar-recents {
     -webkit-backdrop-filter: blur(16px) saturate(1.08) !important;
     backdrop-filter: blur(16px) saturate(1.08) !important;
-    border-color: rgba(255, 255, 255, 0.072) !important;
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.052),
-      inset 0 -1px 0 rgba(0, 0, 0, 0.18) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
     /* Keep the scrollbar in its own lane so chat rows never sit underneath it. */
     scrollbar-gutter: stable !important;
+    --eterx-sidebar-scroll-fade-size: 12px;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-recents-scroll.eterx-sidebar-scroll-fade-top {
+    -webkit-mask-image: linear-gradient(
+      180deg,
+      transparent 0%,
+      #000 var(--eterx-sidebar-scroll-fade-size),
+      #000 100%
+    ) !important;
+    mask-image: linear-gradient(
+      180deg,
+      transparent 0%,
+      #000 var(--eterx-sidebar-scroll-fade-size),
+      #000 100%
+    ) !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-recents-scroll.eterx-sidebar-scroll-fade-bottom {
+    -webkit-mask-image: linear-gradient(
+      180deg,
+      #000 0%,
+      #000 calc(100% - var(--eterx-sidebar-scroll-fade-size)),
+      transparent 100%
+    ) !important;
+    mask-image: linear-gradient(
+      180deg,
+      #000 0%,
+      #000 calc(100% - var(--eterx-sidebar-scroll-fade-size)),
+      transparent 100%
+    ) !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-recents-scroll.eterx-sidebar-scroll-fade-both {
+    -webkit-mask-image: linear-gradient(
+      180deg,
+      transparent 0%,
+      #000 var(--eterx-sidebar-scroll-fade-size),
+      #000 calc(100% - var(--eterx-sidebar-scroll-fade-size)),
+      transparent 100%
+    ) !important;
+    mask-image: linear-gradient(
+      180deg,
+      transparent 0%,
+      #000 var(--eterx-sidebar-scroll-fade-size),
+      #000 calc(100% - var(--eterx-sidebar-scroll-fade-size)),
+      transparent 100%
+    ) !important;
   }
 
   .eterx-sidebar-project-filter {
@@ -243,17 +308,42 @@ const lightweightSidebarCss = `
   .eterx-sidebar-project-filter:hover,
   .eterx-sidebar-project-filter:focus-visible,
   .eterx-sidebar-project-filter.is-open {
-    background: color-mix(in srgb, var(--sidebar-hover-bg) 88%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sidebar-hover-text) 8%, transparent);
+    background: var(--sidebar-active-bg);
+    border-color: transparent !important;
+    box-shadow: none;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-row {
+    transition-duration: 140ms !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-row {
+    border-radius: 12px !important;
   }
 
   .eterx-sidebar-project-menu {
     background: color-mix(in srgb, var(--sidebar-bg) 88%, var(--sidebar-strong-text) 12%);
-    border-color: color-mix(in srgb, var(--sidebar-strong-text) 14%, transparent);
-    box-shadow:
-      0 14px 30px rgba(0, 0, 0, 0.26),
-      inset 0 1px 0 color-mix(in srgb, var(--sidebar-strong-text) 10%, transparent);
+    border-color: transparent !important;
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28) !important;
+    scrollbar-gutter: auto !important;
     transform-origin: top left;
+  }
+
+  .eterx-sidebar-project-search {
+    color: var(--sidebar-muted-text);
+    background: color-mix(in srgb, var(--sidebar-strong-text) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--sidebar-strong-text) 8%, transparent);
+  }
+
+  .eterx-sidebar-project-search:focus-within {
+    color: var(--sidebar-hover-text);
+    background: color-mix(in srgb, var(--sidebar-strong-text) 10%, transparent);
+    border-color: color-mix(in srgb, var(--sidebar-hover-text) 18%, transparent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--sidebar-hover-text) 8%, transparent);
+  }
+
+  .eterx-sidebar-project-search input {
+    color: var(--sidebar-strong-text);
   }
 
   .eterx-sidebar-project-menu-item {
@@ -262,6 +352,7 @@ const lightweightSidebarCss = `
     display: flex;
     align-items: center;
     gap: 8px;
+    border: 1px solid transparent;
     border-radius: 8px;
     padding: 5px 8px;
     color: var(--sidebar-muted-text);
@@ -274,14 +365,16 @@ const lightweightSidebarCss = `
   .eterx-sidebar-project-menu-item:hover,
   .eterx-sidebar-project-menu-item:focus-visible,
   .eterx-sidebar-project-menu-item.is-selected {
-    background: color-mix(in srgb, var(--sidebar-hover-bg) 82%, transparent);
+    background: var(--sidebar-hover-bg);
+    border-color: transparent;
     color: var(--sidebar-hover-text);
+    box-shadow: none;
     outline: none;
   }
 
   .eterx-sidebar-project-menu-item:hover,
   .eterx-sidebar-project-menu-item:focus-visible {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sidebar-hover-text) 7%, transparent);
+    box-shadow: none;
   }
 
   .eterx-sidebar-project-menu-item:active {
@@ -299,13 +392,15 @@ const lightweightSidebarCss = `
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.040), rgba(255, 255, 255, 0.018)),
       rgba(16, 16, 16, 0.30) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
   }
 
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents {
-    background: transparent !important;
+    background: rgba(255, 255, 255, 0.52) !important;
     -webkit-backdrop-filter: none !important;
     backdrop-filter: none !important;
-    border-color: rgba(31, 31, 29, 0.06) !important;
+    border-color: transparent !important;
     box-shadow: none !important;
   }
 
@@ -330,10 +425,16 @@ const lightweightSidebarCss = `
   }
 
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile {
-    background: transparent !important;
-    border-top-color: transparent !important;
+    background: rgba(255, 255, 255, 0.62) !important;
+    border-top-color: rgba(31, 31, 29, 0.08) !important;
     -webkit-backdrop-filter: none !important;
     backdrop-filter: none !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile-card {
+    background: rgba(255, 255, 255, 0.86) !important;
+    border-color: rgba(31, 31, 29, 0.08) !important;
+    box-shadow: 0 1px 2px rgba(31, 31, 29, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
   }
 
   .eterx-sidebar-resize-handle {
@@ -445,7 +546,19 @@ const lightweightSidebarCss = `
     box-shadow: none !important;
   }
 
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-selected,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working {
+    border-radius: 12px !important;
+  }
+
   .eterx-sidebar-shell .eterx-sidebar-chat-working:not(.eterx-sidebar-chat-active) {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-working:not(.eterx-sidebar-chat-active) {
     background: transparent !important;
     border-color: transparent !important;
     box-shadow: none !important;
@@ -515,6 +628,8 @@ const lightweightSidebarCss = `
   .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
   .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover {
     background: var(--sidebar-active-bg) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
     color: var(--sidebar-active-text) !important;
   }
 
@@ -547,45 +662,10 @@ const lightweightSidebarCss = `
     overflow: hidden !important;
   }
 
-  @keyframes eterx-sidebar-ticker {
-    0%, 2% {
-      transform: translateX(0);
-      opacity: 1;
-    }
-    70% {
-      transform: translateX(calc(-1 * var(--eterx-ticker-dist, 0px)));
-      opacity: 1;
-    }
-    84% {
-      transform: translateX(calc(-1 * var(--eterx-ticker-dist, 0px)));
-      opacity: 1;
-    }
-    88% {
-      transform: translateX(calc(-1 * var(--eterx-ticker-dist, 0px)));
-      opacity: 0;
-    }
-    89% {
-      transform: translateX(0);
-      opacity: 0;
-    }
-    93% {
-      transform: translateX(0);
-      opacity: 1;
-    }
-    100% {
-      transform: translateX(0);
-      opacity: 1;
-    }
-  }
-
-  .eterx-sidebar-shell .eterx-sidebar-chat-title.eterx-ticker-play {
-    animation: eterx-sidebar-ticker var(--eterx-ticker-dur, 5s) linear infinite;
-  }
-
   .eterx-sidebar-shell .eterx-sidebar-chat-content {
     min-width: 0;
-    -webkit-mask-image: none !important;
-    mask-image: none !important;
+    -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 8px), transparent 100%) !important;
+    mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 8px), transparent 100%) !important;
   }
 
 
@@ -638,11 +718,6 @@ const lightweightSidebarCss = `
     display: none;
   }
 
-  .eterx-sidebar-shell .eterx-sidebar-chat-active .eterx-sidebar-running-indicator {
-    border-color: color-mix(in srgb, var(--sidebar-active-text) 20%, transparent);
-    border-right-color: color-mix(in srgb, var(--sidebar-active-text) 86%, transparent);
-  }
-
   .eterx-sidebar-shell .eterx-sidebar-chat-working .eterx-sidebar-chat-title {
     background: none !important;
     color: var(--sidebar-working-text) !important;
@@ -662,23 +737,20 @@ const lightweightSidebarCss = `
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .eterx-sidebar-shell *,
+    .eterx-sidebar-menu,
+    .eterx-sidebar-project-menu {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+
     .eterx-sidebar-shell .eterx-sidebar-running-indicator {
       animation: none;
     }
   }
 
-  @media (min-width: 769px) {
-    .eterx-sidebar-shell {
-      border-top-right-radius: 0 !important;
-      border-bottom-right-radius: 0 !important;
-      margin-right: -8px !important;
-    }
-
-    .eterx-sidebar-shell .eterx-sidebar-sheen {
-      border-top-right-radius: 0 !important;
-      border-bottom-right-radius: 0 !important;
-    }
-  }
 `;
 
 interface ChatSession {
@@ -723,9 +795,11 @@ interface SidebarProps {
   isThinking?: boolean;
 }
 
-export const Sidebar = React.memo<SidebarProps>(({
-  isOpen, setIsOpen, createNewChat, chats, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
+export const Sidebar = React.memo<SidebarProps>(
+  ({
+    isOpen, setIsOpen, createNewChat, chats, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
 }) => {
+  const reduceMotion = useReducedMotion();
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean } | null>(null);
   const [toggleHovered, setToggleHovered] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(false);
@@ -734,7 +808,11 @@ export const Sidebar = React.memo<SidebarProps>(({
   const [isResizingSidebar, setIsResizingSidebar] = React.useState(false);
   const [selectedProjectPath, setSelectedProjectPath] = React.useState<string | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = React.useState(false);
+  const [projectMenuPosition, setProjectMenuPosition] = React.useState({ top: 0, left: 0 });
   const projectMenuRef = React.useRef<HTMLDivElement>(null);
+  const projectMenuPortalRef = React.useRef<HTMLDivElement>(null);
+  const chatMenuRef = React.useRef<HTMLDivElement>(null);
+  const chatMenuButtonRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 
   const projects = React.useMemo<SidebarProject[]>(() => {
     const byPath = new Map<string, SidebarProject>();
@@ -767,6 +845,7 @@ export const Sidebar = React.memo<SidebarProps>(({
     return chats.filter(chat => normalizeProjectPath(chat.workspacePath).toLowerCase() === selectedPath);
   }, [chats, selectedProjectPath]);
   const [visibleChatCount, setVisibleChatCount] = React.useState(CHAT_RENDER_BATCH);
+  const [recentScrollFades, setRecentScrollFades] = React.useState({ top: false, bottom: false });
   const visibleChats = React.useMemo(
     () => filteredChats.slice(0, visibleChatCount),
     [filteredChats, visibleChatCount]
@@ -787,10 +866,16 @@ export const Sidebar = React.memo<SidebarProps>(({
   React.useEffect(() => {
     if (!projectMenuOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
-      if (!projectMenuRef.current?.contains(event.target as Node)) setProjectMenuOpen(false);
+      if (!projectMenuRef.current?.contains(event.target as Node) && !projectMenuPortalRef.current?.contains(event.target as Node)) {
+        setProjectMenuOpen(false);
+      }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setProjectMenuOpen(false);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setProjectMenuOpen(false);
+        window.requestAnimationFrame(() => projectMenuRef.current?.querySelector<HTMLButtonElement>('button')?.focus());
+      }
     };
     document.addEventListener('pointerdown', handlePointerDown);
     document.addEventListener('keydown', handleKeyDown);
@@ -800,40 +885,50 @@ export const Sidebar = React.memo<SidebarProps>(({
     };
   }, [projectMenuOpen]);
 
+  React.useEffect(() => {
+    if (!projectMenuOpen) return;
+    const frameId = window.requestAnimationFrame(() => {
+      projectMenuPortalRef.current?.querySelector<HTMLButtonElement>('button[role="menuitemradio"]')?.focus();
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [projectMenuOpen]);
+
+  React.useEffect(() => {
+    if (!menuState) return;
+    const frameId = window.requestAnimationFrame(() => {
+      chatMenuRef.current?.querySelector<HTMLButtonElement>('button[role="menuitem"]')?.focus();
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [menuState]);
+
+  const restoreChatMenuFocus = React.useCallback((chatId: string | null) => {
+    if (!chatId) return;
+    window.requestAnimationFrame(() => chatMenuButtonRefs.current[chatId]?.focus());
+  }, []);
+
+  const updateRecentScrollFades = React.useCallback((container: HTMLDivElement | null) => {
+    if (!container) return;
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const next = {
+      top: maxScrollTop > 1 && container.scrollTop > 1,
+      bottom: maxScrollTop > 1 && container.scrollTop < maxScrollTop - 1,
+    };
+    setRecentScrollFades(current => (
+      current.top === next.top && current.bottom === next.bottom ? current : next
+    ));
+  }, []);
+
   const handleRecentChatsScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const container = event.currentTarget;
+    updateRecentScrollFades(container);
     if (
       visibleChatCount < filteredChats.length &&
       container.scrollHeight - container.scrollTop - container.clientHeight < 320
     ) {
       setVisibleChatCount(current => Math.min(filteredChats.length, current + CHAT_RENDER_BATCH));
     }
-  }, [filteredChats.length, visibleChatCount]);
+  }, [filteredChats.length, updateRecentScrollFades, visibleChatCount]);
 
-  const handleChatRowMouseEnter = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const row = e.currentTarget;
-    const wrap = row.querySelector('.eterx-sidebar-chat-title-wrap') as HTMLElement | null;
-    const title = row.querySelector('.eterx-sidebar-chat-title') as HTMLElement | null;
-    if (!wrap || !title) return;
-    title.classList.remove('eterx-ticker-play');
-    void title.offsetWidth; // force reflow to restart
-    const dist = title.scrollWidth - wrap.clientWidth;
-    if (dist > 6) {
-      const scrollDist = dist + 8;
-      const dur = Math.max(2.5, scrollDist / 19.0);
-      title.style.setProperty('--eterx-ticker-dist', `${scrollDist}px`);
-      title.style.setProperty('--eterx-ticker-dur', `${dur.toFixed(2)}s`);
-      title.classList.add('eterx-ticker-play');
-    }
-  }, []);
-
-  const handleChatRowMouseLeave = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const title = e.currentTarget.querySelector('.eterx-sidebar-chat-title') as HTMLElement | null;
-    if (!title) return;
-    title.classList.remove('eterx-ticker-play');
-    title.style.removeProperty('--eterx-ticker-dist');
-    title.style.removeProperty('--eterx-ticker-dur');
-  }, []);
   const [now, setNow] = React.useState(() => Date.now());
   const resizeStartRef = React.useRef({ x: 0, width: SIDEBAR_DEFAULT_WIDTH });
   const resizeCurrentWidthRef = React.useRef(SIDEBAR_DEFAULT_WIDTH);
@@ -975,10 +1070,22 @@ export const Sidebar = React.memo<SidebarProps>(({
     selectedChatIdsRef.current = new Set();
   }, [selectedProjectPath]);
 
-  const isNewChatActive = false;
+  React.useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const refreshFades = () => updateRecentScrollFades(container);
+    refreshFades();
+
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(refreshFades);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [isOpen, isProjectPending, isSelectMode, filteredChats.length, selectedProjectPath, updateRecentScrollFades, visibleChatCount]);
+
+  const isNewChatActive = activeView === 'chat' && !activeChatId;
   const [glassClick, setGlassClick] = React.useState<{ key: string; x: number; y: number; tick: number } | null>(null);
   const glassClickTimeoutRef = React.useRef<number | null>(null);
-
   const handleSidebarResizePointerDown = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (isMobile) return;
     event.preventDefault();
@@ -989,6 +1096,32 @@ export const Sidebar = React.memo<SidebarProps>(({
     event.currentTarget.setPointerCapture?.(event.pointerId);
     setIsResizingSidebar(true);
   }, [isMobile, sidebarWidth]);
+
+  const handleSidebarResizeKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isMobile) return;
+    const min = getSidebarViewportMin(viewportWidth);
+    const max = getSidebarViewportMax(viewportWidth);
+    let nextWidth = sidebarWidth;
+
+    if (event.key === 'ArrowLeft') nextWidth = Math.max(min, sidebarWidth - 16);
+    if (event.key === 'ArrowRight') nextWidth = Math.min(max, sidebarWidth + 16);
+    if (event.key === 'Home') nextWidth = min;
+    if (event.key === 'End') nextWidth = max;
+    if (nextWidth === sidebarWidth) return;
+
+    event.preventDefault();
+    resizeCurrentWidthRef.current = nextWidth;
+    setSidebarWidth(nextWidth);
+    appStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(nextWidth));
+  }, [isMobile, sidebarWidth, viewportWidth]);
+
+  React.useEffect(() => {
+    selectedChatIdsRef.current = selectedChatIds;
+  }, [selectedChatIds]);
+
+  React.useEffect(() => {
+    dragSelectStateRef.current = dragSelectState;
+  }, [dragSelectState]);
 
   const triggerGlassClick = React.useCallback((event: React.MouseEvent<HTMLElement> | React.PointerEvent<HTMLElement>, key: string) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -1021,14 +1154,6 @@ export const Sidebar = React.memo<SidebarProps>(({
   React.useEffect(() => () => {
     if (glassClickTimeoutRef.current !== null) window.clearTimeout(glassClickTimeoutRef.current);
   }, []);
-
-  React.useEffect(() => {
-    selectedChatIdsRef.current = selectedChatIds;
-  }, [selectedChatIds]);
-
-  React.useEffect(() => {
-    dragSelectStateRef.current = dragSelectState;
-  }, [dragSelectState]);
 
   const commitSelectedChatIds = React.useCallback((next: Set<string>) => {
     selectedChatIdsRef.current = next;
@@ -1218,9 +1343,11 @@ export const Sidebar = React.memo<SidebarProps>(({
       if (KeyboardEvent.key === 'Escape') {
         if (showDeleteConfirm || isSelectMode || menuState) {
           KeyboardEvent.preventDefault();
+          const openMenuId = menuState?.id || null;
           setMenuState(null);
           if (showDeleteConfirm) setShowDeleteConfirm(false);
           else if (isSelectMode) exitSelectMode();
+          else restoreChatMenuFocus(openMenuId);
         }
       }
 
@@ -1232,7 +1359,7 @@ export const Sidebar = React.memo<SidebarProps>(({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [exitSelectMode, handleSelectAllToggle, isSelectMode, menuState, showDeleteConfirm]);
+  }, [exitSelectMode, handleSelectAllToggle, isSelectMode, menuState, restoreChatMenuFocus, showDeleteConfirm]);
 
   const handleBulkDelete = () => {
     if (isDeleting) return;
@@ -1283,22 +1410,14 @@ export const Sidebar = React.memo<SidebarProps>(({
     return () => document.removeEventListener('click', handleClickOutside);
   }, [menuState]);
 
-  const sidebarStyle = React.useMemo(() => ({
-    ...lightweightSidebarVars,
-    '--eterx-shell-sidebar-width': `${ sidebarWidth }px`,
-  } as React.CSSProperties), [sidebarWidth]);
-
-  if (!isOpen) return null;
-
   return (
     <>
       <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: lightweightSidebarCss }} />
-      <motion.div
+      <motion.aside
         animate={{
           opacity: 1
         }}
-        transition={{ duration: 0.28, ease: [0.2, 0.8, 0.2, 1] }}
-        style={sidebarStyle}
+        transition={reduceMotion ? { duration: 0 } : { duration: 0.28, ease: [0.2, 0.8, 0.2, 1] }}
         className="eterx-sidebar-shell relative bg-[var(--sidebar-bg)] shadow-none flex flex-col flex-shrink-0 z-[100] h-full overflow-hidden [-webkit-app-region:no-drag]"
       >
         <div className="eterx-sidebar-sheen pointer-events-none absolute inset-0 bg-transparent overflow-hidden">
@@ -1306,7 +1425,7 @@ export const Sidebar = React.memo<SidebarProps>(({
           <div className={`ambient-glow-layer ambient-glow-thinking absolute inset-0 transition-opacity duration-[3000ms] ease-in-out ${isThinking ? 'opacity-100' : 'opacity-0'}`} />
         </div>
 
-        <div className="relative z-10 flex flex-col h-full w-full overflow-hidden">
+        <div id="eterx-sidebar-content" className="relative z-10 flex flex-col h-full w-full overflow-hidden">
           {/* Header containing Branding + Toggle */}
           <div className="eterx-sidebar-topbar h-[var(--eterx-shell-topbar-height)] px-3 tracking-tight flex items-center justify-start [-webkit-app-region:drag]">
             <Tooltip text={isOpen ? "Close sidebar" : "Open sidebar"} side="right">
@@ -1319,6 +1438,8 @@ export const Sidebar = React.memo<SidebarProps>(({
                 onBlur={() => setToggleHovered(false)}
                 onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
                 aria-label={isOpen ? "Close sidebar" : "Open sidebar"}
+                aria-expanded={isOpen}
+                aria-controls="eterx-sidebar-content"
                 style={glassClickStyle('sidebar-toggle')}
                 className={`eterx-sidebar-click-surface eterx-sidebar-toggle ${ glassClickClass('sidebar-toggle') } h-8 w-8 rounded-[8px] bg-transparent transition-colors duration-150 ease-out text-[var(--sidebar-muted-text)] flex items-center justify-center cursor-pointer border border-transparent hover:bg-[var(--sidebar-toggle-hover-bg)] hover:border-transparent hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] [-webkit-app-region:no-drag]`}
               >
@@ -1333,11 +1454,13 @@ export const Sidebar = React.memo<SidebarProps>(({
           </div>
 
           {/* Navigation Actions */}
-          <div className={`px-3 pb-1.5 ${ isOpen ? 'pt-1.5' : 'pt-0' }`}>
+          <nav aria-label="Primary navigation" className={`px-3 pb-1.5 ${ isOpen ? 'pt-1.5' : 'pt-0' }`}>
             {isOpen ? (
               // Expanded "New Chat" Button
               <Tooltip text="Start a fresh conversation" side="right">
                 <button
+                  type="button"
+                  aria-current={isNewChatActive ? 'page' : undefined}
                   onMouseDown={(e) => triggerGlassClick(e, 'new-chat-expanded')}
                   onClick={() => { createNewChat(); setActiveView('chat'); }}
                   style={glassClickStyle('new-chat-expanded')}
@@ -1356,6 +1479,8 @@ export const Sidebar = React.memo<SidebarProps>(({
               // Collapsed Circular "New Chat" Button
               <Tooltip text="New chat" side="right">
                 <button
+                  type="button"
+                  aria-current={isNewChatActive ? 'page' : undefined}
                   onMouseDown={(e) => triggerGlassClick(e, 'new-chat-collapsed')}
                   onClick={() => { createNewChat(); setActiveView('chat'); }}
                   style={glassClickStyle('new-chat-collapsed')}
@@ -1385,6 +1510,8 @@ export const Sidebar = React.memo<SidebarProps>(({
                   return (
                     <Tooltip key={item.id} text={item.tooltip} side="right">
                       <button
+                        type="button"
+                        aria-current={isActive ? 'page' : undefined}
                         onMouseDown={(e) => triggerGlassClick(e, `nav-${ item.id }`)}
                         onClick={item.onClick}
                         style={glassClickStyle(`nav-${ item.id }`)}
@@ -1406,6 +1533,9 @@ export const Sidebar = React.memo<SidebarProps>(({
                   return (
                     <Tooltip key={item.id} text={item.tooltip} side="right">
                       <button
+                        type="button"
+                        aria-label={item.label}
+                        aria-current={isActive ? 'page' : undefined}
                         onMouseDown={(e) => triggerGlassClick(e, `nav-${ item.id }`)}
                         onClick={item.onClick}
                         style={glassClickStyle(`nav-${ item.id }`)}
@@ -1425,12 +1555,12 @@ export const Sidebar = React.memo<SidebarProps>(({
                 }
               })}
             </div>
-          </div>
+          </nav>
 
           {/* Expanded Recents List */}
           {isOpen ? (
             <div className="eterx-sidebar-recents flex-1 mt-2 ml-1 mr-1 mb-1 bg-transparent rounded-[16px] border border-transparent flex flex-col py-3 overflow-hidden relative">
-              <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-[var(--sidebar-surface-border)]" />
+              <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-transparent" />
               <div className="flex items-center justify-between pl-3.5 pr-1.5 mb-1.5 min-h-[26px] relative z-30">
                 <div ref={projectMenuRef} className="relative min-w-0">
                   {isSelectMode ? (
@@ -1445,6 +1575,12 @@ export const Sidebar = React.memo<SidebarProps>(({
                       aria-expanded={projectMenuOpen}
                       onClick={(event) => {
                         event.stopPropagation();
+                        const bounds = event.currentTarget.getBoundingClientRect();
+                        const menuWidth = Math.min(220, Math.max(180, sidebarWidth - 48));
+                        setProjectMenuPosition({
+                          top: Math.round(bounds.bottom + 6),
+                          left: Math.max(8, Math.min(Math.round(bounds.left), window.innerWidth - menuWidth - 8)),
+                        });
                         setProjectMenuOpen(open => !open);
                       }}
                       className={`eterx-sidebar-project-filter group/filter inline-flex max-w-[180px] items-center gap-1 rounded-full border border-transparent px-2 py-1 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ projectMenuOpen ? 'is-open' : '' }`}
@@ -1456,53 +1592,71 @@ export const Sidebar = React.memo<SidebarProps>(({
                     </button>
                   )}
 
-                  {!isSelectMode && projectMenuOpen && (
+                  {!isSelectMode && projectMenuOpen && typeof document !== 'undefined' && createPortal(
                     <motion.div
-                      initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                      ref={projectMenuPortalRef}
+                      initial={reduceMotion ? false : { opacity: 0, y: -4, scale: 0.98 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -3, scale: 0.98 }}
-                      transition={{ duration: 0.14, ease: 'easeOut' }}
+                      exit={reduceMotion ? undefined : { opacity: 0, y: -3, scale: 0.98 }}
+                      transition={reduceMotion ? { duration: 0 } : { duration: 0.14, ease: 'easeOut' }}
                       role="menu"
                       aria-label="Chat scope"
-                      className="eterx-sidebar-project-menu eterx-scrollbar absolute left-0 top-[calc(100%+6px)] z-[120] max-h-[min(280px,calc(100vh-180px))] min-w-[190px] max-w-[228px] overflow-y-auto rounded-[12px] border p-1"
+                      aria-orientation="vertical"
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                          event.preventDefault();
+                          setProjectMenuOpen(false);
+                          window.requestAnimationFrame(() => projectMenuRef.current?.querySelector<HTMLButtonElement>('button')?.focus());
+                          return;
+                        }
+                        handleMenuKeyboardNavigation(event);
+                      }}
+                      style={{ position: 'fixed', top: projectMenuPosition.top, left: projectMenuPosition.left }}
+                      className="eterx-sidebar-project-menu eterx-scrollbar z-[120] max-h-[min(360px,calc(100vh-180px))] w-[220px] min-w-0 max-w-[calc(100vw-24px)] overflow-y-auto rounded-[16px] border-0 p-1.5"
                     >
                       <button
                         type="button"
                         role="menuitemradio"
                         aria-checked={!selectedProjectPath}
                         onClick={() => handleProjectSelect(null)}
-                        className={`eterx-sidebar-project-menu-item group/menu-item ${ !selectedProjectPath ? 'is-selected' : '' }`}
+                        className="eterx-sidebar-project-menu-item group/menu-item"
                       >
                         <span className="min-w-0 flex-1 truncate text-left">Recents</span>
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--sidebar-muted-text)] transition-colors group-hover/menu-item:text-[var(--sidebar-hover-text)]">
-                          <ChevronRight className="h-4 w-4" strokeWidth={1.9} />
-                        </span>
+                        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--sidebar-muted-text)] transition-transform duration-150 group-hover/menu-item:translate-x-0.5 group-hover/menu-item:text-[var(--sidebar-hover-text)]" strokeWidth={2} />
                       </button>
 
-                      {projects.map(project => {
-                        const isSelectedProject = selectedProjectPath?.toLowerCase() === project.path.toLowerCase();
-                        return (
-                          <button
-                            key={project.path}
-                            type="button"
-                            role="menuitemradio"
-                            aria-checked={isSelectedProject}
-                            title={project.path}
-                            onClick={() => handleProjectSelect(project.path)}
-                            className={`eterx-sidebar-project-menu-item group/menu-item ${ isSelectedProject ? 'is-selected' : '' }`}
-                          >
-                            <Folder className="h-3.5 w-3.5 shrink-0" strokeWidth={1.95} />
-                            <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
-                            <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--sidebar-muted-text)] transition-colors group-hover/menu-item:text-[var(--sidebar-hover-text)]">
-                              <ChevronRight className="h-4 w-4" strokeWidth={1.9} />
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </motion.div>
+                      {projects.map(project => (
+                        <button
+                          key={project.path}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={activeProject?.path.toLowerCase() === project.path.toLowerCase()}
+                          title={project.path}
+                          onClick={() => handleProjectSelect(project.path)}
+                          className="eterx-sidebar-project-menu-item group/menu-item"
+                        >
+                          <Folder className="h-3.5 w-3.5 shrink-0" strokeWidth={1.95} />
+                          <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--sidebar-muted-text)] transition-transform duration-150 group-hover/menu-item:translate-x-0.5 group-hover/menu-item:text-[var(--sidebar-hover-text)]" strokeWidth={2} />
+                        </button>
+                      ))}
+                    </motion.div>,
+                    document.body
                   )}
                 </div>
                 <div className="flex items-center gap-1">
+                  <Tooltip text="Search all chats · Ctrl K" side="right">
+                    <button
+                      type="button"
+                      aria-label="Search all chats"
+                      onMouseDown={(event) => triggerGlassClick(event, 'search-chats')}
+                      onClick={(event) => { event.stopPropagation(); onSearchClick(); }}
+                      style={glassClickStyle('search-chats')}
+                      className={`eterx-sidebar-click-surface ${ glassClickClass('search-chats') } h-7 w-7 inline-flex items-center justify-center rounded-[8px] border border-transparent text-[var(--sidebar-muted-text)] transition-colors hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]`}
+                    >
+                      <Search className="w-[14px] h-[14px]" strokeWidth={2.1} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
                   <AnimatePresence mode="popLayout">
                     {isSelectMode ? (
                       <motion.div
@@ -1514,6 +1668,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                       >
                         <Tooltip text={allChatsSelected ? "Clear selection" : "Select all chats"} side="right">
                           <button
+                            type="button"
                             onClick={(e) => { e.stopPropagation(); handleSelectAllToggle(); }}
                             disabled={filteredChats.length === 0}
                             className={`h-7 w-7 inline-flex items-center justify-center rounded-[8px] hover:bg-[var(--sidebar-hover-bg)] disabled:text-[var(--sidebar-muted-text)] disabled:hover:bg-transparent transition-colors ${ allChatsSelected ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)]' : 'text-[var(--sidebar-muted-text)]' }`}
@@ -1523,6 +1678,8 @@ export const Sidebar = React.memo<SidebarProps>(({
                         </Tooltip>
                         <Tooltip text="Delete selected" side="right">
                           <button
+                            type="button"
+                            aria-label="Delete selected chats"
                             onClick={(e) => { e.stopPropagation(); selectedCount > 0 && setShowDeleteConfirm(true); }}
                             className={`h-7 w-7 inline-flex items-center justify-center rounded-[8px] transition-colors ${ selectedCount > 0 ? 'text-[#EF4444] hover:bg-red-500/10' : 'text-[#555350] cursor-not-allowed' }`}
                           >
@@ -1531,6 +1688,8 @@ export const Sidebar = React.memo<SidebarProps>(({
                         </Tooltip>
                         <Tooltip text="Cancel selection" side="right">
                           <button
+                            type="button"
+                            aria-label="Cancel chat selection"
                             onClick={(e) => { e.stopPropagation(); exitSelectMode(); }}
                             className="h-7 w-7 inline-flex items-center justify-center rounded-[8px] text-[var(--sidebar-muted-text)] hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] transition-colors"
                           >
@@ -1568,7 +1727,7 @@ export const Sidebar = React.memo<SidebarProps>(({
               <div
                 ref={scrollContainerRef}
                 onScroll={handleRecentChatsScroll}
-                className="eterx-sidebar-recents-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto eterx-scrollbar pl-2 pr-2 space-y-0.5 relative z-10"
+                className={`eterx-sidebar-recents-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto eterx-scrollbar pl-2 pr-2 space-y-0.5 relative z-10 ${ recentScrollFades.top && recentScrollFades.bottom ? 'eterx-sidebar-scroll-fade-both' : recentScrollFades.top ? 'eterx-sidebar-scroll-fade-top' : recentScrollFades.bottom ? 'eterx-sidebar-scroll-fade-bottom' : '' }`}
                 style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined, overscrollBehavior: 'contain' }}
               >
                 {isProjectPending ? (
@@ -1592,8 +1751,10 @@ export const Sidebar = React.memo<SidebarProps>(({
                     return (
                       <div
                         key={chat.id}
-                        onMouseEnter={handleChatRowMouseEnter}
-                        onMouseLeave={handleChatRowMouseLeave}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Open chat ${ chat.title }${ isWorking ? ', agent working' : hasUnread ? ', unread agent update' : '' }`}
+                        aria-pressed={isSelectMode ? isSelected : undefined}
                         onPointerDown={(e) => {
                           triggerGlassClick(e, `chat-${ chat.id }`);
                           if (isSelectMode) {
@@ -1625,6 +1786,17 @@ export const Sidebar = React.memo<SidebarProps>(({
                           if (!isSelectMode) {
                             loadChat(chat.id); setActiveView('chat');
                           }
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.target !== event.currentTarget) return;
+                          if (event.key !== 'Enter' && event.key !== ' ') return;
+                          event.preventDefault();
+                          if (isSelectMode) {
+                            applyChatSelection(chat.id, !isSelected);
+                            return;
+                          }
+                          loadChat(chat.id);
+                          setActiveView('chat');
                         }}
                         style={glassClickStyle(`chat-${ chat.id }`)}
                         className={`eterx-sidebar-click-surface eterx-sidebar-chat-row ${ glassClickClass(`chat-${ chat.id }`) } ${ isActive && !isSelectMode ? 'eterx-sidebar-chat-active' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-working' : '' } ${ hasUnread && !isSelectMode ? 'eterx-sidebar-chat-unread' : '' } ${ isSelectMode && isSelected ? 'eterx-sidebar-chat-selected' : '' } w-full min-h-[38px] text-left px-3 transition-colors duration-150 ease-out flex items-center group cursor-pointer text-[13px] leading-normal rounded-[10px] border relative z-0 overflow-hidden ${ isActive && !isSelectMode ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent font-medium' : isWorking && !isSelectMode ? 'bg-transparent text-[var(--sidebar-text)] border-transparent' : 'text-[var(--sidebar-text)] border-transparent' } ${ isSelectMode && isSelected ? 'bg-[var(--sidebar-active-bg)] text-[var(--sidebar-active-text)] border-transparent' : '' } ${ isSelectMode ? 'select-none touch-none' : '' }`}
@@ -1672,8 +1844,8 @@ export const Sidebar = React.memo<SidebarProps>(({
                           <div className="eterx-sidebar-chat-meta ml-1.5 flex shrink-0 items-center justify-end relative z-10">
                             {isWorking ? (
                               <span
-                                className={`eterx-sidebar-running-indicator ${ isActive ? 'eterx-sidebar-active-loading-spinner' : '' }`}
-                                aria-label={isActive ? 'Loading active chat' : 'Agent working'}
+                                className="eterx-sidebar-running-indicator eterx-splash-spinner"
+                                aria-label="Agent working"
                               />
                             ) : hasUnread ? (
                               <span className="eterx-sidebar-unread-dot" aria-label="Unread agent update" />
@@ -1688,9 +1860,12 @@ export const Sidebar = React.memo<SidebarProps>(({
                                 <button
                                   type="button"
                                   aria-label="Chat options"
+                                  aria-haspopup="menu"
+                                  aria-expanded={isMenuOpen}
+                                  ref={(element) => { chatMenuButtonRefs.current[chat.id] = element; }}
                                   onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
                                   style={glassClickStyle(`chat-menu-${ chat.id }`)}
-                                  className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } absolute inset-0 z-20 flex items-center justify-center rounded-[8px] transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)]' : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 text-[var(--sidebar-muted-text)]' }`}
+                                  className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } absolute inset-0 z-20 flex items-center justify-center rounded-[8px] transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] focus-visible:opacity-100 ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)]' : 'opacity-0 group-hover:opacity-100 text-[var(--sidebar-muted-text)]' }`}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     if (isWorking) return;
@@ -1733,8 +1908,9 @@ export const Sidebar = React.memo<SidebarProps>(({
                   type="button"
                   onMouseDown={(e) => triggerGlassClick(e, 'profile-card')}
                   onClick={onSettingsClick}
+                  disabled={!onSettingsClick}
                   aria-label="Open settings"
-                  style={glassClickStyle('profile-card')}
+                style={glassClickStyle('profile-card')}
                 className={`eterx-sidebar-click-surface eterx-sidebar-profile-card eterx-sidebar-settings-button ${ glassClickClass('profile-card') } flex h-[42px] w-full cursor-pointer items-center gap-3 rounded-[10px] border border-transparent px-3 text-left text-[var(--sidebar-text)] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] group`}
                 >
                   <span className="eterx-sidebar-profile-action flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-transparent text-current transition-colors">
@@ -1750,9 +1926,11 @@ export const Sidebar = React.memo<SidebarProps>(({
             <div className="eterx-sidebar-profile relative z-10 px-2 py-2 border-t border-transparent bg-transparent flex flex-col items-center">
               <Tooltip text="Settings" side="right">
                 <button
+                  type="button"
+                  onMouseDown={(e) => triggerGlassClick(e, 'profile-settings-collapsed')}
                   onClick={onSettingsClick}
                   aria-label="Open settings"
-                  onMouseDown={(e) => triggerGlassClick(e, 'profile-settings-collapsed')}
+                  disabled={!onSettingsClick}
                   style={glassClickStyle('profile-settings-collapsed')}
                   className={`eterx-sidebar-click-surface eterx-sidebar-profile-icon-button ${ glassClickClass('profile-settings-collapsed') } w-[38px] h-[38px] flex items-center justify-center rounded-[12px] text-[var(--sidebar-muted-text)] border border-transparent hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] transition-colors duration-150 group`}
                 >
@@ -1768,17 +1946,19 @@ export const Sidebar = React.memo<SidebarProps>(({
           >
             <div
               role="separator"
+              tabIndex={0}
               aria-orientation="vertical"
               aria-label="Resize sidebar"
               aria-valuemin={getSidebarViewportMin(viewportWidth)}
               aria-valuemax={getSidebarViewportMax(viewportWidth)}
               aria-valuenow={sidebarWidth}
               onPointerDown={handleSidebarResizePointerDown}
+              onKeyDown={handleSidebarResizeKeyDown}
               className="eterx-sidebar-resize-target"
             />
           </div>
         )}
-      </motion.div>
+      </motion.aside>
 
       {menuState && typeof document !== 'undefined' && createPortal(
         <div
@@ -1788,10 +1968,24 @@ export const Sidebar = React.memo<SidebarProps>(({
         >
           <AnimatePresence>
             <motion.div
-              initial={{ opacity: 0, y: menuState.dropUp ? 5 : -5, scale: 0.95 }}
+              ref={chatMenuRef}
+              initial={reduceMotion ? false : { opacity: 0, y: menuState.dropUp ? 5 : -5, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
+              exit={reduceMotion ? undefined : { opacity: 0, scale: 0.95 }}
+              transition={reduceMotion ? { duration: 0 } : { duration: 0.15, ease: "easeOut" }}
+              role="menu"
+              aria-label={`Chat options for ${ chats.find(chat => chat.id === menuState.id)?.title || 'conversation' }`}
+              aria-orientation="vertical"
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  const chatId = menuState.id;
+                  setMenuState(null);
+                  restoreChatMenuFocus(chatId);
+                  return;
+                }
+                handleMenuKeyboardNavigation(event);
+              }}
               onClick={(e) => e.stopPropagation()}
               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
               style={{
@@ -1802,6 +1996,8 @@ export const Sidebar = React.memo<SidebarProps>(({
               className="eterx-sidebar-menu w-52 bg-[var(--sidebar-menu-bg)] border border-transparent rounded-[12px] p-1.5 flex flex-col gap-0.5"
             >
               <button
+                type="button"
+                role="menuitem"
                 onClick={(e) => { e.stopPropagation(); handleShare(menuState.id); }}
                 className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left group/btn"
               >
@@ -1809,6 +2005,8 @@ export const Sidebar = React.memo<SidebarProps>(({
                 {shareCopiedId === menuState.id ? <span className="text-[var(--sidebar-hover-text)]">Link copied!</span> : "Share"}
               </button>
               <button
+                type="button"
+                role="menuitem"
                 onClick={(e) => {
                   e.stopPropagation();
                   setEditingChatId(menuState.id);
@@ -1820,6 +2018,8 @@ export const Sidebar = React.memo<SidebarProps>(({
                 <PremiumEdit className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" /> Rename
               </button>
               <button
+                type="button"
+                role="menuitem"
                 onClick={(e) => {
                   e.stopPropagation();
                   toggleFavorite(menuState.id);
@@ -1830,7 +2030,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                 <PremiumStar className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" />
                 {chats.find(c => c.id === menuState.id)?.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
               </button>
-              <button type="button" disabled aria-disabled="true" className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left justify-between group/btn cursor-not-allowed opacity-60 disabled:hover:bg-transparent disabled:hover:text-[var(--sidebar-muted-text)]" title="Coming soon">
+              <button type="button" role="menuitem" disabled aria-disabled="true" className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left justify-between group/btn cursor-not-allowed opacity-60 disabled:hover:bg-transparent disabled:hover:text-[var(--sidebar-muted-text)]" title="Coming soon">
                 <div className="flex items-center gap-3">
                   <PremiumFolder className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" /> Move to Project
                 </div>
@@ -1840,6 +2040,8 @@ export const Sidebar = React.memo<SidebarProps>(({
               <div className="h-[1px] w-full bg-[var(--sidebar-menu-border)] my-1 rounded-full" />
 
               <button
+                type="button"
+                role="menuitem"
                 className="eterx-sidebar-menu-danger w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-danger-text)] hover:text-[var(--sidebar-danger-text)] hover:bg-[var(--sidebar-danger-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left group/btn"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1864,20 +2066,26 @@ export const Sidebar = React.memo<SidebarProps>(({
               onClick={(e) => { e.stopPropagation(); !isDeleting && setShowDeleteConfirm(false); }}
             >
               <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                initial={reduceMotion ? false : { opacity: 0, scale: 0.95, y: 10 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                exit={reduceMotion ? undefined : { opacity: 0, scale: 0.95, y: 10 }}
+                transition={reduceMotion ? { duration: 0 } : undefined}
                 onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="eterx-delete-chats-title"
+                aria-describedby="eterx-delete-chats-description"
                 className="bg-[#141414] border border-white/[0.08] shadow-[0_24px_64px_rgba(0,0,0,0.6)] rounded-[24px] p-6 max-w-[360px] w-full mx-4 flex flex-col gap-6 relative overflow-hidden"
               >
                 <div className="flex flex-col gap-2 relative z-10">
-                  <h3 className="text-[#E8E6E3] text-[18px] font-semibold">Delete {selectedChatIds.size} chats?</h3>
-                  <p className="text-[#A3A19E] text-[14px] leading-relaxed">
+                  <h3 id="eterx-delete-chats-title" className="text-[#E8E6E3] text-[18px] font-semibold">Delete {selectedChatIds.size} chats?</h3>
+                  <p id="eterx-delete-chats-description" className="text-[#A3A19E] text-[14px] leading-relaxed">
                     Are you sure you want to delete the selected chats? This action cannot be undone and the history will be lost forever.
                   </p>
                 </div>
                 <div className="flex items-center justify-end gap-3 w-full relative z-10">
                   <button
+                    type="button"
                     onClick={() => setShowDeleteConfirm(false)}
                     disabled={isDeleting}
                     className={`px-4 py-2 rounded-[12px] text-[#A3A19E] hover:text-[#E8E6E3] hover:bg-white/[0.05] transition-colors text-[14px] font-medium ${ isDeleting ? 'opacity-50 cursor-not-allowed pointer-events-none' : '' }`}
@@ -1885,6 +2093,7 @@ export const Sidebar = React.memo<SidebarProps>(({
                     Cancel
                   </button>
                   <button
+                    type="button"
                     onClick={handleBulkDelete}
                     disabled={isDeleting}
                     className={`relative flex items-center justify-center gap-2 py-2 rounded-[12px] bg-[#EF4444] text-white transition-[width,background-color,color] duration-200 ease-out text-[14px] font-medium overflow-hidden ${ isDeleting ? 'w-[150px] cursor-not-allowed hover:bg-[#EF4444]' : 'w-[130px] hover:bg-[#DC2626]' }`}

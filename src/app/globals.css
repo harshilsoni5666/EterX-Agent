@@ -215,14 +215,17 @@
     -webkit-user-select: none;
   }
 
-  /* EterX is a macOS title-bar label, not a second navigation control. */
+  /* EterX is a macOS title-bar label, not a second navigation control.
+     The element also uses Tailwind's `flex` utility, so keep this platform
+     rule authoritative instead of allowing the utility to reveal it on
+     Windows/Linux. */
   .eterx-global-brand {
-    display: none;
+    display: none !important;
     color: var(--sidebar-text);
   }
 
   .eterx-app-shell[data-platform="macos"] .eterx-global-brand {
-    display: flex;
+    display: flex !important;
   }
 
   .eterx-app-shell[data-platform="linux"] {
@@ -451,38 +454,45 @@
   }
 
   .eterx-thread-tab {
-    background: transparent;
-    border: 1px solid transparent;
+    background: color-mix(in srgb, var(--foreground) 4%, transparent) !important;
+    border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent) !important;
     border-radius: 999px;
-    box-shadow: none;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent) !important;
     color: var(--foreground) !important;
     font-weight: 520;
     min-height: 34px;
     max-width: min(460px, calc(100vw - 360px));
+    transition-property: background-color, border-color, color !important;
+    transition-duration: 120ms !important;
+    transition-timing-function: ease-out !important;
   }
 
-  .eterx-thread-tab:hover,
-  .eterx-thread-tab[data-open="true"] {
-    background: color-mix(in srgb, var(--foreground) 8%, transparent) !important;
-    border-color: color-mix(in srgb, var(--foreground) 13%, transparent) !important;
+  .eterx-thread-tab:hover {
+    background: color-mix(in srgb, var(--foreground) 6%, transparent) !important;
+    border-color: color-mix(in srgb, var(--foreground) 18%, transparent) !important;
     color: var(--foreground) !important;
-    box-shadow:
-      inset 0 1px 0 color-mix(in srgb, var(--foreground) 10%, transparent),
-      0 8px 22px color-mix(in srgb, #000 14%, transparent) !important;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent) !important;
   }
 
-  .eterx-thread-tab[data-open="true"] {
-    background: color-mix(in srgb, var(--foreground) 10%, transparent) !important;
-    border-color: color-mix(in srgb, var(--foreground) 16%, transparent) !important;
+  .eterx-thread-tab[data-open="true"],
+  .eterx-thread-tab:hover[data-open="true"] {
+    background: color-mix(in srgb, var(--foreground) 6%, transparent) !important;
+    border-color: color-mix(in srgb, var(--foreground) 18%, transparent) !important;
+    color: var(--foreground) !important;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent) !important;
   }
 
-  .eterx-thread-tab svg {
-    color: var(--sidebar-muted-text) !important;
+  .eterx-thread-tab:active {
+    background: color-mix(in srgb, var(--foreground) 7%, transparent) !important;
+    border-color: color-mix(in srgb, var(--foreground) 20%, transparent) !important;
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent) !important;
   }
 
+  .eterx-thread-tab svg,
   .eterx-thread-tab:hover svg,
-  .eterx-thread-tab[data-open="true"] svg {
-    color: var(--foreground) !important;
+  .eterx-thread-tab[data-open="true"] svg,
+  .eterx-thread-tab:hover[data-open="true"] svg {
+    color: color-mix(in srgb, var(--foreground) 72%, transparent) !important;
   }
 
   /* Use JetBrains Mono for all monospace content */
@@ -1039,15 +1049,16 @@
     scrollbar-width: none;
   }
 
-  /* Modern scrollbar classes that fallback to global styled values */
+  /* One shared EterX scrollbar surface. Aliases stay for component semantics,
+     but they intentionally share the same native scrollbar implementation. */
   .eterx-scrollbar,
-
   .eterx-modern-scrollbar,
   .eterx-prompt-preview-scroll,
   .eterx-action-scroll,
   .eterx-review-scrollbar {
     scroll-behavior: smooth;
-    scrollbar-gutter: auto;
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
   }
 }
 
@@ -1056,6 +1067,7 @@
   max-width: calc(100vw - 24px);
   height: auto !important;
   max-height: calc(100vh - 120px);
+  --shimmer-surface: #1C1C1A;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   background: #1C1C1A;
@@ -1466,18 +1478,19 @@
 }
 
 /* shadcn shimmer utility, kept local because this project uses Tailwind v3.
-   Defaults: 20deg angle, 2s duration, and a font-aware highlight spread. */
+   Text color comes from the call site; the highlight adapts to the current
+   app theme and to the nearest surface when one is provided. */
 .shimmer {
   display: inline-block;
   vertical-align: middle;
+  will-change: background-position;
+  --_surface: var(--shimmer-surface, var(--background));
   --_spread: var(--shimmer-spread, calc(3ch + 40px));
-  --_base: currentColor;
-  --_highlight: var(--shimmer-color, color-mix(in srgb, currentColor 20%, transparent));
-  --shimmer-color: var(--eterx-ui-working-highlight);
+  --_base: var(--shimmer-base, currentColor);
+  --_highlight: var(--shimmer-color, color-mix(in oklch, var(--_surface) 76%, var(--_base) 24%));
   --shimmer-duration: 2s;
   --shimmer-angle: 20deg;
-  --shimmer-spread: calc(2ch + 24px);
-  color: var(--eterx-ui-working-text);
+  --shimmer-spread: calc(3ch + 40px);
   background-image: var(--shimmer-image, linear-gradient(calc(90deg + var(--shimmer-angle, 20deg)),
         var(--_base) calc(50% - var(--_spread)),
         color-mix(in oklch, var(--_highlight), var(--_base) 50%) calc(50% - var(--_spread) * .5),
@@ -1496,7 +1509,13 @@
 
 :root[data-theme="dark"] .shimmer,
 .dark .shimmer {
+  --shimmer-color: var(--eterx-ui-working-highlight);
   --_highlight: var(--shimmer-color, oklch(from currentColor max(.8, calc(l + .4)) c h / calc(alpha + .4)));
+  color: var(--eterx-ui-working-text);
+}
+
+.eterx-proxy-chat-window {
+  --shimmer-surface: #171717;
 }
 
 .shimmer:where([dir="rtl"], [dir="rtl"] *) {
@@ -1697,6 +1716,9 @@
   --eterx-new-chat-rail-icon: #77736C;
   --eterx-new-chat-rail-hover-bg: rgba(31, 31, 29, 0.055);
   --eterx-new-chat-rail-hover-text: #24221F;
+  --eterx-new-chat-rail-active-bg: rgba(31, 31, 29, 0.075);
+  --eterx-new-chat-rail-active-border: rgba(31, 31, 29, 0.105);
+  --eterx-new-chat-rail-active-shadow: 0 3px 10px rgba(31, 31, 29, 0.055), inset 0 1px 0 rgba(255, 255, 255, 0.55);
   --eterx-new-chat-rail-shadow: 0 14px 32px rgba(31, 31, 29, 0.055);
   --eterx-status-popout-bg: rgba(255, 255, 255, 0.985);
   --eterx-status-popout-border: rgba(31, 31, 29, 0.10);
@@ -1722,6 +1744,9 @@
   --eterx-new-chat-rail-icon: #AAA59F;
   --eterx-new-chat-rail-hover-bg: rgba(255, 255, 255, 0.065);
   --eterx-new-chat-rail-hover-text: #F2EFEA;
+  --eterx-new-chat-rail-active-bg: rgba(45, 45, 45, 0.96);
+  --eterx-new-chat-rail-active-border: rgba(255, 255, 255, 0.075);
+  --eterx-new-chat-rail-active-shadow: 0 4px 12px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.045);
   --eterx-new-chat-rail-shadow: 0 14px 36px rgba(0, 0, 0, 0.20);
   --eterx-status-popout-bg: rgba(34, 34, 34, 0.985);
   --eterx-status-popout-border: rgba(255, 255, 255, 0.095);
@@ -1807,20 +1832,23 @@
   line-height: 1;
   letter-spacing: 0;
   cursor: pointer;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
 }
 
 .eterx-new-chat-status-item:hover,
 .eterx-new-chat-status-item:focus-visible,
 .eterx-new-chat-status-item.is-open {
-  background: var(--eterx-new-chat-rail-hover-bg);
-  border-color: var(--eterx-new-chat-rail-border);
+  background: var(--eterx-new-chat-rail-active-bg);
+  border-color: var(--eterx-new-chat-rail-active-border);
   color: var(--eterx-new-chat-rail-hover-text);
+  box-shadow: var(--eterx-new-chat-rail-active-shadow);
   outline: none;
 }
 
 .eterx-new-chat-status-item:active {
-  transform: scale(0.985);
+  transform: scale(0.97);
+  background: var(--eterx-new-chat-rail-hover-bg);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.16);
 }
 
 .eterx-new-chat-status-item span {
@@ -2094,8 +2122,12 @@
 .eterx-status-menu-item:hover,
 .eterx-status-menu-item:focus-visible {
   background: var(--eterx-status-popout-hover);
-  transform: translateX(2px);
+  transform: none;
   outline: 0;
+}
+
+.eterx-status-menu-item:active {
+  transform: scale(0.98);
 }
 
 .eterx-status-menu-item.is-selected {
@@ -2196,14 +2228,13 @@
   color: #FFFFFF;
 }
 
-.eterx-project-menu-folder,
-.eterx-project-remove-button {
+.eterx-project-menu-folder {
   grid-area: 1 / 1;
-  transition: none !important;
+  transition: opacity 140ms ease, transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1) !important;
 }
 
 .eterx-status-menu-section .eterx-status-menu-item {
-  transition: background-color 160ms ease, color 160ms ease !important;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 160ms ease !important;
 }
 
 .eterx-project-remove-button {
@@ -2221,7 +2252,7 @@
   opacity: 0;
   transform: scale(0.72);
   box-shadow: 0 2px 7px rgba(0, 0, 0, 0.14);
-  transition: none !important;
+  transition: opacity 140ms ease, transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 140ms ease, color 140ms ease, border-color 140ms ease !important;
   cursor: pointer;
   z-index: 1;
   margin: -9.5px 0 0 -9.5px;
@@ -3069,7 +3100,7 @@
 :root[data-theme="light"] .eterx-workspace-review-body,
 :root[data-theme="light"] .eterx-review-panel,
 :root[data-theme="light"] .eterx-review-panel-scroll {
-  background: #FFFFFF !important;
+  background: #F8FAFC !important;
 }
 
 :root[data-theme="light"] .eterx-workspace-review {
@@ -3086,7 +3117,7 @@
 :root[data-theme="light"] .eterx-review-file-card {
   background: #FFFFFF !important;
   border-color: rgba(31, 31, 29, 0.10) !important;
-  box-shadow: 0 18px 42px rgba(31, 31, 29, 0.08) !important;
+  box-shadow: 0 14px 34px rgba(31, 41, 55, 0.08) !important;
 }
 
 :root[data-theme="light"] .eterx-review-file-card-head {
@@ -3099,7 +3130,7 @@
 }
 
 :root[data-theme="light"] .eterx-review-diff-body {
-  background: #FFFFFF !important;
+  background: #F8FAFC !important;
 }
 
 :root[data-theme="light"] .eterx-review-empty-diff {
@@ -3516,6 +3547,34 @@
   color: color-mix(in srgb, var(--eterx-md-text) 84%, var(--eterx-md-muted)) !important;
 }
 
+.eterx-markdown-paragraph,
+.eterx-markdown-list,
+.eterx-markdown-list-item {
+  color: var(--eterx-md-text) !important;
+}
+
+.eterx-markdown-list-item::marker {
+  color: color-mix(in srgb, var(--eterx-md-muted) 84%, var(--eterx-md-accent));
+}
+
+.eterx-markdown-callout,
+.eterx-markdown-callout strong,
+.eterx-markdown-callout em,
+.eterx-markdown-paragraph strong,
+.eterx-markdown-list-item strong {
+  color: var(--eterx-md-text) !important;
+}
+
+.eterx-markdown-paragraph strong,
+.eterx-markdown-list-item strong {
+  color: var(--eterx-md-strong) !important;
+}
+
+.eterx-markdown-paragraph em,
+.eterx-markdown-list-item em {
+  color: color-mix(in srgb, var(--eterx-md-text) 78%, var(--eterx-md-muted)) !important;
+}
+
 .eterx-answer-paragraph,
 .eterx-answer-list,
 .eterx-answer-list-item {
@@ -3536,33 +3595,34 @@
   font-family: var(--font-dm-sans), "Inter", system-ui, sans-serif;
   font-weight: 650;
   letter-spacing: -0.018em;
-  line-height: 1.28;
+  line-height: 1.24;
   overflow-wrap: anywhere;
   text-wrap: balance;
+  max-width: 100%;
 }
 
 .eterx-answer-heading-1 {
-  font-size: clamp(1.34rem, 2.2vw, 1.58rem);
+  font-size: clamp(1.08rem, calc(0.9rem + 0.55vw), 1.24rem) !important;
 }
 
 .eterx-answer-heading-2 {
-  font-size: clamp(1.16rem, 1.75vw, 1.32rem);
+  font-size: clamp(1.02rem, calc(0.88rem + 0.42vw), 1.14rem) !important;
 }
 
 .eterx-answer-heading-3 {
-  font-size: clamp(1.04rem, 1.4vw, 1.15rem);
+  font-size: clamp(0.98rem, calc(0.87rem + 0.3vw), 1.07rem) !important;
 }
 
 .eterx-answer-heading-4 {
-  font-size: clamp(0.98rem, 1.18vw, 1.05rem);
+  font-size: clamp(0.95rem, calc(0.82rem + 0.42vw), 1.03rem) !important;
 }
 
 .eterx-answer-heading-5 {
-  font-size: clamp(0.91rem, 1vw, 0.97rem);
+  font-size: clamp(0.9rem, calc(0.8rem + 0.28vw), 0.98rem) !important;
 }
 
 .eterx-answer-heading-6 {
-  font-size: clamp(0.84rem, 0.92vw, 0.9rem);
+  font-size: clamp(0.84rem, calc(0.78rem + 0.2vw), 0.92rem) !important;
   letter-spacing: -0.008em;
 }
 
@@ -3576,6 +3636,36 @@
 
 .eterx-answer-em {
   color: color-mix(in srgb, var(--eterx-md-text) 78%, var(--eterx-md-muted)) !important;
+}
+
+/* Work notes are progress context, not a second answer pane. Keep their
+   hierarchy visible without allowing a model-supplied heading to dominate
+   the conversation while a task is still running. */
+.eterx-professional-note .eterx-answer-heading {
+  letter-spacing: -0.01em;
+  line-height: 1.28;
+}
+
+.eterx-professional-note .eterx-answer-heading-1 {
+  font-size: clamp(1rem, calc(0.84rem + 0.5vw), 1.12rem) !important;
+}
+
+.eterx-professional-note .eterx-answer-heading-2 {
+  font-size: clamp(0.96rem, calc(0.82rem + 0.38vw), 1.06rem) !important;
+}
+
+.eterx-professional-note .eterx-answer-heading-3,
+.eterx-professional-note .eterx-answer-heading-4 {
+  font-size: clamp(0.9rem, calc(0.78rem + 0.28vw), 0.98rem) !important;
+}
+
+.eterx-professional-note .eterx-answer-heading-5,
+.eterx-professional-note .eterx-answer-heading-6 {
+  font-size: 0.9rem !important;
+}
+
+.professional-thought > :first-child {
+  margin-top: 0 !important;
 }
 
 .eterx-answer-link {
@@ -3655,7 +3745,7 @@
 
 .eterx-progressive-markdown-live>p:last-child,
 .eterx-progressive-markdown-ghost>p:last-child {
-  display: inline;
+  display: block;
 }
 
 .eterx-progressive-ghost-code {
@@ -3835,10 +3925,10 @@
   display: inline;
   margin-inline: 0.06em;
   padding: 0.08em 0.36em !important;
-  border: 1px solid color-mix(in srgb, var(--eterx-md-strong) 8%, transparent) !important;
+  border: 1px solid var(--eterx-md-border-strong) !important;
   border-radius: 0.38em !important;
-  background: color-mix(in srgb, var(--eterx-md-strong) 9%, transparent) !important;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--eterx-md-strong) 4%, transparent) !important;
+  background: var(--eterx-md-inline-code-bg) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--eterx-md-strong) 6%, transparent) !important;
   color: color-mix(in srgb, var(--eterx-md-strong) 90%, var(--eterx-md-text)) !important;
   font-family: var(--font-mono), "Cascadia Code", "SFMono-Regular", Consolas, monospace !important;
   font-size: 0.88em !important;
@@ -3866,51 +3956,54 @@
 
 /* Theme-aware Local File Link Chip styling */
 .eterx-local-file-chip {
-  background-color: #181817 !important;
-  border-color: rgba(255, 255, 255, 0.09) !important;
+  background-color: var(--eterx-md-card-soft) !important;
+  border-color: var(--eterx-md-border-strong) !important;
+  box-shadow: none !important;
+  vertical-align: middle;
+  line-height: normal;
+  white-space: normal;
 }
 
 .eterx-local-file-chip:hover {
-  background-color: #20201F !important;
-  border-color: rgba(255, 255, 255, 0.15) !important;
+  background-color: color-mix(in srgb, var(--eterx-md-card-soft) 86%, var(--eterx-md-strong) 14%) !important;
+  border-color: var(--eterx-md-border-strong) !important;
 }
 
 .eterx-local-file-chip-name {
-  color: #E8E6E3 !important;
+  color: var(--eterx-md-strong) !important;
 }
 
-:root[data-theme="light"] .eterx-local-file-chip,
-.light-theme .eterx-local-file-chip {
-  background-color: #F3F2F0 !important;
-  border-color: rgba(31, 31, 29, 0.12) !important;
-  box-shadow: 0 2px 8px rgba(31, 31, 29, 0.05) !important;
+.eterx-local-file-chip-icon,
+.eterx-local-file-chip-copy {
+  color: var(--eterx-md-muted) !important;
 }
 
-:root[data-theme="light"] .eterx-local-file-chip:hover,
-.light-theme .eterx-local-file-chip:hover {
-  background-color: #E8E7E4 !important;
-  border-color: rgba(31, 31, 29, 0.18) !important;
+.eterx-local-file-chip-copy:hover {
+  background-color: color-mix(in srgb, var(--eterx-md-strong) 8%, transparent) !important;
+  color: var(--eterx-md-strong) !important;
 }
 
-:root[data-theme="light"] .eterx-local-file-chip-name,
-.light-theme .eterx-local-file-chip-name {
-  color: #1F1F1D !important;
-}
-
-:root[data-theme="light"] .eterx-local-file-chip-icon,
-.light-theme .eterx-local-file-chip-icon,
-:root[data-theme="light"] .eterx-local-file-chip-copy,
-.light-theme .eterx-local-file-chip-copy {
-  color: #6D6861 !important;
-}
-
-:root[data-theme="light"] .eterx-local-file-chip-divider,
-.light-theme .eterx-local-file-chip-divider {
-  background-color: rgba(31, 31, 29, 0.10) !important;
+.eterx-local-file-chip-divider {
+  background-color: var(--eterx-md-border-strong) !important;
 }
 
 .eterx-markdown-list-item>.eterx-markdown-plain-snippet:first-child:last-child {
   display: inline;
+}
+
+.eterx-professional-thought .eterx-local-file-chip {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.eterx-professional-thought .eterx-local-file-chip-name {
+  min-width: 0;
+  max-width: min(30ch, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .eterx-code-expanded .eterx-markdown-code-scroll,
@@ -4450,6 +4543,9 @@
   border-color: var(--eterx-md-border) !important;
   background: var(--eterx-md-card) !important;
   max-width: 100%;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  overscroll-behavior-inline: contain;
 }
 
 .eterx-progressive-markdown-live .eterx-markdown-table-wrap,
@@ -4459,8 +4555,8 @@
 
 .eterx-markdown-table {
   width: 100% !important;
-  min-width: 100% !important;
-  table-layout: fixed;
+  min-width: max(100%, 48rem) !important;
+  table-layout: auto !important;
 }
 
 .eterx-markdown-thead {
@@ -4470,12 +4566,23 @@
 .eterx-markdown-th,
 .eterx-markdown-td {
   border-color: var(--eterx-md-border) !important;
-  min-width: 0;
-  max-width: none;
-  overflow-wrap: anywhere;
+  min-width: 8.5rem;
+  max-width: 28rem;
+  overflow-wrap: break-word;
   word-break: normal;
   font-size: 0.79rem;
   line-height: 1.5;
+}
+
+.eterx-markdown-th:first-child,
+.eterx-markdown-td:first-child {
+  min-width: 10.5rem;
+}
+
+.eterx-markdown-th code,
+.eterx-markdown-td code {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .eterx-markdown-td > *,
@@ -4514,8 +4621,8 @@
 @media (max-width: 640px) {
   .eterx-markdown-th,
   .eterx-markdown-td {
-    min-width: 0;
-    max-width: none;
+    min-width: 8rem;
+    max-width: 24rem;
     padding: 0.55rem 0.65rem !important;
     font-size: clamp(0.68rem, 2.65vw, 0.76rem) !important;
   }
@@ -4568,11 +4675,20 @@
 }
 
 .eterx-markdown-figure {
+  display: block;
   max-width: 100%;
+  min-width: 0;
 }
 
 .eterx-markdown-image {
   border-color: var(--eterx-md-border) !important;
+}
+
+.eterx-markdown-image-caption {
+  display: block;
+  color: var(--eterx-md-muted);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .katex-display {
@@ -5177,30 +5293,56 @@
   background: linear-gradient(to left, var(--sidebar-active-fade) 0%, var(--sidebar-active-fade) 56%, transparent 100%) !important;
 }
 
-.eterx-sidebar-chat-active .eterx-sidebar-loading-spinner {
-  border-color: color-mix(in srgb, var(--sidebar-active-text) 18%, transparent) !important;
-  border-right-color: color-mix(in srgb, var(--sidebar-active-text) 72%, transparent) !important;
-}
-
-/* Active-chat loading state: compact ring treatment matching the sidebar
-   control scale, with a single crisp leading arc and no visual noise inside. */
-.eterx-sidebar-shell .eterx-sidebar-active-loading-spinner {
-  width: 16px;
-  height: 16px;
-  border-width: 2px;
-  border-color: color-mix(in srgb, var(--sidebar-active-text) 22%, transparent);
-  border-top-color: color-mix(in srgb, var(--sidebar-active-text) 88%, transparent);
-  border-right-color: color-mix(in srgb, var(--sidebar-active-text) 68%, transparent);
+/* Shared chat loading ring: the same explicit treatment as electron/splash.html. */
+.eterx-splash-spinner {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 0 !important;
+  border-radius: 999px;
+  background:
+    conic-gradient(
+      from 0deg,
+      rgba(255, 255, 255, 0) 0deg,
+      rgba(255, 255, 255, 0.28) 72deg,
+      rgba(255, 255, 255, 0.86) 186deg,
+      #ffffff 292deg,
+      rgba(255, 255, 255, 0) 360deg
+    );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.75px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 1.75px), #000 0);
+  animation: eterx-splash-spin 950ms linear infinite !important;
   box-shadow: none;
 }
 
-.eterx-sidebar-shell .eterx-sidebar-active-loading-spinner::after {
-  display: none;
+.eterx-sidebar-shell .eterx-splash-spinner {
+  width: 12px !important;
+  height: 12px !important;
 }
 
-:root[data-theme="dark"] .eterx-sidebar-chat-active .eterx-sidebar-loading-spinner {
-  border-color: color-mix(in srgb, var(--sidebar-active-text) 20%, transparent) !important;
-  border-right-color: color-mix(in srgb, var(--sidebar-active-text) 82%, transparent) !important;
+:root[data-theme="light"] .eterx-splash-spinner {
+  background:
+    conic-gradient(
+      from 0deg,
+      rgba(31, 31, 29, 0) 0deg,
+      rgba(31, 31, 29, 0.18) 72deg,
+      rgba(31, 31, 29, 0.62) 186deg,
+      #1f1f1d 292deg,
+      rgba(31, 31, 29, 0) 360deg
+    );
+}
+
+@keyframes eterx-splash-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eterx-splash-spinner {
+    animation: none !important;
+  }
 }
 
 .eterx-sidebar-menu {
@@ -5540,6 +5682,18 @@
   [role="button"]:hover[class*="hover:shadow"],
   [tabindex]:not([tabindex="-1"]):hover[class*="hover:shadow"] {
     box-shadow: none !important;
+  }
+
+  /* Keep non-button composer/header controls on the same fast interaction
+     timing as the enterprise button policy above. */
+  .eterx-thread-tab,
+  .eterx-agent-button,
+  .eterx-model-button,
+  .eterx-selector-chevron-wrapper,
+  .eterx-new-chat-status-item,
+  .eterx-topbar-btn {
+    transition-duration: 120ms !important;
+    transition-timing-function: ease-out !important;
   }
 }
 
@@ -6256,16 +6410,12 @@
 
 .eterx-channel-orbit-stage::before {
   left: -16px;
-  background: linear-gradient(90deg, var(--eterx-channel-surface) 0%, var(--eterx-channel-surface-soft) 38%, var(--eterx-channel-surface-clear) 100%);
+  background: linear-gradient(90deg, var(--eterx-channel-surface) 0%, var(--eterx-channel-surface) 48%, var(--eterx-channel-surface-clear) 100%);
 }
 
 .eterx-channel-orbit-stage::after {
   right: -16px;
-  background: linear-gradient(270deg, var(--eterx-channel-surface) 0%, var(--eterx-channel-surface-soft) 38%, var(--eterx-channel-surface-clear) 100%);
-}
-
-.eterx-channel-orbit-stage:hover .eterx-channel-orbit-icon {
-  animation-play-state: paused;
+  background: linear-gradient(270deg, var(--eterx-channel-surface) 0%, var(--eterx-channel-surface) 48%, var(--eterx-channel-surface-clear) 100%);
 }
 
 .eterx-channel-orbit-icon {
@@ -6379,57 +6529,57 @@
 @keyframes eterx-channel-icon-chain {
   0% {
     opacity: 0;
-    transform: translate(calc(-50% - 238px), calc(-50% + 28px)) scale(0.56);
+    transform: translate(calc(-50% - 238px), calc(-50% + 28px)) scale(1);
   }
 
-  7% {
-    opacity: 0.2;
-    transform: translate(calc(-50% - 228px), calc(-50% + 20px)) scale(0.66);
+  2.2% {
+    opacity: 0.38;
+    transform: translate(calc(-50% - 228px), calc(-50% + 20px)) scale(1);
   }
 
-  14% {
-    opacity: 1;
-    transform: translate(calc(-50% - 212px), calc(-50% + 0px)) scale(0.86);
+  6.6% {
+    opacity: 0.92;
+    transform: translate(calc(-50% - 212px), calc(-50% + 0px)) scale(1);
   }
 
-  27% {
+  23.1% {
     opacity: 1;
     transform: translate(calc(-50% - 146px), calc(-50% - 70px)) scale(1);
   }
 
-  40% {
+  37.7% {
     opacity: 1;
-    transform: translate(calc(-50% - 70px), calc(-50% - 108px)) scale(1.06);
+    transform: translate(calc(-50% - 70px), calc(-50% - 108px)) scale(1);
   }
 
-  50% {
+  49.9% {
     opacity: 1;
-    transform: translate(-50%, calc(-50% - 120px)) scale(1.1);
+    transform: translate(-50%, calc(-50% - 120px)) scale(1);
   }
 
-  60% {
+  62.2% {
     opacity: 1;
-    transform: translate(calc(-50% + 70px), calc(-50% - 108px)) scale(1.06);
+    transform: translate(calc(-50% + 70px), calc(-50% - 108px)) scale(1);
   }
 
-  73% {
+  76.8% {
     opacity: 1;
     transform: translate(calc(-50% + 146px), calc(-50% - 70px)) scale(1);
   }
 
-  86% {
+  93.4% {
     opacity: 1;
-    transform: translate(calc(-50% + 212px), calc(-50% + 0px)) scale(0.86);
+    transform: translate(calc(-50% + 212px), calc(-50% + 0px)) scale(1);
   }
 
-  93% {
-    opacity: 0.2;
-    transform: translate(calc(-50% + 228px), calc(-50% + 20px)) scale(0.66);
+  97.8% {
+    opacity: 0.38;
+    transform: translate(calc(-50% + 228px), calc(-50% + 20px)) scale(1);
   }
 
   100% {
     opacity: 0;
-    transform: translate(calc(-50% + 238px), calc(-50% + 28px)) scale(0.56);
+    transform: translate(calc(-50% + 238px), calc(-50% + 28px)) scale(1);
   }
 }
 
@@ -7460,7 +7610,7 @@
   padding-right: 12px !important;
   border-radius: 8px !important;
   font-weight: 500 !important;
-  transition: all 150ms ease-in-out !important;
+  transition: background-color 120ms ease-out, color 120ms ease-out !important;
 }
 
 .eterx-topbar-btn:hover {
@@ -7627,29 +7777,21 @@
    No visual change — pure painting performance improvement.
    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
-/* Chat feed scroll container — isolate paint so streaming text doesn't
-   trigger repaint of the rest of the window */
+/* Keep layout/style containment for streaming performance without size or
+   paint containment. Strict/content containment clips sticky controls and
+   popovers and can make streamed Markdown appear to jump or disappear. */
 .eterx-chat-feed-scroll {
-  contain: strict;
-  will-change: scroll-position;
-  transform: translateZ(0);
+  contain: layout style;
 }
 
-/* Each message group — isolate layout so one group updating doesn't
-   invalidate siblings */
+/* Each message group — isolate layout without clipping overflow from links,
+   code actions, Mermaid menus, or mobile table scrolling. */
 .eterx-chat-message-group {
-  contain: content;
-}
-
-/* Match the sidebar running-chat spinner inside the header thread switcher. */
-:root[data-theme="light"] .eterx-thread-running-indicator {
-  border-color: rgba(31, 31, 29, 0.16) !important;
-  border-right-color: rgba(31, 31, 29, 0.72) !important;
+  contain: layout style;
 }
 
 /* Thought sequence cards — promoted layer for smooth reveal animation */
 .eterx-professional-thought,
-.eterx-professional-note,
 .eterx-professional-answer {
   will-change: opacity;
   transform: translateZ(0);
@@ -7955,11 +8097,6 @@
     }
   }
 
-  .eterx-chat-scroll-latest {
-    zoom: 1.18;
-    bottom: 190px !important;
-  }
-
   .eterx-chat-turns-nav {
     display: none !important;
   }
@@ -8091,6 +8228,86 @@
   }
 }
 
+/* Chat geometry guardrails for phone-sized windows. The component-level dock
+   keeps 44px side padding and a 40px top pad for desktop breathing room; at
+   phone widths those values steal usable width and make the fixed composer
+   reserve more vertical space than the visible controls need. */
+@media (max-width: 768px) {
+  .eterx-chat-input-dock {
+    padding-left: max(12px, env(safe-area-inset-left, 0px)) !important;
+    padding-right: max(12px, env(safe-area-inset-right, 0px)) !important;
+  }
+
+  .eterx-chat-input-dock-active {
+    padding-top: 16px !important;
+    padding-bottom: max(10px, env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .eterx-chat-feed-scroll {
+    padding-bottom: max(8rem, var(--eterx-chat-feed-bottom-space, 8rem)) !important;
+    scroll-padding-bottom: max(8rem, var(--eterx-chat-feed-bottom-space, 8rem)) !important;
+  }
+
+  .eterx-chat-feed-content {
+    padding-top: 32px !important;
+  }
+
+  :root[data-theme="dark"] .eterx-chat-input-dock-active::before {
+    height: 72px !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .eterx-chat-input-dock {
+    padding-left: max(8px, env(safe-area-inset-left, 0px)) !important;
+    padding-right: max(8px, env(safe-area-inset-right, 0px)) !important;
+  }
+
+  .eterx-composer-shell {
+    max-width: 100% !important;
+  }
+
+  .eterx-composer-shell .eterx-composer-popout,
+  .eterx-composer-shell .eterx-status-popout {
+    max-width: calc(100vw - 16px) !important;
+  }
+}
+
+/* Flex/grid children containing streamed commands and markdown need an
+   explicit zero minimum. Without it, long paths/commands can widen a row
+   before the existing break/scroll rules get a chance to apply. */
+.eterx-terminal-trace,
+.eterx-terminal-trace-row,
+.eterx-action-card,
+.eterx-action-chip,
+.eterx-markdown-code-block,
+.eterx-markdown-preview {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Live action groups favor immediate, stable updates over decorative motion. */
+.eterx-action-group {
+  isolation: isolate;
+  background: rgba(21, 21, 20, 0.72) !important;
+  border-color: rgba(255, 255, 255, 0.085) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.032),
+    0 2px 8px rgba(0, 0, 0, 0.12) !important;
+}
+
+.eterx-action-group-header {
+  background: rgba(255, 255, 255, 0.012);
+}
+
+/* Keep the jump-to-latest control attached to the composer corner. On narrow
+   layouts it sits inside the shell so it remains fully reachable. */
+@media (max-width: 768px) {
+  .eterx-composer-scroll-latest {
+    right: 8px !important;
+  }
+}
+
 
 /* ── DeepWork Professional Markdown & Table Styling ────────────────────── */
 .eterx-markdown-table-wrap {
@@ -8186,9 +8403,9 @@ body.eterx-gateway-view .eterx-channels-view::before {
 
 .eterx-markdown-table {
   width: 100% !important;
-  min-width: 100% !important;
+  min-width: max(100%, 48rem) !important;
   border-collapse: collapse !important;
-  table-layout: fixed !important;
+  table-layout: auto !important;
 }
 
 .eterx-markdown-th {
@@ -8363,21 +8580,6 @@ body.eterx-gateway-view section.mt-7:not(.eterx-mcp-panel):not(.eterx-skills-pan
   display: none !important;
 }
 
-/* Keep the Gateway surface clean without removing access to long connector
-   lists or smaller screens that still need to scroll. */
-body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto,
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto::-webkit-scrollbar,
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
-}
-
 /* Single-viewport Gateway layout: the rail is compact enough to show the
    catalog without creating a second scrollbar. */
 body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto {
@@ -8403,28 +8605,6 @@ body.eterx-gateway-view section.mt-8 > main {
   overflow-x: hidden !important;
   scrollbar-gutter: stable;
 }
-body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto,
-body.eterx-gateway-view section.mt-8 > main {
-  scrollbar-width: auto;
-  scrollbar-color: var(--eterx-sb-thumb) transparent;
-}
-body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar,
-body.eterx-gateway-view section.mt-8 > main::-webkit-scrollbar {
-  width: var(--eterx-sb-size) !important;
-  height: var(--eterx-sb-size) !important;
-}
-body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb,
-body.eterx-gateway-view section.mt-8 > main::-webkit-scrollbar-thumb {
-  background: var(--eterx-sb-thumb) !important;
-  border: var(--eterx-sb-inset) solid transparent !important;
-  border-radius: var(--eterx-sb-radius) !important;
-  background-clip: padding-box !important;
-}
-body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb:hover,
-body.eterx-gateway-view section.mt-8 > main::-webkit-scrollbar-thumb:hover {
-  background: var(--eterx-sb-thumb-hover) !important;
-  background-clip: padding-box !important;
-}
 body.eterx-gateway-view section.mt-8 > aside {
   height: 100% !important;
   min-height: 0 !important;
@@ -8439,60 +8619,6 @@ body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto 
 body.eterx-mcp-mode .h-full.min-h-0.w-full.overflow-y-auto {
   overflow-y: auto !important;
   overflow-x: hidden !important;
-  scrollbar-width: auto;
-  -ms-overflow-style: auto;
-}
-
-body.eterx-mcp-mode .h-full.min-h-0.w-full.overflow-y-auto::-webkit-scrollbar {
-  display: block;
-  width: auto;
-  height: auto;
-}
-
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
-  display: block;
-  max-height: 430px !important;
-  overflow-y: auto !important;
-  overflow-x: hidden;
-  padding-right: 0.15rem;
-  scrollbar-width: auto;
-  scrollbar-color: var(--eterx-sb-thumb) transparent;
-}
-
-:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
-  scrollbar-color: rgba(255, 255, 255, .28) transparent;
-}
-
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar {
-  display: block;
-  width: var(--eterx-sb-size) !important;
-  height: var(--eterx-sb-size) !important;
-}
-
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb {
-  border-radius: var(--eterx-sb-radius) !important;
-  background: var(--eterx-sb-thumb) !important;
-  border: var(--eterx-sb-inset) solid transparent !important;
-  background-clip: padding-box !important;
-}
-
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb:hover {
-  background: var(--eterx-sb-thumb-hover) !important;
-  background-clip: padding-box !important;
-}
-
-:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb {
-  background: var(--eterx-sb-thumb) !important;
-  background-clip: padding-box !important;
-}
-
-:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb:hover {
-  background: var(--eterx-sb-thumb-hover) !important;
-  background-clip: padding-box !important;
 }
 
 body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto > button {
@@ -8624,38 +8750,6 @@ body.eterx-gateway-view .eterx-mcp-panel h2 {
 body.eterx-gateway-view .eterx-mcp-panel h3 {
   font-size: .9rem;
 }
-
-/* Connector surfaces use the app-wide EterX scrollbar. */
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
-  scrollbar-width: auto;
-  scrollbar-color: var(--eterx-sb-thumb) transparent;
-}
-
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar {
-  width: var(--eterx-sb-size) !important;
-  height: var(--eterx-sb-size) !important;
-}
-
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb {
-  border-radius: var(--eterx-sb-radius) !important;
-  background: var(--eterx-sb-thumb) !important;
-  border: 1px solid transparent;
-  background-clip: padding-box;
-}
-
-:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto {
-  scrollbar-color: rgba(255, 255, 255, .3) transparent;
-}
-
-:root[data-theme="dark"] body.eterx-gateway-view .max-h-\[500px\].overflow-y-auto::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, .3);
-  background-clip: padding-box;
-}
-
 
 body.eterx-mcp-mode .eterx-mcp-panel {
   animation: eterx-gateway-panel-in 180ms ease-out both;
@@ -9105,23 +9199,6 @@ body.eterx-gateway-view main a {
   display: none !important;
 }
 
-.eterx-channel-cta::after {
-  content: '›';
-  position: absolute;
-  top: 50%;
-  right: 1rem;
-  display: inline-block;
-  transform: translateY(-50%);
-  font-size: 1.25rem;
-  font-weight: 600;
-  line-height: 1;
-  transition: transform 160ms ease;
-}
-
-.eterx-channel-cta:hover::after {
-  transform: translate(3px, -50%);
-}
-
 .eterx-channel-cta {
   position: relative;
   min-width: 172px;
@@ -9129,13 +9206,13 @@ body.eterx-gateway-view main a {
   border-radius: 9999px !important;
   justify-content: flex-start;
   padding-left: 1.5rem !important;
-  padding-right: 2.75rem !important;
+  padding-right: 1.5rem !important;
   font-size: 15px !important;
   letter-spacing: -0.01em;
 }
 
-/* Final Gateway communication layout: fixed outer window, full-height panel,
-   and one internal scrollbar for the connector rail. */
+/* Final Gateway communication layout: fixed outer window with the shared EterX
+   scrollbar on the connector rail and detail pane. */
 body.eterx-gateway-view .h-full.min-h-0.w-full.overflow-y-auto {
   height: 100vh !important;
   max-height: 100vh !important;
@@ -9164,14 +9241,18 @@ body.eterx-gateway-view section.mt-8 > aside > .max-h-\[500px\].overflow-y-auto 
   min-height: 0 !important;
   max-height: none !important;
   overflow-y: auto !important;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
 }
 body.eterx-gateway-view section.mt-8 > main {
   height: 100% !important;
   max-height: 100% !important;
   min-height: 0 !important;
-  overflow-y: scroll !important;
+  overflow-y: auto !important;
   overflow-x: hidden !important;
   display: block !important;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
 }
 
 /* Dark-theme composer contrast pass: keep primary labels bright, secondary

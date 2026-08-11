@@ -4,6 +4,13 @@ import type { ProjectContext } from '../schemas';
 import type { MainAgentMode } from '../model-routing';
 import type { ScopedRuntimeSettings } from '../runtime-api-keys';
 import { getEterxWorkspaceDir } from '../storage-paths';
+import { adaptiveExperience, resolveSelfImprovementEnabled } from '../self-improvement/engine';
+import {
+  delegationTelemetryFromTrace,
+  type DelegatedAgentEvidence,
+  type DelegationCollectionSummary,
+  type DelegationTelemetry,
+} from '../delegation-evidence';
 
 type TraceFn = (trace: any) => void;
 type ProxyAction = 'observe' | 'steer' | 'redirect' | 'challenge' | 'request_real_user' | 'interrupt_main' | 'stop_main' | 'approve_completion';
@@ -13,8 +20,10 @@ type ProxyDecision = {
   message?: string;
   reason?: string;
   remainingGoalGap?: string;
-  confidence?: number;
   severity?: 'low' | 'medium' | 'high' | 'critical';
+  counterfactualImpact?: 'none' | 'minor' | 'material' | 'critical';
+  evidenceQuality?: 'none' | 'indirect' | 'direct' | 'user_authorized';
+  interventionCost?: 'low' | 'medium' | 'high';
   evidenceEventIds?: number[];
   visibilityGap?: string;
   optionalImprovement?: boolean;
@@ -72,6 +81,7 @@ type ProxyEvent = {
   risk: boolean;
   repeated: boolean;
   timestamp: number;
+  delegation?: DelegationTelemetry;
 };
 
 type DeliverableEvidence = {
@@ -152,6 +162,12 @@ type ProxyState = {
     recoveryBranches: string[];
     verificationGates: string[];
   };
+  delegationModel: {
+    revision: number;
+    completionGuardRevision: number;
+    agents: Record<string, DelegatedAgentEvidence>;
+    lastCollection?: DelegationCollectionSummary;
+  };
   updatedAt: number;
 };
 
@@ -191,8 +207,6 @@ const CADENCE_SETTINGS = {
     failuresBeforeGuidance: 3,
     eventsAfterIntervention: 4,
     maxMidRunInterventions: 1,
-    confidence: 0.86,
-    completionConfidence: 0.88,
   },
   normal: {
     scoreThreshold: REVIEW_SCORE_THRESHOLD,
@@ -202,8 +216,6 @@ const CADENCE_SETTINGS = {
     failuresBeforeGuidance: 2,
     eventsAfterIntervention: MIN_EVENTS_AFTER_INTERVENTION,
     maxMidRunInterventions: 4,
-    confidence: 0.72,
-    completionConfidence: 0.76,
   },
   close: {
     scoreThreshold: 5,
@@ -213,8 +225,6 @@ const CADENCE_SETTINGS = {
     failuresBeforeGuidance: 2,
     eventsAfterIntervention: 1,
     maxMidRunInterventions: 8,
-    confidence: 0.66,
-    completionConfidence: 0.72,
   },
 } as const;
 
@@ -326,8 +336,16 @@ function extractDecision(raw: string): ProxyDecision {
       message: compact(parsed.message, 1600),
       reason: compact(parsed.reason, 900),
       remainingGoalGap: compact(parsed.remainingGoalGap, 1200),
-      confidence: Number.isFinite(Number(parsed.confidence)) ? Math.max(0, Math.min(1, Number(parsed.confidence))) : undefined,
       severity,
+      counterfactualImpact: new Set(['none', 'minor', 'material', 'critical']).has(parsed.counterfactualImpact)
+        ? parsed.counterfactualImpact
+        : undefined,
+      evidenceQuality: new Set(['none', 'indirect', 'direct', 'user_authorized']).has(parsed.evidenceQuality)
+        ? parsed.evidenceQuality
+        : undefined,
+      interventionCost: new Set(['low', 'medium', 'high']).has(parsed.interventionCost)
+        ? parsed.interventionCost
+        : undefined,
       evidenceEventIds: Array.isArray(parsed.evidenceEventIds)
         ? parsed.evidenceEventIds.map(Number).filter(Number.isFinite).slice(0, 8)
         : [],
@@ -502,7 +520,11 @@ export class UserProxyRuntime {
   private reviewScore = 0;
   private consecutiveFailures = 0;
   private reviewPromise: Promise<ProxyDecision> | null = null;
+  private reviewEpoch = 0;
+  private deferredReviewTrigger: string | null = null;
   private reviewTimer: NodeJS.Timeout | null = null;
+  private armedReviewTrigger: string | null = null;
+  private lastDelegationReviewFingerprint = '';
   private persistTimer: NodeJS.Timeout | null = null;
   private stopped = false;
   private paused = false;
@@ -560,6 +582,11 @@ export class UserProxyRuntime {
         recoveryBranches: [],
         verificationGates: [],
       },
+      delegationModel: {
+        revision: 0,
+        completionGuardRevision: 0,
+        agents: {},
+      },
       updatedAt: Date.now(),
     };
     this.state = this.restoreCompatibleState(freshState);
@@ -585,15 +612,20 @@ export class UserProxyRuntime {
 
   stop(): void {
     this.stopped = true;
+    this.deferredReviewTrigger = null;
     if (this.reviewTimer) clearTimeout(this.reviewTimer);
+    this.reviewTimer = null;
+    this.armedReviewTrigger = null;
     if (this.state.status !== 'complete') this.state.status = 'stopped';
     this.persistNow();
   }
 
   pause(): void {
     this.paused = true;
+    this.deferredReviewTrigger = null;
     if (this.reviewTimer) clearTimeout(this.reviewTimer);
     this.reviewTimer = null;
+    this.armedReviewTrigger = null;
     if (this.state.status !== 'complete') this.state.status = 'stopped';
     this.persistNow();
   }
@@ -613,6 +645,7 @@ export class UserProxyRuntime {
     if (this.reviewTimer) {
       clearTimeout(this.reviewTimer);
       this.reviewTimer = null;
+      this.armedReviewTrigger = null;
     }
     if (level === 'minimal') {
       this.reviewScore = Math.min(this.reviewScore, CADENCE_SETTINGS.quiet.scoreThreshold - 1);
@@ -743,7 +776,8 @@ export class UserProxyRuntime {
       situationModel: this.state.situationModel,
       complexityModel: this.state.complexityModel,
       interventionLevel: this.selectedIntervention,
-      recentEvents: this.state.events.slice(-18).map(event => ({ id: event.id, kind: event.kind, type: event.type, text: event.text, failed: event.failed, risk: event.risk, timestamp: event.timestamp })),
+      recentEvents: this.state.events.slice(-18).map(event => ({ id: event.id, kind: event.kind, type: event.type, text: event.text, failed: event.failed, risk: event.risk, delegation: event.delegation, timestamp: event.timestamp })),
+      delegationModel: this.state.delegationModel,
       recentInterventions: this.state.interventions.slice(-6),
       managerDirectives: this.state.managerDirectives.slice(-10),
       coordinationEvents: this.state.coordinationEvents.slice(-16),
@@ -789,8 +823,21 @@ export class UserProxyRuntime {
       this.mainPhase = 'acting';
     } else if (['error'].includes(traceType)) {
       this.mainPhase = 'recovering';
-    } else if (['tool_result', 'file_preview', 'evidence', 'work_note'].includes(traceType)) {
+    } else if (['tool_result', 'tool_result_preview', 'file_preview', 'evidence', 'work_note', 'inter_agent_message'].includes(traceType)) {
       this.mainPhase = 'working';
+    }
+
+    if (
+      this.deferredReviewTrigger &&
+      !this.reviewPromise &&
+      !this.reviewTimer &&
+      !this.pendingGuidance &&
+      this.mainPhase !== 'composing' &&
+      this.mainPhase !== 'completion_review'
+    ) {
+      const deferred = this.deferredReviewTrigger;
+      this.deferredReviewTrigger = null;
+      this.scheduleReview(deferred);
     }
 
     if (trace.type === 'steering_received') {
@@ -801,6 +848,7 @@ export class UserProxyRuntime {
     if (!event) return;
     this.state.events.push(event);
     if (this.state.events.length > MAX_EVENTS) this.state.events = this.state.events.slice(-MAX_EVENTS);
+    this.updateDelegationModel(event);
     this.updateWorldModel(event);
     const conditionalDirective = this.state.managerDirectives.find(item =>
       item.status === 'pending' && item.timing === 'when_relevant' && item.expiresAt && item.expiresAt > Date.now(),
@@ -813,11 +861,33 @@ export class UserProxyRuntime {
     this.reviewScore += this.eventScore(event);
     this.schedulePersist();
 
+    if (event.delegation && event.delegation.kind !== 'spawn') {
+      if (!this.pendingGuidance && Date.now() >= this.humanOverrideUntil) {
+        const isCollectedBoundary = event.delegation.kind === 'collection';
+        const collectionGrounded = event.delegation.collection?.fullyGrounded === true;
+        // A result event is followed by its automatic mailbox handoff. Reviewing
+        // the lifecycle edge first races the actual payload and wastes a model
+        // pass. Reconcile only at a delivered/collected boundary; completion has
+        // a deterministic guard if that boundary never arrives.
+        const delegationFingerprint = this.delegationStateFingerprint();
+        if (
+          isCollectedBoundary &&
+          delegationFingerprint !== this.lastDelegationReviewFingerprint &&
+          this.scheduleReview(collectionGrounded ? 'delegation_evidence_boundary' : 'delegation_evidence_gap')
+        ) {
+          this.lastDelegationReviewFingerprint = delegationFingerprint;
+          this.bootstrapReviewPending = false;
+        }
+      }
+      return;
+    }
+
     if (this.pendingGuidance || Date.now() < this.humanOverrideUntil) return;
     const cadence = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence];
     if (
       this.bootstrapReviewPending &&
       this.state.events.length >= cadence.bootstrapAfterEvents &&
+      event.delegation?.kind !== 'spawn' &&
       (this.state.adaptivePolicy.cadence === 'close' || event.kind !== 'intent')
     ) {
       if (this.scheduleReview('task_bootstrap')) this.bootstrapReviewPending = false;
@@ -839,13 +909,44 @@ export class UserProxyRuntime {
     }
   }
 
-  async reviewCompletion(candidate: string): Promise<ProxyDecision> {
+  private getDelegationCompletionGap(): { message: string; eventIds: number[] } | null {
+    const agents = Object.values(this.state.delegationModel.agents);
+    if (agents.length === 0) return null;
+    const pending = agents.filter(agent => agent.resultUsability === 'pending');
+    const uncollectedUsable = agents.filter(agent => agent.resultUsability === 'usable' && !agent.collected);
+    const uncollectedTerminalGap = agents.filter(agent =>
+      ['empty', 'failed', 'cancelled'].includes(agent.resultUsability) && !agent.collected
+    );
+    if (pending.length === 0 && uncollectedUsable.length === 0 && uncollectedTerminalGap.length === 0) return null;
+
+    const names = (items: DelegatedAgentEvidence[]) => items.slice(0, 6).map(item => item.name).join(', ');
+    const details = [
+      uncollectedUsable.length ? `usable results not yet consumed from ${names(uncollectedUsable)}` : '',
+      pending.length ? `work still pending from ${names(pending)}` : '',
+      uncollectedTerminalGap.length ? `empty/failed terminal results not yet acknowledged from ${names(uncollectedTerminalGap)}` : '',
+    ].filter(Boolean).join('; ');
+    const eventIds = this.state.events
+      .filter(event => Boolean(event.delegation))
+      .slice(-8)
+      .map(event => event.id);
+    return {
+      message: `Delegated evidence is unresolved: ${details}. Before finalizing, either consume the actual usable payloads or explicitly proceed without relying on those assignments. Do not invent, infer, or attribute findings that were never received.`,
+      eventIds,
+    };
+  }
+
+  async settleCompletion(candidate: string): Promise<ProxyDecision> {
     if (this.stopped || this.paused) return { action: 'approve_completion', reason: 'Proxy inactive.' };
+    void candidate;
+    // Invalidate any in-flight advisory review. Completion must not wait for a
+    // second model or allow a stale background decision to reopen finished work.
+    this.reviewEpoch += 1;
+    this.deferredReviewTrigger = null;
     if (this.reviewTimer) {
       clearTimeout(this.reviewTimer);
       this.reviewTimer = null;
+      this.armedReviewTrigger = null;
     }
-    if (this.reviewPromise) await this.reviewPromise.catch(() => undefined);
     if (this.pendingGuidance) {
       return {
         action: 'steer',
@@ -855,69 +956,105 @@ export class UserProxyRuntime {
       };
     }
 
-    this.state.status = 'reviewing';
+    const delegationGap = this.getDelegationCompletionGap();
+    if (delegationGap && this.state.delegationModel.completionGuardRevision < this.state.delegationModel.revision) {
+      // At most once for a particular evidence revision. A new payload or a
+      // newly spawned assignment creates a new causal state and may justify one
+      // later correction; retrying completion without new evidence cannot loop.
+      this.state.delegationModel.completionGuardRevision = this.state.delegationModel.revision;
+      const decision: ProxyDecision = {
+        action: 'steer',
+        message: delegationGap.message,
+        reason: 'Delegated lifecycle activity is not proof that Main received a usable result payload.',
+        remainingGoalGap: delegationGap.message,
+        severity: 'high',
+        counterfactualImpact: 'material',
+        evidenceQuality: 'direct',
+        interventionCost: 'low',
+        evidenceEventIds: delegationGap.eventIds,
+        promptIntent: {
+          outcome: 'Resolve or explicitly discard outstanding delegated evidence before making final claims.',
+          preserveRules: ['Never infer a sub-agent finding from lifecycle status alone.'],
+          acceptanceEvidence: 'every relied-on delegated finding has an actually consumed, usable payload',
+          strategyFreedom: 'free',
+          whyNow: 'Main reached its natural completion boundary with unresolved delegation lineage.',
+        },
+      };
+      if (this.applyDecision(decision, true)) return decision;
+    }
+
     this.mainPhase = 'completion_review';
-    for (const directive of this.state.managerDirectives) {
-      if (directive.status === 'pending' && directive.timing === 'before_completion') {
-        directive.status = 'active';
-        this.addCoordinationEvent('proxy_acknowledgement', 'Completion boundary reached; runtime Proxy activated the staged concept for semantic review.', directive.id);
-      }
-    }
-    let decision: ProxyDecision;
-    try {
-      decision = await this.runReview('completion_candidate', candidate);
-    } catch (error: any) {
-      // Proxy capacity must never turn a successful Main run into a failure.
-      this.state.status = 'complete';
-      this.schedulePersist();
-      return {
-        action: 'approve_completion',
-        reason: `Proxy review unavailable; completion left to Main: ${compact(error?.message || error, 180)}`,
+    // A user-authored before-completion directive is already authoritative and
+    // needs no semantic critic pass. Flush it once through the normal steering
+    // queue; the agent loop will consume it as late steering if still active.
+    const stagedDirective = this.state.managerDirectives.find(item =>
+      item.status === 'pending' &&
+      item.timing === 'before_completion' &&
+      item.target !== 'proxy',
+    );
+    if (stagedDirective) {
+      stagedDirective.status = 'active';
+      this.addCoordinationEvent(
+        'proxy_acknowledgement',
+        'Completion boundary reached; the explicit staged directive was released without starting another AI review.',
+        stagedDirective.id,
+      );
+      const action: ProxyAction = stagedDirective.requestedAction === 'stop_main'
+        ? 'stop_main'
+        : stagedDirective.requestedAction === 'interrupt_main'
+          ? 'interrupt_main'
+          : 'steer';
+      const decision: ProxyDecision = {
+        action,
+        message: stagedDirective.message,
+        reason: stagedDirective.rationale || 'Explicit Proxy Manager directive scheduled for the completion boundary.',
+        remainingGoalGap: stagedDirective.message,
+        severity: stagedDirective.urgency === 'critical' ? 'critical' : stagedDirective.urgency === 'high' ? 'high' : 'medium',
+        counterfactualImpact: stagedDirective.urgency === 'critical' ? 'critical' : 'material',
+        evidenceQuality: 'user_authorized',
+        interventionCost: 'low',
+        managerDirectiveId: stagedDirective.id,
+        promptIntent: {
+          outcome: stagedDirective.message,
+          preserveRules: this.state.contract.explicitRules.slice(0, 4),
+          acceptanceEvidence: this.state.contract.successEvidence[0] || 'the requested outcome is observably complete',
+          strategyFreedom: 'bounded',
+          whyNow: 'The user explicitly selected the before-completion boundary.',
+        },
       };
+      if (this.applyDecision(decision, true)) return decision;
+      stagedDirective.status = 'delivered';
+      stagedDirective.deliveredAt = Date.now();
+      stagedDirective.disposition = 'Equivalent guidance was already delivered; no duplicate completion interruption was emitted.';
     }
 
-    this.applyAdaptiveUpdates(decision);
+    const followUp = this.state.managerDirectives.find(item => item.status === 'pending' && item.timing === 'after_current');
+    if (followUp) {
+      const queued = this.options.queueNext(
+        followUp.message,
+        followUp.rationale || 'The user explicitly scheduled this as a separate task after the current task.',
+      );
+      followUp.status = queued ? 'delivered' : 'rejected';
+      followUp.deliveredAt = queued ? Date.now() : undefined;
+      followUp.disposition = queued
+        ? 'Queued as an isolated successor task; it was not injected into the completing run.'
+        : 'Could not queue the successor task.';
+      this.addCoordinationEvent(queued ? 'proxy_delivery' : 'proxy_rejection', followUp.disposition, followUp.id);
+    }
 
-    if (decision.action === 'approve_completion' || decision.action === 'observe' || decision.optionalImprovement) {
-      const followUp = this.state.managerDirectives.find(item => item.status === 'pending' && item.timing === 'after_current');
-      if (followUp) {
-        const queued = this.options.queueNext(
-          followUp.message,
-          followUp.rationale || 'The user explicitly scheduled this as a separate task after the current task.',
-        );
-        followUp.status = queued ? 'delivered' : 'rejected';
-        followUp.deliveredAt = queued ? Date.now() : undefined;
-        followUp.disposition = queued
-          ? 'Queued as an isolated successor task; it was not injected into the completing run.'
-          : 'Could not queue the successor task.';
-        this.addCoordinationEvent(queued ? 'proxy_delivery' : 'proxy_rejection', followUp.disposition, followUp.id);
-      }
-      this.state.status = 'complete';
-      this.options.onTrace?.({
-        type: 'autonomy_proxy_status',
-        phase: 'approved',
-        text: 'User Proxy accepted completion',
-        _autonomyProxy: true,
-        timestamp: Date.now(),
-      });
-      this.schedulePersist();
-      return { ...decision, action: 'approve_completion' };
-    }
-    if (!this.isGroundedDecision(decision, true, candidate)) {
-      this.state.status = 'complete';
-      this.schedulePersist();
-      return { action: 'approve_completion', reason: 'Proxy rejection lacked concrete evidence.' };
-    }
-    const delivered = this.applyDecision(decision, true);
-    if (!delivered) {
-      this.state.status = 'complete';
-      this.schedulePersist();
-      return {
-        action: 'approve_completion',
-        reason: 'Proxy did not deliver a new actionable correction, so completion was not blocked.',
-      };
-    }
-    return decision;
+    this.state.status = 'complete';
+    this.options.onTrace?.({
+      type: 'autonomy_proxy_status',
+      phase: 'approved',
+      text: 'Completion settled at the natural execution boundary',
+      _autonomyProxy: true,
+      timestamp: Date.now(),
+    });
+    this.schedulePersist();
+    return {
+      action: 'approve_completion',
+      reason: 'Completion settled without a post-answer AI critic or rewrite loop.',
+    };
   }
 
   private restoreCompatibleState(freshState: ProxyState): ProxyState {
@@ -996,6 +1133,17 @@ export class UserProxyRuntime {
           recoveryBranches: Array.isArray(saved?.complexityModel?.recoveryBranches) ? unique(saved.complexityModel.recoveryBranches, 12) : [],
           verificationGates: Array.isArray(saved?.complexityModel?.verificationGates) ? unique(saved.complexityModel.verificationGates, 12) : [],
         },
+        delegationModel: {
+          revision: Number(saved?.delegationModel?.revision || 0),
+          completionGuardRevision: Number(
+            saved?.delegationModel?.completionGuardRevision ??
+            (saved?.delegationModel?.completionGuardIssued === true ? saved?.delegationModel?.revision || 0 : 0),
+          ),
+          agents: saved?.delegationModel?.agents && typeof saved.delegationModel.agents === 'object'
+            ? Object.fromEntries(Object.entries(saved.delegationModel.agents).slice(-24)) as Record<string, DelegatedAgentEvidence>
+            : {},
+          lastCollection: saved?.delegationModel?.lastCollection,
+        },
         status: saved.status || 'watching',
       };
     } catch {
@@ -1012,13 +1160,28 @@ export class UserProxyRuntime {
     }
 
     const tool = compact(trace.tool || trace.toolName || trace.name || trace.functionName || '', 120);
-    const rawText = trace.text || trace.data || trace.output || trace.result || trace.error || trace.message ||
+    const delegation = delegationTelemetryFromTrace(trace);
+    const delegationDetails = delegation
+      ? delegation.agents.map(agent =>
+          `${agent.name} [${agent.resultUsability}; collected=${agent.collected}; verified=${agent.verificationStatus}; payload=${agent.payloadTruncated ? 'bounded handoff' : 'complete snapshot'}]: ${agent.resultSummary}`
+        ).join('\n')
+      : '';
+    const rawText = delegation
+      ? `${delegation.summary}${delegationDetails ? `\n${delegationDetails}` : ''}`
+      : trace.text || trace.data || trace.output || trace.result || trace.error || trace.message ||
       (tool ? `${tool} ${JSON.stringify(trace.args || trace.input || {})}` : '');
-    const text = compact(rawText, type === 'thought_stream' ? 900 : 1800);
+    const text = compact(rawText, type === 'thought_stream' ? 900 : delegation ? 4200 : 1800);
     if (!text && !tool) return null;
 
-    const failed = type === 'error' || trace.success === false || trace.status === 'failed' ||
-      /\b(error|failed|denied|rate limit|timed out|timeout|not found|unable to)\b/i.test(text);
+    const delegationFailed = Boolean(delegation && delegation.kind !== 'spawn'
+      && delegation.agents.length > 0
+      && delegation.agents.every(agent => ['empty', 'failed', 'cancelled'].includes(agent.resultUsability)));
+    // A usable specialist report may discuss failures as its subject matter.
+    // Delegation failure comes from structured lineage, never keyword sentiment.
+    const failed = delegation
+      ? delegationFailed
+      : type === 'error' || trace.success === false || trace.status === 'failed' ||
+        /\b(error|failed|denied|rate limit|timed out|timeout|not found|unable to)\b/i.test(text);
     const risk = this.detectRisk(tool, text);
     const signature = this.eventSignature(type, tool, text, trace);
     const count = (this.state.actionCounts[signature] || 0) + 1;
@@ -1027,7 +1190,7 @@ export class UserProxyRuntime {
     return {
       id: ++this.eventCounter,
       type,
-      kind: this.eventKind(type, failed),
+      kind: delegation ? (delegation.kind === 'spawn' ? 'action' : failed ? 'failure' : 'result') : this.eventKind(type, failed),
       text,
       tool: tool || undefined,
       signature,
@@ -1035,6 +1198,7 @@ export class UserProxyRuntime {
       risk,
       repeated,
       timestamp: Date.now(),
+      delegation: delegation || undefined,
     };
   }
 
@@ -1072,6 +1236,38 @@ export class UserProxyRuntime {
     return forbiddenTerms.length >= 2 && forbiddenTerms.filter(term => combined.toLowerCase().includes(term)).length >= 2;
   }
 
+  private updateDelegationModel(event: ProxyEvent): void {
+    const telemetry = event.delegation;
+    if (!telemetry) return;
+    for (const agent of telemetry.agents) {
+      const key = agent.agentId || agent.subAgentChatId || agent.name.toLowerCase();
+      const existing = this.state.delegationModel.agents[key];
+      this.state.delegationModel.agents[key] = {
+        ...(existing || {}),
+        ...agent,
+        // Collection is monotonic only for the same payload. A worker that was
+        // polled while pending can later produce a new, unconsumed result.
+        collected: Boolean(
+          agent.collected ||
+          (existing?.collected && existing.resultHash && existing.resultHash === agent.resultHash),
+        ),
+      };
+    }
+    if (telemetry.collection) this.state.delegationModel.lastCollection = telemetry.collection;
+    this.state.delegationModel.revision += 1;
+    const entries = Object.entries(this.state.delegationModel.agents);
+    if (entries.length > 24) {
+      this.state.delegationModel.agents = Object.fromEntries(entries.slice(-24));
+    }
+  }
+
+  private delegationStateFingerprint(): string {
+    return Object.entries(this.state.delegationModel.agents)
+      .map(([key, agent]) => `${key}:${agent.resultHash || '-'}:${agent.resultUsability}:${agent.collected ? 1 : 0}`)
+      .sort()
+      .join('|');
+  }
+
   private updateWorldModel(event: ProxyEvent): void {
     this.state.actionCounts[event.signature] = (this.state.actionCounts[event.signature] || 0) + 1;
     this.consecutiveFailures = event.failed ? this.consecutiveFailures + 1 : event.kind === 'result' || event.kind === 'artifact' ? 0 : this.consecutiveFailures;
@@ -1090,6 +1286,16 @@ export class UserProxyRuntime {
   }
 
   private eventScore(event: ProxyEvent): number {
+    if (event.delegation?.kind === 'collection') {
+      // A semantic handoff is a material checkpoint even when healthy: Proxy
+      // should reconcile what actually arrived with the task, not merely note
+      // that a worker changed lifecycle state.
+      return event.delegation.collection?.fullyGrounded ? 10 : 12;
+    }
+    if (event.delegation?.kind === 'result') {
+      return event.delegation.agents.some(agent => agent.evidenceReady && !agent.collected) ? 9 : 6;
+    }
+    if (event.delegation?.kind === 'spawn') return 2;
     const attentionMatch = this.state.adaptivePolicy.attentionSignals.some(signal => {
       const terms = signal.toLowerCase().match(/[a-z0-9]{4,}/g) || [];
       return terms.length > 0 && terms.some(term => event.text.toLowerCase().includes(term));
@@ -1112,8 +1318,37 @@ export class UserProxyRuntime {
     return 'consecutive_execution_failures';
   }
 
+  private reviewTriggerPriority(value: string | null): number {
+    if (!value) return 0;
+    if (value === 'possible_constraint_or_safety_violation') return 100;
+    if (value === 'delegation_evidence_gap') return 90;
+    if (value === 'proxy_manager_directive') return 85;
+    if (value === 'delegation_evidence_boundary') return 75;
+    if (value.includes('failure')) return 70;
+    return 20;
+  }
+
+  private deferReview(trigger: string): void {
+    if (this.reviewTriggerPriority(trigger) >= this.reviewTriggerPriority(this.deferredReviewTrigger)) {
+      this.deferredReviewTrigger = trigger;
+    }
+  }
+
   private scheduleReview(trigger: string): boolean {
-    if (this.reviewPromise || this.reviewTimer || this.stopped || this.pendingGuidance || this.mainPhase === 'composing' || this.mainPhase === 'completion_review') return false;
+    if (this.stopped || this.paused || this.pendingGuidance) return false;
+    // Several messages can be delivered in one mailbox batch. They share one
+    // final state snapshot, so upgrade the armed review to the strongest cause
+    // instead of turning the batch into N reviews.
+    if (this.reviewTimer) {
+      if (this.reviewTriggerPriority(trigger) >= this.reviewTriggerPriority(this.armedReviewTrigger)) {
+        this.armedReviewTrigger = trigger;
+      }
+      return true;
+    }
+    if (this.reviewPromise || this.mainPhase === 'composing' || this.mainPhase === 'completion_review') {
+      this.deferReview(trigger);
+      return true;
+    }
     const elapsed = Date.now() - this.state.lastDecisionAt;
     const urgent = trigger !== 'material_execution_checkpoint';
     // Do not arm a delayed background review that can wake while Main is
@@ -1122,16 +1357,26 @@ export class UserProxyRuntime {
     // reviewed immediately.
     if (!urgent && elapsed < CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].minIntervalMs) return false;
     const delay = 0;
+    const reviewEpoch = this.reviewEpoch;
+    this.armedReviewTrigger = trigger;
     this.reviewTimer = setTimeout(() => {
+      const scheduledTrigger = this.armedReviewTrigger || trigger;
       this.reviewTimer = null;
-      if (this.stopped || this.reviewPromise || this.pendingGuidance || this.mainPhase === 'composing' || this.mainPhase === 'completion_review' || (trigger !== 'proxy_manager_directive' && Date.now() < this.humanOverrideUntil)) return;
-      this.reviewPromise = this.runReview(trigger)
+      this.armedReviewTrigger = null;
+      if (this.stopped || this.reviewPromise || this.pendingGuidance || this.mainPhase === 'composing' || this.mainPhase === 'completion_review' || (scheduledTrigger !== 'proxy_manager_directive' && Date.now() < this.humanOverrideUntil)) {
+        this.deferReview(scheduledTrigger);
+        return;
+      }
+      this.reviewPromise = this.runReview(scheduledTrigger)
         .then(decision => {
+          if (reviewEpoch !== this.reviewEpoch || this.stopped || this.paused || this.state.status === 'complete') {
+            return { action: 'observe' as const, reason: 'Review became stale at the completion boundary.' };
+          }
           this.applyAdaptiveUpdates(decision);
-          if (this.isGroundedDecision(decision, false)) this.applyDecision(decision, false);
+          if (this.isGroundedDecision(decision)) this.applyDecision(decision, false);
           else {
             this.state.status = 'watching';
-            if (trigger === 'proxy_manager_directive') this.settleObservedManagerDirective(decision);
+            if (scheduledTrigger === 'proxy_manager_directive') this.settleObservedManagerDirective(decision);
           }
           return decision;
         })
@@ -1142,13 +1387,18 @@ export class UserProxyRuntime {
         .finally(() => {
           this.reviewPromise = null;
           this.schedulePersist();
+          const deferred = this.deferredReviewTrigger;
+          this.deferredReviewTrigger = null;
+          if (deferred && !this.stopped && !this.paused && this.state.status !== 'complete') {
+            this.scheduleReview(deferred);
+          }
         });
     }, delay);
     this.reviewTimer.unref?.();
     return true;
   }
 
-  private async runReview(trigger: string, completionCandidate = ''): Promise<ProxyDecision> {
+  private async runReview(trigger: string): Promise<ProxyDecision> {
     this.reviewScore = 0;
     this.state.lastDecisionAt = Date.now();
     this.state.status = 'reviewing';
@@ -1156,10 +1406,11 @@ export class UserProxyRuntime {
     const recentRisk = this.state.events.slice(-10).some(event => event.risk || event.repeated);
     const posture = this.state.adaptivePolicy.cadence;
     const reviewDepth: 'scan' | 'standard' | 'deep' =
-      completionCandidate || recentRisk || trigger === 'possible_constraint_or_safety_violation'
+      recentRisk || trigger === 'possible_constraint_or_safety_violation' || trigger === 'delegation_evidence_gap'
         ? 'deep'
         : trigger === 'task_bootstrap' ||
           trigger === 'proxy_manager_directive' ||
+          trigger === 'delegation_evidence_boundary' ||
           trigger === 'intervention_changed' ||
           this.consecutiveFailures >= 2 ||
           (posture === 'close' && trigger === 'material_execution_checkpoint')
@@ -1182,14 +1433,31 @@ export class UserProxyRuntime {
     const deliverables = Object.entries(this.state.deliverableEvidence).map(([name, evidence]) =>
       `- ${name}: ${evidence.verified ? 'verified evidence observed' : evidence.observed ? 'mentioned but not verified' : 'not observed'}${evidence.evidenceEventIds.length ? ` [events ${evidence.evidenceEventIds.join(', ')}]` : ''}`,
     ).join('\n') || '(No explicit deliverables extracted.)';
+    const learnedOperatingModel = resolveSelfImprovementEnabled((this.options.context as any).selfImprovementEnabled)
+      ? await adaptiveExperience.getExecutionContext({
+        enabled: true,
+        userId: (this.options.context as any).userId || 'user',
+        projectId: this.options.context.projectId,
+        workspaceKey: String((this.options.context as any).workspacePath || (this.options.context as any).workspaceRoot || ''),
+        agentRuntime: 'user_proxy',
+        role: 'proxy',
+        request: this.state.objective,
+        mode: this.options.mode,
+        selectedModel: {
+          provider: String((this.options.context as any).selectedModelProvider || ''),
+          modelId: String((this.options.context as any).selectedModelName || ''),
+        },
+        runtimeSettings: this.options.runtimeSettings || null,
+      }).catch(() => '')
+      : '';
 
     const interventionDoctrine = this.state.adaptivePolicy.cadence === 'quiet'
       ? [
         'MINIMAL INTERVENTION DOCTRINE:',
-        '- Preserve Main\'s uninterrupted deep-work state as the default. Review primarily at irreversible-risk, explicit-constraint, repeated-blockage, and completion boundaries.',
+        '- Preserve Main\'s uninterrupted deep-work state as the default. Review primarily at irreversible risk, explicit constraints, repeated blockage, and meaningful evidence-producing boundaries.',
         '- Do not intervene for a merely better approach, missing optional polish, uncertain telemetry, or a recoverable mistake Main can reasonably notice and repair.',
         '- Require a large counterfactual benefit: without your message, the task is likely to become materially wrong, unsafe, unauthorized, or falsely complete.',
-        '- Prefer dormant attention and completion review over mid-task steering. One precise late correction is better than several preventative suggestions.',
+        '- Prefer dormant attention and the last useful execution boundary over frequent steering. Never reserve a concern for a post-answer critic pass; act while the work can still change or stay silent.',
         '- A command or tool failure is not an intervention trigger by itself. Allow Main room to repair recoverable failures, but act immediately when one failure proves a binding assumption false, exposes missing authority, or makes the strategy non-credible.',
         '- Escalate immediately only for concrete critical risk or an explicit urgent user directive.',
       ].join('\n')
@@ -1206,7 +1474,7 @@ export class UserProxyRuntime {
         : [
           'NORMAL INTERVENTION DOCTRINE:',
           '- Balance uninterrupted execution with timely expert supervision. Let healthy work proceed, but intervene when a consequential gap is supported and waiting would noticeably reduce quality or increase rework.',
-          '- Review material checkpoints, strategy changes, repeated failures, important artifacts, explicit user constraints, and the completion boundary.',
+          '- Review material checkpoints, strategy changes, repeated failures, important artifacts, explicit user constraints, and the final evidence-producing boundary. Do not start a review after Main has composed its answer.',
           '- Prefer a concise steer at the next model boundary. Redirect only for a materially wrong strategy; challenge only when Main must reassess a consequential assumption.',
           '- Let Main repair an isolated mechanical error. Intervene after one failure when its meaning is structural—for example a false assumption, unavailable authority, invalid target, or infeasible strategy—or when waiting would create consequential rework.',
           '- Combine related observations, avoid duplicate guidance, and allow Main a fair opportunity to self-correct before escalating.',
@@ -1224,7 +1492,7 @@ export class UserProxyRuntime {
       'Intervention-cost model: interruption fragments Main\'s working context, competes with self-correction, and can anchor execution on your local diagnosis. Repeated prompts are especially harmful. Speak only when the counterfactual is clear: without this message, a consequential user outcome is likely to worsen.',
       'Resource economics: supervision also consumes latency, model tokens, and tool capacity. Spend them in proportion to uncertainty and consequence. Reuse the durable situation model, inspect only facts that could change the decision, and never perform broad research merely to make an observe decision feel more thorough.',
       'Your observations are incomplete telemetry, not omniscience. Never claim an action failed, a file is missing, or a constraint was violated unless the supplied evidence supports it. Lack of visibility is not proof of failure.',
-      'Thought streams, streaming work notes, and partially composed response text are unfinished internal activity. Never ask Main to provide a full answer, full code, or final response based on those fragments. Only completion_candidate contains a finished response that may be judged for completeness.',
+      'Thought streams, streaming work notes, and partially composed response text are unfinished internal activity. Never ask Main to provide a full answer, full code, or final response based on those fragments. Supervise observable execution evidence while the work is still active; there is no post-answer critic pass.',
       'Use intelligent counterfactual judgment, not fixed patterns: predict what a capable Main will naturally do next. Before speaking, compare the expected benefit of intervention with the cost of interrupting flow. If Main is likely to handle the issue correctly without you, observe—even if you can imagine an improvement.',
       'Questions are expensive. Infer ordinary implementation details, use available evidence, and trust Main on routine choices. Ask for real-user involvement only when the information or authority is genuinely human-exclusive and the outcome materially depends on it.',
       'Intervene for: a concrete safety/constraint violation; execution Main is not credibly recovering; a failure that changes feasibility, authority, or a binding assumption; a materially wrong strategy; an unresolved decision requiring the real user; or a required completion gap.',
@@ -1236,12 +1504,16 @@ export class UserProxyRuntime {
       'Message formation: write like a capable human correcting the work, not a debugger controlling keystrokes. State the unmet outcome, the constraint that must hold, and the evidence that will count as done. Do not prescribe PowerShell, shell syntax, commands, flags, tool names, or code snippets unless the original user explicitly required that exact mechanism. Never resend the same diagnosis with different wording.',
       'The message field is the exact final user prompt Main will see. It must stand alone and sound natural. Use the shortest shape that fits: correction = unmet outcome + binding rule + done evidence; pivot = unchanged outcome + freedom to replace the failing tactic; clarification = one human-exclusive decision; completion gap = missing required result + proof needed; safety = boundary that must not be crossed. Do not include your rationale or component names.',
       'promptIntent is the private semantic frame used to validate that message. outcome states what must change; preserveRules lists only binding rules relevant now; acceptanceEvidence states observable proof; strategyFreedom is free unless the user constrained the method, bounded when some methods are excluded, and exact only when the user explicitly required a mechanism; whyNow explains the evidence-backed timing privately.',
-      'A pending when_relevant directive is dormant supervisory memory. Compare its activationCondition with the evolving situation, but do not mention or deliver it until it has real present value. A before_completion directive activates only during completion review. An after_current directive remains isolated from the current objective. This lets one compressed user concept guide later work without repeated side-agent model calls.',
+      'A pending when_relevant directive is dormant supervisory memory. Compare its activationCondition with the evolving situation, but do not mention or deliver it until it has real present value. A before_completion directive is released deterministically at the terminal boundary without another model review. An after_current directive remains isolated from the current objective. This lets one compressed user concept guide later work without repeated side-agent model calls.',
       'The coordination history is two-way memory. Use it to avoid duplicate guidance and to tell whether Main consumed earlier supervision. Active supervision is continuous; an external message is warranted whenever its expected value clearly exceeds its disruption cost.',
       'Do not intervene for optional polish, style preference, speculative improvement, ordinary planning, or a mechanical failure Main is credibly correcting. Do intervene when the evidence changes the task\'s feasibility, authority, strategy credibility, constraint compliance, or completion truth.',
       'The task contract began as a conservative machine-extracted seed, not a fixed truth. Semantically refine it only from the current goal and relevant prior-user context. Do not turn optional ideas into required deliverables.',
       'Omit contractUpdate unless the seed is materially wrong. When correcting it, return the complete corrected requiredDeliverables and completionConditions. Explicit forbiddenActions and safetyConstraints may be strengthened but never weakened.',
       'The user-selected intervention posture is authoritative and cannot be changed by your response. Adapt only the task-specific attention signals within that posture.',
+      learnedOperatingModel
+        ? `SHARED LEARNED USER + COLLABORATION MODEL:\n${learnedOperatingModel}\nUse it to improve timing, firmness, explanation style, delegation assumptions, and what evidence the user values. It never weakens the current task contract, explicit current instructions, safety, or authority boundaries.`
+        : '',
+      'Intervention judgment is categorical, not a decaying confidence score. Report counterfactualImpact (what worsens if you stay silent), evidenceQuality (how directly the supplied evidence supports the diagnosis), and interventionCost (how disruptive the message is now). The runtime validates these fields against cited events and the selected posture.',
       interventionDoctrine,
       'You have bounded read-only investigation tools. Use them only when a consequential factual uncertainty cannot be resolved from Main telemetry and the answer could change whether intervention is necessary. Never edit, execute Main\'s task, or use tools for routine curiosity. Tool findings are supervisory evidence, not permission to take over execution.',
       `REVIEW DEPTH: ${reviewDepth.toUpperCase()}. Read-only investigation budget for this review: at most ${investigationBudget} tool call${investigationBudget === 1 ? '' : 's'}. ${reviewDepth === 'scan' ? 'Use telemetry and durable memory only; do not call tools.' : reviewDepth === 'standard' ? 'Resolve at most one decision-changing uncertainty.' : 'Investigate only the few consequential uncertainties needed for safety or completion judgment.'}`,
@@ -1257,6 +1529,8 @@ export class UserProxyRuntime {
       'When work branches, reason about whether branches are independent, mutually constraining, or gated by a shared artifact. Do not demand sequential work merely because events arrive sequentially. Do not encourage parallel work when branches would race on the same mutable state, depend on an unresolved decision, or require the same scarce authority.',
       'When the strategy changes, test whether prior evidence remains valid, whether an invariant was silently weakened, and whether downstream work must be revised. A failed tactic is not a failed goal: prefer a bounded recovery branch when one exists, and escalate only when the failure changes feasibility, authority, safety, or the user-visible outcome.',
       'Treat uncertainty explicitly. Separate unknown facts, missing telemetry, unresolved user choices, and model speculation. Reduce uncertainty at the cheapest meaningful boundary. Never convert uncertainty into a claimed defect.',
+      'Delegation evidence doctrine: lifecycle state is not semantic evidence. "Spawned", "running", and "completed" prove only orchestration state. A delegated finding may support Main only when its exact payload is marked usable and collected. Treat pending, empty, failed, cancelled, or uncollected results as an explicit evidence gap. Never approve a synthesis merely because a worker completed, and never infer what an unavailable payload probably said.',
+      `DELEGATION EVIDENCE LINEAGE:\n${JSON.stringify(this.state.delegationModel, null, 2)}`,
       `DELIVERABLE EVIDENCE:\n${deliverables}`,
       `REVIEW TRIGGER: ${trigger}`,
       `CURRENT MAIN PHASE: ${this.mainPhase}. When this is composing, all visible answer text is partial and Main may already be producing exactly what is needed.`,
@@ -1266,12 +1540,9 @@ export class UserProxyRuntime {
       `PRIOR PROXY GUIDANCE (do not repeat or paraphrase):\n${prior}`,
       `USER-APPROVED PROXY MANAGER DIRECTIVES:\n${this.state.managerDirectives.filter(item => item.status === 'active' || item.status === 'pending').slice(-10).map(item => `- [id=${item.id}; status=${item.status}; timing=${item.timing}; target=${item.target}; intent=${item.intent}; requested=${item.requestedAction || 'adaptive'}; urgency=${item.urgency || 'normal'}] ${item.message}`).join('\n') || '(none)'}`,
       `PROXY COORDINATION HISTORY:\n${this.state.coordinationEvents.slice(-12).map(item => `- [${item.kind}${item.directiveId ? `/${item.directiveId}` : ''}] ${item.message}`).join('\n') || '(none)'}`,
-      completionCandidate ? `MAIN'S PROPOSED FINAL ANSWER:\n${compact(completionCandidate, 5000)}` : '',
-      completionCandidate
-        ? 'Approve unless a required, consequential gap is supported by specific event evidence or explicitly admitted in the final answer. Optional improvements must never block completion.'
-        : 'Choose observe unless intervention is necessary now. If visibility is insufficient, record visibilityGap and observe; do not nag Main for information it is likely still gathering.',
+      'Choose observe unless intervention is necessary now. If visibility is insufficient, record visibilityGap and observe; do not nag Main for information it is likely still gathering.',
       'Return exactly one JSON object:',
-      '{"action":"observe|steer|redirect|challenge|request_real_user|interrupt_main|stop_main|approve_completion","message":"exact short natural user prompt, blank for observe/approve","reason":"private rationale including the counterfactual necessity test","remainingGoalGap":"concrete remaining goal gap or blank","confidence":0.0,"severity":"low|medium|high|critical","evidenceEventIds":[1],"promptIntent":{"outcome":"what must change now","preserveRules":["binding user rule relevant now"],"acceptanceEvidence":"observable proof of completion","strategyFreedom":"free|bounded|exact","whyNow":"private evidence-backed timing"},"managerDirectiveId":"matching active directive id or blank","managerNotice":"only a consequential concise update worth surfacing to Proxy Manager, otherwise blank","visibilityGap":"missing telemetry, if any","optionalImprovement":false,"attentionSignals":["task-specific signal"],"situationUpdate":{"progress":"durable compact progress summary","activeStrategy":"Main current strategy","unresolvedRisks":[],"nextExpectedBoundary":"next meaningful checkpoint"},"complexityUpdate":{"level":"simple|moderate|complex|frontier","criticalPath":[],"dependencies":[],"invariants":[],"decisionPoints":[],"uncertainty":[],"recoveryBranches":[],"verificationGates":[]},"contractUpdate":null}',
+      '{"action":"observe|steer|redirect|challenge|request_real_user|interrupt_main|stop_main|approve_completion","message":"exact short natural user prompt, blank for observe/approve","reason":"private rationale including the counterfactual necessity test","remainingGoalGap":"concrete remaining goal gap or blank","severity":"low|medium|high|critical","counterfactualImpact":"none|minor|material|critical","evidenceQuality":"none|indirect|direct|user_authorized","interventionCost":"low|medium|high","evidenceEventIds":[1],"promptIntent":{"outcome":"what must change now","preserveRules":["binding user rule relevant now"],"acceptanceEvidence":"observable proof of completion","strategyFreedom":"free|bounded|exact","whyNow":"private evidence-backed timing"},"managerDirectiveId":"matching active directive id or blank","managerNotice":"only a consequential concise update worth surfacing to Proxy Manager, otherwise blank","visibilityGap":"missing telemetry, if any","optionalImprovement":false,"attentionSignals":["task-specific signal"],"situationUpdate":{"progress":"durable compact progress summary","activeStrategy":"Main current strategy","unresolvedRisks":[],"nextExpectedBoundary":"next meaningful checkpoint"},"complexityUpdate":{"level":"simple|moderate|complex|frontier","criticalPath":[],"dependencies":[],"invariants":[],"decisionPoints":[],"uncertainty":[],"recoveryBranches":[],"verificationGates":[]},"contractUpdate":null}',
     ].filter(Boolean).join('\n\n');
 
     const { createIsolatedClient } = await import('../Agent');
@@ -1289,6 +1560,7 @@ export class UserProxyRuntime {
       agentRuntime: 'user_proxy',
       isUserProxy: true,
       isProxyManager: false,
+      selfImprovementEnabled: false,
       proxyRole: 'independent_runtime_supervisor',
       disableSubAgents: this.state.helperUsed,
       allowAgentSpawning: !this.state.helperUsed,
@@ -1378,13 +1650,10 @@ export class UserProxyRuntime {
     return evidenceIds;
   }
 
-  private isGroundedDecision(decision: ProxyDecision, completionReview: boolean, completionCandidate = ''): boolean {
+  private isGroundedDecision(decision: ProxyDecision): boolean {
     if (decision.action === 'observe' || decision.action === 'approve_completion') return false;
     if (decision.optionalImprovement) return false;
     const policy = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence];
-    const confidence = decision.confidence ?? 0;
-    const requiredConfidence = completionReview ? policy.completionConfidence : policy.confidence;
-    if (confidence < requiredConfidence) return false;
     if (!compact(decision.message, 1600)) return false;
     const knownIds = new Set(this.state.events.map(event => event.id));
     const evidenceIds = decision.evidenceEventIds || [];
@@ -1405,7 +1674,6 @@ export class UserProxyRuntime {
         `${decision.reason || ''} ${decision.promptIntent?.whyNow || ''}`,
       );
     if (
-      !completionReview &&
       onlyRecoverableFailureEvidence &&
       this.consecutiveFailures < policy.failuresBeforeGuidance &&
       !structuralFailureDecision
@@ -1417,39 +1685,42 @@ export class UserProxyRuntime {
       item.action !== 'stop_main'
     ).length;
     if (
-      !completionReview &&
       midRunInterventions >= policy.maxMidRunInterventions &&
       decision.severity !== 'critical' &&
       !citedEvents.some(event => event.risk)
     ) {
       return false;
     }
-    const candidateAdmitsGap = completionReview &&
-      /\b(not completed|not created|not finished|not verified|could not|couldn't|unable to|failed to|still missing|remains incomplete)\b/i.test(completionCandidate);
-    const unverifiedDeliverables = Object.entries(this.state.deliverableEvidence)
-      .filter(([, evidence]) => !evidence.verified)
-      .map(([deliverable]) => deliverable);
-    const hasContractEvidenceGap =
-      completionReview &&
-      unverifiedDeliverables.length > 0 &&
-      Boolean(decision.promptIntent?.acceptanceEvidence) &&
-      (
-        unverifiedDeliverables.some(deliverable =>
-          messageSimilarity(deliverable, decision.promptIntent?.outcome || decision.message || '') >= 0.12
-        ) ||
-        /\b(verify|evidence|confirm|prove|exists|usable|open|read back)\b/i.test(
-          `${decision.promptIntent?.acceptanceEvidence || ''} ${decision.message || ''}`,
-        )
-      );
     const pendingCanActivate = managerDirective?.status !== 'pending' ||
-      managerDirective.timing === 'when_relevant' ||
-      (completionReview && managerDirective.timing === 'before_completion');
+      managerDirective.timing === 'when_relevant';
     if (managerDirective?.status === 'pending' && !pendingCanActivate) return false;
     const userAuthorizedSupervisorAction = Boolean(managerDirective && managerDirective.target !== 'proxy' && pendingCanActivate);
-    if (!hasEvidence && !candidateAdmitsGap && !hasContractEvidenceGap && !userAuthorizedSupervisorAction && decision.action !== 'request_real_user') return false;
+    if (!hasEvidence && !userAuthorizedSupervisorAction && decision.action !== 'request_real_user') return false;
+    const inferredEvidenceQuality: NonNullable<ProxyDecision['evidenceQuality']> = userAuthorizedSupervisorAction
+      ? 'user_authorized'
+      : hasEvidence
+        ? 'direct'
+        : 'none';
+    const evidenceQuality = decision.evidenceQuality || inferredEvidenceQuality;
+    const impact: NonNullable<ProxyDecision['counterfactualImpact']> = decision.counterfactualImpact
+      || (decision.severity === 'critical' ? 'critical' : decision.severity === 'high' ? 'material' : 'minor');
+    const disruption = decision.interventionCost || 'medium';
+    if (impact === 'none' || impact === 'minor') return false;
+    if (disruption === 'high' && impact !== 'critical' && decision.action !== 'request_real_user') return false;
+    if (this.state.adaptivePolicy.cadence === 'quiet') {
+      if (!['direct', 'user_authorized'].includes(evidenceQuality)) return false;
+      if (!['material', 'critical'].includes(impact)) return false;
+    } else if (this.state.adaptivePolicy.cadence === 'normal') {
+      if (evidenceQuality === 'none') return false;
+    } else if (evidenceQuality === 'none' && decision.action !== 'request_real_user') {
+      return false;
+    }
+    if (['redirect', 'challenge', 'interrupt_main'].includes(decision.action)) {
+      if (!['direct', 'user_authorized'].includes(evidenceQuality) && impact !== 'critical') return false;
+    }
     if (decision.action === 'stop_main') {
       const explicitStop = managerDirective?.requestedAction === 'stop_main' && managerDirective.urgency === 'critical';
-      if (!explicitStop && !((decision.confidence ?? 0) >= 0.92 && decision.severity === 'critical' && hasEvidence)) return false;
+      if (!explicitStop && !(impact === 'critical' && evidenceQuality === 'direct' && hasEvidence)) return false;
     }
     return true;
   }
@@ -1515,7 +1786,7 @@ export class UserProxyRuntime {
     this.state.deliverableEvidence = retainedEvidence;
   }
 
-  private applyDecision(decision: ProxyDecision, completionReview: boolean): boolean {
+  private applyDecision(decision: ProxyDecision, atCompletionBoundary: boolean): boolean {
     this.state.lastGoalGap = decision.remainingGoalGap || this.state.lastGoalGap;
     if (decision.action === 'observe' || decision.action === 'approve_completion' || decision.optionalImprovement) {
       this.state.status = 'watching';
@@ -1592,7 +1863,7 @@ export class UserProxyRuntime {
       proxyManagerDirectiveId: directive?.id,
       proxyManagerIntent: directive?.intent,
       interruptMain: decision.action === 'interrupt_main',
-      completionReview,
+      atCompletionBoundary,
     });
     if (accepted && directive) {
       directive.status = 'delivered';
@@ -1648,10 +1919,10 @@ export function observeUserProxy(projectId: string, trace: any): void {
   runtimes.get(projectId)?.observe(trace);
 }
 
-export async function reviewAutonomousCompletion(projectId: string, candidate: string): Promise<ProxyDecision> {
+export async function settleAutonomousCompletion(projectId: string, candidate: string): Promise<ProxyDecision> {
   const runtime = runtimes.get(projectId);
   if (!runtime) return { action: 'approve_completion', reason: 'No User Proxy runtime.' };
-  return runtime.reviewCompletion(candidate);
+  return runtime.settleCompletion(candidate);
 }
 
 export function stopUserProxyRuntime(projectId: string): void {

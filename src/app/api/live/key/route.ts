@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 /**
  * POST /api/live/key — Return the dedicated selected Live Convo provider key.
  * 
- * The client calls this before connecting to the Live API WebSocket. Credentials
+ * The client calls this before connecting to the selected Live transport. Credentials
  * are configured only by Settings and never accepted by this endpoint. Live
  * credentials are intentionally separate from ordinary provider/model pools.
  */
@@ -27,13 +27,27 @@ export async function POST(req: NextRequest) {
     const apiKey = keys[0] || '';
     if (!apiKey) {
       return NextResponse.json(
-        { error: 'No separate Agent Live API key is configured.' },
+        { error: `No separate ${provider.label} Live API key is configured.` },
         { status: 503 },
       );
+    }
+    // Native browser transports receive only short-lived credentials from
+    // /api/live/session. Keep long-lived OpenAI, xAI, Deepgram, and
+    // ElevenLabs keys on the server; Gemini still uses its documented key in
+    // the WebSocket URL and therefore retains the legacy client key path.
+    if (provider.browserAuth !== 'api-key') {
+      return NextResponse.json({
+        apiKey: '',
+        available: true,
+        provider: provider.value,
+        providerKey: provider.keyProvider,
+        chatId: body.chatId || `live_${Date.now()}`,
+      });
     }
     
     return NextResponse.json({ 
       apiKey,
+      available: true,
       provider: provider.value,
       providerKey: provider.keyProvider,
       chatId: body.chatId || `live_${Date.now()}`,

@@ -56,6 +56,7 @@ const formatCustomToolLabel = (toolName: string) => {
     screenshot_capture: 'Capturing screen',
     json_yaml_transform: 'Transforming data',
     gateway_bridge: 'Using Gateway channel',
+    channel_agent: 'Using channel agent',
     connector_mcp: 'Using connected service',
     slack_controller: 'Slack operation',
     tool_finder: 'Finding tool',
@@ -138,6 +139,7 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
     screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKeys: ['target', 'filename'] },
     json_yaml_transform: { text: 'Transforming data', type: 'command', iconCategory: 'computer', argKeys: ['operation'] },
     gateway_bridge: { text: 'Using Gateway channel', type: 'communication', iconCategory: 'connector', argKeys: ['platform', 'channel', 'action', 'target'] },
+    channel_agent: { text: 'Using channel agent', type: 'communication', iconCategory: 'connector', argKeys: ['profile_id', 'action', 'conversation_id'] },
     connector_mcp: { text: 'Using connected service', type: 'communication', iconCategory: 'connector', argKeys: ['connector_id', 'connectorId', 'server_id', 'action'] },
     slack_controller: { text: 'Slack operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'channel', 'target'] },
   };
@@ -248,7 +250,8 @@ export const createCustomWorkNoteLog = (
     id: `custom_work_note_${at}_${randomSuffix()}`,
     type: 'work_note',
     text: noteText,
-    subAgent: agentName,
+    agentName,
+    agentRuntime: 'custom_agent',
     noteId,
     isDelta: false,
     isStreaming: false,
@@ -301,7 +304,7 @@ export const createCustomToolActionLog = (
   const shouldLinkFile = ['file_read', 'file_edit', 'file_create'].includes(ui.iconCategory)
     || /workspace_(?:read|write|edit)_file|docx|pdf|csv|markdown|chart|image/i.test(toolName);
   const linkedFile = shouldLinkFile ? (traceFields.filename || filePath || primaryPath) : '';
-  const isConnectorTool = ui.type === 'communication' || ['gateway_bridge', 'connector_mcp', 'slack_controller'].includes(toolName);
+  const isConnectorTool = ui.type === 'communication' || ['channel_agent', 'gateway_bridge', 'connector_mcp', 'slack_controller'].includes(toolName);
   const iconCategory = isConnectorTool ? 'connector' : (mapCustomUiIcon(args?.uiIcon) || (command ? 'terminal' : ui.iconCategory));
   return {
     id: `custom_tool_${startedAt}_${toolName}_${randomSuffix()}`,
@@ -317,7 +320,8 @@ export const createCustomToolActionLog = (
     connectorId: args?.connectorId || args?.connector_id || args?.server_id || args?.platform || args?.channel || undefined,
     tool: toolName,
     name: toolName,
-    subAgent: agentName,
+    agentName,
+    agentRuntime: 'custom_agent',
     iconCategory,
     add: undefined,
     remove: undefined,
@@ -380,10 +384,14 @@ export const createCustomToolResultLogs = (
       type: 'console_output',
       command: active.command || active.toolName,
       output: resultText,
-      content: resultText,
       exitCode: typeof result?.exitCode === 'number' ? result.exitCode : undefined,
       durationMs: typeof result?.durationMs === 'number' ? result.durationMs : undefined,
       ownerTraceId: active.id,
+      streamId: result?.streamId,
+      taskId: result?.taskId || result?.backgroundTaskId,
+      cwd: result?.cwd,
+      shell: result?.shell,
+      pid: result?.pid,
       startTime: at,
       endTime: at,
       timestamp: at,

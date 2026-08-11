@@ -35,5 +35,16 @@ export function buildFilePreviewUrl(filePath: string | undefined | null): string
 }
 
 export function normalizePathForComparison(value: string | undefined | null): string {
-  return String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const normalized = String(value || '').replace(/\\/g, '/').trim();
+  if (!normalized) return '';
+
+  // Windows drive and UNC paths are case-insensitive. POSIX paths are not;
+  // lower-casing those here makes two real Linux/macOS files compare equal.
+  const isWindowsPath = /^[A-Za-z]:\//.test(normalized) || normalized.startsWith('//');
+  const withoutTrailingSeparators = normalized === '/'
+    ? normalized
+    : /^[A-Za-z]:\/$/i.test(normalized)
+      ? normalized
+      : normalized.replace(/\/+$/, '');
+  return isWindowsPath ? withoutTrailingSeparators.toLowerCase() : withoutTrailingSeparators;
 }

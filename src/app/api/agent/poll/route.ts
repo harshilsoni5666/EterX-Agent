@@ -57,6 +57,9 @@ export async function GET(req: NextRequest) {
       }
     }
     result.pendingProxyTaskCount = getPendingProxyTaskCount(chatId);
+    const queuedFollowUps = agentRegistry.getQueuedFollowUps(chatId);
+    result.pendingFollowUpCount = queuedFollowUps.length;
+    result.queuedFollowUps = queuedFollowUps;
 
     // Return with anti-cache headers for maximum freshness
     return attachAgentApiSessionCookie(new NextResponse(JSON.stringify(result), {

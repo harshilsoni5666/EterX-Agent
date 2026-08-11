@@ -222,7 +222,7 @@ Outbound integrations with collaborative and chat environments:
 
 ### 6. Office Documents & Structured Data (`filesystem.write`)
 Generates rich data documents, presentations, and analyses:
-*   **Office Generators**: `office_artifact_builder` and `docx_generator` build styled Excel spreadsheets, PowerPoint slides, and Word documents in *Executive*, *Modern*, *Classic*, and *Minimal* layouts.
+*   **Office Generators**: `docx_generator` builds Word documents in *Executive*, *Modern*, *Classic*, and *Minimal* layouts.
 *   **Data Analysis**: `csv_data_analyzer` aggregates and inspects CSV datasets.
 
 ### 7. Utilities & Infrastructure (`tool.utility`)

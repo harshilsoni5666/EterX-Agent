@@ -19,6 +19,7 @@ const RUN_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
 const AGENT_SESSION_COOKIE = 'eterx_agent_session';
 const AGENT_SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const OWNER_RECORD_TTL_MS = AGENT_SESSION_MAX_AGE * 1000;
+const OWNER_PRUNE_INTERVAL_MS = 60_000;
 
 type OwnerRecord = {
   sessionId: string;
@@ -39,6 +40,7 @@ const globalForAgentApi = globalThis as typeof globalThis & {
 const chatOwners =
   globalForAgentApi.__eterxAgentChatOwners ||
   (globalForAgentApi.__eterxAgentChatOwners = new Map<string, OwnerRecord>());
+let lastOwnerPruneAt = 0;
 
 export function jsonError(message: string, status = 400, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ success: false, error: message, ...extra }, { status });
@@ -127,7 +129,13 @@ function pruneOwnerRecords(now = Date.now()) {
 export function ensureChatOwner(chatId: string, sessionId: string): boolean {
   if (!isSafeChatId(chatId) || !isSafeSessionId(sessionId)) return false;
   const now = Date.now();
-  pruneOwnerRecords(now);
+  // Polling touches this map many times per second when several agents are
+  // live. Pruning on every request turns a cheap ownership check into an
+  // O(number of chats) scan and scales poorly with long-lived sessions.
+  if (now - lastOwnerPruneAt >= OWNER_PRUNE_INTERVAL_MS) {
+    pruneOwnerRecords(now);
+    lastOwnerPruneAt = now;
+  }
 
   const existing = chatOwners.get(chatId);
   if (existing && existing.sessionId !== sessionId) return false;
@@ -273,7 +281,7 @@ export function normalizeArray(raw: unknown, maxItems = 50): any[] {
 export function normalizeMediaAttachments(raw: unknown): any[] {
   if (!Array.isArray(raw)) return [];
 
-  return raw.slice(0, 20)
+  return raw.slice(0, 50)
     .map((item: any, index) => {
       const name = cleanPathLike(item?.name || item?.file?.name, 260) || `attachment_${index + 1}`;
       const mimeType = normalizeAttachmentMime(

@@ -7,6 +7,7 @@ import { PremiumSend } from '../ui/premium-icons';
 import { Shimmer } from '../ui/shimmer';
 import { normalizeScheduledTask, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
 import { persistScheduledTasks } from '../../lib/scheduled-task-sync';
+import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 
 export type ScheduledTaskItem = ScheduledTaskRecord;
 import {
@@ -205,12 +206,14 @@ interface ProjectsViewProps {
   selectedSection: string;
   setSelectedSection: (section: string) => void;
   onOpenChat?: (chatId: string) => void;
+  onOpenSettingsTab?: (tab: 'api' | 'models') => void;
 }
 
 export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   selectedSection,
   setSelectedSection,
   onOpenChat,
+  onOpenSettingsTab,
 }) => {
   const [inputValue, setInputValue] = useState("");
   const [showModelMenu, setShowModelMenu] = useState(false);
@@ -463,7 +466,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   const handleScheduleTaskSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!taskTitle.trim()) return;
+    if (!taskTitle.trim() || !modelOptions.some(option => option.optionKey === formModel)) return;
 
     const scheduledTs = computeScheduledTimestamp(triggerTime, dateOption, customDateVal);
 
@@ -669,7 +672,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   }, [activePopover]);
 
   const modelOptions = useMemo<ChatModelOption[]>(() => {
-    return storedModelSettings.modelEntries.map(entry => {
+    return storedModelSettings.modelEntries.filter(entry => (
+      isLocalModelProvider(entry.provider)
+      || Boolean(storedModelSettings.apiKeys[entry.provider])
+      || Boolean(storedModelSettings.modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
+    )).map(entry => {
       const mode = MODEL_PROVIDER_MODE[entry.provider];
       const baseOption = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === mode) || getMainAgentModelConfig(mode);
       return {
@@ -682,48 +689,55 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
         modelId: entry.modelId,
       };
     });
-  }, [storedModelSettings.modelEntries]);
-
-  const fallbackModelConfig = useMemo(() => getMainAgentModelConfig(agentMode), [agentMode]);
-
-  const autoModelOption = useMemo<ChatModelOption>(() => ({
-    optionKey: modelOptions[0]?.optionKey || modelEntryKey(fallbackModelConfig.provider, fallbackModelConfig.modelName),
-    id: fallbackModelConfig.id,
-    provider: fallbackModelConfig.provider,
-    label: modelOptions[0]?.label || fallbackModelConfig.modelName,
-    compactLabel: modelOptions[0]?.compactLabel || fallbackModelConfig.compactLabel,
-    modelName: modelOptions[0]?.modelName || fallbackModelConfig.modelName,
-    modelId: modelOptions[0]?.modelId || fallbackModelConfig.modelName,
-  }), [fallbackModelConfig, modelOptions]);
+  }, [storedModelSettings.apiKeys, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
 
   const selectedModel = useMemo(() => {
-    return modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection) || autoModelOption;
-  }, [modelOptions, autoModelOption, storedModelSettings.chatModelSelection]);
+    return modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection) || null;
+  }, [modelOptions, storedModelSettings.chatModelSelection]);
 
-  const getThinkingTarget = useCallback((option: ChatModelOption) => option.isAuto
-    ? { provider: fallbackModelConfig.provider, modelName: fallbackModelConfig.modelName, capabilities: undefined }
-    : {
+  useEffect(() => {
+    if (selectedModel || modelOptions.length !== 1) return;
+    const option = modelOptions[0];
+    const nextOverrides = {
+      ...storedModelSettings.modelOverrides,
+      [option.provider]: option.modelId || '',
+    };
+    appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
+    appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
+    setStoredModelSettings(previous => ({
+      ...previous,
+      modelOverrides: nextOverrides,
+      chatModelSelection: option.optionKey,
+    }));
+    emitModelSettingsUpdate({ chatModelSelection: option.optionKey, modelOverrides: nextOverrides });
+    syncRuntimeModelOverrides(nextOverrides);
+  }, [modelOptions, selectedModel, storedModelSettings.modelOverrides]);
+
+  const getThinkingTarget = useCallback((option: ChatModelOption | null) => option
+    ? {
       provider: option.provider,
       modelName: option.modelId || option.modelName,
       capabilities: storedModelSettings.thinkingCapabilities[option.optionKey],
-    }, [fallbackModelConfig, storedModelSettings.thinkingCapabilities]);
+    }
+    : null, [storedModelSettings.thinkingCapabilities]);
 
-  const doesModelSupportThinking = useCallback((option: ChatModelOption): boolean => {
+  const doesModelSupportThinking = useCallback((option: ChatModelOption | null): boolean => {
     const target = getThinkingTarget(option);
-    return modelSupportsThinking(target.provider, target.modelName, target.capabilities);
+    return target ? modelSupportsThinking(target.provider, target.modelName, target.capabilities) : false;
   }, [getThinkingTarget]);
 
-  const getThinkingLevelOptions = useCallback((option: ChatModelOption) => {
+  const getThinkingLevelOptions = useCallback((option: ChatModelOption | null) => {
     const target = getThinkingTarget(option);
-    return getModelThinkingOptions(target.provider, target.modelName, target.capabilities);
+    return target ? getModelThinkingOptions(target.provider, target.modelName, target.capabilities) : [];
   }, [getThinkingTarget]);
 
-  // Set default model on catalog load
+  // Mirror only an explicit, usable chat selection. Never manufacture a
+  // provider/model default for scheduled tasks.
   useEffect(() => {
-    setFormModel(selectedModel.optionKey);
-  }, [selectedModel]);
+    setFormModel(selectedModel?.optionKey || (modelOptions.length === 1 ? modelOptions[0].optionKey : AUTO_MODEL_SELECTION));
+  }, [modelOptions, selectedModel]);
 
-  const allModelOptions = useMemo(() => modelOptions.length ? modelOptions : [autoModelOption], [autoModelOption, modelOptions]);
+  const allModelOptions = modelOptions;
   const safeThinkingLevel = useMemo(() => normalizeMainAgentThinkingLevel(thinkingLevel), [thinkingLevel]);
   const activeThinkingOptions = useMemo(() => getThinkingLevelOptions(selectedModel), [selectedModel, getThinkingLevelOptions]);
   const selectedThinkingLevel = useMemo(() => {
@@ -731,10 +745,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   }, [activeThinkingOptions, safeThinkingLevel]);
 
   const getModelOptionLabel = useCallback((option: ChatModelOption) => option.label, []);
-  const modelDisplayLabel = getModelOptionLabel(selectedModel);
+  const modelDisplayLabel = selectedModel ? getModelOptionLabel(selectedModel) : 'Add API to load models';
   const selectedFormModel = useMemo(
-    () => allModelOptions.find(option => option.optionKey === formModel) || autoModelOption,
-    [allModelOptions, autoModelOption, formModel],
+    () => allModelOptions.find(option => option.optionKey === formModel) || null,
+    [allModelOptions, formModel],
   );
   const formThinkingOptions = useMemo(
     () => getThinkingLevelOptions(selectedFormModel),
@@ -897,8 +911,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   // Form validation condition: True if title and instructions are entered
   const isFormValid = useMemo(() => {
-    return taskTitle.trim() !== "" && taskDescription.trim() !== "";
-  }, [taskTitle, taskDescription]);
+    return taskTitle.trim() !== ""
+      && taskDescription.trim() !== ""
+      && modelOptions.some(option => option.optionKey === formModel);
+  }, [formModel, modelOptions, taskTitle, taskDescription]);
 
   // Real attachment operations using Electron desktop APIs
   const importBrowserSources = async (files: File[]) => {
@@ -1077,6 +1093,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                             <button
                               type="button"
                               onClick={() => {
+                                if (allModelOptions.length === 0) {
+                                  setShowModelMenu(false);
+                                  onOpenSettingsTab?.('api');
+                                  return;
+                                }
                                 setShowModelMenu(prev => !prev);
                                 setModelSearch('');
                               }}
@@ -1118,7 +1139,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                       const query = modelSearch.trim().toLowerCase();
                                       return !query || `${getModelOptionLabel(option)} ${MODEL_PROVIDER_LABEL[option.provider]} ${option.modelName}`.toLowerCase().includes(query);
                                     }).map((option) => {
-                                      const selected = option.optionKey === selectedModel.optionKey;
+                                      const selected = option.optionKey === selectedModel?.optionKey;
                                       const optionLabel = getModelOptionLabel(option);
                                       return (
                                         <button
@@ -1284,13 +1305,20 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                         <div className="relative">
                           <button
                             type="button"
-                            onClick={() => setActivePopover(prev => prev === 'model' ? null : 'model')}
+                            onClick={() => {
+                              if (allModelOptions.length === 0) {
+                                setActivePopover(null);
+                                onOpenSettingsTab?.('api');
+                                return;
+                              }
+                              setActivePopover(prev => prev === 'model' ? null : 'model');
+                            }}
                             className="w-full flex items-center justify-between px-3.5 py-2 hover:bg-white/[0.02] transition-colors rounded-t-xl cursor-pointer"
                           >
                             <span className="text-[12.5px] text-white/50 font-medium">Model</span>
                             <div className="flex items-center gap-1">
                               <span className="text-[12.5px] text-white/90 font-medium">
-                                {allModelOptions.find(o => o.optionKey === formModel)?.label || 'Auto'}
+                                {allModelOptions.find(o => o.optionKey === formModel)?.label || 'Add API to load models'}
                               </span>
                               <ChevronDown className="w-3.5 h-3.5 text-white/40" />
                             </div>
@@ -1322,6 +1350,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                     {option.optionKey === formModel && <Check className="w-3.5 h-3.5 text-white" strokeWidth={2.2} />}
                                   </button>
                                 ))}
+                                {allModelOptions.length === 0 && (
+                                  <div className="px-2.5 py-3 text-center text-[11px] text-white/45">Add an API key and save a real model in Settings.</div>
+                                )}
                               </motion.div>
                             )}
                           </AnimatePresence>

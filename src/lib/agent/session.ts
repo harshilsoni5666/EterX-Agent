@@ -24,6 +24,8 @@ const STALE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_ACTIVE_CHAT_SESSIONS = 40;
 const MAX_CALL_HISTORY = 500;
 const MAX_WRITTEN_FILES = 250;
+const MAX_FILE_RECORDS = 250;
+const MAX_ACTION_SUMMARY = 250;
 const MAX_LOADED_SKILLS = 80;
 const MAX_TOOL_RESULT_DIGEST = 150;
 const STALE_CLEANUP_MS = 7 * 24 * 60 * 60 * 1000; // 7 days auto-GC
@@ -214,8 +216,8 @@ export class SessionStateManager {
     state.writtenFiles = state.writtenFiles.slice(-MAX_WRITTEN_FILES);
     state.loadedSkills = state.loadedSkills.slice(-MAX_LOADED_SKILLS);
     state.toolResultDigest = state.toolResultDigest.slice(-MAX_TOOL_RESULT_DIGEST);
-    state.fileRecords = state.fileRecords.slice(-80); // Keep 80 for rich file history
-    state.actionSummary = state.actionSummary.slice(-15);
+    state.fileRecords = state.fileRecords.slice(-MAX_FILE_RECORDS);
+    state.actionSummary = state.actionSummary.slice(-MAX_ACTION_SUMMARY);
     state.taskPlanSteps = state.taskPlanSteps.slice(0, 20);
     if (state.executionPlanState) {
       state.executionPlanState.steps = state.executionPlanState.steps.slice(0, 30).map(step => ({
@@ -651,6 +653,14 @@ export class SessionStateManager {
     const previous = this.getOrCreateStateForChat(chatId);
     const reset: SessionState = {
       ...EMPTY_STATE,
+      // A task boundary is not a conversation boundary. Keep durable
+      // artifacts so later turns can still recover exact work from this chat.
+      writtenFiles: [...previous.writtenFiles],
+      fileRecords: [...previous.fileRecords],
+      loadedSkills: [...previous.loadedSkills],
+      actionSummary: [...previous.actionSummary],
+      lastUserMessage: previous.lastUserMessage,
+      lastAgentOutput: previous.lastAgentOutput,
       createdAt: previous.createdAt || Date.now(),
       lastActivityAt: Date.now(),
       messageCount: previous.messageCount || 0,
@@ -791,8 +801,8 @@ export class SessionStateManager {
       timestamp: Date.now(),
       absolutePath: normalizedAbs
     });
-    if (state.fileRecords.length > 15) {
-      state.fileRecords = state.fileRecords.slice(-15);
+    if (state.fileRecords.length > MAX_FILE_RECORDS) {
+      state.fileRecords = state.fileRecords.slice(-MAX_FILE_RECORDS);
     }
     this.rememberActiveSession(chatId, state);
     this.debouncedSaveForChat(chatId);
@@ -817,8 +827,8 @@ export class SessionStateManager {
   public addActionForChat(chatId: string, action: string): void {
     const state = this.getOrCreateStateForChat(chatId);
     state.actionSummary.push(action);
-    if (state.actionSummary.length > 15) {
-      state.actionSummary = state.actionSummary.slice(-15);
+    if (state.actionSummary.length > MAX_ACTION_SUMMARY) {
+      state.actionSummary = state.actionSummary.slice(-MAX_ACTION_SUMMARY);
     }
     this.rememberActiveSession(chatId, state);
     this.debouncedSaveForChat(chatId);

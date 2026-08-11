@@ -10,8 +10,10 @@ import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
 import { LocalFileLinkChip, decodeLocalFileHref } from './local-file-link';
-import { isInternalWorkNoteNoise, isTerminalWorkTrace, isTurnWorkActive, shouldRenderContextCompactionEvent } from '../../lib/chat-feed-lifecycle';
+import { isInternalWorkNoteNoise, isTerminalWorkTrace, isTurnWorkActive, orderFeedTimelineLogs, shouldRenderContextCompactionEvent, shouldShowWorkflowSequence } from '../../lib/chat-feed-lifecycle';
+import { shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
+import { buildFilePreviewUrl } from '../../lib/path-utils';
 
 interface ChatFeedProps {
   traceLogs: any[];
@@ -69,7 +71,7 @@ const FadeScrollContainer = React.memo(({
       <div
         ref={scrollRef}
         onScroll={checkScroll}
-        className={`w-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${maxHeightClass} ${className}`}
+        className={`min-w-0 max-w-full w-full overflow-x-hidden overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${maxHeightClass} ${className}`}
       >
         {children}
       </div>
@@ -315,7 +317,7 @@ const SteeringFeedCard = React.memo(({ log, isCompressed = false, onEdit }: { lo
     transition={{ type: 'spring', stiffness: 450, damping: 24 }}
     className="flex justify-end w-full my-3 relative z-10 group/steer"
   >
-    <div className={`eterx-steering-bubble bg-[#20201F] px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border border-white/[0.06] select-text flex flex-row items-end gap-3 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
+    <div className={`eterx-steering-bubble bg-[#1F1F1F] px-4 py-3 rounded-[22px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-none leading-[1.5] whitespace-pre-wrap relative select-text flex flex-row items-end gap-3 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
       <UserMessageActions text={log.text} onEdit={onEdit} />
       <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
 
@@ -352,7 +354,7 @@ const chatFeedSurfaceStyles = `
     background: var(--eterx-chat-feed-bg);
   }
   :root[data-theme="light"] .eterx-chat-feed {
-    --eterx-chat-feed-bg: #F8F9FB;
+    --eterx-chat-feed-bg: #FFFFFF;
     color: #252A31;
   }
   :root[data-theme="dark"] .eterx-chat-feed {
@@ -458,12 +460,6 @@ const chatFeedSurfaceStyles = `
     .eterx-chat-turns-nav { display: none; }
     .eterx-user-message-actions { margin-right: 0.25rem; }
   }
-  @media (max-width: 900px) {
-    .eterx-chat-scroll-latest {
-      left: auto !important;
-      right: 1rem;
-    }
-  }
 `;
 
 const WORKFLOW_COUNT_TYPES = new Set([
@@ -495,6 +491,9 @@ const RENDERABLE_TIMELINE_TYPES = new Set([
   'sub_agent_action',
   'sub_agent_complete',
   'sub_agent_error',
+  'sub_agent_pause',
+  'sub_agent_resume',
+  'sub_agent_close',
   'inter_agent_comm',
   'inter_agent_message',
   'file_preview',
@@ -505,7 +504,6 @@ const RENDERABLE_TIMELINE_TYPES = new Set([
 ]);
 const USER_QUERY_PREVIEW_LIMIT = 520;
 const USER_QUERY_PREVIEW_LINES = 8;
-const INITIAL_VISIBLE_GROUPS = 40;
 const MAX_TURN_NAV_ITEMS = 80;
 const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
 
@@ -639,6 +637,9 @@ const dedupeFeedLogs = (logs: any[]) => {
 
     const normalizedText = normalizeTraceText(log.text || log.question || log.secondary);
     const owner = String(log.subAgentChatId || log.subAgentId || log.subAgent || log.agentName || 'main');
+    const chatScope = String(log.chatId || log.ownerChatId || '').trim();
+    const runScope = String(log.runId || log.turnId || '').trim();
+    const identityScope = `${ chatScope }::${ runScope }`;
     let semanticKey = '';
     if (normalizedText && ['thought_stream', 'work_note', 'autonomy_proxy_status'].includes(log.type)) {
       // Providers sometimes promote the same narration from thought_stream to
@@ -652,16 +653,16 @@ const dedupeFeedLogs = (logs: any[]) => {
         log.timestamp ||
         ''
       ).trim();
-      semanticKey = `narrative::${ owner }::${ normalizedText }::${ narrativeAnchor }`;
+      semanticKey = `narrative::${ identityScope }::${ owner }::${ normalizedText }::${ narrativeAnchor }`;
     } else if (
       normalizedText &&
       (log.isLive || log._instant) &&
       ['command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'communication'].includes(log.type)
     ) {
       const semanticType = log.type === 'tool_call' ? 'command' : log.type;
-      semanticKey = `live-action::${ semanticType }::${ normalizedText }::${ String(log.filepath || log.filename || log.command || '') }`;
+      semanticKey = `live-action::${ identityScope }::${ semanticType }::${ normalizedText }::${ String(log.filepath || log.filename || log.command || '') }`;
     } else if (log.type === 'answer' && normalizedText && (log.isLive || log.isStreaming || log.isLiveTyping)) {
-      semanticKey = `answer::${ String(log.answerId || normalizedText) }`;
+      semanticKey = `answer::${ identityScope }::${ String(log.answerId || normalizedText) }`;
     }
 
     if (semanticKey && semanticIndexes.has(semanticKey)) {
@@ -779,14 +780,20 @@ const ContextCompactionNotice = ({ log }: { log: any }) => {
       ? `${Math.round(before / 1000)}k → ${Math.round(after / 1000)}k tokens`
       : '';
 
+  const label = isCompacting
+    ? 'Context automatically compacting'
+    : isRetrying
+      ? 'Context compaction will retry'
+      : 'Context successfully compacted';
+
   return (
     <div
       role="status"
       aria-live="polite"
-      className="eterx-context-compaction my-3.5 flex w-full items-center gap-3.5 py-1 text-[13px] text-[#1D1D1B] dark:text-[#F4F4F4]"
+      className="eterx-context-compaction my-3.5 flex min-h-7 w-full items-center gap-3.5 py-1 text-[13px] text-[#1D1D1B] dark:text-[#F4F4F4]"
     >
       <span className={`h-px min-w-8 flex-1 bg-gradient-to-r from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
-      <span className="inline-flex min-w-0 shrink-0 items-center gap-2">
+      <span className="inline-flex min-w-0 max-w-full flex-1 items-center gap-2 overflow-hidden">
         <span
           aria-hidden="true"
           className={`inline-block h-4 w-4 shrink-0 bg-current transition-opacity ${isCompacting ? 'opacity-90' : 'opacity-100'}`}
@@ -795,22 +802,19 @@ const ContextCompactionNotice = ({ log }: { log: any }) => {
             mask: 'url(/icons/settings/context.png) center / contain no-repeat',
           }}
         />
-        <span className="font-medium tracking-[-0.01em]">
-          {isCompacting ? (
-            <Shimmer>Context automatically compacting</Shimmer>
-          ) : isRetrying ? (
-            <>
-              <span className="opacity-80">Context compaction </span>
-              <span>will retry</span>
-            </>
-          ) : (
-            <>
-              <span className="opacity-80">Context successfully </span>
-              <span>compacted</span>
-            </>
-          )}
-        </span>
-        {detail && <span className="hidden text-[11.5px] font-normal text-[#666664] dark:text-[#B0B0B0] sm:inline">{detail}</span>}
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.span
+            key={`${log?.compactionId || 'context'}-${log?.phase || 'compacted'}`}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.16, ease: 'easeOut' }}
+            className="min-w-0 truncate font-medium tracking-[-0.01em]"
+          >
+            {isCompacting ? <Shimmer>{label}</Shimmer> : label}
+          </motion.span>
+        </AnimatePresence>
+        {detail && <span className="hidden shrink-0 text-[11.5px] font-normal text-[#666664] dark:text-[#B0B0B0] sm:inline">{detail}</span>}
       </span>
       <span className={`h-px min-w-8 flex-1 bg-gradient-to-l from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
     </div>
@@ -993,7 +997,10 @@ const isCountedWorkflowLog = (log: any) =>
 const isTimedWorkLog = (log: any) =>
   isCountedWorkflowLog(log) ||
   (
-    (log?.type === 'work_note' || log?.type === 'thought_stream') &&
+    (
+      log?.type === 'work_note' ||
+      (log?.type === 'thought_stream' && shouldRenderThoughtStream(log))
+    ) &&
     !isHiddenStatusOnlyLog(log)
   );
 
@@ -1161,12 +1168,9 @@ const ThoughtSequence = ({
   const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, turnLogs, turnEndedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
-  if (isSettledNarrativeOnly || (stepCount === 0 && logs.length === 0 && !isLiveThinking)) return null;
+  if (isSettledNarrativeOnly || !shouldShowWorkflowSequence(stepCount)) return null;
 
-  const isWaitingForFirstTrace = isLiveThinking && stepCount === 0 && logs.length === 0 && liveLogs.length === 0;
-  // The active turn owns the live status pill even before its first trace.
-  // This keeps the query-to-work transition visually continuous.
-  const hasCounter = isLiveThinking || stepCount > 0 || logs.length > 0;
+  const hasCounter = hasRealActions;
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
   const isLiveWorkCounter = isLiveThinking;
   const hasTerminalBoundary = hasAnswer || hasInteractionBoundary || turnLogs.some(isTerminalWorkTrace);
@@ -1227,6 +1231,8 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'deletions', 'insertions', 'linesAdded', 'linesRemoved', 'diffLines',
   'name', 'title', 'subject', 'body', 'from', 'to', 'priority', 'commType',
   'message', 'detail', 'messageType', 'deliveryMode', 'deliverAfter', 'scheduled', 'updatedAt',
+  'senderSubAgentId', 'senderSubAgentChatId', 'recipientAgentId', 'recipientSubAgentChatId',
+  'broadcast', 'broadcastRecipientRuns', 'unreadCount', '_teamPollSignature',
   'icon', 'iconCategory', 'size', '_autonomyProxy', '_streamingCancelled',
   '_autonomyCheckpoint', '_autonomyBoundaryFollowUp', '_connection', 'model', 'modelName',
   'phase', 'compactionId', 'beforeTokens', 'afterTokens', 'contextWindow', 'modelProvider',
@@ -1305,7 +1311,7 @@ const ChatFeedMessageGroup = React.memo(({
     return (
       <div data-chat-group-index={groupIdx} className="eterx-chat-message-group mt-8 mb-6 flex w-full scroll-m-20 justify-end group/user">
         <div className="flex w-full justify-end">
-          <div data-delegated={delegatedSource ? 'true' : undefined} className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[18px] border ${ delegatedSource ? 'border-white/[0.24] bg-[#181818] shadow-[0_5px_22px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.05)]' : 'border-white/[0.06] bg-[#20201F] shadow-[0_4px_18px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.025)]' } px-4 py-2.5 text-[13.5px] leading-[1.56] text-[#F4F2EE] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
+          <div data-delegated={delegatedSource ? 'true' : undefined} className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[22px] ${ delegatedSource ? 'bg-[#1B1B1B]' : 'bg-[#1F1F1F]' } px-4 py-2.5 text-[13.5px] leading-[1.5] text-[#F4F2EE] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text shadow-none ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
             <UserMessageActions text={userText} onEdit={onEditUserMessage} timestamp={first.timestamp} />
 
             {delegatedSource && (
@@ -1317,13 +1323,16 @@ const ChatFeedMessageGroup = React.memo(({
             {first.attachments && first.attachments.length > 0 && (
               <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
                 {first.attachments.map((att: any, i: number) => {
-                  const isImage = !!att.preview;
+                  const mimeType = String(att.mimeType || att.file?.type || '').toLowerCase();
                   const fileName = att.name || att.file?.name || 'file';
                   const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
+                  const isImage = mimeType.startsWith('image/') || ['PNG', 'JPG', 'JPEG', 'GIF', 'WEBP', 'AVIF'].includes(extension);
+                  const isVideo = mimeType.startsWith('video/') || ['MP4', 'WEBM', 'MOV', 'M4V'].includes(extension);
+                  const previewUrl = att.preview || (att.localPath || att.path ? buildFilePreviewUrl(att.localPath || att.path) : '');
                   const isPdf = extension === 'PDF';
                   const isDocPreviewable = extension === 'PDF' || extension === 'DOCX';
 
-                  if (isImage) {
+                  if (isImage || isVideo) {
                     return (
                       <button
                         type="button"
@@ -1331,12 +1340,19 @@ const ChatFeedMessageGroup = React.memo(({
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          window.dispatchEvent(new CustomEvent('eterx-preview-image', { detail: { previewUrl: att.preview } }));
+                          if (previewUrl) {
+                            window.dispatchEvent(new CustomEvent(isVideo ? 'eterx-preview-media' : 'eterx-preview-image', { detail: { previewUrl, kind: isVideo ? 'video' : 'image', fileName } }));
+                          }
                         }}
                         className="relative group h-[72px] w-[72px] shrink-0 cursor-pointer rounded-[14px] border border-white/[0.06] shadow-[0_3px_12px_rgba(0,0,0,0.16)] transition-colors hover:border-white/[0.10] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
                         aria-label={`Preview ${ fileName }`}
                       >
-                        <img src={att.preview} alt={fileName} className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
+                        {isVideo ? (
+                          <video src={previewUrl} muted playsInline preload="metadata" className="h-full w-full rounded-[14px] object-cover opacity-90" />
+                        ) : (
+                          <img src={previewUrl} alt={fileName} className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
+                        )}
+                        {isVideo && <span className="pointer-events-none absolute inset-x-0 bottom-1 text-center text-[9px] font-semibold uppercase tracking-[0.12em] text-white/80">Video</span>}
                       </button>
                     );
                   }
@@ -1364,9 +1380,9 @@ const ChatFeedMessageGroup = React.memo(({
                 })}
               </div>
             )}
-            <div className="w-full text-left">
+            <div className="min-w-0 max-w-full w-full text-left">
               <FadeScrollContainer maxHeightClass={isLong ? 'max-h-[230px]' : ''}>
-                <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{userText}</span>
+                <span className="block min-w-0 max-w-full w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{userText}</span>
               </FadeScrollContainer>
             </div>
           </div>
@@ -1541,7 +1557,8 @@ const ChatFeedMessageGroup = React.memo(({
       log?.type === 'work_note' &&
       /^direct_(?:thinking|search)_/i.test(String(log.noteId || ''))
     ) &&
-    RENDERABLE_TIMELINE_TYPES.has(String(log?.type || ''))
+    RENDERABLE_TIMELINE_TYPES.has(String(log?.type || '')) &&
+    (log?.type !== 'thought_stream' || shouldRenderThoughtStream(log))
   );
   const isAskUserInteractionLog = (log: any) =>
     log?.type === 'ask_user' &&
@@ -1865,7 +1882,13 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   // state update arrives during navigation.
   const traceLogs = useMemo(
     () => normalizeInternalUserActionLogs(
-      incomingTraceLogs.filter(log => !log?.chatId || log.chatId === chatId),
+      (Array.isArray(incomingTraceLogs) ? incomingTraceLogs : [])
+        .filter(log => {
+          const owners = [log?.chatId, log?.ownerChatId]
+            .map(value => String(value || '').trim())
+            .filter(Boolean);
+          return owners.length === 0 || owners.includes(String(chatId || '').trim());
+        }),
     ),
     [chatId, incomingTraceLogs]
   );
@@ -1943,7 +1966,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     let currentTurnIdentity = '';
     const assistantGroupsByTurn = new Map<string, any[]>();
     let hasUserBoundary = false;
-    const normalizedLogs = dedupeFeedLogs(traceLogs);
+    const normalizedLogs = orderFeedTimelineLogs(dedupeFeedLogs(traceLogs));
     const containsUserBoundary = normalizedLogs.some(log => log?.type === 'user_action');
 
     normalizedLogs.forEach(log => {
@@ -2055,10 +2078,23 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const latestScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [previewUserMessage, setPreviewUserMessage] = useState<{ text: string; index: number } | null>(null);
   const [hoveredTurn, setHoveredTurn] = useState<{ turn: any; rect: DOMRect } | null>(null);
-  const [historyWindowSize, setHistoryWindowSize] = useState(INITIAL_VISIBLE_GROUPS);
-  const previousGroupCountRef = useRef(groups.length);
-  const historyConversationIdentityRef = useRef(conversationIdentity);
-  const isHydratingConversation = historyConversationIdentityRef.current !== conversationIdentity;
+  const hoveredTurnHideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showHoveredTurn = useCallback((next: { turn: any; rect: DOMRect }) => {
+    if (hoveredTurnHideTimeoutRef.current !== null) {
+      clearTimeout(hoveredTurnHideTimeoutRef.current);
+      hoveredTurnHideTimeoutRef.current = null;
+    }
+    setHoveredTurn(next);
+  }, []);
+  const hideHoveredTurn = useCallback(() => {
+    if (hoveredTurnHideTimeoutRef.current !== null) clearTimeout(hoveredTurnHideTimeoutRef.current);
+    hoveredTurnHideTimeoutRef.current = setTimeout(() => {
+      hoveredTurnHideTimeoutRef.current = null;
+      setHoveredTurn(null);
+    }, 90);
+  }, []);
+  const previousConversationIdentityRef = useRef(conversationIdentity);
+  const isHydratingConversation = previousConversationIdentityRef.current !== conversationIdentity;
   const AUTO_FOLLOW_THRESHOLD = 24;
   const traceActivitySignature = useMemo(() => getTraceActivitySignature(traceLogs), [traceLogs]);
 
@@ -2069,28 +2105,14 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   }, []);
 
   useEffect(() => {
-    setHistoryWindowSize(INITIAL_VISIBLE_GROUPS);
+    previousConversationIdentityRef.current = conversationIdentity;
     setPreviewUserMessage(null);
     shouldAutoFollowRef.current = true;
   }, [conversationIdentity]);
 
-  React.useLayoutEffect(() => {
-    if (historyConversationIdentityRef.current !== conversationIdentity) {
-      historyConversationIdentityRef.current = conversationIdentity;
-      previousGroupCountRef.current = groups.length;
-      return;
-    }
-
-    const previousCount = previousGroupCountRef.current;
-    const addedGroups = groups.length - previousCount;
-    previousGroupCountRef.current = groups.length;
-    if (addedGroups <= 0 || shouldAutoFollowRef.current) return;
-
-    // A fixed-size tail window silently removes rows from the top whenever a
-    // queued turn arrives. Retain those rows while the reader is away from the
-    // bottom so their current viewport cannot shift.
-    setHistoryWindowSize(size => Math.min(groups.length, size + addedGroups));
-  }, [conversationIdentity, groups.length]);
+  useEffect(() => () => {
+    if (hoveredTurnHideTimeoutRef.current !== null) clearTimeout(hoveredTurnHideTimeoutRef.current);
+  }, []);
 
   useEffect(() => {
     if (!previewUserMessage) return;
@@ -2238,24 +2260,11 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
 
 
 
-  const hiddenGroupCount = Math.max(0, groups.length - historyWindowSize);
-  const visibleGroups = hiddenGroupCount > 0 ? groups.slice(hiddenGroupCount) : groups;
+  // Keep the complete conversation mounted. Live polling can append older or
+  // late-arriving turns, and silently windowing the head of the feed makes
+  // users believe history was lost behind a "previous messages" affordance.
+  const visibleGroups = groups;
   const isEmptyNewChatFeed = traceLogs.length === 0 && !isThinking;
-  const revealPreviousGroups = () => {
-    const container = scrollContainerRef.current;
-    const firstVisible = container?.querySelector<HTMLElement>(`[data-chat-group-index="${ hiddenGroupCount }"]`) ?? null;
-    const firstVisibleTop = firstVisible?.getBoundingClientRect().top;
-    const scrollTopBefore = container?.scrollTop;
-    shouldAutoFollowRef.current = false;
-    setHistoryWindowSize(size => Math.min(groups.length, size + INITIAL_VISIBLE_GROUPS));
-
-    if (container && firstVisible && firstVisibleTop !== undefined && scrollTopBefore !== undefined) {
-      window.requestAnimationFrame(() => {
-        const nextTop = firstVisible.getBoundingClientRect().top;
-        container.scrollTop = scrollTopBefore + (nextTop - firstVisibleTop);
-      });
-    }
-  };
   const navigateToTurn = (turn: { idx: number }, turnIndex: number) => {
     const scrollToTurn = () => {
       const container = scrollContainerRef.current;
@@ -2270,13 +2279,17 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     };
 
     setActiveTurnIdx(turnIndex);
-    if (turn.idx < hiddenGroupCount) {
-      setHistoryWindowSize(Math.max(INITIAL_VISIBLE_GROUPS, groups.length - turn.idx));
-      window.requestAnimationFrame(() => window.requestAnimationFrame(scrollToTurn));
-      return;
-    }
     scrollToTurn();
   };
+
+  const previewViewportWidth = typeof window === 'undefined' ? 1440 : window.innerWidth;
+  const previewViewportHeight = typeof window === 'undefined' ? 900 : window.innerHeight;
+  const previewLeft = hoveredTurn
+    ? Math.max(12, Math.min(hoveredTurn.rect.right + 10, previewViewportWidth - 312))
+    : 12;
+  const previewTop = hoveredTurn
+    ? Math.max(90, Math.min(hoveredTurn.rect.top + hoveredTurn.rect.height / 2, previewViewportHeight - 90))
+    : 90;
 
   return (
     <>
@@ -2285,54 +2298,73 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
         {hoveredTurn && typeof document !== 'undefined' && createPortal(
           <div
             role="tooltip"
-            className="pointer-events-none fixed z-[10000] w-[min(300px,calc(100vw-24px))] rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 pb-2.5 pt-2.5 text-left opacity-100 shadow-[0_12px_32px_rgba(0,0,0,0.18)]"
-            style={{
-              left: Math.max(12, Math.min(hoveredTurn.rect.right + 10, window.innerWidth - 312)),
-              top: Math.max(12, Math.min(hoveredTurn.rect.top + hoveredTurn.rect.height / 2, window.innerHeight - 12)),
-              transform: 'translateY(-50%)',
-            }}
+            className="pointer-events-none fixed z-[10000] -translate-y-1/2 transition-[left,top] duration-200 ease-out"
+            style={{ left: previewLeft, top: previewTop }}
           >
-            <p className="text-[12.5px] font-semibold leading-[1.4] tracking-[-0.01em] text-[var(--foreground)]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-              {hoveredTurn.turn.userText}
-            </p>
-            {hoveredTurn.turn.assistantText && (
-              <div className="mt-2 max-h-[72px] overflow-hidden border-t border-[var(--border)] pt-2 text-[11px] leading-[1.45] text-[var(--muted-foreground)]">
-                <ReactMarkdown
-                  remarkPlugins={remarkPlugins}
-                  rehypePlugins={rehypePlugins}
-                  components={{
-                    ...markdownComponents,
-                    p: ({ node, ...props }: any) => <p className="mb-1.5 last:mb-0" {...props} />,
-                    h1: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                    h2: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                    h3: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                    h4: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                    h5: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                    h6: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                    ul: ({ node, ...props }: any) => <ul className="my-1 list-disc space-y-0.5 pl-4" {...props} />,
-                    ol: ({ node, ...props }: any) => <ol className="my-1 list-decimal space-y-0.5 pl-4" {...props} />,
-                    li: ({ node, ...props }: any) => <li className="pl-0.5" {...props} />,
-                    blockquote: ({ node, ...props }: any) => <blockquote className="my-1 border-l border-[var(--border)] pl-2 text-[var(--muted-foreground)]" {...props} />,
-                    strong: ({ node, ...props }: any) => <strong className="font-semibold text-[var(--foreground)]" {...props} />,
-                    em: ({ node, ...props }: any) => <em className="italic text-[var(--muted-foreground)]" {...props} />,
-                    code: ({ node, inline, ...props }: any) => <code className="rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-[10px] text-[var(--foreground)]" {...props} />,
-                    pre: ({ node, children }: any) => <div className="my-1 overflow-hidden rounded bg-[var(--muted)] px-2 py-1 font-mono text-[10px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{children}</div>,
-                    a: ({ node, href, children, ...props }: any) => {
-                      const localPath = decodeLocalFileHref(href);
-                      if (localPath) return <LocalFileLinkChip filePath={localPath} compact />;
-                      return <a className="text-[#E2765A] underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>;
-                    },
-                  }}
+            <motion.div
+              layout
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1], layout: { duration: 0.18, ease: [0.22, 1, 0.36, 1] } }}
+              className="eterx-chat-turns-popover relative flex min-h-[54px] max-h-[calc(100vh-24px)] w-[min(320px,calc(100vw-24px))] flex-col overflow-hidden rounded-[15px] border border-white/[0.10] bg-[#1A1A19]/95 px-3.5 pb-3 pt-3 text-left shadow-[0_18px_52px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.045)] backdrop-blur-xl"
+            >
+              <span aria-hidden="true" className="pointer-events-none absolute inset-x-5 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.14] to-transparent" />
+              <div className="relative min-w-0">
+                <AnimatePresence initial={false} mode="popLayout">
+                  <motion.div
+                  key={hoveredTurn.turn.idx}
+                  layout
+                  initial={{ opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -5 }}
+                  transition={{ duration: 0.14, ease: 'easeOut' }}
+                  className="flex min-w-0 flex-col"
                 >
-                  {normalizeMarkdownForRendering(String(hoveredTurn.turn.assistantText))}
-                </ReactMarkdown>
+                <p className="eterx-chat-turns-usertext shrink-0 text-[12.5px] font-semibold leading-[1.4] tracking-[-0.01em] text-[var(--foreground)]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                  {hoveredTurn.turn.userText}
+                </p>
+                {hoveredTurn.turn.assistantText && (
+                  <div className="eterx-chat-turns-assistanttext mt-2 max-h-[92px] overflow-hidden border-t border-[var(--border)] pt-2 text-[11px] leading-[1.45] text-[var(--muted-foreground)]">
+                    <ReactMarkdown
+                      remarkPlugins={remarkPlugins}
+                      rehypePlugins={rehypePlugins}
+                      components={{
+                        ...markdownComponents,
+                        p: ({ node, ...props }: any) => <p className="mb-1.5 last:mb-0" {...props} />,
+                        h1: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
+                        h2: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
+                        h3: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
+                        h4: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
+                        h5: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
+                        h6: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
+                        ul: ({ node, ...props }: any) => <ul className="my-1 list-disc space-y-0.5 pl-4" {...props} />,
+                        ol: ({ node, ...props }: any) => <ol className="my-1 list-decimal space-y-0.5 pl-4" {...props} />,
+                        li: ({ node, ...props }: any) => <li className="pl-0.5" {...props} />,
+                        blockquote: ({ node, ...props }: any) => <blockquote className="my-1 border-l border-[var(--border)] pl-2 text-[var(--muted-foreground)]" {...props} />,
+                        strong: ({ node, ...props }: any) => <strong className="font-semibold text-[var(--foreground)]" {...props} />,
+                        em: ({ node, ...props }: any) => <em className="italic text-[var(--muted-foreground)]" {...props} />,
+                        code: ({ node, inline, ...props }: any) => <code className="rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-[10px] text-[var(--foreground)]" {...props} />,
+                        pre: ({ node, children }: any) => <div className="my-1 overflow-hidden rounded bg-[var(--muted)] px-2 py-1 font-mono text-[10px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{children}</div>,
+                        a: ({ node, href, children, ...props }: any) => {
+                          const localPath = decodeLocalFileHref(href);
+                          if (localPath) return <LocalFileLinkChip filePath={localPath} compact />;
+                          return <a className="text-[#E2765A] underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>;
+                        },
+                      }}
+                    >
+                      {normalizeMarkdownForRendering(String(hoveredTurn.turn.assistantText))}
+                    </ReactMarkdown>
+                  </div>
+                )}
+                {hoveredTurn.turn.attachmentName && (
+                  <div className="eterx-chat-turns-attachment mt-2 inline-flex max-w-full shrink-0 items-center rounded-lg border border-[var(--border)] bg-[var(--muted)] px-2 py-0.5">
+                    <span className="eterx-chat-turns-attachment-name truncate text-[10.5px] font-medium text-[var(--muted-foreground)]">{hoveredTurn.turn.attachmentName}</span>
+                  </div>
+                )}
+                  </motion.div>
+                </AnimatePresence>
               </div>
-            )}
-            {hoveredTurn.turn.attachmentName && (
-              <div className="mt-2 inline-flex max-w-full items-center rounded-lg border border-[var(--border)] bg-[var(--muted)] px-2 py-0.5">
-                <span className="truncate text-[10.5px] font-medium text-[var(--muted-foreground)]">{hoveredTurn.turn.attachmentName}</span>
-              </div>
-            )}
+            </motion.div>
           </div>,
           document.body,
         )}
@@ -2359,13 +2391,12 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                     aria-label={`Go to turn ${ k + 1 }: ${ turn.userText.slice(0, 80) }`}
                     aria-current={activeTurnIdx === k ? 'step' : undefined}
                     className="group relative flex min-h-[18px] w-[34px] shrink-0 items-center justify-center rounded-lg py-1 text-left outline-none transition-colors duration-150 hover:bg-[var(--muted)] focus-visible:bg-[var(--muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
-                    whileHover={{ x: 2 }}
                     whileTap={{ scale: 0.94 }}
                     transition={{ type: 'spring', stiffness: 520, damping: 32 }}
-                    onMouseEnter={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
-                    onMouseLeave={() => setHoveredTurn(null)}
-                    onFocus={(event) => setHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
-                    onBlur={() => setHoveredTurn(null)}
+                    onMouseEnter={(event) => showHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
+                    onMouseLeave={hideHoveredTurn}
+                    onFocus={(event) => showHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
+                    onBlur={hideHoveredTurn}
                     onClick={() => navigateToTurn(turn, k)}
                   >
                     <span
@@ -2413,19 +2444,8 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
 
             {traceLogs.length > 0 && (
               <div ref={feedContentRef} className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
-                {hiddenGroupCount > 0 && (
-                  <div className="mb-7 flex justify-center">
-                    <button
-                      type="button"
-                      onClick={revealPreviousGroups}
-                      className="rounded-full border border-[var(--border)] bg-[var(--muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"
-                    >
-                      Show previous {hiddenGroupCount} messages
-                    </button>
-                  </div>
-                )}
                 {visibleGroups.map((group, visibleGroupIdx) => {
-                  const groupIdx = hiddenGroupCount + visibleGroupIdx;
+                  const groupIdx = visibleGroupIdx;
                   const isThinkingTurn = feedWorkActive && groupIdx === groups.length - 1;
                   const isLiveSessionActive =
                     groupIdx === groups.length - 1 &&
@@ -2443,7 +2463,10 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                   const dateLabel = showDateDivider ? formatDateLabel(thisDateKey) : '';
 
                   return (
-                    <React.Fragment key={`group-${ conversationIdentity }-${ getGroupMountIdentity(group, groupIdx) }`}>
+                    <div
+                      key={`group-${ conversationIdentity }-${ getGroupMountIdentity(group, groupIdx) }`}
+                      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 280px' }}
+                    >
                       {showDateDivider && dateLabel && (
                         <ChatDateDivider label={dateLabel} />
                       )}
@@ -2462,7 +2485,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                         setPreviewUserMessage={setPreviewUserMessage}
                         showTokenCount={showTokenCount}
                       />
-                    </React.Fragment>
+                    </div>
                   );
                 })}
 

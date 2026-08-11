@@ -25,6 +25,7 @@ import {
   rejectCrossOrigin,
   requireChatOwner,
 } from '../_shared';
+import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -80,6 +81,12 @@ export async function POST(req: NextRequest) {
       return attachAgentApiSessionCookie(ownerError, session);
     }
 
+    const chatMediaAttachments = await resolveChatMediaForRequest(
+      chatId,
+      prompt,
+      safeMediaAttachments,
+    );
+
     const safeMode = normalizeMainAgentMode(mode);
     const safeUserId = cleanString(userId, 120) || 'default_user';
     const safeUserName = cleanString(userName, 120) || 'Developer';
@@ -114,9 +121,6 @@ export async function POST(req: NextRequest) {
     );
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
-    const isAutonomousRun = safePinnedContext?.agentRuntime === 'autonomy_v1'
-      || safePinnedContext?.autonomy?.enabled === true;
-    const isGeneralRun = !isBuilderChat && !isAutonomousRun;
     if (safePinnedContext?.agentRuntime === 'autonomy_v1' || safePinnedContext?.autonomy?.enabled === true) {
       updateProxyControl(chatId, {
         enabled: safePinnedContext?.autonomy?.enabled !== false,
@@ -127,10 +131,6 @@ export async function POST(req: NextRequest) {
     const proxyControl = readProxyControl(chatId);
     const effectivePinnedContext = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
-      ...(isGeneralRun ? {
-        disableSubAgents: true,
-        allowAgentSpawning: false,
-      } : {}),
       ...((safePinnedContext?.agentRuntime === 'autonomy_v1' || safePinnedContext?.autonomy?.enabled === true) ? {
         autonomy: {
           ...(safePinnedContext.autonomy || {}),
@@ -166,7 +166,7 @@ export async function POST(req: NextRequest) {
       effectiveMode,
       safeUserId,
       effectivePinnedContext,
-      safeMediaAttachments,
+      chatMediaAttachments,
       safeUserName,
       runtimeSettings.preferredGeminiApiKey,
       runtimeSettings,
@@ -177,6 +177,9 @@ export async function POST(req: NextRequest) {
       return attachAgentApiSessionCookie(jsonError(result.message, 503, result), session);
     }
     if (result.status === 'already_running') {
+      return attachAgentApiSessionCookie(jsonError(result.message, 409, result), session);
+    }
+    if (result.status === 'cancelled') {
       return attachAgentApiSessionCookie(jsonError(result.message, 409, result), session);
     }
 

@@ -108,7 +108,12 @@ export function isExecTimeoutError(error: any): boolean {
 }
 
 export function emitRuntimeTrace(context: any, traceEvent: any): void {
-  const event = { timestamp: Date.now(), ...traceEvent };
+  const event = {
+    timestamp: Date.now(),
+    ...(context?.ownerTraceId && !traceEvent?.ownerTraceId ? { ownerTraceId: context.ownerTraceId } : {}),
+    ...(context?.runId && !traceEvent?.runId ? { runId: context.runId } : {}),
+    ...traceEvent,
+  };
   if (typeof context?._onTrace === 'function') {
     context._onTrace(event);
     return;
@@ -117,7 +122,7 @@ export function emitRuntimeTrace(context: any, traceEvent: any): void {
   if (context?.chatId) {
     try {
       const { taskStore } = require('../../task-store');
-      taskStore.addTrace(context.chatId, event);
+      taskStore.addTrace(context.chatId, event, context.runId || context.turnId);
     } catch {
       // Trace persistence is best-effort; tool execution should continue.
     }

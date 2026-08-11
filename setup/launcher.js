@@ -14,8 +14,25 @@ const net = require('net');
 const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
-const LOCK_FILE = path.join(ROOT, '.workspaces', '.eterx.lock');
 const MAX_RESTARTS = 3;
+
+// The launcher is also used by source/bootstrap installs. Keep its instance
+// lock beside the app's per-user data on every supported OS so two copies of
+// the checkout cannot block one another and the source tree is never used as
+// durable application state.
+function getUserDataRoot() {
+  if (process.platform === 'win32') {
+    const root = process.env.LOCALAPPDATA || process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    return path.join(root, 'EterX');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'EterX');
+  }
+  const root = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  return path.join(root, 'EterX');
+}
+
+const LOCK_FILE = path.join(getUserDataRoot(), 'launcher.lock');
 
 // ── Single Instance Guard ──
 function acquireLock() {
