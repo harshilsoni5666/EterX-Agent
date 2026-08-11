@@ -30,8 +30,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          visibility="$(gh repo view "$GITHUB_REPOSITORY" --json visibility --jq '.visibility')"
-          if [ "$visibility" != "PUBLIC" ]; then
+          visibility="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility // (if .private then "private" else "public" end)')"
+          visibility="$(printf '%s' "$visibility" | tr '[:upper:]' '[:lower:]')"
+          if [ "$visibility" != "public" ]; then
             echo "EterX desktop clients use an unauthenticated GitHub Releases feed; repository visibility is $visibility, not PUBLIC." >&2
             exit 1
           fi
