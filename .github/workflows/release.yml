@@ -177,8 +177,10 @@ jobs:
             linux)
               # electron-updater requests latest-linux.yml on x64 and an
               # architecture-suffixed file such as latest-linux-arm64.yml on
-              # ARM64. Upload every generated Linux channel file.
-              required_patterns=(dist/latest-linux.yml dist/latest-linux-arm64.yml 'dist/EterX-*-linux-x64.AppImage' 'dist/EterX-*-linux-arm64.AppImage')
+              # ARM64. Electron-builder uses "x86_64" (not "x64") in the
+              # x64 AppImage filename. Validate both architectures by their
+              # actual output names, then upload every generated Linux file.
+              required_patterns=(dist/latest-linux.yml dist/latest-linux-arm64.yml)
               files=(dist/EterX-*.AppImage dist/EterX-*.deb dist/latest-linux*.yml)
               ;;
           esac
@@ -188,6 +190,21 @@ jobs:
               exit 1
             fi
           done
+          if [ "${{ matrix.target }}" = "linux" ]; then
+            linux_appimages=(dist/EterX-*.AppImage)
+            has_linux_x64=false
+            has_linux_arm64=false
+            for asset in "${linux_appimages[@]}"; do
+              case "$asset" in
+                *-arm64.AppImage) has_linux_arm64=true ;;
+                *-x64.AppImage|*-x86_64.AppImage) has_linux_x64=true ;;
+              esac
+            done
+            if [ "$has_linux_x64" != true ] || [ "$has_linux_arm64" != true ]; then
+              echo "Expected x64 and arm64 Linux AppImages; found: ${linux_appimages[*]:-none}" >&2
+              exit 1
+            fi
+          fi
           if [ "${{ matrix.target }}" = "linux" ] && [ -f dist/eterx-icon-512.png ]; then
             files+=(dist/eterx-icon-512.png)
           fi
