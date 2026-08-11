@@ -146,9 +146,8 @@ let desktopUpdateInstallPromise = null;
 let desktopUpdateRevision = 0;
 const pendingRendererFlushes = new Map();
 let rendererFlushSequence = 0;
-// electron-updater supports Linux AppImage installations. Debian packages
-// are intentionally handled as normal package downloads because replacing a
-// system-managed .deb from inside the app is not safe or portable.
+// Linux distribution and in-app updates use AppImage exclusively. A process
+// without APPIMAGE is not the installed Linux desktop package.
 const DESKTOP_UPDATES_SUPPORTED = process.platform !== 'linux' || Boolean(process.env.APPIMAGE);
 const DESKTOP_UPDATE_RELEASE_PAGE = 'https://github.com/harshilsoni5666/EterX-Agent/releases/latest';
 const DESKTOP_UPDATE_PACKAGE_TYPE = !app.isPackaged
@@ -159,7 +158,7 @@ const DESKTOP_UPDATE_PACKAGE_TYPE = !app.isPackaged
       ? 'ZIP/DMG'
       : process.env.APPIMAGE
         ? 'AppImage'
-        : 'system package';
+        : 'unsupported Linux package';
 let desktopUpdateState = {
   revision: desktopUpdateRevision,
   status: app.isPackaged
@@ -653,7 +652,7 @@ function initializeDesktopUpdates() {
     return publishDesktopUpdateState({
       status: 'unsupported',
       supported: false,
-      message: 'In-app updates require the Linux AppImage package. Install the latest .deb manually.',
+      message: 'In-app updates require the official Linux AppImage package.',
     });
   }
   try {

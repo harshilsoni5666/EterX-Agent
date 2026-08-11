@@ -185,7 +185,7 @@ jobs:
               # x64 AppImage filename. Validate both architectures by their
               # actual output names, then upload every generated Linux file.
               required_patterns=(dist/latest-linux.yml dist/latest-linux-arm64.yml)
-              files=(dist/EterX-*.AppImage dist/EterX-*.deb dist/latest-linux*.yml)
+              files=(dist/EterX-*.AppImage dist/latest-linux*.yml)
               ;;
           esac
           for pattern in "${required_patterns[@]}"; do

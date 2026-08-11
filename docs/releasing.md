@@ -10,14 +10,14 @@ packages for x64 and ARM64. It publishes:
 
 - Windows NSIS installers and differential-update blockmaps
 - macOS ZIP/DMG packages
-- Linux AppImage/DEB packages
+- Linux AppImage packages
 - electron-updater metadata for each platform and Linux architecture
 - `SHA256SUMS.txt`, consumed by both public bootstrap scripts
 
-The AppImage is the Linux package used by the in-app updater. A `.deb` is
-published for package-manager installations and is updated by downloading and
-installing the next `.deb`; the app never replaces a system-managed package
-behind the package manager's back.
+The AppImage is the canonical Linux package for both initial installation and
+manual in-app updates. Keeping one package format per Linux architecture avoids
+publishing a second system-managed installation path with different update
+semantics.
 
 The application version in `package.json` and the release tag must match. Use a
 SemVer tag such as `v0.2.0`. A tag is immutable after public release; publish a
@@ -38,10 +38,10 @@ non-prerelease GitHub release.
 
 ## Signing and notarization
 
-Unsigned development builds can be produced locally without repository
-secrets. The native release workflow refuses to publish unsigned Windows or
-macOS production updates because native update verification depends on the
-installed app and replacement package having a valid publisher identity:
+The public workflow currently produces unsigned Windows and macOS packages and
+protects their integrity with the published SHA-256 manifest. Platform signing
+and macOS notarization remain recommended for production distribution and can
+be enabled later with protected repository secrets:
 
 - `WINDOWS_CSC_LINK` and `WINDOWS_CSC_KEY_PASSWORD` for Authenticode signing
 - `MACOS_CSC_LINK` and `MACOS_CSC_KEY_PASSWORD` for Apple code signing
@@ -50,7 +50,8 @@ installed app and replacement package having a valid publisher identity:
 
 Keep signing material only in protected GitHub Actions secrets. Never add
 certificates, passwords, API keys, or notarization credentials to this
-repository.
+repository. Signing changes publisher trust and operating-system warnings; it
+does not change the AppData-preserving update architecture.
 
 ## Update behavior
 

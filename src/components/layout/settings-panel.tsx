@@ -5988,7 +5988,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </div>
 
                           <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
-                            Updates are fully manual. Check for updates reads the stable metadata hosted on GitHub Releases; nothing downloads until you choose Download, and nothing installs until you choose Restart and install. Chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory. Linux in-app updates require the AppImage package; .deb installations are updated through the system package installer.
+                            Updates are fully manual. Check for updates reads the stable metadata hosted on GitHub Releases; nothing downloads until you choose Download, and nothing installs until you choose Restart and install. Chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory. Linux installation and in-app updates use the official AppImage package.
                           </p>
                           {updateState.releaseDate && updateState.availableVersion && (
                             <p className="mt-2 text-[11px] text-[#555]">
