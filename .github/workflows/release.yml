@@ -82,11 +82,9 @@ jobs:
     env:
       NEXT_TELEMETRY_DISABLED: "1"
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-      CSC_LINK: ${{ matrix.target == 'win' && secrets.WINDOWS_CSC_LINK || secrets.MACOS_CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ matrix.target == 'win' && secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.MACOS_CSC_KEY_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # Public releases are intentionally unsigned. Keep electron-builder from
+      # auto-discovering a developer certificate on hosted runners.
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
       ETERX_RUNTIME_TARGETS: ${{ matrix.runtime_targets }}
 
     steps:
@@ -116,24 +114,6 @@ jobs:
             exit 1
           fi
 
-      - name: Require production signing for native updates
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${{ matrix.target }}" in
-            win)
-              [ -n "${CSC_LINK:-}" ] || { echo 'WINDOWS_CSC_LINK is required for a production update release.' >&2; exit 1; }
-              [ -n "${CSC_KEY_PASSWORD:-}" ] || { echo 'WINDOWS_CSC_KEY_PASSWORD is required for a production update release.' >&2; exit 1; }
-              ;;
-            mac)
-              [ -n "${CSC_LINK:-}" ] || { echo 'MACOS_CSC_LINK is required for a production update release.' >&2; exit 1; }
-              [ -n "${CSC_KEY_PASSWORD:-}" ] || { echo 'MACOS_CSC_KEY_PASSWORD is required for a production update release.' >&2; exit 1; }
-              [ -n "${APPLE_ID:-}" ] || { echo 'APPLE_ID is required to notarize a production update release.' >&2; exit 1; }
-              [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] || { echo 'APPLE_APP_SPECIFIC_PASSWORD is required to notarize a production update release.' >&2; exit 1; }
-              [ -n "${APPLE_TEAM_ID:-}" ] || { echo 'APPLE_TEAM_ID is required to notarize a production update release.' >&2; exit 1; }
-              ;;
-          esac
-
       - name: Install locked dependencies
         run: npm ci --legacy-peer-deps --no-audit --fund=false
 
@@ -157,13 +137,8 @@ jobs:
       - name: Package macOS
         if: matrix.target == 'mac'
         run: |
-          if [ -z "${CSC_LINK:-}" ]; then
-            unset CSC_LINK CSC_KEY_PASSWORD
-            export CSC_IDENTITY_AUTO_DISCOVERY=false
-          fi
-          if [ -z "${APPLE_ID:-}" ]; then
-            unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
-          fi
+          unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
+          export CSC_IDENTITY_AUTO_DISCOVERY=false
           npx electron-builder --mac --x64 --arm64 --publish never
 
       - name: Package Linux
