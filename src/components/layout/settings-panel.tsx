@@ -5381,7 +5381,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <Toggle enabled={settings.mcpServersEnabled} onChange={async v => { updateSetting('mcpServersEnabled', v); const gatewayApi = (window as any).electronAPI; const state = await gatewayApi?.getGatewayState?.(); if (state?.config && gatewayApi?.saveGatewayConfig) await gatewayApi.saveGatewayConfig({ ...state.config, mcpBridgeEnabled: v }); }} />
                           </SettingRow>
                           <div className="mt-4 rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3 text-[13px] leading-5 text-[#A5A5A5]">
-                            The gateway's Advanced settings provide a secure MCP endpoint and copyable client configuration. Platform connectors are configured under Channels, so unavailable services are never shown as active here.
+                            The gateway&apos;s Advanced settings provide a secure MCP endpoint and copyable client configuration. Platform connectors are configured under Channels, so unavailable services are never shown as active here.
                           </div>
                         </div>
                       )}

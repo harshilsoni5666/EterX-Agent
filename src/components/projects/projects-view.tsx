@@ -1921,7 +1921,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                 <div className="flex-1 overflow-y-auto pr-1 eterx-scrollbar flex flex-col gap-2.5">
                   {myListTasks.length === 0 ? (
                     <div className="flex-1 flex flex-col items-center justify-center text-center py-16 text-white/35 text-[13px]">
-                      No scheduled tasks in My List. Click "New task" to schedule one.
+                      No scheduled tasks in My List. Click &quot;New task&quot; to schedule one.
                     </div>
                   ) : (
                     myListTasks.map((t) => (
