@@ -146,7 +146,11 @@ jobs:
         run: |
           unset CSC_LINK CSC_KEY_PASSWORD
           export CSC_IDENTITY_AUTO_DISCOVERY=false
-          npx electron-builder --linux --x64 --arm64 --publish never
+          # The public installer and in-app updater use AppImage. Keep the
+          # release path deterministic by avoiding electron-builder's
+          # optional multi-arch Debian/fpm packaging, which can fail after
+          # both AppImages have already been built successfully.
+          npx electron-builder --linux AppImage --x64 --arm64 --publish never
 
       - name: Include Linux launcher icon
         if: matrix.target == 'linux'
