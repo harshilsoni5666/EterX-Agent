@@ -227,6 +227,13 @@ install_macos() {
   previous="$INSTALL_DIR/.EterX.app.previous.$$"
   rm -rf "$staging" "$previous"
   ditto "$app_path" "$staging"
+  app_executable="$staging/Contents/MacOS/EterX"
+  [ -f "$app_executable" ] || { printf '  The EterX application executable is missing.\n' >&2; return 1; }
+  chmod 755 "$app_executable"
+  # This archive has already passed the release SHA-256 check. Clear any
+  # inherited browser/GitHub quarantine metadata so macOS does not allow the
+  # outer app and then silently block its bundled runtime helper on first use.
+  command -v xattr >/dev/null 2>&1 && xattr -dr com.apple.quarantine "$staging" 2>/dev/null || true
   if [ -d "$target" ]; then mv "$target" "$previous"; fi
   if ! mv "$staging" "$target"; then
     [ -d "$previous" ] && mv "$previous" "$target"
@@ -234,9 +241,13 @@ install_macos() {
   fi
   rm -rf "$previous"
   if [ "${ETERX_NO_LAUNCH:-0}" != "1" ]; then
-    if ! open "$target" >/dev/null 2>&1; then
+    launch_error="$TEMP_ROOT/macos-open.error"
+    if ! open "$target" 2>"$launch_error"; then
       printf '  EterX was installed, but macOS could not open it automatically. Launch it from Applications.\n' >&2
+      [ ! -s "$launch_error" ] || cat "$launch_error" >&2
       log 'Installed successfully; automatic macOS launch was unavailable.'
+    else
+      log "Launched $target. Runtime diagnostics: $HOME/Library/Application Support/EterX/eterx-desktop.log"
     fi
   fi
 }

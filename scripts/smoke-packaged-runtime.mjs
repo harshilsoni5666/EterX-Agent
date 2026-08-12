@@ -74,7 +74,7 @@ function request(port, options = {}) {
 
 const archive = findArchive(searchRoot);
 const electronBinary = getElectronBinary();
-const serverEntry = path.join(archive, 'runtime', 'server.js');
+const serverEntry = path.join(archive, 'runtime', 'server-launcher.js');
 const modulesRoot = path.join(path.dirname(archive), 'runtime', 'dependencies.asar', 'node_modules');
 const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'eterx-release-smoke-'));
 const port = await reservePort();
@@ -96,6 +96,7 @@ const child = spawn(electronBinary, [serverEntry], {
     ELECTRON_RUN_AS_NODE: '1',
     ETERX_APP_ROOT: path.join(archive, 'runtime'),
     ETERX_DATA_DIR: stateRoot,
+    ETERX_RUNTIME_MODULES: modulesRoot,
     ETERX_PORT: String(port),
     HOSTNAME: '127.0.0.1',
     NODE_ENV: 'production',

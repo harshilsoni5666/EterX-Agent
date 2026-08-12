@@ -98,6 +98,35 @@ fs.writeFileSync(
   'utf8',
 );
 
+// Electron's macOS utility process does not always rebuild Node's module
+// lookup paths from a late environment mutation. Start through a tiny CommonJS
+// launcher that explicitly activates the external dependency archive before
+// loading Next's standalone server. The same launcher is used by release
+// smoke tests and every desktop platform, keeping the tested and real paths
+// identical.
+fs.writeFileSync(
+  path.join(stagingRoot, 'server-launcher.js'),
+  `'use strict';\n`
+    + `const fs = require('fs');\n`
+    + `const path = require('path');\n`
+    + `const Module = require('module');\n`
+    + `const configuredModulesRoot = String(process.env.ETERX_RUNTIME_MODULES || '').trim();\n`
+    + `const packagedModulesRoot = process.resourcesPath\n`
+    + `  ? path.join(process.resourcesPath, 'runtime', 'dependencies.asar', 'node_modules')\n`
+    + `  : '';\n`
+    + `const modulesRoot = [configuredModulesRoot, packagedModulesRoot]\n`
+    + `  .find((candidate) => candidate && fs.existsSync(candidate));\n`
+    + `if (!modulesRoot) {\n`
+    + `  throw new Error('EterX packaged dependency archive is missing or unreadable.');\n`
+    + `}\n`
+    + `process.env.ETERX_RUNTIME_MODULES = modulesRoot;\n`
+    + `process.env.NODE_PATH = [modulesRoot, process.env.NODE_PATH].filter(Boolean).join(path.delimiter);\n`
+    + `Module._initPaths();\n`
+    + `require.resolve('next/package.json');\n`
+    + `require(path.join(__dirname, 'server.js'));\n`,
+  'utf8',
+);
+
 const staticSource = path.join(repositoryRoot, '.next', 'static');
 const staticTarget = path.join(stagingRoot, '.next', 'static');
 if (fs.existsSync(staticSource)) {
@@ -174,7 +203,7 @@ for (const [index, spec] of targetSpecs.entries()) {
   // These modules are loaded by Electron's main process before the Next
   // server starts. Fail the build if the production archive would not contain
   // them; otherwise users receive an installer that crashes on first launch.
-  for (const requiredModule of ['ws']) {
+  for (const requiredModule of ['next', 'react', 'react-dom', 'ws']) {
     const moduleManifest = path.join(stagedModules, requiredModule, 'package.json');
     if (!fs.existsSync(moduleManifest)) {
       throw new Error(`Required packaged dependency is missing: ${requiredModule}`);
@@ -249,6 +278,7 @@ fs.rmSync(sourceModules, { recursive: true, force: true });
 
 const required = [
   'server.js',
+  'server-launcher.js',
   'dependencies.asar',
   path.join('assets', 'skills'),
   path.join('.next', 'BUILD_ID'),

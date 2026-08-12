@@ -4,7 +4,7 @@ import process from 'node:process';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { listPackage } = require('@electron/asar');
+const { extractFile, listPackage } = require('@electron/asar');
 const searchRoot = path.resolve(process.argv[2] || 'dist');
 
 function findArchives(root) {
@@ -28,6 +28,7 @@ if (archives.length === 0) {
 
 const requiredFiles = [
   'runtime/server.js',
+  'runtime/server-launcher.js',
   'runtime/.next/BUILD_ID',
   'runtime/assets/skills',
 ];
@@ -84,6 +85,12 @@ for (const archive of archives) {
   for (const required of requiredDependencies) {
     if (!dependencyEntries.has(required)) {
       throw new Error(`${dependencyArchive} is missing required dependency entry: ${required}`);
+    }
+  }
+  const launcherSource = extractFile(archive, 'runtime/server-launcher.js').toString('utf8');
+  for (const contractToken of ['ETERX_RUNTIME_MODULES', 'Module._initPaths()', "require.resolve('next/package.json')"]) {
+    if (!launcherSource.includes(contractToken)) {
+      throw new Error(`${archive} has an invalid packaged runtime launcher; missing ${contractToken}.`);
     }
   }
   console.log(`[EterX release] Verified packaged runtime contract: ${archive}`);

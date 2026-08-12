@@ -2112,9 +2112,11 @@ async function startPackagedServer() {
   // main EterX app.  Keep the regular child process path on Windows/Linux,
   // where their native launchers do not have this Dock behavior.
   const serverLauncher = path.join(runtimeRoot, 'server-launcher.js');
-  const serverEntry = fs.existsSync(serverLauncher)
-    ? serverLauncher
-    : path.join(runtimeRoot, 'server.js');
+  if (!fs.existsSync(serverLauncher)) {
+    packagedServerUrl = null;
+    throw new Error(`Bundled runtime launcher is missing: ${serverLauncher}`);
+  }
+  const serverEntry = serverLauncher;
   if (process.platform === 'darwin') {
     if (!utilityProcess?.fork) {
       packagedServerUrl = null;

@@ -69,6 +69,7 @@ const child = spawn(process.execPath, [fileURLToPath(nextCli), 'build'], {
     NEXT_TELEMETRY_DISABLED: '1',
     ETERX_BUILD_TARGET: process.env.ETERX_BUILD_TARGET || 'desktop',
     ETERX_DATA_DIR: buildDataRoot,
+    ETERX_WORKSPACE_ROOT: path.join(buildDataRoot, '.workspaces'),
     // Some server tools intentionally expose user folders at runtime. During
     // Next.js file tracing, isolate those dynamic home paths inside the
     // repository so the tracer never walks protected OS profile junctions.
