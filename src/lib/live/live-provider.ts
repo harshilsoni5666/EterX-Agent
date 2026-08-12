@@ -87,7 +87,6 @@ export const LIVE_PROVIDER_MODELS: Record<string, LiveModelOption[]> = {
   'agent-live-convo': [
     { value: 'auto', label: 'Auto (Latest Gemini Live Model)', tag: 'AUTO', description: 'Uses the newest compatible Live model returned by Gemini' },
     { value: 'gemini-3.1-flash-live-preview', label: 'Gemini 3.1 Flash Live Preview', tag: 'LIVE', description: 'Native realtime audio and multimodal model' },
-    { value: 'gemini-2.5-flash-live-preview', label: 'Gemini 2.5 Flash Live Preview', tag: 'LIVE', description: 'Native realtime audio and multimodal model' },
   ],
   'openai-realtime': [
     { value: 'auto', label: 'Auto (GPT Realtime)', tag: 'AUTO', description: 'Uses the current OpenAI realtime model' },
@@ -101,7 +100,7 @@ export const LIVE_PROVIDER_MODELS: Record<string, LiveModelOption[]> = {
     { value: 'grok-voice-think-fast-1.0', label: 'Grok Voice Think Fast 1.0', tag: 'VOICE', description: 'Fast xAI voice model' },
   ],
   'deepgram-voice-agent': [
-    { value: 'auto', label: 'Auto (Deepgram Voice Agent)', tag: 'AUTO', description: 'Uses the provider’s configured Voice Agent defaults' },
+    { value: 'auto', label: 'Auto (Flux General English)', tag: 'AUTO', description: 'Uses Deepgram Flux for conversational listening' },
     { value: 'flux-general-en', label: 'Flux General English', tag: 'LISTEN', description: 'Deepgram Flux conversational turn detection and transcription' },
   ],
   'elevenlabs-convai': [

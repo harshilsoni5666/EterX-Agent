@@ -64,7 +64,7 @@ export const XAI_REALTIME_VOICE_OPTIONS: LiveVoiceOption[] = [
 ];
 
 export const DEEPGRAM_VOICE_AGENT_VOICE_OPTIONS: LiveVoiceOption[] = [
-  { value: 'auto', label: 'Auto (Agent Configuration)', tag: 'AUTO' },
+  { value: 'auto', label: 'Auto (Thalia Aura-2)', tag: 'AUTO', description: 'Uses aura-2-thalia-en' },
   { value: 'aura-2-asteria-en', label: 'Asteria (Aura-2)' },
   { value: 'aura-2-athena-en', label: 'Athena (Aura-2)' },
   { value: 'aura-2-luna-en', label: 'Luna (Aura-2)' },

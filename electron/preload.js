@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   writeClipboardPng: (dataUrl) => ipcRenderer.invoke('clipboard-write-png', String(dataUrl ?? '')),
   readClipboardText: () => ipcRenderer.invoke('clipboard-read-text'),
   readClipboardImage: () => ipcRenderer.invoke('clipboard-read-image'),
+  requestLiveMediaPermissions: () => ipcRenderer.invoke('live-media-permissions'),
   setNativeTheme: (theme) => ipcRenderer.send('native-theme-set', theme),
   getNativeTheme: () => ipcRenderer.invoke('native-theme-get'),
   getSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-get'),

@@ -2741,6 +2741,10 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error('Microphone capture is unavailable in this browser or desktop runtime.');
       }
+      const desktopPermission = await (window as any).electronAPI?.requestLiveMediaPermissions?.();
+      if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
+        throw new Error('Microphone access is blocked by the operating system. Enable it for EterX in system privacy settings.');
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: 16000,

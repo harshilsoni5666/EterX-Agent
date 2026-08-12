@@ -681,6 +681,18 @@ export function clearPendingResults(projectId?: string): number {
 export class SubAgentSpawner {
   private activeAgents: Map<string, SubAgentInstance> = new Map();
   private backgroundPromises: Map<string, BackgroundSubAgentRun> = new Map();
+  private slotReservations: Map<string, { projectId: string; name: SubAgentName }> = new Map();
+
+  private reserveSlot(projectId: string, name: SubAgentName, agentId: string, context: ProjectContext): boolean {
+    if (this.slotReservations.has(agentId)) return true;
+    if (this.getOccupiedSlotCount(projectId) >= getConfiguredSubAgentLimit(context)) return false;
+    this.slotReservations.set(agentId, { projectId: resolveProjectId(projectId), name });
+    return true;
+  }
+
+  private releaseSlot(agentId: string): void {
+    this.slotReservations.delete(agentId);
+  }
 
   private isNameBusy(projectId: string, name: SubAgentName, reservedNames?: Set<SubAgentName>): boolean {
     const normalizedName = name.toLowerCase();
@@ -691,6 +703,9 @@ export class SubAgentSpawner {
     const activeNameMatch = Array.from(this.activeAgents.values())
       .some(agent => isSameProjectScope(agent.projectId, projectId) && agent.name.toLowerCase() === normalizedName && agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'cancelled');
     if (activeNameMatch) return true;
+    if (Array.from(this.slotReservations.values()).some(reservation =>
+      isSameProjectScope(reservation.projectId, projectId) && reservation.name.toLowerCase() === normalizedName
+    )) return true;
     return Array.from(this.backgroundPromises.values())
       .some(run => isSameProjectScope(run.projectId, projectId) && run.name.toLowerCase() === normalizedName);
   }
@@ -763,9 +778,9 @@ export class SubAgentSpawner {
           .map(a => `  - ${a.name}: "${(a as any).task?.substring(0, 80) || 'working'}"`)
           .join('\n');
     const teamSection = otherAgents
-      ? `\nTEAM - Other agents planned or running:\n${otherAgents}\nUse agent_communicate action="status" to inspect team state and action="send" or "broadcast" to coordinate.\n`
-      : '';
-    const controlSection = `\nUNIFIED CONTROL:\n- Use agent_communicate with to="Main" when you need clarification, approval, a merge decision, or user-facing escalation.\n- Check your mailbox before major decisions and after long tool runs.\n- Broadcast only blockers or discoveries that affect other agents.\n- Handoff concise partial results to Main when your lane is complete.\n`;
+      ? `\nTEAM - Other agents planned or running:\n${otherAgents}\nCoordinate only for a concrete dependency, conflict, or shared finding; do not poll team status.\n`
+      : '\nTEAM - You are the only delegated worker for this request. Work as one deep, focused lane and report back to Main.\n';
+    const controlSection = `\nUNIFIED CONTROL:\n- Incoming messages are delivered automatically at safe execution boundaries; do not poll check/status.\n- Use agent_communicate with to="Main" when you need clarification, approval, a merge decision, or user-facing escalation.\n- Broadcast only blockers or discoveries that affect other agents.\n- Handoff concise partial results to Main when your lane is complete.\n`;
     return `━━━ ${agentName} — Sub-Agent Task ━━━\n🎯 You are ${agentName}, a parallel sub-agent.\n\n${task}\n${teamSection}\nRULES:\n1. Full tool access. Work deeply — no shortcuts.\n2. NEVER call task_decomposer or spawn_sub_agent.\n3. VERIFY your work before finishing.\n4. You are ONE of multiple parallel agents.\n\nINTER-AGENT COMMUNICATION (agent_communicate tool):\n- status: See every planned/running/paused/completed teammate and current progress\n- check: Read Main or teammate instructions\n- send: Send information, questions, answers, or coordination to any named teammate\n- broadcast: Share a blocker or discovery with the whole active team\n- ask_main: Ask Main for clarification or a decision at any time\n- handoff_main: Pass partial or final results to Main\n${controlSection}\n## ${agentName} — Report Format\n**Task:** [what you did]\n**Files:** [paths]\n**Key Results:** [findings]\n**Verified:** [yes/no]\n\n${parentContext ? `CONTEXT: ${parentContext}\n` : ''}EXECUTE NOW.`;
   }
 
@@ -783,7 +798,18 @@ export class SubAgentSpawner {
     const name = customName || this.resolveAgentName(context.projectId, task);
     const agentId = customAgentId || this.createAgentId(context.projectId, name);
     const subAgentChatId = `${context.projectId}::sub-agent::${agentId}`;
+    if (!this.reserveSlot(context.projectId, name, agentId, context)) {
+      return {
+        agentId,
+        name,
+        result: `Not started: the configured ${getConfiguredSubAgentLimit(context)}-agent concurrency limit is already in use.`,
+        success: false,
+        durationMs: 0,
+        traceLog: ['Not started because no project concurrency slot was available'],
+      };
+    }
     if (isCancelled(context.projectId)) {
+      this.releaseSlot(agentId);
       return { agentId, name, result: 'Cancelled by user', success: false, durationMs: 0, traceLog: ['Cancelled before start'] };
     }
     // Register agents in inter-agent mailbox
@@ -1214,6 +1240,7 @@ export class SubAgentSpawner {
       agentCloseFlags.delete(completedControlKey);
       controlAgentNames.delete(completedControlKey);
       this.activeAgents.delete(agentId);
+      this.releaseSlot(agentId);
     }
   }
 
@@ -1234,10 +1261,9 @@ export class SubAgentSpawner {
     notStartedTasks: SubAgentTaskSpec[];
     message: string;
   } {
-    const configuredTasks = limitConfiguredTasks(tasks, context);
     const occupiedSlots = this.getOccupiedSlotCount(context.projectId);
     const availableSlots = Math.max(0, getConfiguredSubAgentLimit(context) - occupiedSlots);
-    const activeTasks = configuredTasks.slice(0, availableSlots);
+    const activeTasks = tasks.slice(0, availableSlots);
     const teamSize = activeTasks.length;
     const reservedNames = new Set<SubAgentName>();
     const agentNames = activeTasks.map((t) => {
@@ -1255,6 +1281,12 @@ export class SubAgentSpawner {
         task: taskItem.task,
       };
     });
+    for (const plan of agentPlans) {
+      this.slotReservations.set(plan.agentId, {
+        projectId: resolveProjectId(context.projectId),
+        name: plan.name,
+      });
+    }
 
     interAgentMailbox.registerAgent(context.projectId, 'Main', {
       role: 'main',
@@ -1313,6 +1345,7 @@ export class SubAgentSpawner {
           console.error(`[SubAgent] Background run failed for ${ name }:`, error);
         })
         .finally(() => {
+          this.releaseSlot(plan.agentId);
           this.backgroundPromises.delete(runKey);
           if (this.getBackgroundCount(context.projectId) === 0) {
             clearCancelState(context.projectId);
@@ -1325,9 +1358,11 @@ export class SubAgentSpawner {
     return {
       agentNames,
       agents: agentPlans,
-      notStartedTasks: configuredTasks.slice(availableSlots),
+      // Preserve every unlaunched task, including tasks beyond the configured
+      // per-run limit. The old pre-slice silently discarded this tail.
+      notStartedTasks: tasks.slice(activeTasks.length),
       message: teamSize > 0
-        ? `${ teamSize } task-named agents spawned and working in background. ${availableSlots < configuredTasks.length ? `${configuredTasks.length - availableSlots} task(s) were not started because the configured concurrent-agent limit is already in use; spawn them after a slot opens. ` : ''}Continue YOUR work now. Results are automatically handed to Main and remain available through mode="collect".`
+        ? `${ teamSize } task-named agents spawned and working in background. ${activeTasks.length < tasks.length ? `${tasks.length - activeTasks.length} task(s) were not started because the configured concurrent-agent limit is already in use; spawn them after a slot opens. ` : ''}Continue YOUR work now. Results are automatically handed to Main and remain available through mode="collect".`
         : `No agent slot is available. ${occupiedSlots} agent(s) are already running at the configured concurrent limit.`
     };
   }
@@ -1348,13 +1383,26 @@ export class SubAgentSpawner {
     failCount: number
   }> {
     const startTime = Date.now();
-    const activeTasks = limitConfiguredTasks(tasks, context);
+    const configuredTasks = limitConfiguredTasks(tasks, context);
+    const availableSlots = Math.max(0, getConfiguredSubAgentLimit(context) - this.getOccupiedSlotCount(context.projectId));
+    const activeTasks = configuredTasks.slice(0, availableSlots);
     const reservedNames = new Set<SubAgentName>();
     const agentNames = activeTasks.map((t) => {
       const name = this.resolveAgentName(context.projectId, t.task, t.name, reservedNames);
       reservedNames.add(name);
       return name;
     });
+    const agentPlans = activeTasks.map((taskItem, index) => ({
+      agentId: this.createAgentId(context.projectId, agentNames[index]),
+      name: agentNames[index],
+      task: taskItem,
+    }));
+    for (const plan of agentPlans) {
+      this.slotReservations.set(plan.agentId, {
+        projectId: resolveProjectId(context.projectId),
+        name: plan.name,
+      });
+    }
 
     interAgentMailbox.registerAgent(context.projectId, 'Main', {
       role: 'main',
@@ -1381,13 +1429,14 @@ export class SubAgentSpawner {
 
     const promises = activeTasks.map((t, index) => {
       const name = agentNames[index];
+      const plan = agentPlans[index];
       return Promise.resolve().then(async () => {
         if (isCancelled(context.projectId)) {
           return { agentId: '', name, result: 'Cancelled', success: false, durationMs: 0, traceLog: [] };
         }
         // Minimal stagger: 500ms (was 2s) — each agent has its own key now
-        return this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t);
-      });
+        return this.spawnAgent(t.task, context, index, parentContext, onTrace, name, t, plan.agentId);
+      }).finally(() => this.releaseSlot(plan.agentId));
     });
 
     const settled = await Promise.allSettled(promises);
@@ -1459,6 +1508,9 @@ export class SubAgentSpawner {
     }
     for (const run of this.backgroundPromises.values()) {
       if (isSameProjectScope(run.projectId, resolvedProjectId)) occupiedNames.add(run.name.toLowerCase());
+    }
+    for (const reservation of this.slotReservations.values()) {
+      if (isSameProjectScope(reservation.projectId, resolvedProjectId)) occupiedNames.add(reservation.name.toLowerCase());
     }
     return occupiedNames.size;
   }

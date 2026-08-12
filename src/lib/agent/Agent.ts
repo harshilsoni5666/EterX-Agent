@@ -37,7 +37,7 @@ import {
 } from './adaptive';
 import { globalSessionManager } from './session';
 import { toolResultCompactor } from './memory/tool-result-compactor';
-import { awaitIfPaused, isCancelled } from './roles/sub_agent';
+import { awaitIfPaused, globalSubAgentSpawner, isCancelled } from './roles/sub_agent';
 import { interAgentMailbox } from './roles/inter_agent_comm';
 import {
   recordProvenModel,
@@ -1740,6 +1740,33 @@ export class GeminiAgentClient {
     }
   }
 
+  /** Join delegated workers only when Main is otherwise ready to finish. */
+  private async drainDelegatedWorkBeforeCompletion(
+    context: ProjectContext,
+    step: number,
+    trace: any[],
+    onTrace?: (t: any) => void,
+    currentTask?: string,
+  ): Promise<string> {
+    if ((context as any).isSubAgent) return '';
+    const projectId = String((context as any).projectId || (context as any).chatId || '').trim();
+    if (!projectId) return '';
+
+    if (globalSubAgentSpawner.getBackgroundCount(projectId) > 0) {
+      onTrace?.({
+        type: 'sub_agent_sync',
+        text: 'Finishing delegated work',
+        secondary: 'Waiting for worker handoffs before Main completes',
+        agentName: 'Main',
+        timestamp: Date.now(),
+      });
+      await globalSubAgentSpawner.waitForAll(projectId);
+      if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
+    }
+
+    return this.drainInterAgentMessages(context, step, trace, onTrace, currentTask);
+  }
+
   private formatLiveSteering(messages: Array<{ id?: string; text: string; metadata?: Record<string, any> }>): string {
     return messages.map((item, index) => {
       if (item.metadata?._autonomyProxy) return item.text.trim();
@@ -3055,6 +3082,18 @@ export class GeminiAgentClient {
       const toolCalls = Array.isArray(assistantMessage.tool_calls) ? assistantMessage.tool_calls : [];
 
       if (toolCalls.length === 0) {
+        const delegatedHandoffs = await this.drainDelegatedWorkBeforeCompletion(
+          context, interactions, trace, onTrace, message,
+        );
+        if (delegatedHandoffs) {
+          cancelProvisionalAnswer();
+          messages.push({ role: 'assistant', content: contentText || lastAnswer || 'I am integrating delegated work.' });
+          messages.push({
+            role: 'user',
+            content: `${delegatedHandoffs}\n\n[SYSTEM] Delegated work is now settled. Integrate only evidence-ready handoffs with your own verified work, then produce the final answer.`,
+          });
+          continue;
+        }
         const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, conversationScopeId);
         // Completion is a terminal execution boundary. The harness records any
         // remaining evidence gaps for learning/telemetry, but never re-prompts
@@ -3721,6 +3760,26 @@ export class GeminiAgentClient {
       if (toolUses.length > 0) cancelProvisionalAnswer();
 
       if (toolUses.length === 0) {
+        const delegatedHandoffs = await this.drainDelegatedWorkBeforeCompletion(
+          context, interactions, trace, onTrace, message,
+        );
+        if (delegatedHandoffs) {
+          cancelProvisionalAnswer();
+          messages.push({
+            role: 'assistant',
+            content: contentBlocks.length > 0
+              ? contentBlocks
+              : [{ type: 'text', text: contentText || lastAnswer || 'I am integrating delegated work.' }],
+          });
+          messages.push({
+            role: 'user',
+            content: [{
+              type: 'text',
+              text: `${delegatedHandoffs}\n\n[SYSTEM] Delegated work is now settled. Integrate only evidence-ready handoffs with your own verified work, then produce the final answer.`,
+            }],
+          });
+          continue;
+        }
         const finalText = this.finalizeEvidenceBoundAnswer(contentText || lastAnswer || 'Done.', evidenceLedger, toolCallCounts, conversationScopeId);
         // Observe completion without starting a critic/rewrite loop. Real
         // verification belongs beside the work that produced the evidence.
@@ -4857,7 +4916,7 @@ TOOLS
 - Use workspace tools for files, web tools for current external facts, and browser controls sequentially with verification.
 - For sales, support, inbox, or cross-channel conversation work, call channel_agent first; it loads the configured playbook on demand instead of carrying it in every prompt. Gateway and Channel Agent message sends execute directly without a confirmation prompt; draft-only profiles never send.
 - A natural request naming an external app is connector intent even if the user never says API, connector, integration, tool, or MCP. Discover live connection state first; use it immediately when ready, safely configure it when the user supplied the required values, and give the exact Channels setup path plus missing credential only when discovery proves setup is required.
-- When agent spawning is enabled, spawn_sub_agent is the authoritative delegation tool. Use it directly for 2+ meaningful independent tasks, then keep working and collect results when they matter; Main owns integration and final claims.
+- When agent spawning is enabled, spawn_sub_agent is the authoritative delegation tool. Use it for 2+ meaningful independent tasks, or for exactly one deep worker only when the user explicitly requests one. Domain words such as architecture, security, research, bug, or test are not by themselves reasons to delegate. Main owns integration and final claims.
 - Delegation lifecycle is not evidence. "Started", "running", and "completed" never tell you what a worker found. Rely on delegated work only when a collected payload or automatic handoff marks that exact result usable/evidenceReady. If lineage reports pending, empty, failed, cancelled, or uncollected work, do not infer its findings; continue from your own evidence or resolve the delegation gap before attributing it.
 - If the spawn_sub_agent declaration is absent, spawning is disabled for this run. Do not invent a substitute tool or claim that delegation happened.
 - Every tool call includes uiActionText (2-6 plain words) and uiIcon from: terminal, agent, image, clock, file_read, computer, file_create, file_edit, folder_read, folder_create, search, web_search, verification, connector.
@@ -5327,8 +5386,8 @@ SUB-AGENTS:
   - mode="consensus": 3-agent debate panel for high-stakes analysis
   - mode="debate": multi-round adversarial panel for critical choices and assumption checks
   - mode="specialist": one focused security/performance/architecture/QA/research expert
-  - Spawn when: 2+ independent parts, each >30 seconds
-  - Don't spawn for: simple tasks, sequential dependencies
+  - Spawn when: 2+ independent parts, each >30 seconds; or exactly one deep worker when the user explicitly asks for one sub-agent
+  - Don't spawn for: simple tasks, sequential dependencies, or merely because the request mentions architecture/security/research/testing
   - Every worker has a custom task-based name and exact run ID; use the ID when the same task name appears in multiple runs
   - New workers may be added while others run, up to the configured concurrent limit; continue Main's own work after spawning
   - Delegation never transfers ownership of the whole request. Main must immediately continue independent implementation, analysis, or synthesis work
@@ -5338,7 +5397,7 @@ SUB-AGENTS:
   - Use agent_communicate action="status" to see planned/running/paused/completed teammates and their current task/progress
   - Main may send direct instructions or broadcast coordination updates; direct interrupt messages are handled at the next safe tool boundary
   - Subagents may talk to each other directly, broadcast discoveries, ask Main at any time, and hand off partial work
-  - Completed/failed workers report to Main automatically; mode="collect" returns retained, distinct run-ID-based result records for synthesis
+  - Completed/failed workers report to Main automatically; Main's completion boundary joins any running workers and injects their handoffs for synthesis. mode="collect" returns retained, distinct run-ID-based result records when an earlier snapshot is needed
   - Main/user pause, resume, and close controls target one exact worker run without stopping unrelated agents
 
 BROWSER CONTROL
@@ -7598,6 +7657,23 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             continue;
           }
 
+          const delegatedHandoffs = await this.drainDelegatedWorkBeforeCompletion(
+            context, interactions, trace, onTrace, message,
+          );
+          if (delegatedHandoffs) {
+            cancelProvisionalAnswer();
+            if (fullResponseContent) contents.push(fullResponseContent);
+            contents.push({
+              role: 'user',
+              parts: [{
+                text: `${delegatedHandoffs}\n\n[SYSTEM] Delegated work is now settled. Integrate only evidence-ready handoffs with your own verified work, then produce the final answer.`,
+              }],
+            });
+            accumulatedText = '';
+            accumulatedThought = '';
+            continue;
+          }
+
           // Plans and proof obligations shape the live execution context. Once
           // the model naturally returns a final answer they become telemetry;
           // they never launch a generic after-answer correction loop.
@@ -7859,67 +7935,6 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             };
           }
 
-          if (call.name !== 'agent_communicate') {
-            const pendingControlMessages = interAgentMailbox.getInterruptingMessages(subAgentProjectId, subAgentName, 3, subAgentId || undefined);
-
-            if (pendingControlMessages.length > 0) {
-              return {
-                functionResponse: {
-                  name: call.name,
-                  response: {
-                    output: {
-                      error: `CONTROL_MESSAGE_PENDING: ${ pendingControlMessages.length } urgent message(s). Call agent_communicate with action="check" before continuing. Routine messages stay queued and do not interrupt active work.`,
-                      controlMessagePending: true,
-                      requiredTool: 'agent_communicate',
-                      unreadCount: pendingControlMessages.length,
-                      messageIds: pendingControlMessages.map((message: any) => message.id),
-                      latestSubjects: pendingControlMessages.map((message: any) => ({
-                        id: message.id,
-                        from: message.from,
-                        type: message.type,
-                        subject: message.subject,
-                        priority: message.metadata?.priority || 'normal',
-                        deliveryMode: message.metadata?.deliveryMode || 'defer',
-                        requiresResponse: message.metadata?.requiresResponse === true,
-                      })),
-                    }
-                  },
-                  ...(call.id ? { id: call.id } : {})
-                }
-              };
-            }
-          }
-        }
-
-        if (!(context as any).isSubAgent && subAgentProjectId && call.name !== 'agent_communicate') {
-          const pendingMainMessages = interAgentMailbox.getInterruptingMessages(subAgentProjectId, 'Main', 3);
-
-          if (pendingMainMessages.length > 0) {
-            return {
-              functionResponse: {
-                name: call.name,
-                response: {
-                  output: {
-                    error: `MAIN_CONTROL_MESSAGE_PENDING: ${ pendingMainMessages.length } urgent message(s). Call agent_communicate with action="check" before continuing. Routine messages stay queued and do not interrupt active work.`,
-                    controlMessagePending: true,
-                    requiredTool: 'agent_communicate',
-                    unreadCount: pendingMainMessages.length,
-                    messageIds: pendingMainMessages.map((message: any) => message.id),
-                    latestSubjects: pendingMainMessages.map((message: any) => ({
-                      id: message.id,
-                      from: message.from,
-                      type: message.type,
-                      subject: message.subject,
-                      priority: message.metadata?.priority || 'normal',
-                      deliveryMode: message.metadata?.deliveryMode || 'defer',
-                      requiresResponse: message.metadata?.requiresResponse === true,
-                    })),
-                  }
-                },
-                ...(call.id ? { id: call.id } : {})
-              }
-            };
-          }
         }
 
         const failureWarning = cognitiveSession.checkToolFailureWarning(call.name, args);

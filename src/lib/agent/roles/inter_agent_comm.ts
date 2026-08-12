@@ -541,6 +541,10 @@ class InterAgentMailbox {
     } catch { /* persisted mailbox cleanup is best-effort */ }
   }
 
+  getAgentPresence(projectId: string, agentName: string): AgentPresence | undefined {
+    return this.getPresenceMap(projectId).get(this.presenceKey(agentName));
+  }
+
   // Cap mailbox at 200 messages to prevent memory bloat
   private capMailbox(inbox: AgentMessage[]): void {
     if (inbox.length > 200) {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  agentIdentitiesOverlap,
   isInternalWorkNoteNoise,
   isTerminalWorkTrace,
   isTurnWorkActive,
@@ -7,6 +8,42 @@ import {
   shouldRenderContextCompactionEvent,
   shouldShowWorkflowSequence,
 } from '../src/lib/chat-feed-lifecycle';
+
+assert.equal(
+  agentIdentitiesOverlap(
+    { id: 'chat-a::sub-agent::worker-7', name: 'Researcher' },
+    { subAgentId: 'worker-7', agentName: 'Researcher' },
+  ),
+  true,
+  'full child-chat IDs and short sub-agent IDs must route to the same tab',
+);
+
+assert.equal(
+  agentIdentitiesOverlap(
+    { subAgentId: 'worker-old', agentName: 'Researcher' },
+    { subAgentId: 'worker-new', agentName: 'Researcher' },
+  ),
+  false,
+  'reused display names must not merge distinct worker runs',
+);
+
+assert.equal(
+  agentIdentitiesOverlap(
+    { agentName: 'Legacy Worker', subAgent: 'Legacy Worker' },
+    'legacy worker',
+  ),
+  true,
+  'legacy name-only traces must remain selectable',
+);
+
+assert.equal(
+  agentIdentitiesOverlap(
+    { id: 'comm-event-42', type: 'inter_agent_message', agentName: 'Legacy Worker' },
+    { id: 'legacy-worker-tab', name: 'Legacy Worker' },
+  ),
+  true,
+  'event IDs must not be mistaken for exact worker-run IDs',
+);
 
 assert.equal(
   isInternalWorkNoteNoise('I will inspect the relevant files.'),
@@ -159,6 +196,21 @@ assert.equal(
     withLateBoundary.map(log => log.text),
     ['Delayed older request', 'Older action', 'Newer request', 'Newer answer'],
     'a delayed user boundary must not create a new turn after the current answer',
+  );
+}
+
+{
+  const ordered = orderFeedTimelineLogs([
+    { type: 'user_action', text: 'Proxy request one', runId: 'run-proxy', turnId: 'run-proxy', _traceIdx: 0 },
+    { type: 'user_action', text: 'Proxy request two', runId: 'run-proxy', turnId: 'run-proxy', _traceIdx: 3 },
+    { type: 'command', text: 'Second request action', runId: 'run-proxy', turnId: 'run-proxy', _traceIdx: 4 },
+    { type: 'command', text: 'Late first request action', runId: 'run-proxy', turnId: 'run-proxy', _traceIdx: 1 },
+  ]);
+
+  assert.deepEqual(
+    ordered.map(log => log.text),
+    ['Proxy request one', 'Late first request action', 'Proxy request two', 'Second request action'],
+    'reused Proxy turn IDs must still route late events by their trace position',
   );
 }
 

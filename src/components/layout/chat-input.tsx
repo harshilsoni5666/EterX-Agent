@@ -3737,8 +3737,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </div>
               )}
 
-              {/* Builder owns a stable specialist runtime; normal chats keep the model selector. */}
-              {!isAgentBuilder && <div ref={modelSelectorRef} className="eterx-model-selector relative min-w-0">
+              {/* The Agent Builder uses the same turn-scoped model selection as every
+                  other agent chat. Keeping this control mounted lets a builder chat
+                  switch provider/model immediately for its next turn. */}
+              <div ref={modelSelectorRef} className="eterx-model-selector relative min-w-0">
                 <div
                   onClick={() => {
                     if (allModelOptions.length === 0) {
@@ -3913,7 +3915,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     )}
                   </div>
                 )}
-              </div>}
+              </div>
 
                <Tooltip text="Voice dictation" side="top">
                 <button type="button" onClick={toggleSpeech} className={`eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse !bg-[#3A2823] !border-transparent' : '' }`}>

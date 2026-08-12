@@ -5247,21 +5247,23 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               </div>
                             </SettingsStackRow>
 
-                            <SettingsStackRow
-                              title="Latency & Streaming Mode"
-                              description="Optimize network streaming for minimum delay or maximum response quality."
-                            >
-                              <ModernSelect
-                                value={settings.liveConvoLatencyMode || 'ultra-low'}
-                                onChange={(val) => updateSetting('liveConvoLatencyMode', val as AppSettings['liveConvoLatencyMode'])}
-                                className="w-[220px]"
-                                options={[
-                                  { value: 'ultra-low', label: 'Ultra-low Latency (Realtime)' },
-                                  { value: 'balanced', label: 'Balanced (Standard Voice)' },
-                                  { value: 'high-quality', label: 'High Quality (Rich Reasoner)' },
-                                ]}
-                              />
-                            </SettingsStackRow>
+                            {activeLiveProvider.provider === 'gemini' && (
+                              <SettingsStackRow
+                                title="Gemini Thinking Level"
+                                description="Choose the documented Gemini 3.1 Live thinking level used for this session."
+                              >
+                                <ModernSelect
+                                  value={settings.liveConvoLatencyMode || 'ultra-low'}
+                                  onChange={(val) => updateSetting('liveConvoLatencyMode', val as AppSettings['liveConvoLatencyMode'])}
+                                  className="w-[220px]"
+                                  options={[
+                                    { value: 'ultra-low', label: 'Minimal (Lowest latency)' },
+                                    { value: 'balanced', label: 'Medium' },
+                                    { value: 'high-quality', label: 'High' },
+                                  ]}
+                                />
+                              </SettingsStackRow>
+                            )}
 
                             <SettingsStackRow
                               title="Audio Modalities"

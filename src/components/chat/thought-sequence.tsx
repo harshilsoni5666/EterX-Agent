@@ -322,7 +322,10 @@ const useProgressiveMarkdown = (value: string, enabled: boolean, speed: RevealSp
           : Math.max(currentSpeed.burst, durationBurst, catchUpBurst);
         return Math.min(total, current + burst);
       });
-    }, 32);
+    // 20 fps is visually continuous for progressive text and cuts React
+    // markdown reconciliation by more than a third versus the old 31 fps
+    // timer. Incoming content is still accepted immediately.
+    }, 50);
 
     return () => window.clearInterval(interval);
   }, [enabled, reducedMotion]);
@@ -3798,9 +3801,9 @@ const ActionChip = ({
 
 // Sub-agent card — professional with status indicator
 const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpenAgentTeam?: (name?: string) => void; assetIndexes?: SubAgentAssetIndexes }) => {
-  const [open, setOpen] = useState(false);
   const agentName = log.agentName || log.subAgent || log.secondary || 'Sub-agent';
-  const isComplete = log.type === 'sub_agent_complete' || log.agentStatus === 'completed' || log.status === 'done';
+  const isComplete = ['sub_agent_complete', 'sub_agent_result', 'sub_agent_answer'].includes(log.type) || log.agentStatus === 'completed' || log.status === 'done';
+  const [open, setOpen] = useState(isComplete);
   const isClosed = log.type === 'sub_agent_close' || log.agentStatus === 'closed' || log.status === 'closed';
   const isPaused = log.type === 'sub_agent_pause' || log.agentStatus === 'paused' || log.status === 'paused';
   const isFailed = !isClosed && !isPaused && (log.type === 'sub_agent_error' || log.agentStatus === 'failed' || log.status === 'error');
@@ -3818,7 +3821,7 @@ const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpen
     : isPaused
       ? 'Paused at a safe boundary'
       : [durationLabel, stepLabel].filter(Boolean).join(' · ') || (isWorking ? 'Working...' : 'Parallel worker');
-  const displayText = log.taskSummary || log.result || log.content || log.text || '';
+  const displayText = log.resultSummary || log.result || log.taskSummary || log.content || log.text || '';
 
   const statusBadge = isComplete
     ? { bg: 'bg-emerald-500/8 border-emerald-500/15', text: 'text-emerald-400', label: 'Done' }
@@ -3954,6 +3957,7 @@ const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Su
 };
 
 const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpenAgentTeam?: (name?: string) => void; assetIndexes?: SubAgentAssetIndexes }) => {
+  const [open, setOpen] = useState(false);
   const fromAgent = log.from || log.agentName || 'Agent';
   const toAgent = log.to || log.secondary || 'Main';
   const msgType = log.messageType || log.commType || 'info_share';
@@ -3989,9 +3993,10 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
     <div className="my-1.5 overflow-hidden">
       <button
         type="button"
-        onClick={() => onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || focusAgent)}
+        onClick={() => preview ? setOpen(value => !value) : onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || focusAgent)}
+        aria-expanded={preview ? open : undefined}
         className={`eterx-agent-comm-card flex min-h-[58px] w-full items-start gap-3 rounded-[8px] px-3 py-2.5 bg-white/[0.012] border border-white/[0.07] text-left transition-colors hover:bg-white/[0.024] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ ACTION_CARD_CLASS }`}
-        aria-label={`View ${ focusAgent || 'agent activity' }`}
+        aria-label={preview ? `${ open ? 'Collapse' : 'Expand' } message from ${ fromAgent }` : `View ${ focusAgent || 'agent activity' }`}
       >
         <span className="eterx-agent-comm-identities mt-0.5 flex shrink-0 items-center gap-1.5">
           <SubAgentIdentityIcon name={fromAgent} status="working" size={28} assetIndex={getSubAgentAssetIndex(assetIndexes, fromAgent) ?? 0} />
@@ -4022,9 +4027,25 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
             )}
           </span>
           {subject && <span className="mt-1 block truncate text-[12px] font-medium text-[#BDB5AB]">{subject}</span>}
-          {preview && <span className="mt-0.5 block truncate text-[11px] text-[#817970]">{preview}</span>}
+          {preview && !open && <span className="mt-0.5 block truncate text-[11px] text-[#817970]">{preview}</span>}
         </span>
+        {preview && <ChevronRight className={`mt-1 h-3.5 w-3.5 shrink-0 text-[#6F685F] transition-transform ${ open ? 'rotate-90' : '' }`} />}
       </button>
+      <AnimatePresence initial={false}>
+        {open && preview && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.16 }}
+            className="overflow-hidden"
+          >
+            <div className="ml-7 max-h-[420px] overflow-y-auto border-l border-white/[0.075] pb-3 pl-4 pt-2 whitespace-pre-wrap text-[12px] leading-relaxed text-[#A79F95] eterx-scrollbar">
+              {preview}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -4814,7 +4835,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   const isFlowLog = (l: any) => {
     const subAgentOwned = Boolean(l?.subAgentId || l?.subAgentChatId || l?.subAgent) && String(l?.agentName || '').toLowerCase() !== 'main';
     const highLevelSubAgentTypes = new Set([
-      'work_note', 'progress', 'sub_agent_spawn', 'sub_agent_complete', 'sub_agent_error',
+      'work_note', 'progress', 'sub_agent_spawn', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_complete', 'sub_agent_error',
       'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close', 'inter_agent_comm', 'inter_agent_message',
     ]);
     // Detailed worker actions belong to the selected worker tab. Keeping them
@@ -4905,12 +4926,13 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
 
     else if (log.type === 'safety_warning') { flush(idx - 1); segs.push({ kind: 'safety', log, idx }); }
     else if (log.type === 'steering_received') { flush(idx - 1); segs.push({ kind: 'steering', log, idx }); }
-    else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result') { /* hidden */ }
+    else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result') {
+      flush(idx - 1);
+      segs.push({ kind: 'subagent_complete', log, idx });
+    }
     else if (log.type === 'sub_agent_complete') {
-      if (isSubAgentTab) {
-        flush(idx - 1);
-        segs.push({ kind: 'subagent_complete', log, idx });
-      }
+      flush(idx - 1);
+      segs.push({ kind: 'subagent_complete', log, idx });
     }
     else if (log.type === 'sub_agent_spawn') {
       // Skip the per-worker event when its exact run is already represented by
@@ -4928,16 +4950,12 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       }
     }
     else if (log.type === 'sub_agent_error') {
-      if (isSubAgentTab) {
-        flush(idx - 1);
-        segs.push({ kind: 'subagent_error', log, idx });
-      }
+      flush(idx - 1);
+      segs.push({ kind: 'subagent_error', log, idx });
     }
     else if (['sub_agent_pause', 'sub_agent_resume', 'sub_agent_close'].includes(log.type)) {
-      if (isSubAgentTab) {
-        flush(idx - 1);
-        segs.push({ kind: 'subagent_status', log, idx });
-      }
+      flush(idx - 1);
+      segs.push({ kind: 'subagent_status', log, idx });
     }
     else if (log.type === 'sub_agent_action') {
       if (isSubAgentTab) {
@@ -5017,13 +5035,13 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'subagent_action') return null;
         if (seg.kind === 'subagent_spawn') return <AgentCreatedCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
         if (seg.kind === 'subagent_complete') {
-          return isSubAgentTab ? <SubAgentCard key={`sc-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} /> : null;
+          return <SubAgentCard key={`sc-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
         }
         if (seg.kind === 'subagent_error') {
-          return isSubAgentTab ? <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} assetIndexes={assetIndexes} /> : null;
+          return <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} assetIndexes={assetIndexes} />;
         }
         if (seg.kind === 'subagent_status') {
-          return isSubAgentTab ? <SubAgentCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} /> : null;
+          return <SubAgentCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
         }
         if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === segs.length - 1 && !seg.log.answeredWith} />;
         if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ seg.idx }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === segs.length - 1} />;

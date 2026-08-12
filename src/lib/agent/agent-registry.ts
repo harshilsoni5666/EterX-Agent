@@ -145,6 +145,7 @@ const MAX_COMPLETED_AGE = 2 * 60 * 60 * 1000; // 2 hours max retention for compl
 
 class AgentRegistry {
   private executions: Map<string, AgentExecution> = new Map();
+  private traceWaiters: Map<string, Set<() => void>> = new Map();
   private userFollowUpQueues: Map<string, QueuedUserFollowUp[]> = new Map();
   private userFollowUpReceipts: Map<string, Map<string, QueuedUserFollowUpSummary>> = new Map();
   private pendingRunCancellations: Map<string, { runId?: string; expiresAt: number }> = new Map();
@@ -297,6 +298,7 @@ class AgentRegistry {
     };
 
     execution.traceBuffer.push(entry);
+    this.notifyTraceWaiters(execution.chatId);
     if (now - execution.lastMemorySampleAt >= 1000) {
       execution.lastMemorySampleAt = now;
       execution.peakMemoryMB = Math.max(execution.peakMemoryMB || 0, this.getProcessMemoryMB());
@@ -326,6 +328,53 @@ class AgentRegistry {
     }
 
     return entry;
+  }
+
+  private notifyTraceWaiters(chatId: string): void {
+    const waiters = this.traceWaiters.get(chatId);
+    if (!waiters?.size) return;
+    this.traceWaiters.delete(chatId);
+    for (const resolve of waiters) resolve();
+  }
+
+  /**
+   * Wait until a trace/status transition may be available without spinning.
+   * Poll routes use this to keep every chat live with zero idle polling CPU.
+   */
+  public waitForTraceChange(
+    chatId: string,
+    afterIndex: number,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const boundedTimeout = Math.max(0, Math.min(2000, Math.floor(timeoutMs)));
+    if (boundedTimeout === 0 || signal?.aborted) return Promise.resolve();
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', finish);
+        const waiters = this.traceWaiters.get(chatId);
+        waiters?.delete(finish);
+        if (waiters?.size === 0) this.traceWaiters.delete(chatId);
+        resolve();
+      };
+      const timer = setTimeout(finish, boundedTimeout);
+      timer.unref?.();
+      const waiters = this.traceWaiters.get(chatId) || new Set<() => void>();
+      waiters.add(finish);
+      this.traceWaiters.set(chatId, waiters);
+      signal?.addEventListener('abort', finish, { once: true });
+
+      // Close the subscribe-after-read race. A trace can be appended between
+      // the route's initial getTraces() call and waiter registration. Recheck
+      // only after registration so either this snapshot or appendTrace's
+      // notification always wakes the request immediately.
+      const latest = this.getTraces(chatId, afterIndex);
+      if (latest.status !== 'running' || latest.traces.length > 0) finish();
+    });
   }
 
   /**

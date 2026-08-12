@@ -22,6 +22,7 @@ import {
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
 import { MAX_SUB_AGENTS } from './sub-agent-settings';
+import { hasExplicitSubAgentRequest } from './roles/sub_agent_strategy';
 import { AGENT_BUILDER_RUNTIME, AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile } from './builder-agent';
 import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
 import { isModelProvider } from './model-selector-store';
@@ -445,9 +446,13 @@ export class AgentOrchestrator {
         }
       }
     }
-    if (pinnedContext?.disableSubAgents) {
-      context.disableSubAgents = true;
-    }
+    // Spawning authority is opt-in per run. Treat omitted/stale pinned fields
+    // as disabled instead of silently inheriting the broad Main capability.
+    const explicitlyRequestedDelegation = hasExplicitSubAgentRequest(userRequest);
+    const agentSpawningEnabled = runLocation !== 'sandbox'
+      && (pinnedContext?.allowAgentSpawning === true || explicitlyRequestedDelegation)
+      && (pinnedContext?.disableSubAgents !== true || explicitlyRequestedDelegation);
+    context.disableSubAgents = !agentSpawningEnabled;
     if (pinnedContext) {
       context.disableMemoryHydration = !!pinnedContext.disableMemoryHydration;
       context.disableLongTermMemory = !!pinnedContext.disableLongTermMemory;
@@ -484,7 +489,7 @@ export class AgentOrchestrator {
     const networkDenied = isSandboxRun || (pinnedContext?.networkPolicy === 'deny' && pinnedContext?.allowNetwork !== true);
     context.networkPolicy = networkDenied ? 'deny' : 'allow';
     context.allowNetwork = !networkDenied;
-    context.allowAgentSpawning = isSandboxRun ? false : (!context.disableSubAgents && pinnedContext?.allowAgentSpawning !== false);
+    context.allowAgentSpawning = agentSpawningEnabled;
     context.allowDynamicCode = isSandboxRun ? false : pinnedContext?.allowDynamicCode !== false;
     context.allowBrowserControl = isSandboxRun ? false : pinnedContext?.allowBrowserControl !== false;
     context.allowHostControl = isSandboxRun
@@ -507,7 +512,7 @@ export class AgentOrchestrator {
       ...pinnedAllowedCapabilities,
     ])).filter(capability => {
       if (networkDenied && capability.startsWith('network.')) return false;
-      if ((isSandboxRun || context.disableSubAgents) && capability === 'agent.spawn') return false;
+      if (!context.allowAgentSpawning && capability === 'agent.spawn') return false;
       if (context.allowDynamicCode === false && capability === 'code.dynamic') return false;
       if (context.allowBrowserControl === false && capability === 'browser.control') return false;
       return true;

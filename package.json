@@ -109,7 +109,7 @@
     "build": "node scripts/build-production.mjs",
     "start": "next start",
     "test": "npm run test:ci",
-    "test:ci": "npm run test:reference-evals && npm run test:markdown-renderer && npm run test:path-utils && npm run test:platform-shortcuts && npm run test:file-icon-utils && npm run test:model-selector && npm run test:credential-storage && npm run test:connector-storage && npm run test:workspace-tools && npm run test:execution-governor && npm run test:adaptive-harness && npm run test:context-fabric && npm run test:agent-cache && npm run test:context-resonance && npm run test:context-compaction-policy && npm run test:context-scope && npm run test:agent-lifecycle && npm run test:tool-schema-router && npm run test:parallel-key-pool && npm run test:polling-coordinator && npm run test:search-runtime && npm run test:image-runtime && npm run test:video-runtime && npm run test:chat-feed-lifecycle && npm run test:thought-stream-lifecycle && npm run test:streaming-lifecycle && npm run test:scheduled-task-store && npm run test:agent-builder-quality && npm run test:provider-runtime && npm run test:local-openai-compat && npx tsc --noEmit --pretty false",
+    "test:ci": "npm run test:reference-evals && npm run test:markdown-renderer && npm run test:path-utils && npm run test:platform-shortcuts && npm run test:file-icon-utils && npm run test:model-selector && npm run test:credential-storage && npm run test:connector-storage && npm run test:workspace-tools && npm run test:execution-governor && npm run test:adaptive-harness && npm run test:context-fabric && npm run test:agent-cache && npm run test:context-resonance && npm run test:context-compaction-policy && npm run test:context-scope && npm run test:agent-lifecycle && npm run test:tool-schema-router && npm run test:parallel-key-pool && npm run test:polling-coordinator && npm run test:search-runtime && npm run test:image-runtime && npm run test:video-runtime && npm run test:chat-feed-lifecycle && npm run test:chat-send-lifecycle && npm run test:thought-stream-lifecycle && npm run test:streaming-lifecycle && npm run test:scheduled-task-store && npm run test:agent-builder-quality && npm run test:provider-runtime && npm run test:local-openai-compat && npx tsc --noEmit --pretty false",
     "test:reference-evals": "tsx scripts/run-reference-evals.ts",
     "test:markdown-renderer": "tsx tests/markdown-renderer.integration.tsx",
     "test:path-utils": "tsx tests/path-utils.integration.ts",
@@ -134,6 +134,7 @@
     "test:image-runtime": "tsx tests/image-generation-runtime.integration.ts",
     "test:video-runtime": "tsx tests/video-generation-runtime.integration.ts",
     "test:chat-feed-lifecycle": "tsx tests/chat-feed-lifecycle.integration.ts",
+    "test:chat-send-lifecycle": "tsx tests/chat-send-lifecycle.integration.ts",
     "test:thought-stream-lifecycle": "tsx tests/thought-stream-lifecycle.integration.ts",
     "test:streaming-lifecycle": "tsx tests/streaming-lifecycle.integration.ts",
     "test:scheduled-task-store": "tsx tests/scheduled-task-store.integration.ts",
@@ -277,6 +278,12 @@
       "icon": "public/icon.icns",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
+      "entitlements": "setup/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "EterX uses the microphone only while you are using voice recording or Live Agent.",
+        "NSCameraUsageDescription": "EterX uses the camera only when you enable camera sharing in Live Agent.",
+        "NSScreenCaptureUsageDescription": "EterX captures the screen only while you explicitly enable screen sharing in Live Agent."
+      },
       "entitlementsInherit": "setup/entitlements.mac.plist"
     }
   },

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { startTransition, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import { CommandPalette } from '../components/layout/command-palette';
@@ -68,7 +68,8 @@ import {
 import { formatVisibleWorkNote } from '../lib/agent/work-note';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../lib/agent/tool-trace';
 import { canonicalizeThoughtStreamLogs, closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
-import { orderFeedTimelineLogs } from '../lib/chat-feed-lifecycle';
+import { agentIdentitiesOverlap, orderFeedTimelineLogs } from '../lib/chat-feed-lifecycle';
+import { resolveChatSendTarget } from '../lib/chat-send-lifecycle';
 import { mergeStreamingText } from '../lib/streaming-lifecycle';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 import { isProjectFile, getFileIconPath } from '../lib/utils/file-icon-utils';
@@ -702,6 +703,55 @@ type ProxyLiveTurn = {
     phase?: string;
     timestamp: number;
   }>;
+};
+
+type ProxyChatMessage = {
+  id?: string;
+  sender: 'user' | 'proxy';
+  text: string;
+  time: string;
+  createdAt: number;
+  optimistic?: boolean;
+  delivery?: string;
+  operation?: string;
+  work?: Array<{ text: string; tool: string }>;
+};
+
+const normalizeProxyHistoryMessages = (items: any[]): ProxyChatMessage[] =>
+  (Array.isArray(items) ? items : []).map((item: any, index) => {
+    const createdAt = Number(item?.createdAt) || index + 1;
+    return {
+      id: String(item?.id || ''),
+      sender: item?.role === 'user' ? 'user' : 'proxy',
+      text: String(item?.text || ''),
+      time: new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      createdAt,
+      delivery: item?.delivery,
+      operation: item?.operation,
+      work: Array.isArray(item?.work) ? item.work : [],
+    };
+  });
+
+const reconcileProxyChatMessages = (
+  existing: ProxyChatMessage[],
+  canonical: ProxyChatMessage[],
+): ProxyChatMessage[] => {
+  const canonicalIds = new Set(canonical.map(message => message.id).filter(Boolean));
+  const pending = existing.filter(message => {
+    if (message.id && canonicalIds.has(message.id)) return false;
+    if (!message.optimistic) return false;
+    return !canonical.some(serverMessage =>
+      serverMessage.sender === message.sender &&
+      serverMessage.text === message.text &&
+      Math.abs(serverMessage.createdAt - message.createdAt) <= 120_000
+    );
+  });
+  return [...canonical, ...pending]
+    .map((message, index) => ({ message, index }))
+    .sort((left, right) =>
+      left.message.createdAt - right.message.createdAt || left.index - right.index
+    )
+    .map(entry => entry.message);
 };
 
 const sortChats = (chats: ChatSession[]) => {
@@ -1398,15 +1448,7 @@ function DeepWorkUI() {
   const [showProxyModelMenu, setShowProxyModelMenu] = useState(false);
   const [showProxyRuntimeModelMenu, setShowProxyRuntimeModelMenu] = useState(false);
   const [showProxyInterventionMenu, setShowProxyInterventionMenu] = useState(false);
-  const [proxyChatMessages, setProxyChatMessages] = useState<Array<{
-    id?: string;
-    sender: 'user' | 'proxy';
-    text: string;
-    time: string;
-    delivery?: string;
-    operation?: string;
-    work?: Array<{ text: string; tool: string }>;
-  }>>([]);
+  const [proxyChatMessages, setProxyChatMessages] = useState<ProxyChatMessage[]>([]);
   const [proxyManagerContext, setProxyManagerContext] = useState<any>(null);
   const [proxyChatHistoryChatId, setProxyChatHistoryChatId] = useState<string | null>(null);
   const [proxyChatLoading, setProxyChatLoading] = useState(false);
@@ -1579,11 +1621,22 @@ function DeepWorkUI() {
         .finally(() => { checkInFlight = false; });
     };
 
-    checkGitStatus();
-    const interval = setInterval(checkGitStatus, 4000);
+    const checkGitStatusWhenVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      checkGitStatus();
+    };
+    checkGitStatusWhenVisible();
+    // A repository status refresh starts two shell commands. Refresh promptly
+    // when the app regains focus, with a quiet safety cadence while visible,
+    // instead of waking the disk and server every four seconds forever.
+    const interval = setInterval(checkGitStatusWhenVisible, 15000);
+    window.addEventListener('focus', checkGitStatusWhenVisible);
+    document.addEventListener('visibilitychange', checkGitStatusWhenVisible);
     return () => {
       active = false;
       clearInterval(interval);
+      window.removeEventListener('focus', checkGitStatusWhenVisible);
+      document.removeEventListener('visibilitychange', checkGitStatusWhenVisible);
     };
   }, [activeWorkspacePath]);
 
@@ -2004,7 +2057,10 @@ function DeepWorkUI() {
   // Bound renderer/server pressure when many chats are live at once. The
   // queue is fair, abortable, and intentionally shared by every chat.
   const pollingGateRef = useRef<PollingConcurrencyGate | null>(null);
-  if (!pollingGateRef.current) pollingGateRef.current = new PollingConcurrencyGate(10);
+  // Long-poll requests are dormant until a trace arrives, so a larger fair
+  // pool keeps many simultaneous agents genuinely live without generating
+  // the empty-request storm that the old rapid polling loop caused.
+  if (!pollingGateRef.current) pollingGateRef.current = new PollingConcurrencyGate(32);
   // Abort the active HTTP poll when a run is replaced or stopped. Generation
   // checks still protect state, but cancellation prevents old requests from
   // occupying a connection slot while a successor catches up.
@@ -2509,18 +2565,11 @@ function DeepWorkUI() {
           }
         }
         setProxyManagerContext(data.context || null);
-        setProxyChatMessages((Array.isArray(data.messages) ? data.messages : []).map((item: any) => ({
-          id: String(item.id || ''),
-          sender: item.role === 'user' ? 'user' : 'proxy',
-          text: String(item.text || ''),
-          time: new Date(Number(item.createdAt || Date.now())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          delivery: item.delivery,
-          operation: item.operation,
-          work: Array.isArray(item.work) ? item.work : [],
-        })));
+        const canonicalMessages = normalizeProxyHistoryMessages(data.messages);
+        setProxyChatMessages(previous => reconcileProxyChatMessages(previous, canonicalMessages));
         setProxyChatHistoryChatId(activeChatId);
       })
-      .catch(() => { if (!cancelled) setProxyChatMessages([]); });
+      .catch(() => { /* Keep any optimistic/live messages already on screen. */ });
     return () => { cancelled = true; };
   }, [activeChatId]);
 
@@ -2550,11 +2599,13 @@ function DeepWorkUI() {
     ) return;
     const parsedModel = parseModelEntryKey(proxyModelSelection);
     if (!parsedModel || !proxyModelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === proxyModelSelection)) {
+      const createdAt = Date.now();
       setProxyChatMessages(prev => [...prev, {
         id: crypto.randomUUID(),
         sender: 'proxy',
         text: 'Select a configured model before messaging the Proxy Manager.',
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        time: new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt,
         delivery: 'unavailable',
       }]);
       return;
@@ -2601,12 +2652,15 @@ function DeepWorkUI() {
     }
 
     const optimisticId = crypto.randomUUID();
+    const sentAt = Date.now();
     setProxyChatHistoryChatId(requestChatId);
     setProxyChatMessages(prev => [...prev, {
       id: optimisticId,
       sender: 'user',
       text: fullText,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      time: new Date(sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      createdAt: sentAt,
+      optimistic: true,
     }]);
 
     setProxyChatInput('');
@@ -2680,22 +2734,17 @@ function DeepWorkUI() {
         setProxyManagerContext(data.context || null);
         if (historyArr.length > 0) {
         // Full history from server — replace list (canonical source of truth)
-        setProxyChatMessages(historyArr.map((item: any) => ({
-          id: String(item.id || ''),
-          sender: item.role === 'user' ? 'user' : 'proxy',
-          text: String(item.text || ''),
-          time: new Date(Number(item.createdAt || Date.now())).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          delivery: item.delivery,
-          operation: item.operation,
-          work: Array.isArray(item.work) ? item.work : [],
-        })));
+        const canonicalMessages = normalizeProxyHistoryMessages(historyArr);
+        setProxyChatMessages(previous => reconcileProxyChatMessages(previous, canonicalMessages));
         } else if (data.reply) {
         // Server returned only the reply (no full history) — append it
+        const createdAt = Date.now();
         setProxyChatMessages(prev => [...prev, {
           id: crypto.randomUUID(),
           sender: 'proxy' as const,
           text: String(data.reply || ''),
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          time: new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt,
         }]);
         }
       }
@@ -2734,11 +2783,13 @@ function DeepWorkUI() {
       // else: server sent empty history + no reply → keep optimistic user msg
     } catch (error: any) {
       if (activeChatIdRef.current === requestChatId) {
+        const createdAt = Date.now();
         setProxyChatMessages(prev => [...prev, {
           id: crypto.randomUUID(),
           sender: 'proxy',
           text: String(error?.message || 'Proxy Manager is temporarily unavailable.'),
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          time: new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          createdAt,
           delivery: 'unavailable',
         }]);
       }
@@ -5259,8 +5310,12 @@ function DeepWorkUI() {
     const senderSubAgentId = message?.subAgentId || message?.metadata?.subAgentId;
     const recipientSubAgentChatId = message?.recipientSubAgentChatId || message?.metadata?.recipientSubAgentChatId;
     const recipientAgentId = message?.recipientAgentId || message?.metadata?.recipientAgentId;
-    const resolvedSubAgentChatId = subAgentIdentity || recipientSubAgentChatId || senderSubAgentChatId;
-    const resolvedSubAgentId = subAgentIdentity || recipientAgentId || senderSubAgentId;
+    const explicitIdentity = String(subAgentIdentity || '').trim();
+    const resolvedSubAgentChatId = explicitIdentity.includes('::sub-agent::')
+      ? explicitIdentity
+      : recipientSubAgentChatId || senderSubAgentChatId;
+    const resolvedSubAgentId = recipientAgentId || senderSubAgentId ||
+      (explicitIdentity && !explicitIdentity.includes('::sub-agent::') ? explicitIdentity : undefined);
     const deliverAfter = Number(message?.deliverAfter || message?.metadata?.deliverAfter || 0) || undefined;
     return {
       id: `comm_${ message?.id || `${ at }_${ Math.random().toString(36).slice(2, 8) }` }`,
@@ -5939,7 +5994,7 @@ function DeepWorkUI() {
       // keeps startup and visibility bursts from bypassing the live poller
       // capacity limit.
       releasePollSlot = await pollingGateRef.current!.acquire(controller.signal);
-      const res = await fetch(`/api/agent/poll?chatId=${ encodeURIComponent(chatId) }&after=${ after }`, {
+      const res = await fetch(`/api/agent/poll?chatId=${ encodeURIComponent(chatId) }&after=${ after }&wait=1200`, {
         cache: 'no-store',
         signal: controller.signal,
       });
@@ -6607,11 +6662,16 @@ function DeepWorkUI() {
     });
     if (changed) {
       const committed = shouldSort ? sortChats(updated) : updated;
+      // Advance authoritative state synchronously. Rendering a potentially
+      // large streaming feed is non-urgent, so interaction work (typing,
+      // scrolling, resizing and menus) can preempt superseded feed frames.
       chatsRef.current = committed;
-      setChats(committed);
-      // Reuse the exact processed history in the visible feed. Previously an
-      // active poll normalized and sorted the complete history twice.
-      if (visibleChatLogs && activeChatIdRef.current) setTraceLogs(visibleChatLogs);
+      startTransition(() => {
+        setChats(committed);
+        // Reuse the exact processed history in the visible feed. Previously
+        // an active poll normalized and sorted the complete history twice.
+        if (visibleChatLogs && activeChatIdRef.current) setTraceLogs(visibleChatLogs);
+      });
       debouncedSaveToFolder();
       return committed;
     }
@@ -6655,8 +6715,10 @@ function DeepWorkUI() {
     queued.push({ apply: updater, touchUpdatedAt });
     backgroundChatUpdatesRef.current.set(chatId, queued);
     if (backgroundUpdateTimerRef.current === null) {
-      // Coalesce simultaneous agent updates into one cross-chat React commit.
-      backgroundUpdateTimerRef.current = window.setTimeout(flushBackgroundChatUpdates, 40);
+      // Coalesce streaming bursts into one cross-chat React commit. A 72 ms
+      // paint batch stays visually live while avoiding repeated whole-page
+      // reconciliation for adjacent tokens and tool events.
+      backgroundUpdateTimerRef.current = window.setTimeout(flushBackgroundChatUpdates, 72);
     }
   };
 
@@ -6668,10 +6730,11 @@ function DeepWorkUI() {
 
   /**
    * Start incremental polling for a specific chat.
-   * Each chat has its own polling interval — fully independent.
+   * Each chat has its own live request loop — fully independent.
    * 
    * DESIGN: ALL chats poll at the SAME full speed. No background slowdown.
-   * - 110ms when receiving data (streaming), 260ms when idle
+   * - The server wakes a long poll immediately when new traces arrive
+   * - Short reconnect delay after responses; no high-frequency empty spin
    * - Exponential backoff on network errors (caps at 5s), auto-recovers
    * - Agent runs at full speed whether user is on screen or not
    * - Does NOT stop on 'idle' status (race: agent hasn't started yet)
@@ -6757,9 +6820,12 @@ function DeepWorkUI() {
         const isLargeActiveChat = isActive && traceLogsLengthRef.current > 1500;
         // Keep every chat near-real-time, including background chats. Only a
         // very large visible feed receives a slightly wider batch window.
+        // The request itself waits for new traces, so this delay is only the
+        // reconnect yield between long-poll responses. All chats remain live
+        // and equally current without a tight HTTP spin loop.
         delay = isLargeActiveChat
-          ? (lastHadData ? 160 : 320)
-          : (lastHadData ? 110 : 260);
+          ? (lastHadData ? 48 : 80)
+          : (lastHadData ? 20 : 48);
       }
 
       // A visibility catch-up or a recovery pass may have left an older
@@ -8278,8 +8344,8 @@ function DeepWorkUI() {
         const activeLogs = chatsRef.current.find(chat => chat.id === activeChatIdRef.current)?.traceLogs || [];
         const matchingLog = [...activeLogs].reverse().find((log: any) => {
           const name = log?.agentName || log?.subAgent;
-          const identity = String(log?.subAgentChatId || log?.subAgentId || name || '');
-          return identity === agentNameOrId || name === agentNameOrId;
+          return agentIdentitiesOverlap(log, agentNameOrId) ||
+            String(name || '').toLowerCase() === String(agentNameOrId).toLowerCase();
         });
         setActiveSubAgentTab(String(
           matchingLog?.subAgentChatId ||
@@ -8336,33 +8402,34 @@ function DeepWorkUI() {
 
   const handleSendSubAgentMessage = useCallback(async () => {
     const latestSelectedLifecycle = [...traceLogs].reverse().find((log: any) => {
-      if (!/^sub_agent_(?:spawn|action|complete|error|pause|resume|close)$/.test(String(log?.type || ''))) return false;
-      const name = log?.agentName || log?.subAgent;
-      const identity = String(log?.subAgentChatId || log?.subAgentId || log?.agentId || name || '');
-      return identity === activeSubAgentTab;
+      if (!/^sub_agent_(?:spawn|action|answer|result|complete|error|pause|resume|close)$/.test(String(log?.type || ''))) return false;
+      return agentIdentitiesOverlap(log, activeSubAgentTab);
     });
     const latestSelectedStatus = String(latestSelectedLifecycle?.agentStatus || '').toLowerCase();
     if (
       ['completed', 'failed', 'error', 'closed', 'cancelled'].includes(latestSelectedStatus) ||
-      ['sub_agent_complete', 'sub_agent_error', 'sub_agent_close'].includes(String(latestSelectedLifecycle?.type || ''))
+      ['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete', 'sub_agent_error', 'sub_agent_close'].includes(String(latestSelectedLifecycle?.type || ''))
     ) return;
     const selectedAgentLog = [...traceLogs].reverse().find((log: any) => {
-      const name = log?.agentName || log?.subAgent;
-      const identity = String(log?.subAgentChatId || log?.subAgentId || log?.agentId || name || '');
-      return identity === activeSubAgentTab;
+      return agentIdentitiesOverlap(log, activeSubAgentTab);
     });
     const selectedAgentDetail = [...traceLogs].reverse().flatMap((log: any) =>
       Array.isArray(log?.agentDetails) ? log.agentDetails : []
     ).find((detail: any) =>
-      String(detail?.subAgentChatId || detail?.subAgentId || detail?.agentId || detail?.name || '') === activeSubAgentTab
+      agentIdentitiesOverlap(detail, activeSubAgentTab)
     );
     const selectedAgentRun = selectedAgentLog || selectedAgentDetail;
     const agentName = selectedAgentRun?.agentName || selectedAgentRun?.subAgent || selectedAgentRun?.name || activeSubAgentTab;
-    const subAgentIdentity = activeSubAgentTab;
+    const selectedTabIdentity = String(activeSubAgentTab || '').trim();
+    const subAgentChatId = String(
+      selectedAgentRun?.subAgentChatId ||
+      (selectedTabIdentity.includes('::sub-agent::') ? selectedTabIdentity : '')
+    ).trim();
     const selectedRunId = String(
       selectedAgentRun?.subAgentId || selectedAgentRun?.agentId ||
-      (String(subAgentIdentity || '').includes('::sub-agent::') ? String(subAgentIdentity).split('::sub-agent::').pop() : '') || ''
+      (selectedTabIdentity.includes('::sub-agent::') ? selectedTabIdentity.split('::sub-agent::').pop() : selectedTabIdentity) || ''
     ).trim();
+    const subAgentIdentity = subAgentChatId || selectedRunId || selectedTabIdentity;
     const broadcastToTeam = subAgentMessageTarget === 'team';
     const recipient = broadcastToTeam ? '*' : agentName;
     const chatId = activeChatId;
@@ -8408,7 +8475,7 @@ function DeepWorkUI() {
       filePaths,
       timestamp: sentAt,
       recipientAgentId: broadcastToTeam ? undefined : selectedRunId || undefined,
-      recipientSubAgentChatId: broadcastToTeam ? undefined : subAgentIdentity,
+      recipientSubAgentChatId: broadcastToTeam ? undefined : subAgentChatId || undefined,
       optimistic: true,
     };
     const optimisticLog = interAgentMessageLog(
@@ -8442,7 +8509,7 @@ function DeepWorkUI() {
           filePaths,
           tags: ['ui', 'sub-agent-chat'],
           recipientAgentId: broadcastToTeam ? undefined : selectedRunId || undefined,
-          recipientSubAgentChatId: broadcastToTeam ? undefined : subAgentIdentity,
+          recipientSubAgentChatId: broadcastToTeam ? undefined : subAgentChatId || undefined,
         }),
       });
       const data = await res.json().catch(() => null);
@@ -8488,7 +8555,7 @@ function DeepWorkUI() {
         agentName: broadcastToTeam ? undefined : agentName,
         subAgent: broadcastToTeam ? undefined : agentName,
         subAgentId: broadcastToTeam ? undefined : selectedRunId || undefined,
-        subAgentChatId: broadcastToTeam ? undefined : subAgentIdentity || undefined,
+        subAgentChatId: broadcastToTeam ? undefined : subAgentChatId || undefined,
       };
       setChatLogsById(chatId, previousLogs => [...previousLogs, failureLog], { touchUpdatedAt: true });
     } finally {
@@ -8536,7 +8603,15 @@ function DeepWorkUI() {
     const originalComposerInput = inputValue;
     const originalComposerAttachments = [...attachments];
     if (!promptText && requestedAttachments.length === 0) return false;
-    const targetChatIdAtSend = targetChatIdOverride || activeChatIdRef.current;
+    // Reserve a real ID before admission. A shared `__new_chat__` key made a
+    // still-streaming send from an earlier fresh chat silently reject sends
+    // after the user returned to New chat.
+    const sendTarget = resolveChatSendTarget(
+      targetChatIdOverride,
+      activeChatIdRef.current,
+      () => crypto.randomUUID(),
+    );
+    const targetChatIdAtSend = sendTarget.chatId;
     const targetChatExists = targetChatIdAtSend
       ? chatsRef.current.some(chat => chat.id === targetChatIdAtSend)
       : false;
@@ -8550,7 +8625,7 @@ function DeepWorkUI() {
     // model/agent/device from whichever chat the user is viewing now. New
     // chats intentionally inherit the current composer unless the caller
     // supplies an explicit execution target.
-    const useActiveComposerContext = !targetChatIdOverride ||
+    const useActiveComposerContext = !sendTarget.hasExplicitTarget ||
       targetChatIdAtSend === activeChatIdRef.current ||
       (!targetChatExists && !runOptionsOverride?.workspacePath && !runOptionsOverride?.runLocation);
     const composerContext = useActiveComposerContext
@@ -8585,8 +8660,11 @@ function DeepWorkUI() {
     const executionProxyEnabled = targetProxyControls?.enabled ?? proxyEnabled;
     const executionProxyIntervention = targetProxyControls?.intervention ?? proxyIntervention;
     const executionProxyRuntimeModelSelection = targetProxyControls?.runtimeModel || proxyRuntimeModelSelection;
-    const shouldCreateTargetChat = Boolean(runOptionsOverride?.createNewChat && targetChatIdAtSend && !targetChatExists);
-    if (targetChatIdOverride && !targetChatExists && !shouldCreateTargetChat) return false;
+    const shouldCreateTargetChat = Boolean(
+      !targetChatExists &&
+      (!sendTarget.hasExplicitTarget || runOptionsOverride?.createNewChat)
+    );
+    if (sendTarget.hasExplicitTarget && !targetChatExists && !shouldCreateTargetChat) return false;
     const targetHasLiveSession =
       targetChatIdAtSend !== null &&
       targetChatIdAtSend === liveChatIdRef.current &&
@@ -8612,7 +8690,7 @@ function DeepWorkUI() {
     }
     // React state does not update synchronously. This latch closes the gap in
     // which a double click/Enter can launch two requests before isThinking flips.
-    const admissionKey = targetChatIdAtSend || '__new_chat__';
+    const admissionKey = targetChatIdAtSend;
     const admittedAt = sendAdmissionsRef.current.get(admissionKey) || 0;
     if (Date.now() - admittedAt < 30_000) return false;
     sendAdmissionsRef.current.set(admissionKey, Date.now());
@@ -8674,7 +8752,10 @@ function DeepWorkUI() {
         )
       : [];
     lastLiveLogsSnapshotRef.current = { chatId: null, turnId: null, commitKey: null, logs: [] };
-    clearDraftComposerState(targetChatIdAtSend);
+    // The reserved ID is not the composer state key until the chat is
+    // committed. Clear `new_chat` for a visible fresh send, while background
+    // and existing-chat sends continue clearing only their own drafts.
+    clearDraftComposerState(sendTarget.fromFreshComposer ? null : targetChatIdAtSend);
 
     let chatIdToUse = targetChatIdAtSend;
 
@@ -8693,8 +8774,7 @@ function DeepWorkUI() {
       fileUri: undefined,
     }));
 
-    if (!chatIdToUse || shouldCreateTargetChat) {
-      chatIdToUse = chatIdToUse || crypto.randomUUID();
+    if (shouldCreateTargetChat) {
       try {
         appStorage.setItem(`eterx_proxy_controls_${ chatIdToUse }`, JSON.stringify({ enabled: proxyEnabled, intervention: proxyIntervention }));
         appStorage.setItem(`eterx_proxy_manager_model_${ chatIdToUse }`, proxyModelSelection);
@@ -10138,7 +10218,7 @@ function DeepWorkUI() {
         }
         // Main keeps compact lifecycle/reporting boundaries while detailed
         // worker actions remain isolated in the exact child-run tab.
-        return ['sub_agent_spawn', 'sub_agent_complete', 'sub_agent_error', 'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close'].includes(String(l.type || ''));
+        return ['sub_agent_spawn', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_complete', 'sub_agent_error', 'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close'].includes(String(l.type || ''));
       }
       return true;
     });
@@ -10237,6 +10317,13 @@ function DeepWorkUI() {
       String(log?.subAgentChatId || log?.subAgentId || log?.agentId || name);
     const findLatestAgentKeyByName = (name: string) =>
       [...agentMap.entries()].reverse().find(([, agent]) => String(agent?.name || '').toLowerCase() === name.toLowerCase())?.[0];
+    const findExistingAgentKey = (log: any, name: string) =>
+      [...agentMap.entries()].reverse().find(([key, agent]) =>
+        agentIdentitiesOverlap(
+          { ...agent, id: key },
+          { ...log, agentName: name, subAgent: name },
+        )
+      )?.[0];
     const getTraceEventTime = (log: any) => {
       const at = Number(log?.startTime || log?.timestamp || log?.endTime || 0);
       return Number.isFinite(at) && at > 0 ? at : 0;
@@ -10318,13 +10405,14 @@ function DeepWorkUI() {
       // the tab from any real sub-agent lifecycle event so it never vanishes or
       // misses the first updates.
       const explicitIdentity = log.subAgentChatId || log.subAgentId;
-      const agentIdentity = explicitIdentity
+      const existingAgentKey = findExistingAgentKey(log, name);
+      const agentIdentity = existingAgentKey || (explicitIdentity
         ? getSubAgentIdentity(log, name)
-        : findLatestAgentKeyByName(name) || name;
+        : findLatestAgentKeyByName(name) || name);
       const hasSubAgentIdentity = Boolean(log.subAgentChatId || log.subAgentId || log.subAgent);
 
       if (!agentMap.has(agentIdentity) && (
-        /^sub_agent_(?:spawn|action|complete|error|pause|resume|close)$/.test(String(log.type || '')) ||
+        /^sub_agent_(?:spawn|action|answer|result|complete|error|pause|resume|close)$/.test(String(log.type || '')) ||
         hasSubAgentIdentity
       )) {
         agentMap.set(agentIdentity, {
@@ -10332,7 +10420,7 @@ function DeepWorkUI() {
           subAgentId: log.subAgentId,
           subAgentChatId: log.subAgentChatId,
           name,
-          status: log.type === 'sub_agent_complete' ? 'completed'
+          status: ['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete'].includes(log.type) ? 'completed'
             : log.type === 'sub_agent_error' ? 'error'
               : log.type === 'sub_agent_pause' ? 'paused'
                 : log.type === 'sub_agent_close' ? 'closed'
@@ -10368,7 +10456,7 @@ function DeepWorkUI() {
         } else if (a && reportedStatus === 'paused') {
           a.status = 'paused';
         }
-      } else if (log.type === 'sub_agent_complete') {
+      } else if (['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete'].includes(log.type)) {
         const a = agentMap.get(agentIdentity);
         if (a) { a.status = 'completed'; a.durationMs = log.durationMs || 0; a.stepCount = log.stepCount || a.stepCount; a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0); }
       } else if (log.type === 'sub_agent_error') {
@@ -10408,7 +10496,7 @@ function DeepWorkUI() {
   );
   const activeSubAgentInfo = useMemo(
     () => activeSubAgentTab
-      ? currentSubAgents.find((agent: any) => (agent.id || agent.name) === activeSubAgentTab) || null
+      ? currentSubAgents.find((agent: any) => agentIdentitiesOverlap(agent, activeSubAgentTab)) || null
       : null,
     [activeSubAgentTab, currentSubAgents],
   );
@@ -10525,7 +10613,7 @@ function DeepWorkUI() {
           action: 'history',
           projectId: chatId,
           agentName,
-          subAgentChatId: activeSubAgentTab,
+          subAgentChatId: String(activeSubAgentInfo?.subAgentChatId || activeSubAgentInfo?.subAgentId || activeSubAgentTab),
           limit: '80',
         });
         const res = await fetch(`/api/agents/comm?${ params.toString() }`, { cache: 'no-store' });
@@ -10533,17 +10621,26 @@ function DeepWorkUI() {
         const data = await res.json().catch(() => null);
         if (!data?.success || !Array.isArray(data.messages) || cancelled) return;
 
+        const selectedIdentity = activeSubAgentInfo?.subAgentChatId || activeSubAgentInfo?.subAgentId || activeSubAgentTab;
         const incomingLogs = data.messages
-          .map((message: any) => interAgentMessageLog(message, agentName, activeSubAgentTab))
+          .map((message: any) => interAgentMessageLog(message, agentName, selectedIdentity))
           .filter((log: any) => log.messageId);
 
-        if (incomingLogs.length === 0) return;
+        if (incomingLogs.length > 0) {
+          setChatLogsById(chatId, previousLogs => {
+            const existingIds = new Set(previousLogs.map((log: any) => log.messageId || log.id).filter(Boolean));
+            const additions = incomingLogs.filter((log: any) => !existingIds.has(log.messageId) && !existingIds.has(log.id));
+            return additions.length > 0 ? [...previousLogs, ...additions] : previousLogs;
+          });
+        }
 
-        setChatLogsById(chatId, previousLogs => {
-          const existingIds = new Set(previousLogs.map((log: any) => log.messageId || log.id).filter(Boolean));
-          const additions = incomingLogs.filter((log: any) => !existingIds.has(log.messageId) && !existingIds.has(log.id));
-          return additions.length > 0 ? [...previousLogs, ...additions] : previousLogs;
-        });
+        // History reads do not mutate the mailbox. Acknowledge only after the
+        // conversation has been accepted into the local feed.
+        void fetch('/api/agents/comm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'markRead', projectId: chatId, agentName }),
+        }).catch(() => undefined);
       } catch {
         // History polling is best-effort; normal agent polling still owns run state.
       } finally { syncInFlight = false; }
@@ -10555,7 +10652,7 @@ function DeepWorkUI() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeChatId, activeSubAgentInfo?.name, activeSubAgentTab]);
+  }, [activeChatId, activeSubAgentInfo?.name, activeSubAgentInfo?.subAgentChatId, activeSubAgentInfo?.subAgentId, activeSubAgentTab]);
 
   useEffect(() => {
     if (!activeChatId || realSubAgents.length === 0) return;
@@ -10658,26 +10755,50 @@ function DeepWorkUI() {
 
         setChatLogsById(chatId, previousLogs => {
           const existingSignatures = new Set(previousLogs.map((log: any) => log?._teamPollSignature).filter(Boolean));
-          const additions = updates.filter((update: any) => {
-            if (existingSignatures.has(update._teamPollSignature)) return false;
-            const updateIdentity = String(update.subAgentChatId || update.subAgentId || update.agentName || '');
-            const latest = [...previousLogs].reverse().find((log: any) =>
-              /^sub_agent_(?:spawn|action|complete|error|pause|resume|close)$/.test(String(log?.type || '')) &&
-              String(log?.subAgentChatId || log?.subAgentId || log?.agentName || log?.subAgent || '') === updateIdentity
+          const nextLogs = [...previousLogs];
+          let changed = false;
+          for (const update of updates) {
+            if (existingSignatures.has(update._teamPollSignature)) continue;
+            const latestIndex = nextLogs.findLastIndex((log: any) =>
+              /^sub_agent_(?:spawn|action|answer|result|complete|error|pause|resume|close)$/.test(String(log?.type || '')) &&
+              agentIdentitiesOverlap(log, update)
             );
+            const latest = latestIndex >= 0 ? nextLogs[latestIndex] : null;
             const latestStatus = String(latest?.agentStatus || '').toLowerCase();
             const incomingStatus = String(update.agentStatus || '').toLowerCase();
             const latestIsTerminal = ['completed', 'failed', 'error', 'closed', 'cancelled'].includes(latestStatus) ||
-              ['sub_agent_complete', 'sub_agent_error', 'sub_agent_close'].includes(String(latest?.type || ''));
-            if (latestIsTerminal && !['completed', 'failed', 'error', 'closed', 'cancelled'].includes(incomingStatus)) {
-              return false;
+              ['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete', 'sub_agent_error', 'sub_agent_close'].includes(String(latest?.type || ''));
+            if (latestIsTerminal && latest && !latest._teamPollSignature) {
+              if (Number(latest.unreadCount || 0) !== Number(update.unreadCount || 0)) {
+                nextLogs[latestIndex] = { ...latest, unreadCount: update.unreadCount };
+                changed = true;
+              }
+              continue;
             }
-            return !latest ||
-              String(latest.text || '') !== String(update.text || '') ||
-              String(latest.agentStatus || '') !== String(update.agentStatus || '') ||
-              Number(latest.unreadCount || 0) !== Number(update.unreadCount || 0);
-          });
-          return additions.length > 0 ? [...previousLogs, ...additions] : previousLogs;
+            if (latestIsTerminal && !['completed', 'failed', 'error', 'closed', 'cancelled'].includes(incomingStatus)) {
+              continue;
+            }
+
+            if (latest && latestStatus === incomingStatus) {
+              const unreadChanged = Number(latest.unreadCount || 0) !== Number(update.unreadCount || 0);
+              // Keep authoritative trace text/results intact. A roster snapshot
+              // may refresh the badge, while replacing only an older roster
+              // snapshot when it is the sole source of progress.
+              if (latest._teamPollSignature) {
+                nextLogs[latestIndex] = { ...latest, ...update };
+                changed = true;
+              } else if (unreadChanged) {
+                nextLogs[latestIndex] = { ...latest, unreadCount: update.unreadCount };
+                changed = true;
+              }
+              continue;
+            }
+
+            nextLogs.push(update);
+            existingSignatures.add(update._teamPollSignature);
+            changed = true;
+          }
+          return changed ? nextLogs : previousLogs;
         });
       } catch {
         // Live trace transport remains authoritative; roster polling repairs
@@ -10697,10 +10818,13 @@ function DeepWorkUI() {
 
   useEffect(() => {
     if (!activeSubAgentTab) return;
-    if (realSubAgents.some((agent: any) => (agent.id || agent.name) === activeSubAgentTab)) return;
-    const renamedIdentity = realSubAgents.find((agent: any) => agent.name === activeSubAgentTab)?.id;
-    if (renamedIdentity) {
-      setActiveSubAgentTab(renamedIdentity);
+    const matchingAgent = realSubAgents.find((agent: any) =>
+      agentIdentitiesOverlap(agent, activeSubAgentTab) ||
+      String(agent?.name || '').toLowerCase() === String(activeSubAgentTab).toLowerCase()
+    );
+    if (matchingAgent) {
+      const canonicalIdentity = String(matchingAgent.id || matchingAgent.name);
+      if (canonicalIdentity !== activeSubAgentTab) setActiveSubAgentTab(canonicalIdentity);
       return;
     }
     setActiveSubAgentTab(null);
@@ -10713,12 +10837,11 @@ function DeepWorkUI() {
   // Per-sub-agent trace logs — filters the main traceLogs for the selected sub-agent tab
   const subAgentDisplayLogs = useMemo(() => {
     if (!activeSubAgentTab) return [];
-    const selectedAgent = currentSubAgents.find(agent => (agent.id || agent.name) === activeSubAgentTab);
+    const selectedAgent = currentSubAgents.find(agent => agentIdentitiesOverlap(agent, activeSubAgentTab));
     const selectedAgentName = selectedAgent?.name || activeSubAgentTab;
     const filtered = traceLogs.filter(log => {
       if (!log) return false;
       const agentName = log.agentName || log.subAgent;
-      const agentIdentity = String(log.subAgentChatId || log.subAgentId || log.agentId || agentName || '');
       if (log.type === 'inter_agent_message') {
         const selectedIds = new Set([
           String(activeSubAgentTab || ''),
@@ -10745,18 +10868,40 @@ function DeepWorkUI() {
         }
         if (participantIds.some((identity: string) => selectedIds.has(identity))) return true;
       }
-      return agentIdentity === activeSubAgentTab ||
-        ((!log.subAgentChatId && !log.subAgentId) || !selectedAgent) && agentName === selectedAgentName;
+      return agentIdentitiesOverlap(
+        log,
+        selectedAgent || { id: activeSubAgentTab, name: selectedAgentName },
+      ) || (
+        !log.subAgentChatId &&
+        !log.subAgentId &&
+        String(agentName || '').toLowerCase() === String(selectedAgentName || '').toLowerCase()
+      );
     });
 
     // Prepend a synthetic user_action log with the sub-agent's full task brief
     const agentInfo = selectedAgent;
-    if (agentInfo && agentInfo.task) {
+    if (
+      agentInfo &&
+      agentInfo.task &&
+      !filtered.some(log =>
+        log?.type === 'user_action' &&
+        String(log?.text || '').trim() === String(agentInfo.task || '').trim()
+      )
+    ) {
+      const taskTurnId = `subagent-task:${ String(agentInfo.id || activeSubAgentTab) }`;
+      const taskTimestamp = Number(agentInfo.startedAt) ||
+        Number(filtered.find(log => Number(log?.startTime || log?.timestamp || 0) > 0)?.startTime ||
+          filtered.find(log => Number(log?.timestamp || 0) > 0)?.timestamp || 1);
       return [
         {
           type: 'user_action',
           text: agentInfo.task,
-          timestamp: agentInfo.startedAt || Date.now(),
+          id: taskTurnId,
+          runId: taskTurnId,
+          turnId: taskTurnId,
+          timestamp: taskTimestamp,
+          startTime: taskTimestamp,
+          endTime: taskTimestamp,
           agentName: selectedAgentName,
           subAgent: selectedAgentName,
           subAgentId: agentInfo.subAgentId || (String(agentInfo.id || '').includes('::sub-agent::') ? String(agentInfo.id).split('::sub-agent::').pop() : agentInfo.id),
@@ -10883,7 +11028,7 @@ function DeepWorkUI() {
   // Compute effective thinking state
   const mainAgentState = currentSubAgents.find(agent => agent.name === 'Main');
   const selectedSubAgentState = activeSubAgentTab && !autonomousSelected
-    ? currentSubAgents.find(agent => (agent.id || agent.name) === activeSubAgentTab)
+    ? currentSubAgents.find(agent => agentIdentitiesOverlap(agent, activeSubAgentTab))
     : null;
   const mainAgentPaused = mainAgentState?.status === 'paused';
   const selectedSubAgentStatus = String(selectedSubAgentState?.status || '').toLowerCase();
@@ -10905,7 +11050,7 @@ function DeepWorkUI() {
     : isThinking && !mainAgentPaused;
   const handleSelectedSubAgentControl = (action: 'pause' | 'resume' | 'close'): Promise<boolean> => {
     const selectedSubAgent = activeSubAgentTab
-      ? currentSubAgents.find(agent => (agent.id || agent.name) === activeSubAgentTab)
+      ? currentSubAgents.find(agent => agentIdentitiesOverlap(agent, activeSubAgentTab))
       : null;
     const agentName = selectedSubAgent?.name || null;
     const rawAgentId = String(selectedSubAgent?.subAgentId || selectedSubAgent?.subAgentChatId || '');
@@ -10946,7 +11091,7 @@ function DeepWorkUI() {
           const eventType = `sub_agent_${ action }`;
           const latestControlEvent = [...previous].reverse().find(log =>
             /^sub_agent_(?:pause|resume|close)$/.test(String(log?.type || '')) &&
-            String(log.subAgentChatId || log.subAgentId || log.agentName || log.subAgent || '') === String(identity)
+            agentIdentitiesOverlap(log, selectedSubAgent || identity)
           );
           if (latestControlEvent?.type === eventType) return previous;
           const nextStatus = action === 'pause' ? 'paused' : action === 'resume' ? 'working' : 'closed';
@@ -10957,7 +11102,8 @@ function DeepWorkUI() {
             agentName,
             subAgent: agentName,
             subAgentId: selectedSubAgentId,
-            subAgentChatId: selectedSubAgent?.subAgentChatId || activeSubAgentTab,
+            subAgentChatId: selectedSubAgent?.subAgentChatId ||
+              (String(activeSubAgentTab).includes('::sub-agent::') ? activeSubAgentTab : undefined),
             agentStatus: nextStatus,
           }];
         });

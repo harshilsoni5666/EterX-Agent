@@ -49,7 +49,8 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   const orbTheme = useLiveOrbTheme(isLiveActive);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const nativeReopenTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const nativeVolumeFrameRef = useRef<number | null>(null);
+  const nativeVolumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nativeVolumeLastSentRef = useRef(0);
   const liveStateRef = useRef(liveState);
   const nativeStatusRef = useRef<Record<string, unknown> | null>(null);
   liveStateRef.current = liveState;
@@ -61,7 +62,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
     return () => {
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
       if (nativeReopenTimeoutRef.current) clearTimeout(nativeReopenTimeoutRef.current);
-      if (nativeVolumeFrameRef.current !== null) cancelAnimationFrame(nativeVolumeFrameRef.current);
+      if (nativeVolumeTimerRef.current !== null) clearTimeout(nativeVolumeTimerRef.current);
     };
   }, []);
 
@@ -108,9 +109,11 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
 
   useEffect(() => {
     if (!isElectron || !isLiveActive || !(window as any).electronAPI?.updatePetWindow) return;
-    if (nativeVolumeFrameRef.current !== null) return;
-    nativeVolumeFrameRef.current = requestAnimationFrame(() => {
-      nativeVolumeFrameRef.current = null;
+    if (nativeVolumeTimerRef.current !== null) return;
+    const waitMs = Math.max(0, 50 - (performance.now() - nativeVolumeLastSentRef.current));
+    nativeVolumeTimerRef.current = setTimeout(() => {
+      nativeVolumeTimerRef.current = null;
+      nativeVolumeLastSentRef.current = performance.now();
       const baseStatus = nativeStatusRef.current;
       if (!baseStatus || !isLiveActive) return;
       const nextStatus = {
@@ -124,7 +127,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
       };
       nativeStatusRef.current = nextStatus;
       (window as any).electronAPI.updatePetWindow(nextStatus);
-    });
+    }, waitMs);
   }, [isElectron, isLiveActive, liveMicVolume, liveModelVolume]);
 
   useEffect(() => {

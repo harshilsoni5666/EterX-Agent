@@ -10,7 +10,9 @@ export type SubAgentRuntimeSettings = {
 export const MAX_SUB_AGENTS = 20;
 
 export const DEFAULT_SUB_AGENT_RUNTIME_SETTINGS: SubAgentRuntimeSettings = {
-  enabled: true,
+  // Delegation is opt-in. A missing or stale settings object must never make a
+  // normal Main-agent turn acquire background-worker authority by accident.
+  enabled: false,
   maxSubAgents: 5,
   maxRetries: 2,
 };
@@ -20,8 +22,13 @@ export function normalizeSubAgentRuntimeSettings(value: unknown): SubAgentRuntim
   const input = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const rawLimit = Number(input.maxSubAgents);
   const rawRetries = Number(input.maxRetries);
+  const enabled = typeof input.autoSubAgents === 'boolean'
+    ? input.autoSubAgents
+    : typeof input.enabled === 'boolean'
+      ? input.enabled
+      : DEFAULT_SUB_AGENT_RUNTIME_SETTINGS.enabled;
   return {
-    enabled: input.autoSubAgents !== false && input.enabled !== false,
+    enabled,
     maxSubAgents: Number.isFinite(rawLimit)
       ? Math.min(MAX_SUB_AGENTS, Math.max(1, Math.floor(rawLimit)))
       : DEFAULT_SUB_AGENT_RUNTIME_SETTINGS.maxSubAgents,

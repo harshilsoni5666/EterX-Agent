@@ -30,7 +30,7 @@ try {
 
 const http = require('http');
 const https = require('https');
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, Tray, clipboard, utilityProcess } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, systemPreferences, Tray, clipboard, utilityProcess } = require('electron');
 
 // The gateway daemon is loaded by Electron's main process before the packaged
 // Next runtime is started. Its production dependencies live in the companion
@@ -53,12 +53,13 @@ if (packagedDependencyModuleRoot) {
 }
 
 const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig } = require('../src/lib/agent/gateways/daemon.cjs');
-// Disable HTTP Cache globally in development to prevent aggressive cache storage of stylesheets and scripts
-app.commandLine.appendSwitch('disable-http-cache');
-// Chromium's GPU shader cache is independent of the HTTP cache. Disable it
-// for the desktop shell because stale legacy profiles can be read-only or
-// owned by another Electron process on Windows.
-app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+// Development should never display a stale local bundle. Packaged builds keep
+// Chromium's HTTP cache so repeat launches do not reload every compiled asset.
+if (!app.isPackaged) app.commandLine.appendSwitch('disable-http-cache');
+// Keep Chromium's shader cache enabled. Recompiling GPU programs on every
+// launch makes the installed app slower on Windows, macOS, and Linux. EterX
+// already owns a writable per-user cache directory, so the old development
+// workaround is no longer needed.
 app.setName('EterX');
 // Keep Windows taskbar grouping, notifications, and jump-list entries tied to
 // the installed EterX identity.  This must be set before any BrowserWindow is
@@ -119,8 +120,10 @@ let petWindowReadyPromise = null;
 let backgroundTray;
 let gatewayDaemon;
 let latestPetStatus = null;
-const DEFAULT_BOOT_TIMEOUT_MS = 45000;
-const MIN_SPLASH_MS = 3600;
+// Development should surface a missing local server promptly. A packaged app
+// has a child-process lifecycle signal instead, so it must not be replaced by
+// a synthetic failure screen merely because a cold device crossed a timer.
+const DEFAULT_DEV_BOOT_TIMEOUT_MS = 45000;
 const DEFAULT_PET_WINDOW_SIZE = 'normal';
 const PET_WINDOW_SIZES = {
   small: { width: 292, height: 90, replyHeight: 162 },
@@ -136,6 +139,7 @@ let bootFailureCount = 0;
 let packagedRuntimeRoot = null;
 let packagedServer = null;
 let packagedServerUrl = null;
+let packagedServerLaunchMode = null;
 let resolvedDevAppTarget = null;
 let packagedServerStopPromise = null;
 let isQuitting = false;
@@ -2084,13 +2088,13 @@ async function startPackagedServer() {
   const env = removeDesktopRuntimeSettingEnvironment({
     ...process.env,
     ...persistentEnv,
-    ELECTRON_RUN_AS_NODE: '1',
     NODE_ENV: 'production',
     HOSTNAME: '127.0.0.1',
     PORT: String(port),
     ETERX_PORT: String(port),
     ETERX_APP_ROOT: runtimeRoot,
     ETERX_DATA_DIR: dataRoot,
+    ETERX_RUNTIME_MODULES: runtimeModules,
     NODE_PATH: [runtimeModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
   });
   const connectorSecret = connectorStoreSecret();
@@ -2107,49 +2111,80 @@ async function startPackagedServer() {
   // entrypoint through a headless helper and keeps the runtime owned by the
   // main EterX app.  Keep the regular child process path on Windows/Linux,
   // where their native launchers do not have this Dock behavior.
-  if (process.platform === 'darwin' && utilityProcess?.fork) {
+  const serverLauncher = path.join(runtimeRoot, 'server-launcher.js');
+  const serverEntry = fs.existsSync(serverLauncher)
+    ? serverLauncher
+    : path.join(runtimeRoot, 'server.js');
+  if (process.platform === 'darwin') {
+    if (!utilityProcess?.fork) {
+      packagedServerUrl = null;
+      throw new Error('This Electron runtime does not provide the macOS utility-process launcher.');
+    }
     try {
-      packagedServer = utilityProcess.fork(path.join(runtimeRoot, 'server.js'), [], {
+      packagedServer = utilityProcess.fork(serverEntry, [], {
         cwd: dataRoot,
         env,
         stdio: 'pipe',
         serviceName: 'EterX Runtime',
+        // The bundled Next runtime contains native modules (for example SWC)
+        // in dependencies.asar.unpacked. On hardened macOS builds Electron
+        // must use its plugin helper so those packaged libraries can load.
+        allowLoadingUnsignedLibraries: true,
       });
+      packagedServerLaunchMode = 'utility';
     } catch (error) {
-      logToFile(`[EterX] Utility runtime launch failed; using compatibility launcher: ${error.message || error}`);
+      packagedServer = null;
+      packagedServerUrl = null;
+      packagedServerLaunchMode = null;
+      throw new Error(`Could not launch the macOS EterX runtime: ${error.message || error}`);
     }
-  }
-  if (!packagedServer) {
-    packagedServer = spawn(process.execPath, [path.join(runtimeRoot, 'server.js')], {
+  } else {
+    packagedServer = spawn(process.execPath, [serverEntry], {
       cwd: dataRoot,
-      env,
+      env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
+    packagedServerLaunchMode = 'child';
   }
 
-  packagedServer.stdout.on('data', (chunk) => {
+  const launchedServer = packagedServer;
+  packagedServer.stdout?.on('data', (chunk) => {
     const message = String(chunk).trim();
     console.log(`[EterX server] ${message}`);
     logToFile(`[EterX server] ${message}`);
   });
-  packagedServer.stderr.on('data', (chunk) => {
+  packagedServer.stderr?.on('data', (chunk) => {
     const message = String(chunk).trim();
     if (message) {
       console.error(`[EterX server] ${message}`);
       logToFile(`[EterX server ERR] ${message}`);
     }
   });
-  packagedServer.once('error', (error) => {
-    console.error('[EterX] Bundled server failed to start:', error);
-    logToFile(`[EterX] Bundled server failed to start: ${error.message || error}`);
+  packagedServer.once('error', (...details) => {
+    const failure = details
+      .map((detail) => detail?.message || (typeof detail === 'string' ? detail : ''))
+      .filter(Boolean)
+      .join(' at ') || 'unknown process error';
+    console.error('[EterX] Bundled server failed to start:', ...details);
+    logToFile(`[EterX] Bundled server failed to start: ${failure}`);
+    if (packagedServer === launchedServer) {
+      packagedServer = null;
+      packagedServerUrl = null;
+      packagedServerLaunchMode = null;
+    }
   });
   packagedServer.once('exit', (code, signal) => {
     const exitMsg = `Bundled server exited (${code ?? 'unknown'}${signal ? `, ${signal}` : ''}).`;
     if (!isQuitting) console.error(`[EterX] ${exitMsg}`);
     logToFile(`[EterX] ${exitMsg}`);
-    packagedServer = null;
-    packagedServerUrl = null;
+    // A retired process may report exit after a retry has already launched a
+    // replacement. Never let that late event erase the active server handle.
+    if (packagedServer === launchedServer) {
+      packagedServer = null;
+      packagedServerUrl = null;
+      packagedServerLaunchMode = null;
+    }
   });
 
   return packagedServerUrl;
@@ -2161,6 +2196,7 @@ function stopPackagedServer(timeoutMs = 5000) {
   if (!server) return Promise.resolve();
   packagedServer = null;
   packagedServerUrl = null;
+  packagedServerLaunchMode = null;
 
   packagedServerStopPromise = new Promise((resolve) => {
     let settled = false;
@@ -2186,6 +2222,29 @@ function stopPackagedServer(timeoutMs = 5000) {
 
 function isHttpTarget(target) {
   return /^https?:\/\//i.test(target);
+}
+
+function isTrustedAppUrl(candidate) {
+  try {
+    return new URL(String(candidate || '')).origin === new URL(getAppTarget()).origin;
+  } catch {
+    return false;
+  }
+}
+
+function isTrustedRenderer(webContents, requestingOrigin = '') {
+  if (!webContents || webContents.isDestroyed()) return false;
+  return isTrustedAppUrl(requestingOrigin) || isTrustedAppUrl(webContents.getURL());
+}
+
+function configureDesktopPermissions(targetSession) {
+  const allowed = new Set(['media', 'notifications', 'display-capture']);
+  targetSession.setPermissionRequestHandler((webContents, permission, callback, details = {}) => {
+    callback(allowed.has(permission) && isTrustedRenderer(webContents, details.requestingUrl || details.requestingOrigin));
+  });
+  targetSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => (
+    allowed.has(permission) && isTrustedRenderer(webContents, requestingOrigin)
+  ));
 }
 
 function delay(ms) {
@@ -2264,10 +2323,15 @@ async function resolveDevAppTarget() {
 }
 
 async function waitForHttpTarget(target) {
-  const timeoutMs = Number(process.env.ETERX_BOOT_TIMEOUT_MS || DEFAULT_BOOT_TIMEOUT_MS);
+  const configuredTimeout = Number(process.env.ETERX_BOOT_TIMEOUT_MS || 0);
+  const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? configuredTimeout
+    : app.isPackaged
+      ? 0
+      : DEFAULT_DEV_BOOT_TIMEOUT_MS;
   const start = Date.now();
 
-  while (Date.now() - start < timeoutMs) {
+  while (timeoutMs === 0 || Date.now() - start < timeoutMs) {
     if (await requestTarget(target)) return;
     if (app.isPackaged && !process.env.ELECTRON_URL && !packagedServer) {
       throw new Error('The bundled EterX runtime stopped before it became ready.');
@@ -2451,72 +2515,6 @@ function sendPetStatus(status) {
   }
 }
 
-function getRoundedRectShape(width, height, radius = 24) {
-  const safeWidth = Math.max(1, Math.round(width));
-  const safeHeight = Math.max(1, Math.round(height));
-  const safeRadius = Math.min(Math.round(radius), Math.floor(safeWidth / 2), Math.floor(safeHeight / 2));
-  const shape = [];
-
-  for (let y = 0; y < safeHeight; y += 1) {
-    const isTop = y < safeRadius;
-    const isBottom = y >= safeHeight - safeRadius;
-    let inset = 0;
-
-    if (isTop || isBottom) {
-      const distanceFromEdge = isTop ? safeRadius - y - 1 : y - (safeHeight - safeRadius);
-      inset = Math.max(0, Math.ceil(safeRadius - Math.sqrt((safeRadius * safeRadius) - (distanceFromEdge * distanceFromEdge))));
-    }
-
-    shape.push({
-      x: inset,
-      y,
-      width: Math.max(1, safeWidth - (inset * 2)),
-      height: 1,
-    });
-  }
-
-  return shape;
-}
-
-function applyPetWindowShape(width, height) {
-  if (!petWindow || petWindow.isDestroyed() || typeof petWindow.setShape !== 'function') return;
-  try {
-    const orbSize = Math.min(132, width, height);
-    const radius = orbSize / 2;
-    const orbLeft = Math.round((width - orbSize) / 2);
-    const orbTop = Math.round((height - orbSize) / 2);
-    const shape = [];
-    for (let row = 0; row < orbSize; row += 1) {
-      const y = row + 0.5 - radius;
-      const halfWidth = Math.sqrt(Math.max(0, (radius * radius) - (y * y)));
-      const inset = Math.max(0, Math.floor(radius - halfWidth));
-      shape.push({
-        x: orbLeft + inset,
-        y: orbTop + row,
-        width: Math.max(1, orbSize - (inset * 2)),
-        height: 1,
-      });
-    }
-
-    // The hover controls overlap the lower orb and extend slightly past it.
-    // Include that compact pill while leaving the rest of the transparent
-    // always-on-top window click-through at the OS level.
-    const pillWidth = Math.min(width, 148);
-    const pillHeight = Math.min(34, Math.max(1, height - (orbTop + 107)));
-    const pillLeft = Math.round((width - pillWidth) / 2);
-    const pillTop = Math.min(height - pillHeight, orbTop + 107);
-    shape.push(...getRoundedRectShape(pillWidth, pillHeight, 17).map((rect) => ({
-      ...rect,
-      x: rect.x + pillLeft,
-      y: rect.y + pillTop,
-    })));
-    petWindow.setShape(shape);
-  } catch {
-    // macOS and older Electron builds may not support setShape. The per-pixel
-    // transparent window remains functional and interactive without it.
-  }
-}
-
 function resizePetWindow(options = {}) {
   if (!petWindow || petWindow.isDestroyed()) return;
 
@@ -2542,7 +2540,6 @@ function resizePetWindow(options = {}) {
     width: preset.width,
     height: nextHeight,
   });
-  applyPetWindowShape(preset.width, nextHeight);
 }
 
 async function openPetWindow(status) {
@@ -2606,8 +2603,6 @@ async function openPetWindow(status) {
   // `forward: true` only forwards mouse movement on macOS. Click-through mode
   // here made the Live controls unreachable on Windows and Linux.
   petWindow.setIgnoreMouseEvents(false);
-  applyPetWindowShape(windowWidth, windowHeight);
-
   petWindow.on('closed', () => {
     petWindow = null;
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2644,7 +2639,6 @@ function closePetWindow() {
 
 async function bootApp(options = {}) {
   const { showSplash = false, retryOnFailure = false } = options;
-  const startedAt = Date.now();
   const bootId = ++activeBootId;
 
   clearBootRetry();
@@ -2662,11 +2656,6 @@ async function bootApp(options = {}) {
 
     if (isHttpTarget(target)) {
       await waitForHttpTarget(target);
-    }
-
-    const elapsed = Date.now() - startedAt;
-    if (elapsed < MIN_SPLASH_MS) {
-      await delay(MIN_SPLASH_MS - elapsed);
     }
 
     if (bootId === activeBootId && mainWindow && !mainWindow.isDestroyed()) {
@@ -2807,8 +2796,9 @@ function createWindow() {
     }
   });
 
-  // Clear session cache on boot to guarantee fresh asset loading
-  if (mainWindow && mainWindow.webContents) {
+  // Clear development assets only. Release updates receive a new Next build
+  // identity, so clearing the production cache here only slows every launch.
+  if (!app.isPackaged && mainWindow && mainWindow.webContents) {
     mainWindow.webContents.session.clearCache().catch((err) => {
       console.warn('[EterX] Failed to clear web contents session cache:', err);
     });
@@ -2834,25 +2824,13 @@ function createWindow() {
       });
   });
 
-  // Handle Live media permissions. Screen sharing still requires a visible
-  // source picker or explicit confirmation at the moment capture begins.
-  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
-    const allowedPermissions = ['media', 'audioCapture', 'videoCapture', 'display-capture'];
-    if (allowedPermissions.includes(permission)) {
-      callback(true);
-    } else {
-      callback(false);
-    }
-  });
-
-  mainWindow.webContents.session.setPermissionCheckHandler((webContents, permission) => {
-    const allowedPermissions = ['media', 'audioCapture', 'videoCapture', 'display-capture'];
-    return allowedPermissions.includes(permission);
-  });
-
   if (typeof mainWindow.webContents.session.setDisplayMediaRequestHandler === 'function') {
-    mainWindow.webContents.session.setDisplayMediaRequestHandler(async (_request, callback) => {
+    mainWindow.webContents.session.setDisplayMediaRequestHandler(async (request, callback) => {
       try {
+        if (!isTrustedRenderer(mainWindow.webContents, request.securityOrigin)) {
+          callback({});
+          return;
+        }
         const confirmation = await dialog.showMessageBox(mainWindow, {
           type: 'question',
           title: 'Share your screen with EterX Live?',
@@ -3336,6 +3314,21 @@ ipcMain.on('pet-reply', (_event, message) => {
   }
 });
 
+ipcMain.handle('live-media-permissions', async (event) => {
+  if (!isTrustedRenderer(event.sender)) return { microphone: 'denied', error: 'Untrusted renderer origin.' };
+  try {
+    let microphone = typeof systemPreferences.getMediaAccessStatus === 'function'
+      ? systemPreferences.getMediaAccessStatus('microphone')
+      : 'unknown';
+    if (process.platform === 'darwin' && microphone === 'not-determined') {
+      microphone = await systemPreferences.askForMediaAccess('microphone') ? 'granted' : 'denied';
+    }
+    return { microphone };
+  } catch (error) {
+    return { microphone: 'unknown', error: String(error?.message || error) };
+  }
+});
+
 app.on('ready', async () => {
   if (!hasSingleInstanceLock) return;
 
@@ -3344,30 +3337,19 @@ app.on('ready', async () => {
 
   migrateLegacyUserData();
 
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const allowedPermissions = ['media', 'microphone', 'audioCapture', 'notifications'];
-    if (allowedPermissions.includes(permission)) {
-      callback(true);
-    } else {
-      callback(false);
-    }
-  });
-
-  session.defaultSession.setPermissionCheckHandler((webContents, permission) => {
-    const allowedPermissions = ['media', 'microphone', 'audioCapture', 'notifications'];
-    if (allowedPermissions.includes(permission)) {
-      return true;
-    }
-    return false;
-  });
-
   try {
     await startPackagedServer();
   } catch (error) {
     console.error('[EterX] Could not prepare bundled server:', error);
   }
 
-  await initializeGatewayDaemon();
+  configureDesktopPermissions(session.defaultSession);
+
+  // Connector discovery must not block the first native paint. The daemon
+  // still starts immediately and remains independent of the renderer.
+  const gatewayInitialization = initializeGatewayDaemon().catch((error) => {
+    console.error('[EterX] Could not initialize gateway daemon:', error);
+  });
   // Login/background launches should stay out of the Dock until the user
   // explicitly opens EterX from the tray or a second launch request.
   if (launchInBackground && process.platform === 'darwin' && app.dock && typeof app.dock.hide === 'function') {
@@ -3375,6 +3357,7 @@ app.on('ready', async () => {
   }
   createWindow();
   initializeDesktopUpdates();
+  await gatewayInitialization;
 });
 
 app.on('window-all-closed', function () {

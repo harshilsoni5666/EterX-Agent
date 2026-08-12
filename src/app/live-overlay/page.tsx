@@ -20,7 +20,6 @@ export default function LiveOverlayPage() {
   const [modelVolume, setModelVolume] = useState<number | number[]>(0);
   const [isHovered, setIsHovered] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const isDraggingRef = useRef(false);
 
   const [statusText, setStatusText] = useState<string | null>(null);
   const orbTheme = useLiveOrbTheme(liveState !== 'idle' && liveState !== 'error');
@@ -99,64 +98,10 @@ export default function LiveOverlayPage() {
   };
 
   const handleMouseLeave = () => {
-    if (isDraggingRef.current) return;
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     hoverTimeoutRef.current = setTimeout(() => {
       setIsHovered(false);
     }, 250);
-  };
-
-  const handleOrbMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const dx = e.clientX - centerX;
-    const dy = e.clientY - centerY;
-    const radius = rect.width / 2;
-
-    // Strict circular check: drag ONLY triggers inside true circle radius
-    if (dx * dx + dy * dy > radius * radius) return;
-
-    isDraggingRef.current = true;
-
-    const startScreenX = e.screenX;
-    const startScreenY = e.screenY;
-    const startWinX = window.screenX;
-    const startWinY = window.screenY;
-
-    let animFrameId: number | null = null;
-    let targetX = startWinX;
-    let targetY = startWinY;
-
-    const onMove = (moveEvt: MouseEvent) => {
-      targetX = Math.round(startWinX + (moveEvt.screenX - startScreenX));
-      targetY = Math.round(startWinY + (moveEvt.screenY - startScreenY));
-
-      if (animFrameId === null) {
-        animFrameId = requestAnimationFrame(() => {
-          animFrameId = null;
-          if (typeof window !== 'undefined' && (window as any).electronAPI?.movePetWindow) {
-            (window as any).electronAPI.movePetWindow({ x: targetX, y: targetY });
-          }
-        });
-      }
-    };
-
-    const onUp = () => {
-      isDraggingRef.current = false;
-      if (animFrameId !== null) {
-        cancelAnimationFrame(animFrameId);
-        animFrameId = null;
-      }
-      if (typeof window !== 'undefined' && (window as any).electronAPI?.movePetWindow) {
-        (window as any).electronAPI.movePetWindow({ x: targetX, y: targetY });
-      }
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
   };
 
   const isSpeaking = liveState === 'speaking';
@@ -264,8 +209,8 @@ export default function LiveOverlayPage() {
                 clipPath: 'circle(50% at 50% 50%)',
                 WebkitClipPath: 'circle(50% at 50% 50%)',
                 pointerEvents: 'auto',
-              }}
-              onMouseDown={handleOrbMouseDown}
+                WebkitAppRegion: 'drag',
+              } as any}
               onMouseEnter={handleMouseEnter}
               onMouseMove={handleOrbMouseMove}
               onMouseLeave={handleMouseLeave}
@@ -284,9 +229,7 @@ export default function LiveOverlayPage() {
                 style={{
                   top: LIVE_ORB_CONTROL_TOP,
                   left: '50%',
-                  background: 'rgba(255, 255, 255, 0.96)',
-                  backdropFilter: 'blur(24px) saturate(1.8)',
-                  WebkitBackdropFilter: 'blur(24px) saturate(1.8)',
+                  background: 'rgba(255, 255, 255, 0.985)',
                   boxShadow: '0 0 0 1px rgba(15, 23, 42, 0.08)',
                   whiteSpace: 'nowrap',
                   pointerEvents: 'auto',

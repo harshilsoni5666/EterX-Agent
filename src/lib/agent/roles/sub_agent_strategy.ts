@@ -105,6 +105,14 @@ function detectSpecialists(request: string): SpecialistRole[] {
   return uniq(roles);
 }
 
+/** True only when the user actually asks for delegated agent work. */
+export function hasExplicitSubAgentRequest(request: string): boolean {
+  const text = String(request || '');
+  return /\b(?:use|spawn|launch|delegate|assign|ask|have|run)\b.{0,40}\b(?:sub[- ]?agents?|specialists?|worker agents?|agents?)\b/i.test(text)
+    || /\b(?:sub[- ]?agents?|specialists?)\b.{0,30}\b(?:handle|work on|review|audit|research|implement|fix|investigate)\b/i.test(text)
+    || /\b(?:multi[- ]?agent|agent swarm|parallel agents?|multiple agents?|several agents?)\b/i.test(text);
+}
+
 function detectComplexity(request: string): SubAgentStrategyComplexity {
   const words = wordCount(request);
   const highStakes = /\b(production|deploy|release|security|compliance|legal|financial|payments?|auth|privacy|data loss|migration)\b/i.test(request);
@@ -152,8 +160,14 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
   const specialists = detectSpecialists(normalizedRequest);
   const highStakes = complexity === 'critical';
   const decisionHeavy = /\b(decide|choice|tradeoff|strategy|risk|compare|versus|vs|should we|recommend)\b/i.test(normalizedRequest);
-  const independentWork = /\b(parallel|multiple|several|research.*and|audit.*and|fix.*and|review.*and|frontend.*backend|security.*performance)\b/i.test(normalizedRequest);
-  const wantsAdvancedAgentWork = /\b(subagent|sub-agent|multi[- ]?agent|orchestrat|specialist|swarm|deep work|advanced|sci fi|autonomous)\b/i.test(normalizedRequest);
+  const explicitPanel = /\b(consensus|debate|panel|adversarial (?:review|analysis)|multiple perspectives)\b/i.test(normalizedRequest);
+  const explicitParallel = /\b(parallel(?:ize|ise)?|concurrent(?:ly)?|simultaneous(?:ly)?|multi[- ]?agent|swarm|multiple agents?|several agents?|split (?:this|the work|the task) (?:across|between|among))\b/i.test(normalizedRequest);
+  const explicitDelegation = hasExplicitSubAgentRequest(normalizedRequest);
+  const explicitSingleWorker = explicitDelegation
+    && !explicitParallel
+    && /\b(?:one|single|a|an)\s+(?:focused\s+|deep(?:-work)?\s+)?(?:sub[- ]?agent|specialist|worker agent)\b/i.test(normalizedRequest);
+  const independentWork = explicitParallel
+    || /\b(?:frontend|client)\b.{0,50}\b(?:backend|server)\b|\bsecurity\b.{0,50}\bperformance\b|\bresearch\b.{0,50}\bimplementation\b/i.test(normalizedRequest);
 
   const rationale: string[] = [];
   const guardrails = [
@@ -178,7 +192,7 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
     };
   }
 
-  if ((highStakes || options?.forceHighRigor) && decisionHeavy) {
+  if ((explicitPanel || options?.forceHighRigor) && (highStakes || decisionHeavy)) {
     rationale.push('High-stakes decision work benefits from adversarial analysis and rebuttal.');
     return {
       mode: 'debate',
@@ -196,7 +210,7 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
     };
   }
 
-  if (highStakes && !decisionHeavy) {
+  if ((explicitPanel || options?.forceHighRigor) && highStakes && !decisionHeavy) {
     rationale.push('High-stakes analysis should use independent optimistic, skeptical, and practical perspectives.');
     return {
       mode: 'consensus',
@@ -215,27 +229,47 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
     };
   }
 
-  if (specialists.length === 1 && !independentWork && !wantsAdvancedAgentWork) {
+  if (explicitSingleWorker) {
     const role = specialists[0];
-    rationale.push(`The request maps cleanly to one ${role.replace(/_/g, ' ')} specialist.`);
+    rationale.push(role
+      ? `The user explicitly requested one focused ${role.replace(/_/g, ' ')} worker.`
+      : 'The user explicitly requested one focused delegated worker.');
     return {
-      mode: 'specialist',
+      mode: role ? 'specialist' : 'parallel',
       complexity,
       shouldSpawn: true,
-      confidence: 0.79,
+      confidence: 0.91,
       estimatedAgentCount: 1,
       rationale,
       guardrails,
       recommendedAgents: [{
-        role,
+        role: role || 'parallel_worker',
         task: normalizedRequest,
-        reason: 'A focused specialist is lower overhead than a broad swarm.',
+        reason: 'One deep worker matches the explicit delegation request without unnecessary fan-out.',
       }],
-      recommendedToolCall: { mode: 'specialist', specialistRole: role, tasks: [{ task: normalizedRequest }] },
+      recommendedToolCall: role
+        ? { mode: 'specialist', specialistRole: role, tasks: [{ task: normalizedRequest }] }
+        : { mode: 'spawn', tasks: [{ task: normalizedRequest }] },
     };
   }
 
-  if (specialists.length > 0 || independentWork || wantsAdvancedAgentWork || complexity === 'complex') {
+  if (specialists.length === 1 && !independentWork && !explicitDelegation) {
+    const role = specialists[0];
+    rationale.push(`The main agent can directly apply the detected ${role.replace(/_/g, ' ')} expertise without delegation overhead.`);
+    return {
+      mode: 'solo',
+      complexity,
+      shouldSpawn: false,
+      confidence: 0.86,
+      estimatedAgentCount: 0,
+      rationale,
+      guardrails,
+      recommendedAgents: [],
+      recommendedToolCall: null,
+    };
+  }
+
+  if (independentWork || (explicitDelegation && specialists.length > 1)) {
     const agents = splitParallelTasks(normalizedRequest, specialists, maxAgents);
     rationale.push('The request has independent work lanes that can be explored in parallel.');
     if (specialists.length > 0) {
@@ -257,7 +291,9 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
     };
   }
 
-  rationale.push('The request is substantive but appears sequential enough for the main agent.');
+  rationale.push(explicitDelegation
+    ? 'Delegation was mentioned, but the request does not identify independent lanes; keep it with Main unless the user asks for one focused worker.'
+    : 'The request is substantive but appears sequential enough for the main agent.');
   return {
     mode: 'solo',
     complexity,

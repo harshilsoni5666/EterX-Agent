@@ -148,6 +148,16 @@ WHEN TO USE:
           if (input.action === 'schedule' && typeof input.deliverAfterMs !== 'number' && typeof input.deliverAt !== 'number') {
             return { success: false, message: 'Required for schedule: deliverAfterMs or deliverAt' };
           }
+          if (input.to !== '*' && !interAgentMailbox.getAgentPresence(projectId, input.to)) {
+            const availableRecipients = interAgentMailbox.getTeamSnapshot(projectId)
+              .map(agent => agent.agentName)
+              .filter(agentName => agentName.toLowerCase() !== String(myName).toLowerCase());
+            return {
+              success: false,
+              message: `Unknown recipient "${input.to}". Available agents: ${availableRecipients.join(', ') || 'none'}.`,
+              availableRecipients,
+            };
+          }
           const msg = interAgentMailbox.send({
             from: myName,
             to: input.to,

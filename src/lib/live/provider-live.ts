@@ -129,6 +129,8 @@ export class ProviderLiveSession implements LiveSession {
   private handledToolCallIds = new Set<string>();
   private awaitingToolContinuation = false;
   private pendingTurnCompletion: { input: string; output: string; internal: boolean } | null = null;
+  private providerKeepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  private elevenLabsInputSampleRate = 16000;
 
   constructor(
     _apiKey: string,
@@ -401,6 +403,10 @@ export class ProviderLiveSession implements LiveSession {
     this.audioElement = audio;
 
     if (this.options.audioInputEnabled !== false) {
+      const desktopPermission = await (window as any).electronAPI?.requestLiveMediaPermissions?.();
+      if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
+        throw new Error('Microphone access is blocked by the operating system. Enable it for EterX in system privacy settings.');
+      }
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
@@ -617,7 +623,6 @@ export class ProviderLiveSession implements LiveSession {
           type: 'conversation_initiation_client_data',
           ...(voice ? { conversation_config_override: { tts: { voice_id: voice } } } : {}),
         });
-        if (this.options.audioInputEnabled !== false) await this.startPcmCapture(16000, attempt);
       })().catch(error => {
         if (!this.isCurrentAttempt(attempt) || this.ws !== socket) return;
         const message = getErrorMessage(error, 'ElevenLabs microphone capture could not start.');
@@ -682,6 +687,10 @@ export class ProviderLiveSession implements LiveSession {
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone capture is unavailable in this desktop runtime.');
+    const desktopPermission = await (window as any).electronAPI?.requestLiveMediaPermissions?.();
+    if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
+      throw new Error('Microphone access is blocked by the operating system. Enable it for EterX in system privacy settings.');
+    }
     const mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
@@ -725,6 +734,10 @@ export class ProviderLiveSession implements LiveSession {
   }
 
   private sendDeepgramSettings(): void {
+    const functions = this.realtimeTools().map(definition => {
+      const { type: _type, ...deepgramDefinition } = definition;
+      return deepgramDefinition;
+    });
     this.sendJson({
       type: 'Settings',
       audio: {
@@ -732,10 +745,9 @@ export class ProviderLiveSession implements LiveSession {
         output: { encoding: 'linear16', sample_rate: 24000, container: 'none' },
       },
       agent: {
-        language: 'en',
         context: { messages: this.options.initialContext?.chatHistory?.slice(-20).map(item => ({ type: 'History', role: item.role === 'model' ? 'assistant' : item.role, content: item.text })) || [] },
-        listen: { provider: { type: 'deepgram', model: this.options.model && this.options.model !== 'auto' ? this.options.model : 'flux-general-en', version: 'v2' } },
-        think: { prompt: this.sessionInstructions() },
+        listen: { provider: { type: 'deepgram', model: this.options.model && this.options.model !== 'auto' ? this.options.model : 'flux-general-en', version: 'v2', language: 'en' } },
+        think: { prompt: this.sessionInstructions(), functions },
         speak: { provider: { type: 'deepgram', model: this.options.voice && this.options.voice !== 'auto' ? this.options.voice : 'aura-2-thalia-en' } },
       },
     });
@@ -922,7 +934,7 @@ export class ProviderLiveSession implements LiveSession {
     }
   }
 
-  private sendRealtimeToolOutput(callId: string, value: unknown): boolean {
+  private sendRealtimeToolOutput(callId: string, value: unknown, requestResponse: boolean): boolean {
     const event = {
       type: 'conversation.item.create',
       item: {
@@ -932,9 +944,9 @@ export class ProviderLiveSession implements LiveSession {
       },
     };
     if (this.provider.transport === 'openai-webrtc') {
-      return this.sendDataChannel(event) && this.sendDataChannel({ type: 'response.create' });
+      return this.sendDataChannel(event) && (!requestResponse || this.sendDataChannel({ type: 'response.create' }));
     }
-    return this.sendJson(event) && this.sendJson({ type: 'response.create' });
+    return this.sendJson(event) && (!requestResponse || this.sendJson({ type: 'response.create' }));
   }
 
   private async handleRealtimeFunctionCall(
@@ -942,6 +954,7 @@ export class ProviderLiveSession implements LiveSession {
     nameValue: unknown,
     argumentsValue: unknown,
     attempt: number,
+    reply?: (output: unknown, failed: boolean) => boolean,
   ): Promise<void> {
     const callId = String(callIdValue || '').trim();
     const name = String(nameValue || '').trim();
@@ -1009,7 +1022,10 @@ export class ProviderLiveSession implements LiveSession {
       completedAt: Date.now(),
     });
     this.callbacks.onToolCallActive?.(this.activeToolCalls.size > 0 ? 'tool' : null);
-    if (!this.sendRealtimeToolOutput(callId, output)) {
+    const delivered = reply
+      ? reply(output, failed)
+      : this.sendRealtimeToolOutput(callId, output, this.activeToolCalls.size === 0);
+    if (!delivered) {
       this.failProvider(attempt, `${this.provider.label} could not receive the ${name} tool result.`);
     }
   }
@@ -1051,10 +1067,28 @@ export class ProviderLiveSession implements LiveSession {
       }
       if (type === 'SettingsApplied') {
         this.markTransportReady(attempt);
+        if (this.providerKeepAliveTimer) clearInterval(this.providerKeepAliveTimer);
+        this.providerKeepAliveTimer = setInterval(() => {
+          if (this.isCurrentAttempt(attempt)) this.sendJson({ type: 'KeepAlive' });
+        }, 8_000);
         if (this.options.audioInputEnabled !== false) {
           void this.startPcmCapture(24000, attempt).catch(error => {
             this.failProvider(attempt, getErrorMessage(error, 'Deepgram microphone capture could not start.'));
           });
+        }
+        return;
+      }
+      if (type === 'FunctionCallRequest') {
+        const functions = Array.isArray(message.functions) ? message.functions : [];
+        for (const call of functions) {
+          if (call?.client_side === false) continue;
+          void this.handleRealtimeFunctionCall(call?.id, call?.name, call?.arguments, attempt, (output) => this.sendJson({
+            type: 'FunctionCallResponse',
+            id: String(call?.id || ''),
+            name: String(call?.name || ''),
+            content: this.serializeToolOutput(output),
+            ...(call?.thought_signature ? { thought_signature: call.thought_signature } : {}),
+          }));
         }
         return;
       }
@@ -1089,7 +1123,13 @@ export class ProviderLiveSession implements LiveSession {
       if (type === 'conversation_initiation_metadata') {
         const metadata = message.conversation_initiation_metadata_event || {};
         this.playbackSampleRate = readSampleRate(metadata.agent_output_audio_format, 16000);
+        this.elevenLabsInputSampleRate = readSampleRate(metadata.user_input_audio_format, 16000);
         this.markTransportReady(attempt);
+        if (this.options.audioInputEnabled !== false) {
+          void this.startPcmCapture(this.elevenLabsInputSampleRate, attempt).catch(error => {
+            this.failProvider(attempt, getErrorMessage(error, 'ElevenLabs microphone capture could not start.'));
+          });
+        }
       } else if (type === 'user_transcript') {
         const text = String(message.user_transcription_event?.user_transcript || '').trim();
         if (!this.internalTextTurn) {
@@ -1101,6 +1141,12 @@ export class ProviderLiveSession implements LiveSession {
         this.outputTranscript = appendText(this.outputTranscript, text);
         this.callbacks.onOutputTranscription(this.outputTranscript);
         this.setState('speaking');
+      } else if (type === 'agent_response_correction') {
+        const corrected = String(message.agent_response_correction_event?.corrected_agent_response || '').trim();
+        if (corrected) {
+          this.outputTranscript = corrected;
+          this.callbacks.onOutputTranscription(corrected);
+        }
       } else if (type === 'audio') {
         const audio = String(message.audio_event?.audio_base_64 || '');
         if (audio) this.enqueuePcm(base64ToBytes(audio), this.playbackSampleRate);
@@ -1110,7 +1156,18 @@ export class ProviderLiveSession implements LiveSession {
         this.setState('listening');
         this.completeCurrentTurn();
       } else if (type === 'ping') {
-        this.sendJson({ type: 'pong', event_id: message.ping_event?.event_id });
+        const delayMs = Math.max(0, Math.min(5_000, Number(message.ping_event?.ping_ms) || 0));
+        setTimeout(() => {
+          if (this.isCurrentAttempt(attempt)) this.sendJson({ type: 'pong', event_id: message.ping_event?.event_id });
+        }, delayMs);
+      } else if (type === 'client_tool_call') {
+        const call = message.client_tool_call || {};
+        void this.handleRealtimeFunctionCall(call.tool_call_id, call.tool_name, call.parameters, attempt, (output, failed) => this.sendJson({
+          type: 'client_tool_result',
+          tool_call_id: String(call.tool_call_id || ''),
+          result: this.serializeToolOutput(output),
+          is_error: failed,
+        }));
       } else if (type === 'error') {
         this.failProvider(attempt, String(message.message || message.error || 'ElevenLabs conversation error.'));
       }
@@ -1356,6 +1413,10 @@ export class ProviderLiveSession implements LiveSession {
     this.awaitingToolContinuation = false;
     this.pendingTurnCompletion = null;
     this.pendingTextTurns = [];
+    if (this.providerKeepAliveTimer) {
+      clearInterval(this.providerKeepAliveTimer);
+      this.providerKeepAliveTimer = null;
+    }
     this.inputTranscript = '';
     this.outputTranscript = '';
     this.callbacks.onMicVolume?.(0);

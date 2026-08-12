@@ -488,6 +488,8 @@ const RENDERABLE_TIMELINE_TYPES = new Set([
   'steering_received',
   'autonomy_proxy_status',
   'sub_agent_spawn',
+  'sub_agent_answer',
+  'sub_agent_result',
   'sub_agent_action',
   'sub_agent_complete',
   'sub_agent_error',
@@ -852,6 +854,9 @@ const getTraceActivitySignature = (logs: any[]) => {
         log?.noteId ?? '',
         log?.thoughtId ?? '',
         log?.endTime ?? log?.timestamp ?? '',
+        log?.isStreaming === true ? 'streaming' : 'settled',
+        log?.isLiveTyping === true ? 'typing' : 'stable',
+        log?.streamState ?? '',
         text.length,
         text.slice(-32),
       ].join(':');
@@ -2071,6 +2076,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const feedContentRef = useRef<HTMLDivElement>(null);
   const prevTraceActivityRef = useRef('');
   const shouldAutoFollowRef = useRef(true);
+  const userScrollIntentUntilRef = useRef(0);
   const lastFaceTraceRef = useRef('');
   const lastFaceLiveNotifyAtRef = useRef(0);
   const scrollUpdateFrameRef = useRef<number | null>(null);
@@ -2139,12 +2145,10 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     if (!container) return;
 
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (showScrollBottom) {
-      // Only suppress auto-follow when user is meaningfully far from bottom
-      if (distanceFromBottom > AUTO_FOLLOW_THRESHOLD * 3) {
-        shouldAutoFollowRef.current = false;
-      }
-    } else if (distanceFromBottom <= AUTO_FOLLOW_THRESHOLD) {
+    // showScrollBottom is derived from geometry and can briefly become true
+    // while a final answer replaces its streaming row. Never interpret that
+    // programmatic layout transition as the user choosing to read upward.
+    if (distanceFromBottom <= AUTO_FOLLOW_THRESHOLD) {
       shouldAutoFollowRef.current = true;
     }
   }, [showScrollBottom]);
@@ -2224,7 +2228,11 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const handleScrollWrap = (e: React.UIEvent<HTMLDivElement>) => {
     const container = e.currentTarget;
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    shouldAutoFollowRef.current = distanceFromBottom <= AUTO_FOLLOW_THRESHOLD;
+    if (distanceFromBottom <= AUTO_FOLLOW_THRESHOLD) {
+      shouldAutoFollowRef.current = true;
+    } else if (performance.now() <= userScrollIntentUntilRef.current) {
+      shouldAutoFollowRef.current = false;
+    }
     latestScrollContainerRef.current = container;
 
     if (scrollUpdateFrameRef.current !== null) return;
@@ -2423,12 +2431,16 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
             onWheel={(e) => {
               const container = e.currentTarget;
               const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-              if (isThinking && (e.deltaY < 0 || distanceFromBottom > AUTO_FOLLOW_THRESHOLD)) shouldAutoFollowRef.current = false;
+              userScrollIntentUntilRef.current = performance.now() + 500;
+              if (e.deltaY < 0 || distanceFromBottom > AUTO_FOLLOW_THRESHOLD) {
+                shouldAutoFollowRef.current = false;
+              }
             }}
             onTouchMove={(e) => {
               const container = e.currentTarget;
               const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-              if (isThinking && distanceFromBottom > AUTO_FOLLOW_THRESHOLD) shouldAutoFollowRef.current = false;
+              userScrollIntentUntilRef.current = performance.now() + 500;
+              if (distanceFromBottom > AUTO_FOLLOW_THRESHOLD) shouldAutoFollowRef.current = false;
             }}
           >
 

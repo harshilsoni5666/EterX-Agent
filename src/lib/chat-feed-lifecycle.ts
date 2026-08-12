@@ -162,6 +162,65 @@ const compareTimelinePositions = (left: any, right: any): number => {
 };
 
 /**
+ * Sub-agent events are transported with a mixture of a full child-chat ID,
+ * the short run ID, and (for older traces) only the agent name. Return all
+ * stable aliases so the roster, tabs, and feed use the same ownership rules.
+ */
+export const getAgentIdentityAliases = (value: any): Set<string> => {
+  const aliases = new Set<string>();
+  const add = (candidate: unknown) => {
+    const normalized = String(candidate || '').trim().toLowerCase();
+    if (!normalized) return;
+    aliases.add(normalized);
+    const marker = '::sub-agent::';
+    const markerIndex = normalized.lastIndexOf(marker);
+    if (markerIndex >= 0) {
+      const shortId = normalized.slice(markerIndex + marker.length).trim();
+      if (shortId) aliases.add(shortId);
+    }
+  };
+
+  if (typeof value === 'string') add(value);
+  else if (value && typeof value === 'object') {
+    add(value.id);
+    add(value.subAgentChatId);
+    add(value.subAgentId);
+    add(value.agentId);
+    add(value.agentName);
+    add(value.subAgent);
+    add(value.name);
+  }
+  return aliases;
+};
+
+export const agentIdentitiesOverlap = (left: any, right: any): boolean => {
+  const strongAliases = (value: any): Set<string> => {
+    if (typeof value === 'string') return getAgentIdentityAliases(value);
+    if (!value || typeof value !== 'object') return new Set();
+    // Timeline/message `id` values identify the event, not its worker. Roster
+    // entries have no event type, while full child-chat IDs are self-describing.
+    const objectId = String(value.id || '').trim();
+    const rosterId = !value.type || objectId.includes('::sub-agent::')
+      ? objectId
+      : undefined;
+    return getAgentIdentityAliases({
+      id: rosterId,
+      subAgentChatId: value.subAgentChatId,
+      subAgentId: value.subAgentId,
+      agentId: value.agentId,
+    });
+  };
+  const leftStrong = strongAliases(left);
+  const rightStrong = strongAliases(right);
+  if (leftStrong.size > 0 && rightStrong.size > 0) {
+    return [...leftStrong].some(alias => rightStrong.has(alias));
+  }
+  const leftAliases = getAgentIdentityAliases(left);
+  const rightAliases = getAgentIdentityAliases(right);
+  return [...leftAliases].some(alias => rightAliases.has(alias));
+};
+
+/**
  * Restore trace order after polling/reconnects deliver an older event late.
  *
  * Trace indices are scoped to a server run, so sorting the whole conversation
@@ -203,7 +262,13 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
       timelineIdentity(boundary.log) === identity
     );
     if (exactTurnMatches.length > 0) {
-      return exactTurnMatches[exactTurnMatches.length - 1].boundaryIndex;
+      if (exactTurnMatches.length === 1) return exactTurnMatches[0].boundaryIndex;
+      const preceding = exactTurnMatches.filter(boundary =>
+        compareTimelinePositions(boundary.log, log) <= 0
+      );
+      return (preceding.length > 0 ? preceding : exactTurnMatches)[
+        (preceding.length > 0 ? preceding : exactTurnMatches).length - 1
+      ].boundaryIndex;
     }
 
     const runMatches = boundaryEntries.filter(boundary => timelineIdentity(boundary.log) === identity);
@@ -213,10 +278,7 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     // Proxy-backed runs can contain multiple user boundaries under one run
     // ID. Use the trace/timestamp position to select the most recent boundary
     // that precedes this event; otherwise transport order wins.
-    const preceding = runMatches.filter(boundary => {
-      const position = compareTimelinePositions(boundary.log, log);
-      return position <= 0 && boundary.sourceIndex <= sourceIndex;
-    });
+    const preceding = runMatches.filter(boundary => compareTimelinePositions(boundary.log, log) <= 0);
     return (preceding.length > 0 ? preceding : runMatches)[
       (preceding.length > 0 ? preceding : runMatches).length - 1
     ].boundaryIndex;
