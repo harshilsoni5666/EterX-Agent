@@ -465,48 +465,6 @@
     background: color-mix(in srgb, var(--background) 96%, var(--sidebar-bg) 4%);
   }
 
-  .eterx-thread-tab {
-    background: color-mix(in srgb, var(--foreground) 4%, transparent) !important;
-    border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent) !important;
-    border-radius: 999px;
-    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent) !important;
-    color: var(--foreground) !important;
-    font-weight: 520;
-    min-height: 34px;
-    max-width: min(460px, calc(100vw - 360px));
-    transition-property: background-color, border-color, color !important;
-    transition-duration: 120ms !important;
-    transition-timing-function: ease-out !important;
-  }
-
-  .eterx-thread-tab:hover {
-    background: color-mix(in srgb, var(--foreground) 6%, transparent) !important;
-    border-color: color-mix(in srgb, var(--foreground) 18%, transparent) !important;
-    color: var(--foreground) !important;
-    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent) !important;
-  }
-
-  .eterx-thread-tab[data-open="true"],
-  .eterx-thread-tab:hover[data-open="true"] {
-    background: color-mix(in srgb, var(--foreground) 6%, transparent) !important;
-    border-color: color-mix(in srgb, var(--foreground) 18%, transparent) !important;
-    color: var(--foreground) !important;
-    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent) !important;
-  }
-
-  .eterx-thread-tab:active {
-    background: color-mix(in srgb, var(--foreground) 7%, transparent) !important;
-    border-color: color-mix(in srgb, var(--foreground) 20%, transparent) !important;
-    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 6%, transparent) !important;
-  }
-
-  .eterx-thread-tab svg,
-  .eterx-thread-tab:hover svg,
-  .eterx-thread-tab[data-open="true"] svg,
-  .eterx-thread-tab:hover[data-open="true"] svg {
-    color: color-mix(in srgb, var(--foreground) 72%, transparent) !important;
-  }
-
   /* Use JetBrains Mono for all monospace content */
   code,
   pre,
@@ -2865,7 +2823,7 @@
   display: grid;
   place-items: center;
   transform-origin: center;
-  filter: drop-shadow(0 20px 38px rgba(31, 31, 29, 0.16));
+  filter: none;
   animation: eterx-loader-mark-motion 2820ms cubic-bezier(0.22, 0.72, 0.18, 1) both;
   will-change: transform, opacity;
 }
@@ -2924,7 +2882,7 @@
 }
 
 :root[data-theme="dark"] .eterx-app-loader-logo-shell {
-  filter: drop-shadow(0 22px 42px rgba(0, 0, 0, 0.42));
+  filter: none;
 }
 
 :root[data-theme="dark"] .eterx-app-loader-wordmark span {
@@ -3752,7 +3710,7 @@
 }
 
 .eterx-reveal-active .eterx-progressive-markdown-live {
-  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--eterx-md-accent) 10%, transparent));
+  filter: none;
 }
 
 .eterx-progressive-markdown-live>p:last-child,

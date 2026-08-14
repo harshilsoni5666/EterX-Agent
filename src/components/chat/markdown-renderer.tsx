@@ -1209,7 +1209,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
           <MoreHorizontal className="h-4 w-4" />
         </button>
         {menuOpen && (
-          <div className="eterx-mermaid-menu absolute right-0 top-10 z-40 w-[230px] overflow-hidden rounded-2xl border border-white/[0.09] bg-[#191817]/96 p-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.34)] backdrop-blur-xl">
+          <div className="eterx-mermaid-menu absolute right-0 top-10 z-40 w-[230px] overflow-hidden rounded-2xl border border-white/[0.09] bg-[#191817]/96 p-1.5 shadow-none backdrop-blur-xl">
             <button type="button" className="eterx-mermaid-menu-item" disabled={!svg} onClick={() => runAction(copyPng)}>
               <Copy className="h-4 w-4" />
               <span>Copy image</span>
@@ -1255,7 +1255,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
         )}
       </div>
       {actionStatus && (
-        <div className="eterx-mermaid-toast absolute right-2 top-12 z-20 rounded-full border border-white/[0.08] bg-[#151515]/86 px-3 py-1.5 text-[12px] font-medium text-[#B8B4AC] shadow-[0_8px_22px_rgba(0,0,0,0.22)] backdrop-blur-md">
+        <div className="eterx-mermaid-toast absolute right-2 top-12 z-20 rounded-full border border-white/[0.08] bg-[#151515]/86 px-3 py-1.5 text-[12px] font-medium text-[#B8B4AC] shadow-none backdrop-blur-md">
           {actionStatus}
         </div>
       )}
@@ -1428,10 +1428,10 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
 
   return (
     <div
-      className={`eterx-markdown-code-block group/code relative my-5 flex max-w-full flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#1C1B1A] shadow-[0_10px_28px_rgba(0,0,0,0.16)] ${ expanded ? 'eterx-code-expanded' : '' }`}
+      className={`eterx-markdown-code-block group/code relative my-5 flex max-w-full flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#1C1B1A] shadow-none ${ expanded ? 'eterx-code-expanded' : '' }`}
       data-language={displayLanguage}
     >
-      <div className="eterx-markdown-code-actions absolute right-2 top-2 z-20 flex items-center gap-1 rounded-lg border border-white/[0.08] bg-[#1C1B1A]/86 p-1 opacity-55 shadow-[0_8px_22px_rgba(0,0,0,0.22)] backdrop-blur-md transition-opacity duration-200 group-hover/code:opacity-100">
+      <div className="eterx-markdown-code-actions absolute right-2 top-2 z-20 flex items-center gap-1 rounded-lg border border-white/[0.08] bg-[#1C1B1A]/86 p-1 opacity-55 shadow-none backdrop-blur-md transition-opacity duration-200 group-hover/code:opacity-100">
         <ToolbarButton label={wrapLines ? 'Disable wrap' : 'Wrap lines'} active={wrapLines} onClick={() => setWrapLines(value => !value)}>
           <WrapText className="h-4 w-4" />
         </ToolbarButton>
@@ -1578,7 +1578,7 @@ export const markdownComponents = {
         : 'quote';
     return (
       <blockquote
-        className="eterx-markdown-callout my-3 rounded-lg border-l-[3px] border-[#E2765A] bg-[#222120]/70 px-3.5 py-2.5 text-[12.5px] leading-relaxed shadow-sm backdrop-blur-sm"
+        className="eterx-markdown-callout my-3 rounded-lg border-l-[3px] border-[#E2765A] bg-[#222120]/70 px-3.5 py-2.5 text-[12.5px] leading-relaxed shadow-none backdrop-blur-sm"
         data-callout={callout}
         {...props}
       />
@@ -1587,7 +1587,7 @@ export const markdownComponents = {
   hr: ({ ...props }: any) => <hr className="eterx-markdown-hr my-4 border-white/[0.08]" {...props} />,
   table: ({ node, ...props }: any) => (
     <div
-      className="eterx-markdown-table-wrap my-4 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-lg border border-white/[0.10] bg-[#1A1918]/90 shadow-sm"
+      className="eterx-markdown-table-wrap my-4 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-lg border border-white/[0.10] bg-[#1A1918]/90 shadow-none"
       role="region"
       aria-label="Data table"
     >
@@ -1605,7 +1605,7 @@ export const markdownComponents = {
     // surrounding text. Keep the captioned image inline-safe with a block
     // span wrapper instead.
     <span className="eterx-markdown-figure my-5" role="figure">
-      <img className="eterx-markdown-image max-w-full rounded-xl border border-white/[0.08] shadow-md" alt={alt || ''} loading="lazy" {...props} />
+      <img className="eterx-markdown-image max-w-full rounded-xl border border-white/[0.08] shadow-none" alt={alt || ''} loading="lazy" {...props} />
       {alt && <span className="eterx-markdown-image-caption mt-2 text-center text-[12px]">{alt}</span>}
     </span>
   ),

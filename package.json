@@ -285,7 +285,7 @@
       ],
       "category": "public.app-category.developer-tools",
       "icon": "public/icon.icns",
-      "hardenedRuntime": true,
+      "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "entitlements": "setup/entitlements.mac.plist",
       "extendInfo": {

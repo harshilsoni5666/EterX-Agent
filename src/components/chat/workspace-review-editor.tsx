@@ -165,7 +165,7 @@ function highlightReviewSyntax(code: string): string {
 }
 const MIN_VISIBLE_TAB_WIDTH = 94;
 const MAX_TAB_RAIL_WIDTH_BEFORE_SCROLL = 520;
-const SECTION_SCROLL_CLASS = 'eterx-review-scrollbar max-h-[min(34vh,340px)] overflow-y-auto overflow-x-hidden overscroll-contain rounded-[14px] border border-white/[0.045] bg-white/[0.014] py-1.5 pr-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.025)] [scrollbar-gutter:stable]';
+const SECTION_SCROLL_CLASS = 'eterx-review-scrollbar max-h-[min(34vh,340px)] overflow-y-auto overflow-x-hidden overscroll-contain rounded-[14px] border border-white/[0.045] bg-white/[0.014] py-1.5 pr-1 shadow-none [scrollbar-gutter:stable]';
 
 function cx(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(' ');
@@ -433,7 +433,7 @@ function StatsButton({
         event.stopPropagation();
         onClick?.();
       }}
-      className="eterx-professional-number inline-flex h-6 items-center gap-1 rounded-full px-1.5 text-[11.5px] font-bold transition-all hover:bg-white/[0.08] hover:shadow-[0_8px_24px_rgba(0,0,0,0.28)] focus:outline-none focus:ring-1 focus:ring-white/18"
+      className="eterx-professional-number inline-flex h-6 items-center gap-1 rounded-full px-1.5 text-[11.5px] font-bold transition-all hover:bg-white/[0.08] hover:shadow-none focus:outline-none focus:ring-1 focus:ring-white/18"
     >
       <span className="text-[#4BE37B]">+{stats.added}</span>
       <span className="text-[#FF6C63]">-{stats.removed}</span>
@@ -485,7 +485,7 @@ function SubagentDetailPanel({
           <div className="flex min-w-0 items-center gap-2">
             <span className={cx(
               'h-2 w-2 shrink-0 rounded-full',
-              running ? 'bg-[#8AB4FF] shadow-[0_0_16px_rgba(138,180,255,0.42)]' : agent.status === 'complete' ? 'bg-[#75D990]' : agent.status === 'failed' ? 'bg-[#FF7A70]' : 'bg-white/26'
+              running ? 'bg-[#8AB4FF] shadow-none' : agent.status === 'complete' ? 'bg-[#75D990]' : agent.status === 'failed' ? 'bg-[#FF7A70]' : 'bg-white/26'
             )} />
             <h3 className="truncate text-[15px] font-semibold text-white/86">{agent.name}</h3>
             <span className={cx('rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.1em]', running ? 'bg-[#8AB4FF]/10 text-[#9CC2FF]' : agent.status === 'complete' ? 'bg-[#75D990]/10 text-[#75D990]' : agent.status === 'failed' ? 'bg-[#FF7A70]/10 text-[#FF7A70]' : 'bg-white/[0.055] text-white/40')}>
@@ -585,7 +585,7 @@ function OverviewPanel({
               >
                 <span className={cx(
                   'relative h-2 w-2 shrink-0 rounded-full',
-                  running ? 'bg-[#8AB4FF] shadow-[0_0_14px_rgba(138,180,255,0.35)]' : agent.status === 'complete' ? 'bg-[#75D990]' : agent.status === 'failed' ? 'bg-[#FF7A70]' : 'bg-white/24'
+                  running ? 'bg-[#8AB4FF] shadow-none' : agent.status === 'complete' ? 'bg-[#75D990]' : agent.status === 'failed' ? 'bg-[#FF7A70]' : 'bg-white/24'
                 )}>
                   {running && <span className="absolute inset-0 animate-ping rounded-full bg-[#8AB4FF]/45" />}
                 </span>
@@ -779,7 +779,7 @@ function ReviewPanel({
                 <div key={key} className={cx(
                   'eterx-review-file-card',
                   'overflow-hidden rounded-[16px] border bg-[#101010]/78 transition-colors',
-                  open ? 'border-white/[0.11] shadow-[0_18px_50px_rgba(0,0,0,0.20)]' : 'border-white/[0.07] hover:border-white/[0.12]'
+                  open ? 'border-white/[0.11] shadow-none' : 'border-white/[0.07] hover:border-white/[0.12]'
                 )}>
                   <button
                     type="button"
@@ -1197,13 +1197,13 @@ export function WorkspaceReviewEditor({
 
   return (
     <aside ref={shellRef} className={cx('eterx-workspace-review flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-white/[0.07] bg-[#0B0B0C] text-[#D8D5CF]', className)}>
-      <div className="eterx-workspace-review-topbar flex h-[48px] shrink-0 items-center gap-1.5 border-b border-white/[0.055] bg-[#0A0A0B]/96 px-2 shadow-[inset_0_-1px_0_rgba(255,255,255,0.025)]">
+      <div className="eterx-workspace-review-topbar flex h-[48px] shrink-0 items-center gap-1.5 border-b border-white/[0.055] bg-[#0A0A0B]/96 px-2 shadow-none">
         <button
           type="button"
           onClick={() => chooseMode('overview')}
           className={cx(
             'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[10px] px-2.5 text-[12.5px] font-semibold transition-colors',
-            mode === 'overview' ? 'bg-white/[0.14] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]' : 'text-white/50 hover:bg-white/[0.055] hover:text-white/82'
+            mode === 'overview' ? 'bg-white/[0.14] text-white shadow-none' : 'text-white/50 hover:bg-white/[0.055] hover:text-white/82'
           )}
         >
           <FileText className="h-3.5 w-3.5" strokeWidth={2.05} />
@@ -1214,7 +1214,7 @@ export function WorkspaceReviewEditor({
           onClick={() => chooseMode('review')}
           className={cx(
             'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[10px] px-2.5 text-[12.5px] font-semibold transition-colors',
-            mode === 'review' ? 'bg-white/[0.14] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]' : 'text-white/50 hover:bg-white/[0.055] hover:text-white/82'
+            mode === 'review' ? 'bg-white/[0.14] text-white shadow-none' : 'text-white/50 hover:bg-white/[0.055] hover:text-white/82'
           )}
         >
           <FileCode2 className="h-3.5 w-3.5" strokeWidth={2.05} />
@@ -1246,7 +1246,7 @@ export function WorkspaceReviewEditor({
                 <ChevronDown className="h-3 w-3" strokeWidth={2.2} />
               </button>
               {filePickerOpen && (
-                <div className="absolute left-0 top-9 z-50 w-[min(360px,calc(100vw-40px))] overflow-hidden rounded-[14px] border border-white/[0.095] bg-[#151515]/98 shadow-[0_22px_70px_rgba(0,0,0,0.42)] backdrop-blur-xl">
+                <div className="absolute left-0 top-9 z-50 w-[min(360px,calc(100vw-40px))] overflow-hidden rounded-[14px] border border-white/[0.095] bg-[#151515]/98 shadow-none backdrop-blur-xl">
                   <div className="border-b border-white/[0.06] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/36">Open files</div>
                   <div className="eterx-review-scrollbar max-h-[46vh] overflow-y-auto overflow-x-hidden overscroll-contain p-1.5 [scrollbar-gutter:stable]">
                     {tabEntries.map(({ file, index, key }) => {
@@ -1282,7 +1282,7 @@ export function WorkspaceReviewEditor({
                 key={key}
                 className={cx(
                   'group/tab inline-flex h-7 max-w-[104px] shrink-0 items-center rounded-[9px] border transition-colors lg:max-w-[118px]',
-                  selected ? 'border-white/[0.12] bg-white/[0.13] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.055)]' : 'border-transparent text-white/48 hover:bg-white/[0.055] hover:text-white/82'
+                  selected ? 'border-white/[0.12] bg-white/[0.13] text-white shadow-none' : 'border-transparent text-white/48 hover:bg-white/[0.055] hover:text-white/82'
                 )}
                 title={file.filepath}
               >

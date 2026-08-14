@@ -452,7 +452,7 @@ export const AgentsView = React.memo(({
                 initial={{ opacity: 0, y: -16, scale: 0.96 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -12, scale: 0.96 }}
-                className="pointer-events-auto flex items-center gap-3 px-4 py-2 rounded-full bg-[#1C1C1B]/95 border border-white/[0.16] text-white shadow-[0_24px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl whitespace-nowrap"
+                className="pointer-events-auto flex items-center gap-3 px-4 py-2 rounded-full bg-[#1C1C1B]/95 border border-white/[0.16] text-white shadow-none backdrop-blur-2xl whitespace-nowrap"
               >
                 <span className="text-[12px] font-medium text-[#EDEBE7]">
                   Setup required to download <strong className="font-semibold text-white">{setupNoticeAgent.name}</strong>
@@ -476,7 +476,7 @@ export const AgentsView = React.memo(({
                 initial={{ opacity: 0, y: -16, scale: 0.96 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -12, scale: 0.96 }}
-                className="pointer-events-auto flex items-center gap-2.5 px-4 py-2 rounded-full bg-[#181817]/95 border border-white/[0.16] text-white shadow-[0_24px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl whitespace-nowrap"
+                className="pointer-events-auto flex items-center gap-2.5 px-4 py-2 rounded-full bg-[#181817]/95 border border-white/[0.16] text-white shadow-none backdrop-blur-2xl whitespace-nowrap"
               >
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span className="text-[12px] font-medium text-[#F0EDE8]">
@@ -490,7 +490,7 @@ export const AgentsView = React.memo(({
                 initial={{ opacity: 0, y: -16, scale: 0.96 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -12, scale: 0.96 }}
-                className="pointer-events-auto flex items-center gap-2.5 px-4 py-2 rounded-full bg-[#181817]/95 border border-white/[0.16] text-white shadow-[0_24px_50px_rgba(0,0,0,0.85)] backdrop-blur-2xl whitespace-nowrap"
+                className="pointer-events-auto flex items-center gap-2.5 px-4 py-2 rounded-full bg-[#181817]/95 border border-white/[0.16] text-white shadow-none backdrop-blur-2xl whitespace-nowrap"
               >
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
                 <span className="text-[12px] font-medium text-[#F0EDE8]">
@@ -518,7 +518,7 @@ export const AgentsView = React.memo(({
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3 }}
-          className="eterx-agents-library-panel flex-1 bg-[#0A0A0A]/70 backdrop-blur-sm border border-white/[0.04] rounded-[18px] p-4 md:p-5 w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.02)] flex flex-col gap-3 overflow-hidden relative"
+          className="eterx-agents-library-panel flex-1 bg-[#0A0A0A]/70 backdrop-blur-sm border border-white/[0.04] rounded-[18px] p-4 md:p-5 w-full shadow-none flex flex-col gap-3 overflow-hidden relative"
         >
           {/* Header internal row matching style and spacing of ProjectsView */}
           <div className="w-full flex items-center justify-between shrink-0 pl-1 pr-1 pb-1.5 border-b border-white/[0.03]">
@@ -568,7 +568,7 @@ export const AgentsView = React.memo(({
                       onOpenBuilder(agent.id, agent.name);
                     }
                   }}
-                  className="eterx-agent-card group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-stretch justify-between shrink-0 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                  className="eterx-agent-card group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-stretch justify-between shrink-0 shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
                 >
                   <div className="absolute inset-0 bg-white/[0.02] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
                   
@@ -726,7 +726,7 @@ export const AgentsView = React.memo(({
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.95, y: 20 }}
               transition={{ type: "spring", damping: 25, stiffness: 300 }}
-              className="bg-[#0A0A0A] border border-white/10 rounded-[28px] p-6 w-full max-w-[680px] shadow-2xl flex flex-col gap-6 max-h-[90vh] overflow-y-auto eterx-scrollbar"
+              className="bg-[#0A0A0A] border border-white/10 rounded-[28px] p-6 w-full max-w-[680px] shadow-none flex flex-col gap-6 max-h-[90vh] overflow-y-auto eterx-scrollbar"
             >
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-white tracking-tight">Agent Builder</h2>
@@ -822,7 +822,7 @@ export const AgentsView = React.memo(({
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.95, y: 20 }}
               transition={{ type: "spring", damping: 25, stiffness: 300 }}
-              className="bg-[#0A0A0A] border border-white/10 rounded-[28px] p-6 w-full max-w-[500px] shadow-2xl flex flex-col gap-6 max-h-[90vh]"
+              className="bg-[#0A0A0A] border border-white/10 rounded-[28px] p-6 w-full max-w-[500px] shadow-none flex flex-col gap-6 max-h-[90vh]"
             >
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-white tracking-tight">Agent Settings</h2>

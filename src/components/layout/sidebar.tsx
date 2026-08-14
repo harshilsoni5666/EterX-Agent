@@ -2075,7 +2075,7 @@ export const Sidebar = React.memo<SidebarProps>(
                 aria-modal="true"
                 aria-labelledby="eterx-delete-chats-title"
                 aria-describedby="eterx-delete-chats-description"
-                className="bg-[#141414] border border-white/[0.08] shadow-[0_24px_64px_rgba(0,0,0,0.6)] rounded-[24px] p-6 max-w-[360px] w-full mx-4 flex flex-col gap-6 relative overflow-hidden"
+                className="bg-[#141414] border border-white/[0.08] shadow-none rounded-[24px] p-6 max-w-[360px] w-full mx-4 flex flex-col gap-6 relative overflow-hidden"
               >
                 <div className="flex flex-col gap-2 relative z-10">
                   <h3 id="eterx-delete-chats-title" className="text-[#E8E6E3] text-[18px] font-semibold">Delete {selectedChatIds.size} chats?</h3>

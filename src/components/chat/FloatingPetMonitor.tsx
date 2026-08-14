@@ -104,7 +104,7 @@ export const FloatingPetMonitor = React.memo(({
 
   return (
     <div
-      className={`eterx-pet-monitor group fixed z-[9998] w-[326px] max-w-[calc(100vw-24px)] select-none rounded-[24px] border border-white/[0.16] bg-[#171717]/96 text-[#F2F0EC] shadow-[0_18px_54px_rgba(0,0,0,0.36),inset_0_1px_0_rgba(255,255,255,0.055)] backdrop-blur-2xl ${ replyOpen ? 'p-3' : 'px-4 py-3.5' }`}
+      className={`eterx-pet-monitor group fixed z-[9998] w-[326px] max-w-[calc(100vw-24px)] select-none rounded-[24px] border border-white/[0.16] bg-[#171717]/96 text-[#F2F0EC] shadow-none backdrop-blur-2xl ${ replyOpen ? 'p-3' : 'px-4 py-3.5' }`}
       style={{ left: position.x, top: position.y }}
       onPointerDown={startDrag}
     >
@@ -112,7 +112,7 @@ export const FloatingPetMonitor = React.memo(({
         type="button"
         onClick={onClose}
         aria-label="Close pet monitor"
-        className="eterx-pet-close absolute -left-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.16] bg-[#1F1F1F] text-white/72 opacity-0 shadow-[0_10px_26px_rgba(0,0,0,0.28)] transition-all duration-100 hover:bg-[#2A2A2A] hover:text-white group-hover:opacity-100 focus:opacity-100"
+        className="eterx-pet-close absolute -left-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full border border-white/[0.16] bg-[#1F1F1F] text-white/72 opacity-0 shadow-none transition-all duration-100 hover:bg-[#2A2A2A] hover:text-white group-hover:opacity-100 focus:opacity-100"
       >
         <X className="h-4 w-4" strokeWidth={2.3} />
       </button>

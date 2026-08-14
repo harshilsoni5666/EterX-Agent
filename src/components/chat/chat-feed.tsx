@@ -1268,7 +1268,7 @@ const ThoughtSequence = ({
   const counterBackground = 'var(--muted)';
   const counterHoverBackground = 'var(--secondary)';
   const counterOutline = 'var(--border)';
-  const counterShadow = '0 4px 16px rgba(0,0,0,0.10)';
+  const counterShadow = 'none';
   const compactCounterStyle: React.CSSProperties = {
     padding: '4px 8px 4px 6px', borderRadius: 13, border: 'none', background: counterBackground,
     outline: `1px solid ${ counterOutline }`, backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
@@ -1279,7 +1279,7 @@ const ThoughtSequence = ({
     <div className="relative" ref={containerRef}>
       {showWorkedSummary && <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]"><span>Worked for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
       {hasCounter && <div className={`eterx-process-summary-row ${ shouldStickCounter ? 'sticky top-3 z-20' : '' } ${ isCollapsedWithAnswer ? 'mb-2' : 'mb-1' } flex w-full items-center overflow-visible py-1.5`}>
-        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border border-[var(--border)] bg-[var(--muted)] px-3 text-[13px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-[0_2px_10px_rgba(0,0,0,0.12),inset_0_1px_0_rgba(255,255,255,0.035)] backdrop-blur-[12px] transition-[background,border-color,color,box-shadow] duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer active={false} className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-0 pb-[1px] leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><span>Working for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{stepCount > 0 ? <><span className="eterx-professional-number">{stepCount}</span> action{stepCount !== 1 ? 's' : ''}</> : 'Working'}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
+        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border border-[var(--border)] bg-[var(--muted)] px-3 text-[13px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-none backdrop-blur-[12px] transition-[background,border-color,color,box-shadow] duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer active={false} className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-0 pb-[1px] leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><span>Working for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{stepCount > 0 ? <><span className="eterx-professional-number">{stepCount}</span> action{stepCount !== 1 ? 's' : ''}</> : 'Working'}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
       </div>}
 
       {isOpen && (
@@ -1436,7 +1436,7 @@ const ChatFeedMessageGroup = React.memo(({
                             window.dispatchEvent(new CustomEvent(isVideo ? 'eterx-preview-media' : 'eterx-preview-image', { detail: { previewUrl, kind: isVideo ? 'video' : 'image', fileName } }));
                           }
                         }}
-                        className="relative group h-[72px] w-[72px] shrink-0 cursor-pointer rounded-[14px] border border-white/[0.06] shadow-[0_3px_12px_rgba(0,0,0,0.16)] transition-colors hover:border-white/[0.10] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                        className="relative group h-[72px] w-[72px] shrink-0 cursor-pointer rounded-[14px] border border-white/[0.06] shadow-none transition-colors hover:border-white/[0.10] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
                         aria-label={`Preview ${ fileName }`}
                       >
                         {isVideo ? (
@@ -1460,7 +1460,7 @@ const ChatFeedMessageGroup = React.memo(({
                           window.dispatchEvent(new CustomEvent('eterx-preview-document', { detail: { filePath: targetPath } }));
                         }
                       }}
-                      className={`flex h-[72px] w-[72px] shrink-0 flex-col items-center justify-center gap-1.5 rounded-[14px] border border-white/[0.055] bg-white/[0.024] shadow-[0_3px_12px_rgba(0,0,0,0.12)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20 ${ isDocPreviewable ? 'cursor-pointer transition-all hover:border-white/[0.10] hover:bg-white/[0.045]' : 'cursor-default' }`}
+                      className={`flex h-[72px] w-[72px] shrink-0 flex-col items-center justify-center gap-1.5 rounded-[14px] border border-white/[0.055] bg-white/[0.024] shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20 ${ isDocPreviewable ? 'cursor-pointer transition-all hover:border-white/[0.10] hover:bg-white/[0.045]' : 'cursor-default' }`}
                       aria-label={isDocPreviewable ? `Preview ${ fileName }` : fileName}
                     >
                       <div className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center shrink-0 ${ isPdf ? 'bg-[#C65D58]' : extension === 'DOCX' ? 'bg-[#2A6B9C]' : 'bg-[#596B7B]' }`}>
@@ -2423,7 +2423,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1], layout: { duration: 0.18, ease: [0.22, 1, 0.36, 1] } }}
-              className="eterx-chat-turns-popover relative flex min-h-[54px] max-h-[calc(100vh-24px)] w-[min(320px,calc(100vw-24px))] flex-col overflow-hidden rounded-[15px] border border-white/[0.10] bg-[#1A1A19]/95 px-3.5 pb-3 pt-3 text-left shadow-[0_18px_52px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.045)] backdrop-blur-xl"
+              className="eterx-chat-turns-popover relative flex min-h-[54px] max-h-[calc(100vh-24px)] w-[min(320px,calc(100vw-24px))] flex-col overflow-hidden rounded-[15px] border border-white/[0.10] bg-[#1A1A19]/95 px-3.5 pb-3 pt-3 text-left shadow-none backdrop-blur-xl"
             >
               <span aria-hidden="true" className="pointer-events-none absolute inset-x-5 top-0 h-px bg-gradient-to-r from-transparent via-white/[0.14] to-transparent" />
               <div className="relative min-w-0">
@@ -2632,7 +2632,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
               role="dialog"
               aria-modal="true"
               aria-labelledby={previewTitleId}
-              className={`eterx-prompt-preview-dialog relative max-h-[82vh] w-[calc(100vw-32px)] overflow-hidden rounded-[20px] border border-white/[0.07] bg-[#1A1A19] shadow-[0_20px_70px_rgba(0,0,0,0.42)] sm:w-[calc(100vw-96px)] ${ isCompressed ? 'max-w-[720px]' : 'max-w-[920px]' }`}
+              className={`eterx-prompt-preview-dialog relative max-h-[82vh] w-[calc(100vw-32px)] overflow-hidden rounded-[20px] border border-white/[0.07] bg-[#1A1A19] shadow-none sm:w-[calc(100vw-96px)] ${ isCompressed ? 'max-w-[720px]' : 'max-w-[920px]' }`}
               initial={{ opacity: 0, y: 14, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 10, scale: 0.98 }}
@@ -2643,7 +2643,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                 ref={previewCloseButtonRef}
                 type="button"
                 onClick={() => setPreviewUserMessage(null)}
-                className="absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-[#242423]/90 text-[#B9B2A8] shadow-[0_8px_24px_rgba(0,0,0,0.30)] transition-colors duration-150 hover:bg-[#2C2C2A] hover:text-[#EFE9DF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                className="absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-[#242423]/90 text-[#B9B2A8] shadow-none transition-colors duration-150 hover:bg-[#2C2C2A] hover:text-[#EFE9DF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
                 aria-label="Close prompt preview"
               >
                 <Minimize2 className="h-4 w-4" strokeWidth={2.2} />

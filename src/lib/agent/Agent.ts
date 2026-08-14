@@ -3128,7 +3128,7 @@ export class GeminiAgentClient {
             messages: [
               {
                 role: 'system',
-                content: 'Write one natural user-facing work note for an action that is about to happen. Return only the finished note, never analysis or drafting.',
+                content: 'Write one brief user-facing work note in 3-4 plain words for the action about to happen. Return only the finished note, never analysis or drafting.',
               },
               { role: 'user', content: prompt },
             ],
@@ -3832,7 +3832,7 @@ export class GeminiAgentClient {
           const noteResponse: any = await client.messages.create({
             model: this.mistralModelName,
             max_tokens: 220,
-            system: 'Write one natural user-facing work note for an action that is about to happen. Return only the finished note, never analysis or drafting.',
+            system: 'Write one brief user-facing work note in 3-4 plain words for the action about to happen. Return only the finished note, never analysis or drafting.',
             messages: [{ role: 'user', content: prompt }],
           });
           return this.extractAnthropicContent(Array.isArray(noteResponse?.content) ? noteResponse.content : []);
@@ -3979,9 +3979,12 @@ export class GeminiAgentClient {
         .trim();
     }).filter(Boolean);
     if (labels.length === 0) return '';
-    const phrase = labels
+    const phrase = [labels[0] || 'continuing work']
       .map(label => label.charAt(0).toLowerCase() + label.slice(1).replace(/[.!?]+$/, ''))
-      .join(labels.length > 1 ? ' and ' : '');
+      .join(labels.length > 1 ? ' and ' : '')
+      .split(/\s+/)
+      .slice(0, 3)
+      .join(' ');
     const note = `I’m ${phrase}.`;
     const recentNotes = new Set((communicationContext.previousNotes || []).slice(-3).map(value => value.trim().toLowerCase()));
     return recentNotes.has(note.toLowerCase()) ? `I’m continuing with ${phrase}.` : note;
@@ -4225,7 +4228,7 @@ export class GeminiAgentClient {
           cleaned.properties = cleaned.properties || {};
           cleaned.properties.uiActionText = {
             type: 'string',
-            description: 'Precise 2-6 word timeline label. Plain words; no step numbers, brackets, code, or generic filler.'
+            description: 'Precise 2-4 word timeline label. Plain words; no step numbers, brackets, code, or generic filler.'
           };
           cleaned.properties.uiIcon = {
             type: 'string',
@@ -4863,7 +4866,7 @@ EXECUTION
 - Use decomposition/checkpoints only for genuinely complex work. Stop when complete, cancelled, runtime-limited, or blocked by required user input.
 
 TOOLS
-- Schemas are authoritative. Every call includes uiActionText (2-6 plain words) and uiIcon from: terminal, agent, image, clock, file_read, computer, file_create, file_edit, folder_read, folder_create, search, web_search, verification, connector.
+- Schemas are authoritative. Every call includes uiActionText (2-4 plain words) and uiIcon from: terminal, agent, image, clock, file_read, computer, file_create, file_edit, folder_read, folder_create, search, web_search, verification, connector.
 - Use workspace tools for files, web tools for current external facts, and sequential browser control with verification.
 - For inbox/sales/support/cross-channel work, call channel_agent first. Gateway/Channel Agent sends need no duplicate confirmation; draft-only profiles never send.
 - A request naming an external app is connector intent even without technical terms: discover live state, use ready connections, configure supplied values safely, or report the exact Channels path and missing authorization.
@@ -7512,7 +7515,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
             config: {
               maxOutputTokens: 350,
-              systemInstruction: 'Write one natural user-facing work note for an action that is about to happen. Return only the finished note, never analysis or drafting.',
+              systemInstruction: 'Write one brief user-facing work note in 3-4 plain words for the action about to happen. Return only the finished note, never analysis or drafting.',
               ...(thinkingConfig ? { thinkingConfig } : {}),
             },
           });

@@ -10,6 +10,7 @@ $ProgressPreference = 'SilentlyContinue'
 $script:Repository = 'harshilsoni5666/EterX-Agent'
 $script:ApiBase = "https://api.github.com/repos/$script:Repository"
 $script:StateRoot = Join-Path $env:LOCALAPPDATA 'EterX\Installer'
+$script:DownloadRoot = Join-Path $script:StateRoot 'downloads'
 $script:LogFile = Join-Path $script:StateRoot 'install.log'
 $script:TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("eterx-bootstrap-" + [guid]::NewGuid().ToString('N'))
 $script:LockPath = Join-Path $script:StateRoot 'install.lock'
@@ -84,61 +85,114 @@ function Get-LatestRelease {
     'User-Agent' = 'EterX-Bootstrap/2'
   }
   return Invoke-WithRetry {
-    Invoke-RestMethod -Uri "$script:ApiBase/releases/latest" -Headers $headers -MaximumRedirection 5
+    Invoke-RestMethod -Uri "$script:ApiBase/releases/latest" -Headers $headers -MaximumRedirection 5 -TimeoutSec 45
   } 'release lookup'
 }
 
 function Save-Download([string]$Url, [string]$Destination, [string]$Label) {
   Add-Type -AssemblyName System.Net.Http
-  $handler = [Net.Http.HttpClientHandler]::new()
-  $handler.AutomaticDecompression = [Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
-  $client = [Net.Http.HttpClient]::new($handler)
-  $client.DefaultRequestHeaders.UserAgent.ParseAdd('EterX-Bootstrap/2')
-  try {
-    Invoke-WithRetry {
-      if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force }
-      $response = $client.GetAsync($Url, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+  $part = "$Destination.part"
+  if ((Test-Path -LiteralPath $Destination) -and (Get-Item -LiteralPath $Destination).Length -gt 0) {
+    Write-Host "  Reusing cached $(Split-Path -Leaf $Destination); SHA-256 will be verified before installation." -ForegroundColor Cyan
+    Write-Log "Reusing cached download $(Split-Path -Leaf $Destination)"
+    return
+  }
+  Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+
+  for ($attempt = 1; $attempt -le 6; $attempt++) {
+    $handler = $null
+    $client = $null
+    $request = $null
+    $response = $null
+    $inputStream = $null
+    $outputStream = $null
+    $cancellation = $null
+    try {
+      [long]$existing = if (Test-Path -LiteralPath $part) { (Get-Item -LiteralPath $part).Length } else { 0 }
+      Write-Host ("`r  Connecting (attempt {0} of 6) - {1}" -f $attempt, $Label).PadRight(100) -NoNewline -ForegroundColor Cyan
+
+      $handler = [Net.Http.HttpClientHandler]::new()
+      $handler.AutomaticDecompression = [Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
+      $client = [Net.Http.HttpClient]::new($handler)
+      $client.Timeout = [TimeSpan]::FromMinutes(15)
+      $client.DefaultRequestHeaders.UserAgent.ParseAdd('EterX-Bootstrap/4')
+      $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, $Url)
+      if ($existing -gt 0) {
+        $null = $request.Headers.TryAddWithoutValidation('Range', "bytes=$existing-")
+      }
+      $cancellation = [Threading.CancellationTokenSource]::new([TimeSpan]::FromMinutes(15))
+      $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cancellation.Token).GetAwaiter().GetResult()
       $null = $response.EnsureSuccessStatusCode()
+      if ($existing -gt 0 -and $response.StatusCode -ne [Net.HttpStatusCode]::PartialContent) {
+        Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+        throw 'The release server did not accept a resumed download; restarting the file.'
+      }
+
       [long]$total = 0
       if ($null -ne $response.Content.Headers.ContentLength) {
-        $total = [long]$response.Content.Headers.ContentLength
+        $total = $existing + [long]$response.Content.Headers.ContentLength
       }
       $inputStream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
-      $outputStream = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-      try {
-        $buffer = New-Object byte[] 1048576
-        [long]$received = 0
-        $lastPercent = -1
-        while (($count = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-          $outputStream.Write($buffer, 0, $count)
-          $received += $count
-          if ($total -gt 0) {
-            $percent = [int][Math]::Min(100, [Math]::Floor($received * 100 / $total))
-            $receivedMb = [Math]::Round($received / 1MB, 1)
-            $totalMb = [Math]::Round($total / 1MB, 1)
-            if ($percent -ne $lastPercent) {
-              $barWidth = 30
-              $filled = [int][Math]::Floor($percent * $barWidth / 100)
-              $bar = ([string][char]0x2588 * $filled) + ([string][char]0x2591 * ($barWidth - $filled))
-              $status = "  [{0}] {1,3}%  {2} MB / {3} MB  {4}" -f $bar, $percent, $receivedMb, $totalMb, $Label
-              Write-Host ("`r" + $status.PadRight(100)) -NoNewline -ForegroundColor Cyan
-              $lastPercent = $percent
-            }
-          } else {
-            $receivedMb = [Math]::Round($received / 1MB, 1)
-            $status = "  Downloaded {0} MB  {1}" -f $receivedMb, $Label
-            Write-Host ("`r" + $status.PadRight(100)) -NoNewline -ForegroundColor Cyan
-          }
+      $fileMode = if ($existing -gt 0) { [IO.FileMode]::Append } else { [IO.FileMode]::Create }
+      $outputStream = [IO.File]::Open($part, $fileMode, [IO.FileAccess]::Write, [IO.FileShare]::None)
+      $buffer = New-Object byte[] 1048576
+      [long]$received = $existing
+      $lastPercent = -1
+      while ($true) {
+        $readTask = $inputStream.ReadAsync($buffer, 0, $buffer.Length, $cancellation.Token)
+        if (-not $readTask.Wait([TimeSpan]::FromSeconds(60))) {
+          $cancellation.Cancel()
+          throw 'The download connection made no progress for 60 seconds.'
         }
-        Write-Host ''
-      } finally {
-        $outputStream.Dispose()
-        $inputStream.Dispose()
+        $count = $readTask.GetAwaiter().GetResult()
+        if ($count -le 0) { break }
+        $outputStream.Write($buffer, 0, $count)
+        $received += $count
+        if ($total -gt 0) {
+          $percent = [int][Math]::Min(100, [Math]::Floor($received * 100 / $total))
+          if ($percent -ne $lastPercent) {
+            $barWidth = 30
+            $filled = [int][Math]::Floor($percent * $barWidth / 100)
+            $bar = ([string][char]0x2588 * $filled) + ([string][char]0x2591 * ($barWidth - $filled))
+            $status = "  [{0}] {1,3}%  {2} MB / {3} MB  {4}" -f $bar, $percent, [Math]::Round($received / 1MB, 1), [Math]::Round($total / 1MB, 1), $Label
+            Write-Host ("`r" + $status.PadRight(100)) -NoNewline -ForegroundColor Cyan
+            $lastPercent = $percent
+          }
+        } else {
+          $status = "  Downloaded {0} MB  {1}" -f [Math]::Round($received / 1MB, 1), $Label
+          Write-Host ("`r" + $status.PadRight(100)) -NoNewline -ForegroundColor Cyan
+        }
       }
-    } "download of $Label"
-  } finally {
-    $client.Dispose()
-    $handler.Dispose()
+      $outputStream.Flush()
+      $outputStream.Dispose()
+      $outputStream = $null
+      if (-not (Test-Path -LiteralPath $part) -or (Get-Item -LiteralPath $part).Length -le 0) {
+        throw 'The release server returned an empty file.'
+      }
+      Move-Item -LiteralPath $part -Destination $Destination -Force
+      Write-Host ''
+      return
+    } catch {
+      Write-Log "Download of $Label failed on attempt ${attempt}: $($_.Exception.Message)"
+      if ($attempt -eq 6) {
+        if (Test-Path -LiteralPath $part) {
+          Write-Host ''
+          Write-Host '  The partial download was saved. Run the installer again to resume it.' -ForegroundColor Yellow
+        }
+        throw
+      }
+      $delay = [Math]::Min(10, $attempt * 2)
+      Write-Host ("`r  Connection stalled; resuming in {0} seconds..." -f $delay).PadRight(100) -NoNewline -ForegroundColor Yellow
+      Start-Sleep -Seconds $delay
+    } finally {
+      if ($null -ne $outputStream) { $outputStream.Dispose() }
+      if ($null -ne $inputStream) { $inputStream.Dispose() }
+      if ($null -ne $response) { $response.Dispose() }
+      if ($null -ne $request) { $request.Dispose() }
+      if ($null -ne $cancellation) { $cancellation.Dispose() }
+      if ($null -ne $client) { $client.Dispose() }
+      if ($null -ne $handler) { $handler.Dispose() }
+    }
   }
 }
 
@@ -150,7 +204,11 @@ function Confirm-Checksum([string]$ArtifactPath, [string]$ChecksumsPath) {
   if (-not $line) { throw "The release checksum manifest does not contain $artifactName." }
   $expected = ($line -split '\s+')[0].ToLowerInvariant()
   $actual = (Get-FileHash -LiteralPath $ArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  if ($actual -ne $expected) { throw "Security verification failed for $artifactName." }
+  if ($actual -ne $expected) {
+    Remove-Item -LiteralPath $ArtifactPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "$ArtifactPath.part" -Force -ErrorAction SilentlyContinue
+    throw "Security verification failed for $artifactName. The cached copy was removed."
+  }
   Write-Log "Verified SHA-256 $actual for $artifactName"
 }
 
@@ -177,6 +235,7 @@ try {
   if (-not $env:LOCALAPPDATA) { throw 'Windows Local AppData is unavailable for this user.' }
   Acquire-InstallerLock
   New-Item -ItemType Directory -Force -Path $script:TempRoot | Out-Null
+  New-Item -ItemType Directory -Force -Path $script:DownloadRoot | Out-Null
 
   Write-Host ''
   Write-Host '  ETERX' -ForegroundColor White
@@ -193,7 +252,7 @@ try {
   if (-not $installerAsset) { throw "Release $($release.tag_name) has no Windows $architecture installer." }
   if (-not $checksumAsset) { throw "Release $($release.tag_name) has no SHA256SUMS.txt manifest." }
 
-  $installerPath = Join-Path $script:TempRoot $installerAsset.name
+  $installerPath = Join-Path $script:DownloadRoot $installerAsset.name
   $checksumPath = Join-Path $script:TempRoot 'SHA256SUMS.txt'
   Show-Stage 30 'Downloading the native application' "$($release.tag_name) | $($installerAsset.name)"
   Save-Download $installerAsset.browser_download_url $installerPath 'Downloading EterX'
@@ -225,6 +284,8 @@ try {
   }
 
   Show-Stage 100 'EterX is installed' 'Future updates are downloaded safely inside the app'
+  Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath "$installerPath.part" -Force -ErrorAction SilentlyContinue
   Write-Host ''
   Write-Host '  Your chats, settings, credentials, and workspaces are stored separately' -ForegroundColor Gray
   Write-Host '  in Local AppData and remain intact across updates.' -ForegroundColor Gray

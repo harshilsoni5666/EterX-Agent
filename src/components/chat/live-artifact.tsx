@@ -48,7 +48,7 @@ export const LiveArtifact: React.FC<LiveArtifactProps> = ({ html = '', css = '',
     <motion.div
       initial={{ opacity: 0, scale: 0.99 }}
       animate={{ opacity: 1, scale: 1 }}
-      className="my-4 w-full rounded-[20px] border border-white/10 bg-[#050505] overflow-hidden shadow-xl"
+      className="my-4 w-full rounded-[20px] border border-white/10 bg-[#050505] overflow-hidden shadow-none"
     >
       <div className="px-4 py-2.5 bg-white/5 border-b border-white/5 flex items-center justify-between">
         <div className="flex items-center gap-3">

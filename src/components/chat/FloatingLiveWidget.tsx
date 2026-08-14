@@ -350,7 +350,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
               background: 'rgba(255, 255, 255, 0.96)',
               backdropFilter: 'blur(24px) saturate(1.8)',
               WebkitBackdropFilter: 'blur(24px) saturate(1.8)',
-              boxShadow: '0 0 0 1px rgba(15, 23, 42, 0.08)',
+              boxShadow: 'none',
               whiteSpace: 'nowrap',
             }}
             onPointerDown={(e) => e.stopPropagation()}

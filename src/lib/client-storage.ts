@@ -163,7 +163,6 @@ export const appStorage = {
     if (
       memory.get(normalizedKey) === normalizedValue
       && !pendingRemovals.has(normalizedKey)
-      && !pendingMutations.has(normalizedKey)
     ) return;
     memory.set(normalizedKey, normalizedValue);
     pendingRemovals.delete(normalizedKey);
@@ -179,7 +178,6 @@ export const appStorage = {
       if (
         memory.get(normalizedKey) === normalizedValue
         && !pendingRemovals.has(normalizedKey)
-        && !pendingMutations.has(normalizedKey)
       ) return;
       memory.set(normalizedKey, normalizedValue);
       pendingRemovals.delete(normalizedKey);

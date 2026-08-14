@@ -250,7 +250,7 @@ const SubAgentAvatar = React.memo(({
 const TaskStatusGlyphMini = React.memo(({ status, active }: { status?: string; active?: boolean }) => {
   if (status === 'done') {
     return (
-      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-[#A9A9A9] text-[#1F1F1F] shadow-[inset_0_1px_0_rgba(255,255,255,0.28)]">
+      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-[#A9A9A9] text-[#1F1F1F] shadow-none">
         <Check className="h-2 w-2" strokeWidth={3.5} />
       </span>
     );
@@ -379,7 +379,7 @@ type ActiveView = 'chat' | 'agents' | 'channels' | 'projects';
           transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
           className="pointer-events-none fixed inset-x-0 top-0 z-[9999] flex justify-center px-4 pt-5"
         >
-          <div className="group pointer-events-auto relative flex min-h-[58px] w-full max-w-[520px] items-center gap-3 overflow-hidden rounded-[18px] border border-white/[0.12] bg-[#141414]/95 px-4 py-3 pr-12 text-[#F2F0EC] shadow-[0_18px_52px_rgba(0,0,0,0.48),inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-2xl">
+          <div className="group pointer-events-auto relative flex min-h-[58px] w-full max-w-[520px] items-center gap-3 overflow-hidden rounded-[18px] border border-white/[0.12] bg-[#141414]/95 px-4 py-3 pr-12 text-[#F2F0EC] shadow-none backdrop-blur-2xl">
             <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/[0.13] bg-white/[0.055]">
               {offline ? (
@@ -406,7 +406,7 @@ type ActiveView = 'chat' | 'agents' | 'channels' | 'projects';
               type="button"
               onClick={onDismiss}
               aria-label="Dismiss network status"
-              className="absolute right-2.5 top-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.09] bg-white/[0.055] text-white/70 opacity-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition-all duration-200 hover:bg-white/[0.11] hover:text-white focus:opacity-100 focus:outline-none group-hover:opacity-100"
+              className="absolute right-2.5 top-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.09] bg-white/[0.055] text-white/70 opacity-0 shadow-none transition-all duration-200 hover:bg-white/[0.11] hover:text-white focus:opacity-100 focus:outline-none group-hover:opacity-100"
             >
               <X className="h-3.5 w-3.5" strokeWidth={2.3} />
             </button>
@@ -678,7 +678,7 @@ const proxyManagerMarkdownComponents = {
   strong: ({ ...props }: any) => <strong className="font-bold text-white" {...props} />,
   em: ({ ...props }: any) => <em className="italic text-white/85" {...props} />,
   table: ({ ...props }: any) => (
-    <div className="eterx-markdown-table-wrap eterx-scrollbar my-3 w-full max-w-full overflow-x-auto rounded-xl border border-white/[0.10] bg-[#1E1E1E] shadow-sm">
+    <div className="eterx-markdown-table-wrap eterx-scrollbar my-3 w-full max-w-full overflow-x-auto rounded-xl border border-white/[0.10] bg-[#1E1E1E] shadow-none">
       <table className="eterx-markdown-table w-full min-w-full border-collapse text-left text-[12px]" {...props} />
     </div>
   ),
@@ -6094,19 +6094,17 @@ function DeepWorkUI() {
     }
   };
 
-  const schedulePendingTitleGeneration = (chatId: string) => {
+  const runPendingTitleGeneration = async (chatId: string) => {
     const pendingTitle = pendingTitleRequestsRef.current.get(chatId);
     if (!pendingTitle) return;
     pendingTitleRequestsRef.current.delete(chatId);
-    window.setTimeout(() => {
-      void generateTitle(
-        chatId,
-        pendingTitle.history,
-        pendingTitle.currentTitle,
-        pendingTitle.mode,
-        pendingTitle.selectedModel,
-      );
-    }, 500);
+    await generateTitle(
+      chatId,
+      pendingTitle.history,
+      pendingTitle.currentTitle,
+      pendingTitle.mode,
+      pendingTitle.selectedModel,
+    );
   };
 
   const mergeTaskPlanLog = (logs: any[], trace: any) => {
@@ -6738,11 +6736,12 @@ function DeepWorkUI() {
       // large streaming feed is non-urgent, so interaction work (typing,
       // scrolling, resizing and menus) can preempt superseded feed frames.
       chatsRef.current = committed;
+      // The active feed is the user's live surface. Commit it immediately so
+      // a continuous stream cannot starve it behind superseded transitions.
+      // Keep the heavier all-chat state update interruptible.
+      if (visibleChatLogs && activeChatIdRef.current) setTraceLogs(visibleChatLogs);
       startTransition(() => {
         setChats(committed);
-        // Reuse the exact processed history in the visible feed. Previously
-        // an active poll normalized and sorted the complete history twice.
-        if (visibleChatLogs && activeChatIdRef.current) setTraceLogs(visibleChatLogs);
       });
       debouncedSaveToFolder();
       return committed;
@@ -6800,10 +6799,9 @@ function DeepWorkUI() {
     queued.push({ apply: updater, touchUpdatedAt });
     backgroundChatUpdatesRef.current.set(chatId, queued);
     if (backgroundUpdateTimerRef.current === null) {
-      // Coalesce streaming bursts into one cross-chat React commit. A 72 ms
-      // paint batch stays visually live while avoiding repeated whole-page
-      // reconciliation for adjacent tokens and tool events.
-      backgroundUpdateTimerRef.current = window.setTimeout(flushBackgroundChatUpdates, 72);
+      // One short frame keeps adjacent trace events smooth without making the
+      // active feed wait for a large burst to finish.
+      backgroundUpdateTimerRef.current = window.setTimeout(flushBackgroundChatUpdates, 32);
     }
   };
 
@@ -7478,7 +7476,7 @@ function DeepWorkUI() {
             data.status === 'completed' ||
             data.status === 'failed' ||
             data.status === 'stopped';
-          if (isTerminalPollStatus && activeChatIdRef.current !== chatId) {
+          if (isTerminalPollStatus) {
             flushBackgroundChatUpdates();
           }
 
@@ -7514,7 +7512,6 @@ function DeepWorkUI() {
           // CRITICAL: Only stop on TERMINAL states, NOT 'idle'
           // 'idle' means agent hasn't started yet (race condition)
           if (data.status === 'failed') {
-            if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();
             // Show error trace so UI doesn't silently drop — this was causing the
             // 'UI gets off while running' appearance (agent failed, no feedback)
             const errMsg = data.finalAnswer || data.error || 'All API attempts exhausted or agent encountered a fatal error.';
@@ -7539,6 +7536,10 @@ function DeepWorkUI() {
               ];
             });
           }
+          // The final answer/failure row above is queued through the same
+          // lightweight commit path; flush it before a queued successor can
+          // hand control to the next turn.
+          if (isTerminalPollStatus) flushBackgroundChatUpdates();
           const hasQueuedSuccessor =
             data.status !== 'stopped' &&
             (Number(data.pendingProxyTaskCount || 0) > 0 || Number(data.pendingFollowUpCount || 0) > 0);
@@ -7559,7 +7560,9 @@ function DeepWorkUI() {
             return;
           }
           if (data.status === 'completed' || data.status === 'failed' || data.status === 'stopped') {
-            if (activeChatIdRef.current !== chatId) flushBackgroundChatUpdates();
+            // Flush traces and terminal fallback/status rows before cleanup or
+            // persistence can observe the previous live snapshot.
+            flushBackgroundChatUpdates();
             // Check if it's already stopped by a overlapping async fetch
             const shouldNotify = activePollersRef.current.has(chatId);
 
@@ -7610,11 +7613,6 @@ function DeepWorkUI() {
                 }
               }
             }
-
-            // Title generation uses the same provider credentials as agents.
-            // Run it only after execution ends so a cosmetic request never
-            // competes with Main or sub-agents for latency/quota.
-            schedulePendingTitleGeneration(chatId);
 
             // TRIGGER DESKTOP NOTIFICATION (Outside setState to prevent React.StrictMode double-firing!)
             if (shouldNotify && data.status === 'completed' && 'Notification' in window) {
@@ -8983,6 +8981,11 @@ function DeepWorkUI() {
       }
     }
 
+    // Generate the title before starting agent work so a new chat is named
+    // immediately. Naming is best-effort: a provider failure must not prevent
+    // the requested run from starting.
+    await runPendingTitleGeneration(chatIdToUse!);
+
     if (!runOptionsOverride?.backgroundChat) clearUnreadChat(chatIdToUse);
 
     if (!runOptionsOverride?.backgroundChat && window.innerWidth < 960) setSidebarOpen(false);
@@ -9037,7 +9040,6 @@ function DeepWorkUI() {
         let buffer = '';
         let streamCompleted = false;
         let streamAnswerText = '';
-
         const handleDirectEvent = (event: any) => {
           if (!event || typeof event !== 'object') return;
           if (event.type === 'trace' && event.data && typeof event.data === 'object') {
@@ -9053,7 +9055,11 @@ function DeepWorkUI() {
                 trace.isDelta === true,
               );
             }
-            setChatLogsById(chatIdToUse!, previousLogs => processServerTraces([trace], previousLogs, chatIdToUse!), { touchUpdatedAt: true });
+            setChatLogsById(
+              chatIdToUse!,
+              previousLogs => processServerTraces([trace], previousLogs, chatIdToUse!),
+              { touchUpdatedAt: true },
+            );
           } else if (event.type === 'error') {
             throw new Error(String(event.error || 'Chat stream failed.'));
           } else if (event.type === 'done') {
@@ -9062,17 +9068,21 @@ function DeepWorkUI() {
             // A provider should emit answer deltas, but retain a defensive
             // final answer for adapters that finish without text chunks.
             if (!streamAnswerText.trim() && finalText) {
-              setChatLogsById(chatIdToUse!, previousLogs => processServerTraces([{
-                type: 'answer',
-                answerId: `direct_answer_fallback_${ clientRunId }`,
-                text: finalText,
-                isDelta: true,
-                isStreaming: true,
-                isLiveTyping: true,
-                runId: clientRunId,
-                turnId: clientRunId,
-                timestamp: Date.now(),
-              }], previousLogs, chatIdToUse!), { touchUpdatedAt: true });
+              setChatLogsById(
+                chatIdToUse!,
+                previousLogs => processServerTraces([{
+                  type: 'answer',
+                  answerId: `direct_answer_fallback_${ clientRunId }`,
+                  text: finalText,
+                  isDelta: true,
+                  isStreaming: true,
+                  isLiveTyping: true,
+                  runId: clientRunId,
+                  turnId: clientRunId,
+                  timestamp: Date.now(),
+                }], previousLogs, chatIdToUse!),
+                { touchUpdatedAt: true },
+              );
             }
           }
         };
@@ -9101,7 +9111,6 @@ function DeepWorkUI() {
           if (dataLines.length) handleDirectEvent(JSON.parse(dataLines.join('\n')));
         }
         if (!streamCompleted) throw new Error('Chat stream ended before completion.');
-        schedulePendingTitleGeneration(chatIdToUse!);
         if (runOptionsOverride?.backgroundChat) {
           markChatUnreadIfBackground(chatIdToUse!, `direct:${clientRunId}:completed`);
         }
@@ -11784,7 +11793,7 @@ function DeepWorkUI() {
                   style={{
                     background: 'var(--eterx-dropdown-bg, var(--sidebar-bg, #F0EDE8))',
                     border: '1px solid var(--eterx-dropdown-border, var(--sidebar-border, rgba(0,0,0,0.1)))',
-                    boxShadow: '0 4px 16px rgba(0,0,0,0.12), 0 1px 4px rgba(0,0,0,0.06)',
+                    boxShadow: 'none',
                   }}
                 >
                   {([
@@ -11862,7 +11871,7 @@ function DeepWorkUI() {
                   style={{
                     background: 'var(--eterx-dropdown-bg, var(--sidebar-bg, #F0EDE8))',
                     border: '1px solid var(--eterx-dropdown-border, var(--sidebar-border, rgba(0,0,0,0.1)))',
-                    boxShadow: '0 4px 16px rgba(0,0,0,0.12), 0 1px 4px rgba(0,0,0,0.06)',
+                    boxShadow: 'none',
                   }}
                 >
                   <DropdownMenu.Item
@@ -11987,7 +11996,7 @@ function DeepWorkUI() {
               <span
                 aria-label="Update available"
                 className="absolute right-[3px] top-[6px] h-[6px] w-[6px] rounded-full bg-[#3B82F6]"
-                style={{ boxShadow: '0 0 0 2px var(--sidebar-bg, #111), 0 0 7px rgba(59, 130, 246, 0.6)' }}
+                style={{ boxShadow: 'none' }}
               />
             )}
           </button>
@@ -12072,7 +12081,7 @@ function DeepWorkUI() {
                         setBuildingAgentName(null);
                         setActiveView('agents');
                       }}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.05] border border-white/5 hover:border-white/10 hover:bg-white/[0.08] text-[#E8E6E3] hover:text-white transition-all rounded-lg group shadow-sm active:scale-95 mr-2"
+                      className="flex items-center gap-2 px-3 py-1.5 bg-white/[0.05] border border-white/5 hover:border-white/10 hover:bg-white/[0.08] text-[#E8E6E3] hover:text-white transition-all rounded-lg group shadow-none active:scale-95 mr-2"
                     >
                       <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
                       <span className="text-[13px] font-medium tracking-wide">Back to Agent-Room</span>
@@ -12101,7 +12110,7 @@ function DeepWorkUI() {
                     const headerLabel = activeView === 'projects' ? 'Tasks' : activeView === 'channels' ? (gatewayScreen ? 'Gateway' : 'Channels') : 'Agents';
                     return (
                       <div className="relative min-w-0 [-webkit-app-region:no-drag] pl-3.5 py-1">
-                        {activeView === 'channels' && gatewayScreen && <button type="button" aria-label="Back to Channels" onClick={() => window.dispatchEvent(new CustomEvent('eterx_gateway_back'))} className="group -ml-2 mr-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 bg-white text-black/75 shadow-sm transition hover:-translate-x-0.5 hover:bg-black/[0.04] hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1d8cff]/40 dark:border-white/10 dark:bg-white/[0.06] dark:text-white/85 dark:hover:bg-white/10"><ArrowLeft className="h-5 w-5 stroke-[2.5] transition-transform group-hover:-translate-x-0.5" /></button>}
+                        {activeView === 'channels' && gatewayScreen && <button type="button" aria-label="Back to Channels" onClick={() => window.dispatchEvent(new CustomEvent('eterx_gateway_back'))} className="group -ml-2 mr-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 bg-white text-black/75 shadow-none transition hover:-translate-x-0.5 hover:bg-black/[0.04] hover:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1d8cff]/40 dark:border-white/10 dark:bg-white/[0.06] dark:text-white/85 dark:hover:bg-white/10"><ArrowLeft className="h-5 w-5 stroke-[2.5] transition-transform group-hover:-translate-x-0.5" /></button>}
                         <span className={`eterx-view-header-label ${gatewayScreen && activeView === 'channels' ? 'text-[24px]' : 'text-[20px]'} font-bold text-white tracking-tight select-none`}>{headerLabel}</span>
                       </div>
                     );
@@ -12114,7 +12123,7 @@ function DeepWorkUI() {
                       : DEFAULT_CHAT_TITLE;
 
                   return (
-                    <div className="relative z-[70] min-w-0 overflow-visible [-webkit-app-region:no-drag]">
+                    <div className="absolute left-1/2 top-1/2 z-[70] min-w-0 -translate-x-1/2 -translate-y-1/2 overflow-visible [-webkit-app-region:no-drag]">
                       <div
                         data-open={headerMenuOpen ? 'true' : 'false'}
                         onClick={() => {
@@ -12123,7 +12132,7 @@ function DeepWorkUI() {
                             setHeaderMenuOpen(!headerMenuOpen);
                           }
                         }}
-                        className={`eterx-thread-tab flex min-w-0 items-center gap-1.5 pl-3.5 pr-1 py-1 text-[13px] font-medium transition-none ${ isEditingChatTitle ? 'cursor-default' : 'cursor-pointer' }`}
+                        className={`eterx-thread-tab eterx-new-chat-status-item flex min-w-0 items-center gap-1.5 px-1.5 py-1 text-[13px] font-medium transition-none ${ headerMenuOpen ? 'is-open' : '' } ${ isEditingChatTitle ? 'cursor-default' : 'cursor-pointer' }`}
                       >
                         {isEditingChatTitle ? (
                           <input
@@ -12154,22 +12163,7 @@ function DeepWorkUI() {
                         ) : (
                           <span className="truncate max-w-[400px] select-none text-[#E8E6E3]">{titleText}</span>
                         )}
-                        <div
-                          className="relative flex items-center justify-center w-[24px] h-[24px]"
-                        >
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (!isEditingChatTitle) {
-                                setChatActionMenuOpen(false);
-                                setHeaderMenuOpen(!headerMenuOpen);
-                              }
-                            }}
-                            className="w-[24px] h-[24px] flex items-center justify-center rounded-full text-white/70 transition-colors duration-100 ease-out hover:bg-white/[0.055] hover:text-white active:bg-white/[0.08]"
-                          >
-                            <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform duration-200 ${ headerMenuOpen ? 'rotate-180 text-white' : '' }`} strokeWidth={1.6} />
-                          </div>
-
+                        <div className="relative flex items-center justify-center">
                           <AnimatePresence>
                             {chatActionMenuOpen && (
                               <>
@@ -12180,7 +12174,7 @@ function DeepWorkUI() {
                                   exit={{ opacity: 0, y: -5, scale: 0.98 }}
                                   transition={{ duration: 0.15, ease: "easeOut" }}
                                   onClick={(e) => e.stopPropagation()}
-                                  className="eterx-chat-action-menu absolute right-0 top-[calc(100%+8px)] w-[180px] z-50 bg-[#1E1E1E]/95 backdrop-blur-xl border border-white/[0.08] rounded-xl shadow-[0_12px_36px_rgba(0,0,0,0.5)] p-1.5 flex flex-col gap-0.5"
+                                  className="eterx-chat-action-menu absolute right-0 top-[calc(100%+8px)] w-[180px] z-50 bg-[#1E1E1E]/95 backdrop-blur-xl border border-white/[0.08] rounded-xl shadow-none p-1.5 flex flex-col gap-0.5"
                                 >
                                   <button
                                     onClick={() => {
@@ -12250,7 +12244,7 @@ function DeepWorkUI() {
                               exit={{ opacity: 0, y: -5, scale: 0.98 }}
                               transition={{ duration: 0.15, ease: "easeOut" }}
                               onClick={(e) => e.stopPropagation()}
-                              className="eterx-thread-switcher absolute left-0 top-[calc(100%+8px)] w-[300px] z-[80] bg-[#1E1E1E]/95 backdrop-blur-xl border border-white/[0.08] rounded-xl shadow-[0_12px_36px_rgba(0,0,0,0.5)] p-1.5 flex flex-col max-h-[400px]"
+                              className="eterx-thread-switcher absolute left-1/2 top-[calc(100%+8px)] z-[80] flex max-h-[400px] w-[300px] -translate-x-1/2 flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 p-1.5 shadow-none backdrop-blur-xl"
                             >
                               <div className="flex items-center justify-between px-2.5 mb-2 mt-1 h-6">
                                 {!headerSearchOpen ? (
@@ -12307,7 +12301,7 @@ function DeepWorkUI() {
                                           loadChat(chat.id);
                                           setHeaderMenuOpen(false);
                                         }}
-                                        className={`eterx-thread-switcher-item w-full text-left px-2.5 py-1.5 text-[12px] rounded-md truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ isActive ? 'bg-white/[0.08] text-white font-medium shadow-sm' : 'text-[#A3A19E] hover:bg-white/[0.05] active:bg-white/10 hover:text-[#E8E6E3]' }`}
+                                        className={`eterx-thread-switcher-item w-full text-left px-2.5 py-1.5 text-[12px] rounded-md truncate transition-all duration-150 flex items-center group cursor-pointer border border-transparent active:scale-[0.98] ${ isActive ? 'bg-white/[0.08] text-white font-medium shadow-none' : 'text-[#A3A19E] hover:bg-white/[0.05] active:bg-white/10 hover:text-[#E8E6E3]' }`}
                                       >
                                         <MessageSquare className="w-3.5 h-3.5 mr-2.5 shrink-0 text-white/40 group-hover:text-white/60 transition-colors" strokeWidth={1.5} />
                                         <span className="min-w-0 flex-1 truncate font-normal">{chat.title}</span>
@@ -12386,7 +12380,7 @@ function DeepWorkUI() {
                           whileDrag={{
                             scale: 1.04,
                             zIndex: 99,
-                            boxShadow: "0 8px 30px rgba(0,0,0,0.6)",
+                            boxShadow: 'none',
                           }}
                           transition={{ type: "spring", stiffness: 500, damping: 40 }}
                           key={agentIdentity}
@@ -12461,7 +12455,7 @@ function DeepWorkUI() {
                         onClick={() => setOverflowDropdownOpen(!overflowDropdownOpen)}
                         className={`eterx-agent-tab eterx-agent-tab-overflow flex items-center gap-1.5 transition-all
                           ${ overflowDropdownOpen
-                            ? 'border-white/25 bg-white/12 text-white shadow-[0_4px_12px_rgba(255,255,255,0.15)]'
+                            ? 'border-white/25 bg-white/12 text-white shadow-none'
                             : 'border-white/12 bg-white/8 text-white/60'
                           }`}
                         title={`${ hiddenHeaderSubAgentCount } more agents`}
@@ -12473,7 +12467,7 @@ function DeepWorkUI() {
                       {overflowDropdownOpen && (
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setOverflowDropdownOpen(false)} />
-                          <div className="absolute right-0 top-[calc(100%+6px)] min-w-[170px] z-50 bg-[#000000]/95 backdrop-blur-xl border border-white/12 rounded-xl shadow-[0_12px_40px_rgba(0,0,0,0.8)] p-1.5 flex flex-col gap-0.5 pointer-events-auto">
+                          <div className="absolute right-0 top-[calc(100%+6px)] min-w-[170px] z-50 bg-[#000000]/95 backdrop-blur-xl border border-white/12 rounded-xl shadow-none p-1.5 flex flex-col gap-0.5 pointer-events-auto">
                             <div className="px-2.5 py-1 text-[9px] font-bold text-[#6A6460] uppercase tracking-wider select-none">
                               Hidden Agents
                             </div>
@@ -12525,7 +12519,7 @@ function DeepWorkUI() {
                     </button>
                     {/* Tooltip on hover */}
                     {!githubDropdownOpen && (
-                      <div className="absolute right-0 top-[calc(100%+8px)] hidden group-hover:block z-[90] bg-[#1E1E1E]/95 border border-white/[0.08] backdrop-blur-xl rounded-md px-2 py-1 text-[11px] font-semibold text-white/90 whitespace-nowrap shadow-lg select-none pointer-events-none">
+                      <div className="absolute right-0 top-[calc(100%+8px)] hidden group-hover:block z-[90] bg-[#1E1E1E]/95 border border-white/[0.08] backdrop-blur-xl rounded-md px-2 py-1 text-[11px] font-semibold text-white/90 whitespace-nowrap shadow-none select-none pointer-events-none">
                         Branch: {currentBranch}
                       </div>
                     )}
@@ -12539,7 +12533,7 @@ function DeepWorkUI() {
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 8, scale: 0.98 }}
                             transition={{ duration: 0.15, ease: "easeOut" }}
-                            className="absolute right-0 top-[calc(100%+10px)] z-50 flex w-[236px] flex-col rounded-xl border border-white/[0.08] bg-[#1A1A1A]/95 backdrop-blur-2xl p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.68),inset_0_1px_0_rgba(255,255,255,0.04)] text-[#F4F1EA]"
+                            className="absolute right-0 top-[calc(100%+10px)] z-50 flex w-[236px] flex-col rounded-xl border border-white/[0.08] bg-[#1A1A1A]/95 backdrop-blur-2xl p-1.5 shadow-none text-[#F4F1EA]"
                             onClick={(e) => e.stopPropagation()}
                             onMouseLeave={() => setHoveredSubmenu(null)}
                           >
@@ -12643,7 +12637,7 @@ function DeepWorkUI() {
                                   transition={{ duration: 0.15, ease: "easeOut" }}
                                   onMouseEnter={() => setHoveredSubmenu(hoveredSubmenu)}
                                   onMouseLeave={() => setHoveredSubmenu(null)}
-                                  className="absolute right-full mr-0.5 top-0 z-50 flex w-[245px] flex-col rounded-xl border border-white/[0.08] bg-[#1A1A1A]/95 backdrop-blur-2xl p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.68),inset_0_1px_0_rgba(255,255,255,0.04)] text-[#F4F1EA] pointer-events-auto"
+                                  className="absolute right-full mr-0.5 top-0 z-50 flex w-[245px] flex-col rounded-xl border border-white/[0.08] bg-[#1A1A1A]/95 backdrop-blur-2xl p-1.5 shadow-none text-[#F4F1EA] pointer-events-auto"
                                 >
                                   {hoveredSubmenu === 'branch' && (
                                     <>
@@ -12797,7 +12791,7 @@ function DeepWorkUI() {
                         e.stopPropagation();
                         setEnvDropdownOpen(!envDropdownOpen);
                       }}
-                      className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20 ${ envDropdownOpen ? 'border-white/10 bg-white/[0.12] text-white shadow-[0_2px_8px_rgba(0,0,0,0.25)]' : 'border-transparent bg-transparent text-[var(--sidebar-muted-text)] hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)]' }`}
+                      className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20 ${ envDropdownOpen ? 'border-white/10 bg-white/[0.12] text-white shadow-none' : 'border-transparent bg-transparent text-[var(--sidebar-muted-text)] hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)]' }`}
                     >
                       <ListTodo className="h-[17px] w-[17px]" strokeWidth={2.15} />
                     </button>
@@ -13049,7 +13043,7 @@ function DeepWorkUI() {
                   >
                     {autonomousSelected && activeChatId && (
                       <div className="eterx-proxy-dock pointer-events-none absolute right-6 top-1/2 z-[60] w-[224px] -translate-y-1/2 transition-all duration-300 ease-in-out">
-                        <div ref={proxyCardRef} className="eterx-proxy-card pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-[0_18px_44px_rgba(0,0,0,0.34),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl select-none">
+                        <div ref={proxyCardRef} className="eterx-proxy-card pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-none backdrop-blur-xl select-none">
                           {/* Professional Header */}
                           <div className="pt-1 pb-1 shrink-0 flex items-center justify-center w-full">
                             <span className="eterx-proxy-title text-[14px] font-semibold tracking-[0.02em] text-white/95 text-center">Proxy-Agent</span>
@@ -13108,7 +13102,7 @@ function DeepWorkUI() {
                                 </button>
                               </div>
                               {showProxyRuntimeModelMenu && (
-                                <div className="eterx-proxy-runtime-model-menu eterx-scrollbar absolute right-0 top-full z-[110] mt-1.5 w-[220px] max-h-[260px] overflow-y-auto rounded-2xl border border-white/[0.10] bg-[#252525] p-1.5 shadow-2xl">
+                                <div className="eterx-proxy-runtime-model-menu eterx-scrollbar absolute right-0 top-full z-[110] mt-1.5 w-[220px] max-h-[260px] overflow-y-auto rounded-2xl border border-white/[0.10] bg-[#252525] p-1.5 shadow-none">
                                   {proxyModelEntries.map(entry => {
                                     const optionKey = modelEntryKey(entry.provider, entry.modelId);
                                     const selected = proxyRuntimeModelSelection === optionKey;
@@ -13155,7 +13149,7 @@ function DeepWorkUI() {
 
                               {/* Pop-out Dropdown to the Left */}
                               <div className={`absolute right-full top-1/2 -translate-y-1/2 z-[110] w-[158px] pr-2 transition-all duration-200 ${ showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2' }`}>
-                                <div className="eterx-proxy-popout rounded-2xl border border-white/[0.08] bg-[#252525] shadow-2xl p-1.5 flex flex-col gap-1 w-full">
+                                <div className="eterx-proxy-popout rounded-2xl border border-white/[0.08] bg-[#252525] shadow-none p-1.5 flex flex-col gap-1 w-full">
                                   {(['minimal', 'normal', 'high'] as const).map((level) => {
                                     const isSelected = proxyIntervention === level;
                                     const subtitle = level === 'minimal' ? 'Observe more' : level === 'normal' ? 'Balanced' : 'Best Efforts';
@@ -13255,7 +13249,7 @@ function DeepWorkUI() {
                           return (
                             <div
                               ref={proxyChatWindowRef}
-                              className="eterx-proxy-chat-window pointer-events-auto fixed right-6 bottom-20 z-[9990] max-h-[calc(100vh-32px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.12] bg-[#171717] shadow-[0_20px_60px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.035)] flex flex-col transition-[box-shadow] duration-200"
+                              className="eterx-proxy-chat-window pointer-events-auto fixed right-6 bottom-20 z-[9990] max-h-[calc(100vh-32px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.12] bg-[#171717] shadow-none flex flex-col transition-[box-shadow] duration-200"
                               style={{
                                 width: proxyChatWindow.width,
                                 height: proxyChatWindow.height,
@@ -13325,7 +13319,7 @@ function DeepWorkUI() {
                                     >
                                       <div
                                         className={`eterx-proxy-message-bubble min-w-0 max-w-full [overflow-wrap:anywhere] text-[11.5px] leading-relaxed ${ msg.sender === 'user'
-                                            ? 'rounded-xl border border-white/[0.08] bg-[#242424] px-3 py-2 text-white/90 shadow-[0_5px_18px_rgba(0,0,0,0.16)] whitespace-pre-wrap'
+                                            ? 'rounded-xl border border-white/[0.08] bg-[#242424] px-3 py-2 text-white/90 shadow-none whitespace-pre-wrap'
                                             : 'rounded-none border-0 bg-transparent px-0 py-0 text-white/78'
                                           }`}
                                       >
@@ -13424,7 +13418,7 @@ function DeepWorkUI() {
                                       title="Drag up/down to adjust height (Double click to reset)"
                                       className="group absolute -top-2 inset-x-0 mx-auto w-16 h-3 flex items-center justify-center cursor-ns-resize z-30 select-none touch-none"
                                     >
-                                      <div className="w-9 h-1 rounded-full bg-white/20 group-hover:bg-white/60 group-active:bg-white/90 transition-colors shadow-sm" />
+                                      <div className="w-9 h-1 rounded-full bg-white/20 group-hover:bg-white/60 group-active:bg-white/90 transition-colors shadow-none" />
                                     </div>
 
                                     <input ref={proxyFileInputRef} type="file" multiple className="hidden" onChange={handleProxyFileSelect} />
@@ -13433,7 +13427,7 @@ function DeepWorkUI() {
                                     {(proxyAttachments.length > 0 || proxyPinnedItems.length > 0) && (
                                        <div className="flex items-center gap-2 px-1 pt-0.5 pb-1 overflow-x-auto overflow-y-hidden select-none whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                                          {proxyPinnedItems.map((pin, idx) => (
-                                           <div key={`proxy-pin-${idx}`} className="group relative inline-flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.12] bg-[#222222]/90 p-1 pr-2.5 shadow-sm backdrop-blur-md select-none mt-1">
+                                           <div key={`proxy-pin-${idx}`} className="group relative inline-flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.12] bg-[#222222]/90 p-1 pr-2.5 shadow-none backdrop-blur-md select-none mt-1">
                                              <div className="flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-lg bg-white/[0.08] border border-white/[0.06]">
                                                <img src="/icons/ui/pin.png" alt="Pin" className="h-3 w-3 object-contain eterx-popout-icon-img" />
                                              </div>
@@ -13443,7 +13437,7 @@ function DeepWorkUI() {
                                              <button
                                                type="button"
                                                onClick={() => setProxyPinnedItems(prev => prev.filter((_, i) => i !== idx))}
-                                               className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white text-black shadow-md transition-transform hover:scale-110 active:scale-95 z-10"
+                                               className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white text-black shadow-none transition-transform hover:scale-110 active:scale-95 z-10"
                                              >
                                                <X className="h-2 w-2 stroke-[3]" />
                                              </button>
@@ -13454,7 +13448,7 @@ function DeepWorkUI() {
                                            const fileName = att.name || att.file?.name || 'File';
                                            const ext = fileName.includes('.') ? fileName.split('.').pop()?.toUpperCase() : 'FILE';
                                            return (
-                                             <div key={`proxy-att-${att.id || idx}`} className="group relative inline-flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.12] bg-[#222222]/90 p-1 pr-2.5 shadow-sm backdrop-blur-md select-none mt-1">
+                                             <div key={`proxy-att-${att.id || idx}`} className="group relative inline-flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.12] bg-[#222222]/90 p-1 pr-2.5 shadow-none backdrop-blur-md select-none mt-1">
                                                {att.preview ? (
                                                  <img src={att.preview} alt={fileName} className="h-6.5 w-6.5 rounded-lg object-cover shrink-0 border border-white/10" />
                                                ) : (
@@ -13469,7 +13463,7 @@ function DeepWorkUI() {
                                                <button
                                                  type="button"
                                                  onClick={() => setProxyAttachments(prev => prev.filter((_, i) => i !== idx))}
-                                                 className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white text-black shadow-md transition-transform hover:scale-110 active:scale-95 z-10"
+                                                 className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white text-black shadow-none transition-transform hover:scale-110 active:scale-95 z-10"
                                                >
                                                  <X className="h-2 w-2 stroke-[3]" />
                                                </button>
@@ -13509,7 +13503,7 @@ function DeepWorkUI() {
 
                                       {/* + Dropdown Menu */}
                                       {showProxyAttachMenu && (
-                                        <div className="eterx-proxy-attach-menu absolute bottom-[calc(100%+8px)] left-0 z-[130] flex w-[136px] flex-col gap-0.5 rounded-xl border border-white/[0.10] bg-[#1E1E1E]/95 p-1 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.52)] backdrop-blur-2xl animate-in fade-in zoom-in-95 duration-150 select-none">
+                                        <div className="eterx-proxy-attach-menu absolute bottom-[calc(100%+8px)] left-0 z-[130] flex w-[136px] flex-col gap-0.5 rounded-xl border border-white/[0.10] bg-[#1E1E1E]/95 p-1 text-[#F4F1EA] shadow-none backdrop-blur-2xl animate-in fade-in zoom-in-95 duration-150 select-none">
                                           <button
                                             type="button"
                                             onClick={() => { setShowProxyAttachMenu(false); proxyPinInputRef.current?.click(); }}
@@ -13563,7 +13557,7 @@ function DeepWorkUI() {
 
                                         {/* Dropdown Menu */}
                                         {showProxyModelMenu && (
-                                          <div className="eterx-composer-popout eterx-scrollbar absolute bottom-[calc(100%+8px)] right-0 z-[130] flex max-h-[184px] w-[232px] max-w-[calc(100vw-24px)] flex-col overflow-y-auto rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 p-1 text-[#F4F1EA] shadow-[0_12px_36px_rgba(0,0,0,0.5)] backdrop-blur-xl">
+                                          <div className="eterx-composer-popout eterx-scrollbar absolute bottom-[calc(100%+8px)] right-0 z-[130] flex max-h-[184px] w-[232px] max-w-[calc(100vw-24px)] flex-col overflow-y-auto rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 p-1 text-[#F4F1EA] shadow-none backdrop-blur-xl">
                                             {allModelOptions.map((option) => {
                                               const isCurrent = option.optionKey === selectedModel?.optionKey;
                                               return (
@@ -13575,7 +13569,7 @@ function DeepWorkUI() {
                                                     setShowProxyModelMenu(false);
                                                   }}
                                                   className={`group flex min-h-[36px] w-full items-center gap-2 rounded-md px-2 py-1 text-left transition-colors ${ isCurrent
-                                                      ? 'eterx-proxy-model-item-active bg-white/[0.08] text-[#F4F1EA] font-normal shadow-sm'
+                                                      ? 'eterx-proxy-model-item-active bg-white/[0.08] text-[#F4F1EA] font-normal shadow-none'
                                                       : 'text-[#D0D0D0] hover:bg-white/[0.05] active:bg-white/[0.12]'
                                                     }`}
                                                   aria-pressed={isCurrent}
@@ -13659,7 +13653,7 @@ function DeepWorkUI() {
 
                     {activeSubAgentTab && (
                       <div className={`eterx-chat-auxiliary-stack px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto pb-2`}>
-                        <div className="flex min-h-[38px] flex-wrap items-center justify-between gap-2 rounded-[8px] border border-white/[0.07] bg-[#181818]/88 px-3 py-1.5 shadow-[0_8px_24px_rgba(0,0,0,0.18)]">
+                        <div className="flex min-h-[38px] flex-wrap items-center justify-between gap-2 rounded-[8px] border border-white/[0.07] bg-[#181818]/88 px-3 py-1.5 shadow-none">
                           <span className="flex min-w-0 items-center gap-2">
                             <MessageSquare className="h-3.5 w-3.5 shrink-0 text-white/48" strokeWidth={2.1} />
                             <span className="min-w-0 truncate text-[12px] font-semibold text-white/82">{activeSubAgentInfo?.name || activeSubAgentTab}</span>
@@ -13722,7 +13716,7 @@ function DeepWorkUI() {
 
                     {selectedSubAgentTerminal ? (
                       <div className={`w-full px-4 pb-3 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' }`}>
-                        <div className="mx-auto flex min-h-[58px] w-full max-w-[760px] items-center gap-3 rounded-[14px] border border-white/[0.075] bg-[#171717]/92 px-4 py-3 shadow-[0_8px_28px_rgba(0,0,0,0.20)]">
+                        <div className="mx-auto flex min-h-[58px] w-full max-w-[760px] items-center gap-3 rounded-[14px] border border-white/[0.075] bg-[#171717]/92 px-4 py-3 shadow-none">
                           <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${ selectedSubAgentStatus === 'completed' ? 'border-emerald-300/15 bg-emerald-400/[0.07] text-emerald-200/75' : selectedSubAgentStatus === 'closed' || selectedSubAgentStatus === 'cancelled' ? 'border-white/10 bg-white/[0.035] text-white/45' : 'border-red-300/15 bg-red-400/[0.06] text-red-200/75' }`}>
                             {selectedSubAgentStatus === 'completed' ? <CheckCircle2 className="h-4 w-4" /> : selectedSubAgentStatus === 'closed' || selectedSubAgentStatus === 'cancelled' ? <Power className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
                           </span>
@@ -13870,7 +13864,7 @@ function DeepWorkUI() {
                       className={`group relative z-30 flex h-full w-[16px] shrink-0 cursor-col-resize items-center justify-center outline-none transition-opacity duration-200 ${ isResizingPanels ? 'opacity-100' : 'opacity-60 hover:opacity-100 focus-visible:opacity-100' }`}
                     >
                       <span className="absolute inset-y-4 left-1/2 w-px -translate-x-1/2 rounded-full bg-white/[0.055] transition-colors duration-200 group-hover:bg-white/[0.14] group-focus-visible:bg-white/[0.18]" />
-                      <span className={`relative flex h-16 w-[9px] items-center justify-center rounded-full border shadow-[0_14px_30px_rgba(0,0,0,0.34)] transition-all duration-200 ${ isResizingPanels ? 'border-white/25 bg-[#303030]' : 'border-white/[0.08] bg-[#1D1D1D]/90 group-hover:border-white/[0.18] group-hover:bg-[#272727]' }`}>
+                      <span className={`relative flex h-16 w-[9px] items-center justify-center rounded-full border shadow-none transition-all duration-200 ${ isResizingPanels ? 'border-white/25 bg-[#303030]' : 'border-white/[0.08] bg-[#1D1D1D]/90 group-hover:border-white/[0.18] group-hover:bg-[#272727]' }`}>
                         <span className={`h-8 w-[2px] rounded-full transition-colors duration-200 ${ isResizingPanels ? 'bg-white/90' : 'bg-[#777] group-hover:bg-white/80 group-focus-visible:bg-white/90' }`} />
                       </span>
                     </button>

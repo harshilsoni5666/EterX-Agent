@@ -294,14 +294,16 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
         antialias: true,
         alpha: true,
         premultipliedAlpha: false,
-        powerPreference: 'high-performance',
+        // The orb is small and shader-bound; forcing the high-performance GPU
+        // wastes energy (especially on dual-GPU Macs) without improving it.
+        powerPreference: 'low-power',
       });
     } catch (error) {
       console.warn('[AbstractBall] WebGL unavailable; keeping the circular fallback.', error);
       return;
     }
     renderer.setClearColor(0x000000, 0);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.setSize(width, height, false);
     renderer.domElement.style.background = 'transparent';
     renderer.domElement.style.backgroundColor = 'transparent';
@@ -322,7 +324,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
 
     container.appendChild(renderer.domElement);
 
-    const geometry = new THREE.IcosahedronGeometry(11, 5);
+    const geometry = new THREE.IcosahedronGeometry(11, 4);
 
     const uniforms = {
       time: { value: 0.0 },
@@ -338,7 +340,8 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
 
     const material = new THREE.ShaderMaterial({
       uniforms,
-      side: THREE.DoubleSide,
+      // The orb is a closed surface, so back faces are never visible.
+      side: THREE.FrontSide,
       transparent: true,
       vertexShader: vertexShaderSource,
       fragmentShader: fragmentShaderSource,
@@ -355,6 +358,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     let firstFramePresented = false;
     let pageVisible = document.visibilityState !== 'hidden';
     let lastFrameTime: number | null = null;
+    let lastRenderedAt = 0;
     let appliedThemeId = orbTheme.id;
 
     const animate = (timestamp: number) => {
@@ -364,14 +368,23 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
         animationFrameId = requestAnimationFrame(animate);
         return;
       }
-      const deltaSeconds = lastFrameTime === null
-        ? 1 / 60
-        : Math.min(0.05, Math.max(0, (timestamp - lastFrameTime) / 1000));
-      lastFrameTime = timestamp;
       const p = propsRef.current;
       const curPerlinTime = p.perlinTime ?? 25.0;
       const curPerlinMorph = p.perlinMorph ?? 25.0;
       const state = p.liveState || 'idle';
+      // Idle animation remains fluid at 30 fps; voice and reasoning states
+      // immediately return to display-rate rendering. This removes half the
+      // idle shader work without reducing application or agent polling speed.
+      const minimumFrameInterval = state === 'idle' ? 1000 / 30 : 0;
+      if (minimumFrameInterval > 0 && timestamp - lastRenderedAt < minimumFrameInterval) {
+        animationFrameId = requestAnimationFrame(animate);
+        return;
+      }
+      lastRenderedAt = timestamp;
+      const deltaSeconds = lastFrameTime === null
+        ? 1 / 60
+        : Math.min(0.05, Math.max(0, (timestamp - lastFrameTime) / 1000));
+      lastFrameTime = timestamp;
       // Live transports report volume on a 0-100 scale. Shader multipliers are
       // designed for a normalized signal; feeding 60 directly made the orb run
       // nearly a hundred times faster during ordinary speech.
@@ -432,7 +445,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       if (disposed) return;
       const w = Math.max(1, container.clientWidth || 115);
       const h = Math.max(1, container.clientHeight || 115);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();

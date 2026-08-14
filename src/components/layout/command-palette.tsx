@@ -134,7 +134,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         role="dialog"
         aria-modal="true"
         aria-label="Search chats"
-        className="eterx-command-palette-dialog absolute left-1/2 top-1/2 flex max-h-[calc(100dvh-48px)] w-[calc(100%-48px)] max-w-[640px] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-white/[0.13] bg-[#252525]/[0.98] py-1 text-[#E8E6E3] shadow-[0_22px_64px_rgba(0,0,0,0.46)] backdrop-blur-[22px] pointer-events-auto dark:bg-[#252525]/[0.98]"
+        className="eterx-command-palette-dialog absolute left-1/2 top-1/2 flex max-h-[calc(100dvh-48px)] w-[calc(100%-48px)] max-w-[640px] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-white/[0.13] bg-[#252525]/[0.98] py-1 text-[#E8E6E3] shadow-none backdrop-blur-[22px] pointer-events-auto dark:bg-[#252525]/[0.98]"
       >
         <div className="shrink-0 px-[20px] pb-1 pt-[15px]">
           <div className="flex items-center gap-2">

@@ -157,7 +157,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             transition={{ type: 'spring', damping: 30, stiffness: 350 }}
             className="eterx-connectors-panel relative w-[780px] max-w-[95vw] h-[640px] max-h-[85vh] flex flex-col rounded-2xl overflow-hidden"
-            style={{ background: '#141414', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 40px 100px rgba(0,0,0,1)' }}
+            style={{ background: '#141414', border: '1px solid rgba(255,255,255,0.1)', boxShadow: 'none' }}
           >
             {/* Header */}
             <div className="eterx-connectors-header flex items-center justify-between px-7 pt-6 pb-4 border-b border-white/[0.07] shrink-0">
@@ -256,7 +256,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
             <AnimatePresence>
               {setupConnector && (
                 <motion.div className="absolute inset-0 z-10 flex items-center justify-center bg-black/70 p-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                  <motion.div className="w-full max-w-[460px] rounded-2xl border border-white/10 bg-[#1b1b1b] p-6 shadow-2xl" initial={{ scale: 0.96, y: 10 }} animate={{ scale: 1, y: 0 }}>
+                  <motion.div className="w-full max-w-[460px] rounded-2xl border border-white/10 bg-[#1b1b1b] p-6 shadow-none" initial={{ scale: 0.96, y: 10 }} animate={{ scale: 1, y: 0 }}>
                     <div className="flex items-start justify-between gap-4">
                       <div><h3 className="text-[18px] font-semibold text-white">Connect {setupConnector.name}</h3><p className="mt-1 text-[12px] leading-5 text-[#888]">Enter the API origin and credential. EterX verifies the connection before the agent can use it.</p></div>
                       <button type="button" onClick={() => setSetupConnector(null)} className="rounded-lg p-1 text-[#777] hover:bg-white/10 hover:text-white"><X className="h-4 w-4" /></button>

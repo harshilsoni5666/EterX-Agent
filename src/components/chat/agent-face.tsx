@@ -351,7 +351,7 @@ export const AgentFace = React.memo(({
                   : active
                     ? [faceScale, faceScale * 1.012, faceScale * 0.998, faceScale]
                     : [faceScale, faceScale, faceScale * 1.006, faceScale],
-            boxShadow: 'inset 0 2px 7px rgba(255,255,255,0.56), inset 0 -9px 16px rgba(6,24,54,0.47)'
+            boxShadow: 'none'
           }}
           transition={{
             rotate: { duration: motionProfile.duration + 0.8, repeat: Infinity, ease: 'easeInOut' },
@@ -361,7 +361,7 @@ export const AgentFace = React.memo(({
           style={{ background: faceGradient }}
         >
           <div className="pointer-events-none absolute inset-[1px] rounded-full border border-white/18" />
-          <div className="pointer-events-none absolute inset-[2.5px] rounded-full shadow-[inset_0_1.5px_3px_rgba(255,255,255,0.28),inset_0_-8px_12px_rgba(3,12,34,0.32)]" />
+          <div className="pointer-events-none absolute inset-[2.5px] rounded-full shadow-none" />
           <span className="pointer-events-none absolute left-[7px] top-[4px] h-[7px] w-[12px] rotate-[-18deg] rounded-full bg-white/42 blur-[2px]" />
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_74%_78%,rgba(4,13,38,0.52),transparent_44%)]" />
           <motion.span
@@ -442,14 +442,14 @@ export const AgentFace = React.memo(({
                   ? { duration: 0.32, times: [0, 0.42, 1], repeat: 0, ease: 'easeInOut' }
                   : { duration: blinkDuration, times: blinkTimes, repeat: Infinity, ease: 'easeInOut', delay: eye * 0.04 + profile.shine * 0.04 }
                 }
-                className="absolute top-0 overflow-hidden rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.68)] ring-[0.5px] ring-white/35"
+                className="absolute top-0 overflow-hidden rounded-full bg-white shadow-none ring-[0.5px] ring-white/35"
                 style={{
                   left: eyeLeft[eye],
                   top: eyeTop + (isSkeptical && eye === 1 ? 0.35 : 0),
                   width: eyeWidth + (isSurprised ? 0.4 : 0),
                   height: eyeHeight - (isSkeptical && eye === 1 ? 0.35 : 0),
                   background: eyeFill,
-                  boxShadow: '0 0 8px rgba(255,255,255,0.68)',
+                  boxShadow: 'none',
                   transformOrigin: isInputAttention ? '50% 82%' : '50% 50%',
                 }}
               >
@@ -488,7 +488,7 @@ export const AgentFace = React.memo(({
                 scale: [0.8, 1, 0.8]
               }}
               transition={{ duration: pace + spark * 0.45, repeat: Infinity, ease: 'easeInOut', delay: 0.45 + spark * 0.52 + profile.shine * 0.12 }}
-              className="absolute h-[2px] w-[2px] rounded-full bg-white/80 shadow-[0_0_5px_rgba(255,255,255,0.65)]"
+              className="absolute h-[2px] w-[2px] rounded-full bg-white/80 shadow-none"
               style={{ left: `${ 8 + spark * 7 }px`, top: `${ 7 + (spark % 2) * 3 }px` }}
             />
           ))}
@@ -509,7 +509,7 @@ export const AgentFace = React.memo(({
                       rotate: particle % 2 ? 90 : -90
                     }}
                     transition={{ duration: 0.9, ease: 'easeOut', delay: particle * 0.025 }}
-                    className="absolute h-[2.5px] w-[2.5px] rounded-full bg-white/85 shadow-[0_0_7px_rgba(255,255,255,0.7)]"
+                    className="absolute h-[2.5px] w-[2.5px] rounded-full bg-white/85 shadow-none"
                   />
                 );
               })}

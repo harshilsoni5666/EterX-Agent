@@ -182,3 +182,22 @@
   background: var(--eterx-sb-thumb-active) !important;
   background-clip: padding-box !important;
 }
+
+/* Flat UI pass: shadows are intentionally disabled across every surface.
+   This rule is last in the layout import order so theme files, Tailwind
+   utilities, hover states, portals, and inline motion styles cannot restore
+   a shadow on a card, dropdown, container, or chat-feed control. */
+html[data-theme][class][lang] body,
+html[data-theme][class][lang] body *,
+html[data-theme][class][lang] body *::before,
+html[data-theme][class][lang] body *::after {
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+/* A CSS filter is a separate shadow mechanism, so remove only drop-shadow
+   filters and leave non-shadow effects such as blur/brightness untouched. */
+:where([class*="drop-shadow"], [style*="drop-shadow"]) {
+  filter: none !important;
+  -webkit-filter: none !important;
+}

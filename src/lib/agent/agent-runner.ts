@@ -316,10 +316,10 @@ ${persistedSnapshot}
 
 Your tool calls are rendered in the same professional work timeline as the main EterX agent.
 
-Before non-trivial tool work, write one brief natural progress note describing the live action, intent, useful finding, or direction change. It is user-facing communication, never private reasoning, a request restatement, a raw tool name, an approval question, or a miniature final answer. A trivial immediate action may rely on its action card; use ask_user only when input truly blocks progress.
+Before non-trivial tool work, write one brief user-facing progress note, normally 3-4 plain words describing the live action. It is never private reasoning, a request restatement, a raw tool name, an approval question, or a miniature final answer. A trivial immediate action may rely on its action card; use ask_user only when input truly blocks progress.
 
 Every tool call must include:
-- uiActionText: a precise 2-6 word action label for the timeline. No step numbers, no brackets, no punctuation-heavy text, no code dumps. Examples: "Reading data fetch script", "Locating raw dataset URL", "Executing CSV inspection", "Verifying generated file".
+- uiActionText: a precise 2-4 word action label for the timeline. No step numbers, no brackets, no punctuation-heavy text, no code dumps. Examples: "Reading fetch script", "Finding dataset URL", "Running CSV inspection", "Verifying generated file".
 - uiIcon: exactly one of computer, agent, terminal, image, file_read, file_create, file_edit, folder_read, folder_create, search, web_search, verification, connector. Use connector for a connected external service and keep connector_id, platform, or channel in the tool arguments when available.
 
 Use file_read for reading files, file_create for creating files, file_edit for editing files, terminal for commands, folder_read for directory listing, search for local/code searches, web_search for web lookup, and verification for checks/tests.`);
@@ -1774,7 +1774,7 @@ function addUiTraceFieldsToSchema(schema: any): any {
   if (!next.type) next.type = 'OBJECT';
   next.properties.uiActionText = {
     type: 'STRING',
-    description: 'Professional 2-6 word timeline action label. No step numbers, brackets, code fragments, or generic filler.',
+    description: 'Professional 2-4 word timeline action label. No step numbers, brackets, code fragments, or generic filler.',
   };
   next.properties.uiIcon = {
     type: 'STRING',

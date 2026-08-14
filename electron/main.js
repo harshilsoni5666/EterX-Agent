@@ -2,7 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const net = require('net');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { pathToFileURL } = require('url');
 
 function logToFile(msg) {
@@ -640,6 +640,135 @@ async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1) {
   return false;
 }
 
+function getRunningMacApplicationBundle() {
+  if (process.platform !== 'darwin') return null;
+  const executable = app.getPath('exe');
+  const bundle = path.resolve(path.dirname(executable), '..', '..');
+  return bundle.endsWith('.app') ? bundle : null;
+}
+
+function macBundleHasDeveloperSignature(bundlePath) {
+  if (!bundlePath) return false;
+  try {
+    const result = spawnSync('/usr/bin/codesign', ['-dvv', bundlePath], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    const detail = `${result.stdout || ''}\n${result.stderr || ''}`;
+    return result.status === 0 && /(?:^|\n)Authority=(?:Developer ID Application|Apple Distribution|Mac App Distribution)/m.test(detail);
+  } catch {
+    return false;
+  }
+}
+
+function prepareUnsignedMacUpdateInstaller() {
+  const archivePath = desktopAutoUpdater?.downloadedUpdateHelper?.file
+    || desktopAutoUpdater?.installerPath
+    || null;
+  const targetBundle = getRunningMacApplicationBundle();
+  if (!archivePath || !fs.existsSync(archivePath)) {
+    throw new Error('The verified macOS update archive is no longer available. Download the update again.');
+  }
+  if (!targetBundle || !fs.existsSync(targetBundle)) {
+    throw new Error('The running EterX application bundle could not be located.');
+  }
+  try {
+    fs.accessSync(path.dirname(targetBundle), fs.constants.W_OK);
+  } catch {
+    throw new Error(`EterX cannot replace ${targetBundle} without administrator access. Install EterX in your user Applications folder first.`);
+  }
+
+  const updateRoot = path.join(app.getPath('userData'), 'updates');
+  const helperPath = path.join(updateRoot, 'install-macos-update.sh');
+  const installLog = path.join(app.getPath('userData'), 'update-install.log');
+  fs.mkdirSync(updateRoot, { recursive: true });
+  fs.writeFileSync(helperPath, `#!/bin/sh
+set -eu
+ARCHIVE="$1"
+TARGET="$2"
+APP_PID="$3"
+LOG_FILE="$4"
+exec >>"$LOG_FILE" 2>&1
+printf '[%s] Installing verified EterX update from %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$ARCHIVE"
+
+wait_count=0
+while kill -0 "$APP_PID" 2>/dev/null && [ "$wait_count" -lt 120 ]; do
+  sleep 0.25
+  wait_count=$((wait_count + 1))
+done
+
+TEMP_BASE="\${TMPDIR:-/tmp}"
+EXTRACT_ROOT="$(mktemp -d "$TEMP_BASE/eterx-update.XXXXXX")"
+STAGING="$TARGET.staging.$$"
+PREVIOUS="$TARGET.previous.$$"
+install_complete=0
+cleanup() {
+  rm -rf "$EXTRACT_ROOT" "$STAGING"
+  if [ "$install_complete" -ne 1 ]; then
+    if [ -d "$PREVIOUS" ]; then
+      rm -rf "$TARGET"
+      mv "$PREVIOUS" "$TARGET" || true
+      printf '[%s] Update failed; restored the previous application bundle.\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    fi
+    if [ -d "$TARGET" ]; then
+      /usr/bin/open "$TARGET" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+trap cleanup EXIT INT TERM HUP
+
+/usr/bin/ditto -x -k "$ARCHIVE" "$EXTRACT_ROOT"
+APP_SOURCE="$(find "$EXTRACT_ROOT" -type d -name 'EterX.app' -print | head -n 1)"
+[ -n "$APP_SOURCE" ] || { printf 'EterX.app is missing from the verified update archive.\\n'; exit 1; }
+rm -rf "$STAGING" "$PREVIOUS"
+/usr/bin/ditto "$APP_SOURCE" "$STAGING"
+[ -f "$STAGING/Contents/MacOS/EterX" ] || { printf 'The updated EterX executable is missing.\\n'; exit 1; }
+chmod 755 "$STAGING/Contents/MacOS/EterX"
+/usr/bin/xattr -dr com.apple.quarantine "$STAGING" 2>/dev/null || true
+[ ! -x /usr/bin/codesign ] || /usr/bin/codesign --force --deep --sign - "$STAGING" >/dev/null 2>&1 || true
+
+if [ -d "$TARGET" ]; then mv "$TARGET" "$PREVIOUS"; fi
+if ! mv "$STAGING" "$TARGET"; then
+  [ -d "$PREVIOUS" ] && mv "$PREVIOUS" "$TARGET"
+  printf 'Could not replace the EterX application bundle; the previous version was restored.\\n'
+  exit 1
+fi
+printf '[%s] Update installed; opening %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$TARGET"
+/usr/bin/open "$TARGET"
+sleep 6
+if ! pgrep -f "$TARGET/Contents/MacOS/EterX" >/dev/null 2>&1; then
+  printf '[%s] The replacement application exited during startup; rolling back.\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  exit 1
+fi
+install_complete=1
+rm -rf "$PREVIOUS"
+`, { encoding: 'utf8', mode: 0o700 });
+  fs.chmodSync(helperPath, 0o700);
+  return { helperPath, archivePath, targetBundle, installLog };
+}
+
+function launchUnsignedMacUpdateInstaller(prepared) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('/bin/sh', [
+      prepared.helperPath,
+      prepared.archivePath,
+      prepared.targetBundle,
+      String(process.pid),
+      prepared.installLog,
+    ], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
 // Electron does not provide Chromium's browser context menu automatically.
 // Keep editing and selection actions native so right-click behaves like the
 // host operating system in every renderer (including the Settings window).
@@ -971,11 +1100,10 @@ function initializeDesktopUpdates() {
     publishDesktopUpdateState({
       status: 'idle',
       supported: true,
-      automaticChecks: true,
+      automaticChecks: false,
       manualInstall: true,
-      message: 'Updates are checked silently while EterX is open',
+      message: 'Ready to check for updates',
     });
-    startAutomaticDesktopUpdateChecks({ immediate: true });
 
   } catch (error) {
     publishDesktopUpdateState({ status: 'error', message: describeDesktopUpdateError(error, 'Updater initialization') });
@@ -2827,9 +2955,9 @@ async function openPetWindow(status) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      // The hidden renderer owns durable gateway-to-agent dispatch. Keep its
-      // reconciliation and run pollers active while EterX is in the tray.
-      backgroundThrottling: false,
+      // This overlay is purely visual. Let Chromium suspend its WebGL frame
+      // loop whenever the window is hidden while keeping full speed onscreen.
+      backgroundThrottling: true,
       preload: path.join(__dirname, 'preload.js')
     }
   });
@@ -3104,8 +3232,6 @@ function createWindow() {
     }
   });
 
-  mainWindow.on('show', () => startAutomaticDesktopUpdateChecks({ immediate: true }));
-  mainWindow.on('restore', () => startAutomaticDesktopUpdateChecks({ immediate: true }));
   mainWindow.on('hide', stopAutomaticDesktopUpdateChecks);
   mainWindow.on('minimize', stopAutomaticDesktopUpdateChecks);
 
@@ -3465,6 +3591,26 @@ ipcMain.handle('desktop-update-install', async () => {
   if (desktopUpdateInstallPromise) return desktopUpdateInstallPromise;
 
   desktopUpdateInstallPromise = (async () => {
+    let unsignedMacInstaller = null;
+    if (process.platform === 'darwin') {
+      const runningBundle = getRunningMacApplicationBundle();
+      if (!macBundleHasDeveloperSignature(runningBundle)) {
+        try {
+          unsignedMacInstaller = prepareUnsignedMacUpdateInstaller();
+          logToFile('[update] The public macOS bundle is unsigned; using the verified atomic bundle-replacement installer.');
+        } catch (error) {
+          publishDesktopUpdateState({
+            status: 'error',
+            percent: 100,
+            bytesPerSecond: 0,
+            downloadReady: true,
+            message: describeDesktopUpdateError(error, 'Update installation'),
+          });
+          return false;
+        }
+      }
+    }
+
     publishDesktopUpdateState({
       status: 'installing',
       percent: 100,
@@ -3488,6 +3634,18 @@ ipcMain.handle('desktop-update-install', async () => {
     // avoids locked runtime files on Windows and a stale helper process on
     // macOS, while leaving AppData untouched.
     await stopPackagedServer(5000);
+    if (unsignedMacInstaller) {
+      try {
+        await launchUnsignedMacUpdateInstaller(unsignedMacInstaller);
+        logToFile(`[update] macOS update helper started; log: ${unsignedMacInstaller.installLog}`);
+        setTimeout(() => app.quit(), 100);
+        return true;
+      } catch (error) {
+        restoreDesktopRuntimeAfterInstallerFailure(error);
+        return false;
+      }
+    }
+
     setImmediate(() => {
       try {
         // Native updaters normally terminate Electron immediately. If a

@@ -196,7 +196,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
         style={{ background: 'linear-gradient(180deg,#1A1A1C 0%,#151517 100%)' }}
       >
         {/* Address bar */}
-        <div className="flex items-center flex-1 gap-1 min-w-0 bg-[#0D0D10] border border-white/[0.07] rounded-[8px] px-2.5 py-1.5 shadow-inner">
+        <div className="flex items-center flex-1 gap-1 min-w-0 bg-[#0D0D10] border border-white/[0.07] rounded-[8px] px-2.5 py-1.5 shadow-none">
           <Globe className="w-3 h-3 text-[#555350] shrink-0" />
           <div className="flex-1 min-w-0 truncate text-[11px] font-mono text-[#C8C6C3]">
             {currentUrl || 'Waiting for the controlled browser'}
@@ -284,7 +284,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
                 <img
                   src={`data:${frame!.screenshot!.startsWith('/9j/') ? 'image/jpeg' : 'image/png'};base64,${frame!.screenshot}`}
                   alt="Browser screenshot"
-                  className="max-w-none shadow-2xl"
+                  className="max-w-none shadow-none"
                   draggable={false}
                 />
               </div>

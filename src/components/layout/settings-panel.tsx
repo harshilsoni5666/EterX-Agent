@@ -1244,12 +1244,12 @@ const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void; disab
     disabled={disabled}
     onClick={() => !disabled && onChange(!enabled)}
     className={`relative w-[42px] h-[24px] rounded-full transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] shrink-0 ${ disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
-      } ${ enabled ? 'bg-[#2F8BEF] shadow-[0_0_10px_rgba(47,139,239,0.22)]' : 'bg-[#D7D7D2] hover:bg-[#C9C9C2] dark:bg-white/10 dark:hover:bg-white/15' }`}
+      } ${ enabled ? 'bg-[#2F8BEF] shadow-none' : 'bg-[#D7D7D2] hover:bg-[#C9C9C2] dark:bg-white/10 dark:hover:bg-white/15' }`}
   >
     <motion.div
       animate={{ x: enabled ? 20 : 2 }}
       transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-      className="absolute left-0 top-[3px] w-[18px] h-[18px] rounded-full bg-white shadow-md"
+      className="absolute left-0 top-[3px] w-[18px] h-[18px] rounded-full bg-white shadow-none"
     />
   </button>
 );
@@ -1283,7 +1283,7 @@ const InfoHint: React.FC<{ text: string; className?: string }> = ({ text, classN
     <span className="grid h-5 w-5 place-items-center rounded-full border border-white/[0.08] bg-white/[0.045] text-[#A7A7A7] transition-colors hover:border-white/[0.16] hover:bg-white/[0.08] hover:text-[#F1F1F1]">
       <Info className="h-3 w-3" strokeWidth={2.2} />
     </span>
-    <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-[80] w-[260px] -translate-x-1/2 rounded-xl border border-white/[0.10] bg-[#111111] px-3 py-2 text-[11.5px] font-medium leading-5 text-[#D6D6D6] opacity-0 shadow-[0_16px_42px_rgba(0,0,0,0.48)] transition-opacity duration-150 group-hover/info:opacity-100">
+    <span className="pointer-events-none absolute left-1/2 top-[calc(100%+8px)] z-[80] w-[260px] -translate-x-1/2 rounded-xl border border-white/[0.10] bg-[#111111] px-3 py-2 text-[11.5px] font-medium leading-5 text-[#D6D6D6] opacity-0 shadow-none transition-opacity duration-150 group-hover/info:opacity-100">
       {text}
     </span>
   </span>
@@ -1877,7 +1877,7 @@ const UserManualOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100001] flex items-start justify-center bg-black/55 px-3 pb-4 pt-12 backdrop-blur-md sm:px-6 sm:pb-6 sm:pt-14">
-      <motion.div initial={{ opacity: 0, y: 18, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.22 }} className="relative flex h-[min(860px,calc(100vh-72px))] w-[min(1180px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-white/[0.13] bg-[#151515] shadow-[0_24px_90px_rgba(0,0,0,0.72)]">
+      <motion.div initial={{ opacity: 0, y: 18, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.22 }} className="relative flex h-[min(860px,calc(100vh-72px))] w-[min(1180px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl border border-white/[0.13] bg-[#151515] shadow-none">
         <header className="flex shrink-0 items-center justify-between border-b border-white/[0.09] bg-[#1B1B1B]/95 px-5 py-4 backdrop-blur-xl sm:px-7">
           <div className="min-w-0"><div className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#76B9FF]">EterX-Agent documentation</div><h2 className="mt-1 truncate text-[19px] font-semibold tracking-[-0.02em] text-[#F4F4F4] sm:text-[21px]">Application Setup and Usage Guide</h2><p className="mt-1 hidden text-[12px] text-[#8F8F8F] sm:block">Everything you need to connect, configure, and operate the app.</p></div>
           <button type="button" onClick={onClose} className="ml-4 shrink-0 rounded-lg border border-white/[0.1] px-3 py-2 text-[12px] font-medium text-[#D8D8D8] transition-colors hover:bg-white/[0.07]">Close</button>
@@ -1944,13 +1944,13 @@ const ModernSelect: React.FC<{
         onBlur={() => window.setTimeout(() => {
           if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
         }, 0)}
-        className="flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+        className="flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
       >
         <span className="truncate">{selected?.label || placeholder}</span>
         <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[240px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1 shadow-xl text-neutral-900 dark:text-neutral-100">
+        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[240px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1 shadow-none text-neutral-900 dark:text-neutral-100">
           {searchable && (
             <div className="relative mb-1 shrink-0">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
@@ -2041,7 +2041,7 @@ const ProviderSelect: React.FC<{
         onBlur={() => window.setTimeout(() => {
           if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
         }, 0)}
-        className="flex h-9 w-full items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+        className="flex h-9 w-full items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
       >
         <span className="flex min-w-0 items-center gap-2">
           <ProviderMark provider={value} />
@@ -2052,7 +2052,7 @@ const ProviderSelect: React.FC<{
         </span>
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[280px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1.5 shadow-xl text-neutral-900 dark:text-neutral-100">
+        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[280px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1.5 shadow-none text-neutral-900 dark:text-neutral-100">
           {searchable && (
             <div className="relative mb-1 shrink-0">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
@@ -2136,7 +2136,7 @@ const ApiKeyRow: React.FC<{
         <div className="flex items-center gap-2.5 min-w-0">
           <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${
             rowStatus === 'ready'
-              ? 'bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.28)]'
+              ? 'bg-emerald-300 shadow-none'
               : rowStatus === 'error'
                 ? 'bg-red-400'
                 : 'bg-white/18'
@@ -4356,7 +4356,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: standalone ? 0 : 10, scale: standalone ? 1 : 0.98 }}
               transition={{ duration: 0.3, ease: [0.2, 0.8, 0.2, 1] }}
-              className={`eterx-settings-dialog ${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(640px,calc(100vh-40px))] w-[min(900px,calc(100vw-40px))] rounded-[12px] border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-[0_20px_60px_rgba(0,0,0,0.55)]`}
+              className={`eterx-settings-dialog ${ standalone ? 'h-screen w-screen rounded-none border-0' : 'h-[min(640px,calc(100vh-40px))] w-[min(900px,calc(100vw-40px))] rounded-[12px] border border-white/[0.08]' } relative overflow-hidden flex flex-col bg-[#151515] shadow-none`}
             >
               {/* Glass Background */}
               <div className="absolute inset-0 bg-[#151515]" />
@@ -4886,7 +4886,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             </div>
                           </div>
                           {hoveredToken && (
-                            <div className="pointer-events-none fixed z-[10000] w-max max-w-[220px] whitespace-nowrap rounded-xl border border-white/[0.12] bg-[#292929] px-2.5 py-2 text-[12px] text-[#F1F1F1] shadow-[0_8px_24px_rgba(0,0,0,0.38)]" style={{ left: Math.min(Math.max(8, hoveredToken.x + 10), window.innerWidth - 240), top: Math.max(8, hoveredToken.y - 48) }}>
+                            <div className="pointer-events-none fixed z-[10000] w-max max-w-[220px] whitespace-nowrap rounded-xl border border-white/[0.12] bg-[#292929] px-2.5 py-2 text-[12px] text-[#F1F1F1] shadow-none" style={{ left: Math.min(Math.max(8, hoveredToken.x + 10), window.innerWidth - 240), top: Math.max(8, hoveredToken.y - 48) }}>
                               {hoveredToken.model ? <div className="space-y-1">
                                 <div className="flex justify-between gap-6"><span className="text-[#999]">Processed</span><span className="font-semibold">{formatTokenMetric(hoveredToken.value)}</span></div>
                                 {hoveredToken.scope !== 'action' && <div className="flex justify-between gap-6"><span className="text-[#999]">Recent run</span><span className="font-semibold">{formatTokenMetric(hoveredToken.recentRunUsage || 0)}</span></div>}
@@ -5046,7 +5046,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     value: option.id,
                                     label: option.label,
                                     description: (() => {
-                                      if (option.source !== 'live') return option.source === 'selected' ? 'Current selection' : 'Saved selection';
+                                      // The model name already communicates the
+                                      // choice; avoid repeating selection state
+                                      // as a second line in every option.
+                                      if (option.source !== 'live') return '';
                                       const liveModel = selectedProviderDirectory?.models.find(model => model.id === option.id);
                                       const levels = getModelThinkingOptions(
                                         selectedConnectionProvider,
@@ -5915,7 +5918,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </SettingRow>
 
                           <SectionHeader title="Computer use" info="Control native apps and screens. Separate from browser control." />
-                          <div className="eterx-computer-control-plane mb-5 overflow-hidden rounded-2xl border border-white/[0.12] bg-gradient-to-br from-[#202832] via-[#1B2027] to-[#171A1E] shadow-[0_18px_50px_rgba(0,0,0,.22)]">
+                          <div className="eterx-computer-control-plane mb-5 overflow-hidden rounded-2xl border border-white/[0.12] bg-gradient-to-br from-[#202832] via-[#1B2027] to-[#171A1E] shadow-none">
                             <div className="p-5 sm:p-6">
                               <div className="eterx-computer-control-plane__header">
                                 <div className="flex min-w-0 items-start gap-3.5">
@@ -6177,7 +6180,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         <div>
                           <SectionHeader title="Profile" />
                           <div className="bg-white/[0.02] rounded-xl border border-white/[0.05] p-5 flex items-center gap-4 mb-4">
-                            <div className="w-14 h-14 rounded-full bg-[#2B2B2B] flex items-center justify-center text-[#E8E6E3] font-bold text-xl border border-white/10 shadow-inner shrink-0">
+                            <div className="w-14 h-14 rounded-full bg-[#2B2B2B] flex items-center justify-center text-[#E8E6E3] font-bold text-xl border border-white/10 shadow-none shrink-0">
                               {settings.userName?.charAt(0).toUpperCase() || 'U'}
                             </div>
                             <div className="flex-1 min-w-0">
@@ -6252,7 +6255,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 0.95, y: 10 }}
                       transition={{ duration: 0.2, ease: "easeOut" }}
-                      className={`w-full max-w-[340px] rounded-2xl border p-6 text-center shadow-[0_24px_48px_rgba(0,0,0,0.4)] ${
+                      className={`w-full max-w-[340px] rounded-2xl border p-6 text-center shadow-none ${
                         settings.theme === 'light'
                           ? 'border-black/5 bg-[#FDFDFD] text-[#1F1F1D]'
                           : 'border-white/10 bg-[#1A1A1A]/95 text-white'
@@ -6288,7 +6291,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             setHasChanges(false);
                             setShowResetConfirm(false);
                           }}
-                          className="flex-1 h-9 rounded-xl bg-[#E2765A] hover:bg-[#D66548] active:bg-[#C95438] text-white font-medium text-[13px] transition-colors shadow-sm"
+                          className="flex-1 h-9 rounded-xl bg-[#E2765A] hover:bg-[#D66548] active:bg-[#C95438] text-white font-medium text-[13px] transition-colors shadow-none"
                         >
                           Confirm
                         </button>
@@ -6359,7 +6362,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                 initial={{ opacity: 0, scale: 0.9, y: 10 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: 1.5, ease: "easeOut" }}
-                className="text-[45px] md:text-[80px] font-black italic tracking-tighter text-white drop-shadow-[0_0_40px_rgba(255,255,255,0.3)] uppercase leading-tight"
+                className="text-[45px] md:text-[80px] font-black italic tracking-tighter text-white drop-shadow-none uppercase leading-tight"
                 style={{ WebkitTextStroke: '1px black' }}
               >
                 {eggQuotes[eggQuoteIndex].line1}
@@ -6368,7 +6371,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.8, delay: 2.8, ease: "easeOut" }}
-                className="text-[25px] md:text-[40px] font-black text-[#FF1A1A] uppercase tracking-[0.2em] mt-4 drop-shadow-[0_10px_25px_rgba(255,0,0,1)] mix-blend-screen"
+                className="text-[25px] md:text-[40px] font-black text-[#FF1A1A] uppercase tracking-[0.2em] mt-4 drop-shadow-none mix-blend-screen"
                 style={{ textShadow: "0 0 15px red, 0 0 40px darkred, 0 0 60px black" }}
               >
                 {eggQuotes[eggQuoteIndex].line2}

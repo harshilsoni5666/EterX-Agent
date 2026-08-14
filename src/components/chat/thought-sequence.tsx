@@ -710,14 +710,24 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
         className="professional-thought eterx-thought-block w-full"
       >
-        <div className={`eterx-thought-card overflow-hidden rounded-[12px] border bg-[#151514]/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.028),0_2px_10px_rgba(0,0,0,0.14)] transition-colors ${ open ? 'border-white/[0.12]' : 'border-white/[0.065] hover:border-white/[0.11]' }`}>
+        <div className={`eterx-thought-card overflow-hidden rounded-[12px] border bg-[#151514]/70 shadow-none transition-colors ${ open ? 'border-white/[0.12]' : 'border-white/[0.065] hover:border-white/[0.11]' }`}>
           <button
             type="button"
             onClick={() => setOpen(value => !value)}
             aria-expanded={open}
             className="eterx-thought-toggle flex min-h-[33px] w-full items-center gap-2.5 px-3 py-1 text-left transition-colors hover:bg-white/[0.026] group"
           >
-            <Shimmer active={isLive} className="flex-1 text-[13.5px] font-medium text-[#7C776F]">
+            <Shimmer
+              active={isLive}
+              durationMs={2600}
+              angle={12}
+              spread="2.4ch"
+              baseColor="var(--eterx-ui-working-text)"
+              color="var(--eterx-ui-working-highlight)"
+              surfaceColor="var(--background)"
+              textColor="var(--eterx-ui-working-text)"
+              className="flex-1 text-[15px] font-normal tracking-[-0.01em] text-[var(--eterx-ui-working-text)]"
+            >
               {thinkLabel}
             </Shimmer>
             <ChevronRight className={`h-4 w-4 text-[#625C54] group-hover:text-[#A8A198] transition-all ${ open ? 'rotate-90' : '' }`} />
@@ -1034,9 +1044,9 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
   const executionLabel = [shellLabel, cwd, isRunning && pid ? `PID ${ pid }` : ''].filter(Boolean).join(' · ');
 
   const consolePanel = (
-    <div className={`eterx-terminal-console flex flex-col font-mono text-[#D8D1C8] ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#141413] shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)]' }`}>
+    <div className={`eterx-terminal-console flex flex-col font-mono text-[#D8D1C8] ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#141413] shadow-none' }`}>
       {/* Liquid Glass Command Container with Floating Overlapping Copy Button */}
-      <div className="eterx-terminal-console-command-card relative mx-3 mt-2.5 mb-1.5 overflow-hidden rounded-[10px] border border-white/[0.07] bg-white/[0.028] shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_2px_8px_rgba(0,0,0,0.12)] backdrop-blur-md p-2.5">
+      <div className="eterx-terminal-console-command-card relative mx-3 mt-2.5 mb-1.5 overflow-hidden rounded-[10px] border border-white/[0.07] bg-white/[0.028] shadow-none backdrop-blur-md p-2.5">
         {/* Floating Overlapping Copy Button */}
         <div className="absolute top-2 right-2 z-10">
           <IconCopyButton content={command} label="Copy command" />
@@ -1066,7 +1076,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
           </div>
         </div>
         {!atBottom && hasManyLines && (
-          <button type="button" aria-label="Scroll output to bottom" onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-[0_6px_18px_rgba(0,0,0,0.26)] transition-colors hover:bg-[#333331] hover:text-[#F0EAE0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20">
+          <button type="button" aria-label="Scroll output to bottom" onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-none transition-colors hover:bg-[#333331] hover:text-[#F0EAE0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20">
             <ChevronDown className="h-3.5 w-3.5" />
           </button>
         )}
@@ -1183,11 +1193,11 @@ const FileOperationSummaryPanel = ({
 
   return (
     <div>
-      <div className={`eterx-patch-summary-panel flex flex-col font-mono shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)] ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514]' }`}>
+      <div className={`eterx-patch-summary-panel flex flex-col font-mono shadow-none ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514]' }`}>
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-2 bg-white/[0.02] border-b border-white/[0.045] px-3 py-2">
           <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-            <span className={`h-2 w-2 rounded-full flex-shrink-0 ${ success ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : hasErrors ? 'bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.5)]' : 'bg-amber-400' }`} />
+            <span className={`h-2 w-2 rounded-full flex-shrink-0 ${ success ? 'bg-emerald-400 shadow-none' : hasErrors ? 'bg-red-400 shadow-none' : 'bg-amber-400' }`} />
             <span className="text-[12px] font-semibold text-[#C8C2BB]">
               {success ? `${ operationLabel } ${ totalFiles } file${ totalFiles !== 1 ? 's' : '' }` : hasErrors ? `${ rolledBack ? 'Changes rolled back' : 'File operation failed' } · ${ errors.length }` : 'No file changes'}
             </span>
@@ -1300,7 +1310,7 @@ const TrpCard = React.memo(({ icon, title, badge, children, flush = false }: {
   children: React.ReactNode;
   flush?: boolean;
 }) => (
-  <div className={`eterx-trp-card ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none text-[#D0C8C0]' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[11px] border border-white/[0.07] bg-[#151514] text-[#D0C8C0] shadow-[0_4px_16px_rgba(0,0,0,0.24)]' }`}>
+  <div className={`eterx-trp-card ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none text-[#D0C8C0]' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[11px] border border-white/[0.07] bg-[#151514] text-[#D0C8C0] shadow-none' }`}>
     {title && (
       <div className="eterx-trp-card-header flex items-center gap-2 border-b border-white/[0.045] bg-white/[0.02] px-3.5 py-2">
         {icon && <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#6A6460]">{icon}</span>}
@@ -1393,7 +1403,7 @@ const ObjectCard = React.memo(({ item, primaryKey, secondaryKey, metaKeys }: {
         <button
           type="button"
           onClick={() => setExpanded(!expanded)}
-          className="shrink-0 text-[10px] font-medium text-[#6B9AB8] hover:text-[#94C7E0] hover:bg-white/[0.04] transition-all px-1.5 py-0.5 rounded border border-white/[0.06] shadow-[0_1px_3px_rgba(0,0,0,0.1)]"
+          className="shrink-0 text-[10px] font-medium text-[#6B9AB8] hover:text-[#94C7E0] hover:bg-white/[0.04] transition-all px-1.5 py-0.5 rounded border border-white/[0.06] shadow-none"
         >
           {expanded ? 'Hide Details' : 'Show Details'}
         </button>
@@ -1831,7 +1841,7 @@ const InlineMissingDiffView = ({
   const parentPath = filepath ? filepath.replace(/\\/g, '/').split('/').slice(0, -1).slice(-3).join('/') : '';
   return (
     <div>
-      <div className={`overflow-hidden ${ flush ? 'border-t border-amber-400/[0.10] bg-transparent rounded-none' : 'mx-3 mb-2 mt-1.5 rounded-[12px] border border-amber-400/[0.12] bg-[#151514] shadow-[0_6px_18px_rgba(0,0,0,0.18)]' }`}>
+      <div className={`overflow-hidden ${ flush ? 'border-t border-amber-400/[0.10] bg-transparent rounded-none' : 'mx-3 mb-2 mt-1.5 rounded-[12px] border border-amber-400/[0.12] bg-[#151514] shadow-none' }`}>
         {!flush && (
           <div className="flex items-center justify-between gap-3 bg-white/[0.02] border-b border-white/[0.045] px-3 py-2">
             <span className="flex min-w-0 flex-col leading-tight">
@@ -1888,7 +1898,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
     }
   };
   const diffPanel = (
-    <div className={`eterx-inline-diff-panel flex flex-col font-mono text-[#D8D1C8] ${ full ? 'h-full rounded-none border-0 bg-[#151514]' : `${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514] shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)]' }` }`}>
+    <div className={`eterx-inline-diff-panel flex flex-col font-mono text-[#D8D1C8] ${ full ? 'h-full rounded-none border-0 bg-[#151514]' : `${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514] shadow-none' }` }`}>
       {/* Header (hidden when flush embedded in card) */}
       {!flush && (
         <div className="eterx-inline-diff-header flex items-center justify-between gap-3 bg-white/[0.02] border-b border-white/[0.045] px-3 py-1.5">
@@ -1962,7 +1972,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
             type="button"
             aria-label="Scroll diff to bottom"
             onClick={(e) => { e.stopPropagation(); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }}
-            className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-[0_6px_18px_rgba(0,0,0,0.26)] transition-colors hover:bg-[#333331] hover:text-[#F0EAE0]"
+            className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-none transition-colors hover:bg-[#333331] hover:text-[#F0EAE0]"
           ><ChevronDown className="h-3.5 w-3.5" /></button>
         )}
       </div>
@@ -2096,7 +2106,7 @@ const InlineCodeView = ({
     }
   };
   const codePanel = (
-    <div className={`eterx-inline-code-panel ${ created ? 'eterx-inline-code-panel-created' : '' } flex flex-col font-mono text-[#D8D1C8] ${ full ? 'h-full rounded-none border-0 bg-[#151514]' : `${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514] shadow-[0_6px_18px_rgba(0,0,0,0.20),inset_0_1px_0_rgba(255,255,255,0.026)]' }` }`}>
+    <div className={`eterx-inline-code-panel ${ created ? 'eterx-inline-code-panel-created' : '' } flex flex-col font-mono text-[#D8D1C8] ${ full ? 'h-full rounded-none border-0 bg-[#151514]' : `${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514] shadow-none' }` }`}>
       {/* Header (hidden when flush embedded in card) */}
       {!flush && (
         <div className="eterx-inline-code-header flex items-center justify-between gap-3 bg-white/[0.02] border-b border-white/[0.045] px-3 py-1.5">
@@ -2153,7 +2163,7 @@ const InlineCodeView = ({
             type="button"
             aria-label="Scroll file to bottom"
             onClick={(e) => { e.stopPropagation(); scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }); }}
-            className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-[0_6px_18px_rgba(0,0,0,0.26)] transition-colors hover:bg-[#333331] hover:text-[#F0EAE0]"
+            className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-none transition-colors hover:bg-[#333331] hover:text-[#F0EAE0]"
           ><ChevronDown className="h-3.5 w-3.5" /></button>
         )}
       </div>
@@ -2635,7 +2645,7 @@ const getStreamRowIdentity = (log: any, fallbackIndex: number) => {
   return primary ? `${ primary }:${ String(anchor) }` : String(anchor);
 };
 
-const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[12px] border border-white/[0.075] bg-[#151514]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.028),0_2px_10px_rgba(0,0,0,0.14)]";
+const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[12px] border border-white/[0.075] bg-[#151514]/60 shadow-none";
 const ACTION_ROW_DIVIDER_CLASS = "eterx-action-row-divider border-t border-white/[0.052]";
 
 const formatTerminalSourcePreview = (value: unknown) => {
@@ -2877,7 +2887,9 @@ const TerminalTraceCard = ({
   const durationLabel = formatTerminalMetaDuration(durationMs);
   
   const isTimer = isTimerAction(log, command);
-  const [isExpanded, setIsExpanded] = useState(() => isStreaming && Boolean(output));
+  // Terminal output is always opt-in. Streaming output must never expand the
+  // inline console or steal attention from the live action sequence.
+  const [isExpanded, setIsExpanded] = useState(false);
   const userSetExpansionRef = useRef(false);
   const commandIdentity = [
     log?.streamId ?? preview?.streamId
@@ -2895,10 +2907,6 @@ const TerminalTraceCard = ({
       setIsExpanded(false);
     }
   }, [commandIdentity]);
-
-  useEffect(() => {
-    if (isStreaming && output && !userSetExpansionRef.current) setIsExpanded(true);
-  }, [isStreaming, output]);
 
   // If this is a timer/schedule log, render an unopenable static status row with seconds/mins
   if (isTimer) {
@@ -3554,7 +3562,7 @@ const ActionChip = ({
           const { Icon: AI, color: ac } = agentEntry;
           return (
             <span
-              className={`eterx-action-icon flex h-[26px] w-[26px] items-center justify-center shrink-0 ${ connectorAction ? 'rounded-[8px] border border-white/[0.08] bg-white/[0.035] shadow-[0_2px_8px_rgba(0,0,0,0.16)]' : '' }`}
+              className={`eterx-action-icon flex h-[26px] w-[26px] items-center justify-center shrink-0 ${ connectorAction ? 'rounded-[8px] border border-white/[0.08] bg-white/[0.035] shadow-none' : '' }`}
               title={connectorAction ? `${ (connectorId || 'connected service').replace(/_/g, ' ') } connector` : undefined}
               data-connector={connectorId || (connectorAction ? 'connected-service' : undefined)}
             >
@@ -3590,7 +3598,7 @@ const ActionChip = ({
                   addedClassName="eterx-action-diff-added text-[#3EE06F]"
                   removedClassName="eterx-action-diff-removed text-[#FF6D63]"
                 />
-                <span className="eterx-action-diff-tooltip pointer-events-none absolute -top-8 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/[0.08] bg-[#222220]/96 px-2.5 py-1 text-[11px] font-medium text-[#E6DED4] opacity-0 shadow-[0_8px_22px_rgba(0,0,0,0.28)] backdrop-blur-xl transition-opacity duration-150 group-hover/diff:opacity-100">
+                <span className="eterx-action-diff-tooltip pointer-events-none absolute -top-8 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/[0.08] bg-[#222220]/96 px-2.5 py-1 text-[11px] font-medium text-[#E6DED4] opacity-0 shadow-none backdrop-blur-xl transition-opacity duration-150 group-hover/diff:opacity-100">
                   Open diff
                 </span>
               </button>
@@ -4223,7 +4231,17 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
 
   return (
     <div className="eterx-live-working-indicator flex h-6 w-fit max-w-full items-center pl-[22px]" role="status" aria-live="polite">
-      <Shimmer active className="min-w-0 truncate text-[13.5px] font-medium leading-none tracking-normal text-[var(--eterx-ui-working-text)]">
+      <Shimmer
+        active
+        durationMs={2600}
+        angle={12}
+        spread="2.4ch"
+        baseColor="var(--eterx-ui-working-text)"
+        color="var(--eterx-ui-working-highlight)"
+        surfaceColor="var(--background)"
+        textColor="var(--eterx-ui-working-text)"
+        className="min-w-0 truncate text-[15px] font-normal leading-none tracking-[-0.01em] text-[var(--eterx-ui-working-text)]"
+      >
         {displayLabel}
       </Shimmer>
     </div>
@@ -4461,7 +4479,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
       layout
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      className="w-full my-2.5 overflow-hidden rounded-[14px] border border-white/[0.07] bg-[#151514]/80 shadow-[0_8px_26px_rgba(0,0,0,0.22)] backdrop-blur-md"
+      className="w-full my-2.5 overflow-hidden rounded-[14px] border border-white/[0.07] bg-[#151514]/80 shadow-none backdrop-blur-md"
     >
       <div className="flex h-[42px] items-center justify-between px-4 border-b border-white/[0.052] bg-white/[0.018]">
         <div className="flex items-center gap-3 min-w-0">
@@ -4581,7 +4599,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
               <motion.div
                 animate={{ width: deviceWidths[device] }}
                 transition={{ type: 'spring', damping: 28, stiffness: 220 }}
-                className="overflow-hidden rounded-[10px] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.28)] border border-white/5 relative"
+                className="overflow-hidden rounded-[10px] bg-white shadow-none border border-white/5 relative"
                 style={{
                   height: device === 'mobile' ? '640px' : device === 'tablet' ? '540px' : '480px',
                   maxHeight: '70vh'
@@ -4869,7 +4887,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
           return <SubAgentCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
         }
         if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === segs.length - 1 && !seg.log.answeredWith} />;
-        if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ seg.idx }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === segs.length - 1} />;
+        if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ getActionIdentity(seg.log, seg.idx) }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === segs.length - 1} />;
         if (seg.kind === 'action_group' && prevSeg?.kind === 'note') return null;
 
         const firstIdx = seg.firstIdx ?? seg.lastIdx ?? i;

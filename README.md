@@ -22,6 +22,10 @@ Use exactly one command for the device you are installing on. The bootstrap
 detects the processor, downloads the matching published release, verifies its
 SHA-256 manifest, installs the compiled application, and removes its temporary
 files. End users do not need Node.js, npm, Git, or the source repository.
+Large downloads use no-progress timeouts, bounded retries, and a persistent
+per-user partial-download cache. If a connection stalls or Terminal closes,
+run the same command again; the installer resumes the matching release instead
+of starting the large package from zero.
 
 ### Windows (PowerShell)
 
@@ -46,7 +50,15 @@ curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect
 ```
 
 The default location is `~/Applications/EterX.app`. The same command supports
-Apple Silicon and Intel Macs; no second installer command is needed.
+Apple Silicon and Intel Macs; no second installer command is needed. EterX is
+installed with an atomic bundle swap. If macOS quarantines the unsigned public
+build, the installer shows a one-time native explanation and lets you either
+approve the verified EterX copy or use Apple's manual **Open Anyway** flow. It
+never reports a pending Gatekeeper approval as an application crash. An
+existing installation is restored if replacement or runtime startup genuinely
+fails. Diagnostics are written to
+`~/Library/Logs/EterX/install.log` and
+`~/Library/Application Support/EterX/eterx-desktop.log`.
 
 ### Linux (Terminal)
 
@@ -58,7 +70,9 @@ curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect
 
 The installer selects the matching x64 or ARM64 AppImage, places it under the
 per-user XDG data directory, and creates both an application-menu entry and
-`~/.local/bin/eterx`.
+`~/.local/bin/eterx`. The launcher uses native FUSE when available and falls
+back to AppImage extract-and-run mode on fresh systems that do not include
+`libfuse2`.
 
 The bootstrap accepts a release only after the SHA-256 manifest matches. A
 publisher-signature warning means the release was not code-signed; it is not a
@@ -69,9 +83,11 @@ checksum failure. Do not continue when the checksum verification itself fails.
 EterX never changes the installed application automatically. Open **Settings →
 Updates** and choose **Check for updates** when you want to look for a newer
 release; you can then review the version, download it, and choose **Restart and
-install**. This keeps updates fully user-controlled. Windows NSIS and macOS
-DMG/ZIP installations use the native updater; Linux installation and in-app
-updates use the matching x64 or ARM64 AppImage.
+install**. This keeps updates fully user-controlled. Windows uses the NSIS
+updater and Linux replaces the matching x64 or ARM64 AppImage. A Developer-ID
+signed macOS build uses the native macOS updater; the unsigned public build
+uses a verified, atomic bundle replacement with rollback so it can update from
+the default user Applications folder without requesting administrator access.
 
 Application binaries and user-owned data are independent:
 

@@ -261,7 +261,7 @@ export default function LiveOverlayPage() {
                   top: LIVE_ORB_CONTROL_TOP,
                   left: '50%',
                   background: 'rgba(255, 255, 255, 0.985)',
-                  boxShadow: '0 0 0 1px rgba(15, 23, 42, 0.08)',
+                  boxShadow: 'none',
                   whiteSpace: 'nowrap',
                   pointerEvents: 'auto',
                   WebkitAppRegion: 'no-drag',

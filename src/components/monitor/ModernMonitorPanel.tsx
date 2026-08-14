@@ -269,7 +269,7 @@ function EmptyState({
       <div className="flex h-full min-h-[320px] flex-col items-center justify-center px-6 text-center">
         <div className="relative mb-7 flex h-16 w-16 items-center justify-center">
           <Icon className="h-12 w-12 text-white/72" />
-          <span className="absolute h-[2px] w-16 rotate-[-36deg] rounded-full bg-white/80 shadow-[0_0_10px_rgba(255,255,255,0.26)]" />
+          <span className="absolute h-[2px] w-16 rotate-[-36deg] rounded-full bg-white/80 shadow-none" />
         </div>
         <p className="text-[15px] font-semibold text-white/72">{title}</p>
         <p className="mt-3 max-w-md text-[13px] leading-6 text-white/30">{detail}</p>
@@ -344,7 +344,7 @@ function ModeSwitcher({
             onClick={() => onChange(item.id)}
             className={`flex h-8 shrink-0 items-center gap-2 rounded-xl px-3 text-xs font-medium transition-all ${
               active
-                ? 'bg-white/[0.095] text-white shadow-[0_10px_24px_rgba(0,0,0,0.22)]'
+                ? 'bg-white/[0.095] text-white shadow-none'
                 : 'text-white/42 hover:bg-white/[0.055] hover:text-white/72'
             }`}
           >
@@ -399,7 +399,7 @@ function ComputerStage({
   const isLiveFrame = latestFrame?.type === 'live_frame';
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-white/[0.09] bg-[#111] shadow-[0_24px_70px_rgba(0,0,0,0.36)]">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[28px] border border-white/[0.09] bg-[#111] shadow-none">
       <div className="relative min-h-[540px] flex-1 overflow-hidden bg-black">
         {imageSrc ? (
           <motion.img
@@ -451,7 +451,7 @@ function ComputerStage({
 
         <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-white/[0.08]">
           <div
-            className="absolute inset-y-0 left-0 rounded-full bg-sky-500 shadow-[0_0_18px_rgba(14,165,233,0.42)] transition-[width] duration-200"
+            className="absolute inset-y-0 left-0 rounded-full bg-sky-500 shadow-none transition-[width] duration-200"
             style={{ width: connected ? '100%' : '14%' }}
           />
           {streaming && (
@@ -460,7 +460,7 @@ function ComputerStage({
         </div>
 
         <div className="flex items-center gap-2 rounded-full px-2.5 py-1 text-sm text-white/78">
-          <span className={`h-2.5 w-2.5 rounded-full ${connected ? 'bg-emerald-500 shadow-[0_0_12px_rgba(34,197,94,0.7)]' : 'bg-red-400'}`} />
+          <span className={`h-2.5 w-2.5 rounded-full ${connected ? 'bg-emerald-500 shadow-none' : 'bg-red-400'}`} />
           <span>{streaming ? 'live stream' : connected ? 'connected' : 'offline'}</span>
         </div>
       </div>
@@ -485,7 +485,7 @@ function BrowserStage({
   const current = screenshots[screenshotIndex] ?? null;
   const latestNav = navs[navs.length - 1];
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[20px] border border-white/[0.09] bg-[#111] shadow-[0_24px_70px_rgba(0,0,0,0.36)]">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[20px] border border-white/[0.09] bg-[#111] shadow-none">
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-white/[0.055] bg-[#171717] px-5">
         <p className="max-w-full truncate font-mono text-[13px] font-semibold text-white/43">
           {latestNav?.url ?? 'Browser'}
@@ -613,7 +613,7 @@ function ActivityCard({
   const title = event ? eventContent(event) : 'No tasks';
 
   return (
-    <div className="shrink-0 rounded-[15px] border border-white/[0.075] bg-white/[0.032] px-3.5 py-2 shadow-[0_12px_28px_rgba(0,0,0,0.18)]">
+    <div className="shrink-0 rounded-[15px] border border-white/[0.075] bg-white/[0.032] px-3.5 py-2 shadow-none">
       <button
         type="button"
         onClick={onToggleExpanded}
@@ -791,7 +791,7 @@ export function MonitorPanel({ isOpen, onClose, chatId, defaultWidth = 640 }: Mo
       animate={{ opacity: 1, x: 0, scale: 1 }}
       exit={{ opacity: 0, x: 36, scale: 0.992 }}
       transition={{ type: 'spring', damping: 34, stiffness: 310 }}
-      className="relative z-30 my-2 mr-3 flex h-[calc(100%-16px)] min-h-0 shrink-0 flex-col overflow-hidden rounded-[30px] border border-white/[0.09] bg-[#202020] shadow-[0_28px_90px_rgba(0,0,0,0.42)]"
+      className="relative z-30 my-2 mr-3 flex h-[calc(100%-16px)] min-h-0 shrink-0 flex-col overflow-hidden rounded-[30px] border border-white/[0.09] bg-[#202020] shadow-none"
       style={{ width: isFullscreen ? 'calc(100% - 24px)' : `${panelWidth}px`, minWidth: isFullscreen ? undefined : 460 }}
     >
       {!isFullscreen && (
