@@ -35,6 +35,7 @@ export type VideoProviderMeta = {
 
 export type VideoProviderKeyMap = Partial<Record<VideoProvider, string[]>>;
 export type VideoProviderModelMap = Partial<Record<VideoProvider, string>>;
+export type VideoProviderBaseURLMap = Partial<Record<VideoProvider, string>>;
 
 export type VideoSettings = {
   enabled: boolean;
@@ -42,6 +43,7 @@ export type VideoSettings = {
   fallbackProviders: VideoProvider[];
   modelByProvider: VideoProviderModelMap;
   apiKeys: VideoProviderKeyMap;
+  baseURLs: VideoProviderBaseURLMap;
 };
 
 export const VIDEO_PROVIDER_META: Record<VideoProvider, VideoProviderMeta> = {
@@ -222,6 +224,7 @@ export const DEFAULT_VIDEO_SETTINGS: VideoSettings = {
     VIDEO_PROVIDER_IDS.map(provider => [provider, VIDEO_PROVIDER_META[provider].defaultModel]),
   ) as VideoProviderModelMap,
   apiKeys: {},
+  baseURLs: {},
 };
 
 const isProvider = (value: unknown): value is VideoProvider =>
@@ -266,5 +269,18 @@ export const normalizeVideoSettings = (value: unknown): VideoSettings => {
       .map(id => [id, normalizeKeys(rawKeys[id])] as const)
       .filter(([, keys]) => keys.length > 0),
   ) as VideoProviderKeyMap;
-  return { enabled: source.enabled !== false, provider, fallbackProviders, modelByProvider, apiKeys };
+  const rawBaseURLs = source.baseURLs && typeof source.baseURLs === 'object' && !Array.isArray(source.baseURLs)
+    ? source.baseURLs as Record<string, unknown>
+    : {};
+  const baseURLs = Object.fromEntries(VIDEO_PROVIDER_IDS.map(id => {
+    const value = typeof rawBaseURLs[id] === 'string' ? rawBaseURLs[id].trim().replace(/\/+$/, '') : '';
+    if (!value || value.length > 2048 || /[\r\n\t]/.test(value)) return [id, ''] as const;
+    try {
+      const parsed = new URL(value);
+      return [id, parsed.protocol === 'http:' || parsed.protocol === 'https:' ? value : ''] as const;
+    } catch {
+      return [id, ''] as const;
+    }
+  }).filter(([, value]) => Boolean(value))) as VideoProviderBaseURLMap;
+  return { enabled: source.enabled !== false, provider, fallbackProviders, modelByProvider, apiKeys, baseURLs };
 };

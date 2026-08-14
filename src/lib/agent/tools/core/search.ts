@@ -16,7 +16,7 @@ Actions:
 - extract: retrieve readable content from a list of URLs.
 - crawl: retrieve readable content from a starting URL.
 - map: discover links from a starting URL.
-- research: run provider-native research when supported, otherwise return a live search result for the deep_research orchestrator.
+- research: run provider-native research when supported, otherwise perform a multi-angle, source-rich search in this same tool.
 
 Never invent current facts when this tool can verify them. Treat returned URLs and content as evidence, and cite the relevant sources in the final answer.`,
   category: 'research',

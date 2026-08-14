@@ -10,8 +10,9 @@ import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
 import { LocalFileLinkChip, decodeLocalFileHref } from './local-file-link';
-import { isInternalWorkNoteNoise, isTerminalWorkTrace, isTurnWorkActive, orderFeedTimelineLogs, shouldRenderContextCompactionEvent, shouldShowWorkflowSequence } from '../../lib/chat-feed-lifecycle';
+import { isInternalWorkNoteNoise, isTerminalWorkTrace, isTurnWorkActive, orderFeedTimelineLogs, shouldRenderContextCompactionEvent, shouldRenderProgressTrace, shouldShowWorkflowSequence } from '../../lib/chat-feed-lifecycle';
 import { shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
+import { isPrivateReasoningTrace } from '../../lib/agent/trace-visibility';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 import { buildFilePreviewUrl } from '../../lib/path-utils';
 
@@ -310,24 +311,30 @@ const UserMessageActions = React.memo(({ text, onEdit, timestamp }: { text: stri
 // chat feed whenever the user sends a live steering message while the
 // agent is running. Feels native to the conversation thread.
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-const SteeringFeedCard = React.memo(({ log, isCompressed = false, onEdit }: { log: any; isCompressed?: boolean; onEdit?: (text: string) => void }) => (
-  <motion.div
-    initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
-    animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
-    transition={{ type: 'spring', stiffness: 450, damping: 24 }}
-    className="flex justify-end w-full my-3 relative z-10 group/steer"
-  >
-    <div className={`eterx-steering-bubble bg-[#1F1F1F] px-4 py-3 rounded-[22px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-none leading-[1.5] whitespace-pre-wrap relative select-text flex flex-row items-end gap-3 ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}>
-      <UserMessageActions text={log.text} onEdit={onEdit} />
-      <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{log.text}</span>
+const SteeringFeedCard = React.memo(({ log, isCompressed = false, onEdit }: { log: any; isCompressed?: boolean; onEdit?: (text: string) => void }) => {
+  const isProxy = log?._autonomyProxy === true || log?.source === 'user_proxy' || log?.source === 'proxy_manager';
+  const text = String(log?.text || '').trim();
+  if (!text) return null;
 
-      {/* CornerDownLeft arrow representing steering entry */}
-      <div className="shrink-0 mb-1 select-none text-[#8F887E]">
-        <CornerDownLeft className="w-[17px] h-[17px]" strokeWidth={2.25} />
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: 12, y: 4 }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
+      transition={{ duration: 0.18, ease: 'easeOut' }}
+      className="group/steer relative z-10 my-1.5 flex w-full justify-end"
+    >
+      <div
+        className={`eterx-steering-bubble relative ml-auto flex items-end gap-2.5 rounded-[18px] rounded-tr-[7px] border px-4 py-2.5 text-[13.5px] leading-[1.5] text-[#F4F2EE] shadow-none ${ isProxy ? 'border-[#34383D] bg-[#16181A]' : 'border-white/[0.065] bg-[#20201F]' } ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}
+        data-proxy={isProxy ? 'true' : undefined}
+        aria-label={isProxy ? 'Proxy guidance' : 'Guidance sent to the running agent'}
+      >
+        <UserMessageActions text={text} onEdit={isProxy ? undefined : onEdit} />
+        <span className="min-w-0 whitespace-pre-wrap break-words text-left [overflow-wrap:anywhere]">{text}</span>
+        <CornerDownLeft className="mb-0.5 h-4 w-4 shrink-0 select-none text-[#8F887E]" strokeWidth={2.15} aria-hidden="true" />
       </div>
-    </div>
-  </motion.div>
-));
+    </motion.div>
+  );
+});
 
 const liveMotionStyles = `
   @keyframes blink { 0%,100%{opacity:0.7} 50%{opacity:0} }
@@ -338,13 +345,21 @@ const liveMotionStyles = `
     38% { transform: translateY(-2px) scale(1.08); opacity: .95; box-shadow: 0 0 9px rgba(190,190,186,.34); }
   }
   .eterx-live-dot { animation: eterx-live-dot 1.45s ease-in-out infinite; }
+  @keyframes eterx-working-dot {
+    0%, 62%, 100% { transform: translateY(0) scale(.82); opacity: .28; }
+    18% { transform: translateY(-2px) scale(1); opacity: .92; }
+    36% { transform: translateY(0) scale(.88); opacity: .48; }
+  }
+  .eterx-working-dot { animation: eterx-working-dot 1.2s ease-in-out infinite; }
+  .eterx-working-dot:nth-child(2) { animation-delay: 140ms; }
+  .eterx-working-dot:nth-child(3) { animation-delay: 280ms; }
   @keyframes eterx-turns-wave {
     0%,100% { opacity: 0.35; transform: scaleX(1); }
     50% { opacity: 1; transform: scaleX(1.22); }
   }
   .eterx-turns-wave { animation: eterx-turns-wave 1.4s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) {
-    .eterx-live-dot, .eterx-turns-wave { animation: none; opacity: .75; }
+    .eterx-live-dot, .eterx-turns-wave, .eterx-working-dot { animation: none; opacity: .62; transform: none; }
   }
 `;
 
@@ -364,6 +379,12 @@ const chatFeedSurfaceStyles = `
   .eterx-chat-feed-scroll,
   .eterx-chat-feed-content {
     background: var(--eterx-chat-feed-bg);
+  }
+  .eterx-chat-feed[data-agent-builder="true"][data-compressed="false"] .eterx-agent-builder-feed-content {
+    max-width: min(760px, 100%) !important;
+  }
+  .eterx-chat-feed[data-agent-builder="true"] .eterx-thinking-process-stack {
+    gap: 10px;
   }
   .eterx-chat-feed-empty {
     --eterx-chat-feed-bg: transparent;
@@ -465,6 +486,7 @@ const chatFeedSurfaceStyles = `
 const WORKFLOW_COUNT_TYPES = new Set([
   'command',
   'tool_call',
+  'tool_call',
   'exploration',
   'file_edit',
   'communication',
@@ -509,6 +531,15 @@ const USER_QUERY_PREVIEW_LINES = 8;
 const MAX_TURN_NAV_ITEMS = 80;
 const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
 
+function normalizeTraceText(value: any) {
+  return String(value || '')
+    .replace(/<\/?thought>/gi, '')
+    .replace(/^[\s*_`~]+|[\s*_`~]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 const normalizeInternalUserActionLogs = (logs: any[]) => {
   const visibleRunIds = new Set(
     logs
@@ -522,6 +553,17 @@ const normalizeInternalUserActionLogs = (logs: any[]) => {
       next.push(log);
       return next;
     }
+    const source = String(log.source || '').trim().toLowerCase();
+    const steeringIds = [log.steeringId, ...(Array.isArray(log.steeringIds) ? log.steeringIds : [])]
+      .map(value => String(value || '').trim())
+      .filter(Boolean);
+    const isInjectedProxyBoundary =
+      (source === 'user_proxy' || source === 'proxy_manager') && steeringIds.length > 0;
+    // A steer is already represented by steering_received. Its internal
+    // context-injection boundary must never become a second user bubble or a
+    // new visual turn, even if the acknowledgement and boundary poll in on
+    // different frames.
+    if (isInjectedProxyBoundary) return next;
     const rawText = String(log.text || '');
     const match = rawText.match(AGENT_BUILDER_INTERNAL_REQUEST_PATTERN);
     if (!match) {
@@ -534,13 +576,6 @@ const normalizeInternalUserActionLogs = (logs: any[]) => {
     return next;
   }, []);
 };
-
-const normalizeTraceText = (value: any) => String(value || '')
-  .replace(/<\/?thought>/gi, '')
-  .replace(/^[\s*_`~]+|[\s*_`~]+$/g, '')
-  .replace(/\s+/g, ' ')
-  .trim()
-  .toLowerCase();
 
 const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
   const previousText = String(previous?.text || '');
@@ -589,6 +624,8 @@ const dedupeFeedLogs = (logs: any[]) => {
   const deduped: any[] = [];
   const stableIndexes = new Map<string, number>();
   const userBoundaryIndexes = new Map<string, number>();
+  const liveUserTextIndexes = new Map<string, number>();
+  const steeringIndexes = new Map<string, number>();
   let semanticIndexes = new Map<string, number>();
 
   logs.forEach((log: any) => {
@@ -607,10 +644,31 @@ const dedupeFeedLogs = (logs: any[]) => {
     }
 
     if (log.type === 'user_action') {
+      const normalizedUserText = normalizeTraceText(log.text);
+      const source = String(log.source || 'human').trim().toLowerCase();
+      const liveUserKey = `${ source }::${ normalizedUserText }`;
+      const priorLiveIndex = liveUserTextIndexes.get(liveUserKey);
+      if (normalizedUserText && priorLiveIndex !== undefined) {
+        const priorBoundary = deduped[priorLiveIndex];
+        const logsBetween = deduped.slice(priorLiveIndex + 1);
+        const hasAssistantResponseBetween = logsBetween.some(candidate =>
+          candidate?.type === 'answer' ||
+          ['command', 'tool_call', 'exploration', 'file_edit', 'browser'].includes(candidate?.type)
+        );
+        const priorAt = Number(priorBoundary?.startTime || priorBoundary?.timestamp || 0);
+        const incomingAt = Number(log?.startTime || log?.timestamp || 0);
+        const closeInTime = priorAt > 0 && incomingAt > 0 && Math.abs(incomingAt - priorAt) <= 15_000;
+        const isLiveReconciliation = Boolean(priorBoundary?.isLive || log?.isLive) && !hasAssistantResponseBetween;
+        if (!hasAssistantResponseBetween && (closeInTime || isLiveReconciliation)) {
+          deduped[priorLiveIndex] = mergeDuplicateFeedLog(priorBoundary, log);
+          if (stableKey) stableIndexes.set(stableKey, priorLiveIndex);
+          return;
+        }
+      }
       const userBoundaryKey = [
         runId,
-        String(log.source || 'human').trim().toLowerCase(),
-        normalizeTraceText(log.text),
+        source,
+        normalizedUserText,
       ].join('::');
       const priorBoundaryIndex = userBoundaryIndexes.get(userBoundaryKey);
       if (priorBoundaryIndex !== undefined) {
@@ -635,6 +693,21 @@ const dedupeFeedLogs = (logs: any[]) => {
       }
       semanticIndexes = new Map();
       userBoundaryIndexes.set(userBoundaryKey, deduped.length);
+      if (normalizedUserText) liveUserTextIndexes.set(liveUserKey, deduped.length);
+    }
+
+    if (log.type === 'steering_received') {
+      const steeringId = String(log.steeringId || '').trim();
+      const steeringKey = steeringId
+        ? `${ runId }::id::${ steeringId }`
+        : `${ runId }::legacy::${ String(log.source || 'user') }::${ normalizeTraceText(log.text) }`;
+      const priorSteeringIndex = steeringIndexes.get(steeringKey);
+      if (priorSteeringIndex !== undefined) {
+        deduped[priorSteeringIndex] = mergeDuplicateFeedLog(deduped[priorSteeringIndex], log);
+        if (stableKey) stableIndexes.set(stableKey, priorSteeringIndex);
+        return;
+      }
+      steeringIndexes.set(steeringKey, deduped.length);
     }
 
     const normalizedText = normalizeTraceText(log.text || log.question || log.secondary);
@@ -656,10 +729,16 @@ const dedupeFeedLogs = (logs: any[]) => {
         ''
       ).trim();
       semanticKey = `narrative::${ identityScope }::${ owner }::${ normalizedText }::${ narrativeAnchor }`;
+    } else if (normalizedText && log.type === 'progress') {
+      // Retry transports can publish the same durable notice more than once.
+      // Preserve distinct messages, but collapse exact repeats within a turn.
+      semanticKey = `progress::${ identityScope }::${ normalizedText }::${ normalizeTraceText(log.secondary) }`;
+    } else if (normalizedText && log.type === 'agent_status') {
+      semanticKey = `agent-status::${ identityScope }::${ String(log.status || '') }::${ normalizedText }`;
     } else if (
       normalizedText &&
       (log.isLive || log._instant) &&
-      ['command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'communication'].includes(log.type)
+      ['command', 'tool_call', 'exploration', 'file_edit', 'browser', 'communication'].includes(log.type)
     ) {
       const semanticType = log.type === 'tool_call' ? 'command' : log.type;
       semanticKey = `live-action::${ identityScope }::${ semanticType }::${ normalizedText }::${ String(log.filepath || log.filename || log.command || '') }`;
@@ -883,10 +962,11 @@ const countVisibleWorkflowActions = (logs: any[]) => {
   const fallbackOccurrences = new Map<string, number>();
   logs.forEach((log, index) => {
     if (!WORKFLOW_COUNT_TYPES.has(log?.type) || HIDDEN_HELPER_TYPES.has(log?.type) || isHiddenStatusOnlyLog(log)) return;
+    const actionType = log.type === 'tool_call' ? 'command' : String(log.type || '');
     const stableIdentity = log._traceIdx ?? log.traceId ?? log.id ?? log.toolCallId ?? log.ownerTraceId;
-    const stableScope = `${log.type}|${log.subAgent || log.agentName || ''}`;
+    const stableScope = `${actionType}|${log.runId || log.turnId || ''}|${log.subAgent || log.agentName || ''}`;
     const semanticIdentity = [
-      log.type,
+      actionType,
       log.subAgent || log.agentName || '',
       normalizeTraceText(log.command || log.text || log.secondary || ''),
       String(log.filename || log.filepath || log.path || '').trim().toLowerCase(),
@@ -925,6 +1005,7 @@ const HIDDEN_MODEL_STATUS_PATTERN = /^(?:(?:using|starting|selected)\s+)?(?:mode
 const DASH_ONLY_STATUS_PATTERN = /^[\s\-â€“â€”]{2,}$/;
 
 const isHiddenStatusOnlyLog = (log: any) => {
+  if (log?.type === 'progress' && !shouldRenderProgressTrace(log)) return true;
   if (log?.type === 'model_usage') return true;
   if (log?.type === 'work_note_cancel') return true;
   if (log?.type === 'answer_cancel') return true;
@@ -998,6 +1079,16 @@ const isCountedWorkflowLog = (log: any) =>
   WORKFLOW_COUNT_TYPES.has(log?.type) &&
   !HIDDEN_HELPER_TYPES.has(log?.type) &&
   !isHiddenStatusOnlyLog(log);
+
+const isLiveWorkflowLog = (log: any) =>
+  isCountedWorkflowLog(log) &&
+  (
+    log?.isLive === true ||
+    log?.isStreaming === true ||
+    log?.isLiveTyping === true ||
+    log?.streamState === 'open' ||
+    ['running', 'working', 'pending'].includes(String(log?.status || '').toLowerCase())
+  );
 
 const isTimedWorkLog = (log: any) =>
   isCountedWorkflowLog(log) ||
@@ -1089,8 +1180,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | 
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, hasInteractionBoundary = false, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, groupIdx = 0, onEditUserMessage, subAgentAssetIndexes
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, hasInteractionBoundary?: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, hasInteractionBoundary = false, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, groupIdx = 0, onEditUserMessage, subAgentAssetIndexes
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, hasInteractionBoundary?: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
   // Start collapsed for completed turns, open for active/no-answer turns
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -1173,7 +1264,7 @@ const ThoughtSequence = ({
   const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, turnLogs, turnEndedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
-  if (isSettledNarrativeOnly || !shouldShowWorkflowSequence(stepCount)) return null;
+  if (isSettledNarrativeOnly || (!shouldShowWorkflowSequence(stepCount) && !isLiveThinking)) return null;
 
   const hasCounter = hasRealActions;
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
@@ -1206,10 +1297,11 @@ const ThoughtSequence = ({
             liveLogs={liveLogs}
             isThinking={isLiveThinking}
             isLast={isLast}
-            showLiveIndicator={isLiveThinking && isLast && liveLogs.length === 0}
+            showLiveIndicator={isLiveThinking && isLast}
             onOpenAgentTeam={onOpenAgentTeam}
             assetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
+            isAgentBuilder={isAgentBuilder}
             onEditUserMessage={onEditUserMessage}
           />
         </div>
@@ -1230,7 +1322,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'toolCallId', 'action', 'occurrenceCount', 'spawnedAgents', 'agentDetails',
   'agentStatus', 'agentStep', 'currentAction', 'stepCount', 'durationMs', 'task',
   'taskSummary', 'traceId', 'ownerTraceId', 'isDelta', 'dedupe', 'args', 'cmd',
-  'tool', 'toolArgs', 'toolResult', 'patchResult', 'exitCode', 'errorType', 'streamId', 'taskId', 'backgroundTaskId',
+  'tool', 'toolArgs', 'toolResult', 'fileOperationResult', 'exitCode', 'errorType', 'streamId', 'taskId', 'backgroundTaskId',
   'file', 'files', 'fileCount', 'filesCount', 'targetPath', 'contentPreview',
   'startLine', 'endLine', 'loadedLines', 'added', 'removed', 'additions',
   'deletions', 'insertions', 'linesAdded', 'linesRemoved', 'diffLines',
@@ -1241,8 +1333,9 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'icon', 'iconCategory', 'size', '_autonomyProxy', '_streamingCancelled',
   '_autonomyCheckpoint', '_autonomyBoundaryFollowUp', '_connection', 'model', 'modelName',
   'phase', 'compactionId', 'beforeTokens', 'afterTokens', 'contextWindow', 'modelProvider',
-  'provider', 'source', 'promptTokens', 'completionTokens', 'totalTokens', 'cachedTokens',
-  'reasoningTokens', 'interaction', 'usageId', 'runId', 'turnId', 'uiOnly',
+  'provider', 'source', 'promptTokens', 'inputTokens', 'completionTokens', 'outputTokens',
+  'totalTokens', 'cachedTokens', 'uncachedPromptTokens', 'cacheHitRatio',
+  'reasoningTokens', 'toolUsePromptTokens', 'interaction', 'usageId', 'runId', 'turnId', 'uiOnly',
 ] as const;
 
 const haveSameNestedValue = (left: unknown, right: unknown) => {
@@ -1276,6 +1369,7 @@ const ChatFeedMessageGroup = React.memo(({
   onAnswerAskUser,
   onEditUserMessage,
   isSubAgentTab,
+  isAgentBuilder,
   setPreviewUserMessage,
   showTokenCount,
 }: {
@@ -1290,6 +1384,7 @@ const ChatFeedMessageGroup = React.memo(({
   onAnswerAskUser?: (timestamp: number, answer: string, responseKey?: string) => void;
   onEditUserMessage?: (text: string) => void;
   isSubAgentTab: boolean;
+  isAgentBuilder: boolean;
   setPreviewUserMessage: (msg: { text: string; index: number } | null) => void;
   showTokenCount: boolean;
 }) => {
@@ -1314,7 +1409,7 @@ const ChatFeedMessageGroup = React.memo(({
           ? String(first.delegatedBy || 'Agent request')
           : '';
     return (
-      <div data-chat-group-index={groupIdx} className="eterx-chat-message-group mt-8 mb-6 flex w-full scroll-m-20 justify-end group/user">
+      <div data-chat-group-index={groupIdx} className="eterx-chat-message-group mt-8 mb-3 flex w-full scroll-m-20 justify-end group/user">
         <div className="flex w-full justify-end">
           <div data-delegated={delegatedSource ? 'true' : undefined} className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[22px] ${ delegatedSource ? 'bg-[#1B1B1B]' : 'bg-[#1F1F1F]' } px-4 py-2.5 text-[13.5px] leading-[1.5] text-[#F4F2EE] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text shadow-none ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
             <UserMessageActions text={userText} onEdit={onEditUserMessage} timestamp={first.timestamp} />
@@ -1413,9 +1508,15 @@ const ChatFeedMessageGroup = React.memo(({
   // render a blank mb-8 div when the group truly has no content yet.
   if (group.length === 0 && !isThinkingTurn) return null;
 
-  const liveCommandLogs = group.filter((l: any) => l.type === 'command' && l.isLive && !isHiddenStatusOnlyLog(l));
+  // Every workflow action uses the same live-to-settled reconciliation path.
+  // Treating only commands as live made file/browser/progress updates appear
+  // as new rows or mutate the first semantically similar action.
+  const liveActionLogs = group.filter(isLiveWorkflowLog);
   const rawStandardLogs = group.filter((l: any) =>
-    !(l.type === 'command' && l.isLive) &&
+    !isLiveWorkflowLog(l) &&
+    shouldRenderProgressTrace(l) &&
+    !isPrivateReasoningTrace(l) &&
+    !(l.type === 'thought' && !isInternalStatusThought(l)) &&
     !isHiddenStatusOnlyLog(l)
   );
   const standardLogs = rawStandardLogs.map((rawLog: any, index: number) => {
@@ -1440,7 +1541,7 @@ const ChatFeedMessageGroup = React.memo(({
       );
     const hasLaterWorkflowActivity = rawStandardLogs.slice(index + 1).some((later: any) =>
       later.type === 'work_note' ||
-      (WORKFLOW_COUNT_TYPES.has(later.type) && !HIDDEN_HELPER_TYPES.has(later.type))
+      (WORKFLOW_COUNT_TYPES.has(later.type) && !HIDDEN_HELPER_TYPES.has(later.type) && shouldRenderProgressTrace(later))
     );
     const shouldStayInWorkSequence =
       isProvisionalAnswer ||
@@ -1558,6 +1659,8 @@ const ChatFeedMessageGroup = React.memo(({
   // internal status thoughts are not actionable timeline rows.
   const rawWorkLogs = [...displayProcessLogs, ...tailLogs].filter(log =>
     !isInternalStatusThought(log) &&
+    shouldRenderProgressTrace(log) &&
+    !isPrivateReasoningTrace(log) &&
     !(
       log?.type === 'work_note' &&
       /^direct_(?:thinking|search)_/i.test(String(log.noteId || ''))
@@ -1655,7 +1758,7 @@ const ChatFeedMessageGroup = React.memo(({
           // Work-note ids are regenerated by some live runtimes. The visible
           // content and owning agent form the stable UI identity, so repeated
           // delivery cannot create duplicate "Working" notes.
-          const key = `${ log.subAgentChatId || log.subAgentId || log.subAgent || log.agentName || '' }::${ text }`;
+      const key = `${ log.runId || log.turnId || '' }::${ log.subAgentChatId || log.subAgentId || log.subAgent || log.agentName || '' }::${ text }`;
           if (seenWorkNoteKeys.has(key)) isValid = false;
           else seenWorkNoteKeys.add(key);
         }
@@ -1673,7 +1776,7 @@ const ChatFeedMessageGroup = React.memo(({
     // so the work indicator does not blink during that handoff.
     isThinkingTurn || isLiveSessionActive,
     hasSettledAnswer,
-    [...standardLogs, ...liveCommandLogs],
+    [...standardLogs, ...liveActionLogs],
   );
 
   if (currentThoughts.length > 0 || groupIsThinking) {
@@ -1725,7 +1828,7 @@ const ChatFeedMessageGroup = React.memo(({
         const hasInteractionBoundary = segments.slice(segIdx + 1).some(s => s.type === 'steering' || s.type === 'ask_user');
         const stepCount = countVisibleWorkflowActions([
           ...(seg.logs || []),
-          ...(isLastThoughts ? liveCommandLogs : []),
+          ...(isLastThoughts ? liveActionLogs : []),
         ]);
 
         // A settled or streaming direct answer may have a provider narration
@@ -1738,7 +1841,7 @@ const ChatFeedMessageGroup = React.memo(({
           <ThoughtSequence
             key={`thoughts-${ groupIdx }-${ segmentIdentity(seg, segIdx) }`}
             logs={seg.logs || []}
-            liveLogs={isLastThoughts ? liveCommandLogs : []}
+            liveLogs={isLastThoughts ? liveActionLogs : []}
             isThinking={groupIsThinking && isLastThoughts}
             isLast={isLastThoughts}
             hasAnswer={hasSettledAnswer && isLastThoughts}
@@ -1748,6 +1851,7 @@ const ChatFeedMessageGroup = React.memo(({
             onOpenAgentTeam={onOpenAgentTeam}
             subAgentAssetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
+            isAgentBuilder={isAgentBuilder}
             groupIdx={groupIdx}
             onEditUserMessage={onEditUserMessage}
           />
@@ -1798,7 +1902,7 @@ const ChatFeedMessageGroup = React.memo(({
                         </span>
                       )}
                       {showTokenCount && answerTokenCount > 0 && (
-                        <span className="eterx-professional-number ml-1.5 text-[11px] font-medium leading-none text-[#746F67] select-none whitespace-nowrap">
+                        <span className="eterx-professional-number ml-1.5 text-[11px] font-medium leading-none text-[#746F67] select-none whitespace-nowrap" title="Provider-reported processed tokens across this run; cached prompt tokens are included in the processed total.">
                           {formatProviderTokenCount(answerTokenCount)} processed tokens
                         </span>
                       )}
@@ -1819,6 +1923,7 @@ const ChatFeedMessageGroup = React.memo(({
   if (previous.suppressInitialReveal !== next.suppressInitialReveal) return false;
   if (previous.isCompressed !== next.isCompressed) return false;
   if (previous.isSubAgentTab !== next.isSubAgentTab) return false;
+  if (previous.isAgentBuilder !== next.isAgentBuilder) return false;
   if (previous.showTokenCount !== next.showTokenCount) return false;
   if (previous.onOpenAgentTeam !== next.onOpenAgentTeam) return false;
   if (previous.subAgentAssetIndexes !== next.subAgentAssetIndexes) return false;
@@ -1882,6 +1987,7 @@ const ChatDateDivider = React.memo(({ label }: { label: string }) => (
 export const ChatFeed = React.memo<ChatFeedProps>(({
   traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, subAgentAssetIndexes, isFeedActivityPaused = false, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState
 }) => {
+  const isAgentBuilderFeed = String(chatId || '').startsWith('agent_builder_');
   // Final presentation boundary: a trace carrying an owner ID can only render
   // inside that exact chat. This protects the feed even if an upstream async
   // state update arrives during navigation.
@@ -1939,18 +2045,29 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     }
     return traceLogs.slice(latestUserIndex >= 0 ? latestUserIndex : 0);
   }, [traceLogs]);
+  const activeFeedRunLogs = useMemo(() => {
+    const latestRunId = [...activeFeedTurnLogs]
+      .reverse()
+      .map(log => String(log?.runId || log?.turnId || '').trim())
+      .find(Boolean);
+    if (!latestRunId) return activeFeedTurnLogs;
+    return activeFeedTurnLogs.filter(log => {
+      const runId = String(log?.runId || log?.turnId || '').trim();
+      return !runId || runId === latestRunId;
+    });
+  }, [activeFeedTurnLogs]);
   const activeTurnHasTerminalTrace = useMemo(
-    () => activeFeedTurnLogs.some(isTerminalWorkTrace),
-    [activeFeedTurnLogs],
+    () => activeFeedRunLogs.some(isTerminalWorkTrace),
+    [activeFeedRunLogs],
   );
   const activeTurnHasSettledAnswer = useMemo(
-    () => activeFeedTurnLogs.some(log =>
+    () => activeFeedRunLogs.some(log =>
       log?.type === 'answer' &&
       String(log.text || '').trim().length > 0 &&
       log.isStreaming !== true &&
       log.isLiveTyping !== true
     ),
-    [activeFeedTurnLogs],
+    [activeFeedRunLogs],
   );
   const liveTransportActive = !isSubAgentTab && !isFeedActivityPaused &&
     liveState !== undefined && liveState !== 'idle' && liveState !== 'error';
@@ -2379,6 +2496,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
         <div
           className={`eterx-chat-feed relative flex-1 min-h-0 w-full overflow-hidden ${ isEmptyNewChatFeed ? 'eterx-chat-feed-empty' : '' }`}
           data-compressed={isCompressed ? 'true' : 'false'}
+          data-agent-builder={isAgentBuilderFeed ? 'true' : 'false'}
         >
           {userTurns.length > 1 && (
             <motion.div
@@ -2455,7 +2573,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
             )}
 
             {traceLogs.length > 0 && (
-              <div ref={feedContentRef} className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
+              <div ref={feedContentRef} className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isAgentBuilderFeed ? 'eterx-agent-builder-feed-content' : '' } ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
                 {visibleGroups.map((group, visibleGroupIdx) => {
                   const groupIdx = visibleGroupIdx;
                   const isThinkingTurn = feedWorkActive && groupIdx === groups.length - 1;
@@ -2494,6 +2612,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                         onAnswerAskUser={onAnswerAskUser}
                         onEditUserMessage={onEditUserMessage}
                         isSubAgentTab={isSubAgentTab}
+                        isAgentBuilder={isAgentBuilderFeed}
                         setPreviewUserMessage={setPreviewUserMessage}
                         showTokenCount={showTokenCount}
                       />

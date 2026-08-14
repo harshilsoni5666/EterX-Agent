@@ -4,6 +4,7 @@ import { getEterxWorkspaceDir } from './storage-paths';
 import { stableScopeSegment } from './context-scope';
 import { closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../thought-stream-lifecycle';
 import { isStreamFinalEvent, mergeStreamingText, normalizeStreamTimestamp } from '../streaming-lifecycle';
+import { isPrivateReasoningTrace } from './trace-visibility';
 
 /**
  * TaskStore — Persistent Server-Side Task State
@@ -251,6 +252,23 @@ function trimTask(task: PersistedTask, compactAll = false): void {
   if (compactAll) task.traceLogs = task.traceLogs.map(compactTraceEvent);
 }
 
+function settleOrphanedLiveTraces(traceLogs: any[], completedAt: number): any[] {
+  return (Array.isArray(traceLogs) ? traceLogs : []).map((trace: any) => {
+    if (trace?.type !== 'console_output' || trace?.isStreaming !== true) return trace;
+    const startedAt = Number(trace.startTime || trace.timestamp || completedAt);
+    return {
+      ...trace,
+      isStreaming: false,
+      isDelta: false,
+      streamState: 'closed',
+      exitCode: typeof trace.exitCode === 'number' ? trace.exitCode : 1,
+      endTime: completedAt,
+      durationMs: Math.max(0, completedAt - startedAt),
+      interrupted: true,
+    };
+  });
+}
+
 function rememberTask(chatId: string, task: PersistedTask): void {
   taskCache.delete(chatId);
   taskCache.set(chatId, task);
@@ -348,7 +366,8 @@ export const taskStore = {
             task.status = 'failed';
             task.finalAnswer = 'Agent interrupted because EterX was closed or restarted. Previous activity is preserved above.';
             task.completedAt = Date.now();
-            task.lastUpdatedAt = Date.now();
+            task.lastUpdatedAt = task.completedAt;
+            task.traceLogs = settleOrphanedLiveTraces(task.traceLogs, task.completedAt);
             trimTask(task, true);
             await writeJsonAtomic(taskPath, task);
           } catch (error: any) {
@@ -407,6 +426,10 @@ export const taskStore = {
           : {}),
       }
       : compactEvent;
+
+    // Reasoning may be useful inside the active runtime, but it is not durable
+    // conversation content and must never be written into a user's chat task.
+    if (isPrivateReasoningTrace(timedEvent)) return;
 
     if (timedEvent?.type !== 'thought_stream') {
       closeThoughtStreamsForBoundary(task.traceLogs, timedEvent);
@@ -696,6 +719,7 @@ export const taskStore = {
       const traceObj = trace && typeof trace === 'object' ? trace : { value: trace };
       const traceIndex = Number.isFinite(traceObj._traceIdx) ? traceObj._traceIdx : index;
       if (traceIndex > maxIndex) maxIndex = traceIndex;
+      if (isPrivateReasoningTrace(traceObj)) continue;
       if (afterIndex < 0 || traceIndex > afterIndex) {
         const fallbackTimestamp = task.completedAt || task.lastUpdatedAt || task.startedAt;
         const indexedTrace = traceObj._traceIdx === traceIndex ? traceObj : { ...traceObj, _traceIdx: traceIndex };
@@ -761,8 +785,10 @@ export const taskStore = {
             data.status = 'failed';
             data.finalAnswer = 'Task failed due to a system crash or timeout.';
             data.completedAt = Date.now();
-            data.lastUpdatedAt = Date.now();
-            data.traceLogs = (data.traceLogs || []).slice(-MAX_COMPLETED_TRACE_LOGS).map(compactTraceEvent);
+            data.lastUpdatedAt = data.completedAt;
+            data.traceLogs = settleOrphanedLiveTraces(data.traceLogs, data.completedAt)
+              .slice(-MAX_COMPLETED_TRACE_LOGS)
+              .map(compactTraceEvent);
             await writeJsonAtomic(taskPath, data);
             lastUpdated = data.completedAt || data.lastUpdatedAt || data.startedAt || 0;
           }

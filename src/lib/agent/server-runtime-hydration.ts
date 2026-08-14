@@ -5,6 +5,7 @@ import {
 import {
   applyRuntimeApiKeys,
   applyRuntimeModelOverrides,
+  applyRuntimeApiRetries,
 } from './runtime-api-keys';
 import { applyRuntimeProviderBaseURLs } from './provider-runtime';
 import { applyRuntimeSearchSettings } from '../search/search-runtime';
@@ -25,6 +26,7 @@ export function hydrateServerRuntimeSettings(): void {
   if (runtimeHydrationGlobal.__eterxServerRuntimeSettingsRevision === revision) return;
   try {
     const stored = readStoredRuntimeSettings();
+    applyRuntimeApiRetries(stored.apiRetries);
     const hydratedApiKeys: Record<string, string | string[]> = { ...(stored.apiKeys || {}) };
     // A model-specific key is stored separately so the renderer can keep its
     // provider/model mapping, but the server runtime still needs the provider

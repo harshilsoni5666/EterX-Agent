@@ -24,40 +24,23 @@ export const DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES = [
 ];
 
 const CAPABILITY_BY_TOOL: Record<string, string> = {
-  api_caller: 'network.public',
-  web_scraper: 'network.public',
-  rss_feed_reader: 'network.public',
-  deep_research: 'network.public',
   web_search: 'network.public',
   image_asset_search: 'network.public',
   image_generator: 'network.public',
   video_generator: 'network.public',
-  youtube_transcript: 'network.public',
 
-  background_task: 'command.raw',
-  process_manager: 'command.raw',
   workspace_run_command: 'command.workspace',
-  workspace_verify_code: 'command.workspace',
   spawn_sub_agent: 'agent.spawn',
 
   browser_control: 'browser.control',
-  desktop_control: 'host.control',
   screen_agent: 'host.control',
   computer: 'host.control',
-  clipboard_manager: 'host.clipboard',
   screenshot_capture: 'host.screenshot',
-  system_automation: 'host.system',
   desktop_notification: 'host.notification',
-  system_monitor: 'host.system',
-  text_to_speech: 'host.audio',
 
-  slack_controller: 'communication.external',
   channel_agent: 'communication.connected',
   gateway_bridge: 'communication.connected',
   connector_mcp: 'communication.connected',
-  memory_v2: 'memory.manage',
-  file_compression: 'filesystem.write',
-  docx_generator: 'filesystem.write',
 };
 
 const DEFAULT_ALLOWED_CAPABILITIES = new Set([

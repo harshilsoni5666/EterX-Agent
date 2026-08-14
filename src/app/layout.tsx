@@ -8,6 +8,10 @@ import './scrollbars.css';
 import 'katex/dist/katex.min.css';
 import { ThemeBridge } from '../components/theme/theme-bridge';
 import { ClipboardPasteBridge } from '../components/ui/clipboard-paste-bridge';
+import { readInitialThemePreference, resolveInitialTheme } from '../lib/initial-theme';
+import { DEFAULT_THEME } from '../lib/theme-config';
+
+export const dynamic = 'force-dynamic';
 
 // Keep the native app and offline development startup independent of Google's
 // font CDN. next/font/google fetches font files during the first Next compile,
@@ -41,32 +45,26 @@ export const metadata: Metadata = {
   },
 };
 
-const themeInitScript = `
+const createThemeInitScript = (initialPreference: string) => `
 (function () {
   try {
-    var settings = {};
-    var requested = settings.theme || 'light';
+    var requested = ${JSON.stringify(initialPreference)};
+    if (requested !== 'dark' && requested !== 'light' && requested !== 'system') requested = '${DEFAULT_THEME}';
     var resolved = requested === 'system'
       ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
       : requested;
-    if (resolved !== 'dark') resolved = 'light';
+    if (resolved !== 'dark' && resolved !== 'light') resolved = '${DEFAULT_THEME}';
     var root = document.documentElement;
     root.setAttribute('data-theme', resolved);
     root.classList.toggle('dark', resolved === 'dark');
     root.classList.toggle('light', resolved === 'light');
     root.style.colorScheme = resolved;
-    if (window.electronAPI && window.electronAPI.setNativeTheme) {
-      window.electronAPI.setNativeTheme(resolved);
-    }
   } catch (_) {
     var root = document.documentElement;
-    root.setAttribute('data-theme', 'light');
-    root.classList.remove('dark');
-    root.classList.add('light');
-    root.style.colorScheme = 'light';
-    if (window.electronAPI && window.electronAPI.setNativeTheme) {
-      window.electronAPI.setNativeTheme('light');
-    }
+    root.setAttribute('data-theme', '${DEFAULT_THEME}');
+    root.classList.remove('light');
+    root.classList.add('${DEFAULT_THEME}');
+    root.style.colorScheme = '${DEFAULT_THEME}';
   }
 })();
 `;
@@ -76,10 +74,12 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const initialPreference = readInitialThemePreference();
+  const initialTheme = resolveInitialTheme(initialPreference);
   return (
-    <html lang="en" className={`light ${ GeistSans.variable }`} style={localFontVariables} data-theme="light" suppressHydrationWarning>
+    <html lang="en" className={`${initialTheme} ${ GeistSans.variable }`} style={localFontVariables} data-theme={initialTheme} suppressHydrationWarning>
       <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
-        <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: createThemeInitScript(initialPreference) }} />
         <ThemeBridge />
         <ClipboardPasteBridge />
         {children}

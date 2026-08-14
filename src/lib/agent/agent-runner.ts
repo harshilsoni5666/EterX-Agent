@@ -33,6 +33,11 @@ import { getPathResolverInfo } from './workspace/path_resolver';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import { normalizeProviderCacheUsage } from './provider-prompt-cache';
+import { getOrCreateAgentCache, handleAgentCacheNotFound } from './agent-cache';
+import { compactStaleGeminiHistory, rollGeminiHistory } from './context-hot-path';
+import { toolResultCompactor } from './memory/tool-result-compactor';
+import { estimateRequestTokenBudget } from './request-token-budget';
+import { writeRuntimeTrace } from './runtime-trace';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import {
   GEMINI_FAST_FALLBACK_CHAIN,
@@ -44,7 +49,12 @@ import { mergeStreamingText } from '../streaming-lifecycle';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
 import { splitLeadingParallelToolCalls } from './parallel-tool-calls';
+import { buildLineDiffPreview } from './tool-trace';
 import { compactContextAtBoundary } from './resilience/context-compaction';
+import { getSearchRouteBrief } from '../search/search-runtime';
+import { getImageGenerationRouteBrief } from '../image/image-generation-runtime';
+import { getVideoGenerationRouteBrief } from '../video/video-generation-runtime';
+import { getApiRetries, isProviderFailoverError, waitForApiRetry } from './api-retry';
 
 // The standalone builder endpoint can import this runner without importing
 // AgentRegistry first, so ensure the complete builder tool surface is present.
@@ -123,42 +133,6 @@ function resolveGeminiRunnerModel(config: AgentRunnerConfig): string {
   return runnerMode === 'fast'
     ? GEMINI_FAST_FALLBACK_CHAIN[0]
     : GEMINI_THINK_FALLBACK_CHAIN[0];
-}
-
-function waitWithAbort(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.reject(new Error('CANCELLED_BY_USER'));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', onAbort);
-      reject(new Error('CANCELLED_BY_USER'));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-function isTransientRunnerError(message: string): boolean {
-  const lower = String(message || '').toLowerCase();
-  return (
-    lower.includes('terminated') ||
-    lower.includes('socket') ||
-    lower.includes('connection reset') ||
-    lower.includes('connection closed') ||
-    lower.includes('fetch failed') ||
-    lower.includes('network error') ||
-    lower.includes('econnreset') ||
-    lower.includes('eai_again') ||
-    lower.includes('unavailable') ||
-    lower.includes('deadline_exceeded') ||
-    lower.includes('timeout') ||
-    lower.includes('429') ||
-    lower.includes('503') ||
-    lower.includes('resource_exhausted')
-  );
 }
 
 function serializeToolResult(result: unknown, maxLength: number): string {
@@ -249,8 +223,13 @@ export class AgentRunner {
     return this.profile;
   }
 
+  private resolveToolsForTask(taskText = ''): ResolvedTool[] {
+    void taskText;
+    return this.resolvedTools;
+  }
+
   /** Build the complete system instruction for this agent */
-  private buildSystemInstruction(): string {
+  private buildSystemInstruction(taskText = ''): string {
     if (!this.profile) throw new Error('Agent not loaded');
 
     if (this.runtimeKind === 'agent_builder') {
@@ -317,18 +296,15 @@ ${persistedSnapshot}
       parts.push(`\n## Response Style\n${this.profile.responseStyle}`);
     }
 
-    // Tool prompt (resolved tools + usage policy)
-    if (this.toolPrompt) {
-      parts.push(`\n${this.toolPrompt}`);
-    }
-
-    const availableToolNames = new Set(this.resolvedTools.map(tool => tool.name));
+    // Function declarations are authoritative. Repeating every description in
+    // the prompt duplicated the largest part of the tool-schema payload.
+    const activeTools = this.resolveToolsForTask(taskText);
+    const availableToolNames = new Set(activeTools.map(tool => tool.name));
     if (availableToolNames.has('channel_agent') || availableToolNames.has('connector_mcp') || availableToolNames.has('gateway_bridge')) {
       parts.push(`
 ## Connected-service behavior
-- A normal request naming an external app is connector intent even if the user does not say connector, API, tool, integration, or MCP.
-- Use channel_agent first for inbox, sales, support, lead, customer-message, and reply work when available. Gateway and Channel Agent message sends execute directly without another approval; draft-only means never send. Use connector_mcp action=guide first for REST/MCP or general external-app work when available, then discover live state before making claims.
-- Continue immediately when the connection is ready. If the user supplied the required setup values, configure and verify them without echoing secrets. If authorization is genuinely missing, name the exact missing value and direct the user to Channels → Communication, Channels → MCP, or Channels → Channel Agents as appropriate.`);
+- Treat a named external app as connector intent. Use channel_agent first for inbox/sales/support/reply work; use connector_mcp action=guide first for REST/MCP work.
+- Discover live state before claims. Ready connections and explicitly requested sends need no duplicate approval; draft-only never sends. Configure supplied values without echoing secrets, otherwise report the exact missing authorization and Channels path.`);
     } else {
       parts.push(`
 ## Connected-service boundary
@@ -340,7 +316,7 @@ ${persistedSnapshot}
 
 Your tool calls are rendered in the same professional work timeline as the main EterX agent.
 
-Before a non-trivial tool call, write one brief visible work note as normal user-facing text so the user can follow the live situation. It may naturally express your intent, what you are doing now, a future action you are actually about to take, why it matters, a finding, or a change in direction. Keep a free human voice with no mandatory opening, sentence count, cadence, or template; use normal prose or simple bullets as appropriate. A work note is not private deliberation, a restatement of the request, an approval question, a closing offer, or a miniature final answer. Never expose self-instructions or response drafting such as "I need to output" or "the user requested". Do not end with "Let me know", "Should I proceed?", or similar permission-seeking language; use ask_user only when input truly blocks the work. Do not write raw tool names as notes. A trivial immediate action may rely on its action card alone. Never use native thought/reasoning as a substitute for the visible note.
+Before non-trivial tool work, write one brief natural progress note describing the live action, intent, useful finding, or direction change. It is user-facing communication, never private reasoning, a request restatement, a raw tool name, an approval question, or a miniature final answer. A trivial immediate action may rely on its action card; use ask_user only when input truly blocks progress.
 
 Every tool call must include:
 - uiActionText: a precise 2-6 word action label for the timeline. No step numbers, no brackets, no punctuation-heavy text, no code dumps. Examples: "Reading data fetch script", "Locating raw dataset URL", "Executing CSV inspection", "Verifying generated file".
@@ -351,22 +327,17 @@ Use file_read for reading files, file_create for creating files, file_edit for e
     parts.push(`
 ## Final response format
 
-- Lead with the answer, completed outcome, or most important finding. Do not start with a decorative title or repeat the request as a heading.
-- Match structure to complexity. Simple results need no heading; use short sentence-case H2/H3 headings only for genuinely separate sections.
-- Do not use emojis, decorative icons, ornamental Unicode, all-caps headings, congratulatory filler, or executive-report language.
-- Prefer concise prose and compact bullets. Do not turn every fact, file, or step into its own section.
-- Use tables only for compact repeated-field comparisons. If a cell would need multiple sentences, a procedure, code, or a long formula, use prose or bullets instead.
-- Use Mermaid only when three or more related components, branches, or state transitions become materially clearer visually. Skip it for simple steps or decorative summaries, and never repeat the same content in a diagram and table.
-- Use bold for short labels or key results and inline code only for commands, identifiers, short values, and code.
-- Link a known local deliverable once with a descriptive filename using [filename](#eterx-local-file:<URL-encoded-absolute-path>). Never expose a raw absolute path as a standalone line, wrap it in code, use file://, or repeat it in multiple sections.
-- Mention verification and limitations only where they help the user use or trust the result. Do not automatically add Summary, Overview, Delivered Files, Evidence, Next Steps, or Conclusion sections.
-- End after communicating the requested outcome. Do not append a generic offer to do more.`);
+- Lead with the outcome or key finding. Use concise prose and only the structure the result needs; no decorative titles, emojis, filler, automatic report sections, or generic closing offer.
+- Use tables only for short repeated fields and Mermaid only when relationships are materially clearer visually. Do not duplicate prose in either.
+- Link a known local deliverable once as [filename](#eterx-local-file:<URL-encoded-absolute-path>); never expose or repeat a raw path.
+- Mention verification, limits, and residual risk only when relevant.`);
 
     parts.push(`
 ## Parallel tool execution
 
-- When two or more read-only tasks are independent, emit their function calls in the same model turn so the runtime can execute them concurrently.
-- Keep writes, edits, installs, process control, browser interactions, user questions, and calls that depend on earlier results ordered.
+- Minimize model round trips: emit every currently-ready function call in the same model turn.
+- The runtime executes independent reads concurrently and preserves provider order for writes, edits, installs, and process control. Include ordered state changes together when later arguments do not depend on earlier results.
+- Keep browser interactions one at a time. Never batch ask_user, and wait when a later call genuinely depends on an earlier result.
 - Parallel tool calls are different from spawning sub-agents: use the normal attached tools and preserve the evidence from every result.`);
 
     // Completion criteria
@@ -379,17 +350,10 @@ Use file_read for reading files, file_create for creating files, file_edit for e
     // These complement the builder-written soul rules in the prompt.
     // ═══════════════════════════════════════════════════════════════
     parts.push(`
-## ⚠️ Runtime Safety Guardrails (enforced by system)
-
-These rules are enforced at runtime and cannot be overridden:
-
-1. FILE PATHS: Only access files within the current workspace. Never use '..' to escape. Never access system directories.
-2. DESTRUCTIVE COMMANDS: Never execute: rm -rf, del /f /s /q, format, drop database, shutdown, reboot, registry edits, mkfs.
-3. CREDENTIALS: Never output API keys, passwords, tokens, or secrets. If a tool returns them, redact before showing to user.
-4. SCOPE: You are "${this.profile.name || this.profile.agentId}". Stay within your defined mission. Politely decline out-of-scope requests.
-5. RATE LIMITS: If a tool fails with rate limit or timeout, wait before retrying. Max 3 retries per operation.
-6. VERIFICATION: After file writes, verify the file was created. After commands, check the exit code. After searches, validate recency.
-7. COMMUNICATION: Always tell the user what you're doing before you do it. Report results after each step. Never go silent.`);
+## Runtime safety
+- Stay inside the workspace and the mission of "${this.profile.name || this.profile.agentId}". Never escape paths, expose secrets, or perform destructive system/database actions.
+- Retry transient failures at most three times with backoff. Verify writes, command exit status, and time-sensitive research before claiming success.
+- Keep the user informed at meaningful work boundaries.`);
 
     // ═══════════════════════════════════════════════════════════════
     // RUNTIME EFFICIENCY (auto-injected)
@@ -397,28 +361,25 @@ These rules are enforced at runtime and cannot be overridden:
     parts.push(`
 ## Efficiency Guidelines
 
-- You have ${this.resolvedTools.length} tools available. Use them purposefully — don't make unnecessary calls.
-- Track your context: don't re-read files or re-search queries you've already processed in this conversation.
-- For large outputs, summarize key findings instead of dumping raw content.
-- If you can answer confidently from your training knowledge, do so — only search when you need to verify or find latest info.`);
+- Use the ${this.resolvedTools.length} attached tools purposefully. Do not repeat unchanged reads/searches; keep exact fresh evidence and summarize already-consumed bulk.
+- Answer stable facts directly and use current evidence when facts may have changed.`);
 
-    // Temporal + environment context
-    const now = new Date();
+    // Keep the cacheable identity free of clocks and per-request evidence.
+    // Those values are attached to the latest user turn in run().
     parts.push(`
 ## Environment Context
-Current date/time: ${now.toLocaleString()}
-Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}
 Workspace: ${getPathResolverInfo().desktopPath}
-Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.name).join(', ')})`);
+Declared tools: ${activeTools.length}. Their schemas are authoritative.
+Current date/time and per-run evidence are supplied with the latest request.`);
 
     return parts.join('\n');
   }
 
   /** Build Gemini function declarations from resolved tools */
-  private buildFunctionDeclarations(): any[] {
+  private buildFunctionDeclarations(taskText = ''): any[] {
     const declarations: any[] = [];
 
-    for (const tool of this.resolvedTools) {
+    for (const tool of this.resolveToolsForTask(taskText)) {
       // Get the actual tool from registry for its schema
       const registryTool = globalToolRegistry.getTool(tool.name);
 
@@ -640,12 +601,11 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
     const abortFromUpstream = () => runAbortController.abort();
     if (upstreamAbortSignal?.aborted) runAbortController.abort();
     else upstreamAbortSignal?.addEventListener('abort', abortFromUpstream, { once: true });
-    const requestedMaxIterations = Number(config.maxIterations ?? 20);
-    const maxIter = Number.isFinite(requestedMaxIterations)
-      ? Math.max(1, Math.min(100, Math.floor(requestedMaxIterations)))
-      : 20;
+    const requestedMaxIterations = Number(config.maxIterations);
+    const maxIter = Number.isFinite(requestedMaxIterations) && requestedMaxIterations > 0
+      ? Math.floor(requestedMaxIterations)
+      : Number.POSITIVE_INFINITY;
     const agentName = this.profile?.name || config.pinnedContext?.agentName || config.agentId;
-    const TOOL_TIMEOUT_MS = 45_000; // Default non-terminal tool guard
 
     // Lease an API key
     apiKeyPool.initialize();
@@ -667,14 +627,40 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       yield { type: 'error', text: 'No API keys available. Please check your API key configuration.', timestamp: Date.now() };
       return;
     }
-    const effectiveApiKey = config.apiKey || lease!.apiKey;
+    const initialApiKey = config.apiKey || lease!.apiKey;
+    const geminiKeyPool = Array.from(new Set([
+      initialApiKey,
+      ...scopedGeminiKeys,
+    ].map(key => String(key || '').trim()).filter(Boolean)));
+    let effectiveApiKey = initialApiKey;
     const ownsLease = !config.apiKey;
 
     try {
-      const ai = new GoogleGenAI({ apiKey: effectiveApiKey });
-      let systemInstruction = this.buildSystemInstruction();
-      let funcDecls = this.buildFunctionDeclarations();
+      let ai = new GoogleGenAI({ apiKey: effectiveApiKey });
+      const currentRequest = [...messages].reverse().find(item => item.role === 'user')?.content || '';
+      let systemInstruction = this.buildSystemInstruction(currentRequest);
+      let funcDecls = this.buildFunctionDeclarations(currentRequest);
+      let resolvedToolSurfaceSignature = this.resolvedTools.map(tool => tool.name).join('\0');
+      const runtimeNow = new Date();
+      const dynamicRunContextParts = [
+        '[SYSTEM-PROVIDED CURRENT RUNTIME CONTEXT]',
+        `Date/time: ${runtimeNow.toISOString()}`,
+        `Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+        `Workspace: ${String(config.pinnedContext?.workspacePath || config.pinnedContext?.paths?.[0] || getPathResolverInfo().desktopPath)}`,
+      ];
       const resolvedModel = resolveGeminiRunnerModel(config);
+      dynamicRunContextParts.push(
+        '--- LIVE EXTERNAL SERVICE ROUTES ---',
+        getSearchRouteBrief({
+          selectedModelProvider: 'gemini',
+          selectedModelName: resolvedModel,
+          runtimeSettings: config.runtimeSettings,
+        }),
+        getImageGenerationRouteBrief(),
+        getVideoGenerationRouteBrief(),
+        'Use web_search, image_generator, or video_generator for the real task and treat the actual result as route evidence. Do not claim success without source-backed results or a validated local media artifact.',
+        '--- END LIVE EXTERNAL SERVICE ROUTES ---',
+      );
       const explicitConversationScope = String(
         config.pinnedContext?.memoryScopeId || config.pinnedContext?.conversationScopeId || '',
       ).trim();
@@ -688,7 +674,6 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         && resolveSelfImprovementEnabled(config.pinnedContext?.selfImprovementEnabled);
       if (selfImprovementEnabled) {
         try {
-          const currentRequest = [...messages].reverse().find(item => item.role === 'user')?.content || '';
           const learnedContext = await adaptiveExperience.getExecutionContext({
             enabled: true,
             userId: 'user',
@@ -701,25 +686,33 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             selectedModel: { provider: 'gemini', modelId: resolvedModel },
             runtimeSettings: config.runtimeSettings || null,
           });
-          if (learnedContext) systemInstruction = `${systemInstruction}\n\n${learnedContext}`;
-          const signalTool = globalToolRegistry.getTool('experience_signal');
-          if (signalTool && !funcDecls.some(declaration => declaration.name === 'experience_signal')) {
-            const { zodToJsonSchema } = require('zod-to-json-schema');
-            const cleaned = cleanSchemaForGemini(zodToJsonSchema(signalTool.inputSchema));
-            funcDecls = [...funcDecls, {
-              name: signalTool.name,
-              description: signalTool.description.substring(0, 420),
-              ...(cleaned?.properties && Object.keys(cleaned.properties).length > 0 ? { parameters: cleaned } : {}),
-            }];
-          }
+          if (learnedContext) dynamicRunContextParts.push(learnedContext);
         } catch { /* learned experience is advisory */ }
       }
+
+      let customAgentCachedContent = await getOrCreateAgentCache(
+        ai,
+        effectiveApiKey,
+        resolvedModel,
+        systemInstruction,
+        funcDecls,
+      ).catch(() => null);
 
       // Format conversation history
       let contents = normalizeConversationTurns(messages.map(m => ({
         role: m.role === 'user' ? 'user' as const : 'model' as const,
         parts: [{ text: m.content }],
       })));
+      const currentUserTurnIndex = contents.map(turn => turn.role).lastIndexOf('user');
+      if (currentUserTurnIndex >= 0) {
+        contents[currentUserTurnIndex] = {
+          ...contents[currentUserTurnIndex],
+          parts: [
+            ...(contents[currentUserTurnIndex].parts || []),
+            { text: `${dynamicRunContextParts.join('\n')}\n[END CURRENT RUNTIME CONTEXT]` },
+          ],
+        };
+      }
 
       // ═══════════════════════════════════════════════════════════════
       // CONTEXT COMPACTION — keep the agent fast on long conversations
@@ -758,22 +751,25 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
         timestamp: Date.now(),
       };
 
-      let consecutiveErrors = 0;
+      let providerAttempts = 0;
       let totalToolCalls = 0;
       let generateConfig: any = null; // Hoisted so catch block can inspect/modify it
       let thinkingConfigDisabled = false;
+      let cacheRecoveryAttempts = 0;
       let hadSuccessfulModelResponse = false;
       let completedNaturally = false;
       let iterationsStarted = 0;
-      const configuredRetries = Number(config.pinnedContext?.maxRetries);
-      const maxTransientRetries = Number.isFinite(configuredRetries)
-        ? Math.max(0, Math.min(5, Math.floor(configuredRetries)))
-        : 2;
+      let modelRequestStarted = false;
+      const configuredRetries = getApiRetries(config.runtimeSettings || {
+        apiRetries: config.pinnedContext?.maxRetries,
+      });
+      const maxProviderAttempts = Math.max(1, geminiKeyPool.length) * (configuredRetries + 1);
       let lastObservedContextInputTokens = 0;
 
       // ReAct loop
       for (let iteration = 0; iteration < maxIter; iteration++) {
         iterationsStarted++;
+        modelRequestStarted = false;
         if (this.cancelled) {
           yield { type: 'status', text: 'Cancelled by user.', timestamp: Date.now() };
           break;
@@ -781,10 +777,43 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
         try {
           const supportsThinking = modelSupportsThinking(resolvedModel);
-          // Builder dynamic loading/unloading changes the declaration surface
-          // for the next turn. Rebuild it every iteration instead of freezing
-          // the initial tool list.
-          funcDecls = this.buildFunctionDeclarations();
+          // Builder tools are intentionally mutable. Finalized custom agents
+          // are normally stable, but may explicitly attach agent_tool_load;
+          // when that changes the real surface, move to the matching
+          // content-addressed cache variant before the next model turn.
+          if (this.runtimeKind === 'agent_builder') {
+            const nextSystemInstruction = this.buildSystemInstruction(currentRequest);
+            const nextFuncDecls = this.buildFunctionDeclarations(currentRequest);
+            const nextSurfaceSignature = `${nextSystemInstruction}\0${nextFuncDecls.map(tool => tool.name).join('\0')}`;
+            const currentSurfaceSignature = `${systemInstruction}\0${funcDecls.map(tool => tool.name).join('\0')}`;
+            if (nextSurfaceSignature !== currentSurfaceSignature) {
+              systemInstruction = nextSystemInstruction;
+              funcDecls = nextFuncDecls;
+              customAgentCachedContent = await getOrCreateAgentCache(
+                ai,
+                effectiveApiKey,
+                resolvedModel,
+                systemInstruction,
+                funcDecls,
+              ).catch(() => null);
+            }
+          } else {
+            const nextSurfaceSignature = this.resolvedTools.map(tool => tool.name).join('\0');
+            if (nextSurfaceSignature !== resolvedToolSurfaceSignature) {
+              systemInstruction = this.buildSystemInstruction(currentRequest);
+              funcDecls = this.buildFunctionDeclarations(currentRequest);
+              resolvedToolSurfaceSignature = nextSurfaceSignature;
+              customAgentCachedContent = await getOrCreateAgentCache(
+                ai,
+                effectiveApiKey,
+                resolvedModel,
+                systemInstruction,
+                funcDecls,
+              ).catch(() => null);
+            }
+          }
+          contents = compactStaleGeminiHistory(contents, currentRequest);
+          contents = rollGeminiHistory(contents, '');
 
           const contextEvents: any[] = [];
           try {
@@ -819,7 +848,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             model: resolvedModel,
             contents,
             config: {
-              systemInstruction,
+              ...(customAgentCachedContent
+                ? { cachedContent: customAgentCachedContent }
+                : { systemInstruction }),
               temperature: config.temperature ?? 0.4,
               abortSignal: runAbortController.signal,
             },
@@ -836,10 +867,23 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           }
 
           // Add tools if we have any
-          if (funcDecls.length > 0) {
+          if (funcDecls.length > 0 && !customAgentCachedContent) {
             generateConfig.config.tools = [{ functionDeclarations: funcDecls }];
           }
 
+          writeRuntimeTrace('request_token_budget', {
+            provider: 'gemini',
+            model: resolvedModel,
+            runtime: this.runtimeKind,
+            cacheActive: Boolean(customAgentCachedContent),
+            ...estimateRequestTokenBudget({
+              system: systemInstruction,
+              tools: funcDecls,
+              messages: contents,
+            }),
+          });
+
+          modelRequestStarted = true;
           const responseStream = await ai.models.generateContentStream(generateConfig);
           const streamedParts: any[] = [];
           let latestCandidate: any = null;
@@ -878,6 +922,10 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
               }
             }
           }
+          // From this point onward the provider request has completed. Any
+          // error while executing tools or assembling the next turn must not
+          // spend another API-key route or replay work.
+          modelRequestStarted = false;
           if (accumulatedThought) {
             const endedAt = Date.now();
             yield {
@@ -938,7 +986,9 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           }
 
           hadSuccessfulModelResponse = true;
-          consecutiveErrors = 0; // Reset on success
+          // Retry budgets belong to one model request. Once a response is
+          // accepted, the next tool/agent turn gets a fresh full key round.
+          providerAttempts = 0;
           let hasToolCalls = false;
           const toolResultParts: any[] = [];
           type FunctionCallRecord = {
@@ -983,15 +1033,8 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           }
 
           for (const part of candidate.content.parts) {
-            // Extract thinking/reasoning trace
-            if ((part as any).thought && !streamedThought) {
-              yield {
-                type: 'status',
-                text: String((part as any).thought).substring(0, 500),
-                agentName,
-                timestamp: Date.now(),
-              };
-            }
+            // Native thought parts stay private. In particular, never recast a
+            // non-streamed provider thought as a user-visible status message.
 
             // Text response
             if (part.text && !part.thought && !visibleTextEmitted) {
@@ -1022,7 +1065,6 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             // Publish the complete action group before execution starts so
             // concurrent calls are visible together in the timeline.
             for (const call of functionCalls) {
-              if (normalizeRegistryToolName(call.name) === 'experience_signal') continue;
               yield {
                 type: 'tool_call',
                 toolName: call.name,
@@ -1052,6 +1094,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                   sideEvents.push({
                     ...trace,
                     type: trace.type || 'status',
+                    ownerTraceId: trace.ownerTraceId || call.uiToolCallId,
                     agentId: config.agentId,
                     agentName,
                     timestamp: Number(trace.timestamp || Date.now()),
@@ -1060,7 +1103,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                 const toolAbortController = new AbortController();
                 const abortTool = () => toolAbortController.abort();
                 runAbortController.signal.addEventListener('abort', abortTool, { once: true });
-                const toolTimeoutMs = this.resolveToolTimeoutMs(call.name, call.args, TOOL_TIMEOUT_MS);
+                const toolTimeoutMs = this.resolveToolTimeoutMs(call.name, call.args);
                 let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
                 try {
                   const execPromise = this.executeToolSafe(
@@ -1070,13 +1113,17 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
                     pushSideEvent,
                     toolAbortController.signal,
                   );
-                  const timeoutPromise = new Promise<never>((_, reject) => {
-                    timeoutHandle = setTimeout(() => {
-                      toolAbortController.abort();
-                      reject(new Error(`Tool "${call.name}" timed out after ${toolTimeoutMs / 1000}s`));
-                    }, toolTimeoutMs);
-                  });
-                  result = await Promise.race([execPromise, timeoutPromise]);
+                  if (toolTimeoutMs === null) {
+                    result = await execPromise;
+                  } else {
+                    const timeoutPromise = new Promise<never>((_, reject) => {
+                      timeoutHandle = setTimeout(() => {
+                        toolAbortController.abort();
+                        reject(new Error(`Tool "${call.name}" timed out after ${toolTimeoutMs / 1000}s`));
+                      }, toolTimeoutMs);
+                    });
+                    result = await Promise.race([execPromise, timeoutPromise]);
+                  }
                 } catch (err: any) {
                   result = { error: err?.message || 'Tool execution failed' };
                 } finally {
@@ -1148,22 +1195,29 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
             // Keep provider responses in call order even when executions finish
             // out of order, which preserves Gemini's function-call contract.
-              for (const call of functionCalls) {
+              const individuallyBoundedResults = functionCalls.map(call =>
+                toolResultCompactor.compact(call.name, call.args, callResults.get(call))
+              );
+              const providerToolResults = toolResultCompactor.compactBatch(
+                functionCalls.map(call => call.name),
+                functionCalls.map(call => call.args),
+                individuallyBoundedResults,
+              );
+              for (let callIndex = 0; callIndex < functionCalls.length; callIndex++) {
+                const call = functionCalls[callIndex];
                 const result = callResults.get(call);
-              if (normalizeRegistryToolName(call.name) !== 'experience_signal') {
-                yield {
-                  type: 'tool_result',
-                  toolName: call.name,
-                  toolCallId: call.uiToolCallId,
-                  toolResult: result,
-                  agentName,
-                  timestamp: Date.now(),
-                };
-              }
+              yield {
+                type: 'tool_result',
+                toolName: call.name,
+                toolCallId: call.uiToolCallId,
+                toolResult: result,
+                agentName,
+                timestamp: Date.now(),
+              };
               toolResultParts.push({
                 functionResponse: {
                   name: call.name,
-                  response: { result: serializeToolResult(result, 16000) },
+                  response: { result: serializeToolResult(providerToolResults[callIndex], 14000) },
                   ...(call.providerCallId ? { id: call.providerCallId } : {}),
                 },
               });
@@ -1177,7 +1231,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
 
             yield {
               type: 'status',
-              text: `${agentName} processed ${totalToolCalls} tool call${totalToolCalls > 1 ? 's' : ''} (iteration ${iteration + 1}/${maxIter})`,
+              text: `${agentName} processed ${totalToolCalls} tool call${totalToolCalls > 1 ? 's' : ''} (iteration ${iteration + 1}${Number.isFinite(maxIter) ? `/${maxIter}` : ''})`,
               agentName,
               timestamp: Date.now(),
             };
@@ -1189,8 +1243,32 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           break;
 
         } catch (err: any) {
-          consecutiveErrors++;
           const errMsg = String(err.message || err);
+          const lowerErrMsg = errMsg.toLowerCase();
+
+          const cachedContentRejected = Boolean(customAgentCachedContent)
+            && (lowerErrMsg.includes('cachedcontent') || lowerErrMsg.includes('cached_content'))
+            && (
+              lowerErrMsg.includes('not found')
+              || lowerErrMsg.includes('404')
+              || lowerErrMsg.includes('permission')
+              || lowerErrMsg.includes('forbidden')
+              || lowerErrMsg.includes('invalid')
+            );
+          if (cachedContentRejected) {
+            const cacheNotFound = lowerErrMsg.includes('not found') || lowerErrMsg.includes('404');
+            customAgentCachedContent = cacheNotFound && cacheRecoveryAttempts < 1
+              ? await handleAgentCacheNotFound(
+                  ai,
+                  effectiveApiKey,
+                  resolvedModel,
+                  systemInstruction,
+                  funcDecls,
+                ).catch(() => null)
+              : null;
+            cacheRecoveryAttempts++;
+            continue;
+          }
 
           // If the model doesn't support thinkingBudget, strip it and retry immediately
           if (
@@ -1201,7 +1279,6 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
             if (generateConfig?.config?.thinkingConfig) {
               delete generateConfig.config.thinkingConfig;
               thinkingConfigDisabled = true;
-              consecutiveErrors = 0;
               console.warn(`[AgentRunner] thinkingConfig not supported by model "${generateConfig.model}" — retrying without it`);
               continue;
             }
@@ -1225,37 +1302,48 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
           }
 
           // Transient errors — exponential backoff
-          if (isTransientRunnerError(errMsg)) {
-            if (consecutiveErrors > maxTransientRetries) {
-              yield {
-                type: 'error',
-                text: `Stopping after ${consecutiveErrors} consecutive model service errors: ${errMsg.substring(0, 240)}`,
-                timestamp: Date.now(),
-              };
-              break;
-            }
-            const backoffMs = Math.min(2000 * Math.pow(2, consecutiveErrors - 1), 30000);
-            yield {
-              type: 'status',
-              text: `Rate limited. Retrying in ${Math.round(backoffMs / 1000)}s... (attempt ${consecutiveErrors})`,
-              timestamp: Date.now(),
-            };
-            await waitWithAbort(backoffMs, runAbortController.signal);
-            continue;
-          }
-
-          // Non-transient errors
-          yield { type: 'error', text: `Iteration ${iteration}: ${errMsg.substring(0, 300)}`, timestamp: Date.now() };
-
-          if (consecutiveErrors > maxTransientRetries) {
-            yield { type: 'error', text: `Stopping after ${consecutiveErrors} consecutive errors.`, timestamp: Date.now() };
+          if (!modelRequestStarted || !isProviderFailoverError(err)) {
+            yield { type: 'error', text: `Iteration ${iteration}: ${errMsg.substring(0, 300)}`, timestamp: Date.now() };
             break;
           }
-          break;
+
+          providerAttempts++;
+          if (providerAttempts >= maxProviderAttempts) {
+            yield {
+              type: 'error',
+              text: `All ${maxProviderAttempts} configured API route attempts failed. Last error: ${errMsg.substring(0, 240)}`,
+              timestamp: Date.now(),
+            };
+            break;
+          }
+
+          const keyCount = Math.max(1, geminiKeyPool.length);
+          const nextKeyIndex = providerAttempts % keyCount;
+          const previousKey = effectiveApiKey;
+          effectiveApiKey = geminiKeyPool[nextKeyIndex] || previousKey;
+          if (effectiveApiKey !== previousKey) {
+            ai = new GoogleGenAI({ apiKey: effectiveApiKey });
+            customAgentCachedContent = null;
+            cacheRecoveryAttempts = 0;
+          }
+
+          const completedRound = providerAttempts % keyCount === 0;
+          yield {
+            type: 'status',
+            text: completedRound
+              ? `All configured API routes failed; starting retry round ${Math.floor(providerAttempts / keyCount) + 1}.`
+              : `API route ${providerAttempts + 1} of ${maxProviderAttempts} failed; trying the next configured route.`,
+            timestamp: Date.now(),
+          };
+          if (completedRound) {
+            await waitForApiRetry(Math.floor(providerAttempts / keyCount), runAbortController.signal);
+          }
+          continue;
         }
       }
 
       if (
+        Number.isFinite(maxIter) &&
         iterationsStarted >= maxIter &&
         !completedNaturally &&
         totalToolCalls > 0 &&
@@ -1282,24 +1370,14 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
    * Execute a tool safely — resolves from local tools first, then global registry.
    * Catches all errors and returns structured results.
    */
-  private resolveToolTimeoutMs(toolName: string, args: any, defaultMs: number): number {
-    const terminalTools = new Set([
-      'system_shell',
-      'workspace_run_command',
-      'workspace_verify_code',
-      'background_task',
-      'process_manager',
-      'wait_timer'
-    ]);
-
-    if (!terminalTools.has(toolName)) return defaultMs;
-
-    const requested = Number(args?.checkInSeconds ?? args?.timeoutSeconds ?? args?.seconds ?? 15);
-    const requestedMs = Number.isFinite(requested) && requested > 0
-      ? (requested <= 120 ? requested * 1000 : requested)
-      : 15_000;
-
-    return Math.min(Math.max(requestedMs + 30_000, 90_000), 5 * 60_000);
+  private resolveToolTimeoutMs(toolName: string, args: any): number | null {
+    const requestedValue = args?.toolTimeoutSeconds
+      ?? args?.timeoutSeconds
+      ?? (toolName === 'wait_timer' ? args?.seconds : undefined);
+    if (requestedValue === undefined || requestedValue === null || requestedValue === '') return null;
+    const requestedSeconds = Number(requestedValue);
+    if (!Number.isFinite(requestedSeconds) || requestedSeconds <= 0) return null;
+    return requestedSeconds * 1000 + 30_000;
   }
 
   private async executeToolSafe(
@@ -1437,6 +1515,90 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       }
     }
 
+    const editTargets = canonicalToolName === 'workspace_edit_file'
+      ? (Array.isArray(effectiveArgs?.files) ? effectiveArgs.files : effectiveArgs?.filename ? [effectiveArgs] : [])
+        .map((target: any) => {
+          const requestedPath = String(target?.filename || '').trim();
+          if (!requestedPath) return null;
+          return {
+            requestedPath,
+            filePath: path.isAbsolute(requestedPath) ? path.normalize(requestedPath) : path.resolve(workspaceRoot, requestedPath),
+          };
+        })
+        .filter(Boolean) as Array<{ requestedPath: string; filePath: string }>
+      : [];
+    const preEditSnapshots = new Map<string, { existed: boolean; content?: string }>();
+    for (const target of editTargets) {
+      try {
+        const existed = fs.existsSync(target.filePath);
+        const stat = existed ? fs.statSync(target.filePath) : null;
+        const content = stat?.isFile() && stat.size <= 5_000_000 ? fs.readFileSync(target.filePath, 'utf8') : undefined;
+        preEditSnapshots.set(target.filePath, { existed, content });
+      } catch {
+        preEditSnapshots.set(target.filePath, { existed: false });
+      }
+    }
+
+    const emitEditPreviews = async (result: any) => {
+      if (canonicalToolName !== 'workspace_edit_file' || !result) return;
+      const created = new Set((Array.isArray(result.filesCreated) ? result.filesCreated : []).map((value: unknown) => path.normalize(String(value)).toLowerCase()));
+      const deleted = new Set((Array.isArray(result.filesDeleted) ? result.filesDeleted : []).map((value: unknown) => path.normalize(String(value)).toLowerCase()));
+      const fileOperationResult = {
+        filesModified: Array.isArray(result.filesModified) ? result.filesModified : [],
+        filesCreated: Array.isArray(result.filesCreated) ? result.filesCreated : [],
+        filesDeleted: Array.isArray(result.filesDeleted) ? result.filesDeleted : [],
+        errors: Array.isArray(result.errors) ? result.errors : [],
+        changes: Array.isArray(result.changes) ? result.changes : [],
+        rolledBack: Boolean(result.rolledBack),
+        operation: result.operation,
+      };
+
+      for (const target of editTargets) {
+        const normalizedPath = path.normalize(target.filePath).toLowerCase();
+        const snapshot = preEditSnapshots.get(target.filePath);
+        const wasCreated = created.has(normalizedPath) || snapshot?.existed === false;
+        const wasDeleted = deleted.has(normalizedPath);
+        let afterContent = '';
+        if (!wasDeleted) {
+          try {
+            const stat = fs.existsSync(target.filePath) ? fs.statSync(target.filePath) : null;
+            if (stat?.isFile() && stat.size <= 5_000_000) afterContent = fs.readFileSync(target.filePath, 'utf8');
+          } catch {}
+        }
+
+        const rawDiff = snapshot?.content !== undefined
+          ? buildLineDiffPreview(snapshot.content, wasDeleted ? '' : afterContent)
+          : null;
+        const diffLines = wasDeleted && rawDiff
+          ? rawDiff.diffLines.filter(line => line.type !== 'added')
+          : wasCreated && afterContent
+            ? afterContent.split(/\r?\n/).slice(0, 2_000).map((line, index) => ({ type: 'added' as const, content: line, newLine: index + 1 }))
+            : rawDiff?.diffLines || [];
+        const linesAdded = wasCreated
+          ? (afterContent ? afterContent.split(/\r?\n/).length : 0)
+          : diffLines.filter(line => line.type === 'added').length;
+        const linesRemoved = diffLines.filter(line => line.type === 'removed').length;
+
+        onTrace?.({
+          type: 'file_preview',
+          filename: path.basename(target.requestedPath),
+          filepath: target.filePath,
+          content: afterContent.length <= 500_000 ? afterContent : '',
+          lineCount: afterContent ? afterContent.split(/\r?\n/).length : 0,
+          totalLines: afterContent ? afterContent.split(/\r?\n/).length : 0,
+          truncated: afterContent.length > 500_000,
+          linesAdded,
+          linesRemoved,
+          diffLines,
+          isEdit: !wasCreated && !wasDeleted,
+          operation: wasDeleted ? 'deleted' : wasCreated ? 'created' : 'edited',
+          fileOperationResult,
+          dedupe: false,
+          timestamp: Date.now(),
+        });
+      }
+    };
+
     const toolExec = createToolExecutionContext(context, onTrace);
     // Priority 1: Resolved tool from agent profile
     try {
@@ -1445,6 +1607,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       if (resolvedTool?.execute) {
         const result = await resolvedTool.execute(effectiveArgs, toolExec.context);
         toolExec.throwIfCancelled();
+        await emitEditPreviews(result);
         return result;
       }
 
@@ -1453,6 +1616,7 @@ Available tools: ${this.resolvedTools.length} (${this.resolvedTools.map(t => t.n
       if (regTool?.execute) {
         const result = await regTool.execute(effectiveArgs, toolExec.context);
         toolExec.throwIfCancelled();
+        await emitEditPreviews(result);
         return result;
       }
 
@@ -1617,8 +1781,11 @@ function addUiTraceFieldsToSchema(schema: any): any {
     enum: ['computer', 'agent', 'terminal', 'image', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification', 'connector'],
     description: 'Timeline icon category: computer, agent, terminal, image, file_read, file_create, file_edit, folder_read, folder_create, search, web_search, verification, or connector.',
   };
-  // Timeline decoration is optional. Requiring UI-only fields makes custom
-  // agent tool calls slower and rejects otherwise valid provider responses.
+  next.required = Array.from(new Set([
+    ...(Array.isArray(next.required) ? next.required : []),
+    'uiActionText',
+    'uiIcon',
+  ]));
 
   return next;
 }

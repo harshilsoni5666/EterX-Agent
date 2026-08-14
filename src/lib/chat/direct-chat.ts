@@ -8,6 +8,7 @@ import {
   type RuntimeApiKeyProvider,
   type ScopedRuntimeSettings,
 } from '../agent/runtime-api-keys';
+import { withApiKeyRounds } from '../agent/api-retry';
 import {
   type MainAgentMode,
   type MainAgentProvider,
@@ -265,6 +266,23 @@ const getProviderKey = (provider: MainAgentProvider, runtimeSettings?: ScopedRun
     throw new Error(`Missing ${provider.toUpperCase()} API key. Add it in Settings > API Keys before using Chat mode.`);
   }
   return key;
+};
+
+const getProviderKeyRound = (provider: MainAgentProvider, runtimeSettings?: ScopedRuntimeSettings | null): string[] => {
+  const configured = getScopedRuntimeApiKeyValues(runtimeSettings, provider as RuntimeApiKeyProvider);
+  if (configured.length > 0) return configured;
+  return [getProviderKey(provider, runtimeSettings)];
+};
+
+const runWithProviderKeyRounds = async <T>(
+  provider: MainAgentProvider,
+  runtimeSettings: ScopedRuntimeSettings | null | undefined,
+  operation: (apiKey: string) => Promise<T>,
+  signal?: AbortSignal,
+  onRetry?: (attempt: number, totalAttempts: number, error: unknown) => void,
+): Promise<T> => {
+  const keys = getProviderKeyRound(provider, runtimeSettings);
+  return withApiKeyRounds(keys, runtimeSettings, operation, signal, onRetry);
 };
 
 const resolveDirectModel = (request: DirectChatRequest) => {
@@ -540,20 +558,19 @@ export async function runDirectChat(request: DirectChatRequest): Promise<{
   const { provider, model } = resolveDirectModel(request);
   const thinking = resolveDirectThinking(request, provider, model);
   const history = flattenHistory(request.history || []);
-  const attachments = await prepareAttachments(
-    request.mediaAttachments || [],
+  const text = await runWithProviderKeyRounds(
     provider,
-    getProviderKey(provider, request.runtimeSettings),
-    model,
+    request.runtimeSettings,
+    async key => {
+      const attachments = await prepareAttachments(request.mediaAttachments || [], provider, key, model);
+      const currentText = withAttachmentNames(String(request.prompt || '').trim(), attachments);
+      return provider === 'gemini'
+        ? runGeminiDirect(model, key, history, currentText, attachments, thinking)
+        : provider === 'anthropic'
+          ? runAnthropicDirect(model, key, history, currentText, attachments, thinking)
+          : runOpenAiCompatibleDirect(provider, model, key, history, currentText, attachments, thinking);
+    },
   );
-  const currentText = withAttachmentNames(String(request.prompt || '').trim(), attachments);
-  const key = getProviderKey(provider, request.runtimeSettings);
-
-  const text = provider === 'gemini'
-    ? await runGeminiDirect(model, key, history, currentText, attachments, thinking)
-    : provider === 'anthropic'
-      ? await runAnthropicDirect(model, key, history, currentText, attachments, thinking)
-      : await runOpenAiCompatibleDirect(provider, model, key, history, currentText, attachments, thinking);
 
   return { text: text || 'I could not generate a response for that request.', provider, model };
 }
@@ -637,11 +654,13 @@ const createDirectUsageTrace = (
 ) => {
   const normalized = normalizeProviderCacheUsage(provider, usage);
   const promptTokens = Number(normalized.promptTokens || 0);
-  const outputTokens = Number(normalized.completionTokens || 0);
+  const completionTokens = Number(normalized.completionTokens || 0);
+  const outputTokens = Number(normalized.outputTokens || completionTokens);
+  const reasoningTokens = Number(normalized.reasoningTokens || 0);
   // Some OpenAI-compatible servers report prompt/output counts but omit the
   // aggregate. The total is still provider-measured when derived from those
   // two reported fields, so keep the usage event visible in the UI.
-  const totalTokens = Number(normalized.totalTokens || 0) || promptTokens + outputTokens;
+  const totalTokens = Number(normalized.totalTokens || 0) || promptTokens + completionTokens;
   if (!Number.isFinite(totalTokens) || totalTokens <= 0) return null;
   const timestamp = Date.now();
   const cachedTokens = Number(normalized.cachedTokens || 0);
@@ -655,7 +674,7 @@ const createDirectUsageTrace = (
     phase: 'chat_direct',
     runId: request.runId,
     turnId: request.runId,
-    text: `[${provider}] Token usage: Input: ${promptTokens} | Cached: ${cachedTokens} | Output: ${outputTokens} | Total: ${totalTokens}`,
+    text: `[${provider}] Token usage: Input: ${promptTokens} | Cached: ${cachedTokens} | Output: ${outputTokens} | Reasoning: ${reasoningTokens} | Total: ${totalTokens}`,
     timestamp,
     startTime: timestamp,
     endTime: timestamp,
@@ -855,7 +874,8 @@ export async function streamDirectChat(
   const { provider, model } = resolveDirectModel(request);
   const thinking = resolveDirectThinking(request, provider, model);
   const history = flattenHistory(request.history || []);
-  const key = getProviderKey(provider, request.runtimeSettings);
+  const firstKey = getProviderKeyRound(provider, request.runtimeSettings)[0] || getProviderKey(provider, request.runtimeSettings);
+  const key = firstKey;
   const attachments = await prepareAttachments(request.mediaAttachments || [], provider, key, model);
   const prompt = String(request.prompt || '').trim();
   let currentText = withAttachmentNames(prompt, attachments);
@@ -919,6 +939,7 @@ export async function streamDirectChat(
         source: 'chat_direct',
         allowNetwork: true,
         networkPolicy: 'allow',
+        runtimeSettings: request.runtimeSettings,
       });
       emit({
         type: 'tool_result_preview',
@@ -971,10 +992,14 @@ export async function streamDirectChat(
   const answerStartedAt = Date.now();
   const onDelta = (delta: string) => {
     if (!delta) return;
+    const merged = mergeStreamingText(answerText, delta, true);
+    const visibleDelta = merged.startsWith(answerText) ? merged.slice(answerText.length) : delta;
+    answerText = merged;
+    if (!visibleDelta) return;
     emit({
       type: 'answer',
       answerId,
-      text: delta,
+      text: visibleDelta,
       isDelta: true,
       isStreaming: true,
       isLiveTyping: true,
@@ -983,16 +1008,33 @@ export async function streamDirectChat(
       startTime: answerStartedAt,
       timestamp: Date.now(),
     });
-    answerText += delta;
   };
 
   throwIfAborted(signal);
-  const providerResult = provider === 'gemini'
-    ? await streamGeminiDirect(model, key, history, currentText, attachments, thinking, onDelta, signal)
-    : provider === 'anthropic'
-      ? await streamAnthropicDirect(model, key, history, currentText, attachments, thinking, onDelta, signal)
-      : await streamOpenAiCompatibleDirect(provider, model, key, history, currentText, attachments, thinking, onDelta, signal);
-  answerText = providerResult.text || answerText;
+  const providerResult = await runWithProviderKeyRounds(
+    provider,
+    request.runtimeSettings,
+    async attemptKey => {
+      const attemptAttachments = attemptKey === firstKey
+        ? attachments
+        : await prepareAttachments(request.mediaAttachments || [], provider, attemptKey, model);
+      const attemptText = currentText;
+      return provider === 'gemini'
+        ? streamGeminiDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, signal)
+        : provider === 'anthropic'
+          ? streamAnthropicDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, signal)
+          : streamOpenAiCompatibleDirect(provider, model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, signal);
+    },
+    signal,
+    (attempt, totalAttempts, error) => {
+      emit({
+        type: 'progress',
+        text: `Provider request failed; trying API route ${attempt + 1} of ${totalAttempts}.`,
+        detail: String((error as any)?.message || error || '').slice(0, 180),
+      });
+    },
+  );
+  answerText = mergeStreamingText(answerText, providerResult.text || '', false);
   const finalText = answerText.trim() || 'I could not generate a response for that request.';
   if (!answerText.trim()) {
     onDelta(finalText);

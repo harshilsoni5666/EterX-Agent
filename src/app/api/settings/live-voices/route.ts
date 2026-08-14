@@ -54,7 +54,10 @@ const buildVoiceCatalogResponse = async (providerValue: unknown, modelValue: unk
     modelId,
     mediaProvider: provider.provider,
     source,
-    defaultVoice: voices.find(voice => voice.value !== 'auto')?.value || 'auto',
+    defaultVoice:
+      voices.find(voice => voice.value === 'eve')?.value ||
+      voices.find(voice => voice.value !== 'auto')?.value ||
+      'auto',
     updatedAt: Date.now(),
     voices,
   };

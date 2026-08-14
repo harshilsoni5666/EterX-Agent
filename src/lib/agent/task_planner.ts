@@ -64,68 +64,26 @@ export type TaskPlanningOptions = {
 };
 
 const BASE_PLANNER_TOOLS = new Set([
-  'workspace_read_file',
-  'workspace_read_many_files',
-  'workspace_list_directory',
-  'workspace_search_text',
-  'workspace_find_files',
-  'workspace_semantic_search',
-  'workspace_file_outline',
-  'workspace_write_file',
-  'workspace_edit_file',
   'workspace_run_command',
-  'workspace_verify_code',
-  'calculator',
-  'json_yaml_transform',
-  'regex_text_processor',
+  'workspace_edit_file',
   'browser_control',
-  'realtime_verify',
+  'computer',
+  'screen_agent',
   'web_search',
-  'web_scraper',
-  'deep_research',
-  'parse_pdf',
-  'youtube_transcript',
-  'rss_feed_reader',
   'get_skill_guidelines',
-  'docx_generator',
-  'csv_data_analyzer',
   'image_generator',
   'video_generator',
   'image_asset_search',
-  'api_caller',
   'ask_user',
 ]);
-
-const TOOL_ALIASES: Record<string, string> = {
-  shell_command: 'workspace_run_command',
-  workspace_shell: 'workspace_run_command',
-  read_file: 'workspace_read_file',
-  read_many_files: 'workspace_read_many_files',
-  search_text: 'workspace_search_text',
-  find_files: 'workspace_find_files',
-  write_file: 'workspace_write_file',
-  edit_file: 'workspace_edit_file',
-  semantic_search: 'workspace_semantic_search',
-  csv_analyzer: 'csv_data_analyzer',
-  data_analyzer: 'csv_data_analyzer',
-  browser: 'browser_control',
-  scraper: 'web_scraper',
-  pdf_parser: 'parse_pdf',
-};
 
 const DISALLOWED_PLANNER_TOOLS = new Set([
   'task_decomposer',
   'task_checkpoint',
   'spawn_sub_agent',
-  'background_task',
-  'desktop_control',
-  'computer',
-  'screen_agent',
-  'process_manager',
 ]);
 
 const EXTERNAL_COMMS_TOOLS = new Set([
-  'slack_controller',
   'gateway_bridge',
   'channel_agent',
   'connector_mcp',
@@ -177,15 +135,11 @@ Rules:
 7. Use exact filenames, folders, UI areas, tools, constraints, and deliverables from the request/context when present.
 8. Dependencies must point only to earlier step numbers.
 9. Tools must be real tool names from this set when relevant:
-   workspace_read_file, workspace_read_many_files, workspace_list_directory, workspace_search_text, workspace_find_files, workspace_semantic_search, workspace_file_outline,
-   workspace_write_file, workspace_edit_file,
-   workspace_run_command, workspace_verify_code,
-   calculator, json_yaml_transform, regex_text_processor,
-   browser_control, realtime_verify,
-   web_search, web_scraper, deep_research, parse_pdf, youtube_transcript, rss_feed_reader,
+   workspace_run_command, workspace_edit_file,
+   browser_control, computer, screen_agent,
+   web_search,
    get_skill_guidelines,
-   docx_generator, csv_data_analyzer,
-   image_generator, video_generator, image_asset_search, api_caller, ask_user.
+   image_generator, video_generator, image_asset_search, ask_user.
 
 Return ONLY valid JSON:
 {
@@ -194,7 +148,7 @@ Return ONLY valid JSON:
       "step": 1,
       "name": "Inspect task planner files",
       "description": "Read the task planner, decomposer, tracker store, and dock UI code to locate the current planning and progress flow.",
-      "tools": ["workspace_read_many_files", "workspace_search_text"],
+      "tools": ["workspace_run_command"],
       "done_when": "The relevant files, entry points, and current behavior are identified.",
       "depends_on": [],
       "priority": "high",
@@ -241,7 +195,7 @@ function getRegisteredToolNames(): Set<string> {
   const names = new Set(BASE_PLANNER_TOOLS);
   try {
     for (const tool of globalToolRegistry.getAllTools()) {
-      if (tool?.name && tool.name !== 'experience_signal') names.add(tool.name);
+      if (tool?.name) names.add(tool.name);
     }
   } catch {
     // Registry may not be bootstrapped during isolated tests.
@@ -485,25 +439,21 @@ function inferTools(type: PlannerStepType, task: string, context = ''): string[]
   const profile = taskProfile(task, context);
   switch (type) {
     case 'inspect':
-      if (profile.files.length > 1) return ['workspace_read_many_files', 'workspace_search_text'];
-      return ['workspace_search_text', 'workspace_read_file'];
+      return ['workspace_run_command'];
     case 'research':
-      return profile.isResearch ? ['web_search', 'web_scraper'] : ['workspace_search_text', 'workspace_read_file'];
+      return profile.isResearch ? ['web_search'] : ['workspace_run_command'];
     case 'configure':
-      return ['workspace_read_file', 'workspace_edit_file'];
+      return ['workspace_run_command', 'workspace_edit_file'];
     case 'edit':
       return ['workspace_edit_file'];
     case 'create':
-      if (profile.isDocument) return ['docx_generator', 'workspace_write_file'];
-      if (profile.isData) return ['csv_data_analyzer'];
-      return ['workspace_write_file'];
+      if (profile.isDocument || profile.isData) return ['workspace_run_command'];
+      return ['workspace_edit_file'];
     case 'run':
       return ['workspace_run_command'];
     case 'verify':
       if (profile.explicitBrowser) return ['workspace_run_command', 'browser_control'];
-      if (profile.isCode || profile.isUi) return ['workspace_run_command', 'workspace_verify_code'];
-      if (profile.isDocument || profile.isData) return ['workspace_read_file', 'workspace_verify_code'];
-      return ['workspace_verify_code'];
+      return ['workspace_run_command'];
     case 'communicate':
       // Communication is an execution lane, not a request for permission.
       // The selected connector tool owns its safety/approval policy; the
@@ -554,7 +504,7 @@ function normalizeToolList(value: unknown, type: PlannerStepType, task: string, 
   const rawTools = Array.isArray(value) ? value : [];
   const normalized = rawTools
     .map(tool => cleanText(tool).toLowerCase())
-    .map(tool => TOOL_ALIASES[tool] || normalizeRegistryToolName(tool))
+    .map(tool => normalizeRegistryToolName(tool))
     .filter(tool => {
       if (!tool) return false;
       if (DISALLOWED_PLANNER_TOOLS.has(tool)) return false;

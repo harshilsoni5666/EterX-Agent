@@ -26,7 +26,7 @@ import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
 import { LiveSessionState, type LiveSession } from '../lib/live/agent-live';
 import { createLiveSession } from '../lib/live/provider-live';
-import { DEFAULT_GEMINI_LIVE_MODEL, getLiveModelOptions, isLiveModelForProvider, normalizeLiveProvider } from '../lib/live/live-provider';
+import { DEFAULT_GEMINI_LIVE_MODEL, getDefaultLiveVoice, getLiveModelOptions, isLiveModelForProvider, normalizeLiveProvider } from '../lib/live/live-provider';
 import {
   MAIN_AGENT_MODEL_OPTIONS,
   MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY,
@@ -66,10 +66,17 @@ import {
   type CustomToolActiveTrace,
 } from '../lib/agent/custom-agent-trace-adapter';
 import { formatVisibleWorkNote } from '../lib/agent/work-note';
+import { isPrivateReasoningTrace } from '../lib/agent/trace-visibility';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../lib/agent/tool-trace';
 import { canonicalizeThoughtStreamLogs, closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
-import { agentIdentitiesOverlap, orderFeedTimelineLogs } from '../lib/chat-feed-lifecycle';
+import { agentIdentitiesOverlap, isTurnWorkActive, orderFeedTimelineLogs } from '../lib/chat-feed-lifecycle';
 import { resolveChatSendTarget } from '../lib/chat-send-lifecycle';
+import {
+  GENERAL_AGENT_SELECTION,
+  normalizeChatAgentSelection,
+  shouldQueueForAgentSwitch,
+  type ChatAgentSelection,
+} from '../lib/chat-agent-selection';
 import { mergeStreamingText } from '../lib/streaming-lifecycle';
 import { FilePanelProvider, useGlobalFilePanel } from '../contexts/FilePanelContext';
 import { isProjectFile, getFileIconPath } from '../lib/utils/file-icon-utils';
@@ -217,7 +224,7 @@ type WorkMenuSourceItem = {
   name: string;
   path: string;
   isPinned?: boolean;
-  status?: 'MOD' | 'ADD';
+  status?: 'MOD' | 'ADD' | 'DEL';
   additions?: number;
   deletions?: number;
 };
@@ -293,18 +300,29 @@ type QueuedFollowUp = {
   runId?: string;
   attachmentCount?: number;
   serverBacked?: boolean;
+  runOptions?: QueuedRunOptions;
+};
+
+type QueuedRunOptions = {
+  modelSelection: string;
+  selectedAgent: SelectedAgentState;
+  thinkingLevel: MainAgentThinkingLevel;
+  pinnedItems: PinnedItem[];
 };
 
 const makeFollowUpAdmissionKey = (
   targetChatId: string,
   message: string,
   nextAttachments: ComposerAttachment[] = [],
+  selectedAgent?: SelectedAgentState | null,
 ) => JSON.stringify([
   targetChatId,
   message.trim(),
   nextAttachments.map(attachment => String(
     attachment.id || attachment.name || attachment.file?.name || ''
   )),
+  selectedAgent ? normalizeChatAgentSelection(selectedAgent).agentId : undefined,
+  selectedAgent?.chatMode === true,
 ]);
 
 type TaskTrackerStep = {
@@ -558,9 +576,9 @@ const readRuntimeModelEntries = () => {
 const readRuntimeChatModelSelection = () => {
   if (typeof window === 'undefined') return AUTO_MODEL_SELECTION;
   const selection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-  return selection === AUTO_MODEL_SELECTION || parseModelEntryKey(selection)
-    ? selection
-    : AUTO_MODEL_SELECTION;
+  const resolved = resolveRuntimeModelSelection(selection);
+  if (resolved !== selection) appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, resolved);
+  return resolved;
 };
 
 const readRuntimeModelThinkingCapability = (selection = readRuntimeChatModelSelection()): ModelThinkingCapabilities | null => {
@@ -604,11 +622,7 @@ const readRuntimeAgentMode = (fallbackMode: MainAgentMode, selection = readRunti
   return autoEntry ? MODEL_PROVIDER_MODE[autoEntry.provider] : fallbackMode;
 };
 
-type SelectedAgentState = {
-  agentId: string | null;
-  agentName: string;
-  chatMode?: boolean;
-};
+type SelectedAgentState = ChatAgentSelection;
 
 const readRuntimeUsableModelEntries = () => {
   const entries = readRuntimeModelEntries();
@@ -621,30 +635,16 @@ const readRuntimeUsableModelEntries = () => {
   ));
 };
 
-const readSelectedAgentState = (): SelectedAgentState => {
-  if (typeof window !== 'undefined') {
-    try {
-      const saved = appStorage.getItem(SELECTED_AGENT_STORAGE_KEY);
-      const parsed = saved ? JSON.parse(saved) : null;
-      const chatMode = parsed?.chatMode === true;
-      const agentId = chatMode
-        ? null
-        : typeof parsed?.agentId === 'string' && parsed.agentId.trim()
-          ? parsed.agentId.trim()
-          : null;
-      const agentName = chatMode
-        ? 'Chat'
-        : typeof parsed?.agentName === 'string' && parsed.agentName.trim()
-          ? parsed.agentName.trim()
-          : agentId === 'coding'
-            ? 'Coding'
-            : agentId || 'General';
-      return { agentId, agentName, chatMode };
-    } catch {
-      // Fall through to the safe default when stored preferences are corrupt.
-    }
-  }
-  return { agentId: null, agentName: 'General', chatMode: false };
+const resolveRuntimeModelSelection = (selection: unknown): string => {
+  const requested = String(selection || '');
+  const usableEntries = readRuntimeUsableModelEntries();
+  const parsed = parseModelEntryKey(requested);
+  if (parsed && usableEntries.some(entry =>
+    modelEntryKey(entry.provider, entry.modelId) === requested
+  )) return requested;
+  return usableEntries[0]
+    ? modelEntryKey(usableEntries[0].provider, usableEntries[0].modelId)
+    : AUTO_MODEL_SELECTION;
 };
 
 const isDefaultChatTitle = (title?: string | null) => {
@@ -1150,13 +1150,20 @@ function DeepWorkUI() {
       pinnedItems: [],
       chatModelSelection: composerRuntimeSelectionRef.current.modelSelection,
     };
+    const requestedStoredSelection = String(state?.chatModelSelection || '');
+    const storedConcreteSelection = parseModelEntryKey(requestedStoredSelection) &&
+      readRuntimeUsableModelEntries().some(entry =>
+        modelEntryKey(entry.provider, entry.modelId) === requestedStoredSelection
+      )
+      ? requestedStoredSelection
+      : readRuntimeChatModelSelection();
     const target: ChatComposerState = {
       ...defaultState,
       ...(state || {}),
       selectedAgent: state?.selectedAgent || defaultState.selectedAgent,
       pinnedItems: state?.pinnedItems || defaultState.pinnedItems,
       attachments: state?.attachments || defaultState.attachments,
-      chatModelSelection: state?.chatModelSelection || defaultState.chatModelSelection,
+      chatModelSelection: storedConcreteSelection || defaultState.chatModelSelection,
     };
     composerRuntimeSelectionRef.current = {
       modelSelection: target.chatModelSelection || composerRuntimeSelectionRef.current.modelSelection,
@@ -1420,21 +1427,17 @@ function DeepWorkUI() {
   useEffect(() => {
     const restoreSelectedAgent = () => {
       try {
-      const saved = appStorage.getItem(SELECTED_AGENT_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        const restoredSelection = readSelectedAgentState();
-        composerRuntimeSelectionRef.current.selectedAgent = restoredSelection;
-        setSelectedAgentState(restoredSelection);
-        return;
-      }
-      const rawSettings = appStorage.getItem(SETTINGS_STORAGE_KEY);
-      const settings = rawSettings ? JSON.parse(rawSettings) : null;
-      if (settings?.workMode === 'specialist') {
-        const restoredSelection = { agentId: 'autonomous', agentName: 'Autonomous', chatMode: false };
-        composerRuntimeSelectionRef.current.selectedAgent = restoredSelection;
-        setSelectedAgentState(restoredSelection);
-      }
+      // The global value is only a migration/default for the untouched New
+      // chat surface. Once a real chat is open, its composer state is the sole
+      // owner; late desktop-storage hydration must never replace it.
+      if (activeChatIdRef.current) return;
+      const savedDraft = composerStatesRef.current.new_chat;
+      const hasSavedDraft = Boolean(savedDraft?.inputValue?.trim() || savedDraft?.attachments?.length);
+      const restoredSelection = hasSavedDraft
+        ? normalizeChatAgentSelection(savedDraft?.selectedAgent)
+        : { ...GENERAL_AGENT_SELECTION };
+      composerRuntimeSelectionRef.current.selectedAgent = restoredSelection;
+      setSelectedAgentState(restoredSelection);
       } catch {}
     };
     restoreSelectedAgent();
@@ -1508,6 +1511,7 @@ function DeepWorkUI() {
   const [subAgentsSectionOpen, setSubAgentsSectionOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<string>('general');
+  const [hasUnreadUpdate, setHasUnreadUpdate] = useState(false);
   const [activeTopbarMenu, setActiveTopbarMenu] = useState<'theme' | 'help' | null>(null);
   const topbarThemeOpen = activeTopbarMenu === 'theme';
   const topbarHelpOpen = activeTopbarMenu === 'help';
@@ -1845,11 +1849,26 @@ function DeepWorkUI() {
   const openSettingsWindow = useCallback((tab?: any) => {
     if (tab && typeof tab === 'string') {
       setSettingsInitialTab(tab);
+      if (tab === 'updates') {
+        setHasUnreadUpdate(false);
+        void (window as any)?.electronAPI?.markUpdateViewed?.();
+      }
     } else {
       setSettingsInitialTab('general');
     }
     setIsSettingsOpen(true);
   }, [setSettingsInitialTab, setIsSettingsOpen]);
+
+  useEffect(() => {
+    const desktopApi = (window as any)?.electronAPI;
+    if (typeof desktopApi?.getUpdateState !== 'function') return;
+    const applyUpdateState = (state: any) => setHasUnreadUpdate(state?.updateAvailableUnread === true);
+    const unsubscribe = typeof desktopApi.onUpdateState === 'function'
+      ? desktopApi.onUpdateState(applyUpdateState)
+      : undefined;
+    desktopApi.getUpdateState().then(applyUpdateState).catch(() => {});
+    return () => unsubscribe?.();
+  }, []);
 
   useEffect(() => {
     const applyStoredAgentMode = () => {
@@ -1932,6 +1951,8 @@ function DeepWorkUI() {
   const [liveSpeakerMuted, setLiveSpeakerMuted] = useState(false);
   const liveMicMutedRef = useRef(false);
   const liveSpeakerMutedRef = useRef(false);
+  const liveCameraTogglePendingRef = useRef(false);
+  const liveScreenTogglePendingRef = useRef(false);
   const [liveCameraEnabled, setLiveCameraEnabled] = useState(false);
   const [liveScreenShareEnabled, setLiveScreenShareEnabled] = useState(false);
   const [liveActivityLabel, setLiveActivityLabel] = useState<string | null>(null);
@@ -3262,7 +3283,8 @@ function DeepWorkUI() {
           }
         : null;
       const configuredLiveVoice = String(storedLiveSettings.liveConvoVoice || 'auto').trim() || 'auto';
-      let resolvedLiveVoice = configuredLiveVoice === 'auto' ? 'Kore' : configuredLiveVoice;
+      const providerDefaultLiveVoice = getDefaultLiveVoice(configuredLiveProviderId);
+      let resolvedLiveVoice = configuredLiveVoice === 'auto' ? providerDefaultLiveVoice : configuredLiveVoice;
       try {
         const voiceResponse = await fetch('/api/settings/live-voices', {
           method: 'POST',
@@ -3283,8 +3305,8 @@ function DeepWorkUI() {
         const defaultVoice = String(
           voicePayload?.defaultVoice ||
           voicePayload?.voices?.find((voice: any) => String(voice?.value || voice?.id || '') !== 'auto')?.value ||
-          (configuredLiveProvider === 'gemini' ? 'Kore' : 'auto'),
-        ).trim() || (configuredLiveProvider === 'gemini' ? 'Kore' : 'auto');
+          providerDefaultLiveVoice,
+        ).trim() || providerDefaultLiveVoice;
         if (
           voiceResponse.ok &&
           voicePayload?.ok &&
@@ -4682,40 +4704,70 @@ function DeepWorkUI() {
 
   const toggleLiveMicMute = useCallback(() => {
     const next = !liveMicMutedRef.current;
-    liveMicMutedRef.current = next;
-    setLiveMicMuted(next);
-    liveSessionRef.current?.setMicMuted(next);
+    const session = liveSessionRef.current;
+    session?.setMicMuted(next);
+    const applied = session?.isMicMuted() ?? next;
+    liveMicMutedRef.current = applied;
+    setLiveMicMuted(applied);
+    setLiveError(null);
   }, []);
 
   const toggleLiveSpeakerMute = useCallback(() => {
     const next = !liveSpeakerMutedRef.current;
-    liveSpeakerMutedRef.current = next;
-    setLiveSpeakerMuted(next);
-    liveSessionRef.current?.setSpeakerMuted(next);
+    const session = liveSessionRef.current;
+    session?.setSpeakerMuted(next);
+    const applied = session?.isSpeakerMuted() ?? next;
+    liveSpeakerMutedRef.current = applied;
+    setLiveSpeakerMuted(applied);
+    setLiveError(null);
   }, []);
 
   const toggleLiveCamera = useCallback(async () => {
+    if (liveCameraTogglePendingRef.current) return;
     const session = liveSessionRef.current;
-    if (!session) return;
-    if (session.isCameraEnabled()) {
-      session.stopCamera();
+    if (!session) {
+      setLiveError('Live session is still connecting.');
       return;
     }
-    const result = await session.startCamera('user');
-    if (liveSessionRef.current !== session) return;
-    setLiveError(result.success ? null : result.message);
+    liveCameraTogglePendingRef.current = true;
+    try {
+      if (session.isCameraEnabled()) {
+        session.stopCamera();
+        setLiveCameraEnabled(false);
+        setLiveError(null);
+        return;
+      }
+      setLiveError('Waiting for camera permission…');
+      const result = await session.startCamera('user');
+      if (liveSessionRef.current !== session) return;
+      setLiveError(result.success ? null : result.message);
+    } finally {
+      liveCameraTogglePendingRef.current = false;
+    }
   }, []);
 
   const toggleLiveScreenShare = useCallback(async () => {
+    if (liveScreenTogglePendingRef.current) return;
     const session = liveSessionRef.current;
-    if (!session) return;
-    if (session.isScreenShareEnabled()) {
-      session.stopScreenShare();
+    if (!session) {
+      setLiveError('Live session is still connecting.');
       return;
     }
-    const result = await session.startScreenShare();
-    if (liveSessionRef.current !== session) return;
-    setLiveError(result.success ? null : result.message);
+    liveScreenTogglePendingRef.current = true;
+    try {
+      if (session.isScreenShareEnabled()) {
+        session.stopScreenShare();
+        setLiveScreenShareEnabled(false);
+        setLiveError(null);
+        return;
+      }
+      setLiveError('Waiting for screen permission…');
+      const result = await session.startScreenShare();
+      if (liveSessionRef.current !== session) return;
+      setLiveError(result.success ? null : result.message);
+    } finally {
+      liveScreenTogglePendingRef.current = false;
+    }
   }, []);
 
   useEffect(() => {
@@ -4726,17 +4778,23 @@ function DeepWorkUI() {
         const data = typeof rawMessage === 'string' && rawMessage.startsWith('{') ? JSON.parse(rawMessage) : { action: rawMessage };
         if (data.action === 'toggle-mic') {
           if (typeof data.muted === 'boolean') {
-            liveMicMutedRef.current = data.muted;
-            setLiveMicMuted(data.muted);
-            liveSessionRef.current?.setMicMuted(data.muted);
+            const session = liveSessionRef.current;
+            session?.setMicMuted(data.muted);
+            const applied = session?.isMicMuted() ?? data.muted;
+            liveMicMutedRef.current = applied;
+            setLiveMicMuted(applied);
+            setLiveError(null);
           } else {
             toggleLiveMicMute();
           }
         } else if (data.action === 'toggle-speaker') {
           if (typeof data.muted === 'boolean') {
-            liveSpeakerMutedRef.current = data.muted;
-            setLiveSpeakerMuted(data.muted);
-            liveSessionRef.current?.setSpeakerMuted(data.muted);
+            const session = liveSessionRef.current;
+            session?.setSpeakerMuted(data.muted);
+            const applied = session?.isSpeakerMuted() ?? data.muted;
+            liveSpeakerMutedRef.current = applied;
+            setLiveSpeakerMuted(applied);
+            setLiveError(null);
           } else {
             toggleLiveSpeakerMute();
           }
@@ -5512,11 +5570,11 @@ function DeepWorkUI() {
       setTraceLogs(canonicalizeClientTraceLogs(chat.traceLogs || [], id));
       hydrateChatHistory(id);
       setActiveWorkspacePath(chat.workspacePath || null);
-      const storedState = composerStates[id];
+      const storedState = composerStatesRef.current[id];
       applyComposerState(storedState || (chat.runLocation ? {
         inputValue: '',
         runLocation: chat.runLocation,
-        selectedAgent: composerRuntimeSelectionRef.current.selectedAgent,
+        selectedAgent: { ...GENERAL_AGENT_SELECTION },
         agentMode: composerRuntimeSelectionRef.current.agentMode,
         thinkingLevel: composerRuntimeSelectionRef.current.thinkingLevel,
         attachments: [],
@@ -5701,20 +5759,33 @@ function DeepWorkUI() {
     setActiveChatId(null);
     setMonitorOpen(false);
     setTraceLogs([]);
-    const storedState = composerStates['new_chat'];
+    const storedState = composerStatesRef.current['new_chat'];
     const hasSavedDraft = Boolean(storedState?.inputValue?.trim() || storedState?.attachments?.length);
     if (storedState && !hasSavedDraft) {
       const defaultModelSelection = readRuntimeChatModelSelection();
       const refreshedState: ChatComposerState = {
         ...storedState,
-        selectedAgent: readSelectedAgentState(),
+        // Agent identity is chat-scoped. New chat begins on General unless it
+        // contains an actual saved draft whose intended runtime must survive.
+        selectedAgent: { ...GENERAL_AGENT_SELECTION },
         chatModelSelection: defaultModelSelection,
         agentMode: readRuntimeAgentMode(storedState.agentMode || 'think', defaultModelSelection),
       };
       applyComposerState(refreshedState);
       updateComposerState(() => refreshedState);
-    } else {
+    } else if (storedState && hasSavedDraft) {
       applyComposerState(storedState);
+    } else {
+      applyComposerState({
+        inputValue: '',
+        runLocation: 'local',
+        selectedAgent: { ...GENERAL_AGENT_SELECTION },
+        agentMode: readRuntimeAgentMode('think'),
+        thinkingLevel: composerRuntimeSelectionRef.current.thinkingLevel,
+        attachments: [],
+        pinnedItems: [],
+        chatModelSelection: readRuntimeChatModelSelection(),
+      });
     }
     setBuildingAgentId(null);
     setBuildingAgentName(null);
@@ -6152,6 +6223,7 @@ function DeepWorkUI() {
         ...(trace?.type === 'user_action' ? { text: getVisibleUserActionText(trace) } : {}),
         ...(traceTurnId ? { turnId: traceTurnId } : {}),
       });
+      if (isPrivateReasoningTrace(processedLog)) continue;
       if (processedLog.type === 'inter_agent_message' && processedLog.messageId) {
         const existingMessageIndex = logs.findIndex((log: any) =>
           log?.type === 'inter_agent_message' && log?.messageId === processedLog.messageId
@@ -6699,7 +6771,20 @@ function DeepWorkUI() {
       const scheduledTasksSaved = await flushScheduledTaskWrites();
       return chatsSaved && preferencesSaved && scheduledTasksSaved;
     });
-    const unsubscribe = desktopApi.onPrepareForQuit(async () => flushDurableState());
+    const unsubscribe = desktopApi.onPrepareForQuit(async () => {
+      // Persistence already runs continuously. Give the final coordinated
+      // flush a bounded window so a suspended API route or stale renderer can
+      // never deadlock a verified desktop update.
+      let timeoutId: number | undefined;
+      const timeout = new Promise<boolean>(resolve => {
+        timeoutId = window.setTimeout(() => resolve(false), 12_000);
+      });
+      try {
+        return await Promise.race([flushDurableState(), timeout]);
+      } finally {
+        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      }
+    });
     return () => {
       unregisterDurableFlush();
       unsubscribe?.();
@@ -7125,8 +7210,8 @@ function DeepWorkUI() {
                   continue;
                 }
 
-                if (trace.type === 'thought_stream') {
-                  mergeThoughtStreamTrace(logs, timedTrace);
+                if (isPrivateReasoningTrace(timedTrace)) {
+                  continue;
                 } else if (trace.type === 'work_note') {
                   const subAgent = trace.subAgent || null;
                   const subAgentIdentity = trace.subAgentChatId || trace.subAgentId || subAgent;
@@ -7983,10 +8068,12 @@ function DeepWorkUI() {
     nextAttachments: ComposerAttachment[] = [],
     requestedQueueId?: string,
     clearComposer = true,
+    runOptions?: QueuedRunOptions,
+    forceRendererQueue = false,
   ): Promise<boolean> => {
     const queuedMessage = message.trim();
     if (!targetChatId || (!queuedMessage && nextAttachments.length === 0)) return false;
-    const admissionKey = makeFollowUpAdmissionKey(targetChatId, queuedMessage, nextAttachments);
+    const admissionKey = makeFollowUpAdmissionKey(targetChatId, queuedMessage, nextAttachments, runOptions?.selectedAgent);
     if (queuedFollowUpAdmissionsRef.current.has(admissionKey)) return false;
 
     queuedFollowUpAdmissionsRef.current.add(admissionKey);
@@ -8004,13 +8091,14 @@ function DeepWorkUI() {
         admissionKey,
         attachmentCount: nextAttachments.length,
         serverBacked: false,
+        ...(runOptions ? { runOptions } : {}),
       },
     ]);
 
     // Direct-chat streams intentionally do not enter AgentRegistry. Keep their
     // next turn local to the renderer that owns that stream; full agent queues
     // continue through the durable backend path below.
-    if (directChatRunsRef.current.has(targetChatId)) {
+    if (forceRendererQueue || directChatRunsRef.current.has(targetChatId)) {
       if (clearComposer) clearDraftComposerState(targetChatId);
       return true;
     }
@@ -8085,10 +8173,12 @@ function DeepWorkUI() {
     nextAttachments: ComposerAttachment[] = [],
     expectedRunId?: string,
     clearComposer = true,
+    runOptions?: QueuedRunOptions,
+    forceRendererQueue = false,
   ) => {
     const followUpMessage = message.trim();
     if (!targetChatId || (!followUpMessage && nextAttachments.length === 0)) return false;
-    const admissionKey = makeFollowUpAdmissionKey(targetChatId, followUpMessage, nextAttachments);
+    const admissionKey = makeFollowUpAdmissionKey(targetChatId, followUpMessage, nextAttachments, runOptions?.selectedAgent);
     if (
       steeringAdmissionsRef.current.has(admissionKey) ||
       queuedFollowUpAdmissionsRef.current.has(admissionKey)
@@ -8096,8 +8186,16 @@ function DeepWorkUI() {
 
     // Attachments must become a real next turn. Text-only guidance can be
     // injected into the current ReAct loop when the user prefers steering.
-    if (nextAttachments.length > 0 || readFollowUpBehavior() === 'queue') {
-      return queueFollowUpForChat(targetChatId, followUpMessage, nextAttachments, undefined, clearComposer);
+    if (forceRendererQueue || nextAttachments.length > 0 || readFollowUpBehavior() === 'queue') {
+      return queueFollowUpForChat(
+        targetChatId,
+        followUpMessage,
+        nextAttachments,
+        undefined,
+        clearComposer,
+        runOptions,
+        forceRendererQueue,
+      );
     }
 
     const steered = await sendSteeringMessageToChat(targetChatId, followUpMessage, expectedRunId, clearComposer);
@@ -8631,7 +8729,7 @@ function DeepWorkUI() {
     const composerContext = useActiveComposerContext
       ? composerRuntimeSelectionRef.current
       : {
-          modelSelection: targetComposerState?.chatModelSelection || AUTO_MODEL_SELECTION,
+          modelSelection: resolveRuntimeModelSelection(targetComposerState?.chatModelSelection),
           selectedAgent: targetComposerState?.selectedAgent || { agentId: null, agentName: 'General' } as SelectedAgentState,
           agentMode: targetComposerState?.agentMode || 'think' as MainAgentMode,
           thinkingLevel: targetComposerState?.thinkingLevel || 'low' as MainAgentThinkingLevel,
@@ -8680,12 +8778,30 @@ function DeepWorkUI() {
       // though the chat already owns a real backend execution. Deliver it as
       // the configured steer/queue follow-up instead of silently dropping it.
       if (!targetChatIdAtSend) return false;
+      const requestedSelection = normalizeChatAgentSelection(
+        runOptionsOverride?.selectedAgent || composerContext.selectedAgent,
+      );
+      const targetLogs = targetChat?.traceLogs
+        || (targetChatIdAtSend === activeChatIdRef.current ? traceLogs : []);
+      const runtimeChanged = shouldQueueForAgentSwitch(
+        targetLogs,
+        pollRunIdRef.current.get(targetChatIdAtSend),
+        requestedSelection,
+      );
+      const queuedRunOptions: QueuedRunOptions = {
+        modelSelection: runOptionsOverride?.modelSelection || composerContext.modelSelection,
+        selectedAgent: requestedSelection,
+        thinkingLevel: runOptionsOverride?.thinkingLevel || composerContext.thinkingLevel,
+        pinnedItems: [...(runOptionsOverride?.pinnedItems || targetComposerState?.pinnedItems || pinnedItems)],
+      };
       return deliverFollowUpToRunningChat(
         targetChatIdAtSend,
         promptText,
         requestedAttachments,
         undefined,
         shouldRestoreComposer,
+        queuedRunOptions,
+        runtimeChanged,
       );
     }
     // React state does not update synchronously. This latch closes the gap in
@@ -8708,16 +8824,22 @@ function DeepWorkUI() {
     } catch { }
 
     const runModelSelection = runOptionsOverride?.modelSelection || composerContext.modelSelection;
-    const requestedRunModelEntry = parseModelEntryKey(runModelSelection);
     const runtimeEntries = readRuntimeModelEntries();
     const runtimeProviderKeys = readRuntimeBaseApiKeys();
     const runtimeModelKeys = readRuntimeModelApiKeys();
+    const requestedRunModelEntry = parseModelEntryKey(runModelSelection)
+      || (runModelSelection === AUTO_MODEL_SELECTION
+        ? pickAutoModelEntry(runtimeEntries, runtimeProviderKeys, runtimeModelKeys)
+        : null);
+    const requestedRunModelSelection = requestedRunModelEntry
+      ? modelEntryKey(requestedRunModelEntry.provider, requestedRunModelEntry.modelId)
+      : runModelSelection;
     const runModelEntry = requestedRunModelEntry
-      && runtimeEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === runModelSelection)
+      && runtimeEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === requestedRunModelSelection)
       && (
         isLocalModelProvider(requestedRunModelEntry.provider)
         || Boolean(runtimeProviderKeys[requestedRunModelEntry.provider])
-        || Boolean(runtimeModelKeys[runModelSelection])
+        || Boolean(runtimeModelKeys[requestedRunModelSelection])
       )
       ? requestedRunModelEntry
       : null;
@@ -8744,6 +8866,9 @@ function DeepWorkUI() {
       turnId: clientRunId,
       startTime: runStartedAt,
       endTime: runStartedAt,
+      selectedAgentId: runSelectedAgentId,
+      selectedAgentName: runSelectedAgentName,
+      chatMode: runSelectedAgent.chatMode === true,
     };
     const historySourceLogs = targetChatIdAtSend && !shouldCreateTargetChat
       ? stripAgentConnectionLogs(
@@ -8792,7 +8917,7 @@ function DeepWorkUI() {
         thinkingLevel: runThinkingLevel,
         attachments: [],
         pinnedItems: [...runPinnedItems],
-        chatModelSelection: runModelSelection,
+        chatModelSelection: requestedRunModelSelection,
       };
       setComposerStates(previous => {
         const next = { ...previous, [chatIdToUse!]: createdComposerState };
@@ -9254,7 +9379,7 @@ function DeepWorkUI() {
             activeCustomToolLogs.set(customToolTraceKey(event), {
               id: actionLog.id,
               toolCallId: event.toolCallId ? String(event.toolCallId) : undefined,
-              toolName: String(event.toolName || ''),
+              toolName: String(actionLog.tool || event.toolName || ''),
               command: actionLog.command ? String(actionLog.command) : undefined,
               filename: actionLog.filename ? String(actionLog.filename) : undefined,
               toolArgs: event.toolArgs,
@@ -9397,7 +9522,7 @@ function DeepWorkUI() {
           verification: 'adaptive',
           intervention: executionProxyIntervention,
           proxyModelSelection: executionProxyRuntimeModelSelection === AUTO_MODEL_SELECTION
-            ? runModelSelection
+            ? requestedRunModelSelection
             : executionProxyRuntimeModelSelection,
         },
       } : {}),
@@ -9814,7 +9939,7 @@ function DeepWorkUI() {
     let started = false;
     const timer = window.setTimeout(() => {
       started = true;
-      void handleSend(next.text, next.attachments, next.chatId).then(accepted => {
+      void handleSend(next.text, next.attachments, next.chatId, next.runOptions).then(accepted => {
         if (!accepted) return;
         setQueuedFollowUps(previous => previous.filter(item => item.id !== next.id));
         if (next.admissionKey) {
@@ -10916,6 +11041,34 @@ function DeepWorkUI() {
   // Which logs to show in ChatFeed — main or sub-agent
   const autonomousSelected = selectedAgent === 'autonomous';
   const effectiveDisplayLogs = activeSubAgentTab && !autonomousSelected ? subAgentDisplayLogs : displayTraceLogs;
+  const mainTurnWorkActive = useMemo(() => {
+    let latestUserIndex = -1;
+    for (let index = displayTraceLogs.length - 1; index >= 0; index -= 1) {
+      const log = displayTraceLogs[index];
+      if (log?.type === 'user_action' && !isInjectedProxyBoundary(log)) {
+        latestUserIndex = index;
+        break;
+      }
+    }
+    const currentTurnLogs = displayTraceLogs.slice(latestUserIndex >= 0 ? latestUserIndex : 0);
+    const latestRunId = [...currentTurnLogs]
+      .reverse()
+      .map((log: any) => String(log?.runId || log?.turnId || '').trim())
+      .find(Boolean);
+    const activeRunLogs = latestRunId
+      ? currentTurnLogs.filter((log: any) => {
+        const runId = String(log?.runId || log?.turnId || '').trim();
+        return !runId || runId === latestRunId;
+      })
+      : currentTurnLogs;
+    const hasFinalAnswer = activeRunLogs.some((log: any) =>
+      log?.type === 'answer' &&
+      String(log.text || '').trim().length > 0 &&
+      log.isStreaming !== true &&
+      log.isLiveTyping !== true
+    );
+    return isTurnWorkActive(isThinking, hasFinalAnswer, activeRunLogs);
+  }, [displayTraceLogs, isThinking]);
   const composerContextUsage = useMemo(() => {
     // Keep the empty New Chat surface clean. The indicator begins with the
     // first real user boundary and remains isolated to this active chat.
@@ -11044,10 +11197,10 @@ function DeepWorkUI() {
     : mainAgentPaused;
   const canStopSelectedFeed = activeSubAgentTab && !autonomousSelected
     ? ['working', 'spawning', 'paused'].includes(String(selectedSubAgentState?.status || ''))
-    : isThinking;
+    : mainTurnWorkActive;
   const effectiveIsThinking = activeSubAgentTab && !autonomousSelected
     ? Boolean(selectedSubAgentActive)
-    : isThinking && !mainAgentPaused;
+    : mainTurnWorkActive && !mainAgentPaused;
   const handleSelectedSubAgentControl = (action: 'pause' | 'resume' | 'close'): Promise<boolean> => {
     const selectedSubAgent = activeSubAgentTab
       ? currentSubAgents.find(agent => agentIdentitiesOverlap(agent, activeSubAgentTab))
@@ -11180,7 +11333,7 @@ function DeepWorkUI() {
   const hasRealTodoItems = Boolean((lastTaskTracker || currentTaskTracker)?.steps?.length);
 
   const chatChangeStats = useMemo(() => {
-    const fileStatusMap = new Map<string, { path: string; status: 'MOD' | 'ADD' }>();
+    const fileStatusMap = new Map<string, { path: string; status: 'MOD' | 'ADD' | 'DEL' }>();
     const fileDiffsMap = new Map<string, { additions: number; deletions: number }>();
 
     for (const log of traceLogs) {
@@ -11191,9 +11344,29 @@ function DeepWorkUI() {
         continue;
       }
 
-      const toolName = log.tool || log.name || '';
       const args = log.toolArgs || {};
       const text = String(log.text || log.content || log.secondary || '').toLowerCase();
+      const rawResult = log.toolResult ?? log.result;
+      let structuredResult = rawResult;
+      if (typeof rawResult === 'string') {
+        try { structuredResult = JSON.parse(rawResult); } catch { structuredResult = null; }
+      }
+      const structuredChanges = Array.isArray(structuredResult?.changes) ? structuredResult.changes : [];
+      if (structuredChanges.length > 0) {
+        for (const change of structuredChanges) {
+          const filePath = String(change?.path || '').trim();
+          if (!filePath || !isProjectFile(filePath)) continue;
+          const key = getBasename(filePath).toLowerCase();
+          const status: 'MOD' | 'ADD' | 'DEL' = change?.action === 'created' ? 'ADD' : change?.action === 'deleted' ? 'DEL' : 'MOD';
+          fileStatusMap.set(key, { path: filePath, status });
+          const existing = fileDiffsMap.get(key) || { additions: 0, deletions: 0 };
+          fileDiffsMap.set(key, {
+            additions: existing.additions + (Number(change?.additions) || 0),
+            deletions: existing.deletions + (Number(change?.deletions) || 0),
+          });
+        }
+        continue;
+      }
 
       // Determine file status if we edit or write to a file
       let targetFile = '';
@@ -11222,22 +11395,21 @@ function DeepWorkUI() {
 
       if (targetFile && isProjectFile(targetFile)) {
         const key = getBasename(targetFile).toLowerCase();
-        let fileStatus: 'MOD' | 'ADD' = 'MOD';
+        let fileStatus: 'MOD' | 'ADD' | 'DEL' = 'MOD';
         if (
-          toolName.includes('write_to_file') ||
-          toolName.includes('write_file') ||
-          toolName.includes('create_file') ||
           text.includes('created file') ||
           text.includes('new file') ||
           text.includes('wrote file')
         ) {
           fileStatus = 'ADD';
+        } else if (text.includes('deleted file') || text.includes('deleting file')) {
+          fileStatus = 'DEL';
         }
 
         const existingStatus = fileStatusMap.get(key);
         // Prefer absolute path if available (contains slashes)
         const pathVal = (targetFile.includes('/') || targetFile.includes('\\')) ? targetFile : (existingStatus?.path || targetFile);
-        if (!existingStatus || fileStatus === 'ADD') {
+        if (!existingStatus || fileStatus === 'ADD' || fileStatus === 'DEL') {
           fileStatusMap.set(key, { path: pathVal, status: fileStatus });
         } else {
           existingStatus.path = pathVal;
@@ -11582,7 +11754,7 @@ function DeepWorkUI() {
           <button type="button"
             onClick={() => { setSettingsInitialTab('api'); setIsSettingsOpen(true); }}
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
-            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+            style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
             API
           </button>
 
@@ -11590,7 +11762,7 @@ function DeepWorkUI() {
           <button type="button"
             onClick={() => { setSettingsInitialTab('models'); setIsSettingsOpen(true); }}
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
-            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+            style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
             Models
           </button>
 
@@ -11600,7 +11772,7 @@ function DeepWorkUI() {
               <DropdownMenu.Trigger asChild>
                 <button type="button"
                   className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
-                  style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+                  style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
                   Theme
                 </button>
               </DropdownMenu.Trigger>
@@ -11621,9 +11793,9 @@ function DeepWorkUI() {
                   ] as const).map(({ value, label, icon: Icon }) => {
                     const currentTheme = (() => {
                       try {
-                        return document.documentElement.getAttribute('data-theme') || 'light';
+                        return document.documentElement.getAttribute('data-theme') || 'dark';
                       } catch {
-                        return 'light';
+                        return 'dark';
                       }
                     })();
                     const isActive = currentTheme === value;
@@ -11678,7 +11850,7 @@ function DeepWorkUI() {
               <DropdownMenu.Trigger asChild>
                 <button type="button"
                   className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
-                  style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+                  style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
                   Help
                 </button>
               </DropdownMenu.Trigger>
@@ -11808,9 +11980,16 @@ function DeepWorkUI() {
           {/* Updates stays in its existing position after Help. */}
           <button type="button"
             onClick={() => openSettingsWindow('updates')}
-            className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
-            style={{ color: 'var(--sidebar-muted-text, #9A9590)' }}>
+            className="eterx-topbar-btn relative px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
+            style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
             Updates
+            {hasUnreadUpdate && (
+              <span
+                aria-label="Update available"
+                className="absolute right-[3px] top-[6px] h-[6px] w-[6px] rounded-full bg-[#3B82F6]"
+                style={{ boxShadow: '0 0 0 2px var(--sidebar-bg, #111), 0 0 7px rgba(59, 130, 246, 0.6)' }}
+              />
+            )}
           </button>
         </div>
         {/* Keep the center draggable while the macOS app title stays at the far right. */}
@@ -13734,6 +13913,7 @@ function DeepWorkUI() {
         isScreenSharing={liveScreenShareEnabled}
         liveActiveTool={liveActiveTool}
         liveActivityLabel={liveActivityLabel}
+        controlMessage={liveError}
         onToggleMicMute={toggleLiveMicMute}
         onToggleSpeakerMute={toggleLiveSpeakerMute}
         onToggleCamera={toggleLiveCamera}

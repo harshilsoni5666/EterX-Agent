@@ -27,11 +27,7 @@ export interface ToolSemantics {
 }
 
 const MUTATION_TOOLS = new Set([
-  'workspace_write_file',
-  'workspace_str_replace',
-  'workspace_apply_patch',
   'workspace_edit_file',
-  'workspace_edit_many_files',
   'agent_builder_attach_all_main_tools',
   'agent_builder_attach_connector_tools',
   'agent_builder_attach_main_tool',
@@ -43,28 +39,12 @@ const MUTATION_TOOLS = new Set([
 ]);
 
 const VERIFICATION_TOOLS = new Set([
-  'workspace_verify_code',
-  'realtime_verify',
   'agent_builder_run_quality_check',
 ]);
 
 const OBSERVATION_TOOLS = new Set([
-  'workspace_read_file',
-  'workspace_read_many_files',
-  'workspace_search_text',
-  'workspace_semantic_search',
-  'workspace_file_outline',
-  'workspace_list_directory',
-  'workspace_find_files',
   'web_search',
-  'web_scraper',
-  'deep_research',
   'image_asset_search',
-  'youtube_transcript',
-  'parse_docx',
-  'parse_pdf',
-  'rss_feed_reader',
-  'system_monitor',
   'agent_builder_get_profile',
   'agent_builder_list_flows',
   'agent_flow_blackboard_get',
@@ -77,15 +57,11 @@ const EXTERNAL_ACTION_TOOLS = new Set([
   'desktop_notification',
   'gateway_bridge',
   'scheduled_tasks',
-  'slack_controller',
-  'text_to_speech',
 ]);
 
 const COORDINATION_TOOLS = new Set([
   'agent_communicate',
   'ask_user',
-  'background_task',
-  'context_manager',
   'spawn_sub_agent',
   'task_checkpoint',
   'task_decomposer',
@@ -93,12 +69,7 @@ const COORDINATION_TOOLS = new Set([
 ]);
 
 const ARTIFACT_TOOLS = new Set([
-  'code_generator',
-  'csv_data_analyzer',
-  'docx_generator',
-  'file_compression',
   'image_generator',
-  'json_yaml_transform',
   'video_generator',
 ]);
 
@@ -136,13 +107,20 @@ function normalizeAction(args: Record<string, any>): string {
   return String(args?.action || args?.mode || args?.operation || '').trim().toLowerCase();
 }
 
+function terminalCommandText(args: Record<string, any>): string {
+  const commands = Array.isArray(args?.commands)
+    ? args.commands.map((entry: any) => String(entry?.command || entry?.cmd || '')).filter(Boolean)
+    : [];
+  return commands.length > 0 ? commands.join('\n') : String(args?.command || args?.script || args?.cmd || '');
+}
+
 export function commandLooksLikeVerification(args: Record<string, any>): boolean {
-  const command = String(args?.command || args?.script || args?.cmd || '');
+  const command = terminalCommandText(args);
   return /(?:^|[\s;&|])(test|lint|build|typecheck|type-check|tsc|pytest|vitest|jest|playwright|verify|check|benchmark|bench|eval|evaluate|audit|cargo\s+check|go\s+test|dotnet\s+test)(?:$|[\s:&|])/i.test(command);
 }
 
 export function commandLooksLikeMutation(args: Record<string, any>): boolean {
-  const command = String(args?.command || args?.script || args?.cmd || '');
+  const command = terminalCommandText(args);
   return /(?:^|[\s;&|])(apply|format|prettier\s+--write|sed\s+-i|move|mv|copy|cp|mkdir|install|uninstall|touch|new-item|set-content|add-content)(?:$|[\s;&|])/i.test(command);
 }
 
@@ -172,7 +150,18 @@ export function classifyToolSemantics(toolName: string, args: Record<string, any
     };
   }
 
-  if (name === 'workspace_run_command' || name === 'system_shell' || name === 'workspace_execute_script') {
+  if (name === 'workspace_run_command') {
+    const mode = normalizeAction(args);
+    if (name === 'workspace_run_command' && (mode === 'check' || mode === 'list')) {
+      return {
+        effect: 'observation',
+        isMutation: false,
+        isVerification: false,
+        isExternalSideEffect: false,
+        isRefreshSensitive: true,
+        materialOnSuccess: false,
+      };
+    }
     if (commandLooksLikeVerification(args)) {
       return {
         effect: 'verification',
@@ -194,7 +183,7 @@ export function classifyToolSemantics(toolName: string, args: Record<string, any
     };
   }
 
-  if (name === 'browser_control' || name === 'screen_agent' || name === 'computer' || name === 'desktop_control' || name === 'screenshot_capture') {
+  if (name === 'browser_control' || name === 'screen_agent' || name === 'computer' || name === 'screenshot_capture') {
     const action = normalizeAction(args);
     const verifies = name === 'screenshot_capture' || BROWSER_OBSERVATION_ACTIONS.has(action);
     const mutates = BROWSER_MUTATION_ACTIONS.has(action);

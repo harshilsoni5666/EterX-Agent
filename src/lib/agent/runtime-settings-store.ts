@@ -6,8 +6,10 @@ import { getEterxDataDir } from './storage-paths';
 import type { SearchSettings } from '../search/search-config';
 import { normalizeImageSettings, type ImageSettings } from '../image/image-generation-config';
 import { normalizeVideoSettings, type VideoSettings } from '../video/video-generation-config';
+import { normalizeApiRetries } from './api-retry';
 
 export type StoredRuntimeSettings = {
+  apiRetries?: number;
   apiKeys?: Record<string, string | string[]>;
   liveApiKeys?: Record<string, string | string[]>;
   modelApiKeys?: Record<string, string>;
@@ -83,6 +85,7 @@ const normalizeStoredSettings = (value: unknown): StoredRuntimeSettings => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const source = value as Record<string, unknown>;
   return {
+    apiRetries: normalizeApiRetries(source.apiRetries),
     apiKeys: source.apiKeys && typeof source.apiKeys === 'object' && !Array.isArray(source.apiKeys)
       ? source.apiKeys as Record<string, string | string[]>
       : {},

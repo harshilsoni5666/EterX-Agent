@@ -8,9 +8,11 @@ import { normalizeProviderCacheUsage } from '../../../../lib/agent/provider-prom
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import {
   buildScopedRuntimeSettings,
-  getScopedRuntimeApiKey,
+  getScopedRuntimeApiKeyValues,
+  type RuntimeApiKeyProvider,
   type ScopedRuntimeSettings,
 } from '../../../../lib/agent/runtime-api-keys';
+import { withApiKeyRounds } from '../../../../lib/agent/api-retry';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
 
@@ -79,19 +81,17 @@ const normalizeRequestedTitleModel = (value: unknown): RequestedTitleModel | nul
   return { provider, modelName };
 };
 
-async function generateTitleWithProvider(
+async function generateTitleWithProviderOnce(
   provider: MainAgentProvider,
   modelName: string,
   prompt: string,
-  runtimeSettings: ScopedRuntimeSettings,
+  apiKey: string,
 ): Promise<{ title: string; provider: MainAgentProvider; model: string; usage?: Record<string, number> }> {
   if (provider === 'anthropic') {
-    const apiKey = getScopedRuntimeApiKey(runtimeSettings, 'anthropic');
-    if (!apiKey) throw new Error('Missing Anthropic API key');
-
     const client = new Anthropic({
       apiKey,
       baseURL: getProviderBaseURL('anthropic'),
+      maxRetries: 0,
     });
     const params: any = {
       model: modelName,
@@ -114,9 +114,6 @@ async function generateTitleWithProvider(
   }
 
   if (provider === 'gemini') {
-    const apiKey = runtimeSettings.preferredGeminiApiKey || getScopedRuntimeApiKey(runtimeSettings, 'gemini');
-    if (!apiKey) throw new Error('Missing Gemini API key');
-
     const genAI = new GoogleGenAI({ apiKey });
     const result = await genAI.models.generateContent({
       model: modelName,
@@ -130,14 +127,10 @@ async function generateTitleWithProvider(
   }
 
   // Other OpenAI-compatible providers: openai, openrouter, groq, mistral
-  const apiKey = isLocalModelProvider(provider)
-    ? (getScopedRuntimeApiKey(runtimeSettings, provider) || 'local-no-key-required')
-    : getScopedRuntimeApiKey(runtimeSettings, provider);
-  if (!apiKey) throw new Error(`Missing ${provider} API key`);
-
   const client = new OpenAI({
     apiKey,
     baseURL: getProviderBaseURL(provider),
+    maxRetries: 0,
     defaultHeaders: provider === 'openrouter'
       ? {
         'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
@@ -160,6 +153,27 @@ async function generateTitleWithProvider(
   const title = cleanTitle(result.choices?.[0]?.message?.content);
   if (!title) throw new Error('Model returned an invalid chat title');
   return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usage) };
+}
+
+async function generateTitleWithProvider(
+  provider: MainAgentProvider,
+  modelName: string,
+  prompt: string,
+  runtimeSettings: ScopedRuntimeSettings,
+): Promise<{ title: string; provider: MainAgentProvider; model: string; usage?: Record<string, number> }> {
+  const configuredKeys = getScopedRuntimeApiKeyValues(runtimeSettings, provider as RuntimeApiKeyProvider);
+  const keys = configuredKeys.length > 0
+    ? configuredKeys
+    : isLocalModelProvider(provider)
+      ? ['local-no-key-required']
+      : [];
+  if (keys.length === 0) throw new Error(`Missing ${provider} API key`);
+
+  return withApiKeyRounds(
+    keys,
+    runtimeSettings,
+    apiKey => generateTitleWithProviderOnce(provider, modelName, prompt, apiKey),
+  );
 }
 
 export async function POST(req: NextRequest) {

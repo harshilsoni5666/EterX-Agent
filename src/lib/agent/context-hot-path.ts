@@ -1,7 +1,13 @@
 import { distillEvidence } from './memory/evidence-distiller';
 
-const DEFAULT_RETAIN_RECENT_TOOL_TURNS = 6;
-const DEFAULT_STALE_RESULT_CHARS = 3_200;
+// The model only needs the newest result batch verbatim. Every older batch has
+// already been consumed by at least one model continuation and can safely use
+// the extractive evidence digest. Retaining six full batches was the largest
+// source of request growth in tool-heavy runs.
+const DEFAULT_RETAIN_RECENT_TOOL_BATCHES = 1;
+const DEFAULT_STALE_RESULT_CHARS = 1_200;
+const DEFAULT_MAX_HOT_MESSAGES = 14;
+const DEFAULT_KEEP_HOT_MESSAGES = 8;
 
 type CompactedEvidence = {
   __eterxContextDigest: true;
@@ -27,6 +33,25 @@ function geminiToolResultTurn(turn: any): boolean {
   return Array.isArray(turn?.parts) && turn.parts.some((part: any) => part?.functionResponse);
 }
 
+function staleToolResultIndexes(
+  indexes: number[],
+  retainRecentBatches: number,
+  combineContiguousIndexes: boolean,
+): Set<number> {
+  if (indexes.length === 0) return new Set();
+  const groups: number[][] = [];
+  for (const index of indexes) {
+    const previous = groups[groups.length - 1];
+    if (combineContiguousIndexes && previous && previous[previous.length - 1] === index - 1) {
+      previous.push(index);
+    } else {
+      groups.push([index]);
+    }
+  }
+  const staleGroupCount = Math.max(0, groups.length - Math.max(0, retainRecentBatches));
+  return new Set(groups.slice(0, staleGroupCount).flat());
+}
+
 /**
  * Shrink only stale tool payloads that the model has already consumed. Recent
  * protocol pairs remain byte-for-byte intact. The extractive digest preserves
@@ -35,11 +60,11 @@ function geminiToolResultTurn(turn: any): boolean {
 export function compactStaleGeminiHistory(
   contents: any[],
   query: string,
-  retainRecentToolTurns = DEFAULT_RETAIN_RECENT_TOOL_TURNS,
+  retainRecentToolBatches = DEFAULT_RETAIN_RECENT_TOOL_BATCHES,
   maxResultChars = DEFAULT_STALE_RESULT_CHARS,
 ): any[] {
   const toolTurnIndexes = contents.map((turn, index) => geminiToolResultTurn(turn) ? index : -1).filter(index => index >= 0);
-  const staleIndexes = new Set(toolTurnIndexes.slice(0, Math.max(0, toolTurnIndexes.length - retainRecentToolTurns)));
+  const staleIndexes = staleToolResultIndexes(toolTurnIndexes, retainRecentToolBatches, false);
   if (staleIndexes.size === 0) return contents;
 
   return contents.map((turn, index) => {
@@ -76,11 +101,14 @@ function providerToolResultTurn(message: any): boolean {
 export function compactStaleProviderHistory(
   messages: any[],
   query: string,
-  retainRecentToolTurns = DEFAULT_RETAIN_RECENT_TOOL_TURNS,
+  retainRecentToolBatches = DEFAULT_RETAIN_RECENT_TOOL_BATCHES,
   maxResultChars = DEFAULT_STALE_RESULT_CHARS,
 ): any[] {
   const toolTurnIndexes = messages.map((message, index) => providerToolResultTurn(message) ? index : -1).filter(index => index >= 0);
-  const staleIndexes = new Set(toolTurnIndexes.slice(0, Math.max(0, toolTurnIndexes.length - retainRecentToolTurns)));
+  // OpenAI-compatible providers emit one contiguous role=tool message per
+  // parallel call. Treat that contiguous run as one atomic batch so every
+  // result from the latest parallel action remains byte-for-byte intact.
+  const staleIndexes = staleToolResultIndexes(toolTurnIndexes, retainRecentToolBatches, true);
   if (staleIndexes.size === 0) return messages;
 
   return messages.map((message, index) => {
@@ -104,6 +132,60 @@ export function compactStaleProviderHistory(
       }),
     };
   });
+}
+
+function geminiTurnText(turn: any): string {
+  if (!Array.isArray(turn?.parts)) return '';
+  return turn.parts.map((part: any) => String(part?.text || '')).filter(Boolean).join('\n');
+}
+
+function stripPriorGeminiRolledHistory(contents: any[]): any[] {
+  let removeAck = false;
+  return contents.filter(turn => {
+    const text = geminiTurnText(turn);
+    if (text.startsWith(ROLLED_HISTORY_PREFIX)) {
+      removeAck = true;
+      return false;
+    }
+    if (removeAck && turn?.role === 'model' && text === ROLLED_HISTORY_ACK) {
+      removeAck = false;
+      return false;
+    }
+    removeAck = false;
+    return true;
+  });
+}
+
+/** Gemini-safe local rolling state transfer; keeps function call/response pairs. */
+export function rollGeminiHistory(
+  contents: any[],
+  ledgerSummary: string,
+  maxConversationTurns = DEFAULT_MAX_HOT_MESSAGES,
+  keepRecentTurns = DEFAULT_KEEP_HOT_MESSAGES,
+): any[] {
+  const clean = stripPriorGeminiRolledHistory(contents);
+  if (clean.length <= maxConversationTurns) return clean;
+
+  let start = Math.max(0, clean.length - keepRecentTurns);
+  const startsWithFunctionResponse = Array.isArray(clean[start]?.parts)
+    && clean[start].parts.some((part: any) => part?.functionResponse);
+  if (startsWithFunctionResponse && start > 0) start--;
+
+  const tail = clean.slice(start);
+  const extractiveFallback = clean
+    .slice(0, start)
+    .map(turn => `${String(turn?.role || 'turn').toUpperCase()}: ${geminiTurnText(turn)}`)
+    .filter(line => line.length > 12)
+    .join('\n')
+    .slice(-6_000);
+  const effectiveLedger = ledgerSummary || extractiveFallback || 'Older protocol turns completed; retained recent turns are authoritative.';
+  const capsule = {
+    role: 'user',
+    parts: [{ text: `${ROLLED_HISTORY_PREFIX}\n${effectiveLedger}\n[END ROLLED EXECUTION HISTORY]` }],
+  };
+  return tail[0]?.role === 'user'
+    ? [capsule, { role: 'model', parts: [{ text: ROLLED_HISTORY_ACK }] }, ...tail]
+    : [capsule, ...tail];
 }
 
 const ROLLED_HISTORY_PREFIX = '[SYSTEM - ROLLED EXECUTION HISTORY]';
@@ -137,10 +219,9 @@ export function rollProviderHistory(
   messages: any[],
   ledgerSummary: string,
   provider: 'anthropic' | 'openai',
-  maxConversationMessages = 18,
-  keepRecentMessages = 12,
+  maxConversationMessages = DEFAULT_MAX_HOT_MESSAGES,
+  keepRecentMessages = DEFAULT_KEEP_HOT_MESSAGES,
 ): any[] {
-  if (!ledgerSummary) return messages;
   const clean = stripPriorRolledHistory(messages);
   const systems = clean.filter(message => message?.role === 'system');
   const conversation = clean.filter(message => message?.role !== 'system');
@@ -156,7 +237,14 @@ export function rollProviderHistory(
     start--;
   }
   const tail = conversation.slice(start);
-  const marker = `${ROLLED_HISTORY_PREFIX}\n${ledgerSummary}\n[END ROLLED EXECUTION HISTORY]`;
+  const extractiveFallback = conversation
+    .slice(0, start)
+    .map(message => `${String(message?.role || 'turn').toUpperCase()}: ${providerMessageText(message)}`)
+    .filter(line => line.length > 12)
+    .join('\n')
+    .slice(-6_000);
+  const effectiveLedger = ledgerSummary || extractiveFallback || 'Older protocol turns completed; retained recent turns are authoritative.';
+  const marker = `${ROLLED_HISTORY_PREFIX}\n${effectiveLedger}\n[END ROLLED EXECUTION HISTORY]`;
 
   if (provider === 'anthropic') {
     const capsule = { role: 'user', content: [{ type: 'text', text: marker }] };

@@ -21,6 +21,7 @@ export type SearchSettings = {
   enabled: boolean;
   preferModelSearch: boolean;
   provider: SearchProvider;
+  xaiModel: string;
   fallbackProviders: SearchProvider[];
   apiKeys: SearchProviderKeyMap;
   baseURLs: SearchProviderBaseURLMap;
@@ -131,6 +132,7 @@ export const DEFAULT_SEARCH_SETTINGS: SearchSettings = {
   enabled: true,
   preferModelSearch: true,
   provider: 'tavily',
+  xaiModel: 'grok-4.6',
   fallbackProviders: SEARCH_PROVIDER_IDS.filter(provider => provider !== 'tavily'),
   apiKeys: {},
   baseURLs: {},
@@ -173,11 +175,11 @@ export const normalizeSearchSettings = (
   const enabled = source.enabled !== false;
   const preferModelSearch = source.preferModelSearch !== false;
   const provider = isProvider(source.provider) ? source.provider : DEFAULT_SEARCH_SETTINGS.provider;
-  const hasServiceConfig = source.enabledServices && typeof source.enabledServices === 'object' && !Array.isArray(source.enabledServices)
-    ? Object.keys(source.enabledServices as Record<string, unknown>).length > 0
-    : false;
+  const xaiModel = typeof source.xaiModel === 'string' && source.xaiModel.trim()
+    ? source.xaiModel.trim().slice(0, 160)
+    : DEFAULT_SEARCH_SETTINGS.xaiModel;
   const rawFallbacks = Array.isArray(source.fallbackProviders)
-    ? source.fallbackProviders.length === 0 && !hasServiceConfig ? DEFAULT_SEARCH_SETTINGS.fallbackProviders : source.fallbackProviders
+    ? source.fallbackProviders
     : DEFAULT_SEARCH_SETTINGS.fallbackProviders;
   const fallbackProviders = Array.from(new Set(rawFallbacks
     .filter(isProvider)
@@ -214,5 +216,5 @@ export const normalizeSearchSettings = (
     }),
   ) as Partial<Record<SearchProvider, SearchService[]>>;
 
-  return { enabled, preferModelSearch, provider, fallbackProviders, apiKeys, baseURLs, enabledServices };
+  return { enabled, preferModelSearch, provider, xaiModel, fallbackProviders, apiKeys, baseURLs, enabledServices };
 };

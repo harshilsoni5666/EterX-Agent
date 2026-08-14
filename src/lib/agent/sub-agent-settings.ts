@@ -14,7 +14,7 @@ export const DEFAULT_SUB_AGENT_RUNTIME_SETTINGS: SubAgentRuntimeSettings = {
   // normal Main-agent turn acquire background-worker authority by accident.
   enabled: false,
   maxSubAgents: 5,
-  maxRetries: 2,
+  maxRetries: 0,
 };
 
 /** Normalize the persisted Settings-panel values at the execution boundary. */
@@ -33,7 +33,7 @@ export function normalizeSubAgentRuntimeSettings(value: unknown): SubAgentRuntim
       ? Math.min(MAX_SUB_AGENTS, Math.max(1, Math.floor(rawLimit)))
       : DEFAULT_SUB_AGENT_RUNTIME_SETTINGS.maxSubAgents,
     maxRetries: Number.isFinite(rawRetries)
-      ? Math.max(0, Math.min(5, Math.floor(rawRetries)))
+      ? Math.max(0, Math.min(3, Math.floor(rawRetries)))
       : DEFAULT_SUB_AGENT_RUNTIME_SETTINGS.maxRetries,
   };
 }

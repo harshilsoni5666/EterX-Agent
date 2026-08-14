@@ -1,4 +1,5 @@
 import { apiKeyPool } from './api-key-pool';
+import { DEFAULT_API_RETRIES, normalizeApiRetries } from './api-retry';
 
 export type RuntimeApiKeyProvider =
   | 'gemini'
@@ -66,6 +67,7 @@ export type RuntimeModelOverrideStatus = {
 };
 
 export type ScopedRuntimeSettings = {
+  apiRetries: number;
   apiKeys: Record<RuntimeApiKeyProvider, string[]>;
   modelOverrides: Record<RuntimeModelProvider, string>;
   apiKeyResult: RuntimeApiKeyApplyResult;
@@ -117,7 +119,10 @@ const PROVIDERS: RuntimeApiKeyProvider[] = [
 const globalForRuntimeKeys = globalThis as typeof globalThis & {
   __eterxRuntimeApiKeys?: Record<RuntimeApiKeyProvider, string[]>;
   __eterxRuntimeApiKeyCursor?: Record<RuntimeApiKeyProvider, number>;
+  __eterxRuntimeApiRetries?: number;
 };
+
+globalForRuntimeKeys.__eterxRuntimeApiRetries ??= DEFAULT_API_RETRIES;
 
 const runtimeApiKeys: Record<RuntimeApiKeyProvider, string[]> =
   globalForRuntimeKeys.__eterxRuntimeApiKeys ||
@@ -242,6 +247,16 @@ export function getRuntimeModelOverrides(): Record<RuntimeModelProvider, string>
 
 export function getRuntimeApiKeyValues(provider: RuntimeApiKeyProvider): string[] {
   return [...(runtimeApiKeys[provider] || [])];
+}
+
+export function getRuntimeApiRetries(): number {
+  return normalizeApiRetries(globalForRuntimeKeys.__eterxRuntimeApiRetries);
+}
+
+export function applyRuntimeApiRetries(raw: unknown): number {
+  const next = normalizeApiRetries(raw);
+  globalForRuntimeKeys.__eterxRuntimeApiRetries = next;
+  return next;
 }
 
 export function getRuntimeApiKey(provider: RuntimeApiKeyProvider): string {
@@ -371,6 +386,7 @@ export function buildScopedRuntimeSettings(): ScopedRuntimeSettings {
   }
 
   return {
+    apiRetries: getRuntimeApiRetries(),
     apiKeys: scopedKeys,
     modelOverrides,
     apiKeyResult: {

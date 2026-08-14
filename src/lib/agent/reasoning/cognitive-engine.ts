@@ -191,7 +191,7 @@ export class CognitiveReasoningEngine {
         hypotheses.push({
           id: 'h_read_fix',
           approach: 'Read the error context, identify root cause, apply targeted fix, verify',
-          toolsNeeded: ['workspace_read_file', 'workspace_edit_file', 'workspace_verify_code'],
+          toolsNeeded: ['workspace_run_command', 'workspace_edit_file'],
           estimatedSteps: 4,
           risks: ['Root cause may be in a different file', 'Fix may introduce new issues'],
           confidence: 0.75,
@@ -200,7 +200,7 @@ export class CognitiveReasoningEngine {
         hypotheses.push({
           id: 'h_search_fix',
           approach: 'Search codebase for error pattern, trace the call chain, fix at source',
-          toolsNeeded: ['workspace_semantic_search', 'workspace_search_text', 'workspace_read_file', 'workspace_edit_file'],
+          toolsNeeded: ['workspace_run_command', 'workspace_edit_file'],
           estimatedSteps: 5,
           risks: ['Search may return too many results', 'Deeper systemic issue'],
           confidence: 0.6,
@@ -212,20 +212,11 @@ export class CognitiveReasoningEngine {
       case 'research': {
         hypotheses.push({
           id: 'h_web_research',
-          approach: 'Web search for authoritative sources, read top results, synthesize findings',
-          toolsNeeded: ['web_search', 'deep_research'],
+          approach: 'Use provider-aware web research for authoritative sources, extract top results, and synthesize findings',
+          toolsNeeded: ['web_search'],
           estimatedSteps: 5,
           risks: ['Sources may be outdated', 'Conflicting information'],
           confidence: 0.7,
-          status: 'pending',
-        });
-        hypotheses.push({
-          id: 'h_deep_research',
-          approach: 'Use deep_research for parallel multi-angle investigation with source reading',
-          toolsNeeded: ['deep_research'],
-          estimatedSteps: 3,
-          risks: ['May take longer', 'Quality depends on source availability'],
-          confidence: 0.8,
           status: 'pending',
         });
         break;
@@ -246,7 +237,7 @@ export class CognitiveReasoningEngine {
           hypotheses.push({
             id: 'h_scaffold_then_fill',
             approach: 'Scaffold project structure first, then fill in implementation details',
-            toolsNeeded: ['workspace_edit_file', 'workspace_verify_code'],
+            toolsNeeded: ['workspace_edit_file', 'workspace_run_command'],
             estimatedSteps: Math.max(6, this.estimateStepCount(message)),
             risks: ['Scaffold may not match exact requirements', 'May need heavy customization'],
             confidence: 0.6,
@@ -303,25 +294,24 @@ export class CognitiveReasoningEngine {
     switch (hypothesis.id) {
       case 'h_read_fix': {
         nodes.push(
-          { id: 'read_context', description: 'Read the file/error context', toolHint: 'workspace_read_file', dependencies: [], status: 'pending', verificationRequired: false },
+          { id: 'read_context', description: 'Read the file/error context', toolHint: 'workspace_run_command', dependencies: [], status: 'pending', verificationRequired: false },
           { id: 'identify_cause', description: 'Identify root cause from the error', dependencies: ['read_context'], status: 'pending', verificationRequired: false },
           { id: 'apply_fix', description: 'Apply the targeted fix', toolHint: 'workspace_edit_file', dependencies: ['identify_cause'], status: 'pending', verificationRequired: true },
-          { id: 'verify_fix', description: 'Verify the fix works', toolHint: 'workspace_verify_code', dependencies: ['apply_fix'], status: 'pending', verificationRequired: false },
+          { id: 'verify_fix', description: 'Verify the fix works', toolHint: 'workspace_run_command', dependencies: ['apply_fix'], status: 'pending', verificationRequired: false },
         );
         break;
       }
 
-      case 'h_web_research':
-      case 'h_deep_research': {
+      case 'h_web_research': {
         nodes.push(
-          { id: 'search', description: 'Search for authoritative sources', toolHint: hypothesis.id === 'h_deep_research' ? 'deep_research' : 'web_search', dependencies: [], status: 'pending', verificationRequired: false },
+          { id: 'search', description: 'Search for authoritative sources', toolHint: 'web_search', dependencies: [], status: 'pending', verificationRequired: false },
           { id: 'read_sources', description: 'Read and extract key information from top sources', toolHint: 'web_search', dependencies: ['search'], status: 'pending', verificationRequired: false },
           { id: 'synthesize', description: 'Synthesize findings into a coherent answer', dependencies: ['read_sources'], status: 'pending', verificationRequired: false },
         );
         // If deliverable requested, add creation step
         if (/\b(report|document|docx|pdf|spreadsheet|xlsx)\b/i.test(lower)) {
           nodes.push(
-            { id: 'create_deliverable', description: 'Create the requested deliverable file', toolHint: 'docx_generator', dependencies: ['synthesize'], status: 'pending', verificationRequired: true },
+            { id: 'create_deliverable', description: 'Create the requested deliverable file with a workspace script', toolHint: 'workspace_run_command', dependencies: ['synthesize'], status: 'pending', verificationRequired: true },
           );
         }
         break;
@@ -517,17 +507,17 @@ export class CognitiveReasoningEngine {
     const tools: string[] = [];
     const lower = message.toLowerCase();
 
-    if (/\b(file|read|open|check|see|look)\b/i.test(lower)) tools.push('workspace_read_file');
-    if (/\b(write|create|make|generate|add|new)\b/i.test(lower)) tools.push('workspace_write_file');
+    if (/\b(file|read|open|check|see|look)\b/i.test(lower)) tools.push('workspace_run_command');
+    if (/\b(write|create|make|generate|add|new)\b/i.test(lower)) tools.push('workspace_edit_file');
     if (/\b(edit|modify|change|update|fix|patch)\b/i.test(lower)) {
       tools.push('workspace_edit_file');
     }
     if (/\b(search|find|grep|locate)\b/i.test(lower)) {
-      tools.push('workspace_semantic_search', 'workspace_search_text');
+      tools.push('workspace_run_command');
     }
     if (/\b(run|execute|command|shell|terminal|npm|pip|install)\b/i.test(lower)) tools.push('workspace_run_command');
     if (/\b(web|search|google|online|internet|latest)\b/i.test(lower)) tools.push('web_search');
-    if (/\b(test|verify|check|lint|build)\b/i.test(lower)) tools.push('workspace_verify_code');
+    if (/\b(test|verify|check|lint|build)\b/i.test(lower)) tools.push('workspace_run_command');
     if (/\b(image|picture|photo|logo|illustration)\b/i.test(lower)) tools.push('image_generator');
 
     return tools.filter(t => available.includes(t));

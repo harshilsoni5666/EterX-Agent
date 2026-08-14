@@ -110,20 +110,16 @@ export class ExecutionMonitor {
     // Track file operations
     const filename = args?.filename || args?.path || '';
     if (success && filename) {
-      if (toolName === 'workspace_write_file') {
-        this.filesCreated.add(filename);
-        this.recordMilestone(`Created: ${String(filename).split(/[\\/]/).pop()}`, 'creation');
-      } else if (['workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files'].includes(toolName)) {
+      if (toolName === 'workspace_edit_file') {
         this.filesModified.add(filename);
-        this.recordMilestone(`Modified: ${String(filename).split(/[\\/]/).pop()}`, 'fix');
+        this.recordMilestone(`Updated: ${String(filename).split(/[\\/]/).pop()}`, 'fix');
       }
     }
 
     // Track progress
     const productiveTools = new Set([
-      'workspace_write_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_file', 'workspace_edit_many_files', 'system_shell',
-      'workspace_run_command', 'workspace_apply_patch',
-      'image_generator', 'video_generator', 'docx_generator',
+      'workspace_edit_file', 'workspace_run_command',
+      'image_generator', 'video_generator',
     ]);
 
     if (productiveTools.has(toolName) && success) {
@@ -217,7 +213,7 @@ export class ExecutionMonitor {
     parts.push(`📊 Progress: ${m.toolCalls} tool calls, ${m.filesCreated} files created, ${m.filesModified} files modified`);
 
     if (m.isStuck) {
-      parts.push('⚠️ LOOP DETECTED — You are not making productive progress. Change approach or deliver what you have.');
+      parts.push('⚠️ LOOP DETECTED — You are not making productive progress. Change approach, then continue toward the objective.');
     }
 
     if (m.failedCalls > 2) {

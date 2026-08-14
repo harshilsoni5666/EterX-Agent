@@ -852,31 +852,40 @@ class LifetimeBrain {
 
     try {
       switch (toolName) {
-        case 'workspace_write_file':
         case 'workspace_edit_file': {
           if (hasError) {
             this.recordError({ chatId, projectId, tool: toolName, error: String(result.error) });
             return;
           }
-          const filename = String(args.filename || args.path || '');
-          const content = String(args.content || '');
           const purpose = String(args.purpose || args.description || args.uiActionText || 'Updated');
-          if (!filename) return;
-          if (toolName === 'workspace_write_file') {
-            this.recordFileWrite({
-              chatId, projectId, filename, purpose,
-              contentPreview: content.substring(0, 500),
-              sizeBytes: content.length,
-            });
-          } else {
+          const created = (Array.isArray(result?.filesCreated) ? result.filesCreated : []).map(String).filter(Boolean);
+          const modified = (Array.isArray(result?.filesModified) ? result.filesModified : []).map(String).filter(Boolean);
+          const deleted = (Array.isArray(result?.filesDeleted) ? result.filesDeleted : []).map(String).filter(Boolean);
+          const requested = Array.isArray(args.files)
+            ? args.files.map((entry: any) => String(entry?.filename || entry?.path || '')).filter(Boolean)
+            : [String(args.filename || args.path || '')].filter(Boolean);
+          if (created.length === 0 && modified.length === 0 && deleted.length === 0) modified.push(...requested);
+          for (const filename of [...new Set(created)]) {
+            this.recordFileWrite({ chatId, projectId, filename, purpose, contentPreview: '', sizeBytes: 0 });
+          }
+          for (const filename of [...new Set(modified)]) {
+            if (created.includes(filename)) continue;
             this.recordFileEdit({ chatId, projectId, filename, changeDescription: purpose });
+          }
+          for (const filename of [...new Set(deleted)]) {
+            this.recordFileEdit({ chatId, projectId, filename, changeDescription: `Deleted — ${purpose}` });
           }
           break;
         }
 
-        case 'system_shell':
         case 'workspace_run_command': {
-          const cmd = String(args.command || args.cmd || '');
+          const batchCommands = Array.isArray(args.commands)
+            ? args.commands.map((entry: any) => String(entry?.command || '')).filter(Boolean)
+            : [];
+          const mode = String(args.mode || 'run');
+          const cmd = batchCommands.length > 0
+            ? batchCommands.join(' && ')
+            : String(args.command || args.cmd || (mode === 'run' ? '' : `${mode} ${args.taskId || ''}`));
           if (!cmd) return;
           const output = String(
             result?.output || result?.stdout || result?.stderr || result?.result || ''

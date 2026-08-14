@@ -76,6 +76,48 @@ async function run() {
     assert.equal(mini.provider, 'minimax');
     assert.ok(minimaxCalls.some(call => call.includes('/v2/video_generation')));
 
+    applyRuntimeVideoSettings({ enabled: true, provider: 'minimax', fallbackProviders: [], modelByProvider: { minimax: 'MiniMax-Hailuo-2.3' }, apiKeys: { minimax: ['minimax-test-key'] } });
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/v1/video_generation') && init?.method === 'POST') return json({ task_id: 'hailuo_test_1' });
+      if (url.includes('/v1/query/video_generation?task_id=hailuo_test_1')) return json({ task_id: 'hailuo_test_1', status: 'Success', file_id: 'hailuo_file_1' });
+      if (url.includes('/v1/files/retrieve?file_id=hailuo_file_1')) return json({ file: { download_url: 'https://media.example/hailuo.mp4' } });
+      if (url === 'https://media.example/hailuo.mp4') return media();
+      throw new Error(`Unexpected Hailuo request: ${url}`);
+    };
+    const hailuo = await executeVideoGeneration({ prompt: 'A blue train crossing a bridge', filePath: path.join(tempDir, 'hailuo.mp4') });
+    assert.equal(hailuo.success, true);
+    assert.equal(hailuo.model, 'MiniMax-Hailuo-2.3');
+
+    applyRuntimeVideoSettings({ enabled: true, provider: 'luma', fallbackProviders: [], modelByProvider: { luma: 'ray-2' }, apiKeys: { luma: ['luma-test-key'] } });
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/generations/video') && init?.method === 'POST') return json({ id: 'luma_test_1' });
+      if (url.endsWith('/generations/luma_test_1')) return json({ id: 'luma_test_1', state: 'completed', assets: { video: { url: 'https://media.example/luma.mp4' } } });
+      if (url === 'https://media.example/luma.mp4') return media();
+      throw new Error(`Unexpected Luma request: ${url}`);
+    };
+    const luma = await executeVideoGeneration({ prompt: 'A red kite over a lake', filePath: path.join(tempDir, 'luma.mp4') });
+    assert.equal(luma.success, true);
+    assert.equal(luma.provider, 'luma');
+
+    applyRuntimeVideoSettings({ enabled: true, provider: 'fal', fallbackProviders: [], modelByProvider: { fal: 'fal-ai/wan-25-preview/text-to-video' }, apiKeys: { fal: ['fal-test-key'] } });
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/fal-ai/wan-25-preview/image-to-video') && init?.method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        assert.equal(body.image_url, 'https://images.example/start.png');
+        assert.equal(body.duration, '5');
+        assert.equal(body.resolution, '1080p');
+        return json({ video: { url: 'https://media.example/fal.mp4' } });
+      }
+      if (url === 'https://media.example/fal.mp4') return media();
+      throw new Error(`Unexpected FAL request: ${url}`);
+    };
+    const fal = await executeVideoGeneration({ prompt: 'Animate the first frame', imageUrl: 'https://images.example/start.png', filePath: path.join(tempDir, 'fal.mp4'), width: 1280, height: 720, duration: 5 });
+    assert.equal(fal.success, true);
+    assert.equal(fal.provider, 'fal');
+
     applyRuntimeVideoSettings({ enabled: true, provider: 'volcengine', fallbackProviders: [], modelByProvider: { volcengine: 'doubao-seedance-1-0-pro-250528' }, apiKeys: { volcengine: ['ark-test-key'] } });
     const arkCalls: string[] = [];
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {

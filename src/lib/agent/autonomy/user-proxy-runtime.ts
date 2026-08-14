@@ -1417,11 +1417,6 @@ export class UserProxyRuntime {
           ? 'standard'
           : 'scan';
     const evidenceLimit = reviewDepth === 'deep' ? 24 : reviewDepth === 'standard' ? 16 : 10;
-    const investigationBudget = reviewDepth === 'deep'
-      ? posture === 'close' ? 4 : posture === 'normal' ? 3 : 2
-      : reviewDepth === 'standard'
-        ? posture === 'close' ? 2 : posture === 'normal' ? 1 : 0
-        : 0;
     const evidenceWindow = this.state.events.slice(-evidenceLimit);
     const reviewThroughEventId = evidenceWindow.reduce((highest, event) => Math.max(highest, event.id), this.state.lastReviewedEventId);
     const recent = evidenceWindow.map(event =>
@@ -1515,10 +1510,10 @@ export class UserProxyRuntime {
         : '',
       'Intervention judgment is categorical, not a decaying confidence score. Report counterfactualImpact (what worsens if you stay silent), evidenceQuality (how directly the supplied evidence supports the diagnosis), and interventionCost (how disruptive the message is now). The runtime validates these fields against cited events and the selected posture.',
       interventionDoctrine,
-      'You have bounded read-only investigation tools. Use them only when a consequential factual uncertainty cannot be resolved from Main telemetry and the answer could change whether intervention is necessary. Never edit, execute Main\'s task, or use tools for routine curiosity. Tool findings are supervisory evidence, not permission to take over execution.',
-      `REVIEW DEPTH: ${reviewDepth.toUpperCase()}. Read-only investigation budget for this review: at most ${investigationBudget} tool call${investigationBudget === 1 ? '' : 's'}. ${reviewDepth === 'scan' ? 'Use telemetry and durable memory only; do not call tools.' : reviewDepth === 'standard' ? 'Resolve at most one decision-changing uncertainty.' : 'Investigate only the few consequential uncertainties needed for safety or completion judgment.'}`,
+      'You have read-only investigation tools. Use them only when a consequential factual uncertainty cannot be resolved from Main telemetry and the answer could change whether intervention is necessary. Never edit, execute Main\'s task, or use tools for routine curiosity. Tool findings are supervisory evidence, not permission to take over execution.',
+      `REVIEW DEPTH: ${reviewDepth.toUpperCase()}. ${reviewDepth === 'scan' ? 'Prefer telemetry and durable memory; investigate only if they leave a consequential uncertainty.' : reviewDepth === 'standard' ? 'Resolve decision-changing uncertainty as needed.' : 'Investigate the consequential uncertainties needed for safety or completion judgment.'}`,
       this.state.helperUsed
-        ? 'The one temporary specialist allowance is already used. Continue with telemetry and bounded read-only inspection.'
+        ? 'The one temporary specialist allowance is already used. Continue with telemetry and read-only inspection.'
         : 'You may call spawn_sub_agent once in specialist mode only after direct read-only inspection is insufficient for a consequential domain uncertainty. Use exactly one focused task. Never create a panel, fleet, or general worker.',
       `TASK CONTRACT:\n${JSON.stringify(this.state.contract, null, 2)}`,
       'The priorUserContext field is reference context only. Treat it as part of the task only when the current goal explicitly continues or refers to it.',
@@ -1582,8 +1577,6 @@ export class UserProxyRuntime {
       selectedThinkingLevel: this.selectedIntervention === 'high'
         ? 'high'
         : this.selectedIntervention === 'minimal' ? 'low' : 'medium',
-      proxyInvestigationBudget: investigationBudget,
-      maxToolCalls: Math.max(1, investigationBudget),
       workspacePath: (this.options.context as any).workspacePath,
       paths: Array.isArray((this.options.context as any).paths)
         ? [...(this.options.context as any).paths]

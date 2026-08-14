@@ -51,8 +51,7 @@ function safeArtifactLabel(label: string, fallback = 'view'): string {
     .slice(0, 60) || fallback;
 }
 
-// ─── PowerShell Preamble (shared with desktop_control.ts) ────────────────────
-// Minimal version — full version is in desktop_control.ts
+// ─── PowerShell preamble for the native Windows computer provider ───────────
 const PS_BASE = `
 Add-Type -AssemblyName System.Windows.Forms;
 Add-Type -AssemblyName System.Drawing;
@@ -410,10 +409,6 @@ export async function screenshotForVision(label: string = 'vision', chatId?: str
 
 // ─── Auto-Screenshot After Desktop/Browser Action ────────────────────────────
 
-const SCREENSHOT_ACTIONS = new Set([
-  'desktop_control', 'screenshot_capture', 'browser_control',
-]);
-
 let _lastScreenshotTs = 0;
 const MIN_SCREENSHOT_INTERVAL_MS = 800;
 
@@ -427,7 +422,7 @@ export async function autoScreenshotAfterAction(
   chatId?: string
 ): Promise<VisionScreenshot | null> {
   // Only screenshot-worthy tools
-  const isDesktopTool = toolName === 'desktop_control' || toolName === 'screenshot_capture';
+  const isDesktopTool = toolName === 'screen_agent' || toolName === 'computer' || toolName === 'screenshot_capture';
   const isBrowserTool = toolName === 'browser_control';
   
   if (!isDesktopTool && !isBrowserTool) return null;
@@ -451,7 +446,7 @@ export async function autoScreenshotAfterAction(
     } catch { }
   }
 
-  // For desktop_control: if it returned a screenshotPath, use it
+  // For computer tools: if the result contains a screenshot path, use it.
   if (isDesktopTool && toolOutput?.screenshotPath) {
     try {
       const buf = await fs.readFile(toolOutput.screenshotPath);

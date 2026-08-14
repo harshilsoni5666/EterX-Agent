@@ -193,20 +193,8 @@ export class ConversationIntelligenceEngine {
   generateSuggestions(toolsUsed: string[], filesCreated: string[]): ProactiveSuggestion[] {
     const suggestions: ProactiveSuggestion[] = [];
 
-    // After creating files, suggest testing
-    if (filesCreated.length > 0 && !toolsUsed.includes('workspace_verify_code')) {
-      suggestions.push({
-        text: 'Run code verification to check for errors',
-        confidence: 0.8,
-        category: 'next_step',
-      });
-    }
-
     // After debugging, suggest testing
-    const usedEditTool = toolsUsed.some(tool => [
-      'workspace_write_file',
-      'workspace_edit_file',
-    ].includes(tool));
+    const usedEditTool = toolsUsed.includes('workspace_edit_file');
     if (this.snapshot.intentPhase === 'debugging' && usedEditTool) {
       suggestions.push({
         text: 'Run tests to verify the fix works correctly',

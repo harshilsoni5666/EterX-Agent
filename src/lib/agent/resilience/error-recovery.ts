@@ -96,8 +96,8 @@ const ERROR_PATTERNS: ErrorPattern[] = [
       if (pathMatch) {
         return {
           description: `Search for the correct path of "${pathMatch[1]}"`,
-          tool: 'workspace_search_text',
-          args: { pattern: pathMatch[1].split(/[\\/]/).pop() || pathMatch[1] },
+          tool: 'workspace_run_command',
+          args: { command: 'rg --files' },
           rollbackPossible: false,
         };
       }
@@ -115,7 +115,7 @@ const ERROR_PATTERNS: ErrorPattern[] = [
       if (moduleMatch) {
         return {
           description: `Install missing dependency: ${moduleMatch[1]}`,
-          tool: 'system_shell',
+          tool: 'workspace_run_command',
           args: { command: `npm install ${moduleMatch[1]}` },
           rollbackPossible: true,
         };
@@ -134,8 +134,8 @@ const ERROR_PATTERNS: ErrorPattern[] = [
       if (fileMatch) {
         return {
           description: `Read and fix syntax error in ${fileMatch[1]}:${fileMatch[2]}`,
-          tool: 'workspace_read_file',
-          args: { filename: fileMatch[1] },
+          tool: 'workspace_run_command',
+          args: { command: `rg -n "^" -- "${fileMatch[1]}"` },
           rollbackPossible: false,
         };
       }
@@ -181,8 +181,8 @@ const ERROR_PATTERNS: ErrorPattern[] = [
       if (fileMatch) {
         return {
           description: `Debug runtime error in ${fileMatch[1]}:${fileMatch[2]}`,
-          tool: 'workspace_read_file',
-          args: { filename: fileMatch[1] },
+          tool: 'workspace_run_command',
+          args: { command: `rg -n "^" -- "${fileMatch[1]}"` },
           rollbackPossible: false,
         };
       }
@@ -302,7 +302,7 @@ export class ErrorRecoveryEngine {
         parts.push('Transient errors usually resolve on retry. Wait briefly, then retry.');
         break;
       case 'not_found':
-        parts.push('Search for the correct file path before retrying. Use workspace_search_text or workspace_list_directory.');
+        parts.push('Search for the correct file path with workspace_run_command before retrying.');
         break;
       case 'dependency':
         parts.push('Install the missing dependency, then retry the original command.');

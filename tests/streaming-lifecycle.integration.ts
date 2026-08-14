@@ -5,6 +5,7 @@ import {
   mergeStreamingText,
   normalizeStreamTimestamp,
 } from '../src/lib/streaming-lifecycle';
+import { isTerminalTraceStreaming } from '../src/lib/terminal-lifecycle';
 
 assert.equal(
   mergeStreamingText('', 'Hel', true),
@@ -38,5 +39,20 @@ assert.equal(isStreamFinalEvent({ isStreaming: true }), false);
 const normalizedSeconds = normalizeStreamTimestamp(1_700_000_000);
 assert.ok(normalizedSeconds > 1_000_000_000_000, 'second-based provider timestamps should normalize to milliseconds');
 assert.equal(normalizeStreamTimestamp('not-a-time', 1234), 1234);
+
+assert.equal(
+  isTerminalTraceStreaming({
+    log: { isStreaming: true },
+    preview: { isStreaming: false, exitCode: 0 },
+    isLiveChip: true,
+  }),
+  false,
+  'a newer settled console trace must override an older running command flag',
+);
+assert.equal(
+  isTerminalTraceStreaming({ preview: { isStreaming: true }, log: { isStreaming: false } }),
+  true,
+  'the newest live console trace must remain live until it settles',
+);
 
 console.log('Streaming lifecycle integration checks passed.');

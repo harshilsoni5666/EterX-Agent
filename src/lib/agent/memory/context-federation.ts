@@ -6,10 +6,13 @@ export interface ContextFederationResult {
   memoryUnitsKept: number;
   duplicatesRemoved: number;
   estimatedTokens: number;
+  originalEstimatedTokens: number;
+  sourcesDropped: number;
 }
 
 const MEMORY_MARKER = /(?:AGENT MEMORY|MEMORY V2 CONTEXT|LIFETIME BRAIN|LIFETIME MEMORY|LONG[- ]TERM MEMORY|SYNAPSE|CONTEXT RESONANCE|Relevant Memor(?:y|ies)|NEURAL PLASTICITY|EVOLVED RULES)/i;
 const SYNAPSE_MARKER = /(?:CONTEXT RESONANCE|SYNAPSE)/i;
+const EXACT_RUNTIME_CONTRACT = /(?:AGENT BUILDER CORE|CUSTOM AGENT IDENTITY OVERRIDE|ATTACHED FILE CONTEXT)/i;
 
 function normalize(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9_./\\-]+/g, ' ').trim();
@@ -43,6 +46,62 @@ function splitUnits(text: string): string[] {
     .filter(Boolean);
 }
 
+function contextPriority(text: string): number {
+  if (EXACT_RUNTIME_CONTRACT.test(text)) return 1000;
+  if (/CONTEXT FABRIC - TEMPORAL EPISTEMIC WORKING SET/i.test(text)) return 95;
+  if (/SMART RESUME|SESSION CONTINUITY EVIDENCE/i.test(text)) return 90;
+  if (/WORKSPACE INTELLIGENCE/i.test(text)) return 85;
+  if (/ADAPTIVE COGNITIVE FABRIC/i.test(text)) return 78;
+  if (/FEDERATED MEMORY CONTEXT/i.test(text)) return 70;
+  if (/ERROR|FAIL|CONSTRAINT|REQUIREMENT/i.test(text)) return 68;
+  if (/INTENT:|ROUTE:|TOOL PREDICTIONS|EXECUTION METRICS/i.test(text)) return 35;
+  return 55;
+}
+
+function boundCompleteChannel(
+  parts: string[],
+  currentQuery: string,
+  totalTokenBudget: number,
+): { parts: string[]; sourcesDropped: number } {
+  const totalCharBudget = Math.max(1200, Math.floor(totalTokenBudget * 4));
+  const indexed = parts.map((text, index) => ({ text, index, priority: contextPriority(text) }));
+  const protectedParts = indexed.filter(item => item.priority >= 1000);
+  const candidates = indexed.filter(item => item.priority < 1000)
+    .sort((a, b) => b.priority - a.priority || a.index - b.index);
+  const selected: Array<{ text: string; index: number }> = protectedParts.map(item => ({
+    text: item.text,
+    index: item.index,
+  }));
+  let usedChars = protectedParts.reduce((sum, item) => sum + item.text.length + 2, 0);
+  let sourcesDropped = 0;
+
+  for (let position = 0; position < candidates.length; position++) {
+    const item = candidates[position];
+    const remaining = totalCharBudget - usedChars;
+    if (remaining < 160) {
+      sourcesDropped += candidates.length - position;
+      break;
+    }
+    const lowerPrioritySources = candidates.length - position - 1;
+    const reserveForOthers = Math.min(Math.max(0, lowerPrioritySources) * 180, Math.floor(remaining * 0.4));
+    const sourceBudget = Math.max(160, Math.min(2400, remaining - reserveForOthers));
+    const bounded = item.text.length > sourceBudget
+      ? distillEvidence(item.text, currentQuery, sourceBudget).text
+      : item.text;
+    if (!bounded) {
+      sourcesDropped++;
+      continue;
+    }
+    selected.push({ text: bounded, index: item.index });
+    usedChars += bounded.length + 2;
+  }
+
+  return {
+    parts: selected.sort((a, b) => a.index - b.index).map(item => item.text),
+    sourcesDropped,
+  };
+}
+
 /**
  * Merge independent memory providers into one attention-bounded channel.
  * Non-memory prompt kernels, tools, skills, and current-request guards are
@@ -52,7 +111,10 @@ export function federateDynamicContextParts(
   inputParts: string[],
   currentQuery: string,
   memoryTokenBudget = 7000,
+  totalTokenBudget = memoryTokenBudget,
 ): ContextFederationResult {
+  const originalText = inputParts.filter(Boolean).join('\n\n');
+  const originalEstimatedTokens = Math.ceil(originalText.length / 4);
   const ordinary: string[] = [];
   const memory = inputParts
     .map((text, index) => ({ text: String(text || '').trim(), index }))
@@ -65,12 +127,15 @@ export function federateDynamicContextParts(
     .sort((a, b) => sourcePriority(b.text) - sourcePriority(a.text) || a.index - b.index);
 
   if (memory.length === 0) {
+    const bounded = boundCompleteChannel(ordinary, currentQuery, totalTokenBudget);
     return {
-      parts: ordinary,
+      parts: bounded.parts,
       memorySources: 0,
       memoryUnitsKept: 0,
       duplicatesRemoved: 0,
-      estimatedTokens: Math.ceil(ordinary.join('\n\n').length / 4),
+      estimatedTokens: Math.ceil(bounded.parts.join('\n\n').length / 4),
+      originalEstimatedTokens,
+      sourcesDropped: bounded.sourcesDropped,
     };
   }
 
@@ -115,12 +180,15 @@ export function federateDynamicContextParts(
         'END FEDERATED MEMORY CONTEXT',
       ].join('\n')
     : '';
-  const parts = federation ? [...ordinary, federation] : ordinary;
+  const unboundedParts = federation ? [...ordinary, federation] : ordinary;
+  const bounded = boundCompleteChannel(unboundedParts, currentQuery, totalTokenBudget);
   return {
-    parts,
+    parts: bounded.parts,
     memorySources: memory.length,
     memoryUnitsKept: kept.length,
     duplicatesRemoved,
-    estimatedTokens: Math.ceil(parts.join('\n\n').length / 4),
+    estimatedTokens: Math.ceil(bounded.parts.join('\n\n').length / 4),
+    originalEstimatedTokens,
+    sourcesDropped: bounded.sourcesDropped,
   };
 }

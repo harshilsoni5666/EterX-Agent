@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import {
   agentIdentitiesOverlap,
+  isInternalProgressNoise,
   isInternalWorkNoteNoise,
   isTerminalWorkTrace,
   isTurnWorkActive,
   orderFeedTimelineLogs,
   shouldRenderContextCompactionEvent,
+  shouldRenderProgressTrace,
   shouldShowWorkflowSequence,
 } from '../src/lib/chat-feed-lifecycle';
 
@@ -54,6 +56,31 @@ assert.equal(
   isInternalWorkNoteNoise('I am following the work note communication style for this workspace.'),
   true,
   'protocol commentary must remain hidden',
+);
+assert.equal(
+  isInternalProgressNoise('Processed 3 tool calls (iteration 2/20)'),
+  true,
+  'tool-loop telemetry must not become a visible feed row',
+);
+assert.equal(
+  isInternalProgressNoise('X poster is thinking...'),
+  true,
+  'the initial thinking status must not duplicate the live work pill',
+);
+assert.equal(
+  shouldRenderProgressTrace({ type: 'progress', text: 'Processed 3 tool calls (iteration 2/20)' }),
+  false,
+  'internal progress telemetry must be filtered from the feed',
+);
+assert.equal(
+  shouldRenderProgressTrace({ type: 'work_note', text: 'X poster processed 3 tool calls (iteration 2/20)' }),
+  false,
+  'builder status notes must use the same telemetry filter',
+);
+assert.equal(
+  shouldRenderProgressTrace({ type: 'progress', text: 'Rotating API key' }),
+  true,
+  'meaningful progress remains visible',
 );
 
 const action = { type: 'command', text: 'Running tests' };

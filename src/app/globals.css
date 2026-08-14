@@ -61,6 +61,9 @@
     --sidebar-hover-bg: rgba(31, 31, 29, 0.052);
     --sidebar-hover-border: rgba(31, 31, 29, 0.085);
     --sidebar-hover-text: #24221F;
+    --eterx-topbar-text: #77736C;
+    --eterx-topbar-hover-bg: rgba(31, 31, 29, 0.05);
+    --eterx-topbar-hover-text: #4B4945;
 
     --success: #047857;
     --destructive: #dc2626;
@@ -138,6 +141,9 @@
     --sidebar-hover-bg: rgba(255, 255, 255, 0.078);
     --sidebar-hover-border: rgba(255, 255, 255, 0.075);
     --sidebar-hover-text: #F1ECE4;
+    --eterx-topbar-text: #A39C92;
+    --eterx-topbar-hover-bg: rgba(255, 255, 255, 0.08);
+    --eterx-topbar-hover-text: rgba(255, 255, 255, 0.9);
 
     --success: #34d399;
     --destructive: #ef4444;
@@ -221,7 +227,7 @@
      Windows/Linux. */
   .eterx-global-brand {
     display: none !important;
-    color: var(--sidebar-text);
+    color: var(--eterx-topbar-text);
   }
 
   .eterx-app-shell[data-platform="macos"] .eterx-global-brand {
@@ -236,6 +242,12 @@
   .eterx-global-topbar {
     left: 0;
     right: var(--eterx-native-controls-right);
+  }
+
+  .eterx-global-topbar {
+    /* Keep the sidebar's own titlebar visible beneath this transparent layer. */
+    background: transparent;
+    color: var(--eterx-topbar-text);
   }
 
   .eterx-app-shell button,
@@ -7610,17 +7622,13 @@
   padding-right: 12px !important;
   border-radius: 8px !important;
   font-weight: 500 !important;
+  color: var(--eterx-topbar-text) !important;
   transition: background-color 120ms ease-out, color 120ms ease-out !important;
 }
 
 .eterx-topbar-btn:hover {
-  background: rgba(0, 0, 0, 0.05) !important;
-  color: var(--sidebar-strong-text, #1F1F1D) !important;
-}
-
-:root[data-theme="dark"] .eterx-topbar-btn:hover {
-  background: rgba(255, 255, 255, 0.08) !important;
-  color: rgba(255, 255, 255, 0.9) !important;
+  background: var(--eterx-topbar-hover-bg) !important;
+  color: var(--eterx-topbar-hover-text) !important;
 }
 
 /* Dropdown custom theme shades */
@@ -7927,6 +7935,10 @@
     padding-left: var(--eterx-chat-compact-gutter) !important;
   }
 
+  .eterx-chat-feed[data-compressed="true"] .eterx-chat-turns-nav {
+    display: none !important;
+  }
+
   .eterx-chat-input-dock {
     padding-right: var(--eterx-chat-gutter) !important;
     padding-left: var(--eterx-chat-gutter) !important;
@@ -8043,6 +8055,17 @@
     --eterx-home-greeting-size: 46px;
     --eterx-home-greeting-compact-size: 32px;
     --eterx-chat-panel-min: 400px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .eterx-app-shell {
+    --eterx-chat-gutter: 24px;
+    --eterx-chat-compact-gutter: 16px;
+  }
+
+  .eterx-chat-turns-nav {
+    display: none !important;
   }
 }
 
@@ -8225,6 +8248,65 @@
   /* At very small widths, hide topbar text-nav buttons entirely to avoid overlap */
   .eterx-topbar-btn {
     display: none !important;
+  }
+}
+
+/* Compact composer control sizing. This is intentionally limited to the
+   icon-only composer variant shown beside a chat feed: the regular composer
+   keeps its existing 38px targets and layout. */
+.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls .eterx-control-button,
+.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls .eterx-agent-button,
+.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls .eterx-model-button {
+  width: 32px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+}
+
+.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls-right {
+  grid-template-columns: repeat(4, 32px) !important;
+  gap: 6px !important;
+}
+
+.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls,
+.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls-left {
+  gap: 6px !important;
+}
+
+.eterx-composer-shell[data-compressed="true"] .eterx-composer-control-icon,
+.eterx-composer-shell[data-compressed="true"] .eterx-composer-spinner,
+.eterx-composer-shell[data-compressed="true"] .eterx-selector-icon,
+.eterx-composer-shell[data-compressed="true"] .eterx-context-usage-trigger > svg {
+  width: 18px !important;
+  height: 18px !important;
+}
+
+.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls-left img.eterx-composer-control-icon {
+  width: 20px !important;
+  height: 20px !important;
+}
+
+/* Keep the desktop chrome compact like Codex: the existing controls stay in
+   place, but the header row and its hit areas do not consume extra height. */
+@media (min-width: 1200px) and (max-width: 2199px) {
+  .eterx-app-shell {
+    --eterx-main-header-height: 44px;
+  }
+
+  .eterx-main-header {
+    gap: 8px !important;
+    padding-left: 12px !important;
+    padding-right: 16px !important;
+  }
+
+  .eterx-header-icon-button {
+    width: 32px !important;
+    height: 32px !important;
+  }
+
+  .eterx-thread-tab {
+    min-height: 30px !important;
+    padding-top: 2px !important;
+    padding-bottom: 2px !important;
   }
 }
 

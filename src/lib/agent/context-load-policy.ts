@@ -7,6 +7,8 @@ export type ContextLoadPolicy = {
   loadAdaptiveRules: boolean;
   loadCognitiveContext: boolean;
   memoryTokenBudget: number;
+  /** Hard budget for the complete per-request dynamic context channel. */
+  dynamicContextTokenBudget: number;
 };
 
 /**
@@ -31,7 +33,8 @@ export function getContextLoadPolicy(message: string, wantsContinuity: boolean):
       loadLifetimeMemory: false,
       loadAdaptiveRules: false,
       loadCognitiveContext: false,
-      memoryTokenBudget: 350,
+      memoryTokenBudget: 250,
+      dynamicContextTokenBudget: 450,
     };
   }
 
@@ -44,7 +47,8 @@ export function getContextLoadPolicy(message: string, wantsContinuity: boolean):
       loadLifetimeMemory: true,
       loadAdaptiveRules: true,
       loadCognitiveContext: true,
-      memoryTokenBudget: 5000,
+      memoryTokenBudget: 1400,
+      dynamicContextTokenBudget: 2800,
     };
   }
 
@@ -57,7 +61,8 @@ export function getContextLoadPolicy(message: string, wantsContinuity: boolean):
       loadLifetimeMemory: true,
       loadAdaptiveRules: true,
       loadCognitiveContext: true,
-      memoryTokenBudget: 4000,
+      memoryTokenBudget: 1800,
+      dynamicContextTokenBudget: 3500,
     };
   }
 
@@ -69,6 +74,7 @@ export function getContextLoadPolicy(message: string, wantsContinuity: boolean):
     loadLifetimeMemory: false,
     loadAdaptiveRules: false,
     loadCognitiveContext: true,
-    memoryTokenBudget: 1600,
+    memoryTokenBudget: 900,
+    dynamicContextTokenBudget: 1800,
   };
 }

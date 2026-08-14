@@ -67,7 +67,7 @@ export interface TerminalBackgroundTask {
   droppedOutputChars: number;
   maxOutputChars: number;
   checkInMs: number;
-  hardTimeoutMs: number;
+  hardTimeoutMs?: number;
   handedOff: boolean;
   hardTimedOut?: boolean;
   outputFile: string;
@@ -89,7 +89,7 @@ export interface TerminalBackgroundTask {
   statusWrite?: Promise<void>;
 }
 
-const TASKS_DIR = getEterxWorkspaceDir('background_tasks');
+const TASKS_DIR = getEterxWorkspaceDir('terminal_tasks');
 const DEFAULT_MAX_OUTPUT_CHARS = 10 * 1024 * 1024;
 const MAX_PERSISTED_OUTPUT_BYTES = 25 * 1024 * 1024;
 const PERSISTED_OUTPUT_RETAIN_BYTES = 16 * 1024 * 1024;
@@ -128,6 +128,37 @@ const terminalTasks: Map<string, TerminalBackgroundTask> =
   globalForTerminalTasks.__eterxTerminalBackgroundTasks ||
   (globalForTerminalTasks.__eterxTerminalBackgroundTasks = new Map());
 
+/**
+ * A command that terminates the runtime serving its own request can never
+ * return a final trace. Protect the current PID and active EterX port while
+ * leaving project processes on every other port fully controllable.
+ */
+export function getRuntimeProtectionReason(command: string): string | null {
+  const normalized = String(command || '').toLowerCase();
+  const destructiveProcessAction = /\b(stop-process|taskkill|kill|killall|pkill|fuser)\b/.test(normalized);
+  if (!destructiveProcessAction) return null;
+
+  const directPidPattern = new RegExp(
+    `(?:-id|/pid|\\bkill(?:\\s+-\\w+)*|\\btaskkill(?:\\.exe)?)\\s+${process.pid}\\b`,
+    'i',
+  );
+  if (directPidPattern.test(command)) {
+    return `Blocked termination of the EterX runtime process (PID ${process.pid}). Stop the project process by its managed task ID instead.`;
+  }
+
+  const activePort = Number(process.env.ETERX_PORT || process.env.PORT);
+  if (!Number.isInteger(activePort) || activePort <= 0) return null;
+  const referencesActivePort = [
+    new RegExp(`(?:-localport\\s+|[:=]\\s*|\\bport\\s+|\\b)${activePort}\\b`, 'i'),
+    new RegExp(`\\b${activePort}/tcp\\b`, 'i'),
+  ].some(pattern => pattern.test(command));
+  if (!referencesActivePort) return null;
+
+  const resolvesPortToPid = /get-nettcpconnection|lsof|fuser|netstat|ss\s/.test(normalized);
+  if (!resolvesPortToPid) return null;
+  return `Blocked termination of port ${activePort} because it is serving EterX. Use a different port for the project server, or stop it through its managed task ID.`;
+}
+
 export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunOptions): Promise<any> {
   await fs.ensureDir(TASKS_DIR);
 
@@ -146,7 +177,26 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   }
 
   const checkInMs = normalizeCheckInMs(options.checkInMs, options.command);
-  const hardTimeoutMs = normalizeHardTimeoutMs(options.hardTimeoutMs, checkInMs);
+  // A check-in is a handoff boundary, not an execution deadline. Commands
+  // that outlive it continue as managed background tasks until they exit or
+  // are explicitly killed. A hard timeout exists only when a caller opts in.
+  const hardTimeoutMs = options.hardTimeoutMs === undefined
+    ? undefined
+    : normalizeHardTimeoutMs(options.hardTimeoutMs, checkInMs);
+  const runtimeProtectionReason = getRuntimeProtectionReason(options.command);
+  if (runtimeProtectionReason) {
+    return {
+      success: false,
+      stdout: '',
+      stderr: runtimeProtectionReason,
+      output: runtimeProtectionReason,
+      exitCode: 126,
+      executionTimeMs: 0,
+      timedOut: false,
+      stillRunning: false,
+      status: 'failed',
+    };
+  }
   // Terminal tools are explicit user-directed execution surfaces. Keep the
   // broker's historical default (network allowed) unless the caller opted
   // into a deny policy; this prevents npm/pip/git commands from being blocked
@@ -277,10 +327,10 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     const abortSignal = options.context?.abortSignal as AbortSignal | undefined;
     let onAbort = () => {};
     let finishStarted = false;
-    const resolveOnce = (result: any) => {
+    const resolveOnce = (result: any, keepAbortListener = false) => {
       if (resultResolved) return;
       resultResolved = true;
-      abortSignal?.removeEventListener('abort', onAbort);
+      if (!keepAbortListener) abortSignal?.removeEventListener('abort', onAbort);
       if (handoffTimer) clearTimeout(handoffTimer);
       resolve(result);
     };
@@ -292,6 +342,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       task.exitCode = exitCode;
       task.signal = signal || null;
       task.completedAt = Date.now();
+      abortSignal?.removeEventListener('abort', onAbort);
       clearTaskTimers(task);
       flushTaskOutput(task, true, exitCode ?? (status === 'completed' ? 0 : 1));
       await waitForTaskOutputWrites(task);
@@ -302,7 +353,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
           type: 'terminal_task_completed',
           text: `Terminal task ${status}`,
           title: 'Terminal command',
-          note: `Task ${task.id} ${status} with exit code ${exitCode ?? 'unknown'}. Check background_task for final output.`,
+          note: `Task ${task.id} ${status} with exit code ${exitCode ?? 'unknown'}. Use workspace_run_command mode="check" for final output.`,
           command: task.command,
           taskId: task.id,
           exitCode,
@@ -328,7 +379,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
         return;
       }
       appendTaskOutput(task, 'stderr', '\nCancelled by user.\n');
-      killProcessTree(task.pid);
+      killProcessTree(task.pid, task.process);
       finishTask('killed', 130, 'SIGTERM').catch(() => {
         resolveOnce(buildTerminalResult(task));
       });
@@ -397,17 +448,31 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       });
       scheduleAutomatedCheckIns(task);
       persistTaskStatus(task).catch(() => undefined);
-      resolveOnce(buildRunningResult(task, note));
+      // Implicit handoffs remain owned by the main run: stopping or settling
+      // that run cancels the process. Explicit background launches detach
+      // from the run and remain controllable through workspace_run_command.
+      resolveOnce(buildRunningResult(task, note), options.surviveRunSettlement !== true);
     }, options.immediateHandoff ? 0 : checkInMs);
     handoffTimer.unref?.();
 
-    task.statusTimer = setTimeout(() => {
-      if (task.status !== 'running') return;
-      task.hardTimedOut = true;
-      appendTaskOutput(task, 'stderr', `\n${terminalTimeoutNote(task.command, task.hardTimeoutMs)}\n`);
-      killProcessTree(task.pid);
-    }, hardTimeoutMs);
-    task.statusTimer.unref?.();
+    if (hardTimeoutMs !== undefined) {
+      task.statusTimer = setTimeout(() => {
+        if (task.status !== 'running') return;
+        task.hardTimedOut = true;
+        appendTaskOutput(task, 'stderr', `\n${terminalTimeoutNote(task.command, hardTimeoutMs)}\n`);
+        killProcessTree(task.pid, task.process);
+        // A few shells never deliver `close` after a forced tree kill. Settle
+        // after a grace period so the persisted trace and UI cannot stay live.
+        const settleTimer = setTimeout(() => {
+          if (task.status !== 'running') return;
+          finishTask('failed', 124, 'SIGKILL').catch(() => {
+            resolveOnce(buildTerminalResult(task));
+          });
+        }, 3_000);
+        settleTimer.unref?.();
+      }, hardTimeoutMs);
+      task.statusTimer.unref?.();
+    }
   });
 }
 
@@ -465,7 +530,7 @@ export async function getTerminalBackgroundTaskStatus(taskId: string, ownerChatI
     droppedOutputChars: status.droppedOutputChars ?? 0,
     message: `Terminal task ${taskId}: ${persistedStatus} | "${status.description || status.command}"`,
     nextActionNote: persistedStatus === 'running'
-      ? `Use wait_timer, then background_task mode="check" with taskId="${taskId}". The process was restored from disk, so control may be limited after server restart.`
+      ? `Use wait_timer, then workspace_run_command mode="check" with taskId="${taskId}". The process was restored from disk, so control may be limited after server restart.`
       : 'Read the final output and continue from the result.'
   };
 }
@@ -528,7 +593,7 @@ export async function killTerminalBackgroundTask(taskId: string, ownerChatId?: s
   if (task) {
     if (requestedOwner && task.ownerChatId !== requestedOwner) return null;
     if (task.status === 'running') {
-      killProcessTree(task.pid);
+      killProcessTree(task.pid, task.process);
       task.status = 'killed';
       task.exitCode = 143;
       task.completedAt = Date.now();
@@ -677,7 +742,7 @@ function scheduleAutomatedCheckIns(task: TerminalBackgroundTask) {
       type: 'timer_expired',
       text: 'Terminal background check-in',
       title: 'Terminal command',
-      note: `Task ${task.id} is still running. Use background_task mode="check" with this taskId, or wait another ${seconds} seconds if there is no new output.`,
+      note: `Task ${task.id} is still running. Use workspace_run_command mode="check" with this taskId, or wait another ${seconds} seconds if there is no new output.`,
       durationMs: task.checkInMs,
       command: task.command,
       taskId: task.id,
@@ -717,7 +782,9 @@ function buildRunningResult(task: TerminalBackgroundTask, note: string): any {
 }
 
 function buildTerminalResult(task: TerminalBackgroundTask): any {
-  const hardTimeoutNote = task.hardTimedOut ? terminalTimeoutNote(task.command, task.hardTimeoutMs) : '';
+  const hardTimeoutNote = task.hardTimedOut && task.hardTimeoutMs !== undefined
+    ? terminalTimeoutNote(task.command, task.hardTimeoutMs)
+    : '';
   return {
     success: task.status === 'completed',
     stdout: task.stdout,
@@ -772,7 +839,7 @@ function buildStatusResult(task: TerminalBackgroundTask): any {
     droppedOutputChars: task.droppedOutputChars,
     message: `Terminal task ${task.id}: ${task.status} | "${task.description}" | Duration: ${(((task.completedAt || Date.now()) - task.startedAt) / 1000).toFixed(1)}s`,
     nextActionNote: task.status === 'running'
-      ? `Use wait_timer for ${secondsFromTimeoutMs(task.checkInMs)} seconds, then background_task mode="check" with taskId="${task.id}".`
+      ? `Use wait_timer for ${secondsFromTimeoutMs(task.checkInMs)} seconds, then workspace_run_command mode="check" with taskId="${task.id}".`
       : 'Read the final output and continue from the result.'
   };
 }
@@ -909,7 +976,7 @@ function emitTrace(context: {
   }
 }
 
-function killProcessTree(pid?: number) {
+function killProcessTree(pid?: number, child?: ChildProcess) {
   if (!pid) return;
 
   if (process.platform === 'win32') {
@@ -920,6 +987,9 @@ function killProcessTree(pid?: number) {
   signalProcessGroup(pid, 'SIGTERM');
 
   const timer = setTimeout(() => {
+    // Avoid signalling an unrelated process if the OS recycled this PID
+    // during the grace period. In-memory tasks retain the ChildProcess identity.
+    if (child && (child.exitCode !== null || child.signalCode !== null)) return;
     signalProcessGroup(pid, 'SIGKILL');
   }, 2_000);
   timer.unref?.();

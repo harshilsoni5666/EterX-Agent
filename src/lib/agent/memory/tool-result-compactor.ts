@@ -6,6 +6,8 @@
  * that knows what's important in that tool's output.
  */
 
+import { distillEvidence } from './evidence-distiller';
+
 interface CompactionResult {
   compacted: any;
   originalSize: number;
@@ -14,9 +16,9 @@ interface CompactionResult {
 }
 
 /** Size thresholds for compaction activation */
-const COMPACT_THRESHOLD = 16_000;     // Compact before one result dominates the next turn
-const MAX_COMPACT_SIZE = 30_000;      // Preserve evidence while bounding token cost
-const CODE_LINE_LIMIT = 300;
+const COMPACT_THRESHOLD = 12_000;     // Compact before one result dominates the next turn
+const MAX_COMPACT_SIZE = 14_000;      // Roughly 3.5K tokens for one fresh result
+const MAX_TOOL_BATCH_SIZE = 24_000;    // Roughly 6K tokens across a parallel batch
 const SEARCH_RESULT_LIMIT = 20;
 const SHELL_TAIL_LINES = 60;
 const SHELL_HEAD_LINES = 16;
@@ -35,53 +37,84 @@ export class ToolResultCompactor {
     if (size < COMPACT_THRESHOLD) return result; // Small enough — keep as-is
 
     try {
+      let compacted: any = result;
       switch (toolName) {
-        case 'workspace_read_file':
-        case 'workspace_view_file':
-          return this.compactFileRead(args, result);
-
-        case 'workspace_read_many_files':
-          return this.compactReadManyFiles(args, result);
-        
         case 'web_search':
-        case 'deep_research':
-          return this.compactSearchResults(args, result);
+          compacted = this.compactSearchResults(args, result);
+          break;
         
-        case 'system_shell':
         case 'workspace_run_command':
-          return this.compactShellOutput(args, result);
-        
-        case 'workspace_search_text':
-        case 'workspace_semantic_search':
-          return this.compactSearchText(args, result);
+          compacted = this.compactShellOutput(args, result);
+          break;
 
-        case 'workspace_apply_patch':
-          return this.compactPatchResult(result);
-        
-        case 'workspace_list_directory':
-        case 'workspace_find_files':
-          return this.compactDirectoryListing(args, result);
-        
-        case 'web_scraper':
-          return this.compactWebScrape(args, result);
+        case 'workspace_edit_file':
+          compacted = this.compactEditResult(result);
+          break;
         
         case 'browser_control':
-          return this.compactBrowserResult(args, result);
+          compacted = this.compactBrowserResult(args, result);
+          break;
 
         case 'spawn_sub_agent':
-          return this.compactDelegationResult(result);
+          compacted = this.compactDelegationResult(result);
+          break;
         
         default:
-          return this.compactGeneric(result);
+          compacted = this.compactGeneric(result);
+          break;
       }
+      return this.estimateSize(compacted) > MAX_COMPACT_SIZE
+        ? this.compactToBudget(toolName, args, compacted, MAX_COMPACT_SIZE)
+        : compacted;
     } catch {
       // Fallback to generic compaction
       return this.compactGeneric(result);
     }
   }
 
+  /**
+   * Bound the combined payload of one parallel tool batch. Small results stay
+   * exact; only oversized siblings are distilled. Raw outputs are retained by
+   * Context Fabric before this provider-facing reduction is applied.
+   */
+  compactBatch(toolNames: string[], argsList: Record<string, any>[], results: any[]): any[] {
+    if (results.length <= 1) return results;
+    const sizes = results.map(result => this.estimateSize(result));
+    const total = sizes.reduce((sum, size) => sum + size, 0);
+    if (total <= MAX_TOOL_BATCH_SIZE) return results;
+
+    const exactIndexes = sizes
+      .map((size, index) => ({ size, index }))
+      .filter(item => item.size <= 2_000);
+    const exactChars = exactIndexes.reduce((sum, item) => sum + item.size, 0);
+    const largeCount = Math.max(1, results.length - exactIndexes.length);
+    const perLargeBudget = Math.max(2_400, Math.floor((MAX_TOOL_BATCH_SIZE - exactChars) / largeCount));
+
+    return results.map((result, index) => sizes[index] <= 2_000
+      ? result
+      : this.compactToBudget(toolNames[index] || 'tool', argsList[index] || {}, result, perLargeBudget));
+  }
+
+  private compactToBudget(
+    toolName: string,
+    args: Record<string, any>,
+    result: any,
+    maxChars: number,
+  ): any {
+    const query = `${toolName} ${JSON.stringify(args || {}).slice(0, 1_200)}`;
+    const digest = distillEvidence(result, query, Math.max(800, maxChars - 280));
+    return {
+      __eterxContextDigest: true,
+      tool: toolName,
+      originalChars: digest.originalChars,
+      status: digest.status,
+      evidence: digest.text,
+      recovery: 'Use a narrower follow-up read/search call if omitted detail becomes decision-relevant.',
+    };
+  }
+
   /** Preserve the complete multi-file manifest while bounding heavy previews. */
-  private compactPatchResult(result: any): any {
+  private compactEditResult(result: any): any {
     if (!result || typeof result !== 'object') return result;
     const changes = Array.isArray(result.changes)
       ? result.changes.map((change: any) => ({
@@ -95,85 +128,11 @@ export class ToolResultCompactor {
       changes,
       readbacks: undefined,
       _compacted: true,
-      _compactionStrategy: 'multi-file patch manifest',
+      _compactionStrategy: 'multi-file edit manifest',
     };
-  }
-
-  /** Compact file read output — keep structure: imports, exports, class/function signatures */
-  private compactFileRead(args: Record<string, any>, result: any): any {
-    const content = typeof result === 'string' ? result : (result?.content || result?.output || '');
-    if (typeof content !== 'string' || content.length < COMPACT_THRESHOLD) return result;
-
-    const lines = content.split('\n');
-    if (lines.length <= CODE_LINE_LIMIT) return result;
-
-    const kept: string[] = [];
-    const filename = String(args?.filename || args?.path || '');
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-
-    // Always keep first 50 lines (imports, header)
-    kept.push(...lines.slice(0, 50));
-    kept.push(`\n// ... [${lines.length - 100} lines compacted by EterX] ...\n`);
-
-    // Scan for structural elements based on language
-    const isTS = ['ts', 'tsx', 'js', 'jsx'].includes(ext);
-    const isPython = ext === 'py';
-    const isRust = ext === 'rs';
-    const isGo = ext === 'go';
-
-    for (let i = 50; i < lines.length - 50; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-      
-      // Keep structural elements
-      if (isTS && /^(export|import|interface|type|class|function|const|enum|abstract)\b/.test(trimmed)) {
-        kept.push(line);
-      } else if (isPython && /^(class|def|import|from|async def|@)/.test(trimmed)) {
-        kept.push(line);
-      } else if (isRust && /^(pub|fn|struct|enum|impl|use|mod|trait)/.test(trimmed)) {
-        kept.push(line);
-      } else if (isGo && /^(func|type|package|import|var|const)/.test(trimmed)) {
-        kept.push(line);
-      }
-      // Keep comments that look like section headers
-      else if (/^(\/\/\s*={3,}|\/\/\s*-{3,}|#\s*={3,}|\/\*\*|\s*\*\s*@)/.test(trimmed)) {
-        kept.push(line);
-      }
-    }
-
-    // Always keep last 50 lines
-    kept.push(`\n// ... [end of compacted section] ...\n`);
-    kept.push(...lines.slice(-50));
-
-    const compacted = kept.join('\n');
-    
-    if (typeof result === 'string') return compacted;
-    return { ...result, content: compacted, _compacted: true, _originalLines: lines.length };
   }
 
   /** Compact search results — keep top results, remove boilerplate */
-  private compactReadManyFiles(args: Record<string, any>, result: any): any {
-    if (!result?.files || !Array.isArray(result.files)) return this.compactFileRead(args, result);
-
-    return {
-      ...result,
-      files: result.files.map((file: any) => {
-        if (!file || typeof file.content !== 'string') return file;
-        if (file.content.length < COMPACT_THRESHOLD) return file;
-        const lines = file.content.split('\n');
-        const head = lines.slice(0, 120).join('\n');
-        const tail = lines.slice(-60).join('\n');
-        return {
-          ...file,
-          content: `${head}\n\n// ... [${Math.max(0, lines.length - 180)} lines compacted from ${file.filename || file.path || 'file'}] ...\n\n${tail}`,
-          _compacted: true,
-          _originalLines: lines.length,
-        };
-      }),
-      _compacted: true,
-    };
-  }
-
   private compactSearchResults(args: Record<string, any>, result: any): any {
     if (typeof result === 'string') {
       if (result.length < COMPACT_THRESHOLD) return result;
@@ -218,77 +177,6 @@ export class ToolResultCompactor {
     if (typeof result.stderr === 'string') compacted.stderr = compact(result.stderr);
     if (typeof result.output === 'string') compacted.output = compact(result.output);
     return compacted;
-  }
-
-  /** Compact text search results — keep matched lines + context, remove duplicates */
-  private compactSearchText(args: Record<string, any>, result: any): any {
-    if (typeof result === 'string') {
-      if (result.length < COMPACT_THRESHOLD) return result;
-      // Keep first 30KB + last 10KB
-      return result.substring(0, 22_000) + '\n\n...[search results truncated]...\n\n' + result.substring(result.length - 6_000);
-    }
-
-    if (result?.results && Array.isArray(result.results)) {
-      // Deduplicate by file
-      const byFile = new Map<string, any[]>();
-      for (const r of result.results) {
-        const file = r.file || r.filename || 'unknown';
-        if (!byFile.has(file)) byFile.set(file, []);
-        const matches = byFile.get(file)!;
-        if (matches.length < 10) { // Max 10 matches per file
-          matches.push(r);
-        }
-      }
-
-      const deduped: any[] = [];
-      for (const [, matches] of byFile) {
-        deduped.push(...matches);
-      }
-
-      return {
-        ...result,
-        results: deduped.slice(0, SEARCH_RESULT_LIMIT * 2),
-        _compacted: true,
-        _originalResultCount: result.results.length,
-      };
-    }
-
-    return this.compactGeneric(result);
-  }
-
-  /** Compact directory listing — keep first level, summarize deep nesting */
-  private compactDirectoryListing(args: Record<string, any>, result: any): any {
-    if (typeof result === 'string') {
-      if (result.length < COMPACT_THRESHOLD) return result;
-      const lines = result.split('\n');
-      // Keep first 200 entries + summary
-      return lines.slice(0, 200).join('\n') + `\n\n... [${lines.length - 200} more entries]`;
-    }
-    return this.compactGeneric(result);
-  }
-
-  /** Compact web scrape results — extract main content, drop navigation/footer */
-  private compactWebScrape(args: Record<string, any>, result: any): any {
-    const content = typeof result === 'string' ? result : (result?.content || result?.text || '');
-    if (typeof content !== 'string' || content.length < COMPACT_THRESHOLD) return result;
-
-    // Simple heuristic: split into paragraphs, keep longest ones (main content)
-    const paragraphs = content.split(/\n{2,}/);
-    const scored = paragraphs.map(p => ({ text: p, score: p.length }));
-    scored.sort((a, b) => b.score - a.score);
-    
-    // Keep top paragraphs up to size limit
-    let total = 0;
-    const kept: string[] = [];
-    for (const p of scored) {
-      if (total + p.text.length > MAX_COMPACT_SIZE) break;
-      kept.push(p.text);
-      total += p.text.length;
-    }
-
-    const compacted = kept.join('\n\n');
-    if (typeof result === 'string') return compacted;
-    return { ...result, content: compacted, _compacted: true };
   }
 
   /** Compact browser control results */

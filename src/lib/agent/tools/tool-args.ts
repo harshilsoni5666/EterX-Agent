@@ -23,16 +23,6 @@ function normalizeFilenameArgs(input: any): void {
   if (input.name && !input.filename) input.filename = input.name;
 }
 
-function normalizeContentArgs(input: any): void {
-  if (!input || typeof input !== 'object' || input.content) return;
-  for (const key of ['text', 'body', 'code', 'source', 'contents', 'textContent', 'data']) {
-    if (typeof input[key] === 'string' && input[key].length > 0) {
-      input.content = input[key];
-      return;
-    }
-  }
-}
-
 function normalizeFileSpec(value: any): any {
   if (typeof value === 'string') return { filename: value };
   if (!value || typeof value !== 'object') return value;
@@ -57,39 +47,21 @@ export function normalizeRegistryToolArgs(toolName: string, args: any): any {
   const name = normalizeRegistryToolName(toolName);
   const input = args && typeof args === 'object' ? { ...args } : {};
 
-  if (name === 'workspace_read_file' || name === 'workspace_write_file' || name === 'workspace_edit_file') {
+  if (name === 'workspace_edit_file') {
     normalizeFilenameArgs(input);
   }
-  if (name === 'workspace_write_file') normalizeContentArgs(input);
-  if (name === 'workspace_read_many_files' && input.paths && !input.files) {
-    input.files = normalizeFileSpecArray(input.paths);
-  }
-  if (name === 'workspace_read_many_files' && input.files) {
+  if (name === 'workspace_edit_file' && input.files) {
     input.files = normalizeFileSpecArray(input.files);
   }
-  if (name === 'workspace_edit_many_files' && input.files && !input.edits) input.edits = input.files;
-  if (name === 'workspace_edit_many_files' && input.edits) {
-    input.edits = normalizeFileSpecArray(input.edits);
+  if (name === 'workspace_run_command') {
+    if (input.cmd && !input.command) input.command = input.cmd;
+    if (Array.isArray(input.commands)) {
+      input.commands = input.commands.map((entry: any) => {
+        if (!entry || typeof entry !== 'object') return entry;
+        return entry.cmd && !entry.command ? { ...entry, command: entry.cmd } : entry;
+      });
+    }
   }
-  if (name === 'workspace_search_text' && input.query && !input.pattern) input.pattern = input.query;
-  if (name === 'workspace_find_files' && input.pattern && !input.glob) input.glob = input.pattern;
-  if (name === 'workspace_run_command' && input.cmd && !input.command) input.command = input.cmd;
-  if (name === 'workspace_apply_patch' && input.content && !input.patch) input.patch = input.content;
-  if (name === 'workspace_apply_patch' && input.diff && !input.patch) input.patch = input.diff;
-  if (name === 'workspace_str_replace') {
-    normalizeFilenameArgs(input);
-    if (input.search && !input.old_string) input.old_string = input.search;
-    if (input.replace && !input.new_string) input.new_string = input.replace;
-  }
-  if (name === 'workspace_semantic_search') {
-    if (input.question && !input.query) input.query = input.question;
-    if (input.q && !input.query) input.query = input.q;
-  }
-  if (name === 'workspace_file_outline') {
-    if (input.path && !input.filename) input.filename = input.path;
-    if (input.file && !input.filename) input.filename = input.file;
-  }
-
   return input;
 }
 

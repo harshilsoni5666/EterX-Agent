@@ -4,6 +4,7 @@ import { rejectCrossOrigin } from '../../agent/_shared';
 import {
   DEFAULT_GEMINI_LIVE_MODEL,
   getLiveModelOptions,
+  isOpenAIRealtimeModel,
   normalizeLiveProvider,
   isGeminiLiveModel,
 } from '../../../../lib/live/live-provider';
@@ -84,8 +85,10 @@ const validateProviderKey = async (providerValue: string, apiKey: string): Promi
     }));
     if (!response.ok) throw new Error(`xAI credential check failed (${response.status}).`);
   } else if (provider.provider === 'deepgram') {
-    const response = await withTimeout(fetch('https://api.deepgram.com/v1/projects', {
-      headers: { Authorization: `Token ${apiKey}` },
+    const response = await withTimeout(fetch('https://api.deepgram.com/v1/auth/grant', {
+      method: 'POST',
+      headers: { Authorization: `Token ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ttl_seconds: 60 }),
       cache: 'no-store',
     }));
     if (!response.ok) throw new Error(`Deepgram credential check failed (${response.status}).`);
@@ -150,6 +153,37 @@ export async function POST(req: NextRequest) {
         false,
         models,
         error instanceof Error ? error.message : String(error || 'Live model discovery failed'),
+        502,
+      );
+    }
+  }
+
+  if (provider.provider === 'openai') {
+    try {
+      const response = await withTimeout(fetch('https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        cache: 'no-store',
+      }));
+      if (!response.ok) throw new Error(`OpenAI Live model request failed (${response.status})`);
+      const payload = await response.json();
+      const discovered = (Array.isArray(payload?.data) ? payload.data : [])
+        .map((model: any) => String(model?.id || '').trim())
+        .filter((id: string) => isOpenAIRealtimeModel(id))
+        .map((id: string) => ({
+          id,
+          name: id === 'gpt-realtime' ? 'GPT Realtime' : id === 'gpt-realtime-mini' ? 'GPT Realtime Mini' : id,
+          description: 'Returned by the OpenAI Realtime model catalog',
+          capabilities: ['audio', 'voice', 'openai-webrtc'],
+        }));
+      const merged = new Map(models.map(model => [String(model.id), model]));
+      for (const model of discovered) merged.set(model.id, model);
+      return responseFor(provider.value, true, [...merged.values()]);
+    } catch (error) {
+      return responseFor(
+        provider.value,
+        false,
+        models,
+        error instanceof Error ? error.message : String(error || 'OpenAI Live model discovery failed'),
         502,
       );
     }

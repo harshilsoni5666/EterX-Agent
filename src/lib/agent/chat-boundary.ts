@@ -171,7 +171,7 @@ function referencesRecentContext(
   }
 
   for (const t of recentToolNames) {
-    // Tool names are like workspace_write_file — check for readable fragments
+    // Tool names are snake_case — check for readable fragments.
     const fragments = t.toLowerCase().split('_').filter(f => f.length > 3);
     for (const frag of fragments) {
       if (lower.includes(frag)) return true;

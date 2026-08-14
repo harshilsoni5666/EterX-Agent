@@ -53,26 +53,28 @@ if (packagedDependencyModuleRoot) {
 }
 
 const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig } = require('../src/lib/agent/gateways/daemon.cjs');
+const IS_DESKTOP_DEVELOPMENT = !app.isPackaged;
+
 // Development should never display a stale local bundle. Packaged builds keep
 // Chromium's HTTP cache so repeat launches do not reload every compiled asset.
-if (!app.isPackaged) app.commandLine.appendSwitch('disable-http-cache');
+if (IS_DESKTOP_DEVELOPMENT) app.commandLine.appendSwitch('disable-http-cache');
 // Keep Chromium's shader cache enabled. Recompiling GPU programs on every
 // launch makes the installed app slower on Windows, macOS, and Linux. EterX
 // already owns a writable per-user cache directory, so the old development
 // workaround is no longer needed.
-app.setName('EterX');
+app.setName(IS_DESKTOP_DEVELOPMENT ? 'EterX Dev' : 'EterX');
 // Keep Windows taskbar grouping, notifications, and jump-list entries tied to
 // the installed EterX identity.  This must be set before any BrowserWindow is
 // created so Windows does not register the Electron default app id first.
 if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function') {
-  app.setAppUserModelId('com.eterx.agent');
+  app.setAppUserModelId(IS_DESKTOP_DEVELOPMENT ? 'com.eterx.agent.dev' : 'com.eterx.agent');
 }
 
 // Keep installed-app state out of the source folder, Desktop, and roaming
 // profile. The renderer, packaged server, and Electron IPC all use the same
 // per-user root on every supported OS.
 const LEGACY_USER_DATA_PATH = app.getPath('userData');
-const CANONICAL_USER_DATA_PATH = (() => {
+const INSTALLED_USER_DATA_PATH = (() => {
   const home = app.getPath('home');
   if (process.platform === 'win32') {
     const localRoot = String(process.env.LOCALAPPDATA || process.env.APPDATA || '').trim();
@@ -85,22 +87,52 @@ const CANONICAL_USER_DATA_PATH = (() => {
   return path.join(xdgDataHome || path.join(home, '.local', 'share'), 'EterX');
 })();
 
-if (path.resolve(LEGACY_USER_DATA_PATH) !== path.resolve(CANONICAL_USER_DATA_PATH)) {
-  app.setPath('userData', CANONICAL_USER_DATA_PATH);
+function pathsOverlap(firstPath, secondPath) {
+  const first = path.resolve(firstPath);
+  const second = path.resolve(secondPath);
+  const relative = path.relative(first, second);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
-app.setPath('sessionData', path.join(CANONICAL_USER_DATA_PATH, 'session'));
+
+const DEVELOPMENT_USER_DATA_PATH = (() => {
+  const fallback = path.join(app.getPath('temp'), 'EterX-Desktop-Dev');
+  const requested = String(process.env.ETERX_DESKTOP_DEV_USER_DATA || '').trim();
+  const candidate = requested ? path.resolve(requested) : fallback;
+  // Even a bad local environment override must never place development state
+  // in or above the installed application's durable profile.
+  if (pathsOverlap(INSTALLED_USER_DATA_PATH, candidate) || pathsOverlap(candidate, INSTALLED_USER_DATA_PATH)) {
+    return fallback;
+  }
+  return candidate;
+})();
+const ACTIVE_USER_DATA_PATH = IS_DESKTOP_DEVELOPMENT
+  ? DEVELOPMENT_USER_DATA_PATH
+  : INSTALLED_USER_DATA_PATH;
+
+if (path.resolve(LEGACY_USER_DATA_PATH) !== path.resolve(ACTIVE_USER_DATA_PATH)) {
+  app.setPath('userData', ACTIVE_USER_DATA_PATH);
+}
+app.setPath('sessionData', path.join(ACTIVE_USER_DATA_PATH, 'session'));
 try {
-  app.setPath('cache', path.join(CANONICAL_USER_DATA_PATH, 'cache'));
+  app.setPath('cache', path.join(ACTIVE_USER_DATA_PATH, 'cache'));
 } catch { }
 try {
-  fs.mkdirSync(CANONICAL_USER_DATA_PATH, { recursive: true });
-  fs.mkdirSync(path.join(CANONICAL_USER_DATA_PATH, 'cache'), { recursive: true });
+  fs.mkdirSync(ACTIVE_USER_DATA_PATH, { recursive: true });
+  fs.mkdirSync(path.join(ACTIVE_USER_DATA_PATH, 'cache'), { recursive: true });
 } catch { }
 
-// Acquire the instance lock after selecting the canonical user-data directory.
-// Calling this before app.setPath('userData', ...) can create separate locks
-// for development and packaged launches and still allow duplicate gateways.
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (IS_DESKTOP_DEVELOPMENT) {
+  console.log(`[EterX] Using isolated local desktop profile: ${ACTIVE_USER_DATA_PATH}`);
+}
+
+// The local launcher already owns a development-session lock and also
+// serializes Electron shell restarts. Skipping Chromium's Windows singleton
+// mutex in development prevents a fast hot-restart from racing the previous
+// process while that OS handle is being released. Packaged builds retain the
+// normal single-instance behavior for the installed application.
+const hasSingleInstanceLock = IS_DESKTOP_DEVELOPMENT
+  ? true
+  : app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 }
@@ -123,7 +155,6 @@ let latestPetStatus = null;
 // Development should surface a missing local server promptly. A packaged app
 // has a child-process lifecycle signal instead, so it must not be replaced by
 // a synthetic failure screen merely because a cold device crossed a timer.
-const DEFAULT_DEV_BOOT_TIMEOUT_MS = 45000;
 const DEFAULT_PET_WINDOW_SIZE = 'normal';
 const PET_WINDOW_SIZES = {
   small: { width: 292, height: 90, replyHeight: 162 },
@@ -145,9 +176,15 @@ let packagedServerStopPromise = null;
 let isQuitting = false;
 let desktopAutoUpdater = null;
 let desktopUpdateCheckPromise = null;
+let desktopUpdateCheckSilent = false;
 let desktopUpdateDownloadPromise = null;
 let desktopUpdateInstallPromise = null;
+let desktopUpdateInstallWatchdog = null;
 let desktopUpdateRevision = 0;
+let desktopUpdateCheckTimer = null;
+let desktopUpdateViewedVersion = null;
+const DESKTOP_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+const DESKTOP_UPDATE_VIEW_STATE_FILE = 'eterx-update-view-state.json';
 const pendingRendererFlushes = new Map();
 let rendererFlushSequence = 0;
 // Linux distribution and in-app updates use AppImage exclusively. A process
@@ -191,6 +228,7 @@ let desktopUpdateState = {
   releasePage: DESKTOP_UPDATE_RELEASE_PAGE,
   releaseName: null,
   releaseDate: null,
+  updateAvailableUnread: false,
 };
 const launchInBackground = process.argv.includes('--background');
 
@@ -321,6 +359,7 @@ const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'XAI_BASE_URL',
   'ETERX_SEARCH_PROVIDER',
   'ETERX_SEARCH_FALLBACK_PROVIDERS',
+  'ETERX_SEARCH_XAI_MODEL',
   'ETERX_PREFER_MODEL_SEARCH',
   'GITHUB_TOKEN',
   'ETERX_IMAGE_PROVIDER',
@@ -340,6 +379,13 @@ const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'ETERX_IMAGE_MODEL_OPENROUTER',
   'ETERX_IMAGE_MODEL_XAI',
   'ETERX_IMAGE_MODEL_FREEPIK',
+  'DEEPINFRA_IMAGE_BASE_URL',
+  'FAL_IMAGE_BASE_URL',
+  'KREA_IMAGE_BASE_URL',
+  'OPENAI_IMAGE_BASE_URL',
+  'OPENROUTER_IMAGE_BASE_URL',
+  'XAI_IMAGE_BASE_URL',
+  'FREEPIK_IMAGE_BASE_URL',
   'ETERX_VIDEO_ENABLED',
   'ETERX_VIDEO_PROVIDER',
   'ETERX_VIDEO_FALLBACK_PROVIDERS',
@@ -348,6 +394,7 @@ const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'ETERX_VIDEO_RUNWAY_API_KEY',
   'ETERX_VIDEO_LUMA_API_KEY',
   'ETERX_VIDEO_MINIMAX_API_KEY',
+  'ETERX_VIDEO_VOLCENGINE_API_KEY',
   'ETERX_VIDEO_FAL_API_KEY',
   'ETERX_VIDEO_REPLICATE_API_KEY',
   'ETERX_VIDEO_XAI_API_KEY',
@@ -356,9 +403,19 @@ const DESKTOP_RUNTIME_SETTING_ENV_KEYS = new Set([
   'ETERX_VIDEO_MODEL_RUNWAY',
   'ETERX_VIDEO_MODEL_LUMA',
   'ETERX_VIDEO_MODEL_MINIMAX',
+  'ETERX_VIDEO_MODEL_VOLCENGINE',
   'ETERX_VIDEO_MODEL_FAL',
   'ETERX_VIDEO_MODEL_REPLICATE',
   'ETERX_VIDEO_MODEL_XAI',
+  'ETERX_VIDEO_GOOGLE_BASE_URL',
+  'ETERX_VIDEO_OPENAI_BASE_URL',
+  'ETERX_VIDEO_RUNWAY_BASE_URL',
+  'ETERX_VIDEO_LUMA_BASE_URL',
+  'ETERX_VIDEO_MINIMAX_BASE_URL',
+  'ETERX_VIDEO_VOLCENGINE_BASE_URL',
+  'ETERX_VIDEO_FAL_BASE_URL',
+  'ETERX_VIDEO_REPLICATE_BASE_URL',
+  'ETERX_VIDEO_XAI_BASE_URL',
   'ETERX_THINK_MODEL',
   'GEMINI_THINK_MODEL',
   'MISTRAL_MODEL',
@@ -434,6 +491,78 @@ function desktopUpdateInfoPatch(info) {
   };
 }
 
+function desktopUpdateViewStatePath() {
+  return path.join(getEterxSettingsRoot(), DESKTOP_UPDATE_VIEW_STATE_FILE);
+}
+
+function readDesktopUpdateViewedVersion() {
+  try {
+    const payload = JSON.parse(fs.readFileSync(desktopUpdateViewStatePath(), 'utf8'));
+    return typeof payload?.viewedVersion === 'string' && payload.viewedVersion.trim()
+      ? payload.viewedVersion.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDesktopUpdateViewedVersion(version) {
+  const target = desktopUpdateViewStatePath();
+  const temporary = `${target}.tmp-${process.pid}`;
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(temporary, JSON.stringify({ viewedVersion: version }), { encoding: 'utf8', mode: 0o600 });
+    fs.rmSync(target, { force: true });
+    fs.renameSync(temporary, target);
+  } catch (error) {
+    try { fs.rmSync(temporary, { force: true }); } catch { }
+    logToFile(`[update] Could not save viewed release: ${error?.message || error}`);
+  }
+}
+
+function markDesktopUpdateViewed() {
+  const version = typeof desktopUpdateState.availableVersion === 'string'
+    ? desktopUpdateState.availableVersion.trim()
+    : '';
+  if (version && version !== desktopUpdateViewedVersion) {
+    desktopUpdateViewedVersion = version;
+    writeDesktopUpdateViewedVersion(version);
+  }
+  if (desktopUpdateState.updateAvailableUnread) {
+    return publishDesktopUpdateState({ updateAvailableUnread: false });
+  }
+  return desktopUpdateState;
+}
+
+function desktopUpdateChecksAreActive() {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized() && !isQuitting);
+}
+
+function stopAutomaticDesktopUpdateChecks() {
+  if (desktopUpdateCheckTimer) clearTimeout(desktopUpdateCheckTimer);
+  desktopUpdateCheckTimer = null;
+}
+
+function scheduleAutomaticDesktopUpdateCheck() {
+  stopAutomaticDesktopUpdateChecks();
+  if (!desktopAutoUpdater || !desktopUpdateChecksAreActive()) return;
+  if (desktopUpdateState.availableVersion || ['available', 'downloading', 'ready', 'installing'].includes(desktopUpdateState.status)) return;
+  desktopUpdateCheckTimer = setTimeout(() => {
+    desktopUpdateCheckTimer = null;
+    if (!desktopUpdateChecksAreActive()) return;
+    void performDesktopUpdateCheck({ silent: true }).finally(scheduleAutomaticDesktopUpdateCheck);
+  }, DESKTOP_UPDATE_CHECK_INTERVAL_MS);
+}
+
+function startAutomaticDesktopUpdateChecks({ immediate = false } = {}) {
+  if (!desktopAutoUpdater || !desktopUpdateChecksAreActive()) {
+    stopAutomaticDesktopUpdateChecks();
+    return;
+  }
+  scheduleAutomaticDesktopUpdateCheck();
+  if (immediate) void performDesktopUpdateCheck({ silent: true });
+}
+
 function describeDesktopUpdateError(error, operation = 'Update') {
   const detail = String(error?.message || error || 'unknown error').trim();
   if (/ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|latest(?:-mac|-linux(?:-arm64)?)?\.yml|\b404\b/i.test(detail)) {
@@ -450,6 +579,22 @@ function describeDesktopUpdateError(error, operation = 'Update') {
     return `${operation} failed: the release host could not be reached. Check the internet connection and try again.`;
   }
   return `${operation} failed: ${detail}`;
+}
+
+function restoreDesktopRuntimeAfterInstallerFailure(error) {
+  if (desktopUpdateInstallWatchdog) clearTimeout(desktopUpdateInstallWatchdog);
+  desktopUpdateInstallWatchdog = null;
+  isQuitting = false;
+  publishDesktopUpdateState({
+    status: 'error',
+    percent: 100,
+    bytesPerSecond: 0,
+    downloadReady: true,
+    message: `The update is still downloaded, but the native installer could not start: ${error?.message || 'unknown error'}`,
+  });
+  void startPackagedServer()
+    .then(() => bootApp({ retryOnFailure: true }))
+    .catch(recoveryError => logToFile(`[update] Could not restore the app runtime after installer failure: ${recoveryError?.message || recoveryError}`));
 }
 
 async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1) {
@@ -579,9 +724,10 @@ ipcMain.on('desktop-durable-flush-complete', (event, requestId, ok) => {
   pending.resolve(ok !== false);
 });
 
-async function performDesktopUpdateCheck() {
+async function performDesktopUpdateCheck({ silent = false } = {}) {
   if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
   if (desktopUpdateCheckPromise) return desktopUpdateCheckPromise;
+  if (silent && desktopUpdateState.status === 'available') return desktopUpdateState;
   if (desktopUpdateState.status === 'downloading' ||
     desktopUpdateState.status === 'ready' ||
     desktopUpdateState.status === 'installing' ||
@@ -589,31 +735,36 @@ async function performDesktopUpdateCheck() {
     return desktopUpdateState;
   }
 
+  desktopUpdateCheckSilent = silent;
+  const revisionBeforeCheck = desktopUpdateState.revision;
   desktopUpdateCheckPromise = (async () => {
-    publishDesktopUpdateState({
-      status: 'checking',
-      availableVersion: null,
-      percent: 0,
-      transferred: 0,
-      total: 0,
-      bytesPerSecond: 0,
-      downloadReady: false,
-      releaseName: null,
-      releaseDate: null,
-      message: 'Checking for updates...',
-    });
+    if (!silent) {
+      publishDesktopUpdateState({
+        status: 'checking',
+        availableVersion: null,
+        percent: 0,
+        transferred: 0,
+        total: 0,
+        bytesPerSecond: 0,
+        downloadReady: false,
+        releaseName: null,
+        releaseDate: null,
+        message: 'Checking for updates...',
+      });
+    }
     try {
       const result = await desktopAutoUpdater.checkForUpdates();
       const checkedVersion = result?.updateInfo?.version;
       // electron-updater normally emits update-available/update-not-available
       // before resolving. Keep a defensive fallback for slower macOS feeds so
       // the UI can never remain stuck on "checking".
-      if (desktopUpdateState.status === 'checking') {
+      if (desktopUpdateState.revision === revisionBeforeCheck || desktopUpdateState.status === 'checking') {
         const now = new Date().toISOString();
         if (result?.isUpdateAvailable && checkedVersion) {
           publishDesktopUpdateState({
             status: 'available',
             ...desktopUpdateInfoPatch(result.updateInfo),
+            updateAvailableUnread: checkedVersion !== desktopUpdateViewedVersion,
             percent: 0,
             message: `EterX ${checkedVersion} is available`,
             lastCheckedAt: now,
@@ -622,6 +773,7 @@ async function performDesktopUpdateCheck() {
           publishDesktopUpdateState({
             status: 'current',
             availableVersion: null,
+            updateAvailableUnread: false,
             percent: 100,
             message: 'EterX is up to date',
             lastCheckedAt: now,
@@ -631,18 +783,23 @@ async function performDesktopUpdateCheck() {
         publishDesktopUpdateState({ lastCheckedAt: new Date().toISOString() });
       }
     } catch (error) {
-      publishDesktopUpdateState({
-        status: 'error',
-        availableVersion: null,
-        percent: 0,
-        transferred: 0,
-        total: 0,
-        bytesPerSecond: 0,
-        downloadReady: false,
-        lastCheckedAt: new Date().toISOString(),
-        message: describeDesktopUpdateError(error, 'Update check'),
-      });
+      if (silent) {
+        logToFile(`[update] Silent check deferred: ${describeDesktopUpdateError(error, 'Update check')}`);
+      } else {
+        publishDesktopUpdateState({
+          status: 'error',
+          availableVersion: null,
+          percent: 0,
+          transferred: 0,
+          total: 0,
+          bytesPerSecond: 0,
+          downloadReady: false,
+          lastCheckedAt: new Date().toISOString(),
+          message: describeDesktopUpdateError(error, 'Update check'),
+        });
+      }
     } finally {
+      desktopUpdateCheckSilent = false;
       desktopUpdateCheckPromise = null;
     }
     return desktopUpdateState;
@@ -660,6 +817,7 @@ function initializeDesktopUpdates() {
     });
   }
   try {
+    desktopUpdateViewedVersion = readDesktopUpdateViewedVersion();
     try {
       ({ autoUpdater: desktopAutoUpdater } = require('electron-updater'));
     } catch {
@@ -693,21 +851,25 @@ function initializeDesktopUpdates() {
       debug: (message) => logToFile(`[update:client:debug] ${String(message ?? '')}`),
     };
 
-    desktopAutoUpdater.on('checking-for-update', () => publishDesktopUpdateState({
-      status: 'checking',
-      availableVersion: null,
-      percent: 0,
-      transferred: 0,
-      total: 0,
-      bytesPerSecond: 0,
-      downloadReady: false,
-      releaseName: null,
-      releaseDate: null,
-      message: 'Checking GitHub Releases for a newer EterX version...',
-    }));
+    desktopAutoUpdater.on('checking-for-update', () => {
+      if (desktopUpdateCheckSilent) return;
+      publishDesktopUpdateState({
+        status: 'checking',
+        availableVersion: null,
+        percent: 0,
+        transferred: 0,
+        total: 0,
+        bytesPerSecond: 0,
+        downloadReady: false,
+        releaseName: null,
+        releaseDate: null,
+        message: 'Checking GitHub Releases for a newer EterX version...',
+      });
+    });
     desktopAutoUpdater.on('update-available', (info) => publishDesktopUpdateState({
       status: 'available',
       ...desktopUpdateInfoPatch(info),
+      updateAvailableUnread: info.version !== desktopUpdateViewedVersion,
       percent: 0,
       transferred: 0,
       total: Number(info?.files?.[0]?.size) || 0,
@@ -719,6 +881,7 @@ function initializeDesktopUpdates() {
     desktopAutoUpdater.on('update-not-available', () => publishDesktopUpdateState({
       status: 'current',
       availableVersion: null,
+      updateAvailableUnread: false,
       percent: 100,
       transferred: 0,
       total: 0,
@@ -772,9 +935,18 @@ function initializeDesktopUpdates() {
       message: `Download cancelled. EterX ${info.version} is still available.`,
     }));
     desktopAutoUpdater.on('error', (error) => {
+      if (desktopUpdateCheckSilent) {
+        logToFile(`[update] Silent updater event deferred: ${describeDesktopUpdateError(error, 'Update check')}`);
+        return;
+      }
       // A late native-installer error must remain visible without discarding
       // the already verified package, so the user can retry installation.
+      const installerFailed = desktopUpdateState.status === 'installing';
       if (desktopUpdateState.downloadReady) {
+        if (installerFailed) {
+          restoreDesktopRuntimeAfterInstallerFailure(error);
+          return;
+        }
         publishDesktopUpdateState({
           status: 'error',
           percent: 100,
@@ -799,10 +971,11 @@ function initializeDesktopUpdates() {
     publishDesktopUpdateState({
       status: 'idle',
       supported: true,
-      automaticChecks: false,
+      automaticChecks: true,
       manualInstall: true,
-      message: 'Ready for a manual update check',
+      message: 'Updates are checked silently while EterX is open',
     });
+    startAutomaticDesktopUpdateChecks({ immediate: true });
 
   } catch (error) {
     publishDesktopUpdateState({ status: 'error', message: describeDesktopUpdateError(error, 'Updater initialization') });
@@ -811,7 +984,7 @@ function initializeDesktopUpdates() {
 }
 
 function normalizeNativeTheme(theme) {
-  return theme === 'dark' ? 'dark' : 'light';
+  return theme === 'light' ? 'light' : 'dark';
 }
 
 function nativeThemePath() {
@@ -852,6 +1025,7 @@ function normalizeSecureRuntimeSettings(raw) {
   const search = hasSearchSettings ? {
     enabled: source.search.enabled !== false,
     preferModelSearch: source.search.preferModelSearch !== false,
+    xaiModel: typeof source.search.xaiModel === 'string' ? source.search.xaiModel.trim().slice(0, 160) : 'grok-4.6',
     provider: SECURE_RUNTIME_SEARCH_PROVIDERS.has(String(source.search.provider || '').trim()) ? String(source.search.provider).trim() : 'tavily',
     fallbackProviders: Array.from(new Set((Array.isArray(source.search.fallbackProviders) ? source.search.fallbackProviders : [])
       .map((provider) => String(provider || '').trim())
@@ -878,6 +1052,7 @@ function normalizeSecureRuntimeSettings(raw) {
       .filter((provider) => SECURE_RUNTIME_VIDEO_PROVIDERS.has(provider)))),
     modelByProvider: {},
     apiKeys: {},
+    baseURLs: {},
   } : undefined;
 
   for (const [provider, value] of Object.entries(source.apiKeys || {})) {
@@ -973,6 +1148,11 @@ function normalizeSecureRuntimeSettings(raw) {
         .filter(Boolean)
         .slice(0, 3);
       if (values.length > 0) video.apiKeys[provider] = Array.from(new Set(values));
+    }
+    for (const [provider, value] of Object.entries(source.video.baseURLs || {})) {
+      if (!SECURE_RUNTIME_VIDEO_PROVIDERS.has(provider) || typeof value !== 'string') continue;
+      const baseURL = value.trim().replace(/\/+$/, '');
+      if (baseURL && baseURL.length <= 2048 && !/[\r\n\t]/.test(baseURL)) video.baseURLs[provider] = baseURL;
     }
   }
 
@@ -1163,6 +1343,9 @@ function ensureBackgroundTray() {
 }
 
 function setGatewayLaunchAtLogin(enabled) {
+  // Local testing must never add, remove, or replace the installed app's
+  // operating-system startup registration.
+  if (IS_DESKTOP_DEVELOPMENT) return { ok: true, development: true };
   if (process.platform === 'linux') {
     // Respect XDG_CONFIG_HOME (used by many Linux desktop environments and
     // portable installations) instead of always writing to ~/.config.
@@ -1315,15 +1498,36 @@ function secureRuntimeSettingsEnvironment(settings) {
     xai: 'ETERX_IMAGE_XAI_API_KEY',
     freepik: 'ETERX_IMAGE_FREEPIK_API_KEY',
   };
+  const imageBaseEnvironment = {
+    deepinfra: 'DEEPINFRA_IMAGE_BASE_URL',
+    fal: 'FAL_IMAGE_BASE_URL',
+    krea: 'KREA_IMAGE_BASE_URL',
+    openai: 'OPENAI_IMAGE_BASE_URL',
+    openrouter: 'OPENROUTER_IMAGE_BASE_URL',
+    xai: 'XAI_IMAGE_BASE_URL',
+    freepik: 'FREEPIK_IMAGE_BASE_URL',
+  };
   const videoKeyEnvironment = {
     google: 'ETERX_VIDEO_GOOGLE_API_KEY',
     openai: 'ETERX_VIDEO_OPENAI_API_KEY',
     runway: 'ETERX_VIDEO_RUNWAY_API_KEY',
     luma: 'ETERX_VIDEO_LUMA_API_KEY',
     minimax: 'ETERX_VIDEO_MINIMAX_API_KEY',
+    volcengine: 'ETERX_VIDEO_VOLCENGINE_API_KEY',
     fal: 'ETERX_VIDEO_FAL_API_KEY',
     replicate: 'ETERX_VIDEO_REPLICATE_API_KEY',
     xai: 'ETERX_VIDEO_XAI_API_KEY',
+  };
+  const videoBaseEnvironment = {
+    google: 'ETERX_VIDEO_GOOGLE_BASE_URL',
+    openai: 'ETERX_VIDEO_OPENAI_BASE_URL',
+    runway: 'ETERX_VIDEO_RUNWAY_BASE_URL',
+    luma: 'ETERX_VIDEO_LUMA_BASE_URL',
+    minimax: 'ETERX_VIDEO_MINIMAX_BASE_URL',
+    volcengine: 'ETERX_VIDEO_VOLCENGINE_BASE_URL',
+    fal: 'ETERX_VIDEO_FAL_BASE_URL',
+    replicate: 'ETERX_VIDEO_REPLICATE_BASE_URL',
+    xai: 'ETERX_VIDEO_XAI_BASE_URL',
   };
   const env = {};
 
@@ -1361,6 +1565,7 @@ function secureRuntimeSettingsEnvironment(settings) {
   if (searchSettings.provider) env.ETERX_SEARCH_PROVIDER = searchSettings.provider;
   if (Array.isArray(searchSettings.fallbackProviders)) env.ETERX_SEARCH_FALLBACK_PROVIDERS = searchSettings.fallbackProviders.join(',');
   if (searchSettings.preferModelSearch === false) env.ETERX_PREFER_MODEL_SEARCH = '0';
+  if (searchSettings.xaiModel) env.ETERX_SEARCH_XAI_MODEL = searchSettings.xaiModel;
 
   const imageSettings = settings.image && typeof settings.image === 'object' ? settings.image : {};
   if (imageSettings.enabled === false) env.ETERX_IMAGE_ENABLED = '0';
@@ -1374,6 +1579,10 @@ function secureRuntimeSettingsEnvironment(settings) {
   for (const [provider, model] of Object.entries(imageSettings.modelByProvider || {})) {
     if (model) env[`ETERX_IMAGE_MODEL_${String(provider).toUpperCase()}`] = model;
   }
+  for (const [provider, baseURL] of Object.entries(imageSettings.baseURLs || {})) {
+    const name = imageBaseEnvironment[provider];
+    if (name && baseURL) env[name] = baseURL;
+  }
 
   const videoSettings = settings.video && typeof settings.video === 'object' ? settings.video : {};
   if (videoSettings.enabled === false) env.ETERX_VIDEO_ENABLED = '0';
@@ -1386,6 +1595,10 @@ function secureRuntimeSettingsEnvironment(settings) {
   }
   for (const [provider, model] of Object.entries(videoSettings.modelByProvider || {})) {
     if (model) env[`ETERX_VIDEO_MODEL_${String(provider).toUpperCase()}`] = model;
+  }
+  for (const [provider, baseURL] of Object.entries(videoSettings.baseURLs || {})) {
+    const name = videoBaseEnvironment[provider];
+    if (name && baseURL) env[name] = baseURL;
   }
 
   return env;
@@ -1403,6 +1616,9 @@ function removeDesktopRuntimeSettingEnvironment(env) {
 }
 
 function migrateLegacyUserData() {
+  // A development launch starts from its own profile and must never read or
+  // copy durable data from an installed EterX profile.
+  if (IS_DESKTOP_DEVELOPMENT) return;
   const currentUserData = app.getPath('userData');
   // Migrate only durable user-owned state. The old runtime and browser cache
   // are deliberately excluded so a new install always starts from its own
@@ -1543,7 +1759,25 @@ function migrateLegacySourceBootstrapData(currentUserData) {
   }
 }
 
+function readStoredRendererTheme() {
+  const preferencesDir = getEterxSettingsRoot();
+  for (const source of [path.join(preferencesDir, 'preferences.json'), path.join(preferencesDir, 'preferences.backup.json')]) {
+    try {
+      if (!fs.existsSync(source)) continue;
+      const preferences = JSON.parse(fs.readFileSync(source, 'utf8'));
+      const rawSettings = preferences?.eterx_settings;
+      if (typeof rawSettings !== 'string') continue;
+      const settings = JSON.parse(rawSettings);
+      if (settings?.theme === 'dark' || settings?.theme === 'light') return settings.theme;
+      if (settings?.theme === 'system') return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+    } catch { }
+  }
+  return null;
+}
+
 function readNativeTheme() {
+  const storedRendererTheme = readStoredRendererTheme();
+  if (storedRendererTheme) return storedRendererTheme;
   for (const source of [nativeThemePath(), `${nativeThemePath()}.backup`]) {
     try {
       if (!fs.existsSync(source)) continue;
@@ -1551,7 +1785,7 @@ function readNativeTheme() {
       return normalizeNativeTheme(JSON.parse(raw)?.theme);
     } catch { }
   }
-  return 'light';
+  return 'dark';
 }
 
 function writeNativeTheme(theme) {
@@ -2326,11 +2560,12 @@ async function resolveDevAppTarget() {
 
 async function waitForHttpTarget(target) {
   const configuredTimeout = Number(process.env.ETERX_BOOT_TIMEOUT_MS || 0);
+  // Local development intentionally waits for Next.js without an artificial
+  // startup deadline. Large first compiles should not turn into a false
+  // Electron failure; the development runner reports if Next.js exits.
   const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
     ? configuredTimeout
-    : app.isPackaged
-      ? 0
-      : DEFAULT_DEV_BOOT_TIMEOUT_MS;
+    : 0;
   const start = Date.now();
 
   while (timeoutMs === 0 || Date.now() - start < timeoutMs) {
@@ -2656,7 +2891,7 @@ async function bootApp(options = {}) {
 
     const target = await resolveDevAppTarget();
 
-    if (isHttpTarget(target)) {
+    if (isHttpTarget(target) && process.env.ETERX_DEV_PREWARMED !== '1') {
       await waitForHttpTarget(target);
     }
 
@@ -2869,7 +3104,13 @@ function createWindow() {
     }
   });
 
+  mainWindow.on('show', () => startAutomaticDesktopUpdateChecks({ immediate: true }));
+  mainWindow.on('restore', () => startAutomaticDesktopUpdateChecks({ immediate: true }));
+  mainWindow.on('hide', stopAutomaticDesktopUpdateChecks);
+  mainWindow.on('minimize', stopAutomaticDesktopUpdateChecks);
+
   mainWindow.on('closed', function () {
+    stopAutomaticDesktopUpdateChecks();
     mainWindow = null;
   });
 }
@@ -3058,6 +3299,10 @@ ipcMain.handle('open-external', async (event, url) => {
 
 ipcMain.handle('app-restart', async () => {
   await requestRendererDurableFlush();
+  if (IS_DESKTOP_DEVELOPMENT) {
+    mainWindow?.webContents.reloadIgnoringCache();
+    return true;
+  }
   isQuitting = true;
   await stopPackagedServer();
   app.relaunch();
@@ -3156,6 +3401,8 @@ ipcMain.handle('gateway-send-message', async (_event, platform, target, text) =>
 
 ipcMain.handle('desktop-update-get-state', () => desktopUpdateState);
 
+ipcMain.handle('desktop-update-mark-viewed', () => markDesktopUpdateViewed());
+
 ipcMain.handle('desktop-update-check', async () => {
   if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
   return performDesktopUpdateCheck();
@@ -3222,16 +3469,14 @@ ipcMain.handle('desktop-update-install', async () => {
       status: 'installing',
       percent: 100,
       bytesPerSecond: 0,
-      message: 'Saving chats and settings before installation...',
+      message: 'Preparing EterX to restart and apply the update...',
     });
-    const flushed = await requestRendererDurableFlush(15000, 3);
+    const flushed = await requestRendererDurableFlush(15000, 1);
     if (!flushed) {
-      publishDesktopUpdateState({
-        status: 'error',
-        percent: 100,
-        message: 'Update paused safely: EterX could not confirm the latest chats or settings were saved. Keep the app open and retry restart and install.',
-      });
-      return false;
+      // AppData is written continuously during normal use. A missing renderer
+      // acknowledgement can mean the UI was reloading, suspended, or already
+      // closing; it must not permanently strand a verified native package.
+      logToFile('[update] Final renderer save acknowledgement was unavailable; continuing with the latest durable AppData snapshot.');
     }
     isQuitting = true;
     publishDesktopUpdateState({
@@ -3242,17 +3487,20 @@ ipcMain.handle('desktop-update-install', async () => {
     // Release the local server before handing control to the installer. This
     // avoids locked runtime files on Windows and a stale helper process on
     // macOS, while leaving AppData untouched.
-    await stopPackagedServer(8000);
+    await stopPackagedServer(5000);
     setImmediate(() => {
       try {
+        // Native updaters normally terminate Electron immediately. If a
+        // platform helper silently declines to launch, restore the runtime and
+        // retain the verified package so Restart to update remains retryable.
+        desktopUpdateInstallWatchdog = setTimeout(() => {
+          desktopUpdateInstallWatchdog = null;
+          if (!mainWindow || mainWindow.isDestroyed()) return;
+          restoreDesktopRuntimeAfterInstallerFailure(new Error('The native installer did not take control of the application.'));
+        }, 30_000);
         desktopAutoUpdater.quitAndInstall(false, true);
       } catch (error) {
-        isQuitting = false;
-        publishDesktopUpdateState({
-          status: 'error',
-          percent: 100,
-          message: `Could not start the installer: ${error?.message || 'unknown error'}`,
-        });
+        restoreDesktopRuntimeAfterInstallerFailure(error);
       }
     });
     return true;
@@ -3369,6 +3617,9 @@ app.on('window-all-closed', function () {
 });
 
 app.on('before-quit', (event) => {
+  stopAutomaticDesktopUpdateChecks();
+  if (desktopUpdateInstallWatchdog) clearTimeout(desktopUpdateInstallWatchdog);
+  desktopUpdateInstallWatchdog = null;
   if (!isQuitting) {
     event.preventDefault();
     isQuitting = true;

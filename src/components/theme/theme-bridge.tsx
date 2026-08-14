@@ -2,9 +2,7 @@
 
 import React, { useEffect } from 'react';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
-
-type ThemePreference = 'dark' | 'light' | 'system';
-type ResolvedTheme = 'dark' | 'light';
+import { DEFAULT_THEME, isThemePreference, type ResolvedTheme, type ThemePreference } from '../../lib/theme-config';
 
 const SETTINGS_STORAGE_KEY = 'eterx_settings';
 const SETTINGS_CHANNEL = 'eterx-settings';
@@ -13,15 +11,12 @@ const readThemePreference = (): ThemePreference => {
   try {
     const saved = appStorage.getItem(SETTINGS_STORAGE_KEY);
     const settings = saved ? JSON.parse(saved) : {};
-    if (settings.theme === 'dark' || settings.theme === 'light' || settings.theme === 'system') {
+    if (isThemePreference(settings.theme)) {
       return settings.theme;
     }
-    // The settings model defaults to light. Keeping the bridge on the same
-    // default prevents an OS dark-mode preference from racing the persisted
-    // app preference during the first render.
-    return 'light';
+    return DEFAULT_THEME;
   } catch {
-    return 'light';
+    return DEFAULT_THEME;
   }
 };
 
@@ -47,7 +42,7 @@ const syncThemeIcons = (theme: ResolvedTheme) => {
 };
 
 export const applyEterxTheme = (theme: ThemePreference = readThemePreference()): ResolvedTheme => {
-  if (typeof window === 'undefined') return 'light';
+  if (typeof window === 'undefined') return 'dark';
   const resolved = resolveTheme(theme);
   const root = document.documentElement;
   root.setAttribute('data-theme', resolved);
@@ -60,18 +55,24 @@ export const applyEterxTheme = (theme: ThemePreference = readThemePreference()):
 };
 
 export const transitionEterxTheme = (theme: ThemePreference): ResolvedTheme => {
-  if (typeof window === 'undefined') return 'light';
+  if (typeof window === 'undefined') return 'dark';
 
   const documentWithViewTransition = document as Document & {
     startViewTransition?: (callback: () => void) => { finished: Promise<unknown> };
   };
 
-  if (documentWithViewTransition.startViewTransition) {
-    const transition = documentWithViewTransition.startViewTransition(() => {
-      applyEterxTheme(theme);
-    });
-    transition.finished.catch(() => undefined);
-  } else {
+  try {
+    if (documentWithViewTransition.startViewTransition) {
+      const transition = documentWithViewTransition.startViewTransition(() => {
+        applyEterxTheme(theme);
+      });
+      transition.finished.catch(() => undefined);
+    } else {
+      return applyEterxTheme(theme);
+    }
+  } catch {
+    // A second switch can arrive while a View Transition is still active.
+    // The theme must still be applied synchronously in that case.
     return applyEterxTheme(theme);
   }
 
@@ -93,36 +94,52 @@ export const broadcastEterxSettingsUpdate = (settings: unknown) => {
 export const ThemeBridge = React.memo(() => {
   useEffect(() => {
     const applyStoredTheme = () => applyEterxTheme();
-    applyStoredTheme();
-    void appStorageReady.then(applyStoredTheme);
+    let storageLoaded = false;
+    // The server-rendered root already contains the synchronous startup
+    // preference. Do not read the empty in-memory store before hydration.
+    void appStorageReady.then((loaded) => {
+      if (loaded) {
+        storageLoaded = true;
+        applyStoredTheme();
+      }
+    });
 
     const media = window.matchMedia?.('(prefers-color-scheme: dark)');
     const onSystemThemeChange = () => {
-      if (readThemePreference() === 'system') applyStoredTheme();
+      if (storageLoaded && readThemePreference() === 'system') applyStoredTheme();
     };
     const onLocalSettingsUpdate = (event: Event) => {
       const detail = (event as CustomEvent).detail;
       // Theme callers already perform the animated update. Reapplying it here
       // would interrupt the View Transition with a second raw DOM update.
       if (detail && typeof detail === 'object' && 'theme' in detail) return;
-      applyStoredTheme();
+      if (storageLoaded) applyStoredTheme();
     };
 
     window.addEventListener('eterx-settings-updated', onLocalSettingsUpdate);
-    window.addEventListener(FOLDER_STORAGE_READY_EVENT, applyStoredTheme);
+    const onStorageReady = (event: Event) => {
+      const loaded = (event as CustomEvent<{ loaded?: boolean }>).detail?.loaded;
+      if (loaded !== false) {
+        storageLoaded = true;
+        applyStoredTheme();
+      }
+    };
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, onStorageReady);
     media?.addEventListener('change', onSystemThemeChange);
 
     let channel: BroadcastChannel | null = null;
     try {
       channel = new BroadcastChannel(SETTINGS_CHANNEL);
-      channel.onmessage = applyStoredTheme;
+      channel.onmessage = () => {
+        if (storageLoaded) applyStoredTheme();
+      };
     } catch {
       channel = null;
     }
 
     return () => {
       window.removeEventListener('eterx-settings-updated', onLocalSettingsUpdate);
-      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, applyStoredTheme);
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onStorageReady);
       media?.removeEventListener('change', onSystemThemeChange);
       channel?.close();
     };

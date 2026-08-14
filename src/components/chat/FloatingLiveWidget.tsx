@@ -16,6 +16,7 @@ export interface FloatingLiveWidgetProps {
   isScreenSharing: boolean;
   liveActiveTool?: string | null;
   liveActivityLabel?: string | null;
+  controlMessage?: string | null;
   onToggleMicMute: () => void;
   onToggleSpeakerMute: () => void;
   onToggleCamera: () => void;
@@ -36,6 +37,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   isScreenSharing,
   liveActiveTool,
   liveActivityLabel,
+  controlMessage,
   onToggleMicMute,
   onToggleSpeakerMute,
   onToggleCamera,
@@ -48,6 +50,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   const isLiveActive = liveState !== 'idle' && liveState !== 'error';
   const orbTheme = useLiveOrbTheme(isLiveActive);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hoverSurfaceRef = useRef<HTMLDivElement | null>(null);
   const nativeReopenTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const nativeVolumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nativeVolumeLastSentRef = useRef(0);
@@ -69,7 +72,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   useEffect(() => {
     if (isElectron) {
       if (liveState !== 'idle' && liveState !== 'error') {
-        let statusStr = liveActivityLabel?.trim() || '';
+        let statusStr = controlMessage?.trim() || liveActivityLabel?.trim() || '';
         if (liveActiveTool) {
           const toolLower = liveActiveTool.toLowerCase();
           if (!statusStr && (toolLower.includes('search') || toolLower.includes('web'))) statusStr = 'Searching';
@@ -105,7 +108,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
         (window as any).electronAPI.closePetWindow?.();
       }
     }
-  }, [liveState, liveActiveTool, liveActivityLabel, isElectron, isMicMuted, isSpeakerMuted, isCameraEnabled, isScreenSharing]);
+  }, [liveState, liveActiveTool, liveActivityLabel, controlMessage, isElectron, isMicMuted, isSpeakerMuted, isCameraEnabled, isScreenSharing]);
 
   useEffect(() => {
     if (!isElectron || !isLiveActive || !(window as any).electronAPI?.updatePetWindow) return;
@@ -170,6 +173,9 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   const isListening = liveState === 'listening';
 
   const getCenterStatusText = (): string | null => {
+    if (controlMessage?.trim()) {
+      return controlMessage.trim().replace(/\s+/g, ' ').slice(0, 28);
+    }
     if (liveActivityLabel?.trim()) {
       return liveActivityLabel.trim().replace(/\s+/g, ' ').slice(0, 28);
     }
@@ -215,31 +221,13 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
     setIsHovered(true);
   };
 
-  const handleOrbMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const dx = e.clientX - centerX;
-    const dy = e.clientY - centerY;
-    const radius = rect.width / 2;
-    const isInsideOrbArea = (dx * dx + dy * dy) <= (radius * radius * 1.05) || (isHovered && dy > 0 && dy <= radius + 35 && Math.abs(dx) <= radius);
-
-    if (isInsideOrbArea) {
-      handlePillEnter(e);
-    } else {
-      handleMouseLeave();
-    }
-  };
-
-  const handleMouseEnter = (e: React.MouseEvent<HTMLDivElement>) => {
-    handleOrbMouseMove(e);
-  };
-
-  const handleMouseLeave = () => {
+  const handleMouseLeave = (e?: React.MouseEvent) => {
+    const nextTarget = e?.relatedTarget;
+    if (nextTarget instanceof Node && hoverSurfaceRef.current?.contains(nextTarget)) return;
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     hoverTimeoutRef.current = setTimeout(() => {
       setIsHovered(false);
-    }, 250);
+    }, 180);
   };
 
   return createPortal(
@@ -256,6 +244,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
         style={{ pointerEvents: 'none' }}
       >
       <motion.div
+        ref={hoverSurfaceRef}
         drag
         dragMomentum={false}
         dragElastic={0}
@@ -340,8 +329,8 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
               WebkitClipPath: 'circle(50% at 50% 50%)',
               pointerEvents: 'auto',
             }}
-            onMouseEnter={handleMouseEnter}
-            onMouseMove={handleOrbMouseMove}
+            onMouseEnter={handlePillEnter}
+            onMouseMove={handlePillEnter}
             onMouseLeave={handleMouseLeave}
           />
         </motion.div>
@@ -354,7 +343,7 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
             animate={{ opacity: 1, x: '-50%', y: 0, scale: 1 }}
             exit={{ opacity: 0, x: '-50%', y: 4, scale: 0.95 }}
             transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-            className="absolute flex items-center gap-px p-1 rounded-full pointer-events-auto z-30 shrink-0"
+            className="absolute flex items-center gap-px p-1 rounded-full pointer-events-auto z-[50] shrink-0"
             style={{
               top: LIVE_ORB_CONTROL_TOP,
               left: '50%',

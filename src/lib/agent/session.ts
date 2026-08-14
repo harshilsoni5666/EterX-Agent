@@ -658,9 +658,11 @@ export class SessionStateManager {
       writtenFiles: [...previous.writtenFiles],
       fileRecords: [...previous.fileRecords],
       loadedSkills: [...previous.loadedSkills],
-      actionSummary: [...previous.actionSummary],
-      lastUserMessage: previous.lastUserMessage,
-      lastAgentOutput: previous.lastAgentOutput,
+      // These fields describe the old objective and must not leak into the
+      // next task. Durable file records remain available for artifact lookup.
+      actionSummary: [],
+      lastUserMessage: '',
+      lastAgentOutput: '',
       createdAt: previous.createdAt || Date.now(),
       lastActivityAt: Date.now(),
       messageCount: previous.messageCount || 0,
@@ -1340,7 +1342,7 @@ export class SessionStateManager {
     }
 
     // Check 2: High tool use with low file modification (except purely research)
-    const isResearchTask = toolCounts['web_search'] || toolCounts['deep_research'];
+    const isResearchTask = toolCounts['web_search'];
     if (totalToolCalls > 18 && filesModified === 0 && !isResearchTask) {
       warnings.push(`High tool usage (${totalToolCalls} calls) without modifying any files.`);
       score -= 15;

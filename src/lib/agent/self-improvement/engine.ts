@@ -177,14 +177,6 @@ type PolicyComposition = {
   communicationRules: string[];
 };
 
-const PRIVATE_EXPERIENCE_PROTOCOL = [
-  'PRIVATE EXPERIENCE CHANNEL (INTERNAL; NEVER MENTION OR RENDER TO THE USER)',
-  'While working, call experience_signal only at a genuinely informative causal turning point: a user correction about how to collaborate, a strategy pivot and why, a failure boundary, a newly proven tool affordance, or a verification result that changes future behavior.',
-  'Record only a compact observable conclusion and its activation condition—never hidden chain-of-thought, raw scratch work, secrets, copied external instructions, or routine progress. Use at most 3 signals in a run, and use none when the run teaches nothing transferable.',
-  'A signal is not a lesson and must not alter the current run. A restricted post-run synthesizer decides whether it is general, scoped, conflicting, or disposable.',
-  'END PRIVATE EXPERIENCE CHANNEL',
-].join('\n');
-
 const parsePolicyComposition = (raw: string, allowedIds: Set<string>): PolicyComposition => {
   const cleaned = String(raw || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const match = cleaned.match(/\{[\s\S]*\}/);
@@ -218,10 +210,7 @@ export class AdaptiveExperienceEngine {
       runtimeSettings: input.runtimeSettings,
     });
 
-    const privateProtocol = input.role === 'main' || input.role === 'custom'
-      ? PRIVATE_EXPERIENCE_PROTOCOL
-      : '';
-    if (insights.length === 0) return privateProtocol;
+    if (insights.length === 0) return '';
 
     if (input.role === 'main' || input.role === 'custom') {
       try {
@@ -229,7 +218,7 @@ export class AdaptiveExperienceEngine {
         if (!resolveSelfImprovementEnabled(input.enabled)) return '';
         const appliedSet = new Set(composition.appliedInsightIds);
         const applied = insights.filter(insight => appliedSet.has(insight.id));
-        if (applied.length === 0) return privateProtocol;
+        if (applied.length === 0) return '';
         const envelope = JSON.stringify({
           outcomeFrame: composition.outcomeFrame,
           collaborationRules: composition.collaborationRules,
@@ -261,12 +250,11 @@ export class AdaptiveExperienceEngine {
           `APPLIED EXPERIENCE IDS: ${applied.map(insight => insight.id).join(', ')}`,
           'Apply these as context-sensitive tendencies, not rigid instructions. Do not mention the envelope or experience IDs to the user.',
           'END ADAPTIVE OPERATING ENVELOPE',
-          privateProtocol,
         ].filter(Boolean).join('\n');
       } catch {
         // A composer outage must not block the run or cause broad, unreviewed
-        // experience to be applied. Continue with only the private capture path.
-        return privateProtocol;
+        // experience to be applied.
+        return '';
       }
     }
 

@@ -142,7 +142,7 @@ export const agentBuilderAttachMainTool: ToolDefinition = {
   category: 'automation',
   inputSchema: z.object({
     agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
-    toolName: z.string().describe('Existing main tool name to attach, for example web_search or workspace_read_file.'),
+    toolName: z.string().describe('Existing main tool name to attach, for example web_search, workspace_run_command, or workspace_edit_file.'),
     purpose: z.string().describe('Why this target agent needs the tool.'),
     whenToUse: z.string().describe('Precise trigger conditions for using this tool.'),
     inputPolicy: z.string().optional().describe('How the target agent should prepare inputs for the tool.'),
@@ -250,7 +250,7 @@ export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
 
     const excluded = new Set((Array.isArray(args.excludeToolNames) ? args.excludeToolNames : []).map((name: unknown) => String(name || '').trim()));
     const availableTools = globalToolRegistry.getAllTools()
-      .filter(tool => !isBuilderOnlyToolName(tool.name) && tool.name !== 'experience_signal')
+      .filter(tool => !isBuilderOnlyToolName(tool.name))
       .filter(tool => !excluded.has(tool.name));
     const availableNames = new Set(availableTools.map(tool => tool.name));
     const skippedToolNames = Array.from(excluded).map(String).filter(name => name.length > 0 && !availableNames.has(name));
@@ -651,7 +651,7 @@ export const agentBuilderSaveFlowTool: ToolDefinition = {
         targetStepId: z.string().describe('The step ID to route to if this condition evaluates to true.')
       })).optional().describe('Array of conditional branches to check.')
     })).describe('Structured list of execution steps.'),
-    maxIterations: z.number().int().optional().describe('Safety limit for total steps run in this flow to avoid infinite cycles (default 20).'),
+    maxIterations: z.number().int().optional().describe('Optional user-configured cap for total flow step executions. Omit to run until completion or cancellation.'),
     notes: z.array(z.string()).optional().describe('Builder notes.')
   }),
   outputSchema: z.object({ success: z.boolean(), message: z.string(), flowPath: z.string().optional(), flow: z.any().optional() }),
@@ -717,9 +717,9 @@ export const agentBuilderSaveFlowTool: ToolDefinition = {
       }
     }
 
-    const maxIterations = Number(args.maxIterations ?? 20);
-    if (!Number.isInteger(maxIterations) || maxIterations < 1 || maxIterations > 1000) {
-      return { success: false, message: 'maxIterations must be an integer between 1 and 1000.' };
+    const maxIterations = args.maxIterations === undefined ? undefined : Number(args.maxIterations);
+    if (maxIterations !== undefined && (!Number.isInteger(maxIterations) || maxIterations < 1)) {
+      return { success: false, message: 'maxIterations must be a positive integer when provided.' };
     }
 
     const savedPath = await writeAgentFlowProfile({
@@ -851,7 +851,9 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
 
       let currentStepId: string | undefined = flow.steps[0].stepId;
       let totalStepsExecuted = 0;
-      const maxIterations = flow.maxIterations || 20;
+      const maxIterations = typeof flow.maxIterations === 'number' && flow.maxIterations > 0
+        ? Math.floor(flow.maxIterations)
+        : Number.POSITIVE_INFINITY;
 
       while (currentStepId) {
         if (context?.abortSignal?.aborted || context?.signal?.aborted) {
@@ -866,7 +868,7 @@ export const agentBuilderRunFlowTool: ToolDefinition = {
         // Cycle protection
         stepIterationCounts[stepId] = (stepIterationCounts[stepId] || 0) + 1;
         totalStepsExecuted++;
-        if (totalStepsExecuted > maxIterations) {
+        if (Number.isFinite(maxIterations) && totalStepsExecuted > maxIterations) {
           throw new Error(`Flow exceeded safety limit of ${maxIterations} total step executions (potential infinite loop).`);
         }
 

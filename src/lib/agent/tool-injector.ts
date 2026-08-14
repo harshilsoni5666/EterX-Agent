@@ -437,13 +437,12 @@ export function resolveAgentTools(profile: AgentBuilderProfile): {
 } {
   const tools: ResolvedTool[] = [];
   const promptParts: string[] = ['## Your Tools\n'];
-  const isDiscoveryShim = (toolName: string) => normalizeRegistryToolName(toolName) === 'tool_finder';
 
   // Resolve direct main tools
   const seenToolNames = new Set<string>();
   for (const ref of profile.directMainTools) {
     const resolved = resolveDirectTool(ref);
-    if (resolved && !isDiscoveryShim(resolved.name) && !seenToolNames.has(resolved.name)) {
+    if (resolved && !seenToolNames.has(resolved.name)) {
       seenToolNames.add(resolved.name);
       tools.push(resolved);
       promptParts.push(resolved.promptGuidance);
@@ -453,7 +452,7 @@ export function resolveAgentTools(profile: AgentBuilderProfile): {
   // Resolve custom tools
   for (const custom of profile.customTools) {
     const resolved = resolveCustomTool(custom);
-    if (resolved && !isDiscoveryShim(resolved.name) && !seenToolNames.has(resolved.name)) {
+    if (resolved && !seenToolNames.has(resolved.name)) {
       seenToolNames.add(resolved.name);
       tools.push(resolved);
       promptParts.push(resolved.promptGuidance);
@@ -470,7 +469,7 @@ export function resolveAgentTools(profile: AgentBuilderProfile): {
 
 export const agentToolLoadTool: ToolDefinition = {
   name: 'agent_tool_load',
-  description: 'Dynamically load an additional tool from the global registry into the active execution context to gain capabilities (e.g. workspace_write_file, web_search, run_command).',
+  description: 'Dynamically load an additional tool from the global registry into the active execution context to gain capabilities (e.g. workspace_run_command, workspace_edit_file, or web_search).',
   category: 'automation',
   inputSchema: z.object({
     toolName: z.string().describe('The name of the global tool to load.')
@@ -482,9 +481,6 @@ export const agentToolLoadTool: ToolDefinition = {
       return { success: false, message: 'Dynamic tool loading is only supported during active custom agent executions.' };
     }
     const name = normalizeRegistryToolName(args.toolName);
-    if (name === 'tool_finder') {
-      return { success: false, message: 'Tool discovery is disabled; attach or call the required tool directly.' };
-    }
     if (isBuilderOnlyToolName(name)) {
       return { success: false, message: `Tool "${name}" is reserved for Agent Builder and cannot be loaded by a finalized custom agent.` };
     }

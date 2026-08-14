@@ -171,12 +171,31 @@ export const appStorage = {
     if (!isSensitive(normalizedKey)) persist();
     dispatchStorageUpdate(normalizedKey);
   },
+  setItems(values: Record<string, string>) {
+    const changed: string[] = [];
+    Object.entries(values).forEach(([key, value]) => {
+      const normalizedKey = String(key);
+      const normalizedValue = String(value);
+      if (
+        memory.get(normalizedKey) === normalizedValue
+        && !pendingRemovals.has(normalizedKey)
+        && !pendingMutations.has(normalizedKey)
+      ) return;
+      memory.set(normalizedKey, normalizedValue);
+      pendingRemovals.delete(normalizedKey);
+      pendingMutations.set(normalizedKey, normalizedValue);
+      changed.push(normalizedKey);
+    });
+    if (changed.some(key => !isSensitive(key))) persist();
+    // Notify only after the complete snapshot is visible to every reader.
+    changed.forEach(key => dispatchStorageUpdate(key));
+  },
 };
 
 export const appStorageReady = (async () => {
   if (!isBrowser) {
     storageHydrated = true;
-    return;
+    return true;
   }
 
   let storedValues: StorageValues = {};
@@ -223,7 +242,8 @@ export const appStorageReady = (async () => {
     persistRequestedDuringHydration = false;
     persist();
   }
-  window.dispatchEvent(new CustomEvent(FOLDER_STORAGE_READY_EVENT));
+  window.dispatchEvent(new CustomEvent(FOLDER_STORAGE_READY_EVENT, { detail: { loaded } }));
+  return loaded;
 })();
 
 export async function refreshAppStorage(): Promise<boolean> {
@@ -269,7 +289,7 @@ export async function refreshAppStorage(): Promise<boolean> {
     }
     const hadPendingWrites = persistRequestedDuringHydration;
     persistRequestedDuringHydration = false;
-    window.dispatchEvent(new CustomEvent(FOLDER_STORAGE_READY_EVENT));
+    window.dispatchEvent(new CustomEvent(FOLDER_STORAGE_READY_EVENT, { detail: { loaded: true } }));
     const pendingWriteSaved = !hadPendingWrites || await enqueuePersist();
     if (!pendingWriteSaved) persistRequestedDuringHydration = true;
     return pendingWriteSaved;

@@ -6,7 +6,7 @@
  * • Hardware accelerated GDI BitBlt captures in 5-15ms
  * • Adaptive fps: 1–12fps — fast when screen changes, slow when idle
  * • Lightweight: ~15-40KB per frame at 1280px wide / 80 JPEG quality
- * • Auto-starts when agent uses screen_agent
+ * • Auto-starts when the agent uses the computer-control surface
  * ═══════════════════════════════════════════════════════════════
  */
 

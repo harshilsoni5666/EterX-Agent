@@ -1,7 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
 import { rejectCrossOrigin } from '../../agent/_shared';
-import { getLiveModelOptions, normalizeLiveProvider } from '../../../../lib/live/live-provider';
+import {
+  DEFAULT_DEEPGRAM_THINK_MODEL,
+  DEFAULT_OPENAI_LIVE_MODEL,
+  getLiveModelOptions,
+  isLiveModelForProvider,
+  isOpenAIRealtimeModel,
+  normalizeLiveProvider,
+  readDeepgramGrantCredential,
+  readLiveRealtimeCredential,
+} from '../../../../lib/live/live-provider';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -28,7 +37,9 @@ const withTimeout = async <T,>(promise: Promise<T>, ms = 15_000): Promise<T> => 
 const providerModel = (providerValue: unknown, modelValue: unknown): string => {
   const requested = String(modelValue || '').trim();
   const options = getLiveModelOptions(providerValue);
-  return requested && requested !== 'auto' && options.some(option => option.value === requested)
+  return requested && requested !== 'auto' && isLiveModelForProvider(providerValue, requested) && (
+    options.some(option => option.value === requested) || isOpenAIRealtimeModel(requested)
+  )
     ? requested
     : String(options.find(option => option.value !== 'auto')?.value || '');
 };
@@ -84,7 +95,9 @@ export async function POST(req: NextRequest) {
       }));
       if (!response.ok) throw await upstreamError(response, provider.label);
       const payload = await response.json();
-      return NextResponse.json({ ok: true, provider: provider.value, token: payload?.value, expiresAt: payload?.expires_at });
+      const credential = readLiveRealtimeCredential(payload);
+      if (!credential.token) throw new Error(`${provider.label} did not return a client secret.`);
+      return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model: model || DEFAULT_OPENAI_LIVE_MODEL });
     }
 
     if (provider.transport === 'xai-native') {
@@ -95,7 +108,9 @@ export async function POST(req: NextRequest) {
       }));
       if (!response.ok) throw await upstreamError(response, provider.label);
       const payload = await response.json();
-      return NextResponse.json({ ok: true, provider: provider.value, token: payload?.value, expiresAt: payload?.expires_at });
+      const credential = readLiveRealtimeCredential(payload);
+      if (!credential.token) throw new Error(`${provider.label} did not return a client secret.`);
+      return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model });
     }
 
     if (provider.transport === 'deepgram-native') {
@@ -106,7 +121,14 @@ export async function POST(req: NextRequest) {
       }));
       if (!response.ok) throw await upstreamError(response, provider.label);
       const payload = await response.json();
-      return NextResponse.json({ ok: true, provider: provider.value, token: payload?.access_token, expiresIn: payload?.expires_in });
+      const credential = readDeepgramGrantCredential(payload);
+      return NextResponse.json({
+        ok: true,
+        provider: provider.value,
+        token: credential.token,
+        expiresIn: credential.expiresIn,
+        thinkModel: DEFAULT_DEEPGRAM_THINK_MODEL,
+      });
     }
 
     if (provider.transport === 'elevenlabs-native') {
@@ -119,7 +141,22 @@ export async function POST(req: NextRequest) {
       const response = await withTimeout(fetch(url, { headers: { 'xi-api-key': apiKey } }));
       if (!response.ok) throw await upstreamError(response, provider.label);
       const payload = await response.json();
-      return NextResponse.json({ ok: true, provider: provider.value, signedUrl: payload?.signed_url });
+      const signedUrl = String(payload?.signed_url || '').trim();
+      if (!signedUrl) throw new Error('ElevenLabs did not return a signed conversation URL.');
+      let parsedSignedUrl: URL;
+      try {
+        parsedSignedUrl = new URL(signedUrl);
+      } catch {
+        throw new Error('ElevenLabs returned an invalid signed conversation URL.');
+      }
+      if (
+        parsedSignedUrl.protocol !== 'wss:' ||
+        parsedSignedUrl.pathname !== '/v1/convai/conversation' ||
+        !parsedSignedUrl.searchParams.get('agent_id')
+      ) {
+        throw new Error('ElevenLabs returned an invalid signed conversation URL.');
+      }
+      return NextResponse.json({ ok: true, provider: provider.value, signedUrl });
     }
 
     return NextResponse.json({ ok: false, error: `No realtime authorization adapter is available for ${provider.label}.` }, { status: 400 });

@@ -102,6 +102,27 @@ async function run() {
     const probe = await testImageProvider('openai', 'test-key', 'gpt-image-2');
     assert.equal(probe.model, 'gpt-image-2');
 
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://krea.test/generate/image/krea/krea-2/medium') {
+        assert.equal(JSON.parse(String(init?.body || '{}')).aspect_ratio, '1:1');
+        return new Response(JSON.stringify({ result: { urls: ['https://media.example/krea.png'] } }), { status: 200 });
+      }
+      if (url === 'https://media.example/krea.png') return new Response(Buffer.from(onePixelPng, 'base64'), { status: 200, headers: { 'content-type': 'image/png' } });
+      throw new Error(`Unexpected Krea request: ${url}`);
+    }) as typeof fetch;
+    applyRuntimeImageSettings({
+      provider: 'krea',
+      fallbackProviders: [],
+      modelByProvider: { krea: 'krea/krea-2/medium' },
+      apiKeys: { krea: ['krea-test-key'] },
+      baseURLs: { krea: 'https://krea.test' },
+    });
+    const kreaOutput = path.join(directory, 'krea.png');
+    const krea = await executeImageGeneration({ prompt: 'krea image', filePath: kreaOutput });
+    assert.equal(krea.success, true);
+    assert.equal(krea.provider, 'krea');
+
     applyRuntimeImageSettings({ enabled: false });
     const disabled = await executeImageGeneration({ prompt: 'disabled', filePath: path.join(directory, 'disabled.png') });
     assert.equal(disabled.success, false);

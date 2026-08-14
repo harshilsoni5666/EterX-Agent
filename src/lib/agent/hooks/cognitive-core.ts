@@ -1,6 +1,5 @@
 import { CognitiveReasoningEngine, type CognitiveState } from '../reasoning/cognitive-engine';
 import { DeepSelfCorrectionEngine } from '../reasoning/self-correction';
-import { VerificationPipeline, type VerificationResult } from '../reasoning/verification-pipeline';
 import { ToolIntelligenceEngine } from '../reasoning/tool-intelligence';
 import { ConversationIntelligenceEngine } from '../reasoning/conversation-intelligence';
 import { ContextIntelligenceEngine } from '../reasoning/context-intelligence';
@@ -27,7 +26,6 @@ type ToolResultDigestEntry = {
 export class CognitiveCoreSession {
   private readonly cognitiveEngine = new CognitiveReasoningEngine();
   private readonly deepSelfCorrection = new DeepSelfCorrectionEngine();
-  private readonly verificationPipeline = new VerificationPipeline();
   private readonly toolIntelligence = new ToolIntelligenceEngine();
   private readonly conversationIntelligence = new ConversationIntelligenceEngine();
   private readonly contextIntelligence = new ContextIntelligenceEngine();
@@ -39,7 +37,6 @@ export class CognitiveCoreSession {
   private readonly failurePatternMemory = new Map<string, { error: string; count: number }>();
 
   private currentCogState: CognitiveState | null = null;
-  private recentVerifications: VerificationResult[] = [];
   private taskStarted = false;
 
   onTaskStart(message: string, availableToolNames: string[], modelName: string): void {
@@ -50,7 +47,6 @@ export class CognitiveCoreSession {
       this.workingMemory.updateUserModel(message);
       this.executionMonitor.startTask(this.currentCogState.hypotheses[0]?.approach || 'executing');
       this.contextIntelligence.setModel(modelName);
-      this.recentVerifications = [];
       this.failurePatternMemory.clear();
       this.velocityMonitor.reset();
       this.velocityMonitor.profileTask(message);
@@ -95,9 +91,6 @@ export class CognitiveCoreSession {
       const velocityNudge = this.velocityMonitor.generateNudge();
       if (velocityNudge) parts.push(velocityNudge);
 
-      const verificationContext = this.verificationPipeline.buildVerificationContext(this.recentVerifications);
-      if (verificationContext) parts.push(verificationContext);
-
       return parts.filter(Boolean).join('\n\n');
     } catch (error: any) {
       console.warn('[CognitiveCore] getEnhancedContext failed (non-blocking):', error?.message || error);
@@ -113,10 +106,6 @@ export class CognitiveCoreSession {
     durationMs: number,
   ): string | null {
     try {
-      const verification = this.verificationPipeline.verify(toolName, args || {}, result);
-      this.recentVerifications.push(verification);
-      if (this.recentVerifications.length > 20) this.recentVerifications.shift();
-
       if (this.currentCogState) {
         const resultSummary = result?.error ? `Error: ${result.error}` : 'Success';
         this.cognitiveEngine.updateAfterToolCall(this.currentCogState, toolName, success, resultSummary);
@@ -140,7 +129,7 @@ export class CognitiveCoreSession {
             ...String(args?.filename || args?.command || '').split(/\s+/).filter(word => word.length > 3),
           ],
         });
-      } else if (toolName === 'workspace_write_file' && args?.filename) {
+      } else if (toolName === 'workspace_edit_file' && args?.filename) {
         this.workingMemory.recordEpisode({
           type: 'task_complete',
           summary: `Created file: ${args.filename}`,
@@ -164,7 +153,7 @@ export class CognitiveCoreSession {
         }
       }
 
-      return verification.correctionInjection;
+      return null;
     } catch (error: any) {
       console.warn('[CognitiveCore] onToolCallComplete failed (non-blocking):', error?.message || error);
       return null;

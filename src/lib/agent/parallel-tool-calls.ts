@@ -21,30 +21,9 @@ export type ParallelToolCallLike = {
 };
 
 const READ_ONLY_TOOLS = new Set([
-  'workspace_semantic_search',
-  'workspace_symbol_lookup',
-  'workspace_file_outline',
-  'workspace_find_files',
-  'workspace_read_file',
-  'workspace_read_many_files',
-  'workspace_view_file',
-  'workspace_search_text',
-  'workspace_list_directory',
   'web_search',
-  'web_scraper',
-  'deep_research',
   'get_skill_guidelines',
-  'calculator',
-  'json_yaml_transform',
-  'regex_text_processor',
   'image_asset_search',
-  'youtube_transcript',
-  'pdf_parser',
-  'parse_pdf',
-  'rss_feed_reader',
-  'csv_analyzer',
-  'csv_data_analyzer',
-  'tool_finder',
 ]);
 
 const STATEFUL_NAME_PARTS = [
@@ -117,14 +96,15 @@ export function isParallelSafeToolCall(call: ParallelToolCallLike): boolean {
   const args = getParallelToolCallArgs(call);
 
   if (READ_ONLY_TOOLS.has(name)) return true;
-  if (lowerName === 'background_task') {
-    return ['check', 'list'].includes(String(args.mode || '').toLowerCase());
-  }
-  if (lowerName === 'process_manager') {
-    return ['status', 'logs', 'list'].includes(String(args.action || '').toLowerCase());
-  }
-  if (lowerName === 'system_shell' || lowerName === 'workspace_run_command') {
-    return args.background === true || isReadOnlyShellCommand(String(args.command || ''));
+  if (lowerName === 'workspace_run_command') {
+    const mode = String(args.mode || 'run').toLowerCase();
+    if (mode === 'check' || mode === 'list') return true;
+    if (args.background === true) return true;
+    const commands = Array.isArray(args.commands) ? args.commands : [];
+    if (commands.length > 0) {
+      return commands.every((entry: any) => entry?.background === true || isReadOnlyShellCommand(String(entry?.command || '')));
+    }
+    return isReadOnlyShellCommand(String(args.command || ''));
   }
 
   if (STATEFUL_NAME_PARTS.some(part => lowerName.includes(part))) return false;

@@ -20,6 +20,15 @@ export default function LiveOverlayPage() {
   const [modelVolume, setModelVolume] = useState<number | number[]>(0);
   const [isHovered, setIsHovered] = useState(false);
   const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hoverSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+  const dragFrameRef = useRef<number | null>(null);
 
   const [statusText, setStatusText] = useState<string | null>(null);
   const orbTheme = useLiveOrbTheme(liveState !== 'idle' && liveState !== 'error');
@@ -68,6 +77,7 @@ export default function LiveOverlayPage() {
     return () => {
       unsubscribe?.();
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+      if (dragFrameRef.current !== null) cancelAnimationFrame(dragFrameRef.current);
     };
   }, []);
 
@@ -77,31 +87,47 @@ export default function LiveOverlayPage() {
     setIsHovered(true);
   };
 
-  const handleOrbMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const dx = e.clientX - centerX;
-    const dy = e.clientY - centerY;
-    const radius = rect.width / 2;
-    const isInsideOrbArea = (dx * dx + dy * dy) <= (radius * radius * 1.05) || (isHovered && dy > 0 && dy <= radius + 35 && Math.abs(dx) <= radius);
-
-    if (isInsideOrbArea) {
-      handlePillEnter(e);
-    } else {
-      handleMouseLeave();
-    }
-  };
-
-  const handleMouseEnter = (e: React.MouseEvent<HTMLDivElement>) => {
-    handleOrbMouseMove(e);
-  };
-
-  const handleMouseLeave = () => {
+  const handleMouseLeave = (e?: React.MouseEvent) => {
+    const nextTarget = e?.relatedTarget;
+    if (nextTarget instanceof Node && hoverSurfaceRef.current?.contains(nextTarget)) return;
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     hoverTimeoutRef.current = setTimeout(() => {
       setIsHovered(false);
-    }, 250);
+    }, 180);
+  };
+
+  const handleOrbPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.screenX,
+      startY: event.screenY,
+      originX: window.screenX,
+      originY: window.screenY,
+    };
+  };
+
+  const handleOrbPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+    const nextPosition = {
+      x: Math.round(dragState.originX + event.screenX - dragState.startX),
+      y: Math.round(dragState.originY + event.screenY - dragState.startY),
+    };
+    if (dragFrameRef.current !== null) cancelAnimationFrame(dragFrameRef.current);
+    dragFrameRef.current = requestAnimationFrame(() => {
+      (window as any).electronAPI?.movePetWindow?.(nextPosition);
+      dragFrameRef.current = null;
+    });
+  };
+
+  const handleOrbPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragStateRef.current?.pointerId !== event.pointerId) return;
+    dragStateRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   const isSpeaking = liveState === 'speaking';
@@ -140,7 +166,7 @@ export default function LiveOverlayPage() {
         className="w-screen h-screen flex flex-col items-center justify-center select-none"
         style={{ background: 'transparent', pointerEvents: 'none' }}
       >
-        <div className="flex flex-col items-center pointer-events-none relative" style={{ width: LIVE_ORB_SIZE }}>
+        <div ref={hoverSurfaceRef} className="flex flex-col items-center pointer-events-none relative" style={{ width: LIVE_ORB_SIZE }}>
           {/* Compact circular Live orb */}
           <div
             className="rounded-full overflow-hidden relative pointer-events-auto cursor-grab active:cursor-grabbing shrink-0"
@@ -209,11 +235,16 @@ export default function LiveOverlayPage() {
                 clipPath: 'circle(50% at 50% 50%)',
                 WebkitClipPath: 'circle(50% at 50% 50%)',
                 pointerEvents: 'auto',
-                WebkitAppRegion: 'drag',
+                WebkitAppRegion: 'no-drag',
+                touchAction: 'none',
               } as any}
-              onMouseEnter={handleMouseEnter}
-              onMouseMove={handleOrbMouseMove}
+              onMouseEnter={handlePillEnter}
+              onMouseMove={handlePillEnter}
               onMouseLeave={handleMouseLeave}
+              onPointerDown={handleOrbPointerDown}
+              onPointerMove={handleOrbPointerMove}
+              onPointerUp={handleOrbPointerUp}
+              onPointerCancel={handleOrbPointerUp}
             />
           </div>
 
@@ -225,7 +256,7 @@ export default function LiveOverlayPage() {
                 animate={{ opacity: 1, x: '-50%', y: 0, scale: 1 }}
                 exit={{ opacity: 0, x: '-50%', y: 4, scale: 0.95 }}
                 transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                className="absolute flex items-center gap-px p-1 rounded-full pointer-events-auto z-30 shrink-0"
+                className="absolute flex items-center gap-px p-1 rounded-full pointer-events-auto z-[50] shrink-0"
                 style={{
                   top: LIVE_ORB_CONTROL_TOP,
                   left: '50%',
@@ -244,10 +275,8 @@ export default function LiveOverlayPage() {
                   onClick={(e) => {
                     e.stopPropagation();
                     handlePillEnter(e);
-                    const next = !isSpeakerMuted;
-                    setIsSpeakerMuted(next);
                     if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
-                      (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-speaker', muted: next }));
+                      (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-speaker' }));
                     }
                   }}
                   className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"
@@ -301,10 +330,8 @@ export default function LiveOverlayPage() {
                   onClick={(e) => {
                     e.stopPropagation();
                     handlePillEnter(e);
-                    const next = !isMicMuted;
-                    setIsMicMuted(next);
                     if (typeof window !== 'undefined' && (window as any).electronAPI?.petReply) {
-                      (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-mic', muted: next }));
+                      (window as any).electronAPI.petReply(JSON.stringify({ action: 'toggle-mic' }));
                     }
                   }}
                   className="w-[26px] h-[26px] flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-black/[0.07] pointer-events-auto cursor-pointer"

@@ -2,9 +2,10 @@
  * AgentContextCacheManager
  *
  * Caches the static portion of the EterX system prompt (base identity + rules +
- * all tool function declarations) on the Gemini server once per API key/model pair.
+ * all tool function declarations) on the Gemini server as reusable,
+ * content-addressed variants.
  *
- * Savings: ~50-55K tokens per request, reducing cost from ~64K → ~9K per turn.
+ * Savings depend on the active prompt/tool surface and provider cache tier.
  *
  * Key behaviours:
  *  - Singleton via globalThis — survives Next.js hot reloads.
@@ -32,6 +33,7 @@ interface CacheEntry {
   contentHash: string;
   /** Unix ms when the cache should be considered expired on our side */
   expiresAt: number;
+  lastUsedAt: number;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
 }
 
@@ -42,14 +44,8 @@ interface CacheEntry {
 const CACHE_TTL_S = 3600;                        // 1 hour
 const CACHE_SAFETY_BUFFER_MS = 2 * 60 * 1000;   // expire 2 min early on our side
 const HEARTBEAT_INTERVAL_MS = 14 * 60 * 1000;   // extend TTL every 14 min
-
-/** Only Gemini models that support context caching */
-const SUPPORTED_MODEL_PREFIXES = [
-  'gemini-2.5',
-  'gemini-2.0',
-  'gemini-1.5',
-  'gemini-3',
-];
+const MAX_CACHE_VARIANTS_PER_MODEL = 6;
+const CACHE_RETRY_COOLDOWN_MS = 10 * 60 * 1000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Global singleton cache store
@@ -58,8 +54,8 @@ const SUPPORTED_MODEL_PREFIXES = [
 const globalForAgentCache = globalThis as typeof globalThis & {
   __eterxAgentContextCaches?: Map<string, CacheEntry>;
   __eterxAgentContextCacheInflight?: Map<string, Promise<string | null>>;
-  /** API key tails permanently disabled after a free-tier / permission quota error */
-  __eterxAgentCacheDisabledKeyTails?: Set<string>;
+  /** Temporary per-key/per-model backoff after a cache quota/permission error. */
+  __eterxAgentCacheDisabledUntil?: Map<string, number>;
 };
 
 function getCacheStore(): Map<string, CacheEntry> {
@@ -69,11 +65,11 @@ function getCacheStore(): Map<string, CacheEntry> {
   return globalForAgentCache.__eterxAgentContextCaches;
 }
 
-function getDisabledKeyTails(): Set<string> {
-  if (!globalForAgentCache.__eterxAgentCacheDisabledKeyTails) {
-    globalForAgentCache.__eterxAgentCacheDisabledKeyTails = new Set();
+function getCacheBackoffStore(): Map<string, number> {
+  if (!globalForAgentCache.__eterxAgentCacheDisabledUntil) {
+    globalForAgentCache.__eterxAgentCacheDisabledUntil = new Map();
   }
-  return globalForAgentCache.__eterxAgentCacheDisabledKeyTails;
+  return globalForAgentCache.__eterxAgentCacheDisabledUntil;
 }
 
 function getInflightStore(): Map<string, Promise<string | null>> {
@@ -89,7 +85,71 @@ function getInflightStore(): Map<string, Promise<string | null>> {
 
 function isCacheSupported(modelName: string): boolean {
   const lower = (modelName || '').toLowerCase();
-  return SUPPORTED_MODEL_PREFIXES.some(prefix => lower.startsWith(prefix));
+  // Let the API decide support so newly released Gemini families benefit
+  // immediately. Exclude only clearly non-generative/non-chat model classes.
+  return /^(?:models\/)?gemini[-_]/.test(lower)
+    && !/(?:embedding|image|imagen|tts|speech|robotics)/.test(lower);
+}
+
+function cacheOwnerKey(apiKey: string, modelName: string): string {
+  return `${apiKeyId(apiKey)}:${modelName}`;
+}
+
+function stableSerialize(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    const encoded = JSON.stringify(value);
+    return encoded === undefined ? String(value) : encoded;
+  }
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableSerialize(item)}`)
+    .join(',')}}`;
+}
+
+const GEMINI_CACHE_SCHEMA_TYPES = new Set([
+  'STRING',
+  'NUMBER',
+  'INTEGER',
+  'BOOLEAN',
+  'ARRAY',
+  'OBJECT',
+]);
+
+/**
+ * `generateContent` normalizes JSON Schema declarations inside the SDK, but
+ * the cached-content endpoint forwards function declarations as-is. Convert
+ * only the cached copy to Gemini's Schema enum representation so the cache
+ * contains the exact same tool contract without mutating runtime declarations.
+ */
+function normalizeGeminiCacheSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeGeminiCacheSchema);
+  if (!value || typeof value !== 'object') return value;
+
+  const normalized: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'type' && typeof item === 'string') {
+      const upper = item.toUpperCase();
+      normalized.type = GEMINI_CACHE_SCHEMA_TYPES.has(upper) ? upper : item;
+      continue;
+    }
+    normalized[key] = normalizeGeminiCacheSchema(item);
+  }
+  return normalized;
+}
+
+function normalizeGeminiCacheToolDeclarations(toolDeclarations: any[]): any[] {
+  return toolDeclarations.map((declaration) => {
+    if (!declaration || typeof declaration !== 'object') return declaration;
+    const normalized = { ...declaration };
+    if (declaration.parameters) {
+      normalized.parameters = normalizeGeminiCacheSchema(declaration.parameters);
+    }
+    if (declaration.response) {
+      normalized.response = normalizeGeminiCacheSchema(declaration.response);
+    }
+    return normalized;
+  });
 }
 
 function buildContentHash(staticSystemInstruction: string, toolDeclarations: any[]): string {
@@ -97,7 +157,7 @@ function buildContentHash(staticSystemInstruction: string, toolDeclarations: any
     .createHash('sha256')
     .update(staticSystemInstruction)
     .update('\0')
-    .update(JSON.stringify(toolDeclarations))
+    .update(stableSerialize(toolDeclarations))
     .digest('hex')
     .slice(0, 24);
 }
@@ -106,9 +166,13 @@ function apiKeyId(apiKey: string): string {
   return crypto.createHash('sha256').update(apiKey).digest('hex').slice(0, 24);
 }
 
-/** Returns a stable key without retaining raw key material. */
-function storeKey(apiKey: string, modelName: string): string {
+/** Returns a stable key prefix without retaining raw key material. */
+function storeKeyPrefix(apiKey: string, modelName: string): string {
   return `${apiKeyId(apiKey)}:${modelName}`;
+}
+
+function storeKey(apiKey: string, modelName: string, contentHash: string): string {
+  return `${storeKeyPrefix(apiKey, modelName)}:${contentHash}`;
 }
 
 function clearEntry(entry: CacheEntry): void {
@@ -127,7 +191,10 @@ function startHeartbeat(ai: any, entry: CacheEntry, entryStoreKey: string): void
 
   const timer = setInterval(async () => {
     try {
-      await ai.caches.update(entry.name, { config: { ttl: `${CACHE_TTL_S}s` } });
+      await ai.caches.update({
+        name: entry.name,
+        config: { ttl: `${CACHE_TTL_S}s` },
+      });
       entry.expiresAt = Date.now() + CACHE_TTL_S * 1000 - CACHE_SAFETY_BUFFER_MS;
       console.log(`[AgentCache] 💓 Heartbeat extended TTL for ${entry.name}`);
     } catch (err: any) {
@@ -170,17 +237,23 @@ async function getOrCreateAgentCacheUnlocked(
   if (process.env.ETERX_DISABLE_CONTEXT_CACHE === '1') return null;
   if (!isCacheSupported(modelName)) return null;
 
-  // Skip permanently-disabled keys (free-tier or permission error on a prior attempt)
+  // Quota/permission failures are often temporary (tier upgrade, model change,
+  // or provider-side recovery). Back off per model instead of disabling the
+  // whole API key for the lifetime of the desktop process.
   const keyId = apiKeyId(apiKey);
-  if (getDisabledKeyTails().has(keyId)) return null;
+  const ownerKey = cacheOwnerKey(apiKey, modelName);
+  const disabledUntil = getCacheBackoffStore().get(ownerKey) || 0;
+  if (disabledUntil > Date.now()) return null;
+  if (disabledUntil) getCacheBackoffStore().delete(ownerKey);
 
   const store = getCacheStore();
-  const key = storeKey(apiKey, modelName);
   const hash = buildContentHash(staticSystemInstruction, toolDeclarations);
+  const key = storeKey(apiKey, modelName, hash);
 
   // ── Check existing valid cache ──
   const existing = store.get(key);
-  if (existing && existing.contentHash === hash && Date.now() < existing.expiresAt) {
+  if (existing && Date.now() < existing.expiresAt) {
+    existing.lastUsedAt = Date.now();
     console.log(`[AgentCache] ♻️ Reusing cache: ${existing.name}`);
     return existing.name;
   }
@@ -191,7 +264,7 @@ async function getOrCreateAgentCacheUnlocked(
     store.delete(key);
     console.log(`[AgentCache] 🔄 Stale/changed cache invalidated for model ${modelName}`);
     try {
-      await ai.caches.delete(existing.name);
+      await ai.caches.delete({ name: existing.name });
       console.log(`[AgentCache] 🗑️ Deleted stale/changed cache on Google servers: ${existing.name}`);
     } catch (e: any) {
       console.warn(`[AgentCache] ⚠️ Failed to delete stale cache on Google servers: ${e.message || e}`);
@@ -226,34 +299,57 @@ async function getOrCreateAgentCacheUnlocked(
       modelName,
       contentHash: hash,
       expiresAt: Date.now() + CACHE_TTL_S * 1000 - CACHE_SAFETY_BUFFER_MS,
+      lastUsedAt: Date.now(),
       heartbeatTimer: null,
     };
 
     store.set(key, entry);
     startHeartbeat(ai, entry, key);
 
-    const estimatedTokens = Math.round(staticSystemInstruction.length / 4);
+    const prefix = `${storeKeyPrefix(apiKey, modelName)}:`;
+    const variants = [...store.entries()]
+      .filter(([entryKey]) => entryKey.startsWith(prefix))
+      .sort(([, left], [, right]) => (left.lastUsedAt || 0) - (right.lastUsedAt || 0));
+    while (variants.length > MAX_CACHE_VARIANTS_PER_MODEL) {
+      const [oldestKey, oldest] = variants.shift()!;
+      if (oldestKey === key) continue;
+      clearEntry(oldest);
+      store.delete(oldestKey);
+      try {
+        await ai.caches.delete({ name: oldest.name });
+      } catch {
+        // Provider-side expiry/deletion is best-effort.
+      }
+    }
+
+    const providerCachedTokens = Number(
+      cache?.usageMetadata?.totalTokenCount ??
+      cache?.usageMetadata?.totalTokens ??
+      0,
+    );
+    const estimatedTokens = providerCachedTokens > 0
+      ? providerCachedTokens
+      : Math.round((staticSystemInstruction.length + stableSerialize(toolDeclarations).length) / 4);
     console.log(
       `[AgentCache] ✅ Created cache: ${cacheName}` +
-      ` (~${estimatedTokens.toLocaleString()} tokens estimated, TTL=${CACHE_TTL_S}s)`
+      ` (${estimatedTokens.toLocaleString()} cached tokens${providerCachedTokens > 0 ? '' : ' estimated'}, TTL=${CACHE_TTL_S}s)`
     );
 
     return cacheName;
   } catch (err: any) {
     const msg = String(err?.message || err);
-    // Detect free-tier / permission quota — permanently disable for this key so
-    // we don't burn an API call on every subsequent request.
+    // Detect free-tier / permission quota and temporarily back off so repeated
+    // turns do not burn a cache-create request while the route is unavailable.
     const isQuotaOrPermError =
       msg.includes('TotalCachedContentStorage') ||
       msg.includes('FreeTier') ||
       msg.includes('PERMISSION_DENIED') ||
       msg.includes('403');
     if (isQuotaOrPermError) {
-      getDisabledKeyTails().add(keyId);
+      getCacheBackoffStore().set(ownerKey, Date.now() + CACHE_RETRY_COOLDOWN_MS);
       console.warn(
         `[AgentCache] ℹ️ Context caching unavailable for this API key ` +
-        `(free-tier or no permission). Falling back to uncached mode permanently. ` +
-        `Upgrade to a paid Gemini API key to enable caching.`
+        `(free-tier, quota, or permission). Falling back temporarily; EterX will retry.`
       );
     } else {
       console.warn(`[AgentCache] ⚠️ Cache creation failed (falling back to uncached): ${msg.slice(0, 120)}`);
@@ -269,7 +365,12 @@ export async function getOrCreateAgentCache(
   staticSystemInstruction: string,
   toolDeclarations: any[]
 ): Promise<string | null> {
-  const inflightKey = storeKey(apiKey, modelName);
+  const cacheToolDeclarations = normalizeGeminiCacheToolDeclarations(toolDeclarations);
+  const inflightKey = storeKey(
+    apiKey,
+    modelName,
+    buildContentHash(staticSystemInstruction, cacheToolDeclarations),
+  );
   const inflight = getInflightStore();
   while (inflight.has(inflightKey)) {
     const pending = inflight.get(inflightKey);
@@ -287,7 +388,7 @@ export async function getOrCreateAgentCache(
     apiKey,
     modelName,
     staticSystemInstruction,
-    toolDeclarations,
+    cacheToolDeclarations,
   );
   inflight.set(inflightKey, creation);
   try {
@@ -310,8 +411,13 @@ export async function handleAgentCacheNotFound(
   staticSystemInstruction: string,
   toolDeclarations: any[]
 ): Promise<string | null> {
+  const cacheToolDeclarations = normalizeGeminiCacheToolDeclarations(toolDeclarations);
   const store = getCacheStore();
-  const key = storeKey(apiKey, modelName);
+  const key = storeKey(
+    apiKey,
+    modelName,
+    buildContentHash(staticSystemInstruction, cacheToolDeclarations),
+  );
   const existing = store.get(key);
   if (existing) {
     clearEntry(existing);
@@ -335,5 +441,8 @@ export function invalidateAgentCacheForKey(apiKey: string): void {
       store.delete(k);
       console.log(`[AgentCache] 🗑️ Cache invalidated after key rotation (tail: ...${tail})`);
     }
+  }
+  for (const key of getCacheBackoffStore().keys()) {
+    if (key.startsWith(`${keyId}:`)) getCacheBackoffStore().delete(key);
   }
 }

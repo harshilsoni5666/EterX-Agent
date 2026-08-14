@@ -284,32 +284,28 @@ export class ConversationLedger {
   private extractArgsDigest(toolName: string, args: Record<string, any>): Record<string, any> {
     try {
       switch (toolName) {
-        case 'workspace_write_file': {
-          const content = String(args.content || '');
-          return {
-            filename: String(args.filename || args.path || ''),
-            purpose: truncate(String(args.purpose || args.description || args.uiActionText || ''), 100),
-            linesWritten: content.split('\n').length,
-          };
-        }
-
-        case 'workspace_read_file': {
-          return {
-            filename: String(args.filename || args.path || ''),
-          };
-        }
-
         case 'workspace_edit_file': {
+          const files = Array.isArray(args.files)
+            ? args.files.map((entry: any) => String(entry?.filename || entry?.path || '')).filter(Boolean)
+            : [];
           return {
             filename: String(args.filename || args.path || ''),
+            files: files.slice(0, 20),
+            fileCount: files.length || (args.filename || args.path ? 1 : 0),
             changeDescription: truncate(String(args.purpose || args.description || args.uiActionText || ''), 100),
           };
         }
 
-        case 'system_shell':
         case 'workspace_run_command': {
+          const commands = Array.isArray(args.commands)
+            ? args.commands.map((entry: any) => truncate(String(entry?.command || ''), 150)).filter(Boolean)
+            : [];
           return {
             command: truncate(String(args.command || args.cmd || ''), 150),
+            commands: commands.slice(0, 20),
+            commandCount: commands.length || (args.command || args.cmd ? 1 : 0),
+            mode: String(args.mode || 'run'),
+            taskId: String(args.taskId || ''),
             cwd: String(args.cwd || args.workingDirectory || ''),
           };
         }
@@ -364,57 +360,31 @@ export class ConversationLedger {
       }
 
       switch (toolName) {
-        case 'workspace_read_file': {
-          const content = String(result?.content || result || '');
-          const filename = String(args.filename || args.path || '');
-          filePaths.push(filename);
-
-          // Extract key function names, exports, imports
-          const lines = content.split('\n');
-          const exports = lines
-            .filter(l => /^export\s+(default\s+)?(function|class|const|let|var|interface|type|enum)\s+/i.test(l.trim()))
-            .map(l => l.trim().substring(0, 80))
-            .slice(0, 3);
-          const imports = lines
-            .filter(l => /^import\s+/i.test(l.trim()))
-            .map(l => {
-              const match = l.match(/from\s+['"]([^'"]+)['"]/);
-              return match ? match[1] : '';
-            })
-            .filter(Boolean)
-            .slice(0, 3);
-
-          if (exports.length > 0) keyFacts.push(`Exports: ${exports.join(', ')}`);
-          if (imports.length > 0) keyFacts.push(`Imports from: ${imports.join(', ')}`);
-          keyFacts.push(`${lines.length} lines`);
-          summary = truncate(`Read ${extractBasename(filename)} (${lines.length} lines)`, MAX_SUMMARY_CHARS);
-          break;
-        }
-
-        case 'workspace_write_file': {
-          const filename = String(args.filename || args.path || '');
-          const content = String(args.content || '');
-          const lineCount = content.split('\n').length;
-          const purpose = String(args.purpose || args.description || '');
-          filePaths.push(filename);
-          keyFacts.push(`Created ${extractBasename(filename)}`);
-          if (purpose) keyFacts.push(truncate(purpose, 80));
-          keyFacts.push(`${lineCount} lines`);
-          summary = truncate(`Created ${extractBasename(filename)} — ${purpose || 'new file'} (${lineCount} lines)`, MAX_SUMMARY_CHARS);
-          break;
-        }
-
         case 'workspace_edit_file': {
-          const filename = String(args.filename || args.path || '');
+          const reportedPaths = [
+            ...(Array.isArray(result?.filesCreated) ? result.filesCreated : []),
+            ...(Array.isArray(result?.filesModified) ? result.filesModified : []),
+            ...(Array.isArray(result?.filesDeleted) ? result.filesDeleted : []),
+          ].map(String).filter(Boolean);
+          const requestedPaths = Array.isArray(args.files)
+            ? args.files.map((entry: any) => String(entry?.filename || entry?.path || '')).filter(Boolean)
+            : [String(args.filename || args.path || '')].filter(Boolean);
+          const targets = [...new Set(reportedPaths.length > 0 ? reportedPaths : requestedPaths)];
+          const filename = targets.length === 1 ? targets[0] : `${targets.length} files`;
           const change = String(args.purpose || args.description || args.uiActionText || '');
-          filePaths.push(filename);
-          keyFacts.push(`Edited ${extractBasename(filename)}`);
+          filePaths.push(...targets);
+          const createdCount = Array.isArray(result?.filesCreated) ? result.filesCreated.length : 0;
+          const modifiedCount = Array.isArray(result?.filesModified) ? result.filesModified.length : 0;
+          const deletedCount = Array.isArray(result?.filesDeleted) ? result.filesDeleted.length : 0;
+          if (createdCount > 0) keyFacts.push(`Created ${createdCount} file${createdCount === 1 ? '' : 's'}`);
+          if (modifiedCount > 0) keyFacts.push(`Edited ${modifiedCount} file${modifiedCount === 1 ? '' : 's'}`);
+          if (deletedCount > 0) keyFacts.push(`Deleted ${deletedCount} file${deletedCount === 1 ? '' : 's'}`);
+          if (createdCount === 0 && modifiedCount === 0 && deletedCount === 0) keyFacts.push(`Checked ${extractBasename(filename)}`);
           if (change) keyFacts.push(truncate(change, 80));
-          summary = truncate(`Edited ${extractBasename(filename)} — ${change || 'modified'}`, MAX_SUMMARY_CHARS);
+          summary = truncate(`${String(result?.operation || 'updated')} ${extractBasename(filename)} — ${change || 'file operation'}`, MAX_SUMMARY_CHARS);
           break;
         }
 
-        case 'system_shell':
         case 'workspace_run_command': {
           const cmd = String(args.command || args.cmd || '');
           const output = String(result?.output || result?.stdout || result?.result || '');
@@ -508,16 +478,12 @@ export class ConversationLedger {
     if (hasError) return 'error';
 
     switch (toolName) {
-      case 'workspace_write_file':
-        return 'file_create';
       case 'workspace_edit_file':
         return 'file_edit';
-      case 'system_shell':
       case 'workspace_run_command':
         return 'command';
       case 'web_search':
         return 'search';
-      case 'workspace_read_file':
       case 'get_skill_guidelines':
         return 'tool_call';
       default:
@@ -529,17 +495,12 @@ export class ConversationLedger {
     if (hasError) return 7;
 
     switch (toolName) {
-      case 'workspace_write_file':
-        return 8;
       case 'workspace_edit_file':
         return 7;
-      case 'system_shell':
       case 'workspace_run_command':
         return 6;
       case 'web_search':
         return 5;
-      case 'workspace_read_file':
-        return 4;
       case 'get_skill_guidelines':
         return 3;
       default:
@@ -749,16 +710,23 @@ export class ConversationLedger {
         }
 
         // File tools: normalize path separators, lowercase
-        case 'workspace_read_file':
-        case 'workspace_write_file':
         case 'workspace_edit_file': {
-          const filename = normalizePath(String(safeArgs.filename || safeArgs.path || ''));
-          return `${toolName}:${filename}`;
+          const filenames = Array.isArray(safeArgs.files)
+            ? safeArgs.files.map((entry: any) => normalizePath(String(entry?.filename || entry?.path || ''))).filter(Boolean)
+            : [normalizePath(String(safeArgs.filename || safeArgs.path || ''))].filter(Boolean);
+          return `${toolName}:${filenames.sort().join('|')}`;
         }
 
         // Shell commands: extract base command, ignore flag ordering
-        case 'system_shell':
         case 'workspace_run_command': {
+          const mode = String(safeArgs.mode || 'run');
+          if (mode !== 'run') return `${toolName}:${mode}:${String(safeArgs.taskId || '')}`;
+          if (Array.isArray(safeArgs.commands) && safeArgs.commands.length > 0) {
+            const batch = safeArgs.commands
+              .map((entry: any) => `${String(entry?.cwd || safeArgs.cwd || '')}:${String(entry?.command || '').trim()}`)
+              .join('|');
+            return `${toolName}:batch:${batch}`;
+          }
           const cmd = String(safeArgs.command || safeArgs.cmd || '').trim();
           // Split into tokens, sort flags (tokens starting with -)
           const tokens = cmd.split(/\s+/);

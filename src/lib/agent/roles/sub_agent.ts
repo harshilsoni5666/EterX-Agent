@@ -8,6 +8,9 @@ import { stableScopeSegment } from '../context-scope';
 import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider, type MainAgentThinkingLevel } from '../model-routing';
 import { MAX_SUB_AGENTS } from '../sub-agent-settings';
 import { assessDelegatedAgent, type DelegatedAgentEvidence } from '../delegation-evidence';
+import { getSearchRouteBrief } from '../../search/search-runtime';
+import { getImageGenerationRouteBrief } from '../../image/image-generation-runtime';
+import { getVideoGenerationRouteBrief } from '../../video/video-generation-runtime';
 
 function boundedHandoffPayload(value: string, maxChars = 20_000): { body: string; truncated: boolean } {
   if (value.length <= maxChars) return { body: value, truncated: false };
@@ -758,7 +761,7 @@ export class SubAgentSpawner {
   }
 
   /** Build a TEAM-AWARE task brief for a sub-agent. */
-  private buildDeepBrief(task: string, agentName: SubAgentName, projectId: string, parentContext?: string): string {
+  private buildDeepBrief(task: string, agentName: SubAgentName, projectId: string, parentContext?: string, runtimeContext?: any): string {
     const activeTaskByName = new Map(
       Array.from(this.activeAgents.values())
         .filter(a => a.projectId === projectId)
@@ -777,10 +780,18 @@ export class SubAgentSpawner {
           .filter(a => a.projectId === projectId && a.status === 'running' && a.name !== agentName)
           .map(a => `  - ${a.name}: "${(a as any).task?.substring(0, 80) || 'working'}"`)
           .join('\n');
-    const teamSection = otherAgents
+    let teamSection = otherAgents
       ? `\nTEAM - Other agents planned or running:\n${otherAgents}\nCoordinate only for a concrete dependency, conflict, or shared finding; do not poll team status.\n`
       : '\nTEAM - You are the only delegated worker for this request. Work as one deep, focused lane and report back to Main.\n';
     const controlSection = `\nUNIFIED CONTROL:\n- Incoming messages are delivered automatically at safe execution boundaries; do not poll check/status.\n- Use agent_communicate with to="Main" when you need clarification, approval, a merge decision, or user-facing escalation.\n- Broadcast only blockers or discoveries that affect other agents.\n- Handoff concise partial results to Main when your lane is complete.\n`;
+    const externalServiceSection = [
+      '\nLIVE EXTERNAL SERVICE ROUTES (read before using a route):',
+      getSearchRouteBrief(runtimeContext),
+      getImageGenerationRouteBrief(),
+      getVideoGenerationRouteBrief(),
+      'Use web_search, image_generator, or video_generator for the real task and treat the actual result as route evidence. Claim real media success only after the generation tool returns validated bytes.',
+    ].join('\n');
+    teamSection = `${teamSection}${externalServiceSection}`;
     return `━━━ ${agentName} — Sub-Agent Task ━━━\n🎯 You are ${agentName}, a parallel sub-agent.\n\n${task}\n${teamSection}\nRULES:\n1. Full tool access. Work deeply — no shortcuts.\n2. NEVER call task_decomposer or spawn_sub_agent.\n3. VERIFY your work before finishing.\n4. You are ONE of multiple parallel agents.\n\nINTER-AGENT COMMUNICATION (agent_communicate tool):\n- status: See every planned/running/paused/completed teammate and current progress\n- check: Read Main or teammate instructions\n- send: Send information, questions, answers, or coordination to any named teammate\n- broadcast: Share a blocker or discovery with the whole active team\n- ask_main: Ask Main for clarification or a decision at any time\n- handoff_main: Pass partial or final results to Main\n${controlSection}\n## ${agentName} — Report Format\n**Task:** [what you did]\n**Files:** [paths]\n**Key Results:** [findings]\n**Verified:** [yes/no]\n\n${parentContext ? `CONTEXT: ${parentContext}\n` : ''}EXECUTE NOW.`;
   }
 
@@ -881,7 +892,7 @@ export class SubAgentSpawner {
     }
     // Keep the delegated task intact while adding the live team roster and the
     // communication/control contract needed for real parallel coordination.
-    const deepBrief = this.buildDeepBrief(task, name, context.projectId, parentContext);
+    const deepBrief = this.buildDeepBrief(task, name, context.projectId, parentContext, subAgentContext);
     const traceLog: string[] = [];
     let traceEventCount = 0;
     let lastStatusWriteAt = 0;
@@ -1846,7 +1857,7 @@ METHODOLOGY:
 7. Check for information disclosure
 
 OUTPUT: Severity-rated findings (CRITICAL/HIGH/MEDIUM/LOW) with exact file locations and fix recommendations.`,
-        toolHints: ['workspace_read_file', 'workspace_search_text', 'code_intelligence', 'system_shell']
+        toolHints: ['workspace_run_command', 'code_intelligence']
       },
       performance_analyst: {
         systemBrief: `You are the PERFORMANCE SPECIALIST for this assignment. Your focus is identifying bottlenecks, memory leaks, and optimization opportunities.
@@ -1861,7 +1872,7 @@ METHODOLOGY:
 7. Check for blocking I/O in async contexts
 
 OUTPUT: Performance findings with impact estimates (ms saved, memory freed) and optimization code.`,
-        toolHints: ['workspace_read_file', 'code_intelligence', 'system_shell', 'workspace_search_text']
+        toolHints: ['workspace_run_command', 'code_intelligence']
       },
       architect: {
         systemBrief: `You are the ARCHITECTURE SPECIALIST for this assignment. Your focus is design patterns, system structure, and long-term maintainability.
@@ -1876,7 +1887,7 @@ METHODOLOGY:
 7. Check for anti-patterns (god objects, spaghetti code, tight coupling)
 
 OUTPUT: Architecture assessment with diagrams (mermaid), specific refactoring recommendations, and migration paths.`,
-        toolHints: ['workspace_list_directory', 'workspace_read_file', 'code_intelligence']
+        toolHints: ['workspace_run_command', 'code_intelligence']
       },
       qa_tester: {
         systemBrief: `You are the QA TESTING SPECIALIST for this assignment. Your focus is finding bugs, edge cases, and writing comprehensive tests.
@@ -1891,7 +1902,7 @@ METHODOLOGY:
 7. Write actual test code (Jest/Vitest)
 
 OUTPUT: Bug report with reproduction steps, test files created, and coverage analysis.`,
-        toolHints: ['workspace_read_file', 'workspace_write_file', 'system_shell', 'workspace_verify_code']
+        toolHints: ['workspace_run_command', 'workspace_edit_file']
       },
       researcher: {
         systemBrief: `You are the DEEP RESEARCH SPECIALIST for this assignment. Your focus is thorough, evidence-based research with source verification.
@@ -1906,7 +1917,7 @@ METHODOLOGY:
 7. Highlight conflicting information
 
 OUTPUT: Research report with cited sources, confidence levels per claim, and areas needing further investigation.`,
-        toolHints: ['web_search', 'web_scraper', 'deep_research']
+        toolHints: ['web_search']
       }
     };
 

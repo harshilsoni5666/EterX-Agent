@@ -157,7 +157,7 @@ const readThinkingCapabilityRecord = (): Record<string, ModelThinkingCapabilitie
 
 const readStoredModelSettings = (): StoredModelSettings => {
   const apiKeys = readStringRecord(MODEL_API_KEY_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
-  const modelOverrides = readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
+  const storedModelOverrides = readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
   const modelCatalog = readStringArrayRecord(MODEL_CATALOG_STORAGE_KEY) as Partial<Record<MainAgentProvider, string[]>>;
   const savedEntries = typeof window !== 'undefined'
     ? (() => {
@@ -168,22 +168,30 @@ const readStoredModelSettings = (): StoredModelSettings => {
       }
     })()
     : [];
-  const overrideEntries = Object.entries(modelOverrides)
-    .map(([provider, modelId]) => ({ provider: provider as MainAgentProvider, modelId: String(modelId || '').trim() }))
-    .filter(entry => entry.modelId);
   const storedChatModelSelection = typeof window !== 'undefined'
     ? (appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
     : AUTO_MODEL_SELECTION;
   const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
-  let modelEntries = normalizeModelSelectorEntries([...normalizeModelSelectorEntries(savedEntries, modelCatalog), ...overrideEntries], modelCatalog);
-  if (parsedStoredChatModel && !modelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)) {
-    modelEntries = normalizeModelSelectorEntries([...modelEntries, parsedStoredChatModel], modelCatalog);
-  }
+  const modelEntries = normalizeModelSelectorEntries(savedEntries, modelCatalog);
+  const modelOverrides = Object.fromEntries(
+    Object.entries(storedModelOverrides).filter(([provider, modelId]) =>
+      modelEntries.some(entry => entry.provider === provider && entry.modelId === modelId)
+    ),
+  ) as Partial<Record<MainAgentProvider, string>>;
   const modelApiKeys = readStringRecord(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
   const thinkingCapabilities = readThinkingCapabilityRecord();
-  const chatModelSelection = storedChatModelSelection === AUTO_MODEL_SELECTION || parsedStoredChatModel
+  const usableEntries = modelEntries.filter(entry =>
+    isLocalModelProvider(entry.provider)
+    || Boolean(apiKeys[entry.provider])
+    || Boolean(modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
+  );
+  const chatModelSelection = parsedStoredChatModel && usableEntries.some(entry =>
+    modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection
+  )
     ? storedChatModelSelection
-    : AUTO_MODEL_SELECTION;
+    : usableEntries[0]
+      ? modelEntryKey(usableEntries[0].provider, usableEntries[0].modelId)
+      : AUTO_MODEL_SELECTION;
 
   return {
     apiKeys,
@@ -1334,11 +1342,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       Object.entries(loaded.modelOverrides).filter(([, modelId]) => !isEmbeddedModelLabel(modelId)),
     ) as Partial<Record<MainAgentProvider, string>>;
     const cleanCatalog = entriesToModelCatalog(loaded.modelEntries);
-    const cleanSelection = loaded.modelEntries.some(entry =>
-      modelEntryKey(entry.provider, entry.modelId) === loaded.chatModelSelection
-    )
-      ? loaded.chatModelSelection
-      : AUTO_MODEL_SELECTION;
+    const cleanSelection = loaded.chatModelSelection;
 
     // Persist the migration once so the removed placeholder cannot return
     // from the folder snapshot on the next refresh or another device.
@@ -1348,9 +1352,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       [MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(cleanOverrides)],
       [CHAT_MODEL_SELECTION_STORAGE_KEY, cleanSelection],
     ];
-    durableValues.forEach(([key, value]) => {
-      if (appStorage.getItem(key) !== value) appStorage.setItem(key, value);
-    });
+    appStorage.setItems(Object.fromEntries(durableValues));
 
     setStoredModelSettings({
       ...loaded,
@@ -2442,7 +2444,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // The static agent mode config is for request routing; it is not a real
   // selectable model and must never be rendered as one by the composer.
   const activeModelSelection = propChatModelSelection !== undefined ? propChatModelSelection : storedModelSettings.chatModelSelection;
-  const selectedModel = modelOptions.find(option => option.optionKey === activeModelSelection) || null;
+  // `auto` and stale per-chat selections must still resolve to a real usable
+  // entry. The API empty state belongs exclusively to a genuinely empty
+  // model directory, never to a selection-reconciliation frame.
+  const selectedModel = modelOptions.find(option => option.optionKey === activeModelSelection)
+    || modelOptions[0]
+    || null;
   
   const getThinkingTarget = useCallback((option: ChatModelOption | null) => option ? ({
     provider: option.provider,
@@ -2553,10 +2560,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const nextEntries = ensureModelSelectorEntry(storedModelSettings.modelEntries, option.provider, option.modelId || option.modelName);
     const nextCatalog = entriesToModelCatalog(nextEntries);
 
-    appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
-    appStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(nextEntries));
-    appStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(nextCatalog));
-    appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
+    appStorage.setItems({
+      [CHAT_MODEL_SELECTION_STORAGE_KEY]: option.optionKey,
+      [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(nextEntries),
+      [MODEL_CATALOG_STORAGE_KEY]: JSON.stringify(nextCatalog),
+      [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(nextOverrides),
+    });
     writeStoredAgentMode(option.id);
     setStoredModelSettings(prev => ({
       ...prev,
@@ -2579,9 +2588,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   useEffect(() => {
     if (isModelLocked) return;
     if (modelOptions.some(option => option.optionKey === activeModelSelection)) return;
-    const nextSelection = modelOptions.length === 1
-      ? modelOptions[0].optionKey
-      : AUTO_MODEL_SELECTION;
+    const nextSelection = modelOptions[0]?.optionKey || AUTO_MODEL_SELECTION;
     if (activeModelSelection === nextSelection) return;
     appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, nextSelection);
     setStoredModelSettings(previous => ({ ...previous, chatModelSelection: nextSelection }));

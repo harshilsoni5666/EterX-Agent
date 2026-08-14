@@ -27,7 +27,7 @@ function timerNote(note: unknown): string {
 
 export const waitTimerTool: ToolDefinition = {
   name: 'wait_timer',
-  description: 'Wait for a bounded interval, then return a check-in note so the agent can continue from the current work. Use after starting long-running work with process_manager/background_task or when a brief internal pause is needed. Maximum wait is 120 seconds.',
+  description: 'Wait for a bounded interval, then return a check-in note so the agent can continue from the current work. Use after workspace_run_command hands off a long-running task or when a brief internal pause is needed. Maximum wait is 120 seconds.',
   category: 'core',
   inputSchema: z.object({
     seconds: z.number().optional().describe('Seconds to wait. Values are capped to 120 seconds.'),

@@ -5,7 +5,7 @@ import {
   updateStoredRuntimeSettings,
 } from '../../../../lib/agent/runtime-settings-store';
 import { rejectCrossOrigin } from '../../agent/_shared';
-import { applyRuntimeApiKeys, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
+import { applyRuntimeApiKeys, applyRuntimeApiRetries, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
 import { applyRuntimeProviderBaseURLs } from '../../../../lib/agent/provider-runtime';
 import { applyRuntimeSearchSettings, getRuntimeSearchSettings } from '../../../../lib/search/search-runtime';
 import { applyRuntimeImageSettings } from '../../../../lib/image/image-generation-runtime';
@@ -37,6 +37,9 @@ export async function PUT(req: NextRequest) {
       ? body.settings
       : body;
     await updateStoredRuntimeSettings(settings || {});
+    if (Object.prototype.hasOwnProperty.call(settings || {}, 'apiRetries')) {
+      applyRuntimeApiRetries(settings?.apiRetries);
+    }
     if (Object.prototype.hasOwnProperty.call(settings || {}, 'apiKeys')) {
       applyRuntimeApiKeys(settings?.apiKeys && typeof settings.apiKeys === 'object' ? settings.apiKeys : {});
     }
@@ -75,6 +78,7 @@ export async function DELETE(req: NextRequest) {
   if (originError) return originError;
   await clearStoredRuntimeSettings();
   applyRuntimeApiKeys({});
+  applyRuntimeApiRetries(undefined);
   applyRuntimeModelOverrides({});
   applyRuntimeProviderBaseURLs({});
   applyRuntimeSearchSettings({});

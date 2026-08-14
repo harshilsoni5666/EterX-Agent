@@ -69,19 +69,19 @@ export class ExecutionVelocityMonitor {
     }
     // File editing
     else if (/\b(edit|fix|change|update|modify|refactor|rename)\b/i.test(lower) && /\b(file|code|function|class|method)\b/i.test(lower)) {
-      this.taskProfile = { type: 'file_edit', expectedIterations: [2, 15], expectedTools: ['workspace_read_file', 'workspace_apply_patch'] };
+      this.taskProfile = { type: 'file_edit', expectedIterations: [2, 15], expectedTools: ['workspace_run_command', 'workspace_edit_file'] };
     }
     // Project creation
     else if (/\b(create|build|make|scaffold|generate|setup|initialize)\b.*\b(project|app|website|api|server|tool)\b/i.test(lower)) {
-      this.taskProfile = { type: 'project_creation', expectedIterations: [5, 40], expectedTools: ['workspace_apply_patch', 'workspace_run_command'] };
+      this.taskProfile = { type: 'project_creation', expectedIterations: [5, 40], expectedTools: ['workspace_edit_file', 'workspace_run_command'] };
     }
     // Research
     else if (/\b(research|find|search|look up|investigate|analyze|compare)\b/i.test(lower)) {
-      this.taskProfile = { type: 'research', expectedIterations: [3, 20], expectedTools: ['web_search', 'deep_research'] };
+      this.taskProfile = { type: 'research', expectedIterations: [3, 20], expectedTools: ['web_search'] };
     }
     // Debugging
     else if (/\b(debug|error|fix|bug|crash|issue|broken|not working|fails?)\b/i.test(lower)) {
-      this.taskProfile = { type: 'debugging', expectedIterations: [3, 25], expectedTools: ['workspace_read_file', 'workspace_search_text', 'system_shell'] };
+      this.taskProfile = { type: 'debugging', expectedIterations: [3, 25], expectedTools: ['workspace_run_command', 'workspace_edit_file'] };
     }
     // Complex multi-step
     else if (lower.length > 300 || /\b(then|after that|also|and then|next|finally)\b/i.test(lower)) {
@@ -109,7 +109,7 @@ export class ExecutionVelocityMonitor {
     this.lastCallTime = Date.now();
 
     // Track file creation
-    if (tool === 'workspace_apply_patch' && success) {
+    if (tool === 'workspace_edit_file' && success) {
       this.fileArtifactsCreated++;
     }
 
@@ -186,22 +186,8 @@ export class ExecutionVelocityMonitor {
       }
     }
 
-    // === PROGRESS ESTIMATION ===
-    let estimatedProgress = -1;
-    const [minIter, maxIter] = this.taskProfile.expectedIterations;
-    if (this.taskProfile.type !== 'unknown') {
-      // Linear interpolation based on iterations
-      estimatedProgress = Math.min(95, Math.round((this.iterationCount / maxIter) * 100));
-      // Boost if file artifacts created
-      if (this.fileArtifactsCreated > 0 && this.taskProfile.type === 'project_creation') {
-        estimatedProgress = Math.min(95, estimatedProgress + this.fileArtifactsCreated * 5);
-      }
-    }
-
-    // === TIME BUDGET WARNINGS ===
-    if (this.iterationCount > maxIter && this.taskProfile.type !== 'unknown') {
-      warnings.push(`Task is taking ${this.iterationCount} iterations (expected max: ${maxIter}). Consider simplifying or delivering partial results.`);
-    }
+    // Progress cannot be inferred honestly from a fixed iteration count.
+    const estimatedProgress = -1;
 
     // Excessive failure rate
     const recentResults = this.callLog.slice(-10);
@@ -233,10 +219,10 @@ export class ExecutionVelocityMonitor {
       this.strategyShiftCount++;
       return `[VELOCITY MONITOR] 🔄 Loop pattern detected: ${snapshot.loopPatterns.join(', ')}. ` +
         `You have repeated the same tool sequence ${3}+ times. SHIFT STRATEGY NOW: ` +
-        `try a completely different tool, combine steps, or deliver what you have.`;
+        `try a different command or combine independent reads, then continue toward the objective.`;
     }
 
-    if (snapshot.warnings.length > 0 && this.iterationCount > this.taskProfile.expectedIterations[1]) {
+    if (snapshot.warnings.length > 0) {
       return `[VELOCITY MONITOR] ⚠️ ${snapshot.warnings[0]}`;
     }
 
@@ -253,21 +239,12 @@ export class ExecutionVelocityMonitor {
   /** Serialize args for pattern matching (only key identifiers, not full content) */
   private serializeArgs(tool: string, args: Record<string, any>): string {
     switch (tool) {
-      case 'workspace_read_file':
-      case 'workspace_write_file':
-      case 'workspace_str_replace':
-      case 'workspace_apply_patch':
       case 'workspace_edit_file':
-      case 'workspace_edit_many_files':
-        return String(args?.filename || args?.path || '').split('/').pop() || '';
+        return String(args?.filename || args?.files?.[0]?.filename || '').split(/[\\/]/).pop() || '';
       case 'web_search':
-      case 'deep_research':
         return String(args?.query || args?.topic || '').substring(0, 50);
-      case 'system_shell':
       case 'workspace_run_command':
         return String(args?.command || '').substring(0, 40);
-      case 'workspace_search_text':
-        return String(args?.pattern || args?.query || '').substring(0, 30);
       default:
         return Object.values(args || {}).map(v => String(v).substring(0, 20)).join(',').substring(0, 50);
     }

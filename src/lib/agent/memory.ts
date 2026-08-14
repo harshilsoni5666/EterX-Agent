@@ -374,12 +374,7 @@ export class ContextWindowManager {
   /** Tools whose results can be aggressively summarized — they're verbose */
   private static VERBOSE_TOOLS = new Set([
     'web_search',
-    'workspace_list_directory',
-    'workspace_search_text',
-    'system_shell',           // Shell output can be huge
-    'web_scraper',
-    'pdf_parser',
-    'youtube_transcript',
+    'workspace_run_command',  // Terminal output can be huge
     'browser_control',
   ]);
 

@@ -6,7 +6,7 @@ import { useFilePanelActions } from '../../contexts/FilePanelContext';
 import {
   ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2, CornerDownLeft,
   RefreshCw, ExternalLink, Check, Globe, Smartphone, Tablet, Terminal, ArrowRight,
-  Search, FileText, Calculator, Database, Hash, Cpu, FolderOpen, Folder, AlertTriangle, MessageSquare,
+  Search, FileText, Hash, FolderOpen, Folder, AlertTriangle, MessageSquare,
   Key, Clock, Timer
 } from 'lucide-react';
 // @ts-ignore
@@ -17,7 +17,9 @@ import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon, SubAgentIdentityIcon, Co
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { isThoughtStreamOpen, shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
+import { shouldRenderProgressTrace } from '../../lib/chat-feed-lifecycle';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../../lib/agent/tool-trace';
+import { isTerminalTraceStreaming } from '../../lib/terminal-lifecycle';
 
 type SubAgentAssetIndexes = Record<string, number>;
 
@@ -497,7 +499,7 @@ const shouldUseTerminalIcon = (log: any, subtitle = '', preview?: any) => {
   if (preview?.type === 'console_output') return true;
   if (log?.type === 'console_output') return true;
   const toolName = normalizeToolTraceName(log?.tool || log?.name);
-  if (['system_shell', 'workspace_run_command', 'terminal_access', 'process_manager'].includes(toolName)) return true;
+  if (['workspace_run_command', 'terminal_access'].includes(toolName)) return true;
   return TERMINAL_ACTION_PATTERN.test(combined);
 };
 
@@ -519,7 +521,6 @@ const asTimestamp = (value: unknown) => {
   return timestamp;
 };
 
-const LIVE_ACTION_SETTLE_MS = 1400;
 const THOUGHT_ELAPSED_TICK_MS = 1000;
 
 const isLiveThoughtFresh = (log: any) => {
@@ -673,10 +674,10 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
   const markdownText = revealEnabled ? progressive.text : renderText;
   const professionalMarkdownComponents = useMemo(() => ({
     ...markdownComponents,
-    p: ({ node, ...props }: any) => <p className={`eterx-answer-paragraph mb-2.5 last:mb-0 break-words tracking-normal ${ isNote ? 'leading-[1.58]' : 'leading-[1.72]' }`} {...props} />,
-    ul: ({ node, ...props }: any) => <ul className="eterx-answer-list my-3 list-disc space-y-1.5 pl-6" {...props} />,
-    ol: ({ node, ...props }: any) => <ol className="eterx-answer-list my-3 list-decimal space-y-1.5 pl-6" {...props} />,
-    li: ({ node, ...props }: any) => <li className="eterx-answer-list-item pl-1.5 leading-[1.68]" {...props} />,
+    p: ({ node, ...props }: any) => <p className={`eterx-answer-paragraph mb-2 last:mb-0 break-words tracking-normal ${ isNote ? 'leading-[1.52]' : 'leading-[1.62]' }`} {...props} />,
+    ul: ({ node, ...props }: any) => <ul className="eterx-answer-list my-2.5 list-disc space-y-1.5 pl-5" {...props} />,
+    ol: ({ node, ...props }: any) => <ol className="eterx-answer-list my-2.5 list-decimal space-y-1.5 pl-5" {...props} />,
+    li: ({ node, ...props }: any) => <li className="eterx-answer-list-item pl-1 leading-[1.58]" {...props} />,
     strong: ({ node, ...props }: any) => <strong className="eterx-answer-strong font-bold" {...props} />,
     em: ({ node, ...props }: any) => <em className="eterx-answer-em italic" {...props} />,
     a: ({ node, href, children, ...props }: any) => {
@@ -1095,18 +1096,25 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
   return <div>{consolePanel}</div>;
 };
 
-// ─── Patch Summary Panel — shown for workspace_apply_patch results ────────────
-type PatchChangeDetail = {
+// ─── File operation summary for workspace_edit_file results ──────────────────
+type FileChangeDetail = {
   path: string;
   action: 'modified' | 'created' | 'deleted';
   additions?: number;
   deletions?: number;
   hunks?: number;
   diff?: string;
+  diffLines?: Array<{
+    type: 'added' | 'removed' | 'context' | 'unchanged';
+    content: string;
+    oldLine?: number;
+    newLine?: number;
+    isGap?: boolean;
+  }>;
   readback?: string;
 };
 
-const patchDiffLines = (diff = '') => diff
+const fileDiffLines = (diff = '') => diff
   .split('\n')
   .map(line => line.startsWith('@@')
     ? { type: 'context' as const, content: line.replace(/^@@\s*|\s*@@$/g, '') || 'Next change', isGap: true }
@@ -1115,7 +1123,7 @@ const patchDiffLines = (diff = '') => diff
       content: /^[+\- ]/.test(line) ? line.slice(1) : line,
     });
 
-const PatchSummaryPanel = ({
+const FileOperationSummaryPanel = ({
   filesModified = [],
   filesCreated = [],
   filesDeleted = [],
@@ -1128,7 +1136,7 @@ const PatchSummaryPanel = ({
   filesCreated?: string[];
   filesDeleted?: string[];
   errors?: string[];
-  changes?: PatchChangeDetail[];
+  changes?: FileChangeDetail[];
   rolledBack?: boolean;
   flush?: boolean;
 }) => {
@@ -1140,8 +1148,15 @@ const PatchSummaryPanel = ({
   const totalFiles = filesModified.length + filesCreated.length + filesDeleted.length;
   const hasErrors = errors.length > 0;
   const success = totalFiles > 0 && !hasErrors;
+  const operationLabel = filesCreated.length > 0 && filesModified.length === 0 && filesDeleted.length === 0
+    ? 'Created'
+    : filesModified.length > 0 && filesCreated.length === 0 && filesDeleted.length === 0
+      ? 'Edited'
+      : filesDeleted.length > 0 && filesCreated.length === 0 && filesModified.length === 0
+        ? 'Deleted'
+        : 'Updated';
 
-  type FileEntry = { path: string; kind: 'modified' | 'created' | 'deleted'; detail?: PatchChangeDetail };
+  type FileEntry = { path: string; kind: 'modified' | 'created' | 'deleted'; detail?: FileChangeDetail };
   const detailByPath = new Map(changes.map(change => [change.path.replace(/\\/g, '/').toLowerCase(), change]));
   const withDetail = (filePath: string, kind: FileEntry['kind']): FileEntry => ({
     path: filePath,
@@ -1154,11 +1169,16 @@ const PatchSummaryPanel = ({
     ...filesDeleted.map(p => withDetail(p, 'deleted')),
   ];
   const selectedFile = allFiles.find(file => file.path === selectedPath) || allFiles.find(file => Boolean(file.detail?.diff));
+  const selectedDiffLines = Array.isArray(selectedFile?.detail?.diffLines)
+    ? selectedFile.detail.diffLines
+    : selectedFile?.detail?.diff
+      ? fileDiffLines(selectedFile.detail.diff)
+      : [];
 
   const kindStyle = {
-    created: { pill: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25', bar: 'bg-emerald-500', label: '+new' },
-    modified: { pill: 'bg-sky-500/15 text-sky-300 border-sky-500/25', bar: 'bg-sky-400', label: 'edited' },
-    deleted: { pill: 'bg-red-500/15 text-red-300 border-red-500/25', bar: 'bg-red-500', label: 'deleted' },
+    created: { bar: 'bg-emerald-500', verb: 'Created' },
+    modified: { bar: 'bg-sky-400', verb: 'Edited' },
+    deleted: { bar: 'bg-red-500', verb: 'Deleted' },
   };
 
   return (
@@ -1169,7 +1189,7 @@ const PatchSummaryPanel = ({
           <div className="flex min-w-0 flex-wrap items-center gap-2.5">
             <span className={`h-2 w-2 rounded-full flex-shrink-0 ${ success ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : hasErrors ? 'bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.5)]' : 'bg-amber-400' }`} />
             <span className="text-[12px] font-semibold text-[#C8C2BB]">
-              {success ? `Patch applied · ${ totalFiles } file${ totalFiles !== 1 ? 's' : '' }` : hasErrors ? `Patch errors · ${ errors.length }` : 'No changes'}
+              {success ? `${ operationLabel } ${ totalFiles } file${ totalFiles !== 1 ? 's' : '' }` : hasErrors ? `${ rolledBack ? 'Changes rolled back' : 'File operation failed' } · ${ errors.length }` : 'No file changes'}
             </span>
             {/* Stat pills */}
             <div className="flex flex-wrap items-center gap-1.5">
@@ -1229,7 +1249,7 @@ const PatchSummaryPanel = ({
                     <div className={`w-[3px] self-stretch shrink-0 ${ style.bar }`} />
                     <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-[5px]">
                       <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                        <span className="truncate text-[12px] font-medium text-[#A9D2E5]">{name}</span>
+                        <span className="truncate text-[12px] font-medium text-[#A9D2E5]">{style.verb} {name}</span>
                         {parentPath ? <span className="mt-0.5 truncate text-[9.5px] text-[#69645E]">{parentPath}</span> : null}
                       </span>
                       {f.detail && (f.detail.additions || f.detail.deletions) ? (
@@ -1238,7 +1258,6 @@ const PatchSummaryPanel = ({
                           <span className="text-red-300">−{f.detail.deletions || 0}</span>
                         </span>
                       ) : null}
-                      <span className={`shrink-0 rounded-[4px] border px-1.5 py-[1px] text-[10px] font-semibold ${ style.pill }`}>{style.label}</span>
                       {f.kind !== 'deleted' ? <ChevronRight className={`h-3 w-3 shrink-0 text-[#716B64] transition-transform ${ selectedFile?.path === f.path ? 'rotate-90 text-[#B2AAA0]' : '' }`} /> : null}
                     </div>
                   </button>
@@ -1253,12 +1272,12 @@ const PatchSummaryPanel = ({
                   </div>
                 </div>
               ))}
-              {selectedFile?.detail?.diff && selectedFile.kind !== 'deleted' ? (
+              {selectedDiffLines.length > 0 ? (
                 <div className="border-t border-white/[0.055] bg-[#151514] px-2 pb-1 pt-0.5">
                   <InlineDiffView
                     filename={selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path}
                     filepath={selectedFile.path}
-                    diffLines={patchDiffLines(selectedFile.detail.diff)}
+                    diffLines={selectedDiffLines}
                     showExpand
                     flush
                   />
@@ -1439,77 +1458,8 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
     );
   }
 
-  // ── 1. deep_research ──────────────────────────────────────────────────────
-  if (toolName === 'deep_research' || toolName === 'research_report') {
-    const report: string = result?.report || result?.content || result?.text || '';
-    const sources: string[] = Array.isArray(result?.sources) ? result.sources : [];
-    const topic: string = args?.topic || args?.query || '';
-    const isOk = result?.success !== false;
-    return (
-      <TrpCard flush={flush}>
-        {topic && (
-          <div className="mb-3 text-[11px] text-[#5E5A55]">
-            <span className="font-medium text-[#7A7470]">Topic — </span>{topic}
-          </div>
-        )}
-        {report ? (
-          <div className="max-h-[380px] overflow-y-auto overflow-x-hidden eterx-scrollbar -mr-1 pr-1">
-            <TrpMarkdown content={report} />
-          </div>
-        ) : (
-          <div className="py-6 text-center text-[12px] text-[#4E4A46] italic">No report generated.</div>
-        )}
-        <TrpSources sources={sources} />
-      </TrpCard>
-    );
-  }
-
-  // ── 2. verify_* / realtime_verify / check_* ───────────────────────────────
-  const isVerifyTool = toolName.includes('verify') || toolName.startsWith('check_') || toolName === 'realtime_verify';
-  if (isVerifyTool && result && typeof result === 'object') {
-    const passed = result.passed === true || result.success === true || result.exists === true;
-    const failed = result.passed === false || result.success === false || result.exists === false;
-    const mode: string = String(result.mode || result.type || '').replace(/_/g, ' ');
-    const details: string = String(result.details || result.message || result.info || '');
-    const evidence: string = String(result.evidence || result.output || '');
-    const items: any[] = Array.isArray(result.items) ? result.items : Array.isArray(result.checks) ? result.checks : [];
-    const status = passed ? 'passed' : failed ? 'failed' : 'unknown';
-    const badgeCls = status === 'passed' ? 'text-emerald-400/90 bg-emerald-500/10' : status === 'failed' ? 'text-red-400/90 bg-red-500/10' : 'text-amber-400/90 bg-amber-500/10';
-    const detailsCls = status === 'passed' ? 'bg-emerald-500/8 border-emerald-500/15 text-emerald-300/90' : status === 'failed' ? 'bg-red-500/8 border-red-500/15 text-red-300/90' : 'bg-amber-500/8 border-amber-500/15 text-amber-300/90';
-    return (
-      <TrpCard>
-        {mode && <div className="mb-2 text-[11px] text-[#5E5A55]"><span className="font-medium text-[#7A7470]">Mode — </span>{mode}</div>}
-        {details && (
-          <div className={`mb-2.5 rounded-[8px] border px-3 py-2 text-[12px] leading-[1.5] ${ detailsCls }`}>{details}</div>
-        )}
-        {evidence && (
-          <div className="mb-2.5 rounded-[7px] bg-black/25 border border-white/[0.05] px-3 py-2 font-mono text-[11px] text-[#9A9288] leading-snug select-all">{evidence}</div>
-        )}
-        {items.length > 0 && (
-          <div className="flex flex-col gap-1 max-h-[160px] overflow-y-auto eterx-scrollbar">
-            {items.map((item: any, i: number) => {
-              const ok = item.passed === true || item.result === true || item.success === true;
-              const fail = item.passed === false || item.result === false || item.success === false;
-              const name: string = item.name || item.check || item.label || `Check ${ i + 1 }`;
-              const msg: string = item.message || item.details || item.error || '';
-              return (
-                <div key={i} className="flex items-start gap-2.5 rounded-[7px] bg-white/[0.025] px-2.5 py-1.5">
-                  <span className={`mt-0.5 text-[11px] font-bold shrink-0 ${ ok ? 'text-emerald-400' : fail ? 'text-red-400' : 'text-amber-400' }`}>{ok ? '✓' : fail ? '✗' : '·'}</span>
-                  <div>
-                    <div className="text-[12px] font-medium text-[#C0B8B0]">{name}</div>
-                    {msg && <div className="text-[11px] text-[#5E5A55] mt-0.5">{msg}</div>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </TrpCard>
-    );
-  }
-
-  // ── 3. web_search ────────────────────────────────────────────────────────
-  if (toolName === 'web_search' || toolName === 'deep_search') {
+  // ── web_search ────────────────────────────────────────────────────────────
+  if (toolName === 'web_search') {
     const summary: string = result?.ai_summary || result?.answer || result?.summary || '';
     const items: any[] = Array.isArray(result?.results) ? result.results : Array.isArray(result) ? result : [];
     const images: any[] = Array.isArray(result?.images) ? result.images : [];
@@ -1560,39 +1510,6 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
     );
   }
 
-  // ── 4. web_scraper / pdf_parser / youtube_transcript / rss_feed ───────────
-  if (['web_scraper', 'pdf_parser', 'youtube_transcript', 'rss_feed'].includes(toolName)) {
-    const contentText: string = typeof result === 'string' ? result : result?.content || result?.text || result?.transcript || '';
-    const wordCount = contentText.split(/\s+/).filter(Boolean).length;
-    const source: string = args?.url || args?.filename || args?.path || '';
-    const labels: Record<string, string> = { web_scraper: 'Scraped Page', pdf_parser: 'PDF', youtube_transcript: 'Transcript', rss_feed: 'RSS Feed' };
-    return (
-      <TrpCard>
-        {source && <div className="mb-2 text-[10.5px] font-mono text-[#4E4A46] truncate select-all">{source}</div>}
-        <div className="max-h-[260px] overflow-y-auto eterx-scrollbar rounded-[7px] bg-black/25 border border-white/[0.05] p-2.5">
-          <p className="font-mono text-[11.5px] leading-[1.6] text-[#9A9288] whitespace-pre-wrap break-words select-text">{contentText || '(empty)'}</p>
-        </div>
-      </TrpCard>
-    );
-  }
-
-  // ── 5. calculator ────────────────────────────────────────────────────────
-  if (toolName === 'calculator') {
-    const expr: string = args?.expression || '';
-    const val = typeof result === 'object' ? (result?.result ?? result?.output ?? result?.value ?? JSON.stringify(result)) : String(result);
-    return (
-      <TrpCard>
-        <div className="flex items-center gap-3 font-mono">
-          {expr && <div className="flex-1 text-[12.5px] text-[#5E5A55] truncate">{expr}</div>}
-          <div className="flex items-center gap-2">
-            <span className="text-[#3E3A36]">=</span>
-            <span className="text-[15px] font-bold text-[#E0D8D0] bg-white/[0.05] border border-white/[0.08] rounded-[7px] px-3 py-0.5 select-all">{String(val)}</span>
-          </div>
-        </div>
-      </TrpCard>
-    );
-  }
-
   // ── 6. database / db_query ────────────────────────────────────────────────
   if (toolName === 'database' || toolName === 'db_query') {
     const query: string = args?.query || args?.sql || '';
@@ -1634,102 +1551,8 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
     );
   }
 
-  // ── 7. workspace_list_directory ───────────────────────────────────────────
-  if (toolName === 'workspace_list_directory' || toolName === 'list_directory') {
-    const list: any[] = Array.isArray(result) ? result : Array.isArray(result?.entries) ? result.entries : Array.isArray(result?.files) ? result.files : [];
-    const dirPath: string = args?.directory || args?.dir || args?.path || '';
-    return (
-      <TrpCard flush={flush}>
-        {dirPath && (
-          <div className="mb-2.5 flex items-center justify-between gap-2 rounded-[7px] border border-white/[0.06] bg-white/[0.025] px-2.5 py-1.5 font-mono text-[11px]">
-            <span className="truncate text-[#C8C1B8] font-medium select-all">{dirPath}</span>
-            <span className="shrink-0 text-[10px] text-[#817A70]">{list.length} item{list.length !== 1 ? 's' : ''}</span>
-          </div>
-        )}
-        <div className="flex flex-col gap-0.5 max-h-[240px] overflow-y-auto eterx-scrollbar">
-          {list.length > 0 ? list.map((item: any, i: number) => {
-            const name: string = typeof item === 'string' ? item : (item.name || item.relative || item.path || item.filename || '');
-            const isDir = typeof item === 'string' ? false : !!(item.isDir || item.isDirectory || item.type === 'directory');
-            const size: string = typeof item === 'string'
-              ? ''
-              : typeof item.size === 'number'
-                ? item.size >= 1048576 ? `${ (item.size / 1048576).toFixed(1) } MB` : `${ (item.size / 1024).toFixed(1) } KB`
-                : '';
-            return (
-              <div key={i} className="flex items-center gap-2.5 px-2 py-1.5 rounded-[6px] hover:bg-white/[0.04] transition-colors font-mono text-[11.5px] group">
-                {isDir ? (
-                  <Folder className="h-3.5 w-3.5 shrink-0 text-amber-400/80" />
-                ) : (
-                  <LocalFileIcon fileName={name} size="sm" />
-                )}
-                <span className="truncate select-all text-[#E2DFDA] group-hover:text-white font-medium">{name}</span>
-                {!isDir && size && (
-                  <span className="eterx-professional-number ml-auto shrink-0 rounded-[4px] border border-white/[0.06] bg-white/[0.025] px-1.5 py-0.5 text-[10px] font-medium text-[#8D867C]">{size}</span>
-                )}
-              </div>
-            );
-          }) : <div className="py-4 text-center text-[11px] text-[#817A70] italic">Empty directory.</div>}
-        </div>
-      </TrpCard>
-    );
-  }
 
-  // ── 8. workspace_search_text / workspace_find_files ───────────────────────
-  if (['workspace_search_text', 'workspace_find_files', 'search_files'].includes(toolName)) {
-    const list: any[] = Array.isArray(result) ? result : Array.isArray(result?.matches) ? result.matches : Array.isArray(result?.files) ? result.files : [];
-    const pattern: string = args?.pattern || args?.query || args?.glob || args?.search || '';
-    return (
-      <TrpCard
-        icon={<Search className="w-3.5 h-3.5" />}
-        title="Code Search"
-        badge={<span className="text-[10px] font-medium text-[#5E5A55]">{list.length} match{list.length !== 1 ? 'es' : ''}</span>}
-      >
-        {pattern && <div className="mb-2 text-[11px] font-mono text-[#4E4A46]">Pattern: <span className="text-[#9A9288] select-all">{pattern}</span></div>}
-        <div className="flex flex-col gap-1 max-h-[240px] overflow-y-auto eterx-scrollbar">
-          {list.length > 0 ? list.map((item: any, i: number) => {
-            const file: string = typeof item === 'string' ? item : item.file || item.filename || item.path || '';
-            const line = item.line || item.lineNumber;
-            const rawContent = item.content ?? item.lineContent ?? item.match ?? '';
-            const content: string = typeof rawContent === 'string'
-              ? rawContent
-              : (typeof rawContent === 'object' && rawContent !== null
-                ? JSON.stringify(rawContent)
-                : String(rawContent));
-            return (
-              <div key={i} className="rounded-[7px] bg-white/[0.02] border border-white/[0.04] p-2 hover:border-white/[0.07] transition-colors">
-                <div className="flex items-center gap-2 text-[10.5px] mb-1">
-                  <span className="text-[#6B9AB8] font-mono truncate select-all flex-1">{file}</span>
-                  {line && <span className="shrink-0 text-[#4E4A46] font-mono">:{line}</span>}
-                </div>
-                {content && <div className="font-mono text-[10.5px] text-[#9A9288] pl-2 border-l border-white/[0.07] whitespace-pre-wrap break-words select-all">{content.trim()}</div>}
-              </div>
-            );
-          }) : <div className="py-4 text-center text-[11px] text-[#4E4A46] italic">No matches found.</div>}
-        </div>
-      </TrpCard>
-    );
-  }
-
-  // ── 9. api_caller / http_request ──────────────────────────────────────────
-  if (toolName === 'api_caller' || toolName === 'http_request') {
-    const url: string = args?.url || '';
-    const method: string = String(args?.method || 'GET').toUpperCase();
-    const status = Number(result?.status || result?.statusCode || 0);
-    const isErr = !!(result?.error) || status >= 400;
-    const body = result?.data || result?.body || result?.response;
-    const bodyStr: string = typeof body === 'object' ? JSON.stringify(body, null, 2) : String(body || result || '');
-    return (
-      <TrpCard>
-        <div className="flex items-center gap-2 font-mono text-[11.5px] mb-2.5">
-          <span className="shrink-0 font-bold text-[#6B9AB8] bg-white/[0.04] border border-white/[0.07] px-2 py-0.5 rounded-[5px]">{method}</span>
-          <span className="text-[#5E5A55] truncate select-all">{url}</span>
-        </div>
-        <div className="max-h-[200px] overflow-auto eterx-scrollbar rounded-[7px] bg-black/25 border border-white/[0.05] p-2.5 font-mono text-[10.5px] leading-[1.5] text-[#9A9288] whitespace-pre select-text">{bodyStr}</div>
-      </TrpCard>
-    );
-  }
-
-  // ── 10. Universal smart renderer ──────────────────────────────────────────
+  // ── Universal smart renderer ──────────────────────────────────────────────
   // Detects the shape of ANY tool result and renders it properly.
   // No tool name matching — purely data-driven.
 
@@ -2377,48 +2200,22 @@ const getDiffStats = (preview: any, log: any) => {
   // Fallback: extract stats from log tool arguments
   const args = log?.toolArgs || log?.args;
   const toolName = normalizeToolTraceName(log?.tool || log?.name);
-  if (added === 0 && removed === 0 && args && toolName) {
-    if (toolName === 'workspace_str_replace') {
-      const oldStr = String(args.old_string || '');
-      const newStr = String(args.new_string || '');
-      if (oldStr || newStr) {
-        removed = oldStr ? oldStr.split(/\r?\n/).length : 0;
-        added = newStr ? newStr.split(/\r?\n/).length : 0;
-      }
-    } else if (toolName === 'replace_file_content') {
-      const targetContent = String(args.TargetContent || '');
-      const replacementContent = String(args.ReplacementContent || '');
-      if (targetContent || replacementContent) {
-        removed = targetContent ? targetContent.split(/\r?\n/).length : 0;
-        added = replacementContent ? replacementContent.split(/\r?\n/).length : 0;
-      }
-    } else if (toolName === 'multi_replace_file_content') {
-      const chunks = Array.isArray(args.ReplacementChunks) ? args.ReplacementChunks : [];
-      chunks.forEach((chunk: any) => {
-        const targetContent = String(chunk.TargetContent || '');
-        const replacementContent = String(chunk.ReplacementContent || '');
-        removed += targetContent ? targetContent.split(/\r?\n/).length : 0;
-        added += replacementContent ? replacementContent.split(/\r?\n/).length : 0;
-      });
-    } else if (toolName === 'workspace_write_file' || toolName === 'write_to_file') {
-      const content = String(args.content || args.CodeContent || '');
-      if (content) {
-        added = content.split(/\r?\n/).length;
-        removed = 0;
-      }
-    } else if (toolName === 'workspace_edit_many_files') {
-      const edits = Array.isArray(args.edits) ? args.edits : [];
+  if (added === 0 && removed === 0 && args && toolName === 'workspace_edit_file') {
+    const targets = Array.isArray(args.files) ? args.files : [args];
+    targets.forEach((target: any) => {
+      if (target?.delete === true) return;
+      const edits = Array.isArray(target?.edits) ? target.edits : [];
       edits.forEach((edit: any) => {
-        const searchStr = String(edit.search || '');
-        const replaceStr = String(edit.replace || '');
-        if (edit.startLine !== undefined && edit.endLine !== undefined) {
-          removed += Math.max(0, edit.endLine - edit.startLine + 1);
-        } else if (searchStr) {
-          removed += searchStr.split(/\r?\n/).length;
+        const searchText = typeof edit?.search === 'string' ? edit.search : '';
+        const replacementText = typeof edit?.replace === 'string' ? edit.replace : '';
+        if (edit?.startLine !== undefined && edit?.endLine !== undefined) {
+          removed += Math.max(0, Number(edit.endLine) - Number(edit.startLine) + 1);
+        } else if (searchText) {
+          removed += searchText.split(/\r?\n/).length;
         }
-        added += replaceStr.split(/\r?\n/).length;
+        if (replacementText) added += replacementText.split(/\r?\n/).length;
       });
-    }
+    });
   }
 
   // Secondary fallback: check log root properties
@@ -2704,10 +2501,18 @@ const normalizeActionTypeForKey = (type: unknown) => {
 };
 
 const getActionIdentity = (log: any, fallbackIndex: number) => {
-  const primary = log?._traceIdx ?? log?.traceId ?? log?.id ?? log?.timestamp ?? log?.startTime ?? fallbackIndex;
+  const stableId = getStableActionEventId(log);
+  const scope = compactActionKeyPart(log?.runId || log?.turnId || log?.ownerChatId || log?.chatId || 'current');
+  const actionType = normalizeActionTypeForKey(log?.type);
+  // A row key must not contain streamed/mutable presentation fields. When an
+  // event has transport identity, keep that identity for its entire lifecycle
+  // so React updates the existing card and preserves expansion state.
+  if (stableId) return `${ scope }|${ actionType }|${ stableId }`;
+  const timeAnchor = log?.startTime ?? log?.timestamp ?? log?.endTime ?? fallbackIndex;
   return [
-    primary,
-    normalizeActionTypeForKey(log?.type),
+    scope,
+    actionType,
+    timeAnchor,
     compactActionKeyPart(log?.text),
     compactActionKeyPart(log?.secondary),
     compactActionKeyPart(log?.command),
@@ -3059,15 +2864,14 @@ const TerminalTraceCard = ({
   const shell = String(preview?.shell ?? resultObject?.shell ?? log?.shell ?? '');
   const pidValue = Number(preview?.pid ?? resultObject?.pid ?? log?.pid);
   const pid = Number.isFinite(pidValue) && pidValue > 0 ? pidValue : undefined;
-  const explicitlyRunning = Boolean(
-    preview?.isStreaming ||
-    log?.isStreaming ||
-    resultObject?.running === true ||
-    resultObject?.stillRunning === true ||
-    resultObject?.status === 'running'
-  );
-  const hasCompletionSignal = exitCode !== undefined || (rawResult !== undefined && rawResult !== null && !explicitlyRunning);
-  const isStreaming = explicitlyRunning || (isLiveChip && !hasCompletionSignal);
+  const isStreaming = isTerminalTraceStreaming({
+    preview,
+    result: resultObject,
+    log,
+    isLiveChip,
+    exitCode,
+    hasResult: rawResult !== undefined && rawResult !== null,
+  });
   const displayedExitCode = isStreaming ? undefined : exitCode ?? 0;
   const isFailed = !isStreaming && exitCode !== undefined && exitCode !== 0;
   const durationLabel = formatTerminalMetaDuration(durationMs);
@@ -3105,8 +2909,8 @@ const TerminalTraceCard = ({
     const displayCollapsed = timerPrompt ? String(timerPrompt) : '';
 
     return (
-      <div className={`eterx-terminal-trace w-full ${ inCard ? '' : `${ ACTION_CARD_CLASS } my-1.5` }`}>
-        <div className={`eterx-terminal-trace-row flex min-h-[33px] w-full items-center gap-2 py-1 text-left ${ inCard ? 'px-1.5' : 'px-3' }`}>
+      <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
+        <div className={`eterx-terminal-trace-row flex w-full items-center gap-2 py-1 text-left ${ inCard ? 'min-h-[33px] px-1.5' : 'min-h-[38px] px-3' }`}>
           <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
             {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#67C58A]' : 'text-[#A39B91]' }`} strokeWidth={2.1} />}
           </span>
@@ -3134,7 +2938,7 @@ const TerminalTraceCard = ({
     : 'grid-cols-[26px_auto_minmax(0,1fr)_auto]';
 
   return (
-    <div className={`eterx-terminal-trace w-full ${ inCard ? '' : `${ ACTION_CARD_CLASS } my-1.5` }`}>
+    <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
       <button
         type="button"
         onClick={(event) => {
@@ -3143,7 +2947,7 @@ const TerminalTraceCard = ({
           setIsExpanded(open => !open);
         }}
         aria-expanded={isExpanded}
-        className={`eterx-terminal-trace-row group grid min-h-[33px] w-full ${ rowGridClass } items-center gap-2 py-1 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'px-1.5 hover:bg-white/[0.024]' : 'px-3 hover:bg-white/[0.024]' }`}
+        className={`eterx-terminal-trace-row group grid w-full ${ rowGridClass } items-center gap-2 py-1 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'min-h-[33px] px-1.5 hover:bg-white/[0.024]' : 'min-h-[38px] px-3 hover:bg-white/[0.024]' }`}
       >
         <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
           {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Terminal className="h-[16.5px] w-[16.5px]" strokeWidth={2.1} />}
@@ -3199,8 +3003,66 @@ const FileChangeTraceCard = ({
   const displayFileTargets = useMemo(() => dedupeFileTraceTargetsForDisplay(fileTargets), [fileTargets]);
   const primaryTarget = displayFileTargets[0] || fileTargets[0];
   const explicitCount = numberFrom(log.fileCount, log.filesCount, log.count);
-  const fileCount = Math.max(displayFileTargets.length, explicitCount || 0);
+  const fileOperationResult = useMemo(() => {
+    const raw = preview?.fileOperationResult ?? preview?.result ?? log?.toolResult ?? log?.result ?? log;
+    let src = raw;
+    if (typeof raw === 'string') {
+      try { src = JSON.parse(raw); } catch { src = {}; }
+    }
+
+    const rawChanges = Array.isArray(src?.changes) ? src.changes as FileChangeDetail[] : [];
+    const relatedPreviews = [preview, ...(Array.isArray(preview?.relatedFilePreviews) ? preview.relatedFilePreviews : [])]
+      .filter((item, index, items) => item?.type === 'file_preview' && items.indexOf(item) === index);
+    const normalizePath = (value: unknown) => String(value || '').replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+    const structuredChanges = rawChanges.map(change => {
+      const changePath = normalizePath(change.path);
+      const matchingPreview = relatedPreviews.find(item => {
+        const previewPath = normalizePath(item?.filepath || item?.filename);
+        return previewPath && (previewPath === changePath || previewPath.endsWith(`/${ changePath }`) || changePath.endsWith(`/${ previewPath }`));
+      });
+      if (!matchingPreview || !Array.isArray(matchingPreview.diffLines)) return change;
+      return {
+        ...change,
+        additions: Number.isFinite(Number(matchingPreview.linesAdded)) ? Number(matchingPreview.linesAdded) : change.additions,
+        deletions: Number.isFinite(Number(matchingPreview.linesRemoved)) ? Number(matchingPreview.linesRemoved) : change.deletions,
+        diffLines: matchingPreview.diffLines,
+      };
+    });
+    const filesModified = (src?.filesModified ?? structuredChanges.filter(change => change.action === 'modified').map(change => change.path)) as string[];
+    const filesCreated = (src?.filesCreated ?? structuredChanges.filter(change => change.action === 'created').map(change => change.path)) as string[];
+    const filesDeleted = (src?.filesDeleted ?? structuredChanges.filter(change => change.action === 'deleted').map(change => change.path)) as string[];
+    const errors = (src?.errors ?? []) as string[];
+    const hasData = filesModified.length > 0 || filesCreated.length > 0 || filesDeleted.length > 0 || structuredChanges.length > 0 || errors.length > 0 || Boolean(src?.operation);
+    if (!hasData) return null;
+
+    const inferredOperation = filesCreated.length > 0 && filesModified.length === 0 && filesDeleted.length === 0
+      ? 'created'
+      : filesModified.length > 0 && filesCreated.length === 0 && filesDeleted.length === 0
+        ? 'edited'
+        : filesDeleted.length > 0 && filesCreated.length === 0 && filesModified.length === 0
+          ? 'deleted'
+          : filesCreated.length + filesModified.length + filesDeleted.length > 0
+            ? 'mixed'
+            : 'none';
+
+    return {
+      operation: ['created', 'edited', 'deleted', 'mixed', 'none'].includes(src?.operation)
+        ? src.operation as 'created' | 'edited' | 'deleted' | 'mixed' | 'none'
+        : inferredOperation,
+      filesModified,
+      filesCreated,
+      filesDeleted,
+      errors,
+      changes: structuredChanges,
+      rolledBack: Boolean(src?.rolledBack),
+    };
+  }, [log, preview]);
+  const resultFileCount = fileOperationResult
+    ? fileOperationResult.filesCreated.length + fileOperationResult.filesModified.length + fileOperationResult.filesDeleted.length
+    : 0;
+  const fileCount = Math.max(displayFileTargets.length, explicitCount || 0, resultFileCount);
   const multiFile = fileCount > 1 || /\bfiles\b/i.test(String(log.text || ''));
+  const resultOperation = fileOperationResult?.operation;
   const resultSaysEdit = preview?.type === 'file_preview' && Boolean(
     preview?.isEdit ||
     (Array.isArray(preview?.diffLines) && preview.diffLines.length > 0) ||
@@ -3209,9 +3071,13 @@ const FileChangeTraceCard = ({
     log?.args?.overwrite
   );
   const baseVerb = displayVerb.replace(/\s+files?$/i, '').trim() || (isLiveChip ? 'Editing' : 'Edited');
-  const normalizedVerb = !isLiveChip && resultSaysEdit && /^(?:creat|writ|generat)/i.test(baseVerb)
-    ? 'Edited'
-    : baseVerb;
+  const normalizedVerb = !isLiveChip && resultOperation
+    ? resultOperation === 'none' && (fileOperationResult?.errors.length || fileOperationResult?.rolledBack)
+      ? 'Failed to update'
+      : ({ created: 'Created', edited: 'Edited', deleted: 'Deleted', mixed: 'Updated', none: 'Unchanged' } as const)[resultOperation]
+    : !isLiveChip && resultSaysEdit && /^(?:creat|writ|generat)/i.test(baseVerb)
+      ? 'Edited'
+      : baseVerb;
   const title = `${ normalizedVerb } ${ multiFile ? 'files' : 'file' }`;
   const filename = preview?.filename || primaryTarget?.filename || (multiFile ? `${ fileCount || 'Multiple' } files` : '');
   const rawTargetLabel = multiFile
@@ -3232,7 +3098,7 @@ const FileChangeTraceCard = ({
     ?? log.endLine;
   const hasDiffPreview = Array.isArray(preview?.diffLines) && preview.diffLines.length > 0;
   const isEditPreview = resultSaysEdit;
-  const isCreateAction = /^(?:creat|generat|scaffold|writ)/i.test(displayVerb);
+  const isCreateAction = resultOperation === 'created' || (!resultOperation && /^(?:creat|generat|scaffold|writ)/i.test(displayVerb));
   const canPreview = preview?.type === 'file_preview' && (
     (isEditPreview && (hasDiffPreview || previewContent.length > 0 || Boolean(previewFilePath))) ||
     (!isEditPreview && (previewContent.length > 0 || Boolean(previewFilePath)))
@@ -3242,36 +3108,17 @@ const FileChangeTraceCard = ({
   const canFetchCreatedFile = !multiFile && !canPreview && Boolean(previewFilePath || primaryTarget?.filepath);
   const canShowFileList = !canPreview && (multiFile || !canFetchCreatedFile) && displayFileTargets.length > 0;
 
-  // Patch result — extract from log.result or log (apply_patch returns filesModified/Created/Deleted)
-  const isPatch = /patch/i.test(String(displayVerb || '')) || /patch/i.test(String(log?.text || ''));
-  const patchResult = useMemo(() => {
-    const raw = preview?.patchResult ?? preview?.result ?? log?.toolResult ?? log?.result ?? log;
-    let src = raw;
-    if (typeof raw === 'string') {
-      try { src = JSON.parse(raw); } catch { src = {}; }
-    }
-    const structuredChanges = Array.isArray(src?.changes) ? src.changes as PatchChangeDetail[] : [];
-    const hasData = Array.isArray(src?.filesModified) || Array.isArray(src?.filesCreated) || Array.isArray(src?.filesDeleted) || structuredChanges.length > 0;
-    if (!hasData) return null;
-    return {
-      filesModified: (src?.filesModified ?? structuredChanges.filter(change => change.action === 'modified').map(change => change.path)) as string[],
-      filesCreated: (src?.filesCreated ?? structuredChanges.filter(change => change.action === 'created').map(change => change.path)) as string[],
-      filesDeleted: (src?.filesDeleted ?? structuredChanges.filter(change => change.action === 'deleted').map(change => change.path)) as string[],
-      errors: (src?.errors ?? []) as string[],
-      changes: structuredChanges,
-      rolledBack: Boolean(src?.rolledBack),
-    };
-  }, [log, preview]);
-  const isPatchWithResult = Boolean(patchResult && (isPatch || patchResult.changes.length > 0));
-  const structuredStats = patchResult?.changes.length
-    ? patchResult.changes.reduce((total, change) => ({
+  // Structured workspace_edit_file result used for operation labels and real diffs.
+  const hasFileOperationResult = Boolean(fileOperationResult);
+  const structuredStats = fileOperationResult?.changes.length
+    ? fileOperationResult.changes.reduce((total, change) => ({
       added: total.added + (Number(change.additions) || 0),
       removed: total.removed + (Number(change.deletions) || 0),
     }), { added: 0, removed: 0 })
     : null;
   const effectiveStats = structuredStats || diffStats;
 
-  const canExpand = isPatchWithResult || canPreview || canFetchCreatedFile || canShowFileList;
+  const canExpand = hasFileOperationResult || canPreview || canFetchCreatedFile || canShowFileList;
   const agentEntry = resolveAgentIcon(displayVerb, log.text, iconCategory || log.iconCategory);
   const { Icon: AI, color: ac } = agentEntry;
 
@@ -3282,14 +3129,14 @@ const FileChangeTraceCard = ({
     }
   };
 
-  const previewPanel = isPatchWithResult && patchResult ? (
-    <PatchSummaryPanel
-      filesModified={patchResult.filesModified}
-      filesCreated={patchResult.filesCreated}
-      filesDeleted={patchResult.filesDeleted}
-      errors={patchResult.errors}
-      changes={patchResult.changes}
-      rolledBack={patchResult.rolledBack}
+  const previewPanel = hasFileOperationResult && fileOperationResult ? (
+    <FileOperationSummaryPanel
+      filesModified={fileOperationResult.filesModified}
+      filesCreated={fileOperationResult.filesCreated}
+      filesDeleted={fileOperationResult.filesDeleted}
+      errors={fileOperationResult.errors}
+      changes={fileOperationResult.changes}
+      rolledBack={fileOperationResult.rolledBack}
       flush
     />
   ) : canFetchCreatedFile ? (
@@ -3344,7 +3191,7 @@ const FileChangeTraceCard = ({
     : `eterx-file-change-row eterx-file-change-row--standalone group grid min-h-[38px] w-full grid-cols-[26px_auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1 text-left transition-colors ${ canExpand ? 'cursor-pointer hover:bg-white/[0.025]' : 'cursor-default' }`;
 
   return (
-    <div className={`eterx-file-change-trace w-full ${ inCard ? '' : `${ ACTION_CARD_CLASS } my-1.5` }`}>
+    <div className={`eterx-file-change-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
       <div
         role={canExpand ? 'button' : undefined}
         tabIndex={canExpand ? 0 : undefined}
@@ -3364,11 +3211,11 @@ const FileChangeTraceCard = ({
         <Shimmer active={isLiveChip} className="eterx-file-change-title min-w-max whitespace-nowrap text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {title}
         </Shimmer>
-        <span className="eterx-file-change-detail flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 overflow-visible">
+        <span className="eterx-file-change-detail flex min-w-0 items-center gap-1.5 overflow-hidden">
           {targetLabel ? (
-            <span className="inline-flex min-w-0 max-w-full items-center gap-2">
+            <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
               <LocalFileIcon fileName={filename || targetLabel} size="sm" />
-              <span className="eterx-file-change-filename min-w-0 overflow-wrap-anywhere break-words text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors group-hover:text-white">{targetLabel}</span>
+              <span className="eterx-file-change-filename min-w-0 truncate text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors group-hover:text-white" title={targetLabel}>{targetLabel}</span>
             </span>
           ) : null}
           {lineContext && (
@@ -3413,18 +3260,11 @@ const ActionChip = ({
 }) => {
   const isLiveChip = isActiveGroup && isLastChip;
   const displayToolName = normalizeToolTraceName(log.tool || log.name);
-  const isEdit = log.type === 'file_edit' ||
-    ['workspace_write_file', 'workspace_edit_file', 'workspace_str_replace', 'workspace_apply_patch', 'workspace_edit_many_files', 'replace_file_content', 'multi_replace_file_content', 'write_to_file'].includes(displayToolName || log.tool || log.name);
-  const isRead = [
-    'workspace_read_file',
-    'workspace_read_many_files',
-    'workspace_view_file',
-  ].includes(displayToolName || log.tool || log.name) || (
+  const isEdit = log.type === 'file_edit' || displayToolName === 'workspace_edit_file';
+  const isRead = (
     log.type === 'exploration' &&
     /\b(?:read(?:ing)?|view(?:ing)?)\s+files?\b/i.test(String(log.text || ''))
   );
-  // workspace_apply_patch logs come in as file_edit with text 'Patching files'
-  const isPatch = isEdit && /patch/i.test(String(log.text || ''));
   const { openPanel } = useFilePanelActions();
   const connectorId = useMemo(() => getConnectorId(log), [log]);
   const connectorAction = useMemo(() => isConnectorTrace(log), [log]);
@@ -3438,16 +3278,12 @@ const ActionChip = ({
   const preview = useMemo(() => {
     if (log.toolResult !== undefined && log.toolResult !== null) {
       const EXCLUDED_PREVIEW_TOOLS = new Set([
-        'skill_loader', 'screenshot_capture', 'system_automation',
-        'memory_v2', 'desktop_control',
+        'skill_loader', 'screenshot_capture',
         'browser_control', 'checkpoint', 'computer', 'screen_agent'
       ]);
       const toolName = displayToolName || log.tool || log.name || '';
       if (!EXCLUDED_PREVIEW_TOOLS.has(toolName) && ![
-        'workspace_read_file', 'workspace_read_many_files', 'workspace_view_file',
-        'workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files',
-        'workspace_str_replace', 'workspace_apply_patch',
-        'system_shell', 'workspace_run_command',
+        'workspace_edit_file', 'workspace_run_command',
       ].includes(toolName)) {
         return {
           id: `inline_result_${ log.id }`,
@@ -3495,11 +3331,16 @@ const ActionChip = ({
         ].filter(value => value !== null && value !== undefined).map(String);
         return ownerIdentities.some(identity => itemIdentities.includes(identity));
       });
-      return candidates.find((item: any) => item?.type === 'file_preview' && Array.isArray(item?.diffLines) && item.diffLines.length > 0)
+      const best = candidates.find((item: any) => item?.type === 'file_preview' && Array.isArray(item?.diffLines) && item.diffLines.length > 0)
         || candidates.find((item: any) => item?.type === 'file_preview' && item?.isEdit)
         || [...candidates].reverse().find((item: any) => item?.type === 'console_output' && (item?.exitCode !== undefined || item?.isStreaming === false))
         || [...candidates].reverse().find((item: any) => item?.type === 'console_output')
         || candidates[0];
+      if (best?.type !== 'file_preview') return best;
+      return {
+        ...best,
+        relatedFilePreviews: candidates.filter((item: any) => item?.type === 'file_preview'),
+      };
     };
     const ownerPreview = findOwnerPreview(searchLogs) || findOwnerPreview(allLogs);
     if (ownerPreview) return ownerPreview;
@@ -3654,7 +3495,7 @@ const ActionChip = ({
   if (log.type === 'progress') {
     const isKey = isApiKeyTrace(String(log.text || ''));
     return (
-      <div className="eterx-worked-summary my-2.5 flex w-full items-center gap-3 pt-1">
+      <div className="eterx-worked-summary my-1 flex w-full items-center gap-3 py-1">
         <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.06]" />
         <span className="eterx-worked-summary-label flex shrink-0 items-center gap-1.5 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">
           {isKey ? (
@@ -3704,7 +3545,7 @@ const ActionChip = ({
           e.preventDefault();
           handleTogglePreview(e);
         }}
-        className={`eterx-action-chip grid min-h-[33px] w-full grid-cols-[26px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 transition-colors group ${ inCard ? 'rounded-none border-0 bg-transparent hover:bg-white/[0.026]' : preview ? `${ ACTION_CARD_CLASS } cursor-pointer hover:border-white/[0.13] hover:bg-[#181817]/80` : `${ ACTION_CARD_CLASS } cursor-default hover:bg-[#171716]/70` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
+        className={`eterx-action-chip grid w-full grid-cols-[26px_auto_minmax(0,1fr)_auto] items-center gap-2 py-1 transition-colors group ${ inCard ? 'min-h-[33px] rounded-none border-0 bg-transparent px-1.5 hover:bg-white/[0.026]' : preview ? `min-h-[38px] px-3 ${ ACTION_CARD_CLASS } cursor-pointer hover:border-white/[0.13] hover:bg-[#181817]/80` : `min-h-[38px] px-3 ${ ACTION_CARD_CLASS } cursor-default hover:bg-[#171716]/70` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
       >
         {!isThinkChip && (() => {
           // Terminal-style traces can arrive with custom text and older computer categories.
@@ -3902,11 +3743,11 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
     : [{ name: singleName || 'Agent', identity: log.subAgentChatId || log.subAgentId || log.agentId || singleName || 'Agent' }];
 
   return (
-    <>
+    <div className="flex w-full flex-col gap-2">
       {displayList.map((agent: { name: string; identity: string }, index: number) => {
         const { name, identity } = agent;
         return (
-          <div key={identity} className="my-1">
+          <div key={identity}>
             <button
               type="button"
               onClick={() => onOpenAgentTeam?.(identity)}
@@ -3921,7 +3762,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
           </div>
         );
       })}
-    </>
+    </div>
   );
 };
 
@@ -3935,7 +3776,7 @@ const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Su
 
   return (
     <div
-      className={`my-1.5 flex min-h-[46px] items-center gap-3 px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
+      className={`flex min-h-[46px] items-center gap-3 px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
     >
       <SubAgentIdentityIcon name={agentName} status="working" size={32} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="min-w-0 flex-1">
@@ -3990,7 +3831,7 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
       : 'border-white/[0.075] bg-white/[0.026] text-[#AFA79D]';
 
   return (
-    <div className="my-1.5 overflow-hidden">
+    <div className="overflow-hidden">
       <button
         type="button"
         onClick={() => preview ? setOpen(value => !value) : onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || focusAgent)}
@@ -4056,7 +3897,7 @@ const SubAgentErrorCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Sub
   const detail = normalizeToolTraceText(log.secondary || '');
   return (
     <div
-      className={`my-1.5 flex min-h-[46px] items-center gap-3 rounded-[12px] px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
+      className={`flex min-h-[46px] items-center gap-3 rounded-[12px] px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
     >
       <SubAgentIdentityIcon name={agentName} status="error" size={36} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="min-w-0 flex-1">
@@ -4069,7 +3910,7 @@ const SubAgentErrorCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Sub
 
 // Safety warning banner
 const SafetyBanner = ({ log }: { log: any }) => (
-  <div className="flex items-start gap-2.5 px-3 py-2.5 my-1 rounded-[10px] bg-red-500/[0.045] border border-red-500/15">
+  <div className="flex items-start gap-2.5 rounded-[10px] border border-red-500/15 bg-red-500/[0.045] px-3 py-2.5">
     <ShieldHalf className="w-4 h-4 text-red-300 shrink-0 mt-0.5" />
     <div>
       <span className="text-[10.5px] font-semibold text-red-300 uppercase tracking-[0.08em] block mb-0.5">Safety Warning</span>
@@ -4147,11 +3988,13 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
 };
 
 const CollapsibleActionGroup = ({
-  logs, isActiveGroup, isLast, allLogs
+  logs, isActiveGroup, isLast, allLogs, isAgentBuilder = false
 }: {
-  logs: any[], isActiveGroup: boolean, isLast: boolean, allLogs: any[]
+  logs: any[], isActiveGroup: boolean, isLast: boolean, allLogs: any[], isAgentBuilder?: boolean
 }) => {
-  const [open, setOpen] = useState(true);
+  // Live work should be inspectable immediately. Larger completed batches
+  // stay compact when a user reopens the work sequence.
+  const [open, setOpen] = useState(() => isActiveGroup || logs.length <= 3);
   const visibleLogs = logs.filter(Boolean);
   if (visibleLogs.length === 0) return null;
 
@@ -4162,6 +4005,14 @@ const CollapsibleActionGroup = ({
   const fileChangeOnly = cardLogs.length === 1 && cardLogs[0]?.type === 'file_edit';
   const useStandaloneRows = terminalOnly || fileChangeOnly;
   const connectorIds = Array.from(new Set(cardLogs.map(log => getConnectorId(log)).filter(Boolean))) as string[];
+  const explicitLiveCardIndex = cardLogs.findLastIndex(isLiveActionEvent);
+  const currentCardIndex = isActiveGroup
+    ? (explicitLiveCardIndex >= 0 ? explicitLiveCardIndex : cardLogs.length - 1)
+    : -1;
+  const explicitLiveProgressIndex = progressLogs.findLastIndex(isLiveActionEvent);
+  const currentProgressIndex = isActiveGroup && cardLogs.length === 0
+    ? (explicitLiveProgressIndex >= 0 ? explicitLiveProgressIndex : progressLogs.length - 1)
+    : -1;
 
   return (
     <div className="w-full">
@@ -4178,7 +4029,7 @@ const CollapsibleActionGroup = ({
             >
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${ open ? '' : '-rotate-90' }`} aria-hidden="true" />
               <span className="flex items-center gap-1.5">
-                <span>{isActiveGroup ? 'Live activity' : `${ cardLogs.length } action${ cardLogs.length === 1 ? '' : 's' }`}</span>
+                <span>{isActiveGroup ? (isAgentBuilder ? 'Builder activity' : 'Live activity') : `${ cardLogs.length } action${ cardLogs.length === 1 ? '' : 's' }`}</span>
               </span>
               {connectorIds.length > 0 && (
                 <span className="ml-auto flex items-center gap-1.5" aria-label={`${ connectorIds.length } connected service${ connectorIds.length === 1 ? '' : 's' }`}>
@@ -4200,7 +4051,7 @@ const CollapsibleActionGroup = ({
               >
                 <ActionChip
                   log={log}
-                  isLastChip={isLast && progressLogs.length === 0 && i === cardLogs.length - 1}
+                  isLastChip={i === currentCardIndex}
                   isActiveGroup={isActiveGroup}
                   allLogs={allLogs}
                   isNested={i > 0}
@@ -4218,7 +4069,7 @@ const CollapsibleActionGroup = ({
         >
           <ActionChip
             log={log}
-            isLastChip={isLast && i === progressLogs.length - 1}
+            isLastChip={i === currentProgressIndex}
             isActiveGroup={isActiveGroup}
             allLogs={allLogs}
             isNested={false}
@@ -4233,14 +4084,8 @@ const CollapsibleActionGroup = ({
 // Live working indicator — real-time log-state-connected
 // 3 modes: thinking (visible note last), acting (real action last), idle (between)
 
-const THINKING_PHRASES = [
-  { text: 'Working', dur: 0 },
-];
-
-const IDLE_PHRASES = [
-  { text: 'Working', dur: 0 },
-];
-
+const THINKING_PHRASES = [{ text: 'Thinking', dur: 0 }];
+const IDLE_PHRASES = [{ text: 'Working', dur: 0 }];
 const DEFAULT_LIVE_PHRASE = { text: 'Working', dur: 0 };
 
 function makeShuffledQueue<T>(arr: T[], exclude?: T): T[] {
@@ -4259,12 +4104,16 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   const getLogState = (ls: any[]): { mode: 'thinking' | 'acting' | 'idle'; label: string | null } => {
     if (ls.length === 0) return { mode: 'thinking', label: 'Working' };
     const last = ls[ls.length - 1];
+    const customLabel = [last.currentAction, last.statusText, last.label]
+      .map(value => String(value || '').trim())
+      .find(value => value && value.length <= 72);
+    if (customLabel) return { mode: 'acting', label: customLabel };
     if (last.type === 'thought_stream' || last.type === 'work_note') {
       return isLiveThoughtFresh(last)
-        ? { mode: 'thinking', label: 'Working' }
+        ? { mode: 'thinking', label: 'Thinking' }
         : { mode: 'idle', label: 'Working' };
     }
-    if (['command', 'exploration', 'file_edit', 'communication', 'browser'].includes(last.type)) {
+    if (['command', 'tool_call', 'exploration', 'file_edit', 'communication', 'browser'].includes(last.type)) {
       const meta = getToolMeta(last.text, last.type, last.icon);
       const fileName = (last.filename || '').split(/[\\/]/).pop() || '';
       const LIVE_VERBS: Record<string, string> = {
@@ -4290,7 +4139,6 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   const modeRef = useRef<'thinking' | 'acting' | 'idle'>('idle');
   const queueRef = useRef<{ text: string; dur: number }[]>([]);
   const lastLabelRef = useRef<string>('');
-  const [statusTick, setStatusTick] = useState(0);
   const logSignature = useMemo(() => {
     const last = logs[logs.length - 1];
     if (!last) return 'empty';
@@ -4347,7 +4195,7 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   const prevSignatureRef = useRef(logSignature);
   useEffect(() => {
     const signatureChanged = logSignature !== prevSignatureRef.current;
-    if (!signatureChanged && statusTick === 0) return;
+    if (!signatureChanged) return;
     prevSignatureRef.current = logSignature;
     const { mode, label: ctxLabel } = getLogState(logs);
     const prevMode = modeRef.current;
@@ -4369,36 +4217,20 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
       doTransition(next.text, next.dur);
     }
     // Same mode: let the current timer naturally advance
-  }, [logSignature, statusTick, logs]);
+  }, [logSignature, logs]);
 
-  const latestLog = logs[logs.length - 1];
-  const signatureSeenAtRef = useRef({ signature: logSignature, at: Date.now() });
-  if (signatureSeenAtRef.current.signature !== logSignature) {
-    signatureSeenAtRef.current = { signature: logSignature, at: Date.now() };
-  }
-
-  useEffect(() => {
-    const timeout = window.setTimeout(() => setStatusTick(t => t + 1), LIVE_ACTION_SETTLE_MS + 24);
-    return () => window.clearTimeout(timeout);
-  }, [logSignature]);
-
-  const hideDuringFreshThought = !!latestLog
-    && (latestLog.type === 'thought_stream' || latestLog.type === 'work_note')
-    && isLiveThoughtFresh(latestLog);
-  const isRecentAction = !!latestLog
-    && !hideDuringFreshThought
-    && logs.length > 0
-    && Date.now() - signatureSeenAtRef.current.at <= LIVE_ACTION_SETTLE_MS;
-  const shouldUseNeutralLabel = hideDuringFreshThought || isRecentAction;
-  const displayLabel = shouldUseNeutralLabel
-    ? 'Working'
-    : label;
+  const displayLabel = label || 'Working';
 
   return (
-    <div className="mt-1 mb-2 flex min-h-[32px] w-fit max-w-full items-center py-0.5">
-      <Shimmer className="min-w-0 truncate pb-[2px] text-[13.5px] font-medium leading-[1.35] tracking-normal">
+    <div className="eterx-live-working-indicator flex h-6 w-fit max-w-full items-center gap-1.5 pl-[22px]" role="status" aria-live="polite">
+      <Shimmer active className="min-w-0 truncate text-[13.5px] font-medium leading-none tracking-normal text-[var(--eterx-ui-working-text)]">
         {displayLabel}
       </Shimmer>
+      <span className="inline-flex h-[10px] shrink-0 translate-y-px items-end gap-[3px]" aria-hidden="true">
+        <span className="eterx-working-dot h-1 w-1 rounded-full bg-current text-[var(--eterx-ui-working-text)]" />
+        <span className="eterx-working-dot h-1 w-1 rounded-full bg-current text-[var(--eterx-ui-working-text)]" />
+        <span className="eterx-working-dot h-1 w-1 rounded-full bg-current text-[var(--eterx-ui-working-text)]" />
+      </span>
     </div>
   );
 };
@@ -4493,25 +4325,22 @@ const UserMessageActions = ({ text, onEdit }: { text: string; onEdit?: (text: st
 
 const SteeringCard = ({ log, onEdit }: { log: any; onEdit?: (text: string) => void }) => {
   const isProxy =
-    log._autonomyProxy === true &&
-    (log.source === 'user_proxy' || log.source === 'proxy_manager');
+    log._autonomyProxy === true ||
+    log.source === 'user_proxy' ||
+    log.source === 'proxy_manager';
   return (
     <motion.div
-      initial={{ opacity: 0, x: 20, y: 10, scale: 0.95 }}
-      animate={{ opacity: 1, x: 0, y: 0, scale: 1 }}
-      transition={{ type: 'spring', stiffness: 450, damping: 24 }}
-      className="flex justify-end w-full my-3 relative z-10 group/steer"
+      initial={{ opacity: 0, x: 12, y: 4 }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
+      transition={{ duration: 0.18, ease: 'easeOut' }}
+      className="group/steer relative z-10 my-1.5 flex w-full justify-end"
     >
-      <div className={`${ isProxy ? 'bg-[#121416] border-[#34383D]' : 'bg-[#20201F] border-white/[0.06]' } px-4 py-3 rounded-[18px] rounded-tr-[6px] ml-auto text-[13.5px] text-[#F4F2EE] shadow-[0_4px_16px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.025)] leading-[1.56] whitespace-pre-wrap relative border select-text flex flex-row items-end gap-3 max-w-[84%]`}>
+      <div className={`${ isProxy ? 'border-[#34383D] bg-[#16181A]' : 'border-white/[0.065] bg-[#20201F]' } relative ml-auto flex max-w-[84%] items-end gap-2.5 rounded-[18px] rounded-tr-[7px] border px-4 py-2.5 text-[13.5px] leading-[1.5] text-[#F4F2EE] shadow-none`}>
         <UserMessageActions text={log.text} onEdit={isProxy ? undefined : onEdit} />
-        <span className="block w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">
+        <span className="min-w-0 whitespace-pre-wrap break-words text-left [overflow-wrap:anywhere]">
           {log.text}
         </span>
-
-        {/* CornerDownLeft arrow representing steering entry */}
-        <div className="shrink-0 mb-1 select-none text-[#8F887E]">
-          <CornerDownLeft className="w-[17px] h-[17px]" strokeWidth={2.25} />
-        </div>
+        <CornerDownLeft className="mb-0.5 h-4 w-4 shrink-0 select-none text-[#8F887E]" strokeWidth={2.15} aria-hidden="true" />
       </div>
     </motion.div>
   );
@@ -4821,17 +4650,9 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes }) => {
+export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, assetIndexes }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
-  const isInternalToolDiscovery = (l: any) => {
-    const rawName = String(l?.tool || l?.name || l?.toolName || '').trim();
-    const label = String(l?.text || l?.label || '').trim();
-    return normalizeToolTraceName(rawName) === 'tool_finder' ||
-      /^(?:finding|searching)\s+tools?$/i.test(rawName) ||
-      /^(?:finding|searching)\s+tools?$/i.test(label);
-  };
-
   const isFlowLog = (l: any) => {
     const subAgentOwned = Boolean(l?.subAgentId || l?.subAgentChatId || l?.subAgent) && String(l?.agentName || '').toLowerCase() !== 'main';
     const highLevelSubAgentTypes = new Set([
@@ -4846,7 +4667,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       /\b(?:I\s+(?:will|'ll)|let me)\s+(?:spawn|create|collect|check|poll|wait for)\b.{0,100}\b(?:sub-?agent|agent(?:'s)?\s+(?:status|result|report))/i.test(String(l?.text || ''));
     return ['thought_stream', 'work_note', 'command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'steering_received', 'autonomy_proxy_status', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close', 'inter_agent_comm', 'inter_agent_message', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
     !redundantAgentNarration &&
-    !isInternalToolDiscovery(l) &&
+    shouldRenderProgressTrace(l) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
     !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')) && !isApiKeyTrace(String(l.text || ''))) &&
     !(l.type === 'work_note' && (l._connection || String(l.text || '').endsWith('is starting'))) &&
@@ -4924,6 +4745,14 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       else { flush(idx - 1); segs.push({ kind: 'note', log, idx }); }
     }
 
+    else if (log.type === 'progress') {
+      // Progress/status rows are chronological boundaries (rate limits,
+      // retries, key rotation, runtime hand-offs). Keeping them inside the
+      // surrounding action buffer moved them below every card in that group.
+      flush(idx - 1);
+      pushActionLog(log, idx);
+      flush(idx);
+    }
     else if (log.type === 'safety_warning') { flush(idx - 1); segs.push({ kind: 'safety', log, idx }); }
     else if (log.type === 'steering_received') { flush(idx - 1); segs.push({ kind: 'steering', log, idx }); }
     else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result') {
@@ -4990,7 +4819,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   });
   flush(timelineLogs.length - 1);
   return (
-    <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-2 py-0">
+    <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-3 py-0">
       {segs.map((seg, i) => {
         const nextSeg = segs[i + 1];
         const prevSeg = segs[i - 1];
@@ -5009,15 +4838,16 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
           return (
             <div
               key={`phase-${ getStreamRowIdentity(seg.log, seg.idx) }-${ groupKey }`}
-              className="eterx-phase-block w-full"
+              className="eterx-phase-block flex w-full flex-col gap-2"
             >
               <WorkNoteBlock text={seg.log.text} isActive={phaseIsActive} isProxyStatus={seg.log.type === 'autonomy_proxy_status'} />
-              <div className="mt-1">
-                <CollapsibleActionGroup
-                  logs={nextSeg.logs}
-                  isActiveGroup={phaseIsActive}
-                  isLast={isLast}
-                  allLogs={timelineLogs}
+              <div>
+                  <CollapsibleActionGroup
+                    logs={nextSeg.logs}
+                    isActiveGroup={phaseIsActive}
+                    isLast={isLast}
+                    allLogs={timelineLogs}
+                    isAgentBuilder={isAgentBuilder}
                 />
               </div>
             </div>
@@ -5049,9 +4879,9 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
 
         const firstIdx = seg.firstIdx ?? seg.lastIdx ?? i;
         const groupKey = `g-${ firstIdx }-${ getActionIdentity(seg.logs[0], firstIdx) }`;
-        return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1} isLast={isLast} allLogs={timelineLogs} />;
+        return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1} isLast={isLast} allLogs={timelineLogs} isAgentBuilder={isAgentBuilder} />;
       })}
-      {showLiveIndicator && isThinking && isLast && segs.length === 0 && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
+      {showLiveIndicator && isThinking && isLast && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
     </div>
   );
 };

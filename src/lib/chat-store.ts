@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
 import { getEterxDataDir } from './agent/storage-paths';
+import { filterUserVisibleTraces } from './agent/trace-visibility';
 
 const CHAT_STORE_DIR = path.join(getEterxDataDir(), 'chats');
 const CHAT_STORE_PATH = path.join(CHAT_STORE_DIR, 'chats.json');
@@ -62,7 +63,7 @@ function normalizePersistedChat(chat: any): any | null {
       : Array.isArray(chat.messages)
         ? chat.messages
         : [];
-  const traceLogs = sourceLogs.map((message: any, index: number) => {
+  const traceLogs = filterUserVisibleTraces(sourceLogs.map((message: any, index: number) => {
     if (message && typeof message.type === 'string') return message;
     const role = String(message?.role || message?.sender || message?.author || '').toLowerCase();
     return {
@@ -72,7 +73,7 @@ function normalizePersistedChat(chat: any): any | null {
       id: String(message?.id || `${String(chat.id)}-legacy-${index}`),
       ...(Number.isFinite(message?.timestamp) ? { timestamp: message.timestamp } : {}),
     };
-  });
+  }));
 
   return {
     ...chat,

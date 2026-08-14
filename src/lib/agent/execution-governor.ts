@@ -9,8 +9,7 @@
  * Features:
  *   - Blocks exact AND semantically-similar repeated failures
  *   - Escalating no-progress guidance (3 → 5 → 8 calls)
- *   - Time-based circuit breaker (soft + hard timeout)
- *   - Tool call budget tracking with approaching-limit warnings
+ *   - Optional time and tool-call boundaries when explicitly configured
  *   - Mutation/verification evidence tracking
  */
 
@@ -35,11 +34,11 @@ export type ExecutionGovernorSnapshot = {
 };
 
 export type ExecutionGovernorOptions = {
-  /** Max tool calls before forcing completion. Default: 120 (desktop), set lower for telegram. */
+  /** Optional max tool calls. Omitted means no fixed tool-call limit. */
   maxToolCalls?: number;
   /** Soft timeout in ms — injects urgent guidance. Default: 10 minutes. */
   softTimeoutMs?: number;
-  /** Hard timeout in ms — forces completion. Default: 20 minutes. */
+  /** Optional hard timeout in ms. Omitted means no fixed runtime cutoff. */
   hardTimeoutMs?: number;
   /** Restore run-local control state after a provider/key retry. */
   state?: ExecutionGovernorState | null;
@@ -63,34 +62,6 @@ export type ExecutionGovernorState = {
   startedAt: number;
   softTimeoutFired: boolean;
 };
-
-const MUTATION_TOOLS = new Set([
-  'workspace_write_file',
-  'workspace_edit_file',
-  'docx_generator',
-  'image_generator',
-  'video_generator',
-  'scheduled_tasks',
-]);
-
-const VERIFICATION_TOOLS = new Set([
-  'workspace_verify_code',
-  'realtime_verify',
-]);
-
-const REFRESH_SENSITIVE_TOOLS = new Set([
-  'browser_control',
-  'web_search',
-  'web_scraper',
-  'deep_research',
-  'workspace_read_file',
-  'workspace_read_many_files',
-  'workspace_search_text',
-  'workspace_semantic_search',
-  'workspace_file_outline',
-  'workspace_list_directory',
-  'workspace_find_files',
-]);
 
 function stableSerialize(value: unknown): string {
   if (value === null || value === undefined) return String(value);
@@ -140,7 +111,7 @@ function isSemanticallyDuplicateSignature(sigA: string, sigB: string): boolean {
   }
 
   // Token overlap for search/research queries
-  if (toolA.includes('search') || toolA === 'deep_research' || toolA === 'web_scraper') {
+  if (toolA.includes('search')) {
     const tokensA = new Set(argsA.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(t => t.length > 2));
     const tokensB = new Set(argsB.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(t => t.length > 2));
     if (tokensA.size === 0 || tokensB.size === 0) return false;
@@ -151,22 +122,6 @@ function isSemanticallyDuplicateSignature(sigA: string, sigB: string): boolean {
   }
 
   return false;
-}
-
-function outputSucceeded(output: any): boolean {
-  if (output === undefined || output === null) return false;
-  if (typeof output === 'string') return !/\b(error|failed|denied|not found)\b/i.test(output);
-  if (output.error || output.CRITICAL_ERROR || output.cancelled) return false;
-  if (output.success === false || output.passed === false || output.verified === false) return false;
-  if (Array.isArray(output.errors) && output.errors.length > 0) return false;
-  const exitCode = output.exitCode ?? output.code ?? output.exit_code;
-  return typeof exitCode !== 'number' || exitCode === 0;
-}
-
-function commandLooksLikeVerification(args: Record<string, any>): boolean {
-  return /\b(test|lint|build|typecheck|tsc|pytest|vitest|jest|playwright|verify|check)\b/i.test(
-    String(args?.command || args?.script || ''),
-  );
 }
 
 function outputHasArtifact(output: any): boolean {
@@ -191,16 +146,20 @@ export class ExecutionGovernor {
   private hasMutation = false;
   private hasVerification = false;
   private readonly startTime: number;
-  private readonly maxToolCalls: number;
+  private readonly maxToolCalls: number | null;
   private readonly softTimeoutMs: number;
-  private readonly hardTimeoutMs: number;
+  private readonly hardTimeoutMs: number | null;
   private softTimeoutFired = false;
   private hardTimeoutFired = false;
 
   constructor(options: ExecutionGovernorOptions = {}) {
-    this.maxToolCalls = options.maxToolCalls ?? 120;
+    this.maxToolCalls = Number.isFinite(options.maxToolCalls) && Number(options.maxToolCalls) > 0
+      ? Math.floor(Number(options.maxToolCalls))
+      : null;
     this.softTimeoutMs = options.softTimeoutMs ?? 10 * 60 * 1000; // 10 min
-    this.hardTimeoutMs = options.hardTimeoutMs ?? 20 * 60 * 1000; // 20 min
+    this.hardTimeoutMs = Number.isFinite(options.hardTimeoutMs) && Number(options.hardTimeoutMs) > 0
+      ? Math.floor(Number(options.hardTimeoutMs))
+      : null;
     this.startTime = options.state?.startedAt || Date.now();
     if (options.state) {
       this.attempts.push(...options.state.attempts.map(attempt => ({ ...attempt })));
@@ -218,7 +177,7 @@ export class ExecutionGovernor {
 
     // Hard timeout — force completion regardless of tool type
     const elapsed = Date.now() - this.startTime;
-    if (elapsed >= this.hardTimeoutMs) {
+    if (this.hardTimeoutMs !== null && elapsed >= this.hardTimeoutMs) {
       return {
         allowed: false,
         reason: `Hard timeout reached (${Math.round(elapsed / 60_000)} min). The execution must complete now.`,
@@ -227,7 +186,7 @@ export class ExecutionGovernor {
     }
 
     // Budget exhausted
-    if (this.attempts.length >= this.maxToolCalls) {
+    if (this.maxToolCalls !== null && this.attempts.length >= this.maxToolCalls) {
       return {
         allowed: false,
         reason: `Tool call budget exhausted (${this.attempts.length}/${this.maxToolCalls}). Complete the task with what you have.`,
@@ -328,8 +287,8 @@ export class ExecutionGovernor {
     }
 
     // Budget approaching warning (at 80%)
-    const budgetUsed = this.attempts.length / this.maxToolCalls;
-    if (budgetUsed >= 0.8 && budgetUsed < 1.0) {
+    const budgetUsed = this.maxToolCalls === null ? 0 : this.attempts.length / this.maxToolCalls;
+    if (this.maxToolCalls !== null && budgetUsed >= 0.8 && budgetUsed < 1.0) {
       notices.push(`Tool call budget: ${this.attempts.length}/${this.maxToolCalls} used (${Math.round(budgetUsed * 100)}%). Prioritize completing the most important remaining work.`);
     }
 
@@ -348,7 +307,7 @@ export class ExecutionGovernor {
       hasVerification: this.hasVerification,
       mutationEpoch: this.mutationEpoch,
       elapsedMs: Date.now() - this.startTime,
-      budgetRemaining: this.maxToolCalls - this.attempts.length,
+      budgetRemaining: this.maxToolCalls === null ? null : this.maxToolCalls - this.attempts.length,
     };
   }
 
@@ -367,12 +326,12 @@ export class ExecutionGovernor {
 
   /** Whether the hard timeout has been reached. */
   public isTimedOut(): boolean {
-    return (Date.now() - this.startTime) >= this.hardTimeoutMs;
+    return this.hardTimeoutMs !== null && (Date.now() - this.startTime) >= this.hardTimeoutMs;
   }
 
   /** Whether the tool call budget is exhausted. */
   public isBudgetExhausted(): boolean {
-    return this.attempts.length >= this.maxToolCalls;
+    return this.maxToolCalls !== null && this.attempts.length >= this.maxToolCalls;
   }
 
   private signature(toolName: string, args: Record<string, any>): string {

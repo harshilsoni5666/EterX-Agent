@@ -68,42 +68,25 @@ interface CacheEntry {
 
 const TOOL_TTL: Record<string, number> = {
   web_search: 30 * 60 * 1000,      // 30 min
-  web_scraper: 60 * 60 * 1000,     // 1 hour
-  workspace_read_file: 5 * 60 * 1000, // 5 min
-  workspace_list_directory: 5 * 60 * 1000,
-  workspace_search_text: 5 * 60 * 1000,
-  pdf_parser: 60 * 60 * 1000,
-  youtube_transcript: 60 * 60 * 1000,
-  rss_feed_reader: 15 * 60 * 1000,   // 15 min
-  calculator: 24 * 60 * 60 * 1000,   // 24 hours (math doesn't change)
-  realtime_verify: 2 * 60 * 1000,    // 2 min
 };
 
 // Tools that should NEVER be cached (have side effects or need fresh results)
 const UNCACHEABLE_TOOLS = new Set([
-  'workspace_apply_patch', 'workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_str_replace', 'workspace_run_command',
-  'workspace_run_command', 'workspace_verify_code', 'git_operations',
-  'docx_generator', 'task_decomposer', 'spawn_sub_agent', 'background_task',
+  'workspace_edit_file', 'workspace_run_command', 'git_operations',
+  'task_decomposer', 'spawn_sub_agent',
   'scheduled_tasks',
   'screenshot_capture',
   'desktop_notification', 'email_sender', 'tts_engine',
-  'process_manager',
-  'code_generator', 'compression_tool',
   'ask_user',            // MUST always actually ask the user
   'task_checkpoint',     // MUST always read/write real checkpoint state
   'get_skill_guidelines', // Skills should load fresh content each time
 ]);
 
 const INVALIDATES_SCOPED_CACHE_TOOLS = new Set([
-  'workspace_apply_patch', 'workspace_write_file', 'workspace_edit_file', 'workspace_edit_many_files', 'workspace_str_replace', 'workspace_run_command',
-  'workspace_run_command', 'workspace_verify_code', 'git_operations',
-  'process_manager',
+  'workspace_edit_file', 'workspace_run_command', 'git_operations',
 ]);
 
-const WORKSPACE_DERIVED_CACHE_TOOLS = new Set([
-  'workspace_read_file', 'workspace_list_directory', 'workspace_search_text',
-  'realtime_verify',
-]);
+const WORKSPACE_DERIVED_CACHE_TOOLS = new Set<string>();
 
 export class IntelligentCache {
   private memoryCache: Map<string, CacheEntry> = new Map();
@@ -319,27 +302,27 @@ export class SmartQueryRouter {
 
     if (hasMath && !hasCode && !hasResearch && wordCount < 20) {
       strategy = 'single_tool';
-      suggestedTools = ['calculator'];
+      suggestedTools = ['workspace_run_command'];
       complexity = 'simple';
       estimatedSteps = 1;
     } else if (hasCode && hasResearch) {
       strategy = 'multi_tool_sequential';
-      suggestedTools = ['web_search', 'workspace_apply_patch', 'workspace_verify_code'];
+      suggestedTools = ['web_search', 'workspace_run_command', 'workspace_edit_file'];
       complexity = 'complex';
       estimatedSteps = 5;
     } else if (hasCode) {
       strategy = 'code_heavy';
-      suggestedTools = ['workspace_apply_patch', 'workspace_verify_code', 'workspace_run_command'];
+      suggestedTools = ['workspace_run_command', 'workspace_edit_file'];
       complexity = wordCount > 30 ? 'complex' : 'moderate';
       estimatedSteps = wordCount > 30 ? 8 : 4;
     } else if (hasResearch) {
       strategy = 'research_heavy';
-      suggestedTools = ['web_search', 'web_scraper'];
+      suggestedTools = ['web_search'];
       complexity = 'moderate';
       estimatedSteps = 3;
     } else if (hasDoc) {
       strategy = 'document_heavy';
-      suggestedTools = ['workspace_apply_patch', 'docx_generator'];
+      suggestedTools = ['workspace_run_command'];
       complexity = 'moderate';
       estimatedSteps = 5;
     } else if (hasCreative) {
@@ -559,54 +542,21 @@ export class KnowledgeEngine {
       }
     }
 
-    // Extract from web scraper — store URL + content summary
-    if (toolName === 'web_scraper' && result && !result.error) {
-      const url = args?.url || '';
-      if (url) {
-        let contentSummary = '';
-        if (typeof result === 'string') {
-          contentSummary = result.substring(0, 300);
-        } else if (result.content || result.text || result.output) {
-          contentSummary = String(result.content || result.text || result.output).substring(0, 300);
-        }
-
-        if (contentSummary) {
-          await this.addEntry('fact',
-            `Scraped ${url}: ${contentSummary}`,
-            'web_scraper',
-            [url.replace(/https?:\/\//, '').split('/')[0], ...url.split('/').slice(3, 5)].filter(Boolean),
-            0.7
-          );
-        }
-      }
-    }
-
-    // Extract from file writes — remember what files were created and why
-    if (toolName === 'workspace_write_file' && result && !result.error) {
-      const filename = args?.filename || args?.path || '';
-      if (filename) {
-        const contentPreview = typeof args?.content === 'string'
-          ? args.content.substring(0, 100).replace(/\n/g, ' ')
-          : '';
+    // Extract compact file-operation facts without duplicating file content.
+    if (toolName === 'workspace_edit_file' && result && !result.error) {
+      const filenames = [
+        ...(Array.isArray(result?.filesCreated) ? result.filesCreated : []),
+        ...(Array.isArray(result?.filesModified) ? result.filesModified : []),
+        ...(Array.isArray(result?.filesDeleted) ? result.filesDeleted : []),
+      ];
+      for (const filename of filenames.slice(0, 20)) {
         await this.addEntry('fact',
-          `Created file: ${filename}${contentPreview ? ` — ${contentPreview}...` : ''}`,
-          'workspace_write_file',
-          [filename.split('/').pop() || filename, ...filename.split('/').filter(Boolean).slice(0, 2)],
+          `${String(result.operation || 'updated')} file: ${filename}`,
+          'workspace_edit_file',
+          [String(filename).split(/[\\/]/).pop() || String(filename)],
           0.65
         );
       }
-    }
-
-    // Extract from docx generator — remember document titles
-    if (toolName === 'docx_generator' && result && !result.error) {
-      const title = args?.title || args?.filename || 'Untitled';
-      const outputPath = result?.path || result?.output || '';
-      await this.addEntry('fact',
-        `Generated document: "${title}"${outputPath ? ` → ${outputPath}` : ''}`,
-        'docx_generator',
-        ['document', title.split(' ').slice(0, 3).join(' ')],
-        0.7
-      );
     }
 
     // Extract error patterns from failed tools
@@ -631,7 +581,7 @@ export class KnowledgeEngine {
  * 
  * STRATEGIES:
  * 1. Retry with modified args (fix common mistakes)
- * 2. Use alternative tool (e.g., web_scraper instead of web_search)
+ * 2. Retry the same unified tool with a narrower or more suitable action
  * 3. Break into smaller sub-tasks
  * 4. Ask the agent to reason about the failure
  */
@@ -663,12 +613,10 @@ export class MultiStrategyRecovery {
     },
     {
       name: 'alternative_search',
-      condition: (tool, error) =>
-        (tool === 'web_search' && (error.includes('no results') || error.includes('failed'))) ||
-        (tool === 'web_scraper' && error.includes('failed')),
+      condition: (tool, error) => tool === 'web_search' && (error.includes('no results') || error.includes('failed')),
       recover: (tool, args) => {
         if (tool === 'web_search') {
-          return { newTool: 'web_scraper', newArgs: { url: `https://www.google.com/search?q=${encodeURIComponent(args?.query || '')}` } };
+          return { newTool: 'web_search', newArgs: { ...args, action: 'search', searchDepth: 'advanced', numResults: Math.max(8, Number(args?.numResults) || 0) } };
         }
         return null;
       }

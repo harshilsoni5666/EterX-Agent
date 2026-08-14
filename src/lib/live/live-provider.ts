@@ -89,9 +89,14 @@ export const LIVE_PROVIDER_MODELS: Record<string, LiveModelOption[]> = {
     { value: 'gemini-3.1-flash-live-preview', label: 'Gemini 3.1 Flash Live Preview', tag: 'LIVE', description: 'Native realtime audio and multimodal model' },
   ],
   'openai-realtime': [
-    { value: 'auto', label: 'Auto (GPT Realtime)', tag: 'AUTO', description: 'Uses the current OpenAI realtime model' },
-    { value: 'gpt-realtime-2.1', label: 'GPT Realtime 2.1', tag: 'REALTIME', description: 'OpenAI realtime audio model over WebRTC' },
+    { value: 'auto', label: 'Auto (GPT Realtime 2.1)', tag: 'AUTO', description: 'Uses the current OpenAI realtime model' },
+    { value: 'gpt-realtime-2.1', label: 'GPT Realtime 2.1', tag: 'REALTIME', description: 'OpenAI reasoning realtime audio model over WebRTC' },
+    { value: 'gpt-realtime-2.1-mini', label: 'GPT Realtime 2.1 Mini', tag: 'REALTIME', description: 'OpenAI lower-cost reasoning realtime audio model over WebRTC' },
+    { value: 'gpt-realtime-2', label: 'GPT Realtime 2', tag: 'REALTIME', description: 'OpenAI reasoning realtime audio model over WebRTC' },
+    { value: 'gpt-realtime-translate', label: 'GPT Realtime Translate', tag: 'TRANSLATE', description: 'OpenAI realtime speech-to-speech translation model over WebRTC' },
     { value: 'gpt-realtime', label: 'GPT Realtime', tag: 'REALTIME', description: 'OpenAI realtime audio model over WebRTC' },
+    { value: 'gpt-realtime-mini', label: 'GPT Realtime Mini', tag: 'REALTIME', description: 'OpenAI cost-efficient realtime audio model over WebRTC' },
+    { value: 'gpt-realtime-1.5', label: 'GPT Realtime 1.5', tag: 'REALTIME', description: 'OpenAI realtime audio model over WebRTC' },
   ],
   'grok-realtime': [
     { value: 'auto', label: 'Auto (Grok Voice Latest)', tag: 'AUTO', description: 'Uses xAI’s recommended realtime voice model' },
@@ -102,6 +107,9 @@ export const LIVE_PROVIDER_MODELS: Record<string, LiveModelOption[]> = {
   'deepgram-voice-agent': [
     { value: 'auto', label: 'Auto (Flux General English)', tag: 'AUTO', description: 'Uses Deepgram Flux for conversational listening' },
     { value: 'flux-general-en', label: 'Flux General English', tag: 'LISTEN', description: 'Deepgram Flux conversational turn detection and transcription' },
+    { value: 'flux-general-multi', label: 'Flux General Multilingual', tag: 'LISTEN', description: 'Deepgram Flux multilingual conversational turn detection and transcription' },
+    { value: 'nova-3', label: 'Nova-3', tag: 'LISTEN', description: 'Deepgram Nova-3 speech recognition' },
+    { value: 'nova-2', label: 'Nova-2', tag: 'LISTEN', description: 'Deepgram Nova-2 speech recognition' },
   ],
   'elevenlabs-convai': [
     { value: 'auto', label: 'Auto (Agent Configuration)', tag: 'AUTO', description: 'Uses the selected ElevenLabs agent configuration' },
@@ -112,6 +120,55 @@ export const LIVE_PROVIDER_MODELS: Record<string, LiveModelOption[]> = {
 export const DEFAULT_GEMINI_LIVE_MODEL = 'gemini-3.1-flash-live-preview';
 export const DEFAULT_OPENAI_LIVE_MODEL = 'gpt-realtime-2.1';
 export const DEFAULT_XAI_LIVE_MODEL = 'grok-voice-latest';
+export const DEFAULT_DEEPGRAM_LISTEN_MODEL = 'flux-general-en';
+export const DEFAULT_DEEPGRAM_SPEAK_MODEL = 'aura-2-thalia-en';
+export const DEFAULT_DEEPGRAM_THINK_MODEL = 'gpt-5-mini';
+export const DEEPGRAM_MAX_RECONNECT_ATTEMPTS = 3;
+
+export const isDeepgramLiveModel = (value: unknown): value is string =>
+  /^(?:flux-general-(?:en|multi)|nova-(?:3|2))$/.test(String(value ?? '').trim());
+
+export const isDeepgramLiveVoice = (value: unknown): value is string =>
+  /^(?:aura(?:-2)?|flux)-[a-z0-9]+-[a-z]{2,3}$/.test(String(value ?? '').trim());
+
+export const getDeepgramReconnectDelay = (attempt: number): number =>
+  Math.min(8000, 500 * 2 ** Math.max(0, Math.floor(attempt) - 1));
+
+export const readDeepgramGrantCredential = (payload: unknown): { token: string; expiresIn: number } => {
+  const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+  const token = String(record.access_token ?? '').trim();
+  const expiresIn = Number(record.expires_in);
+  if (!token) throw new Error('Deepgram grant response did not include access_token.');
+  if (!Number.isFinite(expiresIn) || expiresIn <= 0 || expiresIn > 3600) {
+    throw new Error('Deepgram grant response included an invalid expires_in.');
+  }
+  return { token, expiresIn };
+};
+
+export const getDefaultLiveVoice = (providerValue: unknown): string => {
+  const provider = getLiveProvider(providerValue).provider;
+  if (provider === 'gemini') return 'Kore';
+  if (provider === 'openai') return 'marin';
+  if (provider === 'grok') return 'eve';
+  if (provider === 'deepgram') return 'aura-2-thalia-en';
+  return 'agent-default';
+};
+
+export type LiveRealtimeCredential = {
+  token: string;
+  expiresAt?: number;
+};
+
+export const readLiveRealtimeCredential = (payload: any): LiveRealtimeCredential => {
+  // OpenAI returns { client_secret: { value, expires_at } }; xAI returns the
+  // same short-lived credential as a top-level value. Keep this normalization
+  // at the provider boundary so browser transports consume one stable shape.
+  const clientSecret = payload?.client_secret || payload?.clientSecret || payload || {};
+  return {
+    token: String(clientSecret?.value || clientSecret?.token || '').trim(),
+    expiresAt: Number(clientSecret?.expires_at || clientSecret?.expiresAt || payload?.expires_at) || undefined,
+  };
+};
 
 export const getLiveProvider = (value: unknown): LiveProviderOption => {
   const normalized = String(value || '').trim().toLowerCase();
@@ -141,7 +198,9 @@ export const isLiveModelForProvider = (providerValue: unknown, modelValue: unkno
   const model = String(modelValue || '').trim();
   if (model === 'auto') return true;
   const provider = getLiveProvider(providerValue);
+  if (provider.provider === 'deepgram') return isDeepgramLiveModel(model);
   if (provider.provider === 'gemini') return isGeminiLiveModel(model);
+  if (provider.provider === 'openai') return isOpenAIRealtimeModel(model);
   return getLiveModelOptions(provider.value).some(option => option.value === model);
 };
 
@@ -155,4 +214,13 @@ export const isGeminiLiveModel = (value: unknown): boolean => {
   const model = String(value || '').trim().toLowerCase();
   if (!model || model.includes('translate') || model.includes('robotics')) return false;
   return model.includes('native-audio') || model.includes('flash-live') || model.includes('live-preview');
+};
+
+/** OpenAI exposes realtime snapshots through /v1/models in addition to the
+ * stable aliases. Keep the selector/provider boundary open for those exact
+ * provider IDs instead of silently resetting a discovered selection to auto. */
+export const isOpenAIRealtimeModel = (value: unknown): boolean => {
+  const model = String(value || '').trim().toLowerCase();
+  if (model === 'gpt-realtime-whisper') return false;
+  return /^gpt-(?:realtime(?:[-.][a-z0-9.-]+)?|4o-realtime(?:[-.][a-z0-9.-]+)?)$/.test(model);
 };

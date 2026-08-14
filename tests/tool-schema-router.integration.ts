@@ -18,7 +18,7 @@ function fakeTool(name: string): ToolDefinition {
   } as ToolDefinition;
 }
 
-function testSpawnToolIsAlwaysDirect(): void {
+function testFullSurfacePreservesEveryRealTool(): void {
   const eligibleTools = [
     'workspace_read_file',
     'workspace_write_file',
@@ -31,9 +31,16 @@ function testSpawnToolIsAlwaysDirect(): void {
     'scheduled_tasks',
   ].map(fakeTool);
 
-  const routed = routeToolSchemas(eligibleTools, 'Please explain the project architecture.');
+  const routed = routeToolSchemas(eligibleTools, 'Please explain the project architecture.', {
+    preserveFullSurface: true,
+  });
   assert.ok(routed.tools.some(tool => tool.name === 'spawn_sub_agent'));
   assert.equal(routed.deferredToolNames.includes('spawn_sub_agent'), false);
+  assert.deepEqual(
+    routed.tools.map(tool => tool.name),
+    eligibleTools.map(tool => tool.name),
+    'production full-surface mode must not infer capability from request wording',
+  );
 }
 
 function testSettingsRelayIsFreshAndBounded(): void {
@@ -62,6 +69,6 @@ function testSettingsRelayIsFreshAndBounded(): void {
   });
 }
 
-testSpawnToolIsAlwaysDirect();
+testFullSurfacePreservesEveryRealTool();
 testSettingsRelayIsFreshAndBounded();
 console.log('tool schema router integration tests passed');

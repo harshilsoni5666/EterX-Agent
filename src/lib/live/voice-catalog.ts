@@ -42,13 +42,13 @@ export const GEMINI_LIVE_VOICE_OPTIONS: LiveVoiceOption[] = [
 
 export const OPENAI_REALTIME_VOICE_OPTIONS: LiveVoiceOption[] = [
   { value: 'auto', label: 'Auto (OpenAI Default)', tag: 'AUTO' },
+  { value: 'marin', label: 'Marin', description: 'OpenAI recommended realtime voice' },
+  { value: 'cedar', label: 'Cedar', description: 'OpenAI recommended realtime voice' },
   { value: 'alloy', label: 'Alloy' },
   { value: 'ash', label: 'Ash' },
   { value: 'ballad', label: 'Ballad' },
-  { value: 'cedar', label: 'Cedar' },
   { value: 'coral', label: 'Coral' },
   { value: 'echo', label: 'Echo' },
-  { value: 'marin', label: 'Marin' },
   { value: 'sage', label: 'Sage' },
   { value: 'shimmer', label: 'Shimmer' },
   { value: 'verse', label: 'Verse' },
@@ -71,6 +71,15 @@ export const DEEPGRAM_VOICE_AGENT_VOICE_OPTIONS: LiveVoiceOption[] = [
   { value: 'aura-2-orion-en', label: 'Orion (Aura-2)' },
   { value: 'aura-2-stella-en', label: 'Stella (Aura-2)' },
   { value: 'aura-2-thalia-en', label: 'Thalia (Aura-2)' },
+  { value: 'aura-2-andromeda-en', label: 'Andromeda (Aura-2)' },
+  { value: 'aura-2-helena-en', label: 'Helena (Aura-2)' },
+  { value: 'aura-2-apollo-en', label: 'Apollo (Aura-2)' },
+  { value: 'aura-2-arcas-en', label: 'Arcas (Aura-2)' },
+  { value: 'aura-2-aries-en', label: 'Aries (Aura-2)' },
+  { value: 'flux-alexis-en', label: 'Alexis (Flux TTS)' },
+  { value: 'flux-haley-en', label: 'Haley (Flux TTS)' },
+  { value: 'flux-hannah-en', label: 'Hannah (Flux TTS)' },
+  { value: 'flux-kit-en', label: 'Kit (Flux TTS)' },
 ];
 
 export const ELEVENLABS_CONVAI_VOICE_OPTIONS: LiveVoiceOption[] = [

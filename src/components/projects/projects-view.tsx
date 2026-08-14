@@ -153,7 +153,7 @@ const readThinkingCapabilityRecord = (): Record<string, ModelThinkingCapabilitie
 
 const readStoredModelSettings = (): StoredModelSettings => {
   const apiKeys = readStringRecord(MODEL_API_KEY_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
-  const modelOverrides = readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
+  const storedModelOverrides = readStringRecord(MODEL_OVERRIDE_STORAGE_KEY) as Partial<Record<MainAgentProvider, string>>;
   const modelCatalog = readStringArrayRecord(MODEL_CATALOG_STORAGE_KEY) as Partial<Record<MainAgentProvider, string[]>>;
   const savedEntries = typeof window !== 'undefined'
     ? (() => {
@@ -164,22 +164,30 @@ const readStoredModelSettings = (): StoredModelSettings => {
       }
     })()
     : [];
-  const overrideEntries = Object.entries(modelOverrides)
-    .map(([provider, modelId]) => ({ provider: provider as MainAgentProvider, modelId: String(modelId || '').trim() }))
-    .filter(entry => entry.modelId);
   const storedChatModelSelection = typeof window !== 'undefined'
     ? (appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION)
     : AUTO_MODEL_SELECTION;
   const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
-  let modelEntries = normalizeModelSelectorEntries([...normalizeModelSelectorEntries(savedEntries, modelCatalog), ...overrideEntries], modelCatalog);
-  if (parsedStoredChatModel && !modelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)) {
-    modelEntries = normalizeModelSelectorEntries([...modelEntries, parsedStoredChatModel], modelCatalog);
-  }
+  const modelEntries = normalizeModelSelectorEntries(savedEntries, modelCatalog);
+  const modelOverrides = Object.fromEntries(
+    Object.entries(storedModelOverrides).filter(([provider, modelId]) =>
+      modelEntries.some(entry => entry.provider === provider && entry.modelId === modelId)
+    ),
+  ) as Partial<Record<MainAgentProvider, string>>;
   const modelApiKeys = readStringRecord(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
   const thinkingCapabilities = readThinkingCapabilityRecord();
-  const chatModelSelection = storedChatModelSelection === AUTO_MODEL_SELECTION || parsedStoredChatModel
+  const usableEntries = modelEntries.filter(entry =>
+    isLocalModelProvider(entry.provider)
+    || Boolean(apiKeys[entry.provider])
+    || Boolean(modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
+  );
+  const chatModelSelection = parsedStoredChatModel && usableEntries.some(entry =>
+    modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection
+  )
     ? storedChatModelSelection
-    : AUTO_MODEL_SELECTION;
+    : usableEntries[0]
+      ? modelEntryKey(usableEntries[0].provider, usableEntries[0].modelId)
+      : AUTO_MODEL_SELECTION;
 
   return {
     apiKeys,
@@ -692,18 +700,22 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   }, [storedModelSettings.apiKeys, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
 
   const selectedModel = useMemo(() => {
-    return modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection) || null;
+    return modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection)
+      || modelOptions[0]
+      || null;
   }, [modelOptions, storedModelSettings.chatModelSelection]);
 
   useEffect(() => {
-    if (selectedModel || modelOptions.length !== 1) return;
-    const option = modelOptions[0];
+    if (!selectedModel || selectedModel.optionKey === storedModelSettings.chatModelSelection) return;
+    const option = selectedModel;
     const nextOverrides = {
       ...storedModelSettings.modelOverrides,
       [option.provider]: option.modelId || '',
     };
-    appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
-    appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
+    appStorage.setItems({
+      [CHAT_MODEL_SELECTION_STORAGE_KEY]: option.optionKey,
+      [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(nextOverrides),
+    });
     setStoredModelSettings(previous => ({
       ...previous,
       modelOverrides: nextOverrides,
@@ -734,7 +746,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   // Mirror only an explicit, usable chat selection. Never manufacture a
   // provider/model default for scheduled tasks.
   useEffect(() => {
-    setFormModel(selectedModel?.optionKey || (modelOptions.length === 1 ? modelOptions[0].optionKey : AUTO_MODEL_SELECTION));
+    setFormModel(selectedModel?.optionKey || AUTO_MODEL_SELECTION);
   }, [modelOptions, selectedModel]);
 
   const allModelOptions = modelOptions;
@@ -762,31 +774,21 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   const selectChatModelOption = useCallback((option: ChatModelOption) => {
     if (typeof window !== 'undefined') {
-      if (option.isAuto) {
-        appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
-        appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify({}));
-        setStoredModelSettings(prev => ({
-          ...prev,
-          modelOverrides: {},
-          chatModelSelection: AUTO_MODEL_SELECTION,
-        }));
-        emitModelSettingsUpdate({ chatModelSelection: AUTO_MODEL_SELECTION, modelOverrides: {} });
-        syncRuntimeModelOverrides({});
-      } else {
-        appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, option.optionKey);
-        const nextOverrides = {
-          ...storedModelSettings.modelOverrides,
-          [option.provider]: option.modelId || '',
-        };
-        appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(nextOverrides));
-        setStoredModelSettings(prev => ({
-          ...prev,
-          modelOverrides: nextOverrides,
-          chatModelSelection: option.optionKey,
-        }));
-        emitModelSettingsUpdate({ chatModelSelection: option.optionKey, modelOverrides: nextOverrides });
-        syncRuntimeModelOverrides(nextOverrides);
-      }
+      const nextOverrides = {
+        ...storedModelSettings.modelOverrides,
+        [option.provider]: option.modelId || '',
+      };
+      appStorage.setItems({
+        [CHAT_MODEL_SELECTION_STORAGE_KEY]: option.optionKey,
+        [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(nextOverrides),
+      });
+      setStoredModelSettings(prev => ({
+        ...prev,
+        modelOverrides: nextOverrides,
+        chatModelSelection: option.optionKey,
+      }));
+      emitModelSettingsUpdate({ chatModelSelection: option.optionKey, modelOverrides: nextOverrides });
+      syncRuntimeModelOverrides(nextOverrides);
       setShowModelMenu(false);
     }
   }, [storedModelSettings.modelOverrides]);

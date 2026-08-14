@@ -17,6 +17,7 @@ import { normalizeAttachmentMime } from './attachment-pipeline';
 import { normalizeStreamTimestamp } from '../streaming-lifecycle';
 import { getEterxWorkspaceDir } from './storage-paths';
 import { delegationTelemetryFromTrace } from './delegation-evidence';
+import { filterUserVisibleTraces } from './trace-visibility';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -1108,11 +1109,11 @@ class AgentRegistry {
       }
       start = low;
     }
-    const newTraces = execution.traceBuffer.slice(start).map(trace => ({
+    const newTraces = filterUserVisibleTraces(execution.traceBuffer.slice(start).map(trace => ({
       ...trace.data,
       timestamp: normalizeStreamTimestamp(trace.data?.timestamp, trace.timestamp),
       _traceIdx: trace.index,
-    }));
+    })));
 
     // maxIndex = the highest monotonic index we've ever issued for this chat
     const maxIndex = execution.traceBuffer.length > 0
@@ -1696,7 +1697,6 @@ class AgentRegistry {
     const groups = new Map<string, string[]>();
     const relevant: Array<{ name: string; category: string; capability: string; recentlyUsed: boolean }> = [];
     for (const tool of globalToolRegistry.getAllTools()) {
-      if (tool.name === 'experience_signal') continue;
       const category = String(tool.category || 'support');
       const items = groups.get(category) || [];
       items.push(tool.name);

@@ -92,23 +92,12 @@ const FABRICATED_SPECIFIC_PATTERNS: RegExp[] = [
 
 /** Tools that execute commands and have exit codes */
 const COMMAND_TOOLS = new Set([
-  'system_shell',
   'workspace_run_command',
-  'run_command',
-  'terminal_exec',
-  'execute_command',
 ]);
 
 /** Tools that write or create files */
 const FILE_WRITE_TOOLS = new Set([
-  'workspace_write_file',
-  'workspace_str_replace',
-  'workspace_apply_patch',
   'workspace_edit_file',
-  'workspace_edit_many_files',
-  'write_file',
-  'create_file',
-  'edit_file',
 ]);
 
 // ─── Utility helpers ──────────────────────────────────────────────────────────

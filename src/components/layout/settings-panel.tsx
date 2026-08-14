@@ -343,7 +343,7 @@ export interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
-  theme: 'light',
+  theme: 'dark',
   userName: 'Developer',
   customInstructions: '',
   fontSize: 'default',
@@ -371,7 +371,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   synapseGraphEnabled: false,
   groundingSearch: true,
   streamResponses: true,
-  maxRetries: 2,
+  maxRetries: 0,
   defaultPermissions: true,
   autoReview: true,
   fullAccess: false,
@@ -417,6 +417,13 @@ const CONTEXT_WINDOW_SIZE_OPTIONS = [
   { value: 'model_max', label: 'Model maximum', description: 'Use the full supported model window' },
 ];
 
+const API_RETRY_OPTIONS = [
+  { value: '0', label: 'None', description: 'Send each provider request once.' },
+  { value: '1', label: '1 retry', description: 'Retry one time after a failed request.' },
+  { value: '2', label: '2 retries', description: 'Retry up to two times before failing.' },
+  { value: '3', label: '3 retries', description: 'Retry up to three times before failing.' },
+];
+
 const compactTokenLabel = (tokens: number) => {
   if (!Number.isFinite(tokens) || tokens <= 0) return 'Not measured yet';
   if (tokens < 1_000) return Math.round(tokens).toLocaleString();
@@ -436,6 +443,10 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
   // was explicitly selected; old/invalid preference values must not leave the
   // segmented control with no selected option.
   next.followUpBehavior = stored.followUpBehavior === 'queue' ? 'queue' : 'steer';
+  const configuredRetries = Number(stored.maxRetries);
+  next.maxRetries = Number.isFinite(configuredRetries)
+    ? Math.max(0, Math.min(3, Math.floor(configuredRetries)))
+    : DEFAULT_SETTINGS.maxRetries;
   next.selfImprovementEnabled = stored.selfImprovementEnabled !== false;
   next.showTokenCount = stored.showTokenCount !== false;
   return next;
@@ -551,6 +562,7 @@ type DesktopUpdateState = {
   releasePage?: string;
   releaseName?: string | null;
   releaseDate?: string | null;
+  updateAvailableUnread?: boolean;
 };
 
 const formatUpdateBytes = (value?: number) => {
@@ -1006,9 +1018,34 @@ type TokenChatSummary = {
   title: string;
   updatedAt: number;
   totalTokens: number;
+  promptTokens: number;
+  cachedTokens: number;
+  uncachedPromptTokens: number;
+  outputTokens: number;
   recentRunUsage: number;
   model: string;
-  actions: Array<{ id: string; label: string; kind: string; tokens: number; timestamp: number }>;
+  actions: Array<{
+    id: string;
+    label: string;
+    kind: string;
+    tokens: number;
+    promptTokens: number;
+    cachedTokens: number;
+    uncachedPromptTokens: number;
+    outputTokens: number;
+    model: string;
+    timestamp: number;
+  }>;
+};
+
+type StoredTokenMetrics = {
+  processedTokens: number;
+  promptTokens: number;
+  cachedTokens: number;
+  uncachedPromptTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  toolUsePromptTokens: number;
 };
 
 const EMPTY_TOKEN_STATS: TokenStats = {
@@ -1020,23 +1057,44 @@ const EMPTY_TOKEN_STATS: TokenStats = {
   daily: {},
 };
 
-const tokenCountForStoredLog = (log: any): number => {
-  if (!log || log.type !== 'model_usage') return 0;
+const EMPTY_STORED_TOKEN_METRICS: StoredTokenMetrics = {
+  processedTokens: 0,
+  promptTokens: 0,
+  cachedTokens: 0,
+  uncachedPromptTokens: 0,
+  outputTokens: 0,
+  reasoningTokens: 0,
+  toolUsePromptTokens: 0,
+};
+
+const tokenMetricsForStoredLog = (log: any): StoredTokenMetrics => {
+  if (!log || log.type !== 'model_usage') return EMPTY_STORED_TOKEN_METRICS;
   const usage = log.usageMetadata || log.usage || log;
-  const metric = (...values: unknown[]) => {
+  const optionalMetric = (...values: unknown[]): number | undefined => {
     for (const value of values) {
+      if (value === undefined || value === null || value === '') continue;
       const parsed = Number(value);
       if (Number.isFinite(parsed) && parsed >= 0) return parsed;
     }
-    return 0;
+    return undefined;
   };
-  const prompt = metric(
+  const metric = (...values: unknown[]) => optionalMetric(...values) ?? 0;
+  const promptTokens = metric(
     log.promptTokens, log.prompt_tokens, log.inputTokens, log.input_tokens,
+    log.totalInputTokens, log.total_input_tokens,
     usage.promptTokens, usage.prompt_tokens, usage.inputTokens, usage.input_tokens,
+    usage.promptTokenCount, usage.prompt_token_count, usage.inputTokenCount,
+    usage.totalInputTokens, usage.total_input_tokens,
   );
-  const completion = metric(
-    log.completionTokens, log.completion_tokens, log.outputTokens, log.output_tokens,
-    usage.completionTokens, usage.completion_tokens, usage.outputTokens, usage.output_tokens,
+  const completionTokens = metric(
+    log.completionTokens, log.completion_tokens,
+    usage.completionTokens, usage.completion_tokens,
+  );
+  const outputTokens = metric(
+    log.outputTokens, log.output_tokens, log.totalOutputTokens, log.total_output_tokens,
+    usage.outputTokens, usage.output_tokens, usage.outputTokenCount,
+    usage.candidatesTokenCount, usage.candidates_token_count, usage.responseTokenCount,
+    usage.totalOutputTokens, usage.total_output_tokens,
   );
   const total = metric(
     log.totalTokens, log.total_tokens, usage.totalTokens, usage.total_tokens,
@@ -1044,24 +1102,66 @@ const tokenCountForStoredLog = (log: any): number => {
   );
   const reasoning = metric(
     log.reasoningTokens, log.reasoning_tokens, usage.reasoningTokens, usage.reasoning_tokens,
-    usage.thoughtsTokenCount, usage.thoughtTokenCount,
+    log.totalThoughtTokens, log.total_thought_tokens,
+    usage.thoughtsTokenCount, usage.thoughts_token_count, usage.thoughtTokenCount,
+    usage.totalThoughtTokens, usage.total_thought_tokens,
   );
   const toolUsePrompt = metric(
     log.toolUsePromptTokens, log.tool_use_prompt_tokens,
+    log.totalToolUseTokens, log.total_tool_use_tokens,
     usage.toolUsePromptTokens, usage.tool_use_prompt_tokens,
+    usage.toolUsePromptTokenCount, usage.tool_use_prompt_token_count,
+    usage.totalToolUseTokens, usage.total_tool_use_tokens,
   );
-  const componentTotal = prompt + completion;
-  // Some providers report a total before adding reasoning/tool-use tokens.
-  // Never let that smaller aggregate hide measured component usage.
-  // Gemini's normalized completion already includes reasoning tokens; other
-  // providers may report reasoning separately, so only add those supplements
-  // when no authoritative total is available.
-  const provider = String(log.provider || '').toLowerCase();
-  const fallbackTotal = provider === 'gemini'
-    ? componentTotal
-    : componentTotal + reasoning + toolUsePrompt;
-  return total > 0 ? Math.max(total, componentTotal) : fallbackTotal;
+  const measuredCachedTokens = metric(
+    log.cachedTokens, log.cached_tokens, log.totalCachedTokens, log.total_cached_tokens,
+    usage.cachedTokens, usage.cached_tokens, usage.cacheReadTokens,
+    usage.cachedContentTokenCount, usage.cached_content_token_count,
+    usage.totalCachedTokens, usage.total_cached_tokens,
+  );
+  const cachedTokens = promptTokens > 0
+    ? Math.min(promptTokens, measuredCachedTokens)
+    : measuredCachedTokens;
+  const explicitUncachedPromptTokens = optionalMetric(
+    log.uncachedPromptTokens, log.uncached_prompt_tokens,
+    usage.uncachedPromptTokens, usage.uncached_prompt_tokens,
+  );
+  const uncachedPromptTokens = explicitUncachedPromptTokens
+    ?? Math.max(0, promptTokens - cachedTokens);
+  const measuredOutputAndReasoning = Math.max(
+    completionTokens,
+    outputTokens + reasoning,
+  );
+  const fallbackTotal = promptTokens + measuredOutputAndReasoning + toolUsePrompt;
+
+  return {
+    // Provider total is authoritative. Component arithmetic is only a fallback
+    // for adapters that omit their aggregate usage field.
+    processedTokens: total > 0 ? total : fallbackTotal,
+    promptTokens,
+    cachedTokens,
+    uncachedPromptTokens,
+    outputTokens: outputTokens || Math.max(0, completionTokens - reasoning),
+    reasoningTokens: reasoning,
+    toolUsePromptTokens: toolUsePrompt,
+  };
 };
+
+const tokenCountForStoredLog = (log: any): number =>
+  tokenMetricsForStoredLog(log).processedTokens;
+
+const sumStoredTokenMetrics = (logs: any[]): StoredTokenMetrics =>
+  logs.reduce((totals, log) => {
+    const metrics = tokenMetricsForStoredLog(log);
+    totals.processedTokens += metrics.processedTokens;
+    totals.promptTokens += metrics.promptTokens;
+    totals.cachedTokens += metrics.cachedTokens;
+    totals.uncachedPromptTokens += metrics.uncachedPromptTokens;
+    totals.outputTokens += metrics.outputTokens;
+    totals.reasoningTokens += metrics.reasoningTokens;
+    totals.toolUsePromptTokens += metrics.toolUsePromptTokens;
+    return totals;
+  }, { ...EMPTY_STORED_TOKEN_METRICS });
 
 const TOKEN_ACTIVITY_CELL_COUNT = 200;
 
@@ -1155,21 +1255,6 @@ const Toggle: React.FC<{ enabled: boolean; onChange: (v: boolean) => void; disab
 );
 
 // ─── Slider ────────────────────────────────────────────
-const SettingSlider: React.FC<{ value: number; min: number; max: number; onChange: (v: number) => void; label: string }> = ({ value, min, max, onChange, label }) => (
-  <div className="flex items-center gap-3 w-full">
-    <input
-      type="range"
-      min={min}
-      max={max}
-      value={value}
-      aria-label={label || 'Adjust value'}
-      onChange={(e) => onChange(parseInt(e.target.value))}
-      className="flex-1 h-1 bg-white/10 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white/85 [&::-webkit-slider-thumb]:shadow-[0_0_8px_rgba(255,255,255,0.18)] [&::-webkit-slider-thumb]:transition-transform [&::-webkit-slider-thumb]:hover:scale-125"
-    />
-    <span className="text-[13px] font-mono text-[#DCD8D2] min-w-[28px] text-right">{value}</span>
-  </div>
-);
-
 // ─── Setting Row ───────────────────────────────────────
 const SettingRow: React.FC<{
   icon: React.ReactNode;
@@ -2156,7 +2241,20 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [tokenChats, setTokenChats] = useState<TokenChatSummary[]>([]);
   const [tokenStatsLoading, setTokenStatsLoading] = useState(false);
   const [selectedTokenChatId, setSelectedTokenChatId] = useState('');
-  const [hoveredToken, setHoveredToken] = useState<{ value: number; date: string; x: number; y: number; cellKey?: string; recentRunUsage?: number; model?: string } | null>(null);
+  const [hoveredToken, setHoveredToken] = useState<{
+    value: number;
+    date: string;
+    x: number;
+    y: number;
+    cellKey?: string;
+    recentRunUsage?: number;
+    model?: string;
+    scope?: 'chat' | 'action';
+    promptTokens?: number;
+    cachedTokens?: number;
+    uncachedPromptTokens?: number;
+    outputTokens?: number;
+  } | null>(null);
   const [modelThinkingCapabilities, setModelThinkingCapabilities] = useState<Record<string, ModelThinkingCapabilities>>({});
   const [modelApiKeys, setModelApiKeys] = useState<Record<string, string>>({});
   const [providerBaseURLs, setProviderBaseURLs] = useState<Record<string, string>>({});
@@ -2203,6 +2301,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     total: 0,
     bytesPerSecond: 0,
     downloadReady: false,
+    automaticChecks: false,
     message: 'Desktop updates are available in the installed application.',
   });
   const applyDesktopUpdateState = useCallback((incoming: DesktopUpdateState | null | undefined) => {
@@ -2368,6 +2467,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     }
     return () => unsubscribe?.();
   }, [applyDesktopUpdateState, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'updates') return;
+    const desktopApi = (window as any)?.electronAPI;
+    if (typeof desktopApi?.markUpdateViewed !== 'function') return;
+    desktopApi.markUpdateViewed().then(applyDesktopUpdateState).catch(() => {});
+  }, [activeTab, applyDesktopUpdateState, isOpen, updateState.availableVersion]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -2589,6 +2695,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         .map((chat: any) => {
           const logs = Array.isArray(chat.traceLogs) ? chat.traceLogs : [];
           const usageLogs = uniqueProviderUsageLogs(logs);
+          const totalUsage = sumStoredTokenMetrics(usageLogs);
           const recent = usageLogs[usageLogs.length - 1] || {};
           const modelTotals = usageLogs.reduce((totals: Record<string, number>, log: any) => {
             const model = String(log.model || chat.model || 'Unknown model').trim() || 'Unknown model';
@@ -2598,13 +2705,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           const dominantModel = Object.entries(modelTotals)
             .sort((left, right) => right[1] - left[1])[0]?.[0] || String(recent.model || chat.model || 'Unmeasured');
           const lastUserIndex = logs.findLastIndex((log: any) => log?.type === 'user_action');
-          const recentRunUsage = uniqueProviderUsageLogs(lastUserIndex >= 0 ? logs.slice(lastUserIndex + 1) : logs)
-            .reduce((sum: number, log: any) => sum + tokenCountForStoredLog(log), 0);
+          const recentUsageLogs = uniqueProviderUsageLogs(lastUserIndex >= 0 ? logs.slice(lastUserIndex + 1) : logs);
+          const recentRunUsage = sumStoredTokenMetrics(recentUsageLogs).processedTokens;
           const actions = usageLogs
             .slice(-100)
             .map((log: any, index: number) => {
               const provider = String(log.provider || 'Provider');
               const model = String(log.model || chat.model || 'Model');
+              const usageMetrics = tokenMetricsForStoredLog(log);
               const phase = log.phase === 'chat_title'
                 ? 'Chat title'
                 : log.phase === 'telegram_fast'
@@ -2616,7 +2724,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                 id: String(log.id || `${chat.id}-${index}`),
                 label: `${phase} · ${provider} · ${model}`,
                 kind: 'Usage',
-                tokens: tokenCountForStoredLog(log),
+                tokens: usageMetrics.processedTokens,
+                promptTokens: usageMetrics.promptTokens,
+                cachedTokens: usageMetrics.cachedTokens,
+                uncachedPromptTokens: usageMetrics.uncachedPromptTokens,
+                outputTokens: usageMetrics.outputTokens,
+                model,
                 timestamp: Number(log.timestamp || log.endTime || log.startTime || chat.updatedAt || Date.now()),
               };
             });
@@ -2624,7 +2737,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             id: String(chat.id),
             title: String(chat.title || 'Untitled chat').trim() || 'Untitled chat',
             updatedAt: Number(chat.updatedAt || 0),
-            totalTokens: usageLogs.reduce((sum: number, log: any) => sum + tokenCountForStoredLog(log), 0),
+            totalTokens: totalUsage.processedTokens,
+            promptTokens: totalUsage.promptTokens,
+            cachedTokens: totalUsage.cachedTokens,
+            uncachedPromptTokens: totalUsage.uncachedPromptTokens,
+            outputTokens: totalUsage.outputTokens,
             recentRunUsage,
             model: dominantModel,
             actions,
@@ -2988,20 +3105,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const savedModelEntries = appStorage.getItem(MODEL_SELECTOR_STORAGE_KEY);
       const savedThinkingCapabilities = appStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY);
       const savedProviderBaseURLs = appStorage.getItem(PROVIDER_BASE_URLS_STORAGE_KEY);
-      const resetLegacyAutoModels = appStorage.getItem(MODEL_SELECTOR_SCHEMA_STORAGE_KEY) !== MODEL_SELECTOR_SCHEMA_VERSION;
+      const needsSelectorSchemaMigration = appStorage.getItem(MODEL_SELECTOR_SCHEMA_STORAGE_KEY) !== MODEL_SELECTOR_SCHEMA_VERSION;
       const parsedModelOverrides = savedModelOverrides ? JSON.parse(savedModelOverrides) : {};
       const parsedModelCatalog = savedModelCatalog ? JSON.parse(savedModelCatalog) : {};
       const parsedThinkingCapabilities = savedThinkingCapabilities ? JSON.parse(savedThinkingCapabilities) : {};
       const parsedProviderBaseURLs = savedProviderBaseURLs ? JSON.parse(savedProviderBaseURLs) : {};
       const migratedEntries = normalizeModelSelectorEntries(
-        resetLegacyAutoModels ? [] : (savedModelEntries ? JSON.parse(savedModelEntries) : []),
-        resetLegacyAutoModels ? {} : parsedModelCatalog,
+        savedModelEntries ? JSON.parse(savedModelEntries) : undefined,
+        parsedModelCatalog,
       );
-      Object.entries(resetLegacyAutoModels ? {} : parsedModelOverrides as Record<string, unknown>).forEach(([provider, modelId]) => {
-        if (isModelProvider(provider) && String(modelId || '').trim()) {
-          migratedEntries.push({ provider, modelId: String(modelId).trim() });
-        }
-      });
       const normalizedEntries = normalizeModelSelectorEntries(migratedEntries, parsedModelCatalog);
       const normalizedCatalog = entriesToModelCatalog(normalizedEntries) as ModelCatalog;
       const desktopApi = (window as any)?.electronAPI;
@@ -3009,6 +3121,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         .then(response => response.ok ? response.json() : null)
         .then(payload => payload?.settings && typeof payload.settings === 'object' ? payload.settings : {})
         .catch(() => ({}));
+      const persistedApiRetries = Number(folderRuntimeSettings?.apiRetries);
+      if (Number.isFinite(persistedApiRetries)) {
+        nextSettings.maxRetries = Math.max(0, Math.min(3, Math.floor(persistedApiRetries)));
+      }
       if (
         (!saved || !Object.prototype.hasOwnProperty.call(JSON.parse(saved), 'selfImprovementEnabled'))
         && folderRuntimeSettings?.selfImprovement
@@ -3073,9 +3189,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const parsedApiKeys = { ...folderApiKeys, ...(secureApiKeys || {}) };
       const parsedLiveApiKeys = { ...folderLiveApiKeys, ...(secureLiveApiKeys || {}) };
       const parsedModelApiKeys = { ...folderModelApiKeys, ...(secureModelApiKeys || {}) };
-      const effectiveModelOverrides = resetLegacyAutoModels
-        ? {}
-        : Object.keys(folderModelOverrides).length > 0 || Object.keys(secureModelOverrides || {}).length > 0
+      const effectiveModelOverrides = Object.keys(folderModelOverrides).length > 0 || Object.keys(secureModelOverrides || {}).length > 0
         ? { ...folderModelOverrides, ...(secureModelOverrides || {}) }
         : parsedModelOverrides;
       const normalizedApiKeys = parsedApiKeys && typeof parsedApiKeys === 'object'
@@ -3130,7 +3244,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             .filter(([, value]) => Boolean(value)),
         )
         : {};
-      const normalizedModelApiKeys = !resetLegacyAutoModels && parsedModelApiKeys && typeof parsedModelApiKeys === 'object'
+      const normalizedModelApiKeys = parsedModelApiKeys && typeof parsedModelApiKeys === 'object'
         ? Object.fromEntries(
           Object.entries(parsedModelApiKeys as Record<string, unknown>)
             .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
@@ -3141,29 +3255,30 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         ? Object.fromEntries(
           Object.entries(effectiveModelOverrides as Record<string, unknown>)
             .map(([provider, model]) => [provider, typeof model === 'string' ? model.trim() : ''])
-            .filter(([provider, model]) => isModelProvider(provider) && Boolean(model) && !isEmbeddedModelLabel(model)),
+            .filter(([provider, model]) =>
+              isModelProvider(provider)
+              && Boolean(model)
+              && !isEmbeddedModelLabel(model)
+              && normalizedEntries.some(entry => entry.provider === provider && entry.modelId === model)
+            ),
         )
         : {};
-      const durableOverrideEntries = Object.entries(normalizedModelOverrides)
-        .filter(([provider, modelId]) => isModelProvider(provider) && Boolean(modelId))
-        .map(([provider, modelId]) => ({ provider: provider as MainAgentProvider, modelId }));
-      let resolvedModelEntries = normalizeModelSelectorEntries(
-        [...normalizedEntries, ...durableOverrideEntries],
-        normalizedCatalog,
-      );
-      const storedChatModelSelection = resetLegacyAutoModels
-        ? AUTO_MODEL_SELECTION
-        : appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+      const resolvedModelEntries = normalizeModelSelectorEntries(normalizedEntries, normalizedCatalog);
+      const storedChatModelSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
       const parsedStoredChatModel = parseModelEntryKey(storedChatModelSelection);
-      if (parsedStoredChatModel && !resolvedModelEntries.some(entry =>
-        modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection
-      )) {
-        resolvedModelEntries = normalizeModelSelectorEntries(
-          [...resolvedModelEntries, parsedStoredChatModel],
-          normalizedCatalog,
-        );
-      }
       const resolvedModelCatalog = entriesToModelCatalog(resolvedModelEntries) as ModelCatalog;
+      const usableResolvedEntries = resolvedModelEntries.filter(entry =>
+        isLocalModelProvider(entry.provider)
+        || Boolean(normalizedApiKeys[entry.provider])
+        || Boolean(normalizedModelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
+      );
+      const resolvedChatModelSelection = parsedStoredChatModel && usableResolvedEntries.some(entry =>
+        modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection
+      )
+        ? storedChatModelSelection
+        : usableResolvedEntries[0]
+          ? modelEntryKey(usableResolvedEntries[0].provider, usableResolvedEntries[0].modelId)
+          : AUTO_MODEL_SELECTION;
       setSettings(nextSettings);
       appStorage.setItem('eterx_settings', JSON.stringify(nextSettings));
       setModelEntries(resolvedModelEntries);
@@ -3178,12 +3293,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           ) as Record<string, ModelThinkingCapabilities>
           : {},
       );
-      appStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(resolvedModelEntries));
-      appStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(resolvedModelCatalog));
-      appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(normalizedModelOverrides));
-      if (storedChatModelSelection !== AUTO_MODEL_SELECTION && !parsedStoredChatModel) {
-        appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
-      }
+      appStorage.setItems({
+        [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(resolvedModelEntries),
+        [MODEL_CATALOG_STORAGE_KEY]: JSON.stringify(resolvedModelCatalog),
+        [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(normalizedModelOverrides),
+        [CHAT_MODEL_SELECTION_STORAGE_KEY]: resolvedChatModelSelection,
+      });
       setModelOverrides(normalizedModelOverrides);
       setApiKeys(normalizedApiKeys);
       modelEntriesRef.current = resolvedModelEntries;
@@ -3211,7 +3326,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       providerBaseURLDirtyRef.current = folderBaseURLs === null && secureBaseURLs === null && Object.keys(effectiveBaseURLs).length > 0;
       setProviderBaseURLs(effectiveBaseURLs);
 
-      if (resetLegacyAutoModels) {
+      if (needsSelectorSchemaMigration) {
         const migrationSaved = await persistDesktopRuntimeSettings(
           normalizedApiKeys,
           normalizedModelApiKeys,
@@ -3273,15 +3388,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const storedOverrides = normalizeStringMap(readJson(MODEL_OVERRIDE_STORAGE_KEY, {}));
       const storedBaseURLs = normalizeStringMap(readJson(PROVIDER_BASE_URLS_STORAGE_KEY, {}));
       const storedThinking = readJson(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, {});
-      let syncedEntries = normalizeModelSelectorEntries(storedEntries, storedCatalog);
-      Object.entries(storedOverrides).forEach(([provider, modelId]) => {
-        if (isModelProvider(provider) && typeof modelId === 'string' && modelId) {
-          syncedEntries = ensureModelSelectorEntry(syncedEntries, provider, modelId);
-        }
-      });
-      const storedSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-      const parsedSelection = parseModelEntryKey(storedSelection);
-      if (parsedSelection) syncedEntries = ensureModelSelectorEntry(syncedEntries, parsedSelection.provider, parsedSelection.modelId);
+      const syncedEntries = normalizeModelSelectorEntries(storedEntries, storedCatalog);
       const syncedCatalog = entriesToModelCatalog(syncedEntries) as ModelCatalog;
 
       let runtime: any = {};
@@ -3517,6 +3624,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled: value !== false }),
         }).catch(error => console.warn('Could not persist self-improvement setting:', error));
+      }
+      if (key === 'maxRetries') {
+        void fetch('/api/settings/runtime', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: { apiRetries: next.maxRetries } }),
+        }).catch(error => console.warn('Could not persist API retry setting:', error));
       }
       return next;
     });
@@ -4065,8 +4179,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     modelEntriesRef.current = normalizedEntries;
     setModelEntries(normalizedEntries);
     setModelCatalog(nextCatalog);
-    appStorage.setItem(MODEL_SELECTOR_STORAGE_KEY, JSON.stringify(normalizedEntries));
-    appStorage.setItem(MODEL_CATALOG_STORAGE_KEY, JSON.stringify(nextCatalog));
+    appStorage.setItems({
+      [MODEL_SELECTOR_STORAGE_KEY]: JSON.stringify(normalizedEntries),
+      [MODEL_CATALOG_STORAGE_KEY]: JSON.stringify(nextCatalog),
+    });
     broadcastEterxSettingsUpdate({
       type: 'model-selector-updated',
       modelEntries: normalizedEntries,
@@ -4116,17 +4232,25 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!isModelProvider(provider)) return;
     settingsRevisionRef.current += 1;
     const next = { ...modelOverridesRef.current };
-    if (modelId) {
-      next[provider] = modelId;
+    const fallbackEntry = modelId ? null : entriesSnapshot[0] || null;
+    const effectiveProvider = modelId ? provider : fallbackEntry?.provider;
+    const effectiveModelId = modelId || fallbackEntry?.modelId || '';
+    if (!modelId) delete next[provider];
+    if (effectiveProvider && effectiveModelId) {
+      next[effectiveProvider] = effectiveModelId;
     } else {
       delete next[provider];
     }
     modelOverridesRef.current = next;
     setModelOverrides(next);
-    appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(next));
+    const chatModelSelection = effectiveProvider && effectiveModelId
+      ? modelEntryKey(effectiveProvider, effectiveModelId)
+      : AUTO_MODEL_SELECTION;
+    appStorage.setItems({
+      [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(next),
+      [CHAT_MODEL_SELECTION_STORAGE_KEY]: chatModelSelection,
+    });
     void persistDesktopRuntimeSettings(apiKeysRef.current, modelApiKeysRef.current, next);
-    const chatModelSelection = modelId ? modelEntryKey(provider, modelId) : AUTO_MODEL_SELECTION;
-    appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, chatModelSelection);
     broadcastEterxSettingsUpdate({
       type: 'model-overrides-updated',
       modelOverrides: next,
@@ -4138,7 +4262,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       modelOverrides: next,
       modelEntries: entriesSnapshot,
     }, true);
-    const nextMode = PROVIDER_MODE[provider];
+    const nextMode = effectiveProvider ? PROVIDER_MODE[effectiveProvider] : undefined;
     if (nextMode) updateSetting('agentMode', nextMode);
     setHasChanges(true);
     keysChangedRef.current = true;
@@ -4181,15 +4305,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     persistApiKeyPresence(apiKeysRef.current, nextModelKeys);
     void persistDesktopRuntimeSettings(apiKeysRef.current, nextModelKeys, modelOverridesRef.current);
     const currentChatModelSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+    const fallbackEntry = nextEntries[0] || null;
     const chatModelSelection = currentChatModelSelection === removedKey
-      ? AUTO_MODEL_SELECTION
+      ? fallbackEntry
+        ? modelEntryKey(fallbackEntry.provider, fallbackEntry.modelId)
+        : AUTO_MODEL_SELECTION
       : currentChatModelSelection;
-    if (currentChatModelSelection === removedKey) {
-      appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, AUTO_MODEL_SELECTION);
-    }
-    if (modelOverridesRef.current[cleanProvider] === cleanModelId) {
+    const removedActiveOverride = modelOverridesRef.current[cleanProvider] === cleanModelId;
+    if (removedActiveOverride) {
       selectCatalogModel(cleanProvider, '', nextEntries);
       setExactModelDraft('');
+    } else if (currentChatModelSelection === removedKey) {
+      appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, chatModelSelection);
     }
     queueRuntimeSync({
       apiKeys: apiKeysRef.current,
@@ -4760,18 +4887,47 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </div>
                           {hoveredToken && (
                             <div className="pointer-events-none fixed z-[10000] w-max max-w-[220px] whitespace-nowrap rounded-xl border border-white/[0.12] bg-[#292929] px-2.5 py-2 text-[12px] text-[#F1F1F1] shadow-[0_8px_24px_rgba(0,0,0,0.38)]" style={{ left: Math.min(Math.max(8, hoveredToken.x + 10), window.innerWidth - 240), top: Math.max(8, hoveredToken.y - 48) }}>
-                              {hoveredToken.model ? <div className="space-y-1"><div className="flex justify-between gap-6"><span className="text-[#999]">Total Token</span><span className="font-semibold">{formatTokenMetric(hoveredToken.value)}</span></div><div className="flex justify-between gap-6"><span className="text-[#999]">Recent Run Usage</span><span className="font-semibold">{formatTokenMetric(hoveredToken.recentRunUsage || 0)}</span></div><div className="flex justify-between gap-6"><span className="text-[#999]">Model</span><span className="max-w-[120px] truncate font-semibold">{hoveredToken.model}</span></div></div> : `${formatTokenMetric(hoveredToken.value)} tokens on ${hoveredToken.date}`}
+                              {hoveredToken.model ? <div className="space-y-1">
+                                <div className="flex justify-between gap-6"><span className="text-[#999]">Processed</span><span className="font-semibold">{formatTokenMetric(hoveredToken.value)}</span></div>
+                                {hoveredToken.scope !== 'action' && <div className="flex justify-between gap-6"><span className="text-[#999]">Recent run</span><span className="font-semibold">{formatTokenMetric(hoveredToken.recentRunUsage || 0)}</span></div>}
+                                <div className="flex justify-between gap-6"><span className="text-[#999]">Input</span><span className="font-semibold">{formatTokenMetric(hoveredToken.promptTokens || 0)}</span></div>
+                                <div className="flex justify-between gap-6"><span className="text-[#999]">Uncached input</span><span className="font-semibold">{formatTokenMetric(hoveredToken.uncachedPromptTokens || 0)}</span></div>
+                                <div className="flex justify-between gap-6"><span className="text-[#999]">Cached input</span><span className="font-semibold">{formatTokenMetric(hoveredToken.cachedTokens || 0)}</span></div>
+                                <div className="flex justify-between gap-6"><span className="text-[#999]">Output</span><span className="font-semibold">{formatTokenMetric(hoveredToken.outputTokens || 0)}</span></div>
+                                <div className="flex justify-between gap-6"><span className="text-[#999]">Model</span><span className="max-w-[120px] truncate font-semibold">{hoveredToken.model}</span></div>
+                              </div> : `${formatTokenMetric(hoveredToken.value)} processed tokens on ${hoveredToken.date}`}
                             </div>
                           )}
                           </> : (() => {
                               const selected = tokenChats.find(chat => chat.id === selectedTokenChatId) || tokenChats[0];
-                              const hoverChat = (event: React.MouseEvent, value: number, recentRunUsage: number, model: string, date: string) => setHoveredToken({ value, recentRunUsage, model, date, x: event.clientX, y: event.clientY });
+                              const hoverChat = (
+                                event: React.MouseEvent,
+                                value: number,
+                                recentRunUsage: number,
+                                model: string,
+                                date: string,
+                                details: {
+                                  scope: 'chat' | 'action';
+                                  promptTokens: number;
+                                  cachedTokens: number;
+                                  uncachedPromptTokens: number;
+                                  outputTokens: number;
+                                },
+                              ) => setHoveredToken({
+                                value,
+                                recentRunUsage,
+                                model,
+                                date,
+                                ...details,
+                                x: event.clientX,
+                                y: event.clientY,
+                              });
                               return <div className="mt-4 flex h-[calc(100vh-230px)] min-h-[340px] flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171717]">
                                 <div className="flex min-h-0 flex-1 flex-col border-b border-white/[0.08] p-2">
                                   <div className="px-3 py-2 text-[11px] font-medium tracking-[0.02em] text-[#777]">All chats</div>
                                   <div className="min-h-0 flex-1 overflow-y-auto eterx-scrollbar pr-1">
                                     {tokenChats.length > 0 ? tokenChats.map(chat => (
-                                      <button key={chat.id} type="button" onClick={event => { setSelectedTokenChatId(chat.id); hoverChat(event, chat.totalTokens, chat.recentRunUsage, chat.model, new Date(chat.updatedAt || Date.now()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })); }} onMouseEnter={event => hoverChat(event, chat.totalTokens, chat.recentRunUsage, chat.model, new Date(chat.updatedAt || Date.now()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))} onMouseLeave={() => setHoveredToken(null)} className={`mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${selectedTokenChatId === chat.id ? 'bg-white/[0.10]' : 'hover:bg-white/[0.055]'}`}>
+                                      <button key={chat.id} type="button" onClick={event => { setSelectedTokenChatId(chat.id); hoverChat(event, chat.totalTokens, chat.recentRunUsage, chat.model, new Date(chat.updatedAt || Date.now()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), { scope: 'chat', promptTokens: chat.promptTokens, cachedTokens: chat.cachedTokens, uncachedPromptTokens: chat.uncachedPromptTokens, outputTokens: chat.outputTokens }); }} onMouseEnter={event => hoverChat(event, chat.totalTokens, chat.recentRunUsage, chat.model, new Date(chat.updatedAt || Date.now()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), { scope: 'chat', promptTokens: chat.promptTokens, cachedTokens: chat.cachedTokens, uncachedPromptTokens: chat.uncachedPromptTokens, outputTokens: chat.outputTokens })} onMouseLeave={() => setHoveredToken(null)} className={`mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${selectedTokenChatId === chat.id ? 'bg-white/[0.10]' : 'hover:bg-white/[0.055]'}`}>
                                         <span className="min-w-0 truncate text-[13px] text-[#E8E8E8]">{chat.title}</span>
                                         {settings.showTokenCount && <span className="shrink-0 text-[11px] text-[#888]">{formatTokenMetric(chat.totalTokens)}</span>}
                                       </button>
@@ -4782,7 +4938,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   <div className="flex items-center justify-between px-3 py-2"><span className="text-[11px] font-medium tracking-[0.02em] text-[#777]">Action usage</span><span className="max-w-[55%] truncate text-[12px] text-[#888]">{selected?.title || 'Choose a chat'}</span></div>
                                   <div className="min-h-0 flex-1 overflow-y-auto eterx-scrollbar pr-1">
                                     {selected?.actions?.length ? selected.actions.slice().reverse().map(action => (
-                                      <button key={action.id} type="button" onClick={event => hoverChat(event, selected.totalTokens, selected.recentRunUsage, selected.model, action.label)} onMouseEnter={event => hoverChat(event, selected.totalTokens, selected.recentRunUsage, selected.model, action.label)} onMouseLeave={() => setHoveredToken(null)} className="mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-white/[0.055]">
+                                      <button key={action.id} type="button" onClick={event => hoverChat(event, action.tokens, action.tokens, action.model, action.label, { scope: 'action', promptTokens: action.promptTokens, cachedTokens: action.cachedTokens, uncachedPromptTokens: action.uncachedPromptTokens, outputTokens: action.outputTokens })} onMouseEnter={event => hoverChat(event, action.tokens, action.tokens, action.model, action.label, { scope: 'action', promptTokens: action.promptTokens, cachedTokens: action.cachedTokens, uncachedPromptTokens: action.uncachedPromptTokens, outputTokens: action.outputTokens })} onMouseLeave={() => setHoveredToken(null)} className="mb-1 flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-white/[0.055]">
                                         <span className="min-w-0 truncate"><span className="mr-2 normal-case text-[10px] tracking-[0.04em] text-[#666]">{action.kind.charAt(0).toUpperCase() + action.kind.slice(1).toLowerCase()}</span><span className="text-[13px] text-[#D8D8D8]">{action.label}</span></span>
                                         {settings.showTokenCount && <span className="shrink-0 text-[11px] text-[#888]">{formatTokenMetric(action.tokens)}</span>}
                                       </button>
@@ -4834,11 +4990,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   className="w-24 rounded-md border border-white/10 bg-white/[0.06] px-2 py-1.5 text-right text-[13px] font-mono text-[#DCD8D2] outline-none focus:border-white/25"
                                 />
                                 <span className="text-[12px] text-[#8E8A84]">agents</span>
-                              </div>
-                            </SettingsStackRow>
-                            <SettingsStackRow title="Max retry attempts" description="How many times the runtime retries after a failed action.">
-                              <div className="w-[240px]">
-                                <SettingSlider value={settings.maxRetries} min={0} max={5} onChange={v => updateSetting('maxRetries', v)} label="Max retry attempts" />
                               </div>
                             </SettingsStackRow>
                           </SettingsStack>
@@ -5135,7 +5286,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <SectionHeader title="Service APIs" />
                           <SettingsStack>
-                            <SettingsStackRow title="External service" description="Configure live web search, provider order, endpoints, and three-key failover pools in the External service tab." />
+                            <SettingsStackRow
+                              title="API retries"
+                              description="Choose how many complete passes the runtime may make through the configured provider key pool."
+                              info="None makes one pass. Each retry adds one more full pass; failed keys become eligible again in the next pass."
+                            >
+                              <ModernSelect
+                                value={String(settings.maxRetries)}
+                                onChange={value => updateSetting('maxRetries', Number(value))}
+                                className="w-[220px]"
+                                options={API_RETRY_OPTIONS}
+                              />
+                            </SettingsStackRow>
                             <SettingsStackRow title="Code platform" description="GitHub token enables repository-aware actions when needed." tall>
                               <ApiKeyPoolEditor
                                 provider="github"
@@ -5940,7 +6102,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               <span>{updateState.platform === 'win32' ? 'Windows' : updateState.platform === 'darwin' ? 'macOS' : updateState.platform === 'linux' ? 'Linux' : 'Desktop'} {updateState.architecture || ''}</span>
                               {updateState.packageType && <><span aria-hidden="true">|</span><span>{updateState.packageType}</span></>}
                               <span aria-hidden="true">|</span>
-                              <span>Manual checks only</span>
+                              <span>{updateState.automaticChecks === false ? 'Manual checks' : 'Silent automatic checks'}</span>
                             </div>
 
                             {(updateState.status === 'downloading' || updateState.status === 'ready' || updateState.status === 'installing' || (
@@ -5971,7 +6133,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.downloadReady
                             ) ? (
                               <SoftButton onClick={() => void (window as any)?.electronAPI?.installUpdate?.()}>
-                                {updateState.status === 'error' ? 'Retry restart and install' : 'Restart and install'}
+                                {updateState.status === 'error' ? 'Retry restart and update' : 'Restart to update'}
                               </SoftButton>
                             ) : updateState.status === 'available' || (
                               updateState.status === 'error' && Boolean(updateState.availableVersion) && !updateState.downloadReady
@@ -5987,10 +6149,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 {updateState.status === 'checking' ? 'Checking…' : updateState.status === 'downloading' ? 'Downloading…' : updateState.status === 'unsupported' ? 'Updates unavailable' : 'Check for updates'}
                               </SoftButton>
                             )}
+                            {(updateState.status === 'error' || updateState.status === 'unsupported') && updateState.releasePage && (
+                              <SoftButton onClick={() => void (window as any)?.electronAPI?.openExternal?.(updateState.releasePage)}>
+                                Open official releases
+                              </SoftButton>
+                            )}
                           </div>
 
                           <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
-                            Updates are fully manual. Check for updates reads the stable metadata hosted on GitHub Releases; nothing downloads until you choose Download, and nothing installs until you choose Restart and install. Chats, workspaces, encrypted API settings, browser profiles, and preferences remain in the device data directory. Linux installation and in-app updates use the official AppImage package.
+                            EterX checks silently when the app opens, becomes visible again, and every 30 minutes while it remains open. Checks stop while EterX is closed or hidden. An update replaces the complete installed application—including the interface and internal runtime—while chats, workspaces, encrypted API settings, browser profiles, and preferences stay in the device data directory. Downloads and restart remain under your control. Linux in-app updates use the official AppImage package.
                           </p>
                           {updateState.releaseDate && updateState.availableVersion && (
                             <p className="mt-2 text-[11px] text-[#555]">

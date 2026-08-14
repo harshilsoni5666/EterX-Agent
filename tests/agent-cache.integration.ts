@@ -3,6 +3,8 @@ import { getOrCreateAgentCache, invalidateAgentCacheForKey } from '../src/lib/ag
 import { IntelligentCache } from '../src/lib/agent/next_gen';
 import {
   applyOpenAIPromptCachePolicy,
+  buildOpenAISystemPromptContent,
+  buildProviderConversationCacheId,
   buildPromptCacheIdentity,
   normalizeProviderCacheUsage,
   removeOpenAIPromptCachePolicy,
@@ -74,7 +76,12 @@ async function testRemoteContextCache(): Promise<void> {
   const changed = await getOrCreateAgentCache(ai, apiKey, model, 'system', declarationsB);
   assert.notEqual(changed, first, 'changes after the old 600-character sample boundary must invalidate cache');
   assert.equal(calls.create, 2);
-  assert.equal(calls.delete, 1);
+  assert.equal(calls.delete, 0, 'content-addressed variants must not evict one another');
+  assert.equal(
+    await getOrCreateAgentCache(ai, apiKey, model, 'system', declarationsA),
+    first,
+    'returning to a previous stable tool surface should reuse its remote cache',
+  );
 
   invalidateAgentCacheForKey(apiKey);
 }
@@ -119,8 +126,33 @@ function testProviderPromptCachePolicy(): void {
     identity,
   );
   assert.equal(params.stream_options.include_usage, true);
+  assert.equal(params.prompt_cache_retention, 'in_memory');
   removeOpenAIPromptCachePolicy(params);
   assert.equal(params.prompt_cache_key, undefined);
+
+  const explicitParams: Record<string, any> = { messages: [] };
+  applyOpenAIPromptCachePolicy(explicitParams, {
+    model: 'gpt-5.6',
+    staticPrompt: common.staticPrompt,
+    tools: common.tools,
+  });
+  assert.deepEqual(explicitParams.prompt_cache_options, { mode: 'explicit', ttl: '30m' });
+  assert.equal(explicitParams.prompt_cache_retention, undefined);
+  assert.deepEqual(
+    buildOpenAISystemPromptContent('gpt-5.6', 'stable', 'dynamic', true),
+    [
+      { type: 'text', text: 'stable', prompt_cache_breakpoint: { mode: 'explicit' } },
+      { type: 'text', text: 'dynamic' },
+    ],
+  );
+  assert.equal(
+    buildProviderConversationCacheId('grok', 'chat-a'),
+    buildProviderConversationCacheId('grok', 'chat-a'),
+  );
+  assert.notEqual(
+    buildProviderConversationCacheId('grok', 'chat-a'),
+    buildProviderConversationCacheId('grok', 'chat-b'),
+  );
 
   assert.equal(resolveProviderPromptCacheMode('gemini', true, true), 'explicit-remote');
   assert.equal(resolveProviderPromptCacheMode('anthropic', true), 'explicit-ephemeral');
@@ -131,7 +163,16 @@ function testProviderPromptCachePolicy(): void {
       completion_tokens: 40,
       prompt_tokens_details: { cached_tokens: 1024 },
     }),
-    { promptTokens: 1200, completionTokens: 40, cachedTokens: 1024 },
+    {
+      promptTokens: 1200,
+      inputTokens: 1200,
+      completionTokens: 40,
+      outputTokens: 40,
+      totalTokens: 1240,
+      cachedTokens: 1024,
+      uncachedPromptTokens: 176,
+      cacheHitRatio: 1024 / 1200,
+    },
   );
 }
 

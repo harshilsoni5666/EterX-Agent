@@ -94,22 +94,23 @@ application bundle; the OS-specific EterX data directory remains independent.
 
 ## About EterX Agent
 
-EterX is an autonomous agent platform that plans, runs tasks, and operates your computer locally. It takes high-level goals, breaks them down into clear steps, and executes them using specialized tools and helper agents.
+EterX is an autonomous agent platform that plans and completes tasks on your local computer. You give it a high-level goal, and it breaks that goal into clear steps. It then uses its tools and helper agents to carry out the work.
 
-*   **Collaborative Swarms**: Spawns parallel background sub-agents that communicate via a built-in mailbox system to tackle complex, independent tasks.
-*   **Synapse Graph**: Builds a local relational memory graph of concepts, files, and context, utilizing an Anchor-EWMA centroid divergence-gated state machine for adaptive context selection. This enables the agent to recall instructions, facts, and code patterns from deep within long conversation histories, executing complex tasks immediately without needing to re-explain or re-understand the details.
-*   **Intelligent Model Routing**: Automatically selects the best model, balances load across API keys, and routes through fallback chains to prevent service interruption.
-*   **Custom Agent Builder**: Talk to the builder to create specialized agents with custom rules, missions, and tailored tool chains built specifically for your environment.
+*   **Collaborative Swarms**: Runs several background agents at the same time. They use a built-in mailbox system to share information and work on separate parts of a complex task.
+*   **Autonomous Mode**: Activates a proxy agent that monitors the main agent while it works. If the main agent starts to hallucinate, changes direction, gets stuck, or does not complete a task correctly, the proxy agent can step in, provide guidance, and help keep the work on track. You can choose the proxy agent’s model and set its intervention level to **High**, **Normal**, or **Minimal**, depending on the type of task. You can also work with the proxy agent directly to define future goals, provide guidance, and explain how you want the work to be handled.
+*   **Context and Context Compaction**: Each agent has its own context, including the main agent, sub-agents, proxy agents, and agents working in other tasks. You can set context limits in Settings, and EterX automatically compacts the conversation when a limit is reached. You can also set separate limits for specific chats. The compaction model can be selected in Settings to match your needs.
+*   **Work Mode Selection**: Choose the mode that best fits your task. **Chat Mode** provides direct answers with fewer unnecessary agent prompts, which helps reduce token usage for quick questions and focused tasks. **General Mode** is the default and connects you directly with the main agent for regular work. **Autonomous Mode** works like General Mode but also calls the proxy agent to support a more autonomous workflow.
+*   **Scheduled Tasks**: Schedule a task to run at a specific time or set it to repeat on a schedule. You can choose the model, priority, work mode, and other task settings. You can also ask the main agent to schedule a task for you. Priority is especially useful when several scheduled tasks are waiting to run. When the scheduled time arrives, you can follow the agent’s live progress in a chat view from the sidebar.
+*   **Connectors and MCP**: Open the **Channels** tab, go to **Gateway**, and connect the services and tools you need. You can connect external connectors, add MCP servers, import skills, or edit existing skills. Once connected, the agent can use these tools in its work. You can also ask the agent to set up a connection on your behalf by providing the required details.
+*   **Synapse Graph**: Keeps a local memory of important concepts, files, and conversation context. This helps EterX remember useful instructions, facts, and code patterns from earlier in a long conversation.
+*   **Custom Agent Builder**: Create specialized agents with their own rules, goals, and tools for the way you work.
 
 <p align="center">
   <video src="https://github.com/user-attachments/assets/7ba6c169-a58e-46b9-af0e-6f0536f0b0cc" controls width="100%"></video>
 </p>
 
-> [!NOTE]
-> **Resource Note:** This demo was executed using the free-tier Google AI Studio API (Gemini). Any execution latency is due to free-tier rate-limiting; the platform is engineered with staggered scheduling and fallback queuing to run robustly and cost-effectively under resource constraints.
-
-### Agent-first app support with themes
-A premium, highly integrated interface supporting both custom light and dark themes designed specifically to match your preferred workspace aesthetics. All data runs locally on your machine, ensuring your workspace configurations and memories remain entirely private.
+### Agent-first app with light and dark themes
+EterX includes a clean interface with light and dark themes that you can choose based on your preference. All data runs locally on your machine, keeping your workspace settings and memories private.
 
 <p align="center">
   <img src="./public/assets/black-theme.png" width="48%" alt="Dark Theme" />
@@ -166,6 +167,10 @@ EterX-Synapse is an advanced, local relational memory graph that maintains conve
 *   **Graceful Degradation**: Protects agent behavior by automatically bypassing injection and degrading context gracefully when measurement confidence falls below the designated threshold.
 
 See [Context Resonance](./docs/context-resonance.md) for the scoring equation, provider-neutral runtime path, safety boundaries, reproducible synthetic benchmark, related work, and external validation plan.
+
+See [External service routing](./docs/external-services.md) for the live search,
+image, and video provider matrix, health-check contract, and the operating rules
+injected into Main and delegated sub-agents.
 
 > [!NOTE]
 > **Research Citation:** The `EterX-Synapse` architecture, including the Anchor-EWMA centroid updates and the PCCA (Parallel Context Continuity Architecture) specifications, is implemented based on the research paper *EterX-Synapse: Cognitive Context Continuity in Autonomous Agents* by **Harshil Soni**.

@@ -60,7 +60,6 @@ export const CONNECTORS = [
 // ── Connector icon helper (used by thought sequence) ─────────
 export const getConnectorIcon = (toolName: string): React.ReactNode | null => {
   const map: Record<string, React.ReactNode> = {
-    slack_controller: connectorLogo('slack', 'Slack'),
     github_connector: connectorLogo('github', 'GitHub'),
     gmail_connector: connectorLogo('gmail', 'Gmail'),
   };

@@ -350,7 +350,7 @@ export class DeepSelfCorrectionEngine {
 
       if (!hasEvidence) {
         const toolEvidence = toolResults.some(tr =>
-          tr.tool === 'workspace_write_file' && tr.result.toLowerCase().includes(claimedFile.toLowerCase())
+          tr.tool === 'workspace_edit_file' && tr.result.toLowerCase().includes(claimedFile.toLowerCase())
         );
         if (!toolEvidence) {
           deduction += 10;

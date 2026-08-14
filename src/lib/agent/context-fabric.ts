@@ -995,11 +995,6 @@ export class ContextFabric {
     result: any = {},
     rawResult: any = result,
   ): void {
-    // context_manager writes directly through this fabric. Recording its own
-    // read result again would duplicate opened raw pages (and could grow
-    // geometrically across repeated retrieval); write actions already emitted
-    // their authoritative fact/page events inside the tool.
-    if (normalizeKey(toolName) === 'context_manager') return;
     const semantics = classifyToolSemantics(toolName, args);
     const success = toolResultSucceeded(rawResult);
     if (success && semantics.isMutation) this.mutationEpoch += 1;

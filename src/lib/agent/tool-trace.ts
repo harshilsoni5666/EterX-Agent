@@ -24,47 +24,9 @@ export type DiffLine = {
 };
 
 const TOOL_NAME_ALIASES: Record<string, string> = {
-  // Canonical workspace names are included as well so provider casing does
-  // not create a second UI identity (for example `Workspace_Read_File`).
-  workspace_list_directory: 'workspace_list_directory',
-  workspace_read_file: 'workspace_read_file',
-  workspace_read_many_files: 'workspace_read_many_files',
-  workspace_write_file: 'workspace_write_file',
+  // Normalize provider casing without preserving retired workspace tools.
   workspace_edit_file: 'workspace_edit_file',
-  workspace_edit_many_files: 'workspace_edit_many_files',
-  workspace_str_replace: 'workspace_str_replace',
-  workspace_apply_patch: 'workspace_apply_patch',
-  workspace_search_text: 'workspace_search_text',
-  workspace_semantic_search: 'workspace_semantic_search',
-  workspace_find_files: 'workspace_find_files',
-  workspace_file_outline: 'workspace_file_outline',
   workspace_run_command: 'workspace_run_command',
-  workspace_verify_code: 'workspace_verify_code',
-  tool_finder: 'tool_finder',
-  list_directory: 'workspace_list_directory',
-  listdirectory: 'workspace_list_directory',
-  read_many_files: 'workspace_read_many_files',
-  readmanyfiles: 'workspace_read_many_files',
-  edit_many_files: 'workspace_edit_many_files',
-  editmanyfiles: 'workspace_edit_many_files',
-  str_replace: 'workspace_str_replace',
-  system_shell: 'workspace_run_command',
-  shell_command: 'workspace_run_command',
-  read_file: 'workspace_read_file',
-  readfile: 'workspace_read_file',
-  shortread_file: 'workspace_read_file',
-  shortreadfile: 'workspace_read_file',
-  write_file: 'workspace_write_file',
-  writefile: 'workspace_write_file',
-  shortwrite_file: 'workspace_write_file',
-  shortwritefile: 'workspace_write_file',
-  edit_file: 'workspace_edit_file',
-  editfile: 'workspace_edit_file',
-  shortedit_file: 'workspace_edit_file',
-  shorteditfile: 'workspace_edit_file',
-  search_text: 'workspace_search_text',
-  find_files: 'workspace_find_files',
-  apply_patch: 'workspace_apply_patch',
 };
 
 /** Keep provider aliases and legacy short names from leaking into UI traces. */
@@ -76,21 +38,9 @@ export function normalizeToolTraceName(name: unknown): string {
 }
 
 const TOOL_DISPLAY_LABELS: Record<string, string> = {
-  workspace_list_directory: 'Listing directory',
-  workspace_read_file: 'Reading file',
-  workspace_read_many_files: 'Reading files',
-  workspace_write_file: 'Creating file',
   workspace_edit_file: 'Editing file',
-  workspace_edit_many_files: 'Editing files',
-  workspace_str_replace: 'Editing file',
-  workspace_apply_patch: 'Patching files',
-  workspace_search_text: 'Searching codebase',
-  workspace_semantic_search: 'Searching codebase',
-  workspace_find_files: 'Finding files',
-  workspace_file_outline: 'Outlining file',
   workspace_run_command: 'Running project command',
   spawn_sub_agent: 'Managing agent work',
-  tool_finder: 'Finding tool',
 };
 
 /** Human label for traces, including provider aliases and unknown custom names. */
@@ -336,26 +286,16 @@ function collectPathsFromValue(value: unknown, paths: string[], seen: Set<string
 export function collectToolTraceTargets(toolName: string, args: any = {}, result?: any): string[] {
   const paths: string[] = [];
   const seen = new Set<string>();
-  const name = normalizeToolTraceName(toolName);
+  void toolName;
 
   const collect = (value: unknown) => collectPathsFromValue(value, paths, seen);
 
-  if (name === 'workspace_apply_patch') {
-    collect(result?.filesModified);
-    collect(result?.filesCreated);
-    collect(result?.filesDeleted);
-    parsePatchFileTargets(args?.patch || args?.content || args?.diff)
-      .forEach(target => pushUniquePath(paths, seen, target));
-  } else if (name === 'workspace_read_many_files') {
-    collect(args?.files || args?.paths);
-    collect(result?.files);
-  } else if (name === 'workspace_edit_many_files') {
-    collect(args?.edits || args?.files);
-    collect(result?.results);
-  } else {
-    collect(result?.path || result?.filePath || result?.filepath);
-    collect(args);
-  }
+  collect(result?.path || result?.filePath || result?.filepath);
+  collect(result?.filesModified);
+  collect(result?.filesCreated);
+  collect(result?.filesDeleted);
+  collect(result?.results);
+  collect(args);
 
   return paths;
 }
@@ -416,7 +356,7 @@ export function buildToolTraceFields(
 
   let secondary = targets.length > 0
     ? summarizePathList(targets)
-    : summarizeTraceValue(argValue ?? args?.path ?? args?.command ?? args?.query ?? args?.action ?? canonicalToolName);
+    : summarizeTraceValue(argValue ?? args?.path ?? args?.command ?? args?.commands ?? args?.taskId ?? args?.mode ?? args?.query ?? args?.action ?? canonicalToolName);
 
   if (!secondary && argKey) secondary = summarizeTraceValue(args?.[argKey]);
   if (!secondary) secondary = String(canonicalToolName || 'tool');

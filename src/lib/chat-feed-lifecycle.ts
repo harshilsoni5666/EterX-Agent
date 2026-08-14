@@ -28,6 +28,32 @@ export const isInternalWorkNoteNoise = (value: unknown): boolean => {
 };
 
 /**
+ * Provider/runtime progress telemetry is useful for diagnostics, but it is
+ * not useful conversation content. Tool-loop iteration counters used to
+ * become full-width timeline rows in Agent Builder and made one real action
+ * look like several separate phases.
+ */
+export const isInternalProgressNoise = (value: unknown): boolean => {
+  const text = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return false;
+
+  // Initial runner status is already represented by the live Working pill.
+  // Keeping it as a second narrative row creates a duplicated "thinking"
+  // state, especially in Agent Builder where status events become work notes.
+  if (/^.+\s+is thinking\.{0,3}$/i.test(text)) return true;
+
+  return /^(?:(?:.+?)\s+)?(?:processed\s+\d+\s+tool\s+calls?(?:\s*\(\s*iteration\s+\d+\s*\/\s*\d+\s*\))?|tool\s+calls?\s+processed(?:\s*\(\s*iteration\s+\d+\s*\/\s*\d+\s*\))?|iteration\s+\d+\s*\/\s*\d+)\.?$/i.test(text);
+};
+
+/** Return false only for progress events that should stay out of the feed. */
+export const shouldRenderProgressTrace = (log: any): boolean => {
+  if (!log || !['progress', 'status', 'work_note'].includes(String(log.type || ''))) return true;
+  return !isInternalProgressNoise(log.text) && !isInternalProgressNoise(log.secondary);
+};
+
+/**
  * Returns true only for traces that conclusively end the current main-agent
  * turn. Tool/sub-agent errors are intentionally not inferred from arbitrary
  * text, because the main agent can recover from those.

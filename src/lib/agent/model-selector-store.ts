@@ -128,6 +128,7 @@ const normalizeLegacyCatalog = (raw: unknown): ModelSelectorEntry[] => {
 
 export const normalizeModelSelectorEntries = (raw: unknown, legacyCatalog?: unknown): ModelSelectorEntry[] => {
   const sourceEntries: ModelSelectorEntry[] = [];
+  const hasExplicitSelectorList = Array.isArray(raw);
 
   if (Array.isArray(raw)) {
     raw.forEach(item => {
@@ -145,7 +146,7 @@ export const normalizeModelSelectorEntries = (raw: unknown, legacyCatalog?: unkn
   }
 
   const usableSourceEntries = sourceEntries.filter(entry => !isEmbeddedModelLabel(entry.modelId) && isConcreteModelId(entry.modelId));
-  if (usableSourceEntries.length === 0) {
+  if (usableSourceEntries.length === 0 && !hasExplicitSelectorList) {
     usableSourceEntries.push(...normalizeLegacyCatalog(legacyCatalog).filter(entry => !isEmbeddedModelLabel(entry.modelId) && isConcreteModelId(entry.modelId)));
   }
 

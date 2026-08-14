@@ -80,6 +80,7 @@ const readEnvironmentSettings = (): VideoSettings => normalizeVideoSettings({
     String(process.env[`ETERX_VIDEO_MODEL_${provider.toUpperCase()}`] || '').trim(),
   ])),
   apiKeys: Object.fromEntries(VIDEO_PROVIDER_IDS.map(provider => [provider, envValues(environmentKeys[provider])])),
+  baseURLs: Object.fromEntries(VIDEO_PROVIDER_IDS.map(provider => [provider, envBaseURL(provider)])),
 });
 
 const initialSettings = runtimeGlobal.__eterxVideoSettings || (runtimeGlobal.__eterxVideoSettings = readEnvironmentSettings());
@@ -95,6 +96,7 @@ export function applyRuntimeVideoSettings(raw: unknown): VideoSettings {
   initialSettings.fallbackProviders = next.fallbackProviders;
   initialSettings.modelByProvider = next.modelByProvider;
   initialSettings.apiKeys = next.apiKeys;
+  initialSettings.baseURLs = next.baseURLs;
   runtimeGlobal.__eterxVideoSettings = initialSettings;
   return getRuntimeVideoSettings();
 }
@@ -109,8 +111,8 @@ const keysForProvider = (provider: VideoProvider, settings: VideoSettings): stri
   ...envValues(environmentKeys[provider]),
 ].map(value => value.trim()).filter(Boolean))).slice(0, 3);
 
-const providerBaseURL = (provider: VideoProvider): string => (
-  envBaseURL(provider) || VIDEO_PROVIDER_META[provider].defaultBaseURL
+const providerBaseURL = (provider: VideoProvider, settings = getRuntimeVideoSettings()): string => (
+  settings.baseURLs[provider] || envBaseURL(provider) || VIDEO_PROVIDER_META[provider].defaultBaseURL
 ).replace(/\/+$/, '');
 
 export function getVideoGenerationRouteBrief(): string {
@@ -318,7 +320,7 @@ const executeLuma = async (model: string, prompt: string, key: string, width: nu
   const body: Record<string, unknown> = { prompt, model, aspect_ratio: aspectRatioFor(width, height), resolution: '720p', duration: `${Math.min(9, duration)}s` };
   if (imageUrl) body.keyframes = { frame0: { type: 'image', url: imageUrl } };
   const baseURL = providerBaseURL('luma');
-  const created = await jsonRequest(`${baseURL}/generations`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) });
+  const created = await jsonRequest(`${baseURL}/generations/video`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) });
   const id = String(created?.id || '').trim();
   if (!id) throw new Error('Luma did not return a generation id.');
   for (let attempt = 0; attempt < 180; attempt += 1) {
@@ -346,10 +348,24 @@ const executeMiniMax = async (model: string, prompt: string, key: string, width:
   const taskId = String(created?.task_id || '').trim();
   if (!taskId) throw new Error('MiniMax did not return a task id.');
   for (let attempt = 0; attempt < 180; attempt += 1) {
-    const task = await jsonRequest(`${baseURL}/v2/query/video_generation/${encodeURIComponent(taskId)}`, { headers }, 45_000);
+    const queryURL = new URL(`${baseURL}/v1/query/video_generation`);
+    queryURL.searchParams.set('task_id', taskId);
+    const task = useH3
+      ? await jsonRequest(`${baseURL}/v2/query/video_generation/${encodeURIComponent(taskId)}`, { headers }, 45_000)
+      : await jsonRequest(queryURL.toString(), { headers }, 45_000);
     const record = task?.task || task;
     const state = String(record?.status || '').toLowerCase();
-    if (['success', 'succeeded', 'completed'].includes(state)) return videoBytes(sourceFromPayload(record));
+    if (['success', 'succeeded', 'completed'].includes(state)) {
+      if (!useH3 && record?.file_id) {
+        const fileURL = new URL(`${baseURL}/v1/files/retrieve`);
+        fileURL.searchParams.set('file_id', String(record.file_id));
+        const file = await jsonRequest(fileURL.toString(), { headers }, 45_000);
+        const downloadURL = String(file?.file?.download_url || file?.download_url || '').trim();
+        if (!downloadURL) throw new Error('MiniMax returned a file id without a download URL.');
+        return videoBytes({ url: downloadURL });
+      }
+      return videoBytes(sourceFromPayload(record));
+    }
     if (['failed', 'cancelled', 'canceled', 'error'].includes(state)) throw new Error(record?.error || `MiniMax task ${state}.`);
     await sleep(1000);
   }
@@ -377,14 +393,26 @@ const executeVolcengine = async (model: string, prompt: string, key: string, wid
 
 const executeFal = async (model: string, prompt: string, key: string, width: number, height: number, duration: number, imageUrl?: string): Promise<Buffer> => {
   const baseURL = providerBaseURL('fal');
-  const body: Record<string, unknown> = { prompt, aspect_ratio: aspectRatioFor(width, height), duration: String(duration), resolution: '720p' };
-  if (/seedance|kling/i.test(model)) body.generate_audio = true;
+  const routedModel = imageUrl && /\/text-to-video$/i.test(model) ? model.replace(/\/text-to-video$/i, '/image-to-video') : model;
+  const isWan = /wan-25/i.test(routedModel);
+  const isSeedance = /seedance/i.test(routedModel);
+  const isKling = /kling/i.test(routedModel);
+  const body: Record<string, unknown> = { prompt };
+  if (isWan) {
+    body.aspect_ratio = aspectRatioFor(width, height);
+    body.duration = String(duration <= 7 ? 5 : 10);
+    body.resolution = Math.max(width, height) >= 1280 ? '1080p' : '480p';
+  } else if (isSeedance || isKling) {
+    body.aspect_ratio = aspectRatioFor(width, height);
+    body.duration = Math.min(12, duration);
+    if (isSeedance || isKling) body.generate_audio = true;
+  }
   if (imageUrl) body.image_url = imageUrl;
-  const submitted = await jsonRequest(`${baseURL}/${modelPath(model)}`, { method: 'POST', headers: { Authorization: `Key ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) });
+  const submitted = await jsonRequest(`${baseURL}/${modelPath(routedModel)}`, { method: 'POST', headers: { Authorization: `Key ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body) });
   const requestId = String(submitted?.request_id || '').trim();
   if (!requestId) return videoBytes(sourceFromPayload(submitted));
-  const statusURL = String(submitted?.status_url || `${baseURL}/${modelPath(model)}/requests/${encodeURIComponent(requestId)}/status`);
-  const responseURL = String(submitted?.response_url || `${baseURL}/${modelPath(model)}/requests/${encodeURIComponent(requestId)}`);
+  const statusURL = String(submitted?.status_url || `${baseURL}/${modelPath(routedModel)}/requests/${encodeURIComponent(requestId)}/status`);
+  const responseURL = String(submitted?.response_url || `${baseURL}/${modelPath(routedModel)}/requests/${encodeURIComponent(requestId)}`);
   for (let attempt = 0; attempt < 180; attempt += 1) {
     const status = await jsonRequest(statusURL, { headers: { Authorization: `Key ${key}`, Accept: 'application/json' } }, 45_000);
     if (status?.status === 'COMPLETED') return videoBytes(sourceFromPayload(await jsonRequest(responseURL, { headers: { Authorization: `Key ${key}`, Accept: 'application/json' } }, 90_000)));
@@ -398,8 +426,19 @@ const executeReplicate = async (model: string, prompt: string, key: string, _wid
   const [owner, ...nameParts] = model.split('/');
   const name = nameParts.join('/');
   if (!owner || !name) throw new Error('Replicate model must use the exact owner/model format.');
-  const input: Record<string, unknown> = { prompt, duration };
-  if (imageUrl) { input.image = imageUrl; input.image_url = imageUrl; }
+  const input: Record<string, unknown> = { prompt };
+  if (/^minimax\/video-01$/i.test(model)) {
+    if (imageUrl) input.first_frame_image = imageUrl;
+  } else if (/^bytedance\/seedance-1-(pro|lite)$/i.test(model)) {
+    input.duration = Math.min(12, Math.max(2, duration));
+    input.resolution = '1080p';
+    input.aspect_ratio = aspectRatioFor(_width, _height);
+    if (imageUrl) input.image = imageUrl;
+  } else if (imageUrl) {
+    // Custom/community schemas vary. The documented common field is `image`;
+    // do not send both image and image_url and make the provider reject the body.
+    input.image = imageUrl;
+  }
   const baseURL = providerBaseURL('replicate');
   const created = await jsonRequest(`${baseURL}/models/${encodeURIComponent(owner)}/${modelPath(name)}/predictions`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Prefer: 'wait=1', Accept: 'application/json' }, body: JSON.stringify({ input }) });
   const id = String(created?.id || '').trim();
@@ -488,16 +527,27 @@ export async function testVideoProvider(provider: VideoProvider, key = '', model
   const baseURL = providerBaseURL(provider);
   const headers = { Authorization: provider === 'fal' ? `Key ${key.trim()}` : `Bearer ${key.trim()}`, Accept: 'application/json' };
   let response: Response;
-  if (provider === 'google') response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key.trim())}`);
-  else if (provider === 'openai') response = await fetch(`${baseURL}/videos`, { headers });
+  if (provider === 'google') response = await fetch(`${baseURL}/v1beta/models?key=${encodeURIComponent(key.trim())}`);
+  else if (provider === 'openai') response = await fetch(`${baseURL}/models`, { headers });
   else if (provider === 'xai') response = await fetch(`${baseURL}/video-generation-models`, { headers });
-  else if (provider === 'replicate') response = await fetch(`${baseURL}/models`, { headers });
+  else if (provider === 'replicate') {
+    const [owner, ...nameParts] = selectedModel.split('/');
+    const name = nameParts.join('/');
+    if (!owner || !name) throw new Error('Replicate selected model must use the exact owner/model format.');
+    response = await fetch(`${baseURL}/models/${encodeURIComponent(owner)}/${modelPath(name)}`, { headers });
+  }
   else if (provider === 'runway') response = await fetch(`${baseURL}/tasks?limit=1`, { headers: { ...headers, 'X-Runway-Version': '2024-11-06' } });
   else if (provider === 'luma') response = await fetch(`${baseURL}/generations?limit=1`, { headers });
-  else if (provider === 'minimax') response = await fetch(`${baseURL}/v2/query/video_generation/connection-test`, { headers });
+  else if (provider === 'minimax') response = await fetch(`${baseURL}/v1/query/video_generation?task_id=connection-test`, { headers });
   else if (provider === 'volcengine') response = await fetch(`${baseURL}/contents/generations/tasks`, { headers });
   else response = await fetch(`${baseURL}/${modelPath(selectedModel)}`, { headers });
   if ([401, 403].includes(response.status)) throw new Error(`${response.status} ${response.statusText}: credentials were rejected.`);
-  if (![200, 204, 404, 405].includes(response.status)) throw new Error(`${response.status} ${response.statusText}: provider endpoint is not reachable.`);
-  return { provider, model: selectedModel, message: `${meta.label} credentials and endpoint responded. Generation will use ${selectedModel}.` };
+  if (response.status < 200 || response.status >= 300) throw new Error(`${response.status} ${response.statusText}: endpoint/model probe did not verify ${selectedModel}.`);
+  const payload = await response.clone().json().catch(() => null);
+  if (provider === 'openai' || provider === 'xai' || provider === 'replicate' || provider === 'google') {
+    const entries = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : Array.isArray(payload) ? payload : [];
+    const ids: string[] = entries.map((entry: any) => String(entry?.id || entry?.name || '').trim()).filter(Boolean);
+    if (ids.length > 0 && !ids.some((id: string) => id === selectedModel || id.endsWith(`/${selectedModel}`))) throw new Error(`${meta.label} does not advertise the selected model '${selectedModel}'.`);
+  }
+  return { provider, model: selectedModel, message: `${meta.label} credentials and endpoint responded for the selected model '${selectedModel}' without creating a video.` };
 }

@@ -7,7 +7,9 @@ import {
   getScopedRuntimeApiKeyValues,
   type RuntimeApiKeyProvider,
 } from '../agent/runtime-api-keys';
+import { withApiKeyRounds } from '../agent/api-retry';
 import { getProviderBaseURL } from '../agent/provider-runtime';
+import { safeAxiosRequest } from '../agent/tools/shared/url_safety';
 import {
   DEFAULT_SEARCH_SETTINGS,
   normalizeSearchSettings,
@@ -102,6 +104,7 @@ const envBaseURL = (provider: SearchProvider): string => {
 const readEnvironmentSettings = (): SearchSettings => normalizeSearchSettings({
   preferModelSearch: process.env.ETERX_PREFER_MODEL_SEARCH !== '0',
   provider: process.env.ETERX_SEARCH_PROVIDER,
+  xaiModel: process.env.ETERX_SEARCH_XAI_MODEL,
   fallbackProviders: String(process.env.ETERX_SEARCH_FALLBACK_PROVIDERS || '')
     .split(',')
     .map(value => value.trim())
@@ -128,6 +131,7 @@ export function getSearchRouteBrief(context?: any): string {
   return [
     '[Live web route]',
     `Active provider: ${meta.label}. Enabled services: ${enabled.join(', ') || 'none'}.`,
+    ...(provider === 'xai' ? [`xAI web-search model: ${settings.xaiModel}.`] : []),
     `Provider capabilities: ${meta.capabilities.join(', ')}. Deep research mode: ${meta.deepResearch}.`,
     `Native model search: ${native.status === 'supported' ? `available via ${native.provider}/${native.model}` : native.status === 'unknown' ? 'unknown; use external route if native call is unavailable' : 'not available'}.`,
     `Fallback order: ${fallbacks}.`,
@@ -146,6 +150,7 @@ export function applyRuntimeSearchSettings(raw: unknown, legacyTavilyKeys: unkno
   initialSettings.provider = next.provider;
   initialSettings.enabled = next.enabled;
   initialSettings.preferModelSearch = next.preferModelSearch;
+  initialSettings.xaiModel = next.xaiModel;
   initialSettings.fallbackProviders = next.fallbackProviders;
   initialSettings.apiKeys = next.apiKeys;
   initialSettings.baseURLs = next.baseURLs;
@@ -201,16 +206,21 @@ const normalizeImages = (images: unknown): Array<{ url: string; description?: st
 
 const normalizeItems = (items: unknown): NormalizedSearchItem[] => {
   if (!Array.isArray(items)) return [];
-  return items.map((item: any) => ({
-    title: asText(item?.title || item?.name) || 'Untitled result',
-    url: asText(item?.url || item?.sourceURL || item?.source_url),
-    content: asText(item?.content || item?.description || item?.snippet || item?.text || item?.summary || item?.excerpts?.[0]),
-    rawContent: asText(item?.rawContent || item?.raw_content || item?.markdown || item?.text),
-    score: Number.isFinite(Number(item?.score)) ? Number(item.score) : undefined,
-    favicon: asText(item?.favicon),
-    publishedDate: asText(item?.publishedDate || item?.published_date || item?.published),
-    images: normalizeImages(item?.images || item?.image ? [item.image] : []),
-  })).filter(item => /^https?:\/\//i.test(item.url));
+  return items.map((item: any) => {
+    const metadata = item?.metadata || {};
+    const highlights = Array.isArray(item?.highlights) ? item.highlights.filter((value: unknown) => typeof value === 'string').join('\n\n') : '';
+    const excerpts = Array.isArray(item?.excerpts) ? item.excerpts.filter((value: unknown) => typeof value === 'string').join('\n\n') : '';
+    return {
+      title: asText(item?.title || item?.name || metadata?.title) || 'Untitled result',
+      url: asText(item?.url || item?.sourceURL || item?.source_url || metadata?.url || metadata?.sourceURL || metadata?.source_url),
+      content: asText(item?.content || item?.description || item?.snippet || item?.text || item?.summary || highlights || excerpts),
+      rawContent: asText(item?.rawContent || item?.raw_content || item?.markdown || item?.text || highlights || excerpts),
+      score: Number.isFinite(Number(item?.score)) ? Number(item.score) : undefined,
+      favicon: asText(item?.favicon || metadata?.favicon),
+      publishedDate: asText(item?.publishedDate || item?.published_date || item?.published || metadata?.publishedDate || metadata?.published_date),
+      images: normalizeImages(item?.images || item?.image ? [item.image] : []),
+    };
+  }).filter(item => /^https?:\/\//i.test(item.url));
 };
 
 const result = (provider: SearchProvider | 'model', payload: any, items: unknown, summary?: unknown): NormalizedSearchResult => ({
@@ -294,8 +304,8 @@ const responseURLCitations = (payload: any): Array<{ title: string; url: string;
   return citations;
 };
 
-const executeNativeGeminiSearch = async (input: SearchExecutionInput, context: any, capability: NativeModelSearchCapability): Promise<NormalizedSearchResult> => {
-  const key = nativeModelKey('gemini', context);
+const executeNativeGeminiSearch = async (input: SearchExecutionInput, context: any, capability: NativeModelSearchCapability, apiKey?: string): Promise<NormalizedSearchResult> => {
+  const key = apiKey || nativeModelKey('gemini', context);
   if (!key) throw new Error('No Gemini API key is available for native model search.');
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
   const ai = new GoogleGenAI({ apiKey: key });
@@ -322,8 +332,8 @@ const executeNativeGeminiSearch = async (input: SearchExecutionInput, context: a
   };
 };
 
-const executeNativeResponsesSearch = async (input: SearchExecutionInput, context: any, capability: NativeModelSearchCapability): Promise<NormalizedSearchResult> => {
-  const key = nativeModelKey(capability.provider === 'grok' ? 'grok' : 'openai', context);
+const executeNativeResponsesSearch = async (input: SearchExecutionInput, context: any, capability: NativeModelSearchCapability, apiKey?: string): Promise<NormalizedSearchResult> => {
+  const key = apiKey || nativeModelKey(capability.provider === 'grok' ? 'grok' : 'openai', context);
   if (!key) throw new Error(`No ${capability.provider} API key is available for native model search.`);
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
   const provider = capability.provider as 'openai' | 'grok';
@@ -350,8 +360,8 @@ const executeNativeResponsesSearch = async (input: SearchExecutionInput, context
   };
 };
 
-const executeNativeAnthropicSearch = async (input: SearchExecutionInput, context: any, capability: NativeModelSearchCapability): Promise<NormalizedSearchResult> => {
-  const key = nativeModelKey('anthropic', context);
+const executeNativeAnthropicSearch = async (input: SearchExecutionInput, context: any, capability: NativeModelSearchCapability, apiKey?: string): Promise<NormalizedSearchResult> => {
+  const key = apiKey || nativeModelKey('anthropic', context);
   if (!key) throw new Error('No Anthropic API key is available for native model search.');
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
   const client = new Anthropic({ apiKey: key, baseURL: getProviderBaseURL('anthropic'), maxRetries: 0 });
@@ -381,8 +391,8 @@ const executeNativeAnthropicSearch = async (input: SearchExecutionInput, context
   };
 };
 
-const executeNativePerplexitySearch = async (input: SearchExecutionInput, context: any, capability: NativeModelSearchCapability): Promise<NormalizedSearchResult> => {
-  const key = nativeModelKey('perplexity', context);
+const executeNativePerplexitySearch = async (input: SearchExecutionInput, context: any, capability: NativeModelSearchCapability, apiKey?: string): Promise<NormalizedSearchResult> => {
+  const key = apiKey || nativeModelKey('perplexity', context);
   if (!key) throw new Error('No Perplexity API key is available for native model search.');
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
   const client = new OpenAI({ apiKey: key, baseURL: getProviderBaseURL('perplexity'), maxRetries: 0 });
@@ -406,24 +416,28 @@ const executeNativePerplexitySearch = async (input: SearchExecutionInput, contex
 };
 
 async function executeNativeModelSearch(input: SearchExecutionInput, context: any, capability: NativeModelSearchCapability): Promise<NormalizedSearchResult> {
-  switch (capability.provider) {
-    case 'gemini': return executeNativeGeminiSearch(input, context, capability);
-    case 'openai':
-    case 'grok': return executeNativeResponsesSearch(input, context, capability);
-    case 'anthropic': return executeNativeAnthropicSearch(input, context, capability);
-    case 'perplexity': return executeNativePerplexitySearch(input, context, capability);
-    default: throw new Error('Native model search is not available for this provider.');
-  }
+  const keyProvider = capability.provider === 'grok' ? 'grok' : capability.provider;
+  const configuredKeys = context?.runtimeSettings && typeof context.runtimeSettings === 'object'
+    ? getScopedRuntimeApiKeyValues(context.runtimeSettings, keyProvider as RuntimeApiKeyProvider)
+    : [];
+  const keys = configuredKeys.length > 0 ? configuredKeys : [nativeModelKey(keyProvider, context)];
+  if (!keys[0]) throw new Error(`No ${capability.provider} API key is available for native model search.`);
+
+  return withApiKeyRounds(keys, context?.runtimeSettings, apiKey => {
+    switch (capability.provider) {
+      case 'gemini': return executeNativeGeminiSearch(input, context, capability, apiKey);
+      case 'openai':
+      case 'grok': return executeNativeResponsesSearch(input, context, capability, apiKey);
+      case 'anthropic': return executeNativeAnthropicSearch(input, context, capability, apiKey);
+      case 'perplexity': return executeNativePerplexitySearch(input, context, capability, apiKey);
+      default: throw new Error('Native model search is not available for this provider.');
+    }
+  });
 }
 
 const providerBaseURL = (provider: SearchProvider, settings: SearchSettings): string => {
   const meta = SEARCH_PROVIDER_META[provider];
-  // Hosted providers use their documented public API directly. A saved URL is
-  // meaningful only for a provider that explicitly requires an instance URL;
-  // this prevents an old endpoint override from silently changing a normal
-  // hosted connection.
-  if (meta.requiresEndpoint) return settings.baseURLs[provider] || envBaseURL(provider) || meta.defaultBaseURL || '';
-  return meta.defaultBaseURL || envBaseURL(provider) || '';
+  return settings.baseURLs[provider] || envBaseURL(provider) || meta.defaultBaseURL || '';
 };
 
 const requireURL = (provider: SearchProvider, settings: SearchSettings): string => {
@@ -590,12 +604,16 @@ const executeParallel = async (input: SearchExecutionInput, key: string, setting
   const action = input.action || 'search';
   if (action === 'extract') {
     if (!input.urls?.length) throw new Error("Extract action requires the 'urls' array parameter.");
-    const payload = await requestJson(`${requireURL('parallel', settings)}/extract`, {
+  const payload = await requestJson(`${requireURL('parallel', settings)}/extract`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': key },
       body: JSON.stringify({
         urls: input.urls.slice(0, 20),
         objective: input.query || 'Extract the relevant page content for the current research task.',
         max_chars_total: input.includeRawContent ? 40_000 : 12_000,
+        advanced_settings: {
+          excerpt_settings: { max_chars_per_result: input.includeRawContent ? 3_000 : 1_200 },
+          ...(input.includeRawContent ? { full_content: { max_chars_per_result: 50_000 } } : {}),
+        },
       }),
     });
     const items = (payload?.results || []).map((item: any) => ({
@@ -610,7 +628,14 @@ const executeParallel = async (input: SearchExecutionInput, key: string, setting
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
   const payload = await requestJson(`${requireURL('parallel', settings)}/search`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': key },
-    body: JSON.stringify({ objective: input.query, search_queries: [input.query], max_results: Math.min(20, Math.max(1, input.numResults || 5)), max_chars_per_result: input.includeRawContent ? 3000 : 1200 }),
+    body: JSON.stringify({
+      objective: input.query,
+      search_queries: [input.query],
+      max_chars_total: input.includeRawContent ? 40_000 : 12_000,
+      advanced_settings: {
+        excerpt_settings: { max_chars_per_result: input.includeRawContent ? 3_000 : 1_200 },
+      },
+    }),
   });
   return result('parallel', payload, payload?.results, null);
 };
@@ -657,7 +682,7 @@ const executeXai = async (input: SearchExecutionInput, key: string, settings: Se
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
   const payload = await requestJson(`${requireURL('xai', settings)}/responses`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model: 'grok-4.5', input: [{ role: 'user', content: input.query }], tools: [{ type: 'web_search' }] }),
+    body: JSON.stringify({ model: settings.xaiModel, input: [{ role: 'user', content: input.query }], tools: [{ type: 'web_search' }] }),
   });
   const textParts: string[] = [];
   const output = Array.isArray(payload?.output) ? payload.output : [];
@@ -677,15 +702,52 @@ const executeGenericWebAction = async (input: SearchExecutionInput, provider: Se
   const action = input.action || 'search';
   if (action === 'search') throw new Error('Provider search adapter is unavailable.');
   if (action === 'research') {
-    const searched = await executeSearchProvider({ ...input, action: 'search' }, provider, settings);
-    return { ...searched, research: true };
+    if (!input.query) throw new Error("Research action requires the 'query' parameter.");
+    const angles = Array.from(new Set([
+      input.query,
+      `${input.query} key facts evidence sources`,
+      `${input.query} analysis perspectives limitations`,
+    ]));
+    const searches = await Promise.all(angles.map(query => executeSearchProvider({
+      ...input,
+      action: 'search',
+      query,
+      searchDepth: 'advanced',
+      includeAnswer: true,
+      includeRawContent: true,
+      numResults: Math.max(3, Math.min(8, input.numResults || 5)),
+    }, provider, settings)));
+    const seen = new Set<string>();
+    const results = searches.flatMap(search => search.results || []).filter(item => {
+      const key = String(item.url || item.title || '').trim().toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const summaries = searches.map(search => asText(search.ai_summary)).filter(Boolean);
+    return {
+      provider,
+      results,
+      ai_summary: summaries.join('\n\n') || null,
+      research: true,
+      researchAngles: angles,
+    };
   }
   if (!input.urls?.length) throw new Error(`${action} action requires the 'urls' array parameter.`);
+  const readPublicPage = async (url: string, accept: string) => {
+    const response = await safeAxiosRequest<string>({
+      url,
+      method: 'GET',
+      responseType: 'text',
+      timeout: 30_000,
+      maxContentLength: 2 * 1024 * 1024,
+      headers: { Accept: accept, 'User-Agent': 'EterX-Agent/1.0' },
+    });
+    return { raw: String(response.data || ''), contentType: String(response.headers['content-type'] || '') };
+  };
   if (action === 'map') {
     const links = await Promise.all(input.urls.slice(0, 1).map(async url => {
-      const response = await withTimeout(fetch(url, { headers: { Accept: 'text/html', 'User-Agent': 'EterX-Agent/1.0' } }));
-      if (!response.ok) throw new Error(`Source ${response.status}`);
-      const html = await response.text();
+      const { raw: html } = await readPublicPage(url, 'text/html');
       const found = Array.from(html.matchAll(/href=["'](https?:\/\/[^"']+)["']/gi)).map(match => match[1]);
       return Array.from(new Set([url, ...found])).slice(0, input.numResults || 20).map(link => ({ title: link, url: link }));
     }));
@@ -696,10 +758,8 @@ const executeGenericWebAction = async (input: SearchExecutionInput, provider: Se
     return { ...extracted, crawl: true };
   }
   const results = await Promise.all(input.urls.slice(0, 20).map(async url => {
-    const response = await withTimeout(fetch(url, { headers: { Accept: 'text/html, text/plain', 'User-Agent': 'EterX-Agent/1.0' } }));
-    if (!response.ok) throw new Error(`${url} returned ${response.status}`);
-    const raw = await response.text();
-    const content = response.headers.get('content-type')?.includes('html') ? stripHtml(raw) : raw.trim();
+    const { raw, contentType } = await readPublicPage(url, 'text/html, text/plain');
+    const content = contentType.includes('html') ? stripHtml(raw) : raw.trim();
     return { title: url, url, content: content.slice(0, 12_000), rawContent: content.slice(0, 12_000) };
   }));
   return { provider, results: normalizeItems(results), ai_summary: null };
@@ -806,25 +866,34 @@ export async function executeSearchWithFailover(input: SearchExecutionInput, con
       continue;
     }
     attemptedProviders.push(provider);
-    const keys = meta.requiresKey ? providerKeys(provider, settings) : [''];
+    const keys = meta.requiresKey ? providerKeys(provider, settings) : ['__external_service_no_key__'];
     const start = runtimeKeyCursor[provider] || 0;
-    for (let offset = 0; offset < keys.length; offset += 1) {
-      const keyIndex = (start + offset) % keys.length;
-      const key = keys[keyIndex];
-      try {
-        const scopedSettings: SearchSettings = {
-          ...settings,
-          apiKeys: { ...settings.apiKeys, [provider]: key ? [key] : [] },
-        };
-        const response = await executeSearchProvider({ ...input, action }, provider, scopedSettings);
-        runtimeKeyCursor[provider] = (keyIndex + 1) % keys.length;
-        if (response.results.length === 0 && !response.ai_summary && keys.length > 1) {
-          throw new Error('Provider returned no usable results.');
-        }
-        return { ...annotateProviderResponse(response, provider, action), attemptedProviders, failedProviders };
-      } catch (error: any) {
-        failedProviders.push({ provider, error: error?.message || String(error) });
-      }
+    try {
+      const response = await withApiKeyRounds(
+        keys,
+        context?.runtimeSettings,
+        async (roundKey, attempt) => {
+          const keyIndex = (start + attempt) % keys.length;
+          const key = meta.requiresKey ? roundKey : '';
+          const scopedSettings: SearchSettings = {
+            ...settings,
+            apiKeys: { ...settings.apiKeys, [provider]: key ? [key] : [] },
+          };
+          const response = await executeSearchProvider({ ...input, action }, provider, scopedSettings);
+          runtimeKeyCursor[provider] = (keyIndex + 1) % keys.length;
+          if (response.results.length === 0 && !response.ai_summary) {
+            throw new Error('Provider returned no usable results.');
+          }
+          return { ...annotateProviderResponse(response, provider, action), attemptedProviders, failedProviders };
+        },
+        undefined,
+        (_attempt, _totalAttempts, error) => {
+          failedProviders.push({ provider, error: error instanceof Error ? error.message : String(error) });
+        },
+      );
+      return response;
+    } catch (error: any) {
+      failedProviders.push({ provider, error: error?.message || String(error) });
     }
   }
 

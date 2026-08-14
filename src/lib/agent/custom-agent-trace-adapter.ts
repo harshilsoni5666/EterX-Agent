@@ -1,6 +1,5 @@
 import {
   buildToolTraceFields,
-  getToolDisplayLabel,
   normalizeToolTraceName,
   normalizeToolTraceText,
   summarizeTraceValue,
@@ -29,37 +28,20 @@ const randomSuffix = () => Math.random().toString(36).slice(2, 8);
 const formatCustomToolLabel = (toolName: string) => {
   toolName = normalizeToolTraceName(toolName);
   const known: Record<string, string> = {
-    system_shell: 'Running command',
     workspace_run_command: 'Running project command',
-    workspace_list_directory: 'Scanning directory',
-    workspace_read_file: 'Reading file',
-    workspace_write_file: 'Writing artifact',
     workspace_edit_file: 'Editing file',
-    workspace_apply_patch: 'Patching files',
-    workspace_search_text: 'Searching codebase',
-    code_intelligence: 'Analyzing code',
-    realtime_verify: 'Verifying output',
-    workspace_verify_code: 'Verifying code',
-    file_compression: 'Compressing files',
     desktop_notification: 'Notifying',
     plan_organization: 'Planning organization',
     ask_user: 'Asking user',
     web_search: 'Researching',
-    web_scraper: 'Reading source',
     browser_search: 'Researching',
     browser_control: 'Using browser',
-    api_caller: 'API request',
-    calculator: 'Calculating',
-    csv_analyzer: 'Analyzing data',
     image_generator: 'Generating image',
     video_generator: 'Generating video',
     screenshot_capture: 'Capturing screen',
-    json_yaml_transform: 'Transforming data',
     gateway_bridge: 'Using Gateway channel',
     channel_agent: 'Using channel agent',
     connector_mcp: 'Using connected service',
-    slack_controller: 'Slack operation',
-    tool_finder: 'Finding tool',
   };
   if (known[toolName]) return known[toolName];
   return String(toolName || 'Running tool')
@@ -106,42 +88,19 @@ const getCustomToolLogType = (toolName: string): CustomToolLogType => {
 const getCustomToolUi = (toolName: string): CustomToolUi => {
   toolName = normalizeToolTraceName(toolName);
   const known: Record<string, CustomToolUi> = {
-    system_shell: { text: 'Running command', type: 'command', iconCategory: 'terminal', argKeys: ['command'] },
-    workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKeys: ['command'] },
-    workspace_list_directory: { text: 'Scanning directory', type: 'exploration', iconCategory: 'folder_read', argKeys: ['directory', 'dir', 'path'] },
-    workspace_semantic_search: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKeys: ['query', 'question'] },
-    workspace_file_outline: { text: 'Outlining file', type: 'exploration', iconCategory: 'file_read', argKeys: ['filename', 'path', 'file'] },
-    workspace_str_replace: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['filename', 'filePath', 'file_path', 'path', 'file'] },
-    workspace_apply_patch: { text: 'Patching files', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['patch', 'content', 'diff'] },
-    workspace_find_files: { text: 'Finding files', type: 'exploration', iconCategory: 'search', argKeys: ['glob', 'directory'] },
-    workspace_read_file: { text: 'Reading file', type: 'exploration', iconCategory: 'file_read', argKeys: ['filename', 'filePath', 'file_path', 'path'] },
-    workspace_read_many_files: { text: 'Reading files', type: 'exploration', iconCategory: 'file_read', argKeys: ['files'] },
-    workspace_write_file: { text: 'Writing artifact', type: 'file_edit', iconCategory: 'file_create', argKeys: ['filename', 'filePath', 'file_path', 'path'] },
-    workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['filename', 'filePath', 'file_path', 'path'] },
-    workspace_edit_many_files: { text: 'Editing files', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['edits', 'files'] },
-    workspace_search_text: { text: 'Searching codebase', type: 'exploration', iconCategory: 'search', argKeys: ['pattern', 'query', 'directory'] },
-    tool_finder: { text: 'Finding tool', type: 'exploration', iconCategory: 'search', argKeys: ['toolName', 'query'] },
-    code_intelligence: { text: 'Analyzing code', type: 'exploration', iconCategory: 'search', argKeys: ['target', 'path', 'query'] },
-    realtime_verify: { text: 'Verifying output', type: 'command', iconCategory: 'verification', argKeys: ['target', 'mode', 'checkType'] },
-    workspace_verify_code: { text: 'Verifying code', type: 'command', iconCategory: 'verification', argKeys: ['checkType', 'filename', 'path'] },
-    file_compression: { text: 'Compressing files', type: 'file_edit', iconCategory: 'file_create', argKeys: ['source', 'sourcePath', 'path', 'targetPath'] },
+    workspace_run_command: { text: 'Running project command', type: 'command', iconCategory: 'terminal', argKeys: ['command', 'commands', 'taskId', 'mode'] },
+    workspace_edit_file: { text: 'Editing file', type: 'file_edit', iconCategory: 'file_edit', argKeys: ['filename', 'files', 'filePath', 'file_path', 'path'] },
     desktop_notification: { text: 'Notifying', type: 'communication', iconCategory: 'computer', argKeys: ['title', 'message'] },
     plan_organization: { text: 'Planning organization', type: 'exploration', iconCategory: 'search', argKeys: ['goal', 'request', 'target'] },
     web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKeys: ['query'] },
-    web_scraper: { text: 'Reading source', type: 'exploration', iconCategory: 'web_search', argKeys: ['url'] },
     browser_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKeys: ['query'] },
     browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'computer', argKeys: ['action', 'url'] },
-    api_caller: { text: 'API request', type: 'exploration', iconCategory: 'computer', argKeys: ['url', 'method'] },
-    calculator: { text: 'Calculating', type: 'command', iconCategory: 'computer', argKeys: ['expression'] },
-    csv_analyzer: { text: 'Analyzing data', type: 'exploration', iconCategory: 'search', argKeys: ['filename', 'path'] },
     image_generator: { text: 'Generating image', type: 'file_edit', iconCategory: 'image', argKeys: ['prompt', 'filename'] },
     video_generator: { text: 'Generating video', type: 'file_edit', iconCategory: 'image', argKeys: ['prompt', 'filename'] },
     screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKeys: ['target', 'filename'] },
-    json_yaml_transform: { text: 'Transforming data', type: 'command', iconCategory: 'computer', argKeys: ['operation'] },
     gateway_bridge: { text: 'Using Gateway channel', type: 'communication', iconCategory: 'connector', argKeys: ['platform', 'channel', 'action', 'target'] },
     channel_agent: { text: 'Using channel agent', type: 'communication', iconCategory: 'connector', argKeys: ['profile_id', 'action', 'conversation_id'] },
     connector_mcp: { text: 'Using connected service', type: 'communication', iconCategory: 'connector', argKeys: ['connector_id', 'connectorId', 'server_id', 'action'] },
-    slack_controller: { text: 'Slack operation', type: 'communication', iconCategory: 'connector', argKeys: ['action', 'channel', 'target'] },
   };
 
   if (known[toolName]) return known[toolName];
@@ -183,29 +142,6 @@ const cleanActionText = (value: any, fallback: string) =>
     .replace(/^(?:step\s+\d+[:\s.]*|\[\s*step\s+\d+\s*\]\s*|\(\s*step\s+\d+\s*\)\s*|\(\s*\d+\s*\)\s*|\[\s*\d+(?:\/\d+)?\s*\]\s*|\d+[.:]\s*)/i, '')
     .replace(/[^\S\r\n]+/g, ' ')
     .trim() || fallback;
-
-const languageFromFilename = (filename: string) => {
-  const ext = filename.toLowerCase().match(/\.[^.\\/]+$/)?.[0] || '';
-  const map: Record<string, string> = {
-    '.ts': 'typescript',
-    '.tsx': 'tsx',
-    '.js': 'javascript',
-    '.jsx': 'jsx',
-    '.py': 'python',
-    '.css': 'css',
-    '.html': 'html',
-    '.htm': 'html',
-    '.json': 'json',
-    '.md': 'markdown',
-    '.yaml': 'yaml',
-    '.yml': 'yaml',
-    '.sh': 'bash',
-    '.ps1': 'powershell',
-    '.sql': 'sql',
-    '.txt': 'text',
-  };
-  return map[ext] || 'text';
-};
 
 export const formatVisibleCustomWorkNote = (value: string, maxLength = 720): string => {
   let text = String(value || '')
@@ -297,14 +233,11 @@ export const createCustomToolActionLog = (
   ]);
   const query = getCustomToolArg(args, ['query', 'pattern', 'search', 'goal', 'request']);
   let secondary = normalizeToolTraceText(traceFields.secondary || preferredSecondary || command || primaryPath || query);
-  if (toolName === 'tool_finder') {
-    secondary = getToolDisplayLabel(args?.toolName || args?.query || 'tool_finder');
-  }
   const type = ui.type === 'ask_user' ? 'exploration' : ui.type;
   const shouldLinkFile = ['file_read', 'file_edit', 'file_create'].includes(ui.iconCategory)
     || /workspace_(?:read|write|edit)_file|docx|pdf|csv|markdown|chart|image/i.test(toolName);
   const linkedFile = shouldLinkFile ? (traceFields.filename || filePath || primaryPath) : '';
-  const isConnectorTool = ui.type === 'communication' || ['channel_agent', 'gateway_bridge', 'connector_mcp', 'slack_controller'].includes(toolName);
+  const isConnectorTool = ui.type === 'communication' || ['channel_agent', 'gateway_bridge', 'connector_mcp'].includes(toolName);
   const iconCategory = isConnectorTool ? 'connector' : (mapCustomUiIcon(args?.uiIcon) || (command ? 'terminal' : ui.iconCategory));
   return {
     id: `custom_tool_${startedAt}_${toolName}_${randomSuffix()}`,
@@ -378,7 +311,7 @@ export const createCustomToolResultLogs = (
 
   // terminal_background already streams the command's output and emits its
   // final event. Do not manufacture a second console card from tool_result.
-  if (!result?._consoleTraceEmitted && (active.command || /(?:system_shell|workspace_run_command)/i.test(active.toolName)) && resultText) {
+  if (!result?._consoleTraceEmitted && (active.command || active.toolName === 'workspace_run_command') && resultText) {
     logs.push({
       id: `custom_console_${at}_${randomSuffix()}`,
       type: 'console_output',
@@ -398,52 +331,14 @@ export const createCustomToolResultLogs = (
     });
   }
 
-  if (active.filename && active.toolName === 'workspace_read_file' && typeof result?.content === 'string') {
-    logs.push({
-      id: `custom_preview_${at}_${randomSuffix()}`,
-      type: 'file_preview',
-      filename: active.filename,
-      filepath: result.path || active.filename,
-      content: result.content,
-      language: languageFromFilename(active.filename),
-      isEdit: false,
-      ownerTraceId: active.id,
-      dedupe: false,
-      startTime: at,
-      endTime: at,
-      timestamp: at,
-    });
-  }
-
-  if (active.filename && active.toolName === 'workspace_write_file' && typeof active.toolArgs?.content === 'string') {
-    logs.push({
-      id: `custom_preview_${at}_${randomSuffix()}`,
-      type: 'file_preview',
-      filename: active.filename,
-      filepath: result?.path || active.filename,
-      content: active.toolArgs.content,
-      language: languageFromFilename(active.filename),
-      lineCount: active.toolArgs.content.split('\n').length,
-      linesAdded: active.toolArgs.content.split('\n').length,
-      linesRemoved: 0,
-      isEdit: false,
-      ownerTraceId: active.id,
-      dedupe: false,
-      startTime: at,
-      endTime: at,
-      timestamp: at,
-    });
-  }
-
   // --- Add Professional Tool Result Previews ---
   const EXCLUDED_PREVIEW_TOOLS = new Set([
-    'skill_loader', 'screenshot_capture', 'system_automation',
-    'memory_v2', 'desktop_control',
+    'skill_loader', 'screenshot_capture',
     'browser_control', 'checkpoint', 'computer', 'screen_agent'
   ]);
 
   if (result !== undefined && result !== null && !EXCLUDED_PREVIEW_TOOLS.has(active.toolName)) {
-    if (!['workspace_read_file', 'workspace_write_file', 'workspace_edit_file', 'system_shell', 'workspace_run_command'].includes(active.toolName)) {
+    if (!['workspace_edit_file', 'workspace_run_command'].includes(active.toolName)) {
       logs.push({
         id: `custom_result_${at}_${randomSuffix()}`,
         type: 'tool_result_preview',

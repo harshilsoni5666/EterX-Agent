@@ -6,6 +6,15 @@ import {
   type LiveSessionState,
   type LiveSystemEvent,
 } from './agent-live';
+import {
+  DEFAULT_DEEPGRAM_LISTEN_MODEL,
+  DEFAULT_DEEPGRAM_SPEAK_MODEL,
+  DEFAULT_DEEPGRAM_THINK_MODEL,
+  DEFAULT_OPENAI_LIVE_MODEL,
+  DEFAULT_XAI_LIVE_MODEL,
+  DEEPGRAM_MAX_RECONNECT_ATTEMPTS,
+  getDeepgramReconnectDelay,
+} from './live-provider';
 import type { LiveProviderOption } from './live-provider';
 import { appStorage } from '../client-storage';
 
@@ -79,6 +88,75 @@ const readSampleRate = (format: unknown, fallback: number): number => {
   return match ? Number(match[1]) : fallback;
 };
 
+export const parseElevenLabsAudioFormat = (format: unknown, fallback = 16000): { encoding: 'pcm16'; sampleRate: number } => {
+  const value = String(format || '').trim().toLowerCase();
+  if (!value) return { encoding: 'pcm16', sampleRate: fallback };
+  const match = value.match(/^(?:pcm|linear16)[_-](\d{4,6})$/i);
+  if (!match) throw new Error(`Unsupported ElevenLabs audio format: ${value}. Configure the agent for pcm_<sample_rate>.`);
+  const sampleRate = Number(match[1]);
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) throw new Error(`Invalid ElevenLabs audio sample rate: ${value}.`);
+  return { encoding: 'pcm16', sampleRate };
+};
+
+export const createElevenLabsInitiationMessage = (instructions: string, voice?: string): Record<string, unknown> => ({
+  type: 'conversation_initiation_client_data',
+  conversation_config_override: {
+    agent: { prompt: { prompt: instructions } },
+    ...(voice ? { tts: { voice_id: voice } } : {}),
+  },
+});
+
+export const shouldSendElevenLabsToolResult = (expectsResponse: unknown): boolean => expectsResponse !== false;
+
+export const XAI_LIVE_INPUT_SAMPLE_RATE = 24_000;
+export const XAI_LIVE_OUTPUT_SAMPLE_RATE = 24_000;
+export const XAI_LIVE_PRE_READY_AUDIO_MAX_MS = 2_000;
+const XAI_LIVE_MAX_RECONNECT_ATTEMPTS = 5;
+
+export const buildXaiRealtimeUrl = (
+  model = DEFAULT_XAI_LIVE_MODEL,
+  conversationId?: string | null,
+): string => {
+  const params = new URLSearchParams({ model: String(model || DEFAULT_XAI_LIVE_MODEL) });
+  if (conversationId) params.set('conversation_id', conversationId);
+  return `wss://api.x.ai/v1/realtime?${params.toString()}`;
+};
+
+export const buildXaiSessionUpdate = (options: {
+  instructions: string;
+  voice?: string;
+  tools?: Array<Record<string, unknown>>;
+  resume?: boolean;
+}) => ({
+  type: 'session.update',
+  session: {
+    instructions: options.instructions,
+    voice: options.voice && options.voice !== 'auto' ? options.voice : 'eve',
+    turn_detection: { type: 'server_vad' },
+    audio: {
+      input: {
+        format: { type: 'audio/pcm', rate: XAI_LIVE_INPUT_SAMPLE_RATE },
+        transcription: { model: 'grok-transcribe' },
+      },
+      output: { format: { type: 'audio/pcm', rate: XAI_LIVE_OUTPUT_SAMPLE_RATE } },
+    },
+    ...(options.tools?.length ? { tools: options.tools } : {}),
+    ...(options.resume === false ? {} : { resumption: { enabled: true } }),
+  },
+});
+
+export const buildXaiFunctionCallOutput = (callId: string, output: string) => ({
+  type: 'conversation.item.create',
+  item: { type: 'function_call_output', call_id: callId, output },
+});
+
+export const buildXaiTruncateEvent = (itemId: string, audioEndMs: number) => ({
+  type: 'conversation.item.truncate',
+  item_id: itemId,
+  content_index: 0,
+  audio_end_ms: Math.max(0, Math.floor(audioEndMs)),
+});
+
 /**
  * Native adapters for providers whose documentation exposes a complete
  * realtime voice session. The browser never receives a long-lived provider
@@ -131,6 +209,27 @@ export class ProviderLiveSession implements LiveSession {
   private pendingTurnCompletion: { input: string; output: string; internal: boolean } | null = null;
   private providerKeepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private elevenLabsInputSampleRate = 16000;
+  private elevenLabsInterruptionPending = false;
+  private elevenLabsInterruptionTimer: ReturnType<typeof setTimeout> | null = null;
+  private elevenLabsInterruptedTurnFinalized = false;
+  private xaiConversationId: string | null = null;
+  private xaiTokenExpiresAt?: number;
+  private xaiSessionReady = false;
+  private xaiPreReadyAudioChunks: string[] = [];
+  private xaiPreReadyAudioBytes = 0;
+  private xaiReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private xaiCredentialRenewalTimer: ReturnType<typeof setTimeout> | null = null;
+  private xaiReconnectAttempts = 0;
+  private xaiReconnectInFlight = false;
+  private xaiPendingResponseCreate = false;
+  private xaiPlaybackWaitTimer: ReturnType<typeof setTimeout> | null = null;
+  private xaiCurrentAssistantItemId: string | null = null;
+  private xaiAssistantAudioStartTime = 0;
+  private xaiAssistantAudioDurationMs = 0;
+  private deepgramLastAudioAt = 0;
+  private deepgramReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private deepgramReconnectAttempts = 0;
+  private deepgramReconnectInFlight = false;
 
   constructor(
     _apiKey: string,
@@ -252,6 +351,163 @@ export class ProviderLiveSession implements LiveSession {
       memory ? `Relevant memory:\n- ${memory}` : '',
       history ? `Recent conversation:\n${history}` : '',
     ].filter(Boolean).join('\n\n');
+  }
+
+  private clearXaiPlaybackWait(): void {
+    this.xaiPendingResponseCreate = false;
+    if (this.xaiPlaybackWaitTimer) {
+      clearTimeout(this.xaiPlaybackWaitTimer);
+      this.xaiPlaybackWaitTimer = null;
+    }
+  }
+
+  private resetXaiAssistantPlaybackTracking(): void {
+    this.xaiCurrentAssistantItemId = null;
+    this.xaiAssistantAudioStartTime = 0;
+    this.xaiAssistantAudioDurationMs = 0;
+  }
+
+  private queueXaiPreReadyAudio(audio: string): void {
+    if (!audio) return;
+    const estimatedBytes = Math.max(1, Math.floor(audio.length * 0.75));
+    const maxBytes = Math.floor(
+      XAI_LIVE_INPUT_SAMPLE_RATE * 2 * (XAI_LIVE_PRE_READY_AUDIO_MAX_MS / 1_000),
+    );
+    if (estimatedBytes > maxBytes) return;
+    while (this.xaiPreReadyAudioBytes + estimatedBytes > maxBytes && this.xaiPreReadyAudioChunks.length > 0) {
+      const dropped = this.xaiPreReadyAudioChunks.shift() || '';
+      this.xaiPreReadyAudioBytes = Math.max(0, this.xaiPreReadyAudioBytes - Math.floor(dropped.length * 0.75));
+    }
+    this.xaiPreReadyAudioChunks.push(audio);
+    this.xaiPreReadyAudioBytes += estimatedBytes;
+  }
+
+  private flushXaiPreReadyAudio(attempt: number): void {
+    if (
+      !this.isCurrentAttempt(attempt) ||
+      this.provider.transport !== 'xai-native' ||
+      !this.xaiSessionReady ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN
+    ) return;
+    const chunks = this.xaiPreReadyAudioChunks;
+    this.xaiPreReadyAudioChunks = [];
+    this.xaiPreReadyAudioBytes = 0;
+    for (let index = 0; index < chunks.length; index += 1) {
+      if (this.sendJson({ type: 'input_audio_buffer.append', audio: chunks[index] })) continue;
+      for (let remaining = index; remaining < chunks.length; remaining += 1) {
+        this.queueXaiPreReadyAudio(chunks[remaining]);
+      }
+      break;
+    }
+  }
+
+  private scheduleXaiCredentialRenewal(attempt: number, expiresAt?: number): void {
+    if (this.xaiCredentialRenewalTimer) clearTimeout(this.xaiCredentialRenewalTimer);
+    this.xaiCredentialRenewalTimer = null;
+    if (!expiresAt) return;
+    const expiryMs = expiresAt > 1_000_000_000_000 ? expiresAt : expiresAt * 1_000;
+    const delay = Math.max(1_000, expiryMs - Date.now() - 30_000);
+    this.xaiCredentialRenewalTimer = setTimeout(() => {
+      this.xaiCredentialRenewalTimer = null;
+      if (this.isCurrentAttempt(attempt)) this.scheduleXaiReconnect(attempt, 'xAI ephemeral credential renewal');
+    }, delay);
+  }
+
+  private scheduleXaiReconnect(attempt: number, reason: string): void {
+    if (
+      !this.isCurrentAttempt(attempt) ||
+      this.manualDisconnect ||
+      this.xaiReconnectTimer ||
+      this.xaiReconnectInFlight
+    ) return;
+    this.xaiSessionReady = false;
+    this.audioReady = false;
+    this.clearXaiPlaybackWait();
+    this.flushPlayback();
+    if (this.xaiReconnectAttempts >= XAI_LIVE_MAX_RECONNECT_ATTEMPTS) {
+      const error = new Error(`xAI realtime connection could not recover after ${XAI_LIVE_MAX_RECONNECT_ATTEMPTS} attempts: ${reason}`);
+      if (this.rejectConnectionReady(attempt, error)) return;
+      this.callbacks.onError(error.message);
+      this.cleanup();
+      this.setState('error');
+      return;
+    }
+    const reconnectAttempt = ++this.xaiReconnectAttempts;
+    const delay = Math.min(8_000, 250 * (2 ** (reconnectAttempt - 1)));
+    this.setState('connecting');
+    this.xaiReconnectTimer = setTimeout(() => {
+      this.xaiReconnectTimer = null;
+      if (!this.isCurrentAttempt(attempt)) return;
+      this.xaiReconnectInFlight = true;
+      void this.connectXai(attempt)
+        .catch(error => {
+          if (this.isCurrentAttempt(attempt)) {
+            this.scheduleXaiReconnect(attempt, getErrorMessage(error, 'xAI reconnect failed.'));
+          }
+        })
+        .finally(() => { this.xaiReconnectInFlight = false; });
+    }, delay);
+  }
+
+  private requestXaiResponseAfterPlayback(): void {
+    if (this.provider.transport !== 'xai-native' || this.xaiPendingResponseCreate) return;
+    this.xaiPendingResponseCreate = true;
+    const waitForPlayback = () => {
+      this.xaiPlaybackWaitTimer = null;
+      if (!this.isCurrentAttempt(this.lifecycleId) || !this.xaiPendingResponseCreate) return;
+      const playbackPending = this.activeSources.length > 0 || Boolean(
+        this.playbackContext && this.playbackContext.currentTime + 0.02 < this.nextPlayTime,
+      );
+      if (!playbackPending) {
+        this.xaiPendingResponseCreate = false;
+        this.sendJson({ type: 'response.create' });
+        return;
+      }
+      this.xaiPlaybackWaitTimer = setTimeout(waitForPlayback, 25);
+    };
+    waitForPlayback();
+  }
+
+  private truncateXaiAssistantHistory(): void {
+    if (this.provider.transport !== 'xai-native' || !this.xaiCurrentAssistantItemId) return;
+    const elapsedMs = this.playbackContext && this.xaiAssistantAudioStartTime
+      ? (this.playbackContext.currentTime - this.xaiAssistantAudioStartTime) * 1_000
+      : 0;
+    const audioEndMs = Math.min(this.xaiAssistantAudioDurationMs, Math.max(0, elapsedMs));
+    this.sendJson(buildXaiTruncateEvent(this.xaiCurrentAssistantItemId, audioEndMs));
+    this.resetXaiAssistantPlaybackTracking();
+  }
+
+  private scheduleDeepgramReconnect(attempt: number, reason: string): void {
+    if (
+      !this.isCurrentAttempt(attempt) ||
+      this.manualDisconnect ||
+      this.deepgramReconnectTimer ||
+      this.deepgramReconnectInFlight
+    ) return;
+    if (this.deepgramReconnectAttempts >= DEEPGRAM_MAX_RECONNECT_ATTEMPTS) {
+      const error = new Error(`Deepgram Voice Agent could not recover after ${DEEPGRAM_MAX_RECONNECT_ATTEMPTS} attempts: ${reason}`);
+      if (this.rejectConnectionReady(attempt, error)) return;
+      this.callbacks.onError(error.message);
+      this.cleanup();
+      this.setState('error');
+      return;
+    }
+    const reconnectAttempt = ++this.deepgramReconnectAttempts;
+    this.setState('connecting');
+    this.deepgramReconnectTimer = setTimeout(() => {
+      this.deepgramReconnectTimer = null;
+      if (!this.isCurrentAttempt(attempt)) return;
+      this.deepgramReconnectInFlight = true;
+      void this.connectDeepgram(attempt)
+        .catch(error => {
+          if (this.isCurrentAttempt(attempt)) {
+            this.scheduleDeepgramReconnect(attempt, getErrorMessage(error, 'Deepgram reconnect failed.'));
+          }
+        })
+        .finally(() => { this.deepgramReconnectInFlight = false; });
+    }, getDeepgramReconnectDelay(reconnectAttempt));
   }
 
   private realtimeTools(): Array<Record<string, unknown>> {
@@ -462,7 +718,7 @@ export class ProviderLiveSession implements LiveSession {
         type: 'session.update',
         session: {
           type: 'realtime',
-          model: this.options.model && this.options.model !== 'auto' ? this.options.model : 'gpt-realtime-2.1',
+          model: this.options.model && this.options.model !== 'auto' ? this.options.model : DEFAULT_OPENAI_LIVE_MODEL,
           instructions: this.sessionInstructions(),
            audio: {
             input: {
@@ -506,11 +762,18 @@ export class ProviderLiveSession implements LiveSession {
     await peer.setLocalDescription(offer);
     const response = await fetch('https://api.openai.com/v1/realtime/calls', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/sdp' },
-      body: offer.sdp,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/sdp',
+      },
+      body: offer.sdp || (() => { throw new Error('OpenAI did not receive a local WebRTC SDP offer.'); })(),
     });
-    if (!response.ok) throw new Error(`OpenAI realtime call failed (${response.status}).`);
-    await peer.setRemoteDescription({ type: 'answer', sdp: await response.text() });
+    const answerSdp = await response.text();
+    if (!response.ok) {
+      throw new Error(`OpenAI realtime call failed (${response.status}): ${answerSdp.slice(0, 600)}`);
+    }
+    if (!answerSdp.trim()) throw new Error('OpenAI realtime call returned an empty SDP answer.');
+    await peer.setRemoteDescription({ type: 'answer', sdp: answerSdp });
     if (!this.isCurrentAttempt(attempt) || this.peerConnection !== peer) {
       throw new Error('OpenAI Live connection was cancelled.');
     }
@@ -521,25 +784,21 @@ export class ProviderLiveSession implements LiveSession {
     if (!this.isCurrentAttempt(attempt)) throw new Error('xAI Live connection was cancelled.');
     const token = String(auth.token || auth.value || '').trim();
     if (!token) throw new Error('xAI did not return an ephemeral realtime client secret.');
-    const model = encodeURIComponent(this.options.model && this.options.model !== 'auto' ? this.options.model : 'grok-voice-latest');
-    const socket = new WebSocket(`wss://api.x.ai/v1/realtime?model=${model}`, [`xai-client-secret.${token}`]);
+    this.xaiTokenExpiresAt = Number(auth.expiresAt) || undefined;
+    this.scheduleXaiCredentialRenewal(attempt, this.xaiTokenExpiresAt);
+    const model = this.options.model && this.options.model !== 'auto' ? this.options.model : DEFAULT_XAI_LIVE_MODEL;
+    const socket = new WebSocket(buildXaiRealtimeUrl(model, this.xaiConversationId), [`xai-client-secret.${token}`]);
     this.ws = socket;
+    this.xaiSessionReady = false;
     socket.onopen = () => {
       if (!this.isCurrentAttempt(attempt) || this.ws !== socket) return;
       void (async () => {
-        this.sendJson({
-          type: 'session.update',
-          session: {
-            instructions: this.sessionInstructions(),
-            voice: this.options.voice && this.options.voice !== 'auto' ? this.options.voice : 'eve',
-            audio: {
-              input: { format: { type: 'audio/pcm', rate: 24000 }, transcription: { model: 'grok-transcribe' }, turn_detection: { type: 'server_vad' } },
-              output: { format: { type: 'audio/pcm', rate: 24000 } },
-            },
-            tools: this.realtimeTools(),
-            tool_choice: 'auto',
-          },
-        });
+        const sent = this.sendJson(buildXaiSessionUpdate({
+          instructions: this.sessionInstructions(),
+          voice: this.options.voice,
+          tools: this.realtimeTools(),
+        }));
+        if (!sent) throw new Error('xAI realtime session setup could not be sent.');
         if (this.options.audioInputEnabled !== false) await this.startPcmCapture(24000, attempt);
       })().catch(error => {
         if (!this.isCurrentAttempt(attempt) || this.ws !== socket) return;
@@ -563,11 +822,7 @@ export class ProviderLiveSession implements LiveSession {
       if (!this.isCurrentAttempt(attempt) || this.ws !== socket) return;
       const message = `xAI realtime connection closed${event.reason ? `: ${event.reason}` : '.'}`;
       if (this.rejectConnectionReady(attempt, new Error(message))) return;
-      if (this.state !== 'idle' && this.state !== 'error') {
-        this.callbacks.onError(message);
-        this.cleanup();
-        this.setState('error');
-      }
+      this.scheduleXaiReconnect(attempt, message);
     };
   }
 
@@ -576,7 +831,10 @@ export class ProviderLiveSession implements LiveSession {
     if (!this.isCurrentAttempt(attempt)) throw new Error('Deepgram Live connection was cancelled.');
     const token = String(auth.token || auth.accessToken || '').trim();
     if (!token) throw new Error('Deepgram did not return a temporary Voice Agent token.');
-    const socket = new WebSocket('wss://agent.deepgram.com/v1/agent/converse', ['token', token]);
+    // The session route mints a short-lived JWT via /v1/auth/grant. Deepgram
+    // requires bearer authentication for that credential; `token` is reserved
+    // for a long-lived API key in the browser subprotocol.
+    const socket = new WebSocket('wss://agent.deepgram.com/v1/agent/converse', ['bearer', token]);
     this.ws = socket;
     socket.binaryType = 'arraybuffer';
     socket.onopen = () => {
@@ -598,16 +856,16 @@ export class ProviderLiveSession implements LiveSession {
       if (!this.isCurrentAttempt(attempt) || this.ws !== socket) return;
       const message = `Deepgram Voice Agent connection closed${event.reason ? `: ${event.reason}` : '.'}`;
       if (this.rejectConnectionReady(attempt, new Error(message))) return;
-      if (this.state !== 'idle' && this.state !== 'error') {
-        this.callbacks.onError(message);
-        this.cleanup();
-        this.setState('error');
-      }
+      this.scheduleDeepgramReconnect(attempt, message);
     };
   }
 
   private async connectElevenLabs(attempt: number): Promise<void> {
+    const microphonePromise = this.options.audioInputEnabled !== false
+      ? this.startPcmCapture(this.elevenLabsInputSampleRate, attempt)
+      : Promise.resolve();
     const auth = await this.getSessionAuth();
+    await microphonePromise;
     if (!this.isCurrentAttempt(attempt)) throw new Error('ElevenLabs Live connection was cancelled.');
     const signedUrl = String(auth.signedUrl || '').trim();
     if (!signedUrl) throw new Error('ElevenLabs did not return a signed conversation URL. Set an agent ID in Live settings.');
@@ -615,23 +873,12 @@ export class ProviderLiveSession implements LiveSession {
     this.ws = socket;
     socket.onopen = () => {
       if (!this.isCurrentAttempt(attempt) || this.ws !== socket) return;
-      void (async () => {
-        const voice = this.options.voice && !['auto', 'agent-default'].includes(this.options.voice)
-          ? this.options.voice
-          : '';
-        this.sendJson({
-          type: 'conversation_initiation_client_data',
-          ...(voice ? { conversation_config_override: { tts: { voice_id: voice } } } : {}),
-        });
-      })().catch(error => {
-        if (!this.isCurrentAttempt(attempt) || this.ws !== socket) return;
-        const message = getErrorMessage(error, 'ElevenLabs microphone capture could not start.');
-        if (!this.rejectConnectionReady(attempt, new Error(message))) {
-          this.callbacks.onError(message);
-          this.cleanup();
-          this.setState('error');
-        }
-      });
+      const voice = this.options.voice && !['auto', 'agent-default'].includes(this.options.voice)
+        ? this.options.voice
+        : '';
+      if (!this.sendJson(createElevenLabsInitiationMessage(this.sessionInstructions(), voice))) {
+        this.rejectConnectionReady(attempt, new Error('ElevenLabs conversation initialization could not be sent.'));
+      }
     };
     socket.onmessage = event => {
       if (!this.isCurrentAttempt(attempt) || this.ws !== socket) return;
@@ -711,14 +958,21 @@ export class ProviderLiveSession implements LiveSession {
       let sum = 0;
       for (let index = 0; index < input.length; index += 1) sum += input[index] * input[index];
       this.callbacks.onMicVolume?.(Math.min(100, Math.round(Math.sqrt(sum / input.length) * 400)));
-      const base64 = pcm16ToBase64(input, sourceRate, targetSampleRate);
+      const effectiveTargetRate = this.provider.transport === 'elevenlabs-native'
+        ? this.elevenLabsInputSampleRate
+        : targetSampleRate;
+      const base64 = pcm16ToBase64(input, sourceRate, effectiveTargetRate);
       if (this.provider.transport === 'deepgram-native') {
         if (this.ws?.readyState === WebSocket.OPEN && this.audioReady) {
+          this.deepgramLastAudioAt = Date.now();
           const bytes = base64ToBytes(base64);
           this.ws.send(bytes.buffer as ArrayBuffer);
         }
       } else if (this.provider.transport === 'xai-native') {
-        this.sendJson({ type: 'input_audio_buffer.append', audio: base64 });
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          if (this.xaiSessionReady) this.sendJson({ type: 'input_audio_buffer.append', audio: base64 });
+          else this.queueXaiPreReadyAudio(base64);
+        }
       } else if (this.provider.transport === 'elevenlabs-native') {
         this.sendJson({ user_audio_chunk: base64 });
       }
@@ -741,14 +995,14 @@ export class ProviderLiveSession implements LiveSession {
     this.sendJson({
       type: 'Settings',
       audio: {
-        input: { encoding: 'linear16', sample_rate: 24000 },
+        input: { encoding: 'linear16', sample_rate: 16000 },
         output: { encoding: 'linear16', sample_rate: 24000, container: 'none' },
       },
       agent: {
         context: { messages: this.options.initialContext?.chatHistory?.slice(-20).map(item => ({ type: 'History', role: item.role === 'model' ? 'assistant' : item.role, content: item.text })) || [] },
-        listen: { provider: { type: 'deepgram', model: this.options.model && this.options.model !== 'auto' ? this.options.model : 'flux-general-en', version: 'v2', language: 'en' } },
-        think: { prompt: this.sessionInstructions(), functions },
-        speak: { provider: { type: 'deepgram', model: this.options.voice && this.options.voice !== 'auto' ? this.options.voice : 'aura-2-thalia-en' } },
+        listen: { provider: { type: 'deepgram', model: this.options.model && this.options.model !== 'auto' ? this.options.model : DEFAULT_DEEPGRAM_LISTEN_MODEL, version: 'v2', language: 'en' } },
+        think: { provider: { type: 'open_ai', model: DEFAULT_DEEPGRAM_THINK_MODEL }, prompt: this.sessionInstructions(), functions },
+        speak: { provider: { type: 'deepgram', model: this.options.voice && this.options.voice !== 'auto' ? this.options.voice : DEFAULT_DEEPGRAM_SPEAK_MODEL } },
       },
     });
   }
@@ -762,6 +1016,31 @@ export class ProviderLiveSession implements LiveSession {
     this.outputTranscript = '';
     this.callbacks.onModelVolume?.(0);
     this.setState('listening');
+  }
+
+  private finalizeElevenLabsInterruption(): void {
+    if (!this.elevenLabsInterruptionPending) return;
+    if (this.elevenLabsInterruptionTimer) {
+      clearTimeout(this.elevenLabsInterruptionTimer);
+      this.elevenLabsInterruptionTimer = null;
+    }
+    this.elevenLabsInterruptionPending = false;
+    this.elevenLabsInterruptedTurnFinalized = true;
+    this.callbacks.onInterrupted();
+    this.internalTextTurn = false;
+    this.inputTranscript = '';
+    this.outputTranscript = '';
+  }
+
+  private beginElevenLabsInterruption(): void {
+    this.pendingTurnCompletion = null;
+    this.elevenLabsInterruptionPending = true;
+    this.elevenLabsInterruptedTurnFinalized = false;
+    this.flushPlayback();
+    this.callbacks.onModelVolume?.(0);
+    this.setState('listening');
+    if (this.elevenLabsInterruptionTimer) clearTimeout(this.elevenLabsInterruptionTimer);
+    this.elevenLabsInterruptionTimer = setTimeout(() => this.finalizeElevenLabsInterruption(), 250);
   }
 
   private completeCurrentTurn(): void {
@@ -935,6 +1214,11 @@ export class ProviderLiveSession implements LiveSession {
   }
 
   private sendRealtimeToolOutput(callId: string, value: unknown, requestResponse: boolean): boolean {
+    if (this.provider.transport === 'xai-native') {
+      const delivered = this.sendJson(buildXaiFunctionCallOutput(callId, this.serializeToolOutput(value)));
+      if (delivered && requestResponse) this.requestXaiResponseAfterPlayback();
+      return delivered;
+    }
     const event = {
       type: 'conversation.item.create',
       item: {
@@ -1067,12 +1351,19 @@ export class ProviderLiveSession implements LiveSession {
       }
       if (type === 'SettingsApplied') {
         this.markTransportReady(attempt);
+        this.deepgramReconnectAttempts = 0;
+        this.deepgramLastAudioAt = Date.now();
         if (this.providerKeepAliveTimer) clearInterval(this.providerKeepAliveTimer);
         this.providerKeepAliveTimer = setInterval(() => {
-          if (this.isCurrentAttempt(attempt)) this.sendJson({ type: 'KeepAlive' });
+          if (
+            this.isCurrentAttempt(attempt) &&
+            Date.now() - this.deepgramLastAudioAt >= 8_000
+          ) {
+            this.sendJson({ type: 'KeepAlive' });
+          }
         }, 8_000);
         if (this.options.audioInputEnabled !== false) {
-          void this.startPcmCapture(24000, attempt).catch(error => {
+          void this.startPcmCapture(16000, attempt).catch(error => {
             this.failProvider(attempt, getErrorMessage(error, 'Deepgram microphone capture could not start.'));
           });
         }
@@ -1116,14 +1407,25 @@ export class ProviderLiveSession implements LiveSession {
         this.completeCurrentTurn();
       }
       if (type === 'Error') this.failProvider(attempt, String(message.description || 'Deepgram Voice Agent error.'));
+      if (type === 'Warning') {
+        this.callbacks.onError(`Deepgram Voice Agent warning: ${String(message.description || message.message || 'provider warning')}`);
+      }
+      if (type === 'InjectionRefused') {
+        this.callbacks.onError(`Deepgram Voice Agent injection refused: ${String(message.description || message.message || 'message was refused')}`);
+      }
       return;
     }
 
     if (this.provider.transport === 'elevenlabs-native') {
       if (type === 'conversation_initiation_metadata') {
         const metadata = message.conversation_initiation_metadata_event || {};
-        this.playbackSampleRate = readSampleRate(metadata.agent_output_audio_format, 16000);
-        this.elevenLabsInputSampleRate = readSampleRate(metadata.user_input_audio_format, 16000);
+        try {
+          this.playbackSampleRate = parseElevenLabsAudioFormat(metadata.agent_output_audio_format, 16000).sampleRate;
+          this.elevenLabsInputSampleRate = parseElevenLabsAudioFormat(metadata.user_input_audio_format, 16000).sampleRate;
+        } catch (error) {
+          this.failProvider(attempt, getErrorMessage(error, 'ElevenLabs returned an unsupported audio format.'));
+          return;
+        }
         this.markTransportReady(attempt);
         if (this.options.audioInputEnabled !== false) {
           void this.startPcmCapture(this.elevenLabsInputSampleRate, attempt).catch(error => {
@@ -1147,12 +1449,18 @@ export class ProviderLiveSession implements LiveSession {
           this.outputTranscript = corrected;
           this.callbacks.onOutputTranscription(corrected);
         }
+        this.finalizeElevenLabsInterruption();
       } else if (type === 'audio') {
         const audio = String(message.audio_event?.audio_base_64 || '');
         if (audio) this.enqueuePcm(base64ToBytes(audio), this.playbackSampleRate);
       } else if (type === 'interruption') {
-        this.interruptCurrentTurn();
+        this.beginElevenLabsInterruption();
       } else if (type === 'agent_response_complete' || type === 'agent_response_done') {
+        if (this.elevenLabsInterruptionPending) this.finalizeElevenLabsInterruption();
+        if (this.elevenLabsInterruptedTurnFinalized) {
+          this.elevenLabsInterruptedTurnFinalized = false;
+          return;
+        }
         this.setState('listening');
         this.completeCurrentTurn();
       } else if (type === 'ping') {
@@ -1162,23 +1470,46 @@ export class ProviderLiveSession implements LiveSession {
         }, delayMs);
       } else if (type === 'client_tool_call') {
         const call = message.client_tool_call || {};
-        void this.handleRealtimeFunctionCall(call.tool_call_id, call.tool_name, call.parameters, attempt, (output, failed) => this.sendJson({
-          type: 'client_tool_result',
-          tool_call_id: String(call.tool_call_id || ''),
-          result: this.serializeToolOutput(output),
-          is_error: failed,
-        }));
+        void this.handleRealtimeFunctionCall(call.tool_call_id, call.tool_name, call.parameters, attempt, (output, failed) => {
+          if (!shouldSendElevenLabsToolResult(call.expects_response)) return true;
+          return this.sendJson({
+            type: 'client_tool_result',
+            tool_call_id: String(call.tool_call_id || ''),
+            result: this.serializeToolOutput(output),
+            is_error: failed,
+          });
+        });
       } else if (type === 'error') {
         this.failProvider(attempt, String(message.message || message.error || 'ElevenLabs conversation error.'));
       }
       return;
     }
 
+    if (this.provider.transport === 'xai-native' && type === 'conversation.created') {
+      const conversationId = message.conversation?.id || message.conversation_id || message.id;
+      if (conversationId) this.xaiConversationId = String(conversationId);
+    }
+    if (
+      this.provider.transport === 'xai-native' &&
+      type === 'response.output_item.added' &&
+      message.item?.type === 'message' &&
+      message.item?.role === 'assistant' &&
+      message.item?.id
+    ) {
+      this.xaiCurrentAssistantItemId = String(message.item.id);
+    }
     if (type === 'session.updated') {
+      if (this.provider.transport === 'xai-native') {
+        this.xaiSessionReady = true;
+        this.xaiReconnectAttempts = 0;
+        this.flushXaiPreReadyAudio(attempt);
+      }
       this.markTransportReady(attempt);
     } else if (type === 'input_audio_buffer.speech_started') {
+      if (this.provider.transport === 'xai-native') this.truncateXaiAssistantHistory();
       this.interruptCurrentTurn();
     } else if (type === 'response.created') {
+      if (this.provider.transport === 'xai-native') this.resetXaiAssistantPlaybackTracking();
       if (this.awaitingToolContinuation && this.activeToolCalls.size === 0) {
         this.awaitingToolContinuation = false;
       }
@@ -1196,7 +1527,19 @@ export class ProviderLiveSession implements LiveSession {
       }
     } else if (type === 'response.output_audio.delta') {
       const audio = String(message.delta || '');
-      if (audio) this.enqueuePcm(base64ToBytes(audio), 24000);
+      if (audio) {
+        const audioBytes = base64ToBytes(audio);
+        if (this.provider.transport === 'xai-native') {
+          const itemId = message.item_id || message.item?.id || message.response?.output_item?.id;
+          if (itemId && !this.xaiCurrentAssistantItemId) this.xaiCurrentAssistantItemId = String(itemId);
+          if (!this.xaiAssistantAudioStartTime) {
+            this.ensurePlayback();
+            this.xaiAssistantAudioStartTime = this.playbackContext?.currentTime || 0;
+          }
+          this.xaiAssistantAudioDurationMs += (audioBytes.byteLength / 2 / XAI_LIVE_OUTPUT_SAMPLE_RATE) * 1_000;
+        }
+        this.enqueuePcm(audioBytes, this.provider.transport === 'xai-native' ? XAI_LIVE_OUTPUT_SAMPLE_RATE : 24000);
+      }
       this.setState('speaking');
     } else if (type === 'response.done') {
       const responseHasFunctionCall = Array.isArray(message.response?.output) &&
@@ -1343,6 +1686,9 @@ export class ProviderLiveSession implements LiveSession {
   }
 
   private sendTextNow(trimmed: string, internal: boolean): boolean {
+    if (this.provider.transport === 'elevenlabs-native' && this.elevenLabsInterruptionPending) {
+      this.finalizeElevenLabsInterruption();
+    }
     let sent = false;
     if (this.provider.transport === 'deepgram-native') {
       sent = this.sendJson({ type: 'InjectUserMessage', content: trimmed });
@@ -1412,6 +1758,35 @@ export class ProviderLiveSession implements LiveSession {
     this.internalTextTurn = false;
     this.awaitingToolContinuation = false;
     this.pendingTurnCompletion = null;
+    if (this.xaiReconnectTimer) {
+      clearTimeout(this.xaiReconnectTimer);
+      this.xaiReconnectTimer = null;
+    }
+    if (this.xaiCredentialRenewalTimer) {
+      clearTimeout(this.xaiCredentialRenewalTimer);
+      this.xaiCredentialRenewalTimer = null;
+    }
+    if (this.deepgramReconnectTimer) {
+      clearTimeout(this.deepgramReconnectTimer);
+      this.deepgramReconnectTimer = null;
+    }
+    this.xaiSessionReady = false;
+    this.xaiReconnectInFlight = false;
+    this.deepgramReconnectInFlight = false;
+    this.xaiReconnectAttempts = 0;
+    this.deepgramReconnectAttempts = 0;
+    this.xaiTokenExpiresAt = undefined;
+    this.xaiPreReadyAudioChunks = [];
+    this.xaiPreReadyAudioBytes = 0;
+    this.clearXaiPlaybackWait();
+    this.resetXaiAssistantPlaybackTracking();
+    this.deepgramLastAudioAt = 0;
+    if (this.elevenLabsInterruptionTimer) {
+      clearTimeout(this.elevenLabsInterruptionTimer);
+      this.elevenLabsInterruptionTimer = null;
+    }
+    this.elevenLabsInterruptionPending = false;
+    this.elevenLabsInterruptedTurnFinalized = false;
     this.pendingTextTurns = [];
     if (this.providerKeepAliveTimer) {
       clearInterval(this.providerKeepAliveTimer);

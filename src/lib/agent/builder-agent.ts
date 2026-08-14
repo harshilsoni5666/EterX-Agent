@@ -59,19 +59,8 @@ export interface AgentBuilderProfile {
  */
 export const AGENT_BUILDER_BASELINE_TOOL_NAMES = [
   'web_search',
-  'web_scraper',
-  'deep_research',
-  'realtime_verify',
-  'calculator',
-  'workspace_read_file',
-  'workspace_read_many_files',
-  'workspace_list_directory',
-  'workspace_search_text',
-  'workspace_write_file',
   'workspace_edit_file',
   'workspace_run_command',
-  'workspace_verify_code',
-  'csv_data_analyzer',
 ] as const;
 
 const CUSTOM_AGENT_TRAINING_MARKER = 'CUSTOM AGENT TRAINING STANDARD v1';
@@ -93,11 +82,11 @@ export function getCustomAgentAllowedToolNames(profile: Partial<AgentBuilderProf
   const names = new Set<string>();
   for (const ref of profile?.directMainTools || []) {
     const name = normalizeRegistryToolName(String(ref?.toolName || '').trim());
-    if (name && name !== 'tool_finder' && !isBuilderOnlyToolName(name)) names.add(name);
+    if (name && !isBuilderOnlyToolName(name)) names.add(name);
   }
   for (const tool of profile?.customTools || []) {
     const name = String(tool?.toolName || '').trim();
-    if (name && name !== 'tool_finder' && tool?.safetyStatus !== 'blocked') names.add(name);
+    if (name && tool?.safetyStatus !== 'blocked') names.add(name);
   }
   return names;
 }
@@ -149,7 +138,7 @@ You are ${agentName}, a configurable custom agent. Adapt your behavior to the us
 ### Real-data and evidence discipline
 1. Treat user-provided files, workspace data, connector results, and verified tool outputs as evidence. Do not invent facts, records, metrics, prices, names, citations, test results, or completed actions.
 2. For current, changing, or high-consequence information, use an appropriate attached research or data tool. Record the source and relevant date, period, units, assumptions, or limitations. Prefer primary or authoritative sources when available.
-3. Distinguish observed data, derived calculations, estimates, scenarios, and recommendations. Use the calculator for arithmetic and verify important transformations, units, and totals.
+3. Distinguish observed data, derived calculations, estimates, scenarios, and recommendations. Use a small terminal script for arithmetic and verify important transformations, units, and totals.
 4. If real data is missing, stale, contradictory, or inaccessible, say exactly what is known, what is not verified, and what input would resolve it. Never turn a placeholder into a factual claim.
 
 ### Tool and recovery behavior
@@ -191,7 +180,7 @@ export function applyAgentBuilderDefaults(profile: AgentBuilderProfile): AgentBu
       'real-data grounding and source evaluation',
       'tool planning and bounded recovery',
     ]),
-    toolUsePolicy: next.toolUsePolicy || 'Use attached tools only when they materially help. For current or consequential claims, gather and verify real evidence; for calculations, use the calculator; for files and actions, verify the result before reporting success.',
+    toolUsePolicy: next.toolUsePolicy || 'Use attached tools only when they materially help. For current or consequential claims, gather and verify real evidence; use the terminal for calculations and checks; use workspace_edit_file for file mutations.',
     completionCriteria: next.completionCriteria || 'The requested outcome is delivered in the appropriate format, material claims are grounded in real evidence, important outputs are verified, and assumptions, limitations, or blockers are explicit.',
     notes: uniqueStrings([...(next.notes || []), 'Adaptive custom-agent training standard applied by Agent Builder.']),
   };
@@ -215,7 +204,7 @@ export function evaluateAgentBuilderProfile(profile: AgentBuilderProfile): {
     { id: 'prompt', label: 'Professional prompt', passed: promptText.length >= 1200 && bespokePromptText.length >= 500 && !/configure this agent according to the builder conversation/i.test(promptText), detail: 'The prompt contains bespoke operating guidance in addition to the shared training standard.' },
     { id: 'behavior', label: 'Behavior rules', passed: profile.behaviorRules.length >= 3, detail: 'At least three testable operating rules are present.' },
     { id: 'safety', label: 'Safety rules', passed: profile.safetyRules.length >= 2, detail: 'At least two explicit safety boundaries are present.' },
-    { id: 'tools', label: 'Baseline tools', passed: AGENT_BUILDER_BASELINE_TOOL_NAMES.filter(name => globalToolRegistry.getTool(name)).every(name => allowedTools.has(name)), detail: 'Core research, calculation, workspace, and verification tools are attached.' },
+    { id: 'tools', label: 'Baseline tools', passed: AGENT_BUILDER_BASELINE_TOOL_NAMES.filter(name => globalToolRegistry.getTool(name)).every(name => allowedTools.has(name)), detail: 'Core web, workspace-edit, and terminal tools are attached.' },
     { id: 'policy', label: 'Tool-use policy', passed: !!profile.toolUsePolicy?.trim(), detail: 'The agent knows when to use tools and how to validate results.' },
     { id: 'completion', label: 'Completion criteria', passed: !!profile.completionCriteria?.trim(), detail: 'The agent has a concrete done condition.' },
     { id: 'training-standard', label: 'Adaptive training standard', passed: trainingStandard, detail: 'The agent can shift modes across different request types while preserving real-data and scope discipline.' },
@@ -419,14 +408,14 @@ export function validateAgentScopedCode(code: string): { allowed: boolean; notes
 export function buildAgentBuilderRuntimePrompt(agentId: string, agentName?: string): string {
   const mainToolNames = globalToolRegistry.getAllTools()
     .map(tool => tool.name)
-    .filter(name => !isBuilderOnlyToolName(name) && name !== 'experience_signal')
+    .filter(name => !isBuilderOnlyToolName(name))
     .sort()
     .join(', ');
 
   // Group tools by category for the builder to understand what's available
   const toolsByCategory: Record<string, string[]> = {};
   for (const tool of globalToolRegistry.getAllTools()) {
-    if (isBuilderOnlyToolName(tool.name) || tool.name === 'experience_signal') continue;
+    if (isBuilderOnlyToolName(tool.name)) continue;
     const cat = tool.category || 'other';
     if (!toolsByCategory[cat]) toolsByCategory[cat] = [];
     toolsByCategory[cat].push(`${tool.name}: ${tool.description.substring(0, 80)}`);
@@ -530,7 +519,7 @@ This is what makes the agent THINK, not just respond. Include:
 ## TOOL USAGE POLICY
 - Exactly when and how to use each available tool.
 - "Use web_search ONLY when the answer is not in the provided context."
-- "Use workspace_write_file for new files and workspace_edit_file for targeted updates when persistent output is required."
+- "Use workspace_run_command for inspection, search, execution, and verification. Use workspace_edit_file for every file mutation: creating new files, updating existing files, and atomic multi-file changes with real UI diffs."
 - TOOL FAILURE RECOVERY: "If a tool returns an error, try: (1) validate inputs, (2) retry with corrected args, (3) use alternative approach, (4) inform user."
 
 ## INPUT PROCESSING
@@ -602,7 +591,7 @@ CONTEXT WINDOW MANAGEMENT:
 - Keep responses focused. Don't repeat earlier conversation content.
 - When reading large files, extract only the relevant sections — don't dump full files.
 - When search returns many results, summarize top 3-5 instead of listing all.
-- Prefer workspace_search_text over reading entire files when looking for specific code.
+- Prefer targeted rg/rg --files commands through workspace_run_command over reading entire files.
 
 NO DUPLICATE WORK:
 - Before making a tool call, check: did I already do this exact call in this conversation?
@@ -612,7 +601,7 @@ NO DUPLICATE WORK:
 
 BATCH OPERATIONS:
 - When you need to read multiple files, plan all reads first, then execute.
-- Use workspace_write_file once for each new file and group related edits to an existing file in one workspace_edit_file call.
+- Put independent reads/searches in one parallel workspace_run_command commands batch, and group related existing/new file changes in one workspace_edit_file call.
 - Group related operations together — don't interleave unrelated tasks.
 
 COST-AWARE EXECUTION:
@@ -627,10 +616,9 @@ COST-AWARE EXECUTION:
 
 TOOL FAILURE CHAIN:
 If primary tool fails → try these fallbacks:
-- web_search fails → try web_scraper with direct URL
-- workspace_read_file fails → try workspace_list_directory to check path, then retry
+- web_search search fails → retry once with a narrower query or use action="extract" for a known direct URL
 - workspace_run_command fails → check command syntax, try a simpler portable command, report to user
-- workspace_edit_file fails → re-read the exact target range, then retry once with corrected search text or line ranges
+- workspace_edit_file fails → inspect the exact target range through workspace_run_command, then retry once with corrected search text or line ranges
 - Any tool times out → reduce scope and retry with simpler input
 
 ERROR CLASSIFICATION:
@@ -650,7 +638,7 @@ NEVER LOOP:
 
 BEFORE FILE OPERATIONS:
 - Validate file paths: no '..' traversal, no absolute paths outside workspace
-- Check file exists before reading (use workspace_list_directory first if uncertain)
+- Check file existence with a targeted workspace_run_command before reading when the path is uncertain
 - Verify directory exists before writing
 
 BEFORE SHELL COMMANDS:
@@ -737,25 +725,17 @@ Do NOT wait for the user to request them. ALWAYS call agent_builder_attach_all_m
 (or agent_builder_attach_main_tool for each deliberate selection) immediately after saving the profile:
 
 TIER 1 — ALWAYS ATTACH (no exceptions):
-  • web_search — "Search the web for information, latest data, documentation, solutions"
-  • workspace_read_file — "Read files from the workspace for context and analysis"
-  • workspace_list_directory — "Browse workspace structure to understand project layout"
-  • workspace_search_text — "Search for patterns/keywords across the workspace codebase"
-  • workspace_write_file — "Create a new file and show its real created-file preview"
+  • web_search — "Search, extract pages, crawl/map, and perform provider-aware deep research"
   • workspace_edit_file — "Apply targeted changes and show the expandable real diff"
-  • workspace_run_command — "Execute workspace commands using the current operating system shell"
+  • workspace_run_command — "Inspect, search, execute, and verify through the current operating system shell"
 
 TIER 2 — ATTACH BASED ON AGENT TYPE (attach if even slightly relevant):
-  • realtime_verify — "Verify facts, check URLs, validate data in real time"
-  • web_scraper — "Scrape web pages for detailed content extraction"
-  • workspace_verify_code — "Verify code syntax and correctness"
-  • deep_research — "Multi-source deep research with synthesis"
   • ask_user — "Ask the user for clarification when ambiguous"
-  • csv_data_analyzer — "Analyze CSV/tabular data with statistics"
+  • browser_control — "Interact with websites when clicks, forms, or sessions are required"
 
 TIER 3 — SPECIALIZED (attach when the agent domain requires it):
   • image_generator — For design/creative agents
-  • parse_pdf — For research/document agents
+  • screen_agent — For computer-control agents
 
 ━━━ SOUL RULES FRAMEWORK ━━━
 
@@ -824,7 +804,7 @@ When performing multi-step tasks, communicate your progress:
 ━━━ TOOL DESIGN INTELLIGENCE ━━━
 
 @tool INJECTION SYNTAX:
-When the user says "@web_search" or "@workspace_read_file", immediately call agent_builder_attach_main_tool for that tool. Auto-generate:
+When the user says "@web_search" or "@workspace_run_command", immediately call agent_builder_attach_main_tool for that tool. Auto-generate:
 - purpose: Why this agent needs this tool (inferred from agent type)
 - whenToUse: Precise trigger conditions
 - inputPolicy: How inputs should be prepared
@@ -836,7 +816,7 @@ TOOL TYPE SELECTION:
   Example: "analyze_sentiment" prompt_macro that teaches the agent to score sentiment 1-10.
   IMPORTANT: Use ONLY flat STRING/NUMBER/BOOLEAN params in inputSchemaJson. No arrays or nested objects.
 - tool_chain → Composition of existing tools. Use for multi-step workflows.
-  Example: "research_and_summarize" = web_search → workspace_read_file → workspace_write_file
+  Example: "research_and_summarize" = web_search → workspace_run_command
 - agent_scoped_code → Custom JavaScript executed inside a sandboxed V8 execution context. Custom tools of this type are fully executable and can run custom processing, calculations, and dynamically call any other registered system tools using \`await callTool('tool_name', {args})\`!
 
 ━━━ MULTI-AGENT FLOW & LOOP ORCHESTRATION ━━━
@@ -886,8 +866,7 @@ REFERENCE FLOW JSON STRUCTURE (for agent_builder_save_flow):
       ],
       "nextStepId": "final_step"
     }
-  ],
-  "maxIterations": 20
+  ]
 }
 
 PROMPT ANTI-PATTERNS (things to NEVER do in agent prompts):
@@ -1211,7 +1190,7 @@ export interface AgentFlowProfile {
   updatedAt: string;
   status: 'draft' | 'ready';
   steps: AgentFlowStep[];
-  maxIterations?: number; // Cap cycles to prevent infinite runs
+  maxIterations?: number; // Optional user-configured cycle cap
   notes: string[];
 }
 
@@ -1243,7 +1222,7 @@ export async function readAgentFlowProfile(flowId: string): Promise<AgentFlowPro
       updatedAt: typeof saved.updatedAt === 'string' ? saved.updatedAt : now,
       status: saved.status === 'ready' ? 'ready' : 'draft',
       steps: Array.isArray(saved.steps) ? saved.steps : [],
-      maxIterations: typeof saved.maxIterations === 'number' ? saved.maxIterations : 20,
+      maxIterations: typeof saved.maxIterations === 'number' ? saved.maxIterations : undefined,
       notes: Array.isArray(saved.notes) ? saved.notes.map(String) : [],
     };
   }
@@ -1255,7 +1234,7 @@ export async function readAgentFlowProfile(flowId: string): Promise<AgentFlowPro
     updatedAt: now,
     status: 'draft',
     steps: [],
-    maxIterations: 20,
+    maxIterations: undefined,
     notes: [],
   };
 }
@@ -1271,7 +1250,7 @@ export async function writeAgentFlowProfile(profile: AgentFlowProfile): Promise<
     updatedAt: new Date().toISOString(),
     status: profile.status === 'ready' ? 'ready' : 'draft',
     steps: Array.isArray(profile.steps) ? profile.steps : [],
-    maxIterations: typeof profile.maxIterations === 'number' ? profile.maxIterations : 20,
+    maxIterations: typeof profile.maxIterations === 'number' ? profile.maxIterations : undefined,
     notes: Array.isArray(profile.notes) ? profile.notes.map(String) : [],
   };
   await fs.ensureDir(path.dirname(filePath));

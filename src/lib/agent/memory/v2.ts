@@ -356,7 +356,7 @@ export class MemoryV2Manager {
       userId: input.userId || 'user',
       projectId: input.projectId,
       chatId: input.chatId,
-      allowedTools: input.allowedTools || ['system_shell', 'workspace_run_command', 'api_caller'],
+      allowedTools: input.allowedTools || ['workspace_run_command'],
       createdAt: existingIdx >= 0 ? this.state.credentials[existingIdx].createdAt : now,
       updatedAt: now,
       status: 'active',

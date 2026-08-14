@@ -59,8 +59,8 @@ const SettingsLoadingShell = () => (
     aria-hidden="true"
     className="fixed inset-0"
     style={{
-      background: 'var(--eterx-settings-shell-bg, #FAFAF8)',
-      color: 'var(--eterx-settings-shell-fg, #1F1F1D)',
+      background: 'var(--eterx-settings-shell-bg, #151515)',
+      color: 'var(--eterx-settings-shell-fg, #F4F4F4)',
     }}
   />
 );

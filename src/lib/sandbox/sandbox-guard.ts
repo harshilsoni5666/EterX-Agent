@@ -33,22 +33,13 @@ import type {
 
 export const SANDBOX_BLOCKED_TOOLS = new Set<string>([
   // Raw shell — use workspace_run_command instead
-  // Long-running processes
-  'background_task',
-  'process_manager',
   // Host control
-  'desktop_control',
   'screen_agent',
   'computer',
-  'system_automation',
-  'system_monitor',
-  'clipboard_manager',
   'desktop_notification',
-  'text_to_speech',
   // Browser control
   'browser_control',
   // Communication
-  'slack_controller',
   // Agent spawning
   'spawn_sub_agent',
   // Dynamic code
