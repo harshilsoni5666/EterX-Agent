@@ -345,21 +345,13 @@ const liveMotionStyles = `
     38% { transform: translateY(-2px) scale(1.08); opacity: .95; box-shadow: 0 0 9px rgba(190,190,186,.34); }
   }
   .eterx-live-dot { animation: eterx-live-dot 1.45s ease-in-out infinite; }
-  @keyframes eterx-working-dot {
-    0%, 62%, 100% { transform: translateY(0) scale(.82); opacity: .28; }
-    18% { transform: translateY(-2px) scale(1); opacity: .92; }
-    36% { transform: translateY(0) scale(.88); opacity: .48; }
-  }
-  .eterx-working-dot { animation: eterx-working-dot 1.2s ease-in-out infinite; }
-  .eterx-working-dot:nth-child(2) { animation-delay: 140ms; }
-  .eterx-working-dot:nth-child(3) { animation-delay: 280ms; }
   @keyframes eterx-turns-wave {
     0%,100% { opacity: 0.35; transform: scaleX(1); }
     50% { opacity: 1; transform: scaleX(1.22); }
   }
   .eterx-turns-wave { animation: eterx-turns-wave 1.4s ease-in-out infinite; }
   @media (prefers-reduced-motion: reduce) {
-    .eterx-live-dot, .eterx-turns-wave, .eterx-working-dot { animation: none; opacity: .62; transform: none; }
+    .eterx-live-dot, .eterx-turns-wave { animation: none; opacity: .62; transform: none; }
   }
 `;
 

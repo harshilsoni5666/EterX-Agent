@@ -4222,15 +4222,10 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   const displayLabel = label || 'Working';
 
   return (
-    <div className="eterx-live-working-indicator flex h-6 w-fit max-w-full items-center gap-1.5 pl-[22px]" role="status" aria-live="polite">
+    <div className="eterx-live-working-indicator flex h-6 w-fit max-w-full items-center pl-[22px]" role="status" aria-live="polite">
       <Shimmer active className="min-w-0 truncate text-[13.5px] font-medium leading-none tracking-normal text-[var(--eterx-ui-working-text)]">
         {displayLabel}
       </Shimmer>
-      <span className="inline-flex h-[10px] shrink-0 translate-y-px items-end gap-[3px]" aria-hidden="true">
-        <span className="eterx-working-dot h-1 w-1 rounded-full bg-current text-[var(--eterx-ui-working-text)]" />
-        <span className="eterx-working-dot h-1 w-1 rounded-full bg-current text-[var(--eterx-ui-working-text)]" />
-        <span className="eterx-working-dot h-1 w-1 rounded-full bg-current text-[var(--eterx-ui-working-text)]" />
-      </span>
     </div>
   );
 };
