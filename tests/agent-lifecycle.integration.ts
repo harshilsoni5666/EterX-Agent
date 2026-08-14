@@ -8,6 +8,7 @@ import { getEterxWorkspaceDir } from '../src/lib/agent/storage-paths';
 import { MAX_HISTORY_TOTAL_CHARS, normalizeHistory } from '../src/app/api/agent/_shared';
 import { buildSubAgentStrategy } from '../src/lib/agent/roles/sub_agent_strategy';
 import { buildProxyTaskHistory } from '../src/lib/agent/agent-registry';
+import { getSubAgentAssetName } from '../src/components/chat/agent-icons';
 import {
   awaitIfPaused,
   cancelAgent,
@@ -144,14 +145,15 @@ function testHistoryAndSubAgentIdentityBounds(): void {
   assert.ok(totalChars <= MAX_HISTORY_TOTAL_CHARS);
   assert.ok(normalized.at(-1)?.parts[0].text.startsWith('11:'));
 
-  const iconBackedNames = globalSubAgentSpawner.getAgentNames();
+  const roleNames = globalSubAgentSpawner.getAgentNames();
   const iconNames = fs.readdirSync(path.join(process.cwd(), 'public', 'icons', 'sub-agents'))
     .filter(file => file.endsWith('.png'))
     .map(file => path.basename(file, '.png'))
     .sort();
-  assert.deepEqual(iconBackedNames.map(name => name.toLowerCase()).sort(), iconNames);
-  const removedLegacyNames = ['Dave', 'Nova', 'Mira', 'Leo', 'Kai', 'Zara', 'Sage'];
-  assert.equal(removedLegacyNames.some(name => iconBackedNames.includes(name as any)), false);
+  assert.deepEqual(roleNames, ['Task-Research', 'Runtime-Control', 'Interface-Review']);
+  for (const roleName of roleNames) {
+    assert.equal(iconNames.includes(getSubAgentAssetName(roleName)), true, `role ${roleName} must resolve to a shipped avatar`);
+  }
   const strategy = buildSubAgentStrategy('Deeply review and fix frontend and backend concurrency bugs in parallel.');
   assert.equal(strategy.recommendedAgents.some(agent => Boolean(agent.name)), false, 'strategies must not bind identities to roles');
 }

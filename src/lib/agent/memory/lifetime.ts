@@ -858,9 +858,12 @@ class LifetimeBrain {
             return;
           }
           const purpose = String(args.purpose || args.description || args.uiActionText || 'Updated');
-          const created = (Array.isArray(result?.filesCreated) ? result.filesCreated : []).map(String).filter(Boolean);
-          const modified = (Array.isArray(result?.filesModified) ? result.filesModified : []).map(String).filter(Boolean);
-          const deleted = (Array.isArray(result?.filesDeleted) ? result.filesDeleted : []).map(String).filter(Boolean);
+           const created: string[] = (Array.isArray(result?.filesCreated) ? result.filesCreated : [])
+             .map((value: unknown) => String(value)).filter((value: string) => Boolean(value));
+           const modified: string[] = (Array.isArray(result?.filesModified) ? result.filesModified : [])
+             .map((value: unknown) => String(value)).filter((value: string) => Boolean(value));
+           const deleted: string[] = (Array.isArray(result?.filesDeleted) ? result.filesDeleted : [])
+             .map((value: unknown) => String(value)).filter((value: string) => Boolean(value));
           const requested = Array.isArray(args.files)
             ? args.files.map((entry: any) => String(entry?.filename || entry?.path || '')).filter(Boolean)
             : [String(args.filename || args.path || '')].filter(Boolean);

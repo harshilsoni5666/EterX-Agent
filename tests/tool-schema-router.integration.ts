@@ -1,46 +1,40 @@
 import assert from 'node:assert/strict';
-import { z } from 'zod';
-import type { ToolDefinition } from '../src/lib/agent/schemas';
-import { routeToolSchemas } from '../src/lib/agent/tools/tool-schema-router';
+import { globalToolRegistry } from '../src/lib/agent/tools/registry';
+import '../src/lib/agent/tools';
 import {
   buildSubAgentPinnedContext,
   normalizeSubAgentRuntimeSettings,
 } from '../src/lib/agent/sub-agent-settings';
 
-function fakeTool(name: string): ToolDefinition {
-  return {
-    name,
-    description: `${name} capability`,
-    category: 'core',
-    inputSchema: z.object({}),
-    outputSchema: z.object({}),
-    execute: async () => ({}),
-  } as ToolDefinition;
-}
-
 function testFullSurfacePreservesEveryRealTool(): void {
-  const eligibleTools = [
-    'workspace_read_file',
-    'workspace_write_file',
+  const expectedTools = [
     'workspace_edit_file',
+    'workspace_run_command',
     'spawn_sub_agent',
     'web_search',
     'browser_control',
-    'calculator',
-    'deep_research',
     'scheduled_tasks',
-  ].map(fakeTool);
+  ];
+  const tools = globalToolRegistry.getAllTools();
+  const names = tools.map(tool => tool.name);
+  assert.equal(new Set(names).size, names.length, 'the curated registry must not contain duplicate tool names');
+  for (const name of expectedTools) {
+    assert.ok(names.includes(name), `curated registry should expose ${name}`);
+  }
 
-  const routed = routeToolSchemas(eligibleTools, 'Please explain the project architecture.', {
-    preserveFullSurface: true,
-  });
-  assert.ok(routed.tools.some(tool => tool.name === 'spawn_sub_agent'));
-  assert.equal(routed.deferredToolNames.includes('spawn_sub_agent'), false);
+  const declarations = globalToolRegistry.getGeminiFunctionDeclarations();
   assert.deepEqual(
-    routed.tools.map(tool => tool.name),
-    eligibleTools.map(tool => tool.name),
-    'production full-surface mode must not infer capability from request wording',
+    declarations.map(declaration => declaration.name),
+    names,
+    'the schema declaration surface must preserve every registered tool in order',
   );
+  for (const declaration of declarations) {
+    assert.equal(declaration.parameters.type, 'object');
+    assert.equal(typeof declaration.description, 'string');
+  }
+
+  assert.equal(globalToolRegistry.getFunctionDeclaration('workspace_edit_file')?.name, 'workspace_edit_file');
+  assert.equal(globalToolRegistry.getFunctionDeclaration('missing_tool'), undefined);
 }
 
 function testSettingsRelayIsFreshAndBounded(): void {
@@ -53,7 +47,7 @@ function testSettingsRelayIsFreshAndBounded(): void {
     disableSubAgents: true,
     allowAgentSpawning: false,
     maxSubAgents: 2,
-    maxRetries: 5,
+    maxRetries: 3,
   });
 
   const enabled = normalizeSubAgentRuntimeSettings({
@@ -71,4 +65,4 @@ function testSettingsRelayIsFreshAndBounded(): void {
 
 testFullSurfacePreservesEveryRealTool();
 testSettingsRelayIsFreshAndBounded();
-console.log('tool schema router integration tests passed');
+console.log('tool schema registry integration tests passed');

@@ -4,11 +4,8 @@
     "mode": "agent-edit",
     "prompt": "Remove stale product naming from this reference folder and replace it with EterX naming. Do not edit outside this folder.",
     "expectedTools": [
-      "workspace_search_text",
-      "workspace_read_file",
-      "workspace_str_replace",
-      "workspace_apply_patch",
-      "realtime_verify"
+      "workspace_run_command",
+      "workspace_edit_file"
     ],
     "mustVerify": [
       "case-insensitive stale-name search returns no active matches",
@@ -30,12 +27,8 @@
     "mode": "ui-build",
     "prompt": "Fix the settings modal layout so controls do not overlap on mobile.",
     "expectedTools": [
-      "workspace_search_text",
-      "workspace_read_file",
-      "workspace_str_replace",
-      "workspace_verify_code",
-      "process_manager",
-      "realtime_verify",
+      "workspace_run_command",
+      "workspace_edit_file",
       "browser_control"
     ],
     "mustVerify": [
@@ -58,8 +51,6 @@
     "mode": "debug-repair",
     "prompt": "Clear all caches and temp files for this project.",
     "expectedTools": [
-      "workspace_list_directory",
-      "workspace_search_text",
       "workspace_run_command"
     ],
     "mustVerify": [

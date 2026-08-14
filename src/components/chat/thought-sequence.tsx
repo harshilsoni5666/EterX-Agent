@@ -1272,7 +1272,7 @@ const FileOperationSummaryPanel = ({
                   </div>
                 </div>
               ))}
-              {selectedDiffLines.length > 0 ? (
+              {selectedFile && selectedDiffLines.length > 0 ? (
                 <div className="border-t border-white/[0.055] bg-[#151514] px-2 pb-1 pt-0.5">
                   <InlineDiffView
                     filename={selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path}

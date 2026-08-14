@@ -59,7 +59,7 @@ function testResearchAndExternalActionsUseDifferentProof(): void {
 
   const external = new AdaptiveHarness('Send the approved update to the Slack channel.', 'external');
   assert.equal(external.getOpenObligations().some(item => item.kind === 'complete_external_action'), true);
-  external.recordTool('slack_controller', { action: 'send', channel: 'ops' }, { success: true, messageId: 'm-1' });
+  external.recordTool('channel_agent', { action: 'send', channel: 'ops' }, { success: true, messageId: 'm-1' });
   assert.equal(external.getOpenObligations().length, 0);
   assert.equal(external.reviewCompletion('Sent the approved update to the ops channel.').approved, true);
 }

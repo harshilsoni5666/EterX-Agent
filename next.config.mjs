@@ -4,9 +4,6 @@ import path from 'node:path';
 const repositoryRoot = path.resolve(process.cwd());
 const tracingPath = (...segments) => path.join(repositoryRoot, ...segments).replaceAll('\\', '/');
 const runtimeDataExcludes = [
-  tracingPath('.workspaces'),
-  tracingPath('.workspaces', '**'),
-  tracingPath('.workspaces', '**', '*'),
   tracingPath('.temp'),
   tracingPath('.temp', '**'),
   tracingPath('dist'),
@@ -30,14 +27,6 @@ const nextConfig = {
     outputFileTracingExcludes: {
       '*': [
         ...runtimeDataExcludes,
-        '**/.workspaces/**',
-        '**\\.workspaces\\**',
-        '**/.temp/**',
-        '**/dist/**',
-        '**/desktop-runtime/**',
-        '**/gaia/**',
-        '**/Windows/Microsoft.NET/**',
-        '**\\Windows\\Microsoft.NET\\**',
       ],
     },
   },

@@ -283,7 +283,6 @@ export class AdaptiveExperienceEngine {
       'Lessons do not expire or lose weight with time. Apparent conflicts must be resolved by scope and present context; if the context does not decide, follow the current user request and avoid assuming.',
       ...sections,
       'END ADAPTIVE EXPERIENCE GRAPH',
-      privateProtocol,
     ].join('\n');
   }
 

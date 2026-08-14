@@ -16,32 +16,32 @@ async function testScopedToolCache(): Promise<void> {
   const argsA = { expression: '2 + 2', nested: { b: 2, a: 1 } };
   const argsB = { nested: { a: 1, b: 2 }, expression: '2 + 2' };
 
-  cache.set('calculator', argsA, { value: 4 }, 'project-a|workspace-a');
+  cache.set('web_search', argsA, { value: 4 }, 'project-a|workspace-a');
   assert.deepEqual(
-    cache.get('calculator', argsB, 'project-a|workspace-a'),
+    cache.get('web_search', argsB, 'project-a|workspace-a'),
     { value: 4 },
     'nested argument ordering should not create avoidable cache misses',
   );
   assert.equal(
-    cache.get('calculator', argsB, 'project-b|workspace-b'),
+    cache.get('web_search', argsB, 'project-b|workspace-b'),
     null,
     'tool results must not leak across project/workspace scopes',
   );
 
-  const first = cache.get('calculator', argsA, 'project-a|workspace-a');
+  const first = cache.get('web_search', argsA, 'project-a|workspace-a');
   first.value = 99;
   assert.deepEqual(
-    cache.get('calculator', argsA, 'project-a|workspace-a'),
+    cache.get('web_search', argsA, 'project-a|workspace-a'),
     { value: 4 },
     'callers must not mutate the cached value',
   );
 
-  cache.set('workspace_read_file', { filename: 'agent.ts' }, { content: 'old' }, 'project-a|workspace-a');
-  cache.set('workspace_str_replace', { filename: 'agent.ts' }, { success: true }, 'project-a|workspace-a');
+  cache.set('workspace_run_command', { command: 'Get-Content agent.ts' }, { content: 'old' }, 'project-a|workspace-a');
+  cache.set('workspace_edit_file', { filename: 'agent.ts' }, { success: true }, 'project-a|workspace-a');
   assert.equal(
-    cache.get('workspace_read_file', { filename: 'agent.ts' }, 'project-a|workspace-a'),
+    cache.get('workspace_run_command', { command: 'Get-Content agent.ts' }, 'project-a|workspace-a'),
     null,
-    'workspace mutations must invalidate scoped read caches',
+    'workspace tools must never be served from the result cache',
   );
 }
 
