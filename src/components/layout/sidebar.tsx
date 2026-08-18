@@ -530,18 +530,23 @@ const lightweightSidebarCss = `
   }
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-active,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active,
+  .eterx-sidebar-shell .eterx-sidebar-nav-active {
+    background: var(--sidebar-active-bg) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+  }
+
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-selected,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working,
-  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-selected,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working,
-  .eterx-sidebar-shell .eterx-sidebar-nav-active,
   .eterx-sidebar-shell .eterx-sidebar-chat-active,
   .eterx-sidebar-shell .eterx-sidebar-chat-selected,
   .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working {
-    background: var(--sidebar-active-bg) !important;
+    background: var(--sidebar-hover-bg) !important;
     border-color: transparent !important;
     box-shadow: none !important;
   }
@@ -619,18 +624,24 @@ const lightweightSidebarCss = `
 
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
-  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
-  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
-  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
-  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover,
-  .eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
-  .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
-  .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover {
+  .eterx-sidebar-shell .eterx-sidebar-nav-active:hover {
     background: var(--sidebar-active-bg) !important;
     border-color: transparent !important;
     box-shadow: none !important;
     color: var(--sidebar-active-text) !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover,
+  .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
+  .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover {
+    background: var(--sidebar-hover-bg) !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+    color: var(--sidebar-hover-text) !important;
   }
 
   .eterx-sidebar-shell svg,

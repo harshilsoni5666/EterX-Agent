@@ -58,7 +58,7 @@ export async function GET(req: NextRequest) {
     // Return a simple success page instead of redirecting to the app
     return new NextResponse(
       `<html>
-        <body style="background: #0A0A0A; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+        <body style="background: #0A0A0A; color: white; font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
           <div style="background: #161616; padding: 40px; border-radius: 24px; border: 1px solid rgba(255,255,255,0.1); text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,0.5);">
             <div style="font-size: 50px; margin-bottom: 20px;">✅</div>
             <h1 style="margin: 0 0 10px 0; font-size: 24px;">Connected Successfully!</h1>

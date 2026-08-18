@@ -10,7 +10,7 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["var(--font-dm-sans)", "Inter", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "sans-serif"],
+        sans: ["Segoe UI", "-apple-system", "BlinkMacSystemFont", "Arial", "sans-serif"],
         mono: ["var(--font-mono)", "JetBrains Mono", "ui-monospace", "Cascadia Code", "Fira Code", "monospace"],
       },
       backgroundImage: {

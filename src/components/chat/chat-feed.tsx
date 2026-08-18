@@ -372,8 +372,9 @@ const chatFeedSurfaceStyles = `
   .eterx-chat-feed-content {
     background: var(--eterx-chat-feed-bg);
   }
-  .eterx-chat-feed[data-agent-builder="true"][data-compressed="false"] .eterx-agent-builder-feed-content {
-    max-width: min(760px, 100%) !important;
+  .eterx-chat-feed[data-compressed="false"] .eterx-chat-feed-content {
+    width: 100%;
+    max-width: var(--eterx-reference-composer-max) !important;
   }
   .eterx-chat-feed[data-agent-builder="true"] .eterx-thinking-process-stack {
     gap: 10px;
@@ -616,6 +617,7 @@ const dedupeFeedLogs = (logs: any[]) => {
   const deduped: any[] = [];
   const stableIndexes = new Map<string, number>();
   const userBoundaryIndexes = new Map<string, number>();
+  const userBoundaryTurnIndexes = new Map<string, number>();
   const liveUserTextIndexes = new Map<string, number>();
   const steeringIndexes = new Map<string, number>();
   let semanticIndexes = new Map<string, number>();
@@ -623,6 +625,7 @@ const dedupeFeedLogs = (logs: any[]) => {
   logs.forEach((log: any) => {
     if (!log) return;
     const runId = String(log.runId || log.turnId || '').trim();
+    const turnId = String(log.turnId || '').trim();
     const stableId = log._traceIdx ?? log.traceId ?? log.id ?? null;
     const stableType = log.type === 'tool_call' ? 'command' : String(log.type || '');
     const stableKey = stableId === null || stableId === undefined
@@ -638,6 +641,19 @@ const dedupeFeedLogs = (logs: any[]) => {
     if (log.type === 'user_action') {
       const normalizedUserText = normalizeTraceText(log.text);
       const source = String(log.source || 'human').trim().toLowerCase();
+      const explicitTurnKey = turnId ? `${ turnId }::${ source }` : '';
+      const priorExplicitTurnIndex = explicitTurnKey
+        ? userBoundaryTurnIndexes.get(explicitTurnKey)
+        : undefined;
+      if (priorExplicitTurnIndex !== undefined) {
+        // Streaming transcription can replace a partial user sentence with a
+        // longer final sentence under the same turn ID. Update the existing
+        // bubble in place instead of creating a second conversation turn.
+        deduped[priorExplicitTurnIndex] = mergeDuplicateFeedLog(deduped[priorExplicitTurnIndex], log);
+        if (stableKey) stableIndexes.set(stableKey, priorExplicitTurnIndex);
+        if (normalizedUserText) liveUserTextIndexes.set(`${ source }::${ normalizedUserText }`, priorExplicitTurnIndex);
+        return;
+      }
       const liveUserKey = `${ source }::${ normalizedUserText }`;
       const priorLiveIndex = liveUserTextIndexes.get(liveUserKey);
       if (normalizedUserText && priorLiveIndex !== undefined) {
@@ -658,7 +674,7 @@ const dedupeFeedLogs = (logs: any[]) => {
         }
       }
       const userBoundaryKey = [
-        runId,
+        turnId ? `turn:${ turnId }` : `run:${ runId }`,
         source,
         normalizedUserText,
       ].join('::');
@@ -667,7 +683,13 @@ const dedupeFeedLogs = (logs: any[]) => {
         const priorBoundary = deduped[priorBoundaryIndex];
         const priorIsOptimistic = priorBoundary?._traceIdx === undefined || priorBoundary?._traceIdx === null;
         const incomingIsOptimistic = log._traceIdx === undefined || log._traceIdx === null;
-        if (priorIsOptimistic || incomingIsOptimistic) {
+        const priorTurnId = String(priorBoundary?.turnId || '').trim();
+        // Live snapshots and persisted traces can carry different delivery
+        // indices while still representing the exact same user boundary.
+        // An explicit turn ID is authoritative; the broader run ID is not,
+        // because proxy runs may legitimately contain several user turns.
+        const sameExplicitTurn = Boolean(turnId && priorTurnId && turnId === priorTurnId);
+        if (sameExplicitTurn || priorIsOptimistic || incomingIsOptimistic) {
           deduped[priorBoundaryIndex] = mergeDuplicateFeedLog(priorBoundary, log);
           if (stableKey) stableIndexes.set(stableKey, priorBoundaryIndex);
           return;
@@ -685,6 +707,7 @@ const dedupeFeedLogs = (logs: any[]) => {
       }
       semanticIndexes = new Map();
       userBoundaryIndexes.set(userBoundaryKey, deduped.length);
+      if (explicitTurnKey) userBoundaryTurnIndexes.set(explicitTurnKey, deduped.length);
       if (normalizedUserText) liveUserTextIndexes.set(liveUserKey, deduped.length);
     }
 
@@ -865,8 +888,8 @@ const ContextCompactionNotice = ({ log }: { log: any }) => {
       aria-live="polite"
       className="eterx-context-compaction my-3.5 flex min-h-7 w-full items-center gap-3.5 py-1 text-[13px] text-[#1D1D1B] dark:text-[#F4F4F4]"
     >
-      <span className={`h-px min-w-8 flex-1 bg-gradient-to-r from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
-      <span className="inline-flex min-w-0 max-w-full flex-1 items-center gap-2 overflow-hidden">
+      <span className={`eterx-context-compaction-line h-px min-w-4 shrink-0 bg-gradient-to-r from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
+      <span className="eterx-context-compaction-content inline-flex min-w-0 max-w-full items-center justify-center gap-2">
         <span
           aria-hidden="true"
           className={`inline-block h-4 w-4 shrink-0 bg-current transition-opacity ${isCompacting ? 'opacity-90' : 'opacity-100'}`}
@@ -882,14 +905,14 @@ const ContextCompactionNotice = ({ log }: { log: any }) => {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.16, ease: 'easeOut' }}
-            className="min-w-0 truncate font-medium tracking-[-0.01em]"
+            className="eterx-context-compaction-label min-w-0 max-w-full whitespace-nowrap font-medium tracking-[-0.01em]"
           >
             {isCompacting ? <Shimmer>{label}</Shimmer> : label}
           </motion.span>
         </AnimatePresence>
-        {detail && <span className="hidden shrink-0 text-[11.5px] font-normal text-[#666664] dark:text-[#B0B0B0] sm:inline">{detail}</span>}
+        {detail && <span className="eterx-context-compaction-detail whitespace-nowrap text-[11.5px] font-normal">{detail}</span>}
       </span>
-      <span className={`h-px min-w-8 flex-1 bg-gradient-to-l from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
+      <span className={`eterx-context-compaction-line h-px min-w-4 shrink-0 bg-gradient-to-l from-transparent to-[var(--border)] ${isCompacting ? 'opacity-80' : 'opacity-55'}`} />
     </div>
   );
 };
@@ -1263,7 +1286,6 @@ const ThoughtSequence = ({
   const isLiveWorkCounter = isLiveThinking;
   const hasTerminalBoundary = hasAnswer || hasInteractionBoundary || turnLogs.some(isTerminalWorkTrace);
   const showWorkedSummary = !isLiveThinking && hasRealActions && hasTerminalBoundary;
-  const shouldStickCounter = hasAnswer || isLiveWorkCounter;
   const counterColor = 'var(--muted-foreground)';
   const counterBackground = 'var(--muted)';
   const counterHoverBackground = 'var(--secondary)';
@@ -1277,13 +1299,13 @@ const ThoughtSequence = ({
 
   return (
     <div className="relative" ref={containerRef}>
-      {showWorkedSummary && <div className="eterx-worked-summary mb-2 flex w-full items-center gap-4 pt-1"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]"><span>Worked for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
-      {hasCounter && <div className={`eterx-process-summary-row ${ shouldStickCounter ? 'sticky top-3 z-20' : '' } ${ isCollapsedWithAnswer ? 'mb-2' : 'mb-1' } flex w-full items-center overflow-visible py-1.5`}>
-        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border border-[var(--border)] bg-[var(--muted)] px-3 text-[13px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-none backdrop-blur-[12px] transition-[background,border-color,color,box-shadow] duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer active={false} className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-0 pb-[1px] leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><span>Working for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer', position: 'relative', zIndex: 1 }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{stepCount > 0 ? <><span className="eterx-professional-number">{stepCount}</span> action{stepCount !== 1 ? 's' : ''}</> : 'Working'}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
+      {showWorkedSummary && <div className="eterx-worked-summary mb-1 flex w-full items-center gap-4 pt-0"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]"><span>Worked for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
+      {hasCounter && <div className={`eterx-process-summary-row ${ isCollapsedWithAnswer ? 'mb-1.5' : 'mb-1' } flex w-full items-center py-1`}>
+        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border border-[var(--border)] bg-[var(--muted)] px-3 text-[13px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-none backdrop-blur-[12px] transition-[background,border-color,color,box-shadow] duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer active={false} className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-0 pb-[1px] leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><span>Working for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer' }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{stepCount > 0 ? <><span className="eterx-professional-number">{stepCount}</span> action{stepCount !== 1 ? 's' : ''}</> : 'Working'}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
       </div>}
 
       {isOpen && (
-        <div className="mb-1 overflow-hidden">
+        <div className="overflow-hidden">
           <ThinkingProcess
             logs={logs}
             liveLogs={liveLogs}
@@ -2565,7 +2587,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
             )}
 
             {traceLogs.length > 0 && (
-              <div ref={feedContentRef} className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isAgentBuilderFeed ? 'eterx-agent-builder-feed-content' : '' } ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[660px] pt-16' }`}>
+              <div ref={feedContentRef} className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isAgentBuilderFeed ? 'eterx-agent-builder-feed-content' : '' } ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[var(--eterx-reference-composer-max)] pt-16' }`}>
                 {visibleGroups.map((group, visibleGroupIdx) => {
                   const groupIdx = visibleGroupIdx;
                   const isThinkingTurn = feedWorkActive && groupIdx === groups.length - 1;

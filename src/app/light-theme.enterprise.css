@@ -222,10 +222,16 @@
 
 :root[data-theme="light"] .eterx-sidebar-nav-active,
 :root[data-theme="light"] .eterx-sidebar-chat-active {
+  background: var(--sidebar-hover-bg) !important;
+  border-color: var(--sidebar-hover-border) !important;
+  color: var(--sidebar-hover-text) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-nav-active {
   background: var(--sidebar-active-bg) !important;
   border-color: transparent !important;
   color: var(--sidebar-active-text) !important;
-  box-shadow: none !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-chat-active::after {
@@ -244,10 +250,10 @@
 }
 
 :root[data-theme="light"] .eterx-sidebar-chat-active.eterx-sidebar-chat-working {
-  background: var(--sidebar-active-bg) !important;
-  border-color: var(--sidebar-active-border) !important;
-  box-shadow: var(--sidebar-active-shadow) !important;
-  color: var(--sidebar-active-text) !important;
+  background: var(--sidebar-hover-bg) !important;
+  border-color: var(--sidebar-hover-border) !important;
+  box-shadow: none !important;
+  color: var(--sidebar-hover-text) !important;
 }
 
 :root[data-theme="light"] .eterx-sidebar-chat-active.eterx-sidebar-chat-working .eterx-sidebar-working-fade {
@@ -358,7 +364,7 @@
 }
 
 :root[data-theme="light"] .eterx-professional-note {
-  color: #55514A !important;
+  color: #1F1F1D !important;
 }
 
 :root[data-theme="light"] .eterx-thought-card,
@@ -2665,4 +2671,353 @@
 :root[data-theme="dark"] .eterx-composer-surface:focus-within {
   border-color: rgba(255, 255, 255, 0.07) !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Light composer reference pass
+
+   Keep the light composer airy and quiet: the outer surface carries the
+   boundary, while the agent/model/actions sit on it without separate cards.
+------------------------------------------------------------------------- */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) {
+  background: #FFFFFF !important;
+  border: 1px solid rgba(31, 41, 55, 0.12) !important;
+  border-radius: 24px !important;
+  box-shadow: 0 8px 24px rgba(31, 41, 55, 0.045) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea-wrap > .relative > span[aria-hidden="true"] {
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
+  color: #20252B !important;
+  caret-color: #20252B !important;
+  font-size: 15px !important;
+  font-weight: 400 !important;
+  letter-spacing: -0.004em !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea-wrap > .relative > span[aria-hidden="true"] {
+  color: #7B8491 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-live-button {
+  border: 0 !important;
+  border-color: transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-live-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-live-button:focus-visible {
+  border: 0 !important;
+  background: rgba(31, 41, 55, 0.055) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button .eterx-selector-label,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button .eterx-selector-label {
+  color: #58636F !important;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 550 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-thinking-closed-label {
+  color: #8A949F !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-selector-chevron,
+:root[data-theme="light"] .eterx-composer-shell .eterx-selector-chevron-wrapper {
+  color: #89939E !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-control-icon:not(img) {
+  color: #5D6874 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls-left > *:first-child .eterx-control-button {
+  width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  border: 0 !important;
+  background: #F4F5F6 !important;
+  color: #5D6874 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls-left > *:first-child .eterx-control-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls-left > *:first-child .eterx-control-button:focus-visible {
+  border: 0 !important;
+  background: #ECEFF2 !important;
+  color: #35404B !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-context-usage-trigger {
+  color: #B9C1C9 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-send-button {
+  width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  border: 0 !important;
+  background: #3F78E8 !important;
+  color: #FFFFFF !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-send-button .eterx-composer-control-icon {
+  color: #FFFFFF !important;
+}
+
+/* Keep closed, selected, and no-model selector states on one light surface. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button[data-open="true"],
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button[data-open="true"] {
+  background: transparent !important;
+  border: 0 !important;
+  border-color: transparent !important;
+  color: #58636F !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button[data-open="true"],
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button[data-open="true"] {
+  background: rgba(31, 41, 55, 0.055) !important;
+  border: 0 !important;
+  color: #46515E !important;
+}
+
+/* Model and thinking popouts use the same white-theme card and selection
+   language as the agent menu. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-popout,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-thinking-popout,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout {
+  background: #FFFFFF !important;
+  border-color: rgba(31, 41, 55, 0.12) !important;
+  color: #20252B !important;
+  box-shadow: 0 14px 36px rgba(31, 41, 55, 0.12) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-title,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .text-white\/50 {
+  color: #7B8491 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-row > button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-thinking-popout > button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout button {
+  color: #3F4A56 !important;
+  background: transparent !important;
+  border-color: transparent !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-row > button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-row[data-thinking-open="true"] > button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-thinking-popout > button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout button:hover {
+  background: #F1F3F5 !important;
+  color: #20252B !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-popout .eterx-model-option-row > button[aria-pressed="true"] {
+  background: #F1F3F5 !important;
+  color: #20252B !important;
+  border-color: rgba(31, 41, 55, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-popout .eterx-model-thinking-label,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-thinking-popout .text-white\/48 {
+  color: #8A949F !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-popout input {
+  background: #F7F8F9 !important;
+  border-color: rgba(31, 41, 55, 0.12) !important;
+  color: #20252B !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-popout input::placeholder {
+  color: #8A949F !important;
+}
+
+/* Keep the light composer visually stable: hover/focus should not recolor the
+   input controls or make the selector state look like a different mode. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button[data-open="true"],
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button[data-open="true"] {
+  background: transparent !important;
+  border: 0 !important;
+  border-color: transparent !important;
+  color: #58636F !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls-left > *:first-child .eterx-control-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls-left > *:first-child .eterx-control-button:focus-visible {
+  background: #F4F5F6 !important;
+  border: 0 !important;
+  color: #5D6874 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-live-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-live-button:focus-visible {
+  background: transparent !important;
+  border: 0 !important;
+  color: #5D6874 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-send-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-send-button:focus-visible {
+  background: #3F78E8 !important;
+  border: 0 !important;
+  color: #FFFFFF !important;
+}
+
+/* Empty composer parity: keep the same action structure as dark mode. Only
+   the surface palette changes for light mode; microphone/live controls stay
+   present until the user has actual text to send. */
+:root[data-theme="light"] .eterx-composer-shell:not([data-typing="true"]) .eterx-composer-dictation-button,
+:root[data-theme="light"] .eterx-composer-shell:not([data-typing="true"]) .eterx-composer-live-button {
+  display: flex !important;
+  width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  border: 0 !important;
+  background: #F4F5F6 !important;
+  color: #5D6874 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell:not([data-typing="true"]) .eterx-composer-dictation-button:hover,
+:root[data-theme="light"] .eterx-composer-shell:not([data-typing="true"]) .eterx-composer-dictation-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell:not([data-typing="true"]) .eterx-composer-live-button:hover,
+:root[data-theme="light"] .eterx-composer-shell:not([data-typing="true"]) .eterx-composer-live-button:focus-visible {
+  border: 0 !important;
+  background: #F4F5F6 !important;
+  color: #5D6874 !important;
+}
+
+/* The surface itself must remain white while the pointer crosses the chat
+   input. This overrides the generated light hover fill and the shared dark
+   composer hover rule. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]),
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]):hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]):focus-within,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-surface:hover {
+  background: #FFFFFF !important;
+  background-color: #FFFFFF !important;
+}
+
+/* Worker guidance composers do not use the main-chat agent/model/context or
+   dictation controls, regardless of the active theme. */
+:root[data-theme="light"] .eterx-composer-shell[data-composer-controls="hidden"] .eterx-agent-selector,
+:root[data-theme="light"] .eterx-composer-shell[data-composer-controls="hidden"] .eterx-model-selector,
+:root[data-theme="light"] .eterx-composer-shell[data-composer-controls="hidden"] .eterx-chat-controls-right > *:has(.eterx-context-usage-trigger),
+:root[data-theme="light"] .eterx-composer-shell[data-composer-controls="hidden"] .eterx-chat-controls-right > *:has(.eterx-composer-dictation-button) {
+  display: none !important;
+}
+
+/* Secondary controls are transparent at rest and gain a quiet surface only
+   while the user is interacting with them. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-button[data-open="true"],
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button[data-open="true"],
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button[data-active="true"] {
+  background: rgba(31, 41, 55, 0.055) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Override the legacy high-specificity idle fills in the final cascade. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-agent-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-model-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-dictation-button,
+:root[data-theme="light"] .eterx-composer-shell:not([data-typing="true"]) .eterx-composer-dictation-button {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-agent-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-agent-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-agent-button[data-open="true"],
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-model-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-model-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-model-button[data-open="true"],
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-dictation-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-dictation-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-dictation-button[data-active="true"] {
+  background: rgba(31, 41, 55, 0.055) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Compact activity feed parity: the light theme uses the same geometry as
+   dark mode, with a single white surface instead of stacked gray cards. */
+:root[data-theme="light"] .eterx-action-card,
+:root[data-theme="light"] .eterx-terminal-trace,
+:root[data-theme="light"] .eterx-file-change-trace,
+:root[data-theme="light"] .eterx-agent-comm-card {
+  background: rgba(255, 255, 255, 0.76) !important;
+  border-color: rgba(31, 41, 55, 0.095) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-action-group {
+  background: rgba(255, 255, 255, 0.84) !important;
+  border-color: rgba(31, 41, 55, 0.11) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-action-group-header {
+  background: transparent !important;
+  border-bottom-color: rgba(31, 41, 55, 0.075) !important;
+  color: #66717D !important;
+}
+
+:root[data-theme="light"] .eterx-terminal-console {
+  background: #F8F9FA !important;
+  border-color: rgba(31, 41, 55, 0.095) !important;
+}
+
+:root[data-theme="light"] .eterx-terminal-console-command-card {
+  background: rgba(31, 41, 55, 0.035) !important;
+  border-color: rgba(31, 41, 55, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-terminal-console-footer {
+  background: rgba(31, 41, 55, 0.018) !important;
+  border-top-color: rgba(31, 41, 55, 0.07) !important;
 }

@@ -57,7 +57,7 @@ export const Tooltip = React.memo(({
   const [coords, setCoords] = useState({ left: 0, top: 0, width: 96, arrowLeft: 43, arrowTop: 10 });
   const ref = useRef<HTMLDivElement>(null);
   const hoverTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const tooltipFontFamily = '"Google Sans Text", "Google Sans", "Product Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  const tooltipFontFamily = '"Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif';
 
   const handleMouseEnter = () => {
     if (disabled) return;

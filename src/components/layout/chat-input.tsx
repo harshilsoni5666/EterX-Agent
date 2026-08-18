@@ -10,7 +10,6 @@ import { ConnectorsModal } from './connectors-modal';
 import { AgentFace } from '../chat/agent-face';
 import { notifyAgentFaceFiles, notifyAgentFaceInputChange, notifyAgentFaceSend } from '../chat/agent-face-controller';
 import {
-  doesModelSupportThinking as modelSupportsThinking,
   getModelThinkingOptions,
   normalizeModelThinkingCapabilities,
   normalizeMainAgentThinkingLevel,
@@ -45,6 +44,7 @@ import { getFileIconPath } from '../../lib/utils/file-icon-utils';
 
 const MODEL_API_KEY_STORAGE_KEY = API_KEY_PRESENCE_STORAGE_KEY;
 const SETTINGS_CHANNEL = 'eterx-settings';
+const MODEL_THINKING_LEVELS_STORAGE_KEY = 'eterx-model-thinking-levels';
 
 // Model selection is configuration, not a chat credential payload. Keep its
 // server update on the single Settings gateway used for all runtime config.
@@ -373,6 +373,7 @@ interface ChatInputProps {
   isSpeakerMuted?: boolean;
   onToggleSpeakerMute?: () => void;
   isCompressed?: boolean;
+  showComposerControls?: boolean;
   taskTracker?: TaskTrackerState | null;
   isNetworkPaused?: boolean;
   onNetworkPausedAction?: () => void;
@@ -412,6 +413,27 @@ const formatContextTokenCount = (value: number) => {
   if (safeValue < 1_000) return safeValue.toLocaleString();
   if (safeValue >= 1_000_000) return `${(safeValue / 1_000_000).toFixed(safeValue >= 10_000_000 ? 0 : 1).replace(/\.0$/, '')}M`;
   return `${(safeValue / 1_000).toFixed(safeValue >= 10_000 ? 0 : 1).replace(/\.0$/, '')}k`;
+};
+
+const readModelThinkingLevels = (): Record<string, MainAgentThinkingLevel> => {
+  if (typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(appStorage.getItem(MODEL_THINKING_LEVELS_STORAGE_KEY) || '{}');
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([key, value]) => [key, normalizeMainAgentThinkingLevel(value)] as const)
+        .filter(([, value]) => Boolean(value)),
+    );
+  } catch {
+    return {};
+  }
+};
+
+const persistModelThinkingLevels = (levels: Record<string, MainAgentThinkingLevel>) => {
+  try {
+    appStorage.setItem(MODEL_THINKING_LEVELS_STORAGE_KEY, JSON.stringify(levels));
+  } catch { }
 };
 
 const inferFileExtension = (mimeType: string) => {
@@ -1039,6 +1061,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   isSpeakerMuted = false, onToggleSpeakerMute = () => { },
   onLiveSendText,
   isCompressed = false,
+  showComposerControls = true,
   taskTracker = null,
   isNetworkPaused = false,
   onNetworkPausedAction = () => { },
@@ -1090,12 +1113,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const stopRequestRef = useRef<Promise<void> | null>(null);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
+  const [thinkingMenuModelKey, setThinkingMenuModelKey] = useState<string | null>(null);
+  const [thinkingMenuPosition, setThinkingMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const thinkingMenuAnchorRef = useRef<HTMLElement | null>(null);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [openStatusMenu, setOpenStatusMenu] = useState<StatusRailMenu>(null);
   const [projectSearch, setProjectSearch] = useState('');
   const [agentMenuXOffset, setAgentMenuXOffset] = useState(0);
   const [modelMenuXOffset, setModelMenuXOffset] = useState(0);
-  const [thinkingMenuSide, setThinkingMenuSide] = useState<'left' | 'right'>('right');
   const [availableAgents, setAvailableAgents] = useState<Array<{ agentId: string; name: string; status: string; mission: string }>>([]);
   const agentSelectorRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
@@ -1103,6 +1128,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [forceCollapse, setForceCollapse] = useState(false);
   const [sendingQueuedFollowUpId, setSendingQueuedFollowUpId] = useState<string | null>(null);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
+  const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, MainAgentThinkingLevel>>(readModelThinkingLevels);
   const thinkingTimeoutRef = useRef<any>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [previewVideo, setPreviewVideo] = useState<{ url: string; name?: string } | null>(null);
@@ -1199,6 +1225,31 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     thinkingTimeoutRef.current = setTimeout(() => {
       setShowThinkingLevels(false);
     }, 200);
+  };
+
+  const updateThinkingMenuPosition = useCallback((anchor: HTMLElement, optionCount: number) => {
+    if (typeof window === 'undefined') return;
+    const margin = 12;
+    const gap = 8;
+    const menuWidth = Math.min(168, window.innerWidth - margin * 2);
+    const menuHeight = Math.min(optionCount * 34 + 10, window.innerHeight - margin * 2);
+    const rect = anchor.getBoundingClientRect();
+    const canOpenRight = rect.right + gap + menuWidth <= window.innerWidth - margin;
+    const left = canOpenRight
+      ? rect.right + gap
+      : Math.max(margin, rect.left - gap - menuWidth);
+    const top = Math.max(
+      margin,
+      Math.min(rect.bottom - menuHeight, window.innerHeight - menuHeight - margin),
+    );
+    setThinkingMenuPosition({ top, left });
+  }, []);
+
+  const openThinkingMenuForRow = (optionKey: string, anchor: HTMLElement, optionCount: number) => {
+    thinkingMenuAnchorRef.current = anchor;
+    updateThinkingMenuPosition(anchor, optionCount);
+    setThinkingMenuModelKey(optionKey);
+    handleThinkingMouseEnter();
   };
   const [slashTrigger, setSlashTrigger] = useState<SlashTrigger | null>(null);
   const [slashActiveIndex, setSlashActiveIndex] = useState(0);
@@ -1498,8 +1549,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   }, [isModelLocked]);
   useEffect(() => {
-    if (!showModelMenu) setShowThinkingLevels(false);
+    if (!showModelMenu) {
+      setShowThinkingLevels(false);
+      setThinkingMenuModelKey(null);
+      setThinkingMenuPosition(null);
+      thinkingMenuAnchorRef.current = null;
+    }
   }, [showModelMenu]);
+
   useEffect(() => {
     if (initialFocusAppliedRef.current) return;
     initialFocusAppliedRef.current = true;
@@ -1572,7 +1629,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   useEffect(() => {
     if (!showModelMenu || typeof window === 'undefined') {
       setModelMenuXOffset(0);
-      setThinkingMenuSide('right');
       return;
     }
 
@@ -1581,18 +1637,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       if (!rect) return;
 
       const margin = 16;
-      const gap = 8;
       const menuWidth = Math.min(isCompressed ? 248 : 286, window.innerWidth - margin * 2);
-      const thinkingWidth = Math.min(188, window.innerWidth - margin * 2);
       const xOffset = getCenteredPopoutOffset(rect, menuWidth, margin);
       const menuLeft = rect.left + rect.width / 2 - menuWidth / 2 + xOffset;
       const menuRight = menuLeft + menuWidth;
 
-      const roomRight = window.innerWidth - margin - menuRight;
-      const roomLeft = menuLeft - margin;
-
       setModelMenuXOffset(xOffset);
-      setThinkingMenuSide(roomRight >= thinkingWidth + gap || roomRight >= roomLeft ? 'right' : 'left');
     };
 
     updatePosition();
@@ -2423,8 +2473,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setOpenStatusMenu(null);
     onOpenProjects();
   }, [onOpenProjects]);
-  const shellMaxWidth = isCompressed ? 'max-w-[460px]' : 'max-w-[1020px]';
-  const inputSidePadding = isCompressed ? 'px-11' : 'px-11 sm:px-14';
+  // Keep the composer visually centered with enough breathing room to match
+  // the wider Codex-style input surface on desktop. The compact layout keeps
+  // its existing constrained width for narrow/embedded views.
+  const shellMaxWidth = isCompressed ? 'max-w-[460px]' : 'max-w-[1105px]';
+  const inputSidePadding = isCompressed ? 'px-11' : 'px-5 sm:px-6';
   const composerRadius = isCompressed ? 'rounded-[24px]' : 'rounded-[26px]';
   const modelOptions = useMemo<ChatModelOption[]>(() => {
     return storedModelSettings.modelEntries
@@ -2464,11 +2517,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     capabilities: storedModelSettings.thinkingCapabilities[option.optionKey],
   }) : null, [storedModelSettings.thinkingCapabilities]);
 
-  const doesModelSupportThinking = useCallback((option: ChatModelOption | null): boolean => {
-    const target = getThinkingTarget(option);
-    return target ? modelSupportsThinking(target.provider, target.modelName, target.capabilities) : false;
-  }, [getThinkingTarget]);
-
   const getThinkingLevelOptions = useCallback((option: ChatModelOption | null) => {
     const target = getThinkingTarget(option);
     return target ? getModelThinkingOptions(target.provider, target.modelName, target.capabilities) : [];
@@ -2477,17 +2525,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const allModelOptions = modelOptions;
   const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
   const activeThinkingOptions = useMemo(() => getThinkingLevelOptions(selectedModel), [selectedModel, getThinkingLevelOptions]);
+  const activeModelThinkingLevel = selectedModel
+    ? modelThinkingLevels[selectedModel.optionKey] || safeThinkingLevel
+    : safeThinkingLevel;
   const normalizedActiveThinkingLevel = useMemo(() => {
     if (activeThinkingOptions.length === 0 || !selectedModel) return null;
     const target = getThinkingTarget(selectedModel);
     if (!target) return null;
     return normalizeThinkingLevelForModel(
-      safeThinkingLevel,
+      activeModelThinkingLevel,
       target.provider,
       target.modelName,
       target.capabilities,
     );
-  }, [activeThinkingOptions, getThinkingTarget, safeThinkingLevel, selectedModel]);
+  }, [activeModelThinkingLevel, activeThinkingOptions, getThinkingTarget, selectedModel]);
   const selectedThinkingLevel = useMemo(() => {
     return normalizedActiveThinkingLevel
       ? activeThinkingOptions.find(option => option.id === normalizedActiveThinkingLevel) || activeThinkingOptions[0]
@@ -2496,12 +2547,49 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const modelDisplayLabel = selectedModel ? getModelOptionLabel(selectedModel) : 'Add API to load models';
 
   // A level belongs to the concrete model, not to the provider or the
-  // previous model. Reconcile the persisted value as soon as the selector
+  // previous model. Reconcile the stored value as soon as the selector
   // changes so the request payload and visible checkmark cannot diverge.
   useEffect(() => {
-    if (!normalizedActiveThinkingLevel || normalizedActiveThinkingLevel === safeThinkingLevel) return;
-    onThinkingLevelChange(normalizedActiveThinkingLevel);
-  }, [normalizedActiveThinkingLevel, onThinkingLevelChange, safeThinkingLevel]);
+    if (!selectedModel || !normalizedActiveThinkingLevel) return;
+    const modelKey = selectedModel.optionKey;
+    setModelThinkingLevels(previous => {
+      if (previous[modelKey] === normalizedActiveThinkingLevel) return previous;
+      const next = { ...previous, [modelKey]: normalizedActiveThinkingLevel };
+      persistModelThinkingLevels(next);
+      return next;
+    });
+    if (normalizedActiveThinkingLevel !== safeThinkingLevel) {
+      onThinkingLevelChange(normalizedActiveThinkingLevel);
+    }
+  }, [normalizedActiveThinkingLevel, onThinkingLevelChange, safeThinkingLevel, selectedModel]);
+
+  const handleModelThinkingChange = useCallback((optionKey: string, level: MainAgentThinkingLevel) => {
+    const safeLevel = normalizeMainAgentThinkingLevel(level);
+    setModelThinkingLevels(previous => {
+      const next = { ...previous, [optionKey]: safeLevel };
+      persistModelThinkingLevels(next);
+      return next;
+    });
+    onThinkingLevelChange(safeLevel);
+  }, [onThinkingLevelChange]);
+
+  useEffect(() => {
+    if (!showModelMenu || !showThinkingLevels || !thinkingMenuModelKey) return;
+    const updatePosition = () => {
+      const anchor = thinkingMenuAnchorRef.current;
+      if (!anchor) return;
+      const option = allModelOptions.find(item => item.optionKey === thinkingMenuModelKey) || null;
+      const optionCount = getThinkingLevelOptions(option).length;
+      if (optionCount > 0) updateThinkingMenuPosition(anchor, optionCount);
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [allModelOptions, getThinkingLevelOptions, showModelMenu, showThinkingLevels, thinkingMenuModelKey, updateThinkingMenuPosition]);
 
   useEffect(() => {
     const el = composerShellRef.current;
@@ -2591,6 +2679,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     syncRuntimeModelOverrides(nextOverrides);
     onModeChange(option.id);
     setShowThinkingLevels(false);
+    setThinkingMenuModelKey(null);
   }, [agentMode, onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides, onModelSelectionChange]);
   useEffect(() => {
     if (isModelLocked) return;
@@ -2607,11 +2696,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const selectorMenuOffset = 8;
   const agentMenuX = `calc(-50% + ${ agentMenuXOffset }px)`;
   const modelMenuX = `calc(-50% + ${ modelMenuXOffset }px)`;
-  const thinkingMenuHorizontalClass = thinkingMenuSide === 'right' ? 'left-[calc(100%+8px)]' : 'right-[calc(100%+8px)]';
-  const thinkingMenuVerticalClass = 'bottom-0';
-  const thinkingMenuOffset = thinkingMenuSide === 'right' ? -8 : 8;
   const pillPopoutVerticalClass = isEmptyHome ? 'bottom-full mb-2' : 'bottom-[calc(100%+72px)] mb-0';
   const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle' && !isRecording && !isProcessingVoice;
+  const thinkingMenuOption = allModelOptions.find(option => option.optionKey === thinkingMenuModelKey) || null;
+  const thinkingMenuOptions = getThinkingLevelOptions(thinkingMenuOption);
+  const thinkingMenuTarget = getThinkingTarget(thinkingMenuOption);
+  const thinkingMenuSelectedId = thinkingMenuOption?.optionKey === selectedModel?.optionKey
+    ? selectedThinkingLevel?.id || null
+    : thinkingMenuTarget?.capabilities?.defaultLevel || null;
 
     return (<div ref={composerDockRef} className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }` : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]` }`}
       data-home={isEmptyHome ? 'true' : 'false'}
@@ -2743,13 +2835,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       <div
         ref={composerShellRef}
         className={`eterx-composer-shell w-full ${ shellMaxWidth } flex flex-col pointer-events-auto relative`}
-         data-compressed={isCompressed ? 'true' : undefined}
-         data-force-collapse={forceCollapse ? 'true' : undefined}
+         style={!isCompressed ? { width: '100%' } : undefined}
+          data-compressed={isCompressed ? 'true' : undefined}
+          data-composer-controls={showComposerControls ? undefined : 'hidden'}
+          data-force-collapse={forceCollapse ? 'true' : undefined}
          data-new-chat={isNewChatHome ? 'true' : undefined}
          data-typing={hasPromptText ? 'true' : undefined}
          onDragStart={handleComposerDragStart}
       >
-        {showScrollBottom && traceLogsLength > 0 && !isEmptyHome && (
+        {showScrollBottom && traceLogsLength > 0 && !isEmptyHome && !showModelMenu && !showAgentMenu && (
           <button
             type="button"
             aria-label="Jump to latest message"
@@ -2925,9 +3019,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         <motion.div
           animate={liveAnimateState}
           transition={liveTransition}
-          className={`eterx-composer-surface transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${
+          className={`eterx-composer-surface eterx-composer-main transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${
 `w-full ${ isLiveActive ? (inputValue.includes('\n') || inputValue.length > 55 ? 'rounded-[22px]' : 'rounded-full') : composerRadius } flex flex-col ${ isLiveActive ? 'p-1' : isCompressed ? 'pt-2 pb-2' : 'pt-2.5 pb-2' } ${ isNewChatHome ? 'eterx-new-chat-composer-surface' : '' } bg-[#202020] backdrop-blur-[28px] shadow-none ${ isLiveActive || isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.075] hover:border-white/[0.11] focus-within:border-white/[0.15]' }`
-          }`}>
+          }`}
+          style={!isCompressed ? { width: '100%', alignSelf: 'center' } : undefined}
+          data-live={isLiveActive ? 'true' : undefined}
+          data-recording={isRecording || isProcessingVoice ? 'true' : undefined}
+        >
           <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
           <input type="file" multiple ref={pinFileInputRef} onChange={handleBrowserPinSelection} className="hidden" />
           <input
@@ -3029,7 +3127,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             </div>
           )}
 
-          {!isLiveActive && (<div className={`${ isCompressed ? 'px-4' : 'px-5' } pb-1 min-h-[42px] flex items-center relative z-10`}>
+          {!isLiveActive && (<div className={`eterx-composer-input-row ${ isCompressed ? 'px-4' : 'px-5' } pb-1 min-h-[42px] flex items-center relative z-10`}>
             <AnimatePresence mode="wait">
               {/* ═══ GEMINI LIVE — Modern Centered Visualization ═══ */}
               {false ? (
@@ -3485,7 +3583,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white" strokeWidth={1.85} />
                 </button>
               </Tooltip>
-              <div className="relative">
+              <div className="relative eterx-pin-control hidden">
                 <Tooltip text="Pin folder or files" side="top" disabled={showPinMenu}>
                   <button
                     type="button"
@@ -3596,6 +3694,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     onClick={() => {
                       setShowAgentMenu(prev => !prev);
                     }}
+                    data-open={showAgentMenu ? 'true' : undefined}
                     className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] pl-2.5 pr-1' : 'max-w-[232px] pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer ${ showAgentMenu ? '!bg-[#333333] !border-transparent !text-white' : '' }`}
                   >
                     <AnimatePresence mode="wait">
@@ -3624,14 +3723,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         </span>
                       </motion.div>
                     </AnimatePresence>
-                    <div
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
-                    className="eterx-selector-chevron-wrapper w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/[0.055] active:bg-white/[0.08] text-[#F0F0F0] hover:text-white transition-colors duration-100 ease-out"
-                  >
+                    <span className="eterx-selector-chevron-wrapper flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[#BDB8B0] transition-colors duration-100 ease-out">
                       <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-transform duration-150 text-[#F0F0F0] group-hover:text-white ${ showAgentMenu ? 'rotate-180' : '' }`} strokeWidth={2.1} />
-                    </div>
+                    </span>
                   </div>
 
                   {showAgentMenu && (
@@ -3648,10 +3742,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                       {/* Chat (direct conversation path) */}
                       <button
+                        type="button"
                         onClick={() => {
                           onAgentChange?.(null, 'Chat', true);
                           setShowAgentMenu(false);
                         }}
+                        aria-pressed={chatMode}
                         className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ chatMode
                           ? 'bg-white/[0.08] text-white font-medium shadow-none'
                           : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
@@ -3663,10 +3759,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                       {/* General (default) */}
                       <button
+                        type="button"
                         onClick={() => {
                           onAgentChange?.(null, 'General', false);
                           setShowAgentMenu(false);
                         }}
+                        aria-pressed={!chatMode && !selectedAgent}
                         className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ !chatMode && !selectedAgent
                           ? 'bg-white/[0.08] text-white font-medium shadow-none'
                           : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
@@ -3678,10 +3776,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                       {/* Autonomous */}
                       <button
+                        type="button"
                         onClick={() => {
                           onAgentChange?.('autonomous', 'Autonomous', false);
                           setShowAgentMenu(false);
                         }}
+                        aria-pressed={selectedAgent === 'autonomous'}
                         className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ selectedAgent === 'autonomous'
                           ? 'bg-white/[0.08] text-white font-medium shadow-none'
                           : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
@@ -3696,6 +3796,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         type="button"
                         disabled
                         aria-disabled="true"
+                        aria-pressed={selectedAgent === 'coding'}
                         title="Coding agent coming soon"
                         className="flex w-full cursor-not-allowed items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[#8C8A88] opacity-75"
                       >
@@ -3717,10 +3818,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             {availableAgents.map(agent => (
                               <button
                                 key={agent.agentId}
+                                type="button"
                                 onClick={() => {
                                   onAgentChange?.(agent.agentId, agent.name, false);
                                   setShowAgentMenu(false);
                                 }}
+                                aria-pressed={selectedAgent === agent.agentId}
                                 className={`flex min-h-[32px] w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left transition-all duration-150 ${ selectedAgent === agent.agentId
                                   ? 'bg-white/[0.08] text-white font-medium shadow-none'
                                   : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
@@ -3765,6 +3868,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     setShowModelMenu(prev => !prev);
                     setModelSearch('');
                   }}
+                  data-open={showModelMenu ? 'true' : undefined}
                   className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] pl-2.5 pr-1' : 'mr-1 pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer ${ showModelMenu ? '!bg-[#333333] !border-transparent !text-white' : '' }`}
                 >
                   <div className="flex min-w-0 items-center gap-1.5">
@@ -3784,15 +3888,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors">
                         {modelDisplayLabel}
                       </span>
+                      {selectedThinkingLevel?.label && (
+                        <span className="eterx-model-thinking-closed-label shrink-0 truncate text-[13px] font-medium leading-4">
+                          {selectedThinkingLevel.label}
+                        </span>
+                      )}
                   </div>
-                  <div
-                    onClick={(e) => {
-                      e.stopPropagation();
-                    }}
-                    className="eterx-selector-chevron-wrapper w-[22px] h-[22px] shrink-0 flex items-center justify-center rounded-full hover:bg-white/[0.055] active:bg-white/[0.08] text-[#F0F0F0] hover:text-white transition-colors duration-100 ease-out"
-                  >
+                  <span className="eterx-selector-chevron-wrapper flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[#BDB8B0] transition-colors duration-100 ease-out">
                     <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-transform duration-150 group-hover:text-white ${ showModelMenu ? 'rotate-180' : '' }`} strokeWidth={2.1} />
-                  </div>
+                  </span>
                 </div>
 
                 {showModelMenu && (
@@ -3802,6 +3906,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     role="dialog"
                     aria-label="Model and thinking settings"
                   >
+                    <div className="eterx-model-menu-title">Model</div>
                     {allModelOptions.length > 6 && (
                       <div className="relative mb-1.5 shrink-0 px-0.5 pt-0.5">
                         <Search className="pointer-events-none absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/45" />
@@ -3826,26 +3931,76 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       }).map((option) => {
                         const selected = option.optionKey === selectedModel?.optionKey;
                         const optionLabel = getModelOptionLabel(option);
+                        const optionThinkingOptions = getThinkingLevelOptions(option);
+                        const optionThinkingTarget = getThinkingTarget(option);
+                        const optionThinkingLevel = optionThinkingTarget
+                          ? selected
+                            ? normalizeThinkingLevelForModel(
+                              safeThinkingLevel,
+                              optionThinkingTarget.provider,
+                              optionThinkingTarget.modelName,
+                              optionThinkingTarget.capabilities,
+                            )
+                            : optionThinkingTarget.capabilities?.defaultLevel
+                              || optionThinkingOptions.find(item => item.id === 'medium')?.id
+                              || optionThinkingOptions[0]?.id
+                              || null
+                          : null;
+                        const optionSelectedThinkingId = selected
+                          ? selectedThinkingLevel?.id || optionThinkingLevel
+                          : optionThinkingLevel;
+                        const optionThinkingLabel =
+                          optionThinkingOptions.find(item => item.id === optionSelectedThinkingId)?.label || null;
+                        const thinkingMenuOpen = thinkingMenuModelKey === option.optionKey && showThinkingLevels;
                         return (
-                          <React.Fragment key={option.optionKey}>
+                          <div
+                            key={option.optionKey}
+                            className="eterx-model-option-row relative w-full"
+                            data-thinking-open={thinkingMenuOpen ? 'true' : undefined}
+                            onMouseEnter={(event) => {
+                              if (!optionThinkingOptions.length) return;
+                              openThinkingMenuForRow(option.optionKey, event.currentTarget, optionThinkingOptions.length);
+                            }}
+                            onMouseLeave={handleThinkingMouseLeave}
+                            onFocus={(event) => {
+                              if (!optionThinkingOptions.length) return;
+                              openThinkingMenuForRow(option.optionKey, event.currentTarget, optionThinkingOptions.length);
+                            }}
+                          >
                             <button
+                              type="button"
                               onClick={() => selectChatModelOption(option)}
-                              className={`group flex min-h-[46px] w-full items-center gap-2.5 rounded-[12px] border px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'border-white/[0.08] bg-white/[0.10] text-white font-medium shadow-none' : 'border-transparent text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.10] font-normal' }`}
+                              className={`group flex h-full w-full items-center gap-2 rounded-[9px] border px-2 py-1 text-left transition-colors duration-150 ${ selected ? 'border-white/[0.08] bg-white/[0.10] text-white font-medium shadow-none' : 'border-transparent text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.10] font-normal' }`}
                               aria-pressed={selected}
                             >
-                              <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${ selected ? 'bg-white/[0.10] text-white' : 'text-white/30' }`}>
-                                {selected && <Check className="h-3.5 w-3.5" strokeWidth={2.05} />}
+                              <span className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full ${ selected ? 'bg-white/[0.10] text-white' : 'text-white/30' }`}>
+                                {selected && <Check className="h-3 w-3" strokeWidth={2.05} />}
                               </span>
-                              <span className="flex min-w-0 flex-1 flex-col">
-                                <span className="truncate text-[12.5px] font-semibold leading-4 tracking-normal">
+                              <span className="flex min-w-0 flex-1 items-center gap-2">
+                                <span className="min-w-0 truncate text-[12.5px] font-semibold leading-4 tracking-normal">
                                   {optionLabel}
                                 </span>
-                                <span className="truncate text-[11px] leading-3 text-white/45">
-                                  {MODEL_PROVIDER_LABEL[option.provider]}
-                                </span>
+                                {optionThinkingLabel && (
+                                  <span className="eterx-model-thinking-label shrink-0 truncate text-[11px] font-medium leading-4 text-white/48">
+                                    {optionThinkingLabel}
+                                  </span>
+                                )}
                               </span>
+                              {optionThinkingOptions.length > 0 && (
+                                <span
+                                  className={`eterx-model-thinking-trigger flex h-[18px] w-[18px] shrink-0 items-center justify-center text-white/45 transition-colors duration-100 ${ thinkingMenuOpen ? 'text-white' : '' }`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    const row = (event.currentTarget as HTMLElement).closest('.eterx-model-option-row') as HTMLElement | null;
+                                    if (row) openThinkingMenuForRow(option.optionKey, row, optionThinkingOptions.length);
+                                  }}
+                                  aria-label={`Choose thinking level for ${optionLabel}`}
+                                >
+                                  <ChevronRight className="h-3.5 w-3.5" strokeWidth={2.1} />
+                                </span>
+                              )}
                             </button>
-                          </React.Fragment>
+                          </div>
                         );
                       })}
                       {allModelOptions.length > 0 && allModelOptions.filter(option => {
@@ -3863,76 +4018,49 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       )}
                     </div>
 
-                    {doesModelSupportThinking(selectedModel) && (
-                      <>
-                        <div className="mx-2 my-2 h-px bg-white/[0.10]" />
-
-                        <div className="px-0.5 pb-0.5">
-                          <div
-                            className="relative"
-                            onMouseEnter={handleThinkingMouseEnter}
-                            onMouseLeave={handleThinkingMouseLeave}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => setShowThinkingLevels(prev => !prev)}
-                              onFocus={handleThinkingMouseEnter}
-                              className={`flex min-h-[48px] w-full items-center gap-2.5 rounded-[13px] px-2.5 py-1.5 text-left text-white transition-colors duration-150 hover:bg-white/[0.055] ${ showThinkingLevels ? 'bg-white/[0.07]' : '' }`}
-                              aria-expanded={showThinkingLevels}
-                            >
-                              <span className="h-5 w-5 shrink-0" />
-                              <span className="flex min-w-0 flex-1 flex-col">
-                                <span className="truncate text-[13px] font-semibold leading-5 tracking-normal">
-                                  Thinking level
-                                </span>
-                                <span className="truncate text-[12px] font-medium leading-4 text-[#E7E7E7]">
-                                  {selectedThinkingLevel?.label || 'Not supported'}
-                                </span>
-                              </span>
-                              <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white transition-transform duration-150 ${ showThinkingLevels ? 'rotate-90' : '' }`} strokeWidth={2.2} />
-                            </button>
-
-                            {showThinkingLevels && (
-                              <div
-                                onMouseEnter={handleThinkingMouseEnter}
-                                onMouseLeave={handleThinkingMouseLeave}
-                                className={`eterx-composer-popout absolute ${ thinkingMenuVerticalClass } ${ thinkingMenuHorizontalClass } z-[140] w-[188px] max-w-[calc(100vw-44px)] overflow-hidden rounded-[18px] border border-white/[0.10] bg-[#171717] p-1.5 shadow-none`}
-                              >
-                                {activeThinkingOptions.map(option => {
-                                  const selected = option.id === selectedThinkingLevel?.id;
-                                  return (
-                                    <button
-                                      key={option.id}
-                                      type="button"
-                                      onClick={() => {
-                                        onThinkingLevelChange(option.id);
-                                        setShowThinkingLevels(false);
-                                      }}
-                                      className={`flex min-h-[42px] w-full items-center gap-2.5 rounded-[12px] px-2.5 py-1.5 text-left transition-colors duration-150 ${ selected ? 'bg-white/[0.08] text-white' : 'text-[#F4F4F4] hover:bg-white/[0.055] hover:text-white' }`}
-                                    >
-                                      <span className="flex h-5 w-5 shrink-0 items-center justify-center text-white/95">
-                                        {selected && <Check className="h-4 w-4" strokeWidth={2.35} />}
-                                      </span>
-                                      <span className="min-w-0 flex-1">
-                                        <span className="block truncate text-[13px] font-semibold leading-5">
-                                          {option.label}
-                                        </span>
-                                      </span>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </>
-                    )}
                   </div>
                 )}
               </div>
 
+              {showModelMenu && showThinkingLevels && thinkingMenuOption && thinkingMenuOptions.length > 0 && thinkingMenuPosition && typeof window !== 'undefined' && createPortal(
+                <div
+                  className="eterx-model-thinking-popout eterx-composer-popout fixed z-[10000] overflow-hidden"
+                  style={{ top: `${ thinkingMenuPosition.top }px`, left: `${ thinkingMenuPosition.left }px`, zIndex: 2147483000 }}
+                  onMouseEnter={handleThinkingMouseEnter}
+                  onMouseLeave={handleThinkingMouseLeave}
+                  role="menu"
+                  aria-label={`Thinking level for ${getModelOptionLabel(thinkingMenuOption)}`}
+                >
+                  {thinkingMenuOptions.map(thinkingOption => {
+                    const thinkingSelected = thinkingOption.id === thinkingMenuSelectedId;
+                    return (
+                      <button
+                        key={thinkingOption.id}
+                        type="button"
+                        onClick={() => {
+                          selectChatModelOption(thinkingMenuOption);
+                          handleModelThinkingChange(thinkingMenuOption.optionKey, thinkingOption.id);
+                          setThinkingMenuModelKey(null);
+                          setThinkingMenuPosition(null);
+                          setShowThinkingLevels(false);
+                        }}
+                        className={`flex items-center gap-2 text-left transition-colors duration-100 ${ thinkingSelected ? 'bg-white/[0.10] text-white' : 'text-[#F4F1EA] hover:bg-white/[0.055]' }`}
+                        role="menuitemradio"
+                        aria-checked={thinkingSelected}
+                      >
+                        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
+                          {thinkingOption.label}
+                        </span>
+                        {thinkingSelected && <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={2.1} />}
+                      </button>
+                    );
+                  })}
+                </div>,
+                document.body,
+              )}
+
                <Tooltip text="Voice dictation" side="top">
-                <button type="button" onClick={toggleSpeech} className={`eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse !bg-[#3A2823] !border-transparent' : '' }`}>
+                <button type="button" onClick={toggleSpeech} data-active={isRecording ? 'true' : undefined} className={`eterx-control-button eterx-composer-dictation-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse !bg-[#3A2823] !border-transparent' : '' }`}>
                   <PremiumMic className="eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out" strokeWidth={1.85} />
                 </button>
               </Tooltip>

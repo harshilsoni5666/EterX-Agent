@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import type { CSSProperties } from 'react';
-import { GeistSans } from 'geist/font/sans';
 import './globals.css';
 import './light-theme.generated.css';
 import './light-theme.enterprise.css';
@@ -13,13 +12,11 @@ import { DEFAULT_THEME } from '../lib/theme-config';
 
 export const dynamic = 'force-dynamic';
 
-// Keep the native app and offline development startup independent of Google's
-// font CDN. next/font/google fetches font files during the first Next compile,
-// which makes an otherwise local desktop app fail or retry when networking is
-// unavailable. These system stacks render consistently on Windows, macOS, and
-// Linux without a network request.
+// Keep the native app and offline development startup independent of a font CDN.
+// Segoe UI is the app's primary UI font, with platform fallbacks for systems
+// where it is not installed.
 const localFontVariables: CSSProperties = {
-  '--font-sans': 'var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  '--font-sans': '"Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif',
   '--font-mono': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
   '--font-serif': 'Lora, Georgia, Cambria, "Times New Roman", serif',
 } as CSSProperties;
@@ -77,7 +74,7 @@ export default function RootLayout({
   const initialPreference = readInitialThemePreference();
   const initialTheme = resolveInitialTheme(initialPreference);
   return (
-    <html lang="en" className={`${initialTheme} ${ GeistSans.variable }`} style={localFontVariables} data-theme={initialTheme} suppressHydrationWarning>
+    <html lang="en" className={initialTheme} style={localFontVariables} data-theme={initialTheme} suppressHydrationWarning>
       <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
         <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: createThemeInitScript(initialPreference) }} />
         <ThemeBridge />

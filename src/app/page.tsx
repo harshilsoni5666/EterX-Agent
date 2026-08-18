@@ -12123,7 +12123,7 @@ function DeepWorkUI() {
                       : DEFAULT_CHAT_TITLE;
 
                   return (
-                    <div className="absolute left-1/2 top-1/2 z-[70] min-w-0 -translate-x-1/2 -translate-y-1/2 overflow-visible [-webkit-app-region:no-drag]">
+                    <div className="relative z-[70] min-w-0 overflow-visible [-webkit-app-region:no-drag]">
                       <div
                         data-open={headerMenuOpen ? 'true' : 'false'}
                         onClick={() => {
@@ -12132,7 +12132,7 @@ function DeepWorkUI() {
                             setHeaderMenuOpen(!headerMenuOpen);
                           }
                         }}
-                        className={`eterx-thread-tab eterx-new-chat-status-item flex min-w-0 items-center gap-1.5 px-1.5 py-1 text-[13px] font-medium transition-none ${ headerMenuOpen ? 'is-open' : '' } ${ isEditingChatTitle ? 'cursor-default' : 'cursor-pointer' }`}
+                        className={`eterx-thread-tab flex min-w-0 items-center gap-1.5 px-1.5 py-1 text-[13px] font-medium transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] ${ headerMenuOpen ? 'bg-[var(--sidebar-toggle-hover-bg)] text-[var(--sidebar-hover-text)]' : '' } ${ isEditingChatTitle ? 'cursor-default' : 'cursor-pointer' }`}
                       >
                         {isEditingChatTitle ? (
                           <input
@@ -12244,7 +12244,7 @@ function DeepWorkUI() {
                               exit={{ opacity: 0, y: -5, scale: 0.98 }}
                               transition={{ duration: 0.15, ease: "easeOut" }}
                               onClick={(e) => e.stopPropagation()}
-                              className="eterx-thread-switcher absolute left-1/2 top-[calc(100%+8px)] z-[80] flex max-h-[400px] w-[300px] -translate-x-1/2 flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 p-1.5 shadow-none backdrop-blur-xl"
+                              className="eterx-thread-switcher absolute left-0 top-[calc(100%+8px)] z-[80] flex max-h-[400px] w-[300px] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 p-1.5 shadow-none backdrop-blur-xl"
                             >
                               <div className="flex items-center justify-between px-2.5 mb-2 mt-1 h-6">
                                 {!headerSearchOpen ? (
@@ -13782,6 +13782,7 @@ function DeepWorkUI() {
                       isNetworkPaused={isNetworkPaused}
                       onNetworkPausedAction={revealNetworkBanner}
                       isCompressed={isRightPanelVisible}
+                      showComposerControls={!Boolean(activeSubAgentTab)}
                       taskTracker={currentTaskTracker}
                       activeChatId={activeChatId}
                       buildingAgentId={buildingAgentId}

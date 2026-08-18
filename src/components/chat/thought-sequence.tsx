@@ -674,7 +674,7 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
   const markdownText = revealEnabled ? progressive.text : renderText;
   const professionalMarkdownComponents = useMemo(() => ({
     ...markdownComponents,
-    p: ({ node, ...props }: any) => <p className={`eterx-answer-paragraph mb-2 last:mb-0 break-words tracking-normal ${ isNote ? 'leading-[1.52]' : 'leading-[1.62]' }`} {...props} />,
+    p: ({ node, ...props }: any) => <p className="eterx-answer-paragraph mb-2 last:mb-0 break-words leading-[1.62] tracking-normal" {...props} />,
     ul: ({ node, ...props }: any) => <ul className="eterx-answer-list my-2.5 list-disc space-y-1.5 pl-5" {...props} />,
     ol: ({ node, ...props }: any) => <ol className="eterx-answer-list my-2.5 list-decimal space-y-1.5 pl-5" {...props} />,
     li: ({ node, ...props }: any) => <li className="eterx-answer-list-item pl-1 leading-[1.58]" {...props} />,
@@ -710,12 +710,12 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
         className="professional-thought eterx-thought-block w-full"
       >
-        <div className={`eterx-thought-card overflow-hidden rounded-[12px] border bg-[#151514]/70 shadow-none transition-colors ${ open ? 'border-white/[0.12]' : 'border-white/[0.065] hover:border-white/[0.11]' }`}>
+        <div className={`eterx-thought-card overflow-hidden rounded-[10px] border bg-[#151514]/42 shadow-none transition-colors ${ open ? 'border-white/[0.11]' : 'border-white/[0.06] hover:border-white/[0.095]' }`}>
           <button
             type="button"
             onClick={() => setOpen(value => !value)}
             aria-expanded={open}
-            className="eterx-thought-toggle flex min-h-[33px] w-full items-center gap-2.5 px-3 py-1 text-left transition-colors hover:bg-white/[0.026] group"
+            className="eterx-thought-toggle flex min-h-[30px] w-full items-center gap-2 px-2.5 py-0.5 text-left transition-colors hover:bg-white/[0.024] group"
           >
             <Shimmer
               active={isLive}
@@ -726,11 +726,11 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
               color="var(--eterx-ui-working-highlight)"
               surfaceColor="var(--background)"
               textColor="var(--eterx-ui-working-text)"
-              className="flex-1 text-[15px] font-normal tracking-[-0.01em] text-[var(--eterx-ui-working-text)]"
+              className="eterx-thinking-shimmer flex-1 text-[15.5px] font-normal tracking-[0.005em] text-[var(--eterx-ui-working-text)]"
             >
               {thinkLabel}
             </Shimmer>
-            <ChevronRight className={`h-4 w-4 text-[#625C54] group-hover:text-[#A8A198] transition-all ${ open ? 'rotate-90' : '' }`} />
+            <ChevronRight className={`h-3.5 w-3.5 text-[#625C54] group-hover:text-[#A8A198] transition-all ${ open ? 'rotate-90' : '' }`} />
           </button>
           <AnimatePresence initial={false}>
             {open && renderText && (
@@ -741,13 +741,13 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
                 transition={{ duration: 0.18, ease: 'easeOut' }}
                 className="overflow-hidden"
               >
-                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' } pl-[54px] pr-[18px] pb-4 pt-0.5 text-[13.5px] leading-[1.56] text-[#D5D3CE]`} style={{ maxHeight: 'min(52vh, 520px)' }}>
+                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' } pl-[42px] pr-3 pb-3 pt-0.5 text-[12.5px] leading-[1.5] text-[#D5D3CE]`} style={{ maxHeight: 'min(46vh, 420px)' }}>
                   <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
                     ...markdownComponents,
-                    p: ({ node, ...props }: any) => <p className="mb-3 last:mb-0 break-words leading-[1.68] text-[#D5D3CE]" {...props} />,
-                    ol: ({ node, ...props }: any) => <ol className="my-3 list-decimal space-y-2 pl-6 text-[#D5D3CE]" {...props} />,
-                    ul: ({ node, ...props }: any) => <ul className="my-3 list-disc space-y-2 pl-6 text-[#D5D3CE]" {...props} />,
-                    li: ({ node, ...props }: any) => <li className="pl-1.5 leading-[1.66] marker:text-[#827C73]" {...props} />,
+                    p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 break-words leading-[1.54] text-[#D5D3CE]" {...props} />,
+                    ol: ({ node, ...props }: any) => <ol className="my-2 list-decimal space-y-1.5 pl-5 text-[#D5D3CE]" {...props} />,
+                    ul: ({ node, ...props }: any) => <ul className="my-2 list-disc space-y-1.5 pl-5 text-[#D5D3CE]" {...props} />,
+                    li: ({ node, ...props }: any) => <li className="pl-1 leading-[1.52] marker:text-[#827C73]" {...props} />,
                     strong: ({ node, ...props }: any) => <strong className="font-bold text-[#F3F2EF]" {...props} />,
                     a: ({ node, href, children, ...props }: any) => {
                       const localPath = decodeLocalFileHref(href);
@@ -766,7 +766,7 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
 
   return (
     <div
-      className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#D98B6A]/20 select-text tracking-normal ${ progressive.isRevealing ? 'eterx-reveal-active' : '' } ${ isNote ? 'eterx-professional-note py-0.5 text-[13.5px] leading-[1.5] text-[#D2CECA]' : 'eterx-professional-answer text-[13.5px] leading-[1.56] text-[#F2F0EC]' }`}
+      className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#D98B6A]/20 select-text tracking-normal ${ progressive.isRevealing ? 'eterx-reveal-active' : '' } ${ isNote ? 'eterx-professional-note text-[13.5px] leading-[1.56] text-[#F2F0EC]' : 'eterx-professional-answer text-[13.5px] leading-[1.56] text-[#F2F0EC]' }`}
     >
       {revealEnabled ? (
         <div className="eterx-progressive-markdown eterx-progressive-markdown--direct">
@@ -788,7 +788,7 @@ const ProxyStatusDivider = ({ text, isActive = false }: { text: string; isActive
 
   return (
     <div
-      className={`eterx-proxy-status-divider w-full px-1 py-2.5 ${ isActive ? 'eterx-proxy-status-divider-active' : '' }`}
+      className={`eterx-proxy-status-divider w-full px-1 py-1.5 ${ isActive ? 'eterx-proxy-status-divider-active' : '' }`}
       role="status"
       aria-live={isActive ? 'polite' : undefined}
     >
@@ -818,7 +818,7 @@ const WorkNoteBlock = ({ text, isActive = false, isProxyStatus = false }: { text
   if (isProxyStatus) return <ProxyStatusDivider text={note} isActive={isActive} />;
 
   return (
-    <div className="eterx-work-note-block w-full px-1 py-0">
+    <div className="eterx-work-note-block w-full px-0 py-0">
       <ProfessionalThought
         text={note}
         isLatest={isActive}
@@ -1044,17 +1044,17 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
   const executionLabel = [shellLabel, cwd, isRunning && pid ? `PID ${ pid }` : ''].filter(Boolean).join(' · ');
 
   const consolePanel = (
-    <div className={`eterx-terminal-console flex flex-col font-mono text-[#D8D1C8] ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#141413] shadow-none' }`}>
+    <div className={`eterx-terminal-console flex flex-col font-mono text-[#D8D1C8] ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'overflow-hidden rounded-[10px] border border-white/[0.07] bg-[#141413]/80 shadow-none' }`}>
       {/* Liquid Glass Command Container with Floating Overlapping Copy Button */}
-      <div className="eterx-terminal-console-command-card relative mx-3 mt-2.5 mb-1.5 overflow-hidden rounded-[10px] border border-white/[0.07] bg-white/[0.028] shadow-none backdrop-blur-md p-2.5">
+      <div className="eterx-terminal-console-command-card relative mx-2 mt-1.5 mb-1 overflow-hidden rounded-[8px] border border-white/[0.065] bg-white/[0.022] shadow-none p-2">
         {/* Floating Overlapping Copy Button */}
-        <div className="absolute top-2 right-2 z-10">
+        <div className="absolute right-1.5 top-1.5 z-10">
           <IconCopyButton content={command} label="Copy command" />
         </div>
         {/* Full width command block till end right of container, max-h-[84px], INVISIBLE scrollbar */}
-        <div className="eterx-scrollbar-hidden max-h-[84px] w-full overflow-y-auto pr-9 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <div className="eterx-terminal-console-command flex items-start gap-2 text-[#E4DDD3]">
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[12px] font-medium leading-5 text-[#F0EAE0] select-all">{command}</span>
+        <div className="eterx-scrollbar-hidden max-h-[68px] w-full overflow-y-auto pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="eterx-terminal-console-command flex items-start gap-1.5 text-[#E4DDD3]">
+            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11.5px] font-medium leading-[1.4] text-[#F0EAE0] select-all">{command}</span>
           </div>
         </div>
       </div>
@@ -1064,7 +1064,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="eterx-terminal-console-output eterx-scrollbar max-h-[280px] min-h-[72px] overflow-auto px-3.5 py-2.5 text-[12.25px] leading-[1.58] text-[#CDC5BB]"
+          className="eterx-terminal-console-output eterx-scrollbar max-h-[220px] min-h-[56px] overflow-auto px-2.5 py-2 text-[11.5px] leading-[1.48] text-[#CDC5BB]"
         >
           <div className="min-w-0 pr-1">
             <div className="eterx-terminal-console-body whitespace-pre-wrap break-words text-[#CDC5BB]">
@@ -1076,14 +1076,14 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
           </div>
         </div>
         {!atBottom && hasManyLines && (
-          <button type="button" aria-label="Scroll output to bottom" onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2.5 right-2.5 flex h-7 w-7 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-none transition-colors hover:bg-[#333331] hover:text-[#F0EAE0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20">
-            <ChevronDown className="h-3.5 w-3.5" />
+          <button type="button" aria-label="Scroll output to bottom" onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-none transition-colors hover:bg-[#333331] hover:text-[#F0EAE0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20">
+            <ChevronDown className="h-3 w-3" />
           </button>
         )}
       </div>
 
       {/* Terminal footer status bar */}
-      <div className="eterx-terminal-console-footer flex items-center justify-between gap-3 border-t border-white/[0.045] bg-white/[0.015] px-3.5 py-1.5 text-[11px] font-medium text-[#A9A196]">
+      <div className="eterx-terminal-console-footer flex items-center justify-between gap-2 border-t border-white/[0.045] bg-white/[0.012] px-2.5 py-1 text-[10.5px] font-medium text-[#A9A196]">
         <span className="min-w-0 truncate text-[#777168]" title={executionLabel || undefined}>{executionLabel}</span>
         <div className="flex items-center gap-2.5">
           {durationMs !== undefined && durationMs > 0 && (
@@ -2645,7 +2645,7 @@ const getStreamRowIdentity = (log: any, fallbackIndex: number) => {
   return primary ? `${ primary }:${ String(anchor) }` : String(anchor);
 };
 
-const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[12px] border border-white/[0.075] bg-[#151514]/60 shadow-none";
+const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[10px] border border-white/[0.07] bg-[#151514]/34 shadow-none";
 const ACTION_ROW_DIVIDER_CLASS = "eterx-action-row-divider border-t border-white/[0.052]";
 
 const formatTerminalSourcePreview = (value: unknown) => {
@@ -2918,15 +2918,15 @@ const TerminalTraceCard = ({
 
     return (
       <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
-        <div className={`eterx-terminal-trace-row flex w-full items-center gap-2 py-1 text-left ${ inCard ? 'min-h-[33px] px-1.5' : 'min-h-[38px] px-3' }`}>
-          <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
+        <div className={`eterx-terminal-trace-row flex w-full items-center gap-1.5 py-0.5 text-left ${ inCard ? 'min-h-[29px] px-1' : 'min-h-[34px] px-2.5' }`}>
+          <span className="eterx-action-icon eterx-terminal-icon flex h-[22px] w-[22px] shrink-0 items-center justify-center text-[#A39B91]">
             {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#67C58A]' : 'text-[#A39B91]' }`} strokeWidth={2.1} />}
           </span>
-          <Shimmer active={isStreaming} className="min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
+          <Shimmer active={isStreaming} className="min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
             {headerLabel}
           </Shimmer>
           {displayCollapsed && (
-            <span className="min-w-0 flex-1 truncate font-mono text-[12px] leading-tight text-[#857E73] select-all">
+            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-tight text-[#857E73] select-all">
               {displayCollapsed}
             </span>
           )}
@@ -2955,16 +2955,16 @@ const TerminalTraceCard = ({
           setIsExpanded(open => !open);
         }}
         aria-expanded={isExpanded}
-        className={`eterx-terminal-trace-row group grid w-full ${ rowGridClass } items-center gap-2 py-1 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'min-h-[33px] px-1.5 hover:bg-white/[0.024]' : 'min-h-[38px] px-3 hover:bg-white/[0.024]' }`}
+        className={`eterx-terminal-trace-row group grid w-full ${ rowGridClass } items-center gap-1.5 py-0.5 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'min-h-[29px] px-1 hover:bg-white/[0.024]' : 'min-h-[34px] px-2.5 hover:bg-white/[0.024]' }`}
       >
-        <span className="eterx-action-icon eterx-terminal-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center text-[#A39B91]">
+        <span className="eterx-action-icon eterx-terminal-icon flex h-[22px] w-[22px] shrink-0 items-center justify-center text-[#A39B91]">
           {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Terminal className="h-[16.5px] w-[16.5px]" strokeWidth={2.1} />}
         </span>
-        <Shimmer active={isStreaming} className="min-w-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
+        <Shimmer active={isStreaming} className="min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {headerLabel}
         </Shimmer>
         {!isExpanded && (
-          <span className="min-w-0 flex-1 truncate font-mono text-[12px] leading-tight text-[#857E73] select-all">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-tight text-[#857E73] select-all">
             {collapsedCommand || '(no command)'}
           </span>
         )}
@@ -3195,8 +3195,8 @@ const FileChangeTraceCard = ({
   );
 
   const collapsedRowClass = inCard
-    ? `eterx-file-change-row eterx-file-change-row--embedded group grid min-h-[33px] w-full grid-cols-[26px_auto_minmax(0,1fr)_auto] items-center gap-2 px-1.5 py-1 text-left transition-colors hover:bg-white/[0.024] ${ canExpand ? 'cursor-pointer' : 'cursor-default' }`
-    : `eterx-file-change-row eterx-file-change-row--standalone group grid min-h-[38px] w-full grid-cols-[26px_auto_minmax(0,1fr)_auto] items-center gap-2 px-3 py-1 text-left transition-colors ${ canExpand ? 'cursor-pointer hover:bg-white/[0.025]' : 'cursor-default' }`;
+    ? `eterx-file-change-row eterx-file-change-row--embedded group grid min-h-[29px] w-full grid-cols-[22px_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-1 py-0.5 text-left transition-colors hover:bg-white/[0.024] ${ canExpand ? 'cursor-pointer' : 'cursor-default' }`
+    : `eterx-file-change-row eterx-file-change-row--standalone group grid min-h-[34px] w-full grid-cols-[22px_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-2.5 py-0.5 text-left transition-colors ${ canExpand ? 'cursor-pointer hover:bg-white/[0.025]' : 'cursor-default' }`;
 
   return (
     <div className={`eterx-file-change-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
@@ -3213,10 +3213,10 @@ const FileChangeTraceCard = ({
         }}
         className={collapsedRowClass}
       >
-        <span className="eterx-action-icon eterx-file-change-icon flex h-[26px] w-[26px] shrink-0 items-center justify-center">
+        <span className="eterx-action-icon eterx-file-change-icon flex h-[22px] w-[22px] shrink-0 items-center justify-center">
           <AI isLive={isLiveChip} size={16.5} color={isLiveChip ? ac : '#DAD6CF'} />
         </span>
-        <Shimmer active={isLiveChip} className="eterx-file-change-title min-w-max whitespace-nowrap text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
+          <Shimmer active={isLiveChip} className="eterx-file-change-title min-w-max whitespace-nowrap text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {title}
         </Shimmer>
         <span className="eterx-file-change-detail flex min-w-0 items-center gap-1.5 overflow-hidden">
@@ -3553,7 +3553,7 @@ const ActionChip = ({
           e.preventDefault();
           handleTogglePreview(e);
         }}
-        className={`eterx-action-chip grid w-full grid-cols-[26px_auto_minmax(0,1fr)_auto] items-center gap-2 py-1 transition-colors group ${ inCard ? 'min-h-[33px] rounded-none border-0 bg-transparent px-1.5 hover:bg-white/[0.026]' : preview ? `min-h-[38px] px-3 ${ ACTION_CARD_CLASS } cursor-pointer hover:border-white/[0.13] hover:bg-[#181817]/80` : `min-h-[38px] px-3 ${ ACTION_CARD_CLASS } cursor-default hover:bg-[#171716]/70` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
+        className={`eterx-action-chip grid w-full grid-cols-[22px_auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5 transition-colors group ${ inCard ? 'min-h-[29px] rounded-none border-0 bg-transparent px-1 hover:bg-white/[0.026]' : preview ? `min-h-[34px] px-2.5 ${ ACTION_CARD_CLASS } cursor-pointer hover:border-white/[0.12] hover:bg-[#181817]/70` : `min-h-[34px] px-2.5 ${ ACTION_CARD_CLASS } cursor-default hover:bg-[#171716]/60` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
       >
         {!isThinkChip && (() => {
           // Terminal-style traces can arrive with custom text and older computer categories.
@@ -3562,25 +3562,25 @@ const ActionChip = ({
           const { Icon: AI, color: ac } = agentEntry;
           return (
             <span
-              className={`eterx-action-icon flex h-[26px] w-[26px] items-center justify-center shrink-0 ${ connectorAction ? 'rounded-[8px] border border-white/[0.08] bg-white/[0.035] shadow-none' : '' }`}
+              className={`eterx-action-icon flex h-[22px] w-[22px] items-center justify-center shrink-0 ${ connectorAction ? 'rounded-[6px] border border-white/[0.08] bg-white/[0.035] shadow-none' : '' }`}
               title={connectorAction ? `${ (connectorId || 'connected service').replace(/_/g, ' ') } connector` : undefined}
               data-connector={connectorId || (connectorAction ? 'connected-service' : undefined)}
             >
               {connectorAction
-                ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ (connectorId || 'connected service').replace(/_/g, ' ') } connector`} />
-                : <AI isLive={isLiveChip} size={16.5} color={isLiveChip ? ac : '#DAD6CF'} />}
+                ? <ConnectorIcon connectorId={connectorId} size={15} title={`${ (connectorId || 'connected service').replace(/_/g, ' ') } connector`} />
+                : <AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} />}
             </span>
           );
         })()}
-        {isThinkChip && <span className="h-6 w-6 shrink-0" />}
-        <Shimmer active={isLiveChip} className="eterx-action-verb shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">{displayVerbLabel}</Shimmer>
+        {isThinkChip && <span className="h-[22px] w-[22px] shrink-0" />}
+        <Shimmer active={isLiveChip} className="eterx-action-verb shrink-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">{displayVerbLabel}</Shimmer>
         {hasFile && (
           <span className="flex min-w-0 items-center gap-2">
             <LocalFileIcon fileName={fileName} size="sm" />
             <button
               type="button"
               onClick={openInIde}
-              className="eterx-action-file-link min-w-0 truncate text-left text-[13.5px] font-semibold leading-tight text-[#DDEAF1] transition-colors duration-150 hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/22"
+              className="eterx-action-file-link min-w-0 truncate text-left text-[12.5px] font-semibold leading-tight text-[#DDEAF1] transition-colors duration-150 hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/22"
               aria-label={`Open file: ${ fileName }`}
             >
               {fileName}
@@ -3589,7 +3589,7 @@ const ActionChip = ({
               <button
                 type="button"
                 onClick={openInIde}
-                className="eterx-action-diff-chip group/diff relative -my-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[12px] font-semibold tabular-nums leading-none text-[#C8C1B8] transition-colors duration-150 hover:bg-white/[0.052] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/18"
+                className="eterx-action-diff-chip group/diff relative -my-1 inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-1.5 text-[11px] font-semibold tabular-nums leading-none text-[#C8C1B8] transition-colors duration-150 hover:bg-white/[0.052] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/18"
                 aria-label={`Open file: ${ fileName }`}
               >
                 <ChangeStats
@@ -3604,14 +3604,14 @@ const ActionChip = ({
               </button>
             )}
             {lineContext && (
-              <span className="shrink-0 text-[12px] font-medium leading-tight text-[#857E73]">
+              <span className="shrink-0 text-[11px] font-medium leading-tight text-[#857E73]">
                 {lineContext}
               </span>
             )}
           </span>
         )}
         {!hasFile && subtitle && (
-          <span className="min-w-0 truncate font-mono text-[12.5px] leading-tight text-[#918A80]">{subtitle}</span>
+          <span className="min-w-0 truncate font-mono text-[11.5px] leading-tight text-[#918A80]">{subtitle}</span>
         )}
         {!hasFile && !subtitle && <span className="min-w-0" />}
         <span className="flex shrink-0 items-center justify-end gap-2 justify-self-end">
@@ -3759,10 +3759,10 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
             <button
               type="button"
               onClick={() => onOpenAgentTeam?.(identity)}
-              className={`w-full flex min-h-[33px] items-center gap-2.5 rounded-[9px] px-3 py-1 bg-white/[0.015] border border-white/[0.045] text-left transition-all hover:bg-white/[0.024] hover:border-white/[0.075] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ ACTION_CARD_CLASS }`}
+              className={`w-full flex min-h-[29px] items-center gap-2 rounded-[8px] px-2.5 py-0.5 bg-white/[0.012] border border-white/[0.04] text-left transition-all hover:bg-white/[0.024] hover:border-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ ACTION_CARD_CLASS }`}
               aria-label={`View agent ${ name }`}
             >
-              <SubAgentIdentityIcon name={name} status="spawning" size={24} assetIndex={getSubAgentAssetIndex(assetIndexes, name) ?? index} />
+              <SubAgentIdentityIcon name={name} status="spawning" size={21} assetIndex={getSubAgentAssetIndex(assetIndexes, name) ?? index} />
               <span className="text-[11.5px] font-medium text-[#C8C1B8] group-hover:text-[#E0DAD2] transition-colors">
                 Created <span className="text-[#E0DAD2]">{name}</span>
               </span>
@@ -3784,17 +3784,17 @@ const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Su
 
   return (
     <div
-      className={`flex min-h-[46px] items-center gap-3 px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
+      className={`flex min-h-[40px] items-center gap-2.5 px-2.5 py-2 ${ ACTION_CARD_CLASS }`}
     >
-      <SubAgentIdentityIcon name={agentName} status="working" size={32} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
+      <SubAgentIdentityIcon name={agentName} status="working" size={26} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">
-          <span className="shrink-0 text-[12px] font-medium text-[#D8D1C8]">{agentName}</span>
+          <span className="shrink-0 text-[11.5px] font-medium text-[#D8D1C8]">{agentName}</span>
           <span className="shrink-0 rounded-full border border-white/[0.07] bg-white/[0.028] px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-[#8F877C]">
             {stepLabel}
           </span>
         </span>
-        <span className="mt-0.5 block min-w-0 truncate text-[13px] font-medium leading-5 text-[#C8C1B8]">
+          <span className="mt-0.5 block min-w-0 truncate text-[12px] font-medium leading-4 text-[#C8C1B8]">
           {actionText}
         </span>
         {detailText && (
@@ -3844,19 +3844,19 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
         type="button"
         onClick={() => preview ? setOpen(value => !value) : onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || focusAgent)}
         aria-expanded={preview ? open : undefined}
-        className={`eterx-agent-comm-card flex min-h-[58px] w-full items-start gap-3 rounded-[8px] px-3 py-2.5 bg-white/[0.012] border border-white/[0.07] text-left transition-colors hover:bg-white/[0.024] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ ACTION_CARD_CLASS }`}
+         className={`eterx-agent-comm-card flex min-h-[46px] w-full items-start gap-2.5 rounded-[8px] px-2.5 py-2 bg-white/[0.01] border border-white/[0.065] text-left transition-colors hover:bg-white/[0.024] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ ACTION_CARD_CLASS }`}
         aria-label={preview ? `${ open ? 'Collapse' : 'Expand' } message from ${ fromAgent }` : `View ${ focusAgent || 'agent activity' }`}
       >
-        <span className="eterx-agent-comm-identities mt-0.5 flex shrink-0 items-center gap-1.5">
-          <SubAgentIdentityIcon name={fromAgent} status="working" size={28} assetIndex={getSubAgentAssetIndex(assetIndexes, fromAgent) ?? 0} />
-          <ArrowRight className="h-3.5 w-3.5 text-[#6F685F]" />
-          <SubAgentIdentityIcon name={toAgent === '*' ? 'All agents' : toAgent} status="idle" size={28} assetIndex={getSubAgentAssetIndex(assetIndexes, toAgent === '*' ? 'All agents' : toAgent) ?? 1} />
+          <span className="eterx-agent-comm-identities mt-0.5 flex shrink-0 items-center gap-1">
+           <SubAgentIdentityIcon name={fromAgent} status="working" size={23} assetIndex={getSubAgentAssetIndex(assetIndexes, fromAgent) ?? 0} />
+           <ArrowRight className="h-3 w-3 text-[#6F685F]" />
+           <SubAgentIdentityIcon name={toAgent === '*' ? 'All agents' : toAgent} status="idle" size={23} assetIndex={getSubAgentAssetIndex(assetIndexes, toAgent === '*' ? 'All agents' : toAgent) ?? 1} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <span className="text-[12px] font-semibold text-[#D8D1C7]">{fromAgent}</span>
+            <span className="text-[11.5px] font-semibold text-[#D8D1C7]">{fromAgent}</span>
             <ArrowRight className="h-3 w-3 text-[#6F685F]" />
-            <span className="text-[12px] font-semibold text-[#D8D1C7]">{toAgent === '*' ? 'All agents' : toAgent}</span>
+            <span className="text-[11.5px] font-semibold text-[#D8D1C7]">{toAgent === '*' ? 'All agents' : toAgent}</span>
             <span className="inline-flex items-center gap-1 rounded-[6px] border border-white/[0.075] bg-white/[0.026] px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-[#9C948B]">
               {typeIcon[msgType] || <MessageSquare className="h-3.5 w-3.5" />}
               {msgType.replace('_', ' ')}
@@ -3875,7 +3875,7 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
               </span>
             )}
           </span>
-          {subject && <span className="mt-1 block truncate text-[12px] font-medium text-[#BDB5AB]">{subject}</span>}
+          {subject && <span className="mt-0.5 block truncate text-[11.5px] font-medium text-[#BDB5AB]">{subject}</span>}
           {preview && !open && <span className="mt-0.5 block truncate text-[11px] text-[#817970]">{preview}</span>}
         </span>
         {preview && <ChevronRight className={`mt-1 h-3.5 w-3.5 shrink-0 text-[#6F685F] transition-transform ${ open ? 'rotate-90' : '' }`} />}
@@ -3905,9 +3905,9 @@ const SubAgentErrorCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Sub
   const detail = normalizeToolTraceText(log.secondary || '');
   return (
     <div
-      className={`flex min-h-[46px] items-center gap-3 rounded-[12px] px-3 py-2.5 ${ ACTION_CARD_CLASS }`}
+      className={`flex min-h-[40px] items-center gap-2.5 rounded-[10px] px-2.5 py-2 ${ ACTION_CARD_CLASS }`}
     >
-      <SubAgentIdentityIcon name={agentName} status="error" size={36} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
+      <SubAgentIdentityIcon name={agentName} status="error" size={28} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="min-w-0 flex-1">
         <span className="block text-[13.5px] font-medium text-[#E5B2AD]">{agentName} {log.errorType === 'cancelled' ? 'stopped' : 'encountered an error'}</span>
         <span className="block text-[12px] font-medium text-[#A07B76] mt-0.5 truncate">{detail}</span>
@@ -3942,19 +3942,19 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
         type="button"
         onClick={() => setOpen(value => !value)}
         aria-expanded={open}
-        className={`${ ACTION_CARD_CLASS } flex min-h-[44px] items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.028]`}
+        className={`${ ACTION_CARD_CLASS } flex min-h-[36px] items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.028]`}
       >
-        <span className="eterx-action-icon flex h-7 w-7 shrink-0 items-center justify-center text-[#D8D1C8]">
+        <span className="eterx-action-icon flex h-6 w-6 shrink-0 items-center justify-center text-[#D8D1C8]">
           {answered ? (
             <Check className="h-4 w-4 text-[#DAD6CF]" />
           ) : (
             <AgentAssetIcon size={18} color="#DAD6CF" />
           )}
         </span>
-        <Shimmer active={!answered && isLive} className="shrink-0 truncate text-[13.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
+        <Shimmer active={!answered && isLive} className="shrink-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {answered ? 'Asked user' : `Asking user${ isLive ? '...' : '' }`}
         </Shimmer>
-        <span className="min-w-0 flex-1 truncate text-[12.75px] text-[#918A80]">
+        <span className="min-w-0 flex-1 truncate text-[11.5px] text-[#918A80]">
           {questionLabel}
         </span>
         <ChevronRight className={`h-4 w-4 shrink-0 text-[#898176] transition-transform ${ open ? 'rotate-90 text-[#C8C1B8]' : '' }`} />
@@ -4003,6 +4003,14 @@ const CollapsibleActionGroup = ({
   // Live work should be inspectable immediately. Larger completed batches
   // stay compact when a user reopens the work sequence.
   const [open, setOpen] = useState(() => isActiveGroup || logs.length <= 3);
+  const wasActiveRef = useRef(isActiveGroup);
+  useEffect(() => {
+    // A group can be created before the transport marks it live. Open it once
+    // that transition arrives, but preserve a user's manual collapse while it
+    // remains active on subsequent polling updates.
+    if (isActiveGroup && !wasActiveRef.current) setOpen(true);
+    wasActiveRef.current = isActiveGroup;
+  }, [isActiveGroup]);
   const visibleLogs = logs.filter(Boolean);
   if (visibleLogs.length === 0) return null;
 
@@ -4033,7 +4041,7 @@ const CollapsibleActionGroup = ({
               type="button"
               aria-expanded={open}
               onClick={() => setOpen(value => !value)}
-              className="eterx-action-group-header flex min-h-[36px] w-full items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-left text-[12px] font-medium text-white/60 hover:bg-white/[0.035] hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+              className="eterx-action-group-header flex min-h-[30px] w-full items-center gap-1.5 border-b border-white/[0.055] px-2.5 py-1.5 text-left text-[11px] font-medium text-white/60 hover:bg-white/[0.028] hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
             >
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${ open ? '' : '-rotate-90' }`} aria-hidden="true" />
               <span className="flex items-center gap-1.5">
@@ -4042,8 +4050,8 @@ const CollapsibleActionGroup = ({
               {connectorIds.length > 0 && (
                 <span className="ml-auto flex items-center gap-1.5" aria-label={`${ connectorIds.length } connected service${ connectorIds.length === 1 ? '' : 's' }`}>
                   {connectorIds.slice(0, 4).map(connectorId => (
-                    <span key={connectorId} className="grid h-5 w-5 place-items-center rounded-[6px] border border-white/[0.08] bg-white/[0.035]" title={`${ connectorId.replace(/_/g, ' ') } connector`}>
-                      <ConnectorIcon connectorId={connectorId} size={13} />
+                    <span key={connectorId} className="grid h-4 w-4 place-items-center rounded-[5px] border border-white/[0.08] bg-white/[0.03]" title={`${ connectorId.replace(/_/g, ' ') } connector`}>
+                      <ConnectorIcon connectorId={connectorId} size={11} />
                     </span>
                   ))}
                   {connectorIds.length > 4 && <span className="text-[10px] text-white/35">+{ connectorIds.length - 4 }</span>}
@@ -4240,7 +4248,7 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
         color="var(--eterx-ui-working-highlight)"
         surfaceColor="var(--background)"
         textColor="var(--eterx-ui-working-text)"
-        className="min-w-0 truncate text-[15px] font-normal leading-none tracking-[-0.01em] text-[var(--eterx-ui-working-text)]"
+        className="eterx-thinking-shimmer min-w-0 truncate text-[15.5px] font-normal leading-[1.2] tracking-[0.005em] text-[var(--eterx-ui-working-text)]"
       >
         {displayLabel}
       </Shimmer>
@@ -4667,7 +4675,13 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
   const isFlowLog = (l: any) => {
-    const subAgentOwned = Boolean(l?.subAgentId || l?.subAgentChatId || l?.subAgent) && String(l?.agentName || '').toLowerCase() !== 'main';
+    const agentName = String(l?.agentName || l?.subAgent || '').trim().toLowerCase();
+    const explicitlyMain = agentName === 'main';
+    const subAgentOwned = !explicitlyMain && Boolean(
+      l?.subAgentId ||
+      l?.subAgentChatId ||
+      (l?.subAgent && agentName),
+    );
     const highLevelSubAgentTypes = new Set([
       'work_note', 'progress', 'sub_agent_spawn', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_complete', 'sub_agent_error',
       'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close', 'inter_agent_comm', 'inter_agent_message',
@@ -4745,6 +4759,45 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     }
   });
 
+  // Live transports often emit both a rich result/answer and a generic
+  // completion event for the same worker. Keep one authoritative terminal
+  // card per worker run so the main timeline does not repeat or flicker.
+  const terminalAgentEventTypes = new Set([
+    'sub_agent_answer', 'sub_agent_result', 'sub_agent_complete',
+    'sub_agent_error', 'sub_agent_close',
+  ]);
+  const terminalAgentEventPriority: Record<string, number> = {
+    sub_agent_complete: 1,
+    sub_agent_close: 2,
+    sub_agent_answer: 3,
+    sub_agent_result: 3,
+    sub_agent_error: 4,
+  };
+  const terminalAgentEventIndex = new Map<string, number>();
+  const agentLifecycleIdentity = (log: any) => String(
+    log?.subAgentChatId || log?.subAgentId || log?.agentId ||
+    log?.taskId || log?.backgroundTaskId || log?.agentName || log?.subAgent || '',
+  ).trim().toLowerCase();
+  timelineLogs.forEach((log: any, index: number) => {
+    if (!terminalAgentEventTypes.has(String(log?.type || ''))) return;
+    const identity = agentLifecycleIdentity(log);
+    if (!identity) return;
+    const previousIndex = terminalAgentEventIndex.get(identity);
+    if (previousIndex === undefined) {
+      terminalAgentEventIndex.set(identity, index);
+      return;
+    }
+    const previous = timelineLogs[previousIndex];
+    const previousPriority = terminalAgentEventPriority[String(previous?.type || '')] || 0;
+    const nextPriority = terminalAgentEventPriority[String(log?.type || '')] || 0;
+    if (nextPriority >= previousPriority) terminalAgentEventIndex.set(identity, index);
+  });
+  const isSupersededTerminalAgentEvent = (log: any, index: number) => {
+    if (!terminalAgentEventTypes.has(String(log?.type || ''))) return false;
+    const identity = agentLifecycleIdentity(log);
+    return Boolean(identity && terminalAgentEventIndex.get(identity) !== index);
+  };
+
   timelineLogs.forEach((log, idx) => {
     if (log.type === 'thought_stream') {
       if (shouldRenderThoughtSegment(log, timelineLogs, idx)) {
@@ -4769,12 +4822,16 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     else if (log.type === 'safety_warning') { flush(idx - 1); segs.push({ kind: 'safety', log, idx }); }
     else if (log.type === 'steering_received') { flush(idx - 1); segs.push({ kind: 'steering', log, idx }); }
     else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result') {
-      flush(idx - 1);
-      segs.push({ kind: 'subagent_complete', log, idx });
+      if (!isSupersededTerminalAgentEvent(log, idx)) {
+        flush(idx - 1);
+        segs.push({ kind: 'subagent_complete', log, idx });
+      }
     }
     else if (log.type === 'sub_agent_complete') {
-      flush(idx - 1);
-      segs.push({ kind: 'subagent_complete', log, idx });
+      if (!isSupersededTerminalAgentEvent(log, idx)) {
+        flush(idx - 1);
+        segs.push({ kind: 'subagent_complete', log, idx });
+      }
     }
     else if (log.type === 'sub_agent_spawn') {
       // Skip the per-worker event when its exact run is already represented by
@@ -4792,12 +4849,16 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       }
     }
     else if (log.type === 'sub_agent_error') {
-      flush(idx - 1);
-      segs.push({ kind: 'subagent_error', log, idx });
+      if (!isSupersededTerminalAgentEvent(log, idx)) {
+        flush(idx - 1);
+        segs.push({ kind: 'subagent_error', log, idx });
+      }
     }
     else if (['sub_agent_pause', 'sub_agent_resume', 'sub_agent_close'].includes(log.type)) {
-      flush(idx - 1);
-      segs.push({ kind: 'subagent_status', log, idx });
+      if (!isSupersededTerminalAgentEvent(log, idx)) {
+        flush(idx - 1);
+        segs.push({ kind: 'subagent_status', log, idx });
+      }
     }
     else if (log.type === 'sub_agent_action') {
       if (isSubAgentTab) {

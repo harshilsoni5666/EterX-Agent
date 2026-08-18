@@ -24,7 +24,7 @@ export const LiveArtifact: React.FC<LiveArtifactProps> = ({ html = '', css = '',
               margin: 0; 
               padding: 20px; 
               color: #E8E6E3; 
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+              font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
               background: transparent;
               overflow-x: hidden;
             }

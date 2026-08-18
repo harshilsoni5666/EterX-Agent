@@ -2058,7 +2058,7 @@ function getPetWindowHtml() {
       body {
         display: block;
         padding: 0;
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
         color: #f2f0ec;
         user-select: none;
         -webkit-app-region: drag;
@@ -2753,7 +2753,7 @@ async function showStartupFailure(error, target) {
         place-items: center;
         background: ${failureColors.page};
         color: ${failureColors.text};
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
       }
       main {
         width: min(440px, calc(100vw - 48px));
