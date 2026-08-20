@@ -1409,8 +1409,6 @@ function DeepWorkUI() {
 
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [isRecording, setIsRecording] = useState(false);
-  const [audioVolume, setAudioVolume] = useState<number>(0);
-  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [desktopPlatform, setDesktopPlatform] = useState<'windows' | 'macos' | 'linux' | 'web'>('web');
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
@@ -3115,32 +3113,34 @@ function DeepWorkUI() {
   const notifiedChatIdsRef = useRef<Set<string>>(new Set());
   const gatewayReplyRunIdsRef = useRef<Set<string>>(new Set());
 
-  // Custom Speech Media Refs
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<BlobPart[]>([]);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const silenceIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const transcriptBufferRef = useRef('');
-  const lastSpeechTimeRef = useRef(0);
-  const isManualStopRef = useRef(false);
-  const hasSpokenRef = useRef(false);
-  const isCancelledRef = useRef(false);
+  // Dictation stays live until the user turns it off. Chromium desktop builds
+  // use the prefixed constructor while newer browsers expose the standard one.
+  const speechRecognitionRef = useRef<any>(null);
+  const dictationShouldRunRef = useRef(false);
+  const dictationRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dictationBaseTextRef = useRef('');
+  const inputValueRef = useRef(inputValue);
 
-  const cancelVoice = () => {
-    isCancelledRef.current = true;
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop();
+  useEffect(() => {
+    inputValueRef.current = inputValue;
+  }, [inputValue]);
+
+  const stopSpeechDictation = useCallback(() => {
+    dictationShouldRunRef.current = false;
+    if (dictationRestartTimerRef.current) {
+      clearTimeout(dictationRestartTimerRef.current);
+      dictationRestartTimerRef.current = null;
+    }
+    const recognition = speechRecognitionRef.current;
+    speechRecognitionRef.current = null;
+    if (recognition) {
+      recognition.onend = null;
+      try { recognition.stop(); } catch { }
     }
     setIsRecording(false);
-    setIsProcessingVoice(false);
-    setAudioVolume(0);
-  };
+  }, []);
 
-  const acceptVoice = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop();
-    }
-  };
+  useEffect(() => () => stopSpeechDictation(), [stopSpeechDictation]);
 
   // ═══════════════════════════════════════════════════════════════
   // AGENT LIVE — provider-specific realtime voice conversations
@@ -8238,220 +8238,102 @@ function DeepWorkUI() {
     await deliverFollowUpToRunningChat(targetChatId, steerMessage, attachments);
   };
 
-  const toggleSpeech = () => {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      return alert("Microphone access is not supported in this environment.");
-    }
-
-    if (isRecording) {
-      isManualStopRef.current = true;
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop();
-      }
+  const toggleSpeech = async () => {
+    if (dictationShouldRunRef.current) {
+      stopSpeechDictation();
       return;
     }
 
-    transcriptBufferRef.current = inputValue;
-    if (transcriptBufferRef.current && !transcriptBufferRef.current.endsWith(' ')) {
-      transcriptBufferRef.current += ' ';
+    const browserWindow = window as typeof window & {
+      SpeechRecognition?: new () => any;
+      webkitSpeechRecognition?: new () => any;
+    };
+    const SpeechRecognitionConstructor =
+      browserWindow.SpeechRecognition || browserWindow.webkitSpeechRecognition;
+
+    if (!SpeechRecognitionConstructor) {
+      alert('Live voice dictation is not supported by this browser. Please use the EterX desktop app, Chrome, Edge, or Safari.');
+      return;
     }
 
-    lastSpeechTimeRef.current = Date.now();
-    isManualStopRef.current = false;
-    hasSpokenRef.current = false;
-    isCancelledRef.current = false;
-    audioChunksRef.current = [];
+    const desktopPermission = await (window as any).electronAPI?.requestLiveMediaPermissions?.();
+    if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
+      alert('Microphone access is blocked. Allow microphone access in your system settings, then try again.');
+      return;
+    }
 
-    const startRecording = async () => {
-      try {
-        // Request microphone with minimal processing — noiseSuppression can eat speech on some systems
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: true,
-          }
-        });
+    const startingText = inputValue && !/\s$/.test(inputValue) ? `${inputValue} ` : inputValue;
+    dictationBaseTextRef.current = startingText;
+    inputValueRef.current = startingText;
+    dictationShouldRunRef.current = true;
+    setIsRecording(true);
 
-        // Diagnostics: log what microphone we got
-        const tracks = stream.getAudioTracks();
-        console.log('[Voice] Got', tracks.length, 'audio track(s)');
-        tracks.forEach((t, i) => {
-          console.log(`[Voice] Track ${ i }: label="${ t.label }" enabled=${ t.enabled } muted=${ t.muted } readyState=${ t.readyState }`);
-          const settings = t.getSettings();
-          console.log(`[Voice] Track ${ i } settings:`, JSON.stringify(settings));
-        });
+    const startRecognition = () => {
+      if (!dictationShouldRunRef.current) return;
 
-        // Detect best supported mimeType
-        const mimeTypes = [
-          'audio/webm;codecs=opus',
-          'audio/webm',
-          'audio/ogg;codecs=opus',
-          'audio/mp4',
-          'audio/wav',
-          ''
-        ];
-        let selectedMime = '';
-        for (const mime of mimeTypes) {
-          if (!mime || MediaRecorder.isTypeSupported(mime)) {
-            selectedMime = mime;
-            break;
-          }
+      const recognition = new SpeechRecognitionConstructor();
+      speechRecognitionRef.current = recognition;
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+      recognition.lang = navigator.language || 'en-US';
+
+      recognition.onresult = (event: any) => {
+        let finalText = '';
+        let interimText = '';
+
+        for (let index = 0; index < event.results.length; index++) {
+          const result = event.results[index];
+          const transcript = String(result?.[0]?.transcript || '');
+          if (result.isFinal) finalText += transcript;
+          else interimText += transcript;
         }
-        console.log('[Voice] Using mimeType:', selectedMime || '(browser default)');
 
-        const recorderOptions: MediaRecorderOptions = {};
-        if (selectedMime) recorderOptions.mimeType = selectedMime;
+        const nextText = dictationBaseTextRef.current + finalText + interimText;
+        inputValueRef.current = nextText;
+        updateInputValue(nextText);
+      };
 
-        const mediaRecorder = new MediaRecorder(stream, recorderOptions);
-        mediaRecorderRef.current = mediaRecorder;
+      recognition.onerror = (event: any) => {
+        const error = String(event?.error || '');
+        if (error === 'no-speech' || error === 'aborted') return;
 
-        // Setup AudioContext for volume visualization
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-        if (audioContext.state === 'suspended') {
-          await audioContext.resume();
+        dictationShouldRunRef.current = false;
+        speechRecognitionRef.current = null;
+        setIsRecording(false);
+
+        if (error === 'not-allowed' || error === 'service-not-allowed') {
+          alert('Microphone access is blocked. Allow microphone access, then try voice dictation again.');
+        } else if (error === 'audio-capture') {
+          alert('No working microphone was found. Check your selected input device and try again.');
+        } else {
+          alert('Live voice dictation stopped because speech recognition is unavailable right now.');
         }
-        console.log('[Voice] AudioContext state:', audioContext.state, 'sampleRate:', audioContext.sampleRate);
+      };
 
-        audioContextRef.current = audioContext;
-        const source = audioContext.createMediaStreamSource(stream);
-        const analyser = audioContext.createAnalyser();
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.5;
-        analyser.minDecibels = -90;
-        analyser.maxDecibels = -10;
-        source.connect(analyser);
-
-        const freqData = new Uint8Array(analyser.frequencyBinCount);
-        let volumeLogCounter = 0;
-
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0) {
-            audioChunksRef.current.push(e.data);
-            console.log('[Voice] Chunk received:', e.data.size, 'bytes');
-          }
-        };
-
-        const cleanupAndTranscribe = async () => {
+      recognition.onend = () => {
+        speechRecognitionRef.current = null;
+        if (!dictationShouldRunRef.current) {
           setIsRecording(false);
-          setAudioVolume(0);
-          if (silenceIntervalRef.current) clearInterval(silenceIntervalRef.current);
-          if (audioContextRef.current) {
-            audioContextRef.current.close().catch(() => { });
-            audioContextRef.current = null;
-          }
-          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
 
-          if (isCancelledRef.current) {
-            setInputValue(transcriptBufferRef.current);
-            return;
-          }
+        dictationBaseTextRef.current = inputValueRef.current;
+        dictationRestartTimerRef.current = setTimeout(() => {
+          dictationRestartTimerRef.current = null;
+          startRecognition();
+        }, 150);
+      };
 
-          if (audioChunksRef.current.length === 0) {
-            console.warn('[Voice] No audio chunks collected');
-            return;
-          }
-
-          const blobType = mediaRecorder.mimeType || 'audio/webm';
-          const audioBlob = new Blob(audioChunksRef.current, { type: blobType });
-          console.log('[Voice] Final blob:', audioBlob.size, 'bytes, type:', blobType, 'chunks:', audioChunksRef.current.length);
-
-          if (audioBlob.size < 1000) {
-            console.warn('[Voice] Audio too short');
-            return;
-          }
-
-          setIsProcessingVoice(true);
-
-          let ext = 'webm';
-          if (blobType.includes('ogg')) ext = 'ogg';
-          else if (blobType.includes('mp4')) ext = 'mp4';
-          else if (blobType.includes('wav')) ext = 'wav';
-
-          const formData = new FormData();
-          formData.append('file', audioBlob, `audio.${ ext }`);
-
-          try {
-            const res = await fetch('/api/whisper', {
-              method: 'POST',
-              body: formData
-            });
-
-            const data = await res.json();
-            console.log('[Voice] Whisper response:', JSON.stringify(data));
-
-            if (data.filtered) {
-              // Server detected hallucination or empty audio
-              console.warn('[Voice] Speech not detected, reason:', data.reason);
-              setInputValue(transcriptBufferRef.current);
-              alert("Could not detect speech. Please check your microphone is selected correctly in Windows Sound Settings → Input.");
-            } else if (data.text && data.text.trim()) {
-              setInputValue(transcriptBufferRef.current + data.text);
-            } else {
-              setInputValue(transcriptBufferRef.current);
-            }
-          } catch (e) {
-            console.error('[Voice] Transcription error:', e);
-            setInputValue(transcriptBufferRef.current);
-            alert("Whisper Transcription Error: Could not connect to Groq.");
-          } finally {
-            setIsProcessingVoice(false);
-          }
-        };
-
-        mediaRecorder.onstop = () => {
-          cleanupAndTranscribe();
-        };
-
-        // Volume monitoring — use frequency data for reliable speech detection
-        silenceIntervalRef.current = setInterval(() => {
-          if (isManualStopRef.current) {
-            if (mediaRecorder.state === 'recording') mediaRecorder.stop();
-            return;
-          }
-
-          analyser.getByteFrequencyData(freqData);
-          // Use RMS of frequency bins for more accurate volume
-          let sumSquares = 0;
-          for (let i = 0; i < freqData.length; i++) {
-            sumSquares += freqData[i] * freqData[i];
-          }
-          const rms = Math.sqrt(sumSquares / freqData.length);
-          // Normalize to 0-100 range
-          const normalizedVolume = Math.min(100, (rms / 128) * 100);
-          setAudioVolume(normalizedVolume);
-
-          // Log volume periodically for debugging
-          volumeLogCounter++;
-          if (volumeLogCounter % 25 === 0) { // every ~2 seconds
-            console.log('[Voice] Volume RMS:', rms.toFixed(1), 'normalized:', normalizedVolume.toFixed(1));
-          }
-
-          if (normalizedVolume > 5) {
-            hasSpokenRef.current = true;
-            lastSpeechTimeRef.current = Date.now();
-          }
-
-          const timeSinceLast = Date.now() - lastSpeechTimeRef.current;
-          const limit = hasSpokenRef.current ? 4000 : 20000; // 20s timeout if never spoke
-
-          if (timeSinceLast >= limit) {
-            if (mediaRecorder.state === 'recording') mediaRecorder.stop();
-          }
-        }, 80);
-
-        mediaRecorder.start();
-        setIsRecording(true);
-        console.log('[Voice] Recording started. mimeType:', mediaRecorder.mimeType, 'state:', mediaRecorder.state);
-      } catch (err: any) {
-        console.error("[Voice] Microphone Error:", err);
-        alert("Microphone Error: " + (err.message || "Please grant microphone permissions."));
+      try {
+        recognition.start();
+      } catch {
+        recognition.onend();
       }
     };
 
-    startRecording();
+    startRecognition();
   };
-
   const handleOpenAgentTeam = useCallback((agentNameOrId?: string) => {
     if (agentNameOrId) {
       // Switch to that agent's tab in the header
@@ -8554,10 +8436,7 @@ function DeepWorkUI() {
     const admissionKey = `${ chatId }:${ broadcastToTeam ? 'team' : subAgentIdentity || agentName }`;
     if (subAgentSendAdmissionsRef.current.has(admissionKey)) return;
 
-    if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-    }
+    if (dictationShouldRunRef.current) stopSpeechDictation();
     if (!inputValue.trim() && attachments.length === 0) return;
     subAgentSendAdmissionsRef.current.add(admissionKey);
     const originalInput = inputValue;
@@ -8710,10 +8589,7 @@ function DeepWorkUI() {
       pinnedItems?: PinnedItem[];
     },
   ) => {
-    if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-    }
+    if (dictationShouldRunRef.current) stopSpeechDictation();
     const promptText = (typeof overridePrompt === 'string' ? overridePrompt : inputValue).trim();
     const requestedAttachments = overrideAttachments ?? attachments;
     const shouldRestoreComposer = typeof overridePrompt !== 'string' && !runOptionsOverride?.backgroundChat;
@@ -13771,10 +13647,6 @@ function DeepWorkUI() {
                       setAttachments={updateAttachments}
                       greeting={greeting}
                       traceLogsLength={traceLogs.length}
-                      isProcessingVoice={isProcessingVoice}
-                      audioVolume={audioVolume}
-                      cancelVoice={cancelVoice}
-                      acceptVoice={acceptVoice}
                       agentMode={agentMode}
                       onModeChange={handleAgentModeChange}
                       thinkingLevel={thinkingLevel}

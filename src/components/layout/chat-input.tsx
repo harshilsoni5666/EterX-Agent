@@ -346,10 +346,6 @@ interface ChatInputProps {
   setAttachments: React.Dispatch<React.SetStateAction<Attachment[]>>;
   greeting: string;
   traceLogsLength: number;
-  isProcessingVoice?: boolean;
-  audioVolume?: number;
-  cancelVoice?: () => void;
-  acceptVoice?: () => void;
   agentMode?: MainAgentMode;
   onModeChange?: (mode: MainAgentMode) => void;
   thinkingLevel?: MainAgentThinkingLevel;
@@ -548,108 +544,6 @@ const DocumentPreviewIframe = React.memo(({ src }: { src: string }) => {
   );
 });
 DocumentPreviewIframe.displayName = 'DocumentPreviewIframe';
-
-const VoiceWaveform = React.memo(({ volume, isProcessing, cancelVoice, acceptVoice }: { volume: number, isProcessing: boolean, cancelVoice: () => void, acceptVoice: () => void }) => {
-  const BAR_COUNT = 64;
-  const [volumes, setVolumes] = useState<number[]>(new Array(BAR_COUNT).fill(2));
-  const volumeRef = useRef(volume);
-  const tickRef = useRef(0);
-
-  useEffect(() => { volumeRef.current = volume; }, [volume]);
-
-  useEffect(() => {
-    if (isProcessing) return;
-    const interval = setInterval(() => {
-      tickRef.current += 1;
-      setVolumes(prev => {
-        const v = volumeRef.current; // 0–100
-        // Base height driven by mic volume — taller range (2px idle → 40px peak)
-        const base = Math.max(2, Math.min(40, (v / 100) * 38 + 2));
-        // Frequency shimmer: subtle sine wave that shifts over time so bars aren't uniform
-        const freqShimmer = Math.sin(tickRef.current * 0.18) * (v / 100) * 6;
-        const jitter = Math.random() * 3; // micro organic noise
-        const next = Math.max(2, Math.min(40, base + freqShimmer + jitter));
-        return [...prev.slice(1), next];
-      });
-    }, 45); // ~22fps scroll — smooth waterfall
-    return () => clearInterval(interval);
-  }, [isProcessing]);
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 8, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.96 }}
-      className="flex items-center w-full min-h-[44px]"
-    >
-      {/* Main Pill Container */}
-      <div className="flex-1 flex items-center justify-between bg-[#1C1C1C] border border-white/[0.08] rounded-full h-[48px] pl-5 pr-2 shadow-none w-full overflow-hidden">
-
-        {/* Scrolling Waterfall Waveform */}
-        <div
-          className="flex-1 flex items-center gap-[3px] h-[40px] overflow-hidden"
-          style={{ WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 12%, black 88%, transparent 100%)' }}
-        >
-          {isProcessing ? (
-            <div className="flex items-center justify-center gap-2 h-full w-full">
-              {[0, 1, 2].map((dot) => (
-                <motion.div
-                  key={dot}
-                  className="w-2.5 h-2.5 bg-[#E8E6E3]/70 rounded-full"
-                  animate={{ scale: [1, 1.4, 1], opacity: [0.5, 1, 0.5] }}
-                  transition={{ duration: 0.9, repeat: Infinity, ease: 'easeInOut', delay: dot * 0.25 }}
-                />
-              ))}
-            </div>
-          ) : (
-            volumes.map((v, i) => {
-              const intensity = Math.min(1, v / 32);
-              const r = Math.round(130 + intensity * 102);
-              const g = Math.round(128 + intensity * 100);
-              const b = Math.round(126 + intensity * 93);
-              return (
-                <div
-                  key={i}
-                  style={{
-                    height: v + 'px',
-                    width: '3.5px',
-                    borderRadius: '999px',
-                    backgroundColor: `rgb(${ r },${ g },${ b })`,
-                    transition: 'height 0.045s linear',
-                    willChange: 'height',
-                    transform: 'translateZ(0)',
-                    flexShrink: 0,
-                  }}
-                />
-              );
-            })
-          )}
-        </div>
-
-        {/* Right side controls */}
-        {!isProcessing && (
-          <div className="flex items-center gap-2 pl-4 shrink-0">
-            {/* Cancel (X) */}
-            <button
-              onClick={cancelVoice}
-              className="w-[34px] h-[34px] flex items-center justify-center rounded-full bg-white/[0.04] hover:bg-red-500/10 transition-all duration-200 group active:scale-95"
-            >
-              <X className="w-[17px] h-[17px] text-[#8C8A88] group-hover:text-red-400 transition-colors" strokeWidth={2.5} />
-            </button>
-
-            {/* Square Stop */}
-            <button
-              onClick={acceptVoice}
-              className="w-[34px] h-[34px] flex items-center justify-center rounded-full bg-[#E8E6E3] hover:bg-white transition-all duration-200 group active:scale-95 shadow-none"
-            >
-              <div className="w-[13px] h-[13px] rounded-[3.5px] bg-[#0A0A0A] group-hover:scale-90 transition-transform duration-200" />
-            </button>
-          </div>
-        )}
-      </div>
-    </motion.div>
-  );
-});
 
 const inputControlButton = "eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.07] bg-[#2D2D2D] text-white shadow-none transition-[background-color,border-color,box-shadow,color] duration-120 ease-out active:bg-[#2F2F2F] active:shadow-none hover:text-white hover:bg-[#333333] hover:border-white/[0.10] hover:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/15 group relative overflow-hidden";
 const inputControlSheen = "hidden";
@@ -1051,7 +945,6 @@ const TaskTrackerDock = React.memo(({
 export const ChatInput: React.FC<ChatInputProps> = ({
   inputValue, setInputValue, isThinking, canStop = false, isRecording, handleSend, handleStop, handleSteer = () => { },
   toggleSpeech, attachments, setAttachments, greeting, traceLogsLength,
-  isProcessingVoice = false, audioVolume = 0, cancelVoice = () => { }, acceptVoice = () => { },
   agentMode = 'think', onModeChange = () => { },
   thinkingLevel = 'low', onThinkingLevelChange = () => { },
   pinnedItems = [], setPinnedItems = () => { },
@@ -1890,11 +1783,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [inputValue, slashTrigger]);
 
   useEffect(() => {
-    if (liveState !== 'idle' || isRecording || isProcessingVoice) {
+    if (liveState !== 'idle') {
       setSlashTrigger(null);
       setSlashPanel(null);
     }
-  }, [isProcessingVoice, isRecording, liveState]);
+  }, [liveState]);
 
   // Save pasted/browser files as binary FormData so the renderer never base64-encodes media.
   const saveFileForAgent = useCallback(async (file: File, attachmentId: string, displayName: string) => {
@@ -2739,7 +2632,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const agentMenuX = `calc(-50% + ${ agentMenuXOffset }px)`;
   const modelMenuX = `calc(-50% + ${ modelMenuXOffset }px)`;
   const pillPopoutVerticalClass = isEmptyHome ? 'bottom-full mb-2' : 'bottom-[calc(100%+72px)] mb-0';
-  const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle' && !isRecording && !isProcessingVoice;
+  const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle';
   const thinkingMenuOption = allModelOptions.find(option => option.optionKey === thinkingMenuModelKey) || null;
   const thinkingMenuOptions = getThinkingLevelOptions(thinkingMenuOption);
   const thinkingMenuSelectedId = getEffectiveThinkingLevel(thinkingMenuOption);
@@ -3059,11 +2952,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           animate={liveAnimateState}
           transition={liveTransition}
           className={`eterx-composer-surface eterx-composer-main transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] overflow-visible relative ${
-`w-full ${ isLiveActive ? (inputValue.includes('\n') || inputValue.length > 55 ? 'rounded-[22px]' : 'rounded-full') : composerRadius } flex flex-col ${ isLiveActive ? 'p-1' : isCompressed ? 'pt-2 pb-2' : 'pt-2.5 pb-2' } ${ isNewChatHome ? 'eterx-new-chat-composer-surface' : '' } bg-[#202020] backdrop-blur-[28px] shadow-none ${ isLiveActive || isRecording ? 'border border-white/[0.20]' : 'border border-white/[0.075] hover:border-white/[0.11] focus-within:border-white/[0.15]' }`
+`w-full ${ isLiveActive ? (inputValue.includes('\n') || inputValue.length > 55 ? 'rounded-[22px]' : 'rounded-full') : composerRadius } flex flex-col ${ isLiveActive ? 'p-1' : isCompressed ? 'pt-2 pb-2' : 'pt-2.5 pb-2' } ${ isNewChatHome ? 'eterx-new-chat-composer-surface' : '' } bg-[#202020] backdrop-blur-[28px] shadow-none ${ isLiveActive ? 'border border-white/[0.20]' : 'border border-white/[0.075] hover:border-white/[0.11] focus-within:border-white/[0.15]' }`
           }`}
           style={!isCompressed ? { width: '100%', alignSelf: 'center' } : undefined}
           data-live={isLiveActive ? 'true' : undefined}
-          data-recording={isRecording || isProcessingVoice ? 'true' : undefined}
         >
           <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
           <input type="file" multiple ref={pinFileInputRef} onChange={handleBrowserPinSelection} className="hidden" />
@@ -3308,14 +3200,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     </button>
                   </div>
                 </motion.div>
-              ) : (isRecording || isProcessingVoice) ? (
-                <VoiceWaveform
-                  key="waveform"
-                  volume={audioVolume}
-                  isProcessing={isProcessingVoice}
-                  cancelVoice={cancelVoice}
-                  acceptVoice={acceptVoice}
-                />
               ) : (
                 <div className="eterx-composer-textarea-wrap relative w-full">
                   {planModeActive && (
@@ -4098,9 +3982,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 document.body,
               )}
 
-               <Tooltip text="Voice dictation" side="top">
-                <button type="button" onClick={toggleSpeech} data-active={isRecording ? 'true' : undefined} className={`eterx-control-button eterx-composer-dictation-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group ${ isRecording ? '!text-[#E2765A] animate-pulse !bg-[#3A2823] !border-transparent' : '' }`}>
-                  <PremiumMic className="eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out" strokeWidth={1.85} />
+               <Tooltip text={isRecording ? "Stop voice dictation" : "Voice dictation"} side="top">
+                <button type="button" onClick={toggleSpeech} aria-pressed={isRecording} aria-label={isRecording ? "Stop voice dictation" : "Start voice dictation"} data-active={isRecording ? 'true' : undefined} className="eterx-control-button eterx-composer-dictation-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group">
+                  <PremiumMic className={`eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out ${ isRecording ? 'scale-[1.04]' : '' }`} strokeWidth={1.85} />
                 </button>
               </Tooltip>
 
