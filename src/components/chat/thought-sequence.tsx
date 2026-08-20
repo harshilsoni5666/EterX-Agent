@@ -2702,15 +2702,19 @@ const reconcileLiveActionLogs = (settledLogs: any[], liveLogs: any[]): any[] => 
 
 const getStreamRowIdentity = (log: any, fallbackIndex: number) => {
   const scope = compactActionKeyPart(log?.runId || log?.turnId || log?.ownerChatId || log?.chatId || 'current');
+  const owner = compactActionKeyPart(log?.subAgentChatId || log?.subAgentId || log?.subAgent || log?.agentName || 'main');
   const eventId = String(log?.traceId ?? log?.id ?? log?._traceIdx ?? '').trim();
   const streamId = String(log?.thoughtId || log?.noteId || log?.streamId || '').trim();
+  const streamType = ['thought_stream', 'work_note'].includes(String(log?.type || ''))
+    ? 'narrative'
+    : String(log?.type || 'stream');
   // Prefer immutable transport/stream identity. Timestamps are filled in at
   // different stages of a live hand-off and must not remount an existing row
   // just because the settled snapshot added startTime or timestamp later.
-  if (eventId) return `${ scope }:${ String(log?.type || 'stream') }:event:${ eventId }`;
-  if (streamId) return `${ scope }:${ String(log?.type || 'stream') }:stream:${ streamId }`;
+  if (streamId) return `${ scope }:${ owner }:${ streamType }:stream:${ streamId }`;
+  if (eventId) return `${ scope }:${ owner }:${ String(log?.type || 'stream') }:event:${ eventId }`;
   const anchor = log?.streamStartedAt ?? log?.startTime ?? log?.timestamp ?? fallbackIndex;
-  return `${ scope }:${ String(log?.type || 'stream') }:time:${ String(anchor) }`;
+  return `${ scope }:${ owner }:${ String(log?.type || 'stream') }:time:${ String(anchor) }`;
 };
 
 const getTimelineRowIdentity = (log: any, fallbackIndex: number) => {

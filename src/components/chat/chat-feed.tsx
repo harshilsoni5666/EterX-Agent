@@ -430,6 +430,7 @@ const WORKFLOW_COUNT_TYPES = new Set([
   'browser',
 ]);
 const HIDDEN_HELPER_TYPES = new Set(['answer', 'ask_user', 'file_preview', 'console_output', 'html_preview']);
+const NARRATIVE_TRACE_TYPES = new Set(['thought_stream', 'work_note', 'autonomy_proxy_status']);
 const RENDERABLE_TIMELINE_TYPES = new Set([
   'thought_stream',
   'work_note',
@@ -514,7 +515,7 @@ const normalizeInternalUserActionLogs = (logs: any[]) => {
 const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
   const previousText = String(previous?.text || '');
   const incomingText = String(incoming?.text || '');
-  const text = incomingText.length >= previousText.length ? incomingText : previousText;
+  let text = incomingText.length >= previousText.length ? incomingText : previousText;
   const previousStart = Number(previous?.startTime || previous?.timestamp || 0);
   const incomingStart = Number(incoming?.startTime || incoming?.timestamp || 0);
   const previousEnd = Number(previous?.endTime || previous?.timestamp || 0);
@@ -531,6 +532,38 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
     incoming?.isLiveTyping === true ||
     incoming?.streamState === 'open' ||
     ['running', 'working', 'pending'].includes(String(incoming?.status || '').toLowerCase());
+  const previousNarrativeId = String(previous?.noteId || previous?.thoughtId || previous?.streamId || '').trim();
+  const incomingNarrativeId = String(incoming?.noteId || incoming?.thoughtId || incoming?.streamId || '').trim();
+  const previousNarrativeOwner = String(previous?.subAgentChatId || previous?.subAgentId || previous?.subAgent || previous?.agentName || 'main').trim();
+  const incomingNarrativeOwner = String(incoming?.subAgentChatId || incoming?.subAgentId || incoming?.subAgent || incoming?.agentName || 'main').trim();
+  const sameNarrativeStream = Boolean(
+    NARRATIVE_TRACE_TYPES.has(String(previous?.type || '')) &&
+    NARRATIVE_TRACE_TYPES.has(String(incoming?.type || '')) &&
+    previousNarrativeId &&
+    previousNarrativeId === incomingNarrativeId &&
+    previousNarrativeOwner === incomingNarrativeOwner
+  );
+  const incomingSettledNarrative = Boolean(
+    NARRATIVE_TRACE_TYPES.has(String(incoming?.type || '')) &&
+    !incomingOpen
+  );
+  // The settled payload is authoritative for its own narrative stream, even
+  // when it is a concise rewrite of a longer provisional snapshot.
+  if (sameNarrativeStream && incomingSettledNarrative && incomingText) text = incomingText;
+  const cancelTraceIndex = Number(previous?._cancelTraceIdx);
+  const incomingTraceIndex = Number(incoming?._traceIdx);
+  const resolvesCancelledWorkNote = Boolean(
+    previous?._streamingCancelled === true &&
+    incoming?.type === 'work_note' &&
+    incoming?._streamingCancelled !== true &&
+    incomingSettledNarrative &&
+    sameNarrativeStream &&
+    (
+      !Number.isFinite(cancelTraceIndex) ||
+      !Number.isFinite(incomingTraceIndex) ||
+      incomingTraceIndex >= cancelTraceIndex
+    )
+  );
   const preserveClosedLifecycle = previousClosed && incomingOpen;
   const narrativeRank = (type: any) =>
     type === 'autonomy_proxy_status' ? 3 : type === 'work_note' ? 2 : type === 'thought_stream' ? 1 : 0;
@@ -542,6 +575,9 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
     ...incoming,
     type: preferredType,
     text,
+    ...(sameNarrativeStream
+      ? { _traceIdx: previous?._traceIdx ?? incoming?._traceIdx }
+      : {}),
     startTime: previousStart > 0 && incomingStart > 0
       ? Math.min(previousStart, incomingStart)
       : previousStart || incomingStart || undefined,
@@ -554,6 +590,13 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
         isLive: false,
         streamState: 'closed',
         status: previous?.status,
+      }
+      : {}),
+    ...(resolvesCancelledWorkNote
+      ? {
+        _streamingCancelled: undefined,
+        _cancelTraceIdx: undefined,
+        _cancelledAt: undefined,
       }
       : {}),
     wasStreaming: Boolean(
@@ -582,11 +625,18 @@ const dedupeFeedLogs = (logs: any[]) => {
     if (log.type === 'user_action') boundaryScope += 1;
     const runId = String(log.runId || log.turnId || '').trim();
     const turnId = String(log.turnId || '').trim();
-    const stableId = log.toolCallId ?? log.streamId ?? log.traceId ?? log.id ?? log._traceIdx ?? null;
+    const isNarrativeTrace = NARRATIVE_TRACE_TYPES.has(String(log.type || ''));
+    const narrativeId = isNarrativeTrace
+      ? log.noteId ?? log.thoughtId ?? null
+      : null;
+    const narrativeOwner = isNarrativeTrace
+      ? String(log.subAgentChatId || log.subAgentId || log.subAgent || log.agentName || 'main').trim()
+      : '';
+    const stableId = log.toolCallId ?? log.streamId ?? narrativeId ?? log.traceId ?? log.id ?? log._traceIdx ?? null;
     const stableType = log.type === 'tool_call' ? 'command' : String(log.type || '');
     const stableKey = stableId === null || stableId === undefined
       ? ''
-      : `turn:${ boundaryScope }::${ runId }::${ String(stableId) }::${ stableType }`;
+      : `turn:${ boundaryScope }::${ runId }::${ narrativeOwner }::${ String(stableId) }::${ stableType }`;
 
     if (stableKey && stableIndexes.has(stableKey)) {
       const index = stableIndexes.get(stableKey)!;
@@ -706,7 +756,7 @@ const dedupeFeedLogs = (logs: any[]) => {
     const runScope = String(log.runId || log.turnId || '').trim();
     const identityScope = `${ chatScope }::${ runScope }`;
     let semanticKey = '';
-    if (normalizedText && ['thought_stream', 'work_note', 'autonomy_proxy_status'].includes(log.type)) {
+    if (normalizedText && NARRATIVE_TRACE_TYPES.has(log.type)) {
       // Providers sometimes promote the same narration from thought_stream to
       // work_note (or Proxy status) with a new type. The stream anchor is part
       // of the key: text alone is not identity because two real phases can
@@ -1623,8 +1673,6 @@ const ChatFeedMessageGroup = React.memo(({
     !displayFinalAnswer.isStreaming
   );
 
-  // Stable deduplication set for work notes â€” keyed on noteId or content
-  const seenWorkNoteKeys = new Set<string>();
   // Status/interruptions have their own professional notice. Keeping them in
   // the thinking timeline creates an empty "Thinking" pill because plain
   // internal status thoughts are not actionable timeline rows.
@@ -1725,18 +1773,17 @@ const ChatFeedMessageGroup = React.memo(({
         }
       }
       if (log.type === 'work_note') {
-        const text = String(log.text || '').trim().toLowerCase();
+        const text = String(log.text || '').trim();
         if (!text) isValid = false;
         else if (isInternalWorkNoteNoise(log.text)) isValid = false;
-        else if (displayFinalAnswer && isLikelyAnswerEcho(log.text, displayFinalAnswer.text)) isValid = false;
-        else {
-          // Work-note ids are regenerated by some live runtimes. The visible
-          // content and owning agent form the stable UI identity, so repeated
-          // delivery cannot create duplicate "Working" notes.
-      const key = `${ log.runId || log.turnId || '' }::${ log.subAgentChatId || log.subAgentId || log.subAgent || log.agentName || '' }::${ text }`;
-          if (seenWorkNoteKeys.has(key)) isValid = false;
-          else seenWorkNoteKeys.add(key);
-        }
+        // Only recovered provisional answers are duplicate answer surfaces.
+        // A native work note may legitimately summarize the result again and
+        // must remain available when the completed timeline is reopened.
+        else if (
+          displayFinalAnswer &&
+          /^recovered_work_note_/i.test(String(log.noteId || '')) &&
+          isLikelyAnswerEcho(log.text, displayFinalAnswer.text)
+        ) isValid = false;
       }
 
       if (isValid) {

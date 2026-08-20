@@ -149,6 +149,42 @@ const MAX_AGENT_HISTORY_TOTAL_CHARS = 400_000;
 // it out of both the transcript and the next model-history request.
 const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
 
+const WORK_NOTE_PHASE_BOUNDARY_TYPES = new Set([
+  'command',
+  'tool_call',
+  'exploration',
+  'file_edit',
+  'browser',
+  'communication',
+  'progress',
+  'ask_user',
+  'steering_received',
+  'sub_agent_spawn',
+  'sub_agent_action',
+  'sub_agent_complete',
+  'sub_agent_error',
+  'answer',
+]);
+
+const isOpenWorkNoteTrace = (log: any): boolean => {
+  if (!log || log.type !== 'work_note' || log._streamingCancelled === true) return false;
+  if (
+    log.final === true ||
+    log.done === true ||
+    log.isStreaming === false ||
+    log.streamState === 'closed' ||
+    ['completed', 'complete', 'failed', 'error', 'stopped', 'cancelled', 'canceled', 'closed'].includes(String(log.status || '').toLowerCase())
+  ) return false;
+  return log.isStreaming === true ||
+    log.isLiveTyping === true ||
+    log.isDelta === true ||
+    log.streamState === 'open' ||
+    ['running', 'working', 'pending', 'streaming'].includes(String(log.status || '').toLowerCase());
+};
+
+const stableWorkNoteTraceIndex = (previous: any, incoming: any) =>
+  previous !== undefined && previous !== null ? previous : incoming;
+
 const getVisibleUserActionText = (log: any): string => {
   const text = String(log?.text || '');
   const match = log?.type === 'user_action'
@@ -6489,6 +6525,12 @@ function DeepWorkUI() {
             ) {
               break;
             }
+            // A delayed cancellation belongs only to an open placeholder. It
+            // must never hide the settled note that already replaced it.
+            if (!isOpenWorkNoteTrace(logs[i])) {
+              if (noteId && logs[i].noteId === noteId) break;
+              continue;
+            }
             logs[i] = {
               ...logs[i],
               _streamingCancelled: true,
@@ -6507,24 +6549,31 @@ function DeepWorkUI() {
         const subAgent = trace.subAgent || null;
         const subAgentIdentity = trace.subAgentChatId || trace.subAgentId || subAgent;
         const noteId = trace.noteId || null;
-        const incomingIsFinal =
-          trace.isStreaming === false ||
-          (trace.isLiveTyping === false && trace.isStreaming !== true) ||
-          trace.streamState === 'closed' ||
-          trace.final === true ||
-          trace.done === true;
+        // Work notes are settled by default. Only an explicitly open stream
+        // may keep mutating; many provider adapters emit a one-shot note with
+        // no streaming flags at all.
+        const incomingIsFinal = !isOpenWorkNoteTrace({ ...trace, type: 'work_note' });
         const noteText = formatVisibleWorkNote(String(trace.text || ''));
         if (!noteText) continue;
         let mergeIdx = -1;
-        let duplicateIdx = -1;
+        let ignoreCancelledUpdate = false;
+        let crossedPhaseBoundary = false;
         for (let i = logs.length - 1; i >= 0; i--) {
           if (logs[i].type === 'user_action') break;
+          if (WORK_NOTE_PHASE_BOUNDARY_TYPES.has(String(logs[i].type || ''))) {
+            crossedPhaseBoundary = true;
+            continue;
+          }
           if (
             logs[i].type === 'work_note' &&
             (logs[i].subAgentChatId || logs[i].subAgentId || logs[i].subAgent || null) === subAgentIdentity
           ) {
             const existingText = String(logs[i].text || '').trim();
             if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
+              if (logs[i]._streamingCancelled && !incomingIsFinal) {
+                ignoreCancelledUpdate = true;
+                break;
+              }
               mergeIdx = i;
               break;
             }
@@ -6540,6 +6589,7 @@ function DeepWorkUI() {
             const isAdjacentCancelledPlaceholder = Boolean(
               logs[i]._streamingCancelled &&
               incomingIsFinal &&
+              !crossedPhaseBoundary &&
               i === logs.length - 1 &&
               orderedCancellation &&
               closeInTime
@@ -6549,27 +6599,22 @@ function DeepWorkUI() {
               break;
             }
             if (existingText === noteText) {
-              if (incomingIsFinal && (logs[i].isStreaming || logs[i].isDelta)) {
+              if (!crossedPhaseBoundary && incomingIsFinal && isOpenWorkNoteTrace(logs[i])) {
                 mergeIdx = i;
-              } else {
-                duplicateIdx = i;
               }
               break;
             }
-            const existingIsStreaming =
-              logs[i].isStreaming === true ||
-              logs[i].isLiveTyping === true ||
-              logs[i].isDelta === true;
             if (
+              !crossedPhaseBoundary &&
               (!noteId || !logs[i].noteId) &&
-              (existingIsStreaming || !incomingIsFinal)
+              isOpenWorkNoteTrace(logs[i])
             ) {
               mergeIdx = i;
               break;
             }
           }
         }
-        if (duplicateIdx >= 0) continue;
+        if (ignoreCancelledUpdate) continue;
         if (mergeIdx >= 0) {
           const existingTraceIdx = Number(logs[mergeIdx]._traceIdx);
           const incomingTraceIdx = Number(trace._traceIdx);
@@ -6584,10 +6629,12 @@ function DeepWorkUI() {
             ...logs[mergeIdx],
             ...trace,
             type: 'work_note',
-            text: mergeStreamingText(logs[mergeIdx].text, noteText, trace.isDelta === true),
-            subAgent,
-            noteId,
-            _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
+            text: incomingIsFinal && trace.isDelta !== true
+              ? noteText
+              : mergeStreamingText(logs[mergeIdx].text, noteText, trace.isDelta === true),
+            subAgent: subAgent ?? logs[mergeIdx].subAgent ?? null,
+            noteId: noteId || logs[mergeIdx].noteId || null,
+            _traceIdx: stableWorkNoteTraceIndex(logs[mergeIdx]._traceIdx, trace._traceIdx),
             timestamp: Math.max(Number(logs[mergeIdx].timestamp || 0), traceAt),
             startTime: logs[mergeIdx].startTime || processedLog.startTime,
             endTime: Math.max(Number(logs[mergeIdx].endTime || 0), traceAt),
@@ -7419,6 +7466,12 @@ function DeepWorkUI() {
                       ) {
                         break;
                       }
+                      // Ignore a late cancellation once the durable note has
+                      // already settled in this row.
+                      if (!isOpenWorkNoteTrace(logs[i])) {
+                        if (noteId && logs[i].noteId === noteId) break;
+                        continue;
+                      }
                       logs[i] = {
                         ...logs[i],
                         _streamingCancelled: true,
@@ -7437,24 +7490,30 @@ function DeepWorkUI() {
                   const subAgent = trace.subAgent || null;
                   const subAgentIdentity = trace.subAgentChatId || trace.subAgentId || subAgent;
                   const noteId = trace.noteId || null;
-                  const incomingIsFinal =
-                    trace.isStreaming === false ||
-                    (trace.isLiveTyping === false && trace.isStreaming !== true) ||
-                    trace.streamState === 'closed' ||
-                    trace.final === true ||
-                    trace.done === true;
+                  // One-shot notes omit stream flags and are authoritative
+                  // settled events, not another provisional chunk.
+                  const incomingIsFinal = !isOpenWorkNoteTrace({ ...trace, type: 'work_note' });
                   const noteText = formatVisibleWorkNote(String(trace.text || ''));
                   if (!noteText) continue;
                   let mergeIdx = -1;
-                  let duplicateIdx = -1;
+                  let ignoreCancelledUpdate = false;
+                  let crossedPhaseBoundary = false;
                   for (let i = logs.length - 1; i >= 0; i--) {
                     if (logs[i].type === 'user_action') break;
+                    if (WORK_NOTE_PHASE_BOUNDARY_TYPES.has(String(logs[i].type || ''))) {
+                      crossedPhaseBoundary = true;
+                      continue;
+                    }
                     if (
                       logs[i].type === 'work_note' &&
                       (logs[i].subAgentChatId || logs[i].subAgentId || logs[i].subAgent || null) === subAgentIdentity
                     ) {
                       const existingText = String(logs[i].text || '').trim();
                       if (noteId && logs[i].noteId && logs[i].noteId === noteId) {
+                        if (logs[i]._streamingCancelled && !incomingIsFinal) {
+                          ignoreCancelledUpdate = true;
+                          break;
+                        }
                         mergeIdx = i;
                         break;
                       }
@@ -7470,6 +7529,7 @@ function DeepWorkUI() {
                       if (
                         logs[i]._streamingCancelled &&
                         incomingIsFinal &&
+                        !crossedPhaseBoundary &&
                         i === logs.length - 1 &&
                         orderedCancellation &&
                         closeInTime
@@ -7478,27 +7538,22 @@ function DeepWorkUI() {
                         break;
                       }
                       if (existingText === noteText) {
-                        if (incomingIsFinal && (logs[i].isStreaming || logs[i].isDelta)) {
+                        if (!crossedPhaseBoundary && incomingIsFinal && isOpenWorkNoteTrace(logs[i])) {
                           mergeIdx = i;
-                        } else {
-                          duplicateIdx = i;
                         }
                         break;
                       }
-                      const existingIsStreaming =
-                        logs[i].isStreaming === true ||
-                        logs[i].isLiveTyping === true ||
-                        logs[i].isDelta === true;
                       if (
+                        !crossedPhaseBoundary &&
                         (!noteId || !logs[i].noteId) &&
-                        (existingIsStreaming || !incomingIsFinal)
+                        isOpenWorkNoteTrace(logs[i])
                       ) {
                         mergeIdx = i;
                         break;
                       }
                     }
                   }
-                  if (duplicateIdx >= 0) continue;
+                  if (ignoreCancelledUpdate) continue;
                   if (mergeIdx >= 0) {
                     const existingTraceIdx = Number(logs[mergeIdx]._traceIdx);
                     const incomingTraceIdx = Number(trace._traceIdx);
@@ -7513,10 +7568,12 @@ function DeepWorkUI() {
                       ...logs[mergeIdx],
                       ...trace,
                       type: 'work_note',
-                      text: mergeStreamingText(logs[mergeIdx].text, noteText, trace.isDelta === true),
-                      subAgent,
-                      noteId,
-                      _traceIdx: trace._traceIdx ?? logs[mergeIdx]._traceIdx,
+                      text: incomingIsFinal && trace.isDelta !== true
+                        ? noteText
+                        : mergeStreamingText(logs[mergeIdx].text, noteText, trace.isDelta === true),
+                      subAgent: subAgent ?? logs[mergeIdx].subAgent ?? null,
+                      noteId: noteId || logs[mergeIdx].noteId || null,
+                      _traceIdx: stableWorkNoteTraceIndex(logs[mergeIdx]._traceIdx, trace._traceIdx),
                       timestamp: Math.max(Number(logs[mergeIdx].timestamp || 0), traceAt),
                       startTime: logs[mergeIdx].startTime || timedTrace.startTime,
                       endTime: Math.max(Number(logs[mergeIdx].endTime || 0), traceAt),

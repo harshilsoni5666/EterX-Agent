@@ -34,6 +34,27 @@ const MAX_PERSISTED_CONSOLE_CHARS = 120_000;
 const MAX_PERSISTED_CONSOLE_CHUNK_CHARS = 6_000;
 const MAX_PROMPT_CHARS = 12000;
 const MAX_FINAL_ANSWER_CHARS = 100000;
+const WORK_NOTE_PHASE_BOUNDARY_TYPES = new Set([
+  'command', 'tool_call', 'exploration', 'file_edit', 'browser',
+  'communication', 'progress', 'ask_user', 'steering_received',
+  'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete',
+  'sub_agent_error', 'answer',
+]);
+
+const isOpenPersistedWorkNote = (log: any): boolean => {
+  if (
+    !log ||
+    log.type !== 'work_note' ||
+    log._streamingCancelled === true ||
+    isStreamFinalEvent(log) ||
+    ['complete', 'error', 'stopped', 'cancelled', 'canceled', 'closed'].includes(String(log.status || '').toLowerCase())
+  ) return false;
+  return log.isStreaming === true ||
+    log.isLiveTyping === true ||
+    log.isDelta === true ||
+    log.streamState === 'open' ||
+    ['running', 'working', 'pending', 'streaming'].includes(String(log.status || '').toLowerCase());
+};
 
 export interface PersistedTask {
   taskId: string;
@@ -552,6 +573,12 @@ export const taskStore = {
             Number.isFinite(cancellationTraceIdx) &&
             cancellationTraceIdx < existingTraceIdx
           ) break;
+          // Cancellation events address a live placeholder, not a durable
+          // note that has already replaced it.
+          if (!isOpenPersistedWorkNote(log)) {
+            if (noteId && log.noteId === noteId) break;
+            continue;
+          }
           task.traceLogs[i] = {
             ...log,
             _streamingCancelled: true,
@@ -567,17 +594,29 @@ export const taskStore = {
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;
       const subAgentIdentity = timedEvent.subAgentChatId || timedEvent.subAgentId || subAgent;
-      const incomingIsFinal = isStreamFinalEvent(timedEvent);
+      // Provider adapters commonly emit a complete one-shot work note without
+      // any stream flags. Treat only an explicitly open note as provisional.
+      const incomingIsFinal = !isOpenPersistedWorkNote(timedEvent);
       let mergeIdx = -1;
+      let ignoreCancelledUpdate = false;
+      let crossedPhaseBoundary = false;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
         if (log?.type === 'user_action') break;
+        if (WORK_NOTE_PHASE_BOUNDARY_TYPES.has(String(log?.type || ''))) {
+          crossedPhaseBoundary = true;
+          continue;
+        }
         if (
           log?.type !== 'work_note' ||
           (log.subAgentChatId || log.subAgentId || log.subAgent || null) !== subAgentIdentity
         ) continue;
         const sameNote = noteId && log.noteId && log.noteId === noteId;
         const sameText = String(log.text || '').trim() === noteText.trim();
+        if (sameNote && log._streamingCancelled && !incomingIsFinal) {
+          ignoreCancelledUpdate = true;
+          break;
+        }
         // A cancellation may be immediately followed by the permanent form of
         // the same streamed note. Do not reuse an older cancelled row after an
         // action or a later phase has already started.
@@ -593,23 +632,40 @@ export const taskStore = {
         const isCancelledPlaceholder = Boolean(
           log._streamingCancelled &&
           incomingIsFinal &&
+          !crossedPhaseBoundary &&
           i === task.traceLogs.length - 1 &&
           orderedCancellation &&
           closeInTime
         );
-        if (sameNote || sameText || isCancelledPlaceholder) {
+        const canMergeIdlessStream = Boolean(
+          !crossedPhaseBoundary &&
+          (!noteId || !log.noteId) &&
+          isOpenPersistedWorkNote(log)
+        );
+        const canFinalizeAdjacentText = Boolean(
+          !crossedPhaseBoundary &&
+          sameText &&
+          incomingIsFinal &&
+          isOpenPersistedWorkNote(log)
+        );
+        if (sameNote || canFinalizeAdjacentText || canMergeIdlessStream || isCancelledPlaceholder) {
           mergeIdx = i;
           break;
         }
+        if (sameText) break;
       }
+      if (ignoreCancelledUpdate) return;
       if (mergeIdx >= 0) {
         const previous = task.traceLogs[mergeIdx];
         task.traceLogs[mergeIdx] = {
           ...previous,
           ...timedEvent,
-          text: mergeStreamingText(previous.text, noteText, timedEvent.isDelta === true),
-          noteId,
-          subAgent,
+          text: incomingIsFinal && timedEvent.isDelta !== true
+            ? noteText
+            : mergeStreamingText(previous.text, noteText, timedEvent.isDelta === true),
+          noteId: noteId || previous.noteId || null,
+          subAgent: subAgent ?? previous.subAgent ?? null,
+          _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
           startTime: previous.startTime || timedEvent.startTime || timedEvent.timestamp,
           endTime: Math.max(
             Number(previous.endTime || previous.timestamp || 0),
