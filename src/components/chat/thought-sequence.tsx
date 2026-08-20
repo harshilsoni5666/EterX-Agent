@@ -641,10 +641,13 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
       setThoughtCanScroll(false);
       return;
     }
-    thoughtAutoScrollRef.current = true;
+    thoughtAutoScrollRef.current = isLive;
     const frame = window.requestAnimationFrame(() => {
       syncThoughtOverflow();
-      scrollThoughtToBottom();
+      const el = thoughtScrollRef.current;
+      if (!el) return;
+      if (isLive) scrollThoughtToBottom();
+      else el.scrollTop = 0;
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
@@ -704,7 +707,6 @@ export const ProfessionalThought = React.memo(({ text, isLatest, isThinking, var
   if (variant === 'thought') {
     return (
       <motion.div
-        layout
         initial={{ opacity: 0, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
@@ -1001,7 +1003,7 @@ const normalizeTerminalOutputForDisplay = (value: unknown): string => {
 const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid, flush = false }: { command: string, content: string, exitCode?: number, durationMs?: number, cwd?: string, shell?: string, pid?: number, flush?: boolean }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldFollowOutputRef = useRef(exitCode === undefined);
-  const previousContentLengthRef = useRef((content || '').length);
+  const previousContentLengthRef = useRef(0);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
 
@@ -1010,11 +1012,15 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
     const nextLength = (content || '').length;
     const grew = nextLength > previousContentLengthRef.current;
     previousContentLengthRef.current = nextLength;
-    if (!el || exitCode !== undefined || !grew || !shouldFollowOutputRef.current) return;
-    let frameId: number;
-    frameId = window.requestAnimationFrame(() => {
-      if (shouldFollowOutputRef.current) {
-        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+    if (!el) return;
+    const frameId = window.requestAnimationFrame(() => {
+      if (exitCode === undefined && grew && shouldFollowOutputRef.current) {
+        el.scrollTop = el.scrollHeight;
+      }
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+      if (nearBottom !== atBottomRef.current) {
+        atBottomRef.current = nearBottom;
+        setAtBottom(nearBottom);
       }
     });
     return () => window.cancelAnimationFrame(frameId);
@@ -2695,12 +2701,27 @@ const reconcileLiveActionLogs = (settledLogs: any[], liveLogs: any[]): any[] => 
 };
 
 const getStreamRowIdentity = (log: any, fallbackIndex: number) => {
-  const primary = String(log?.thoughtId || log?.noteId || log?.id || '').trim();
-  const anchor = log?.startTime ?? log?.streamStartedAt ?? log?.timestamp ?? log?._traceIdx ?? fallbackIndex;
-  // IDs can be reused by providers after a tool/retry boundary. Keep the
-  // stream start in the React key so a new phase cannot inherit an old row's
-  // text, open state, or frozen timer.
-  return primary ? `${ primary }:${ String(anchor) }` : String(anchor);
+  const scope = compactActionKeyPart(log?.runId || log?.turnId || log?.ownerChatId || log?.chatId || 'current');
+  const eventId = String(log?.traceId ?? log?.id ?? log?._traceIdx ?? '').trim();
+  const streamId = String(log?.thoughtId || log?.noteId || log?.streamId || '').trim();
+  // Prefer immutable transport/stream identity. Timestamps are filled in at
+  // different stages of a live hand-off and must not remount an existing row
+  // just because the settled snapshot added startTime or timestamp later.
+  if (eventId) return `${ scope }:${ String(log?.type || 'stream') }:event:${ eventId }`;
+  if (streamId) return `${ scope }:${ String(log?.type || 'stream') }:stream:${ streamId }`;
+  const anchor = log?.streamStartedAt ?? log?.startTime ?? log?.timestamp ?? fallbackIndex;
+  return `${ scope }:${ String(log?.type || 'stream') }:time:${ String(anchor) }`;
+};
+
+const getTimelineRowIdentity = (log: any, fallbackIndex: number) => {
+  const scope = compactActionKeyPart(log?.runId || log?.turnId || log?.ownerChatId || log?.chatId || 'current');
+  const eventId = String(
+    log?.traceId ?? log?.id ?? log?._traceIdx ?? log?.responseKey ??
+    log?.subAgentChatId ?? log?.subAgentId ?? log?.agentId ?? ''
+  ).trim();
+  if (eventId) return `${ scope }:${ String(log?.type || 'event') }:${ eventId }`;
+  const anchor = log?.startTime ?? log?.timestamp ?? log?.endTime ?? fallbackIndex;
+  return `${ scope }:${ String(log?.type || 'event') }:${ String(anchor) }`;
 };
 
 const ACTION_CARD_CLASS = "eterx-action-card w-full overflow-hidden rounded-[10px] border border-white/[0.07] bg-[#151514]/34 shadow-none";
@@ -5121,7 +5142,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         }
         if (seg.kind === 'note' && nextSeg?.kind === 'action_group') {
           const firstIdx = nextSeg.firstIdx ?? nextSeg.lastIdx ?? i;
-          const groupKey = `phase-g-${ firstIdx }-${ getActionIdentity(nextSeg.logs[0], firstIdx) }`;
+          const groupKey = `phase-g-${ getActionIdentity(nextSeg.logs[0], firstIdx) }`;
           return (
             <div
               key={`phase-${ getStreamRowIdentity(seg.log, seg.idx) }-${ groupKey }`}
@@ -5141,26 +5162,26 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
           );
         }
         if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isActive={isThinking && isLast && i === displaySegs.length - 1} isProxyStatus={seg.log.type === 'autonomy_proxy_status'} />;
-        if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
-        if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} onEdit={onEditUserMessage} />;
+        if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ getTimelineRowIdentity(seg.log, seg.idx) }`} log={seg.log} />;
+        if (seg.kind === 'steering') return <SteeringCard key={`steer-${ getTimelineRowIdentity(seg.log, seg.idx) }`} log={seg.log} onEdit={onEditUserMessage} />;
         if (seg.kind === 'subagent') return null;
         if (seg.kind === 'comm') {
           return isSubAgentTab
-            ? <InterAgentCommCard key={`comm-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />
+            ? <InterAgentCommCard key={`comm-${ getTimelineRowIdentity(seg.log, seg.idx) }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />
             : null;
         }
         if (seg.kind === 'subagent_action') return null;
-        if (seg.kind === 'subagent_spawn') return <AgentCreatedCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
+        if (seg.kind === 'subagent_spawn') return <AgentCreatedCard key={`ss-${ getTimelineRowIdentity(seg.log, seg.idx) }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
         if (seg.kind === 'subagent_complete') {
-          return <SubAgentCard key={`sc-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
+          return <SubAgentCard key={`sc-${ getTimelineRowIdentity(seg.log, seg.idx) }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
         }
         if (seg.kind === 'subagent_error') {
-          return <SubAgentErrorCard key={`se-${ seg.idx }`} log={seg.log} assetIndexes={assetIndexes} />;
+          return <SubAgentErrorCard key={`se-${ getTimelineRowIdentity(seg.log, seg.idx) }`} log={seg.log} assetIndexes={assetIndexes} />;
         }
         if (seg.kind === 'subagent_status') {
-          return <SubAgentCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
+          return <SubAgentCard key={`ss-${ getTimelineRowIdentity(seg.log, seg.idx) }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
         }
-        if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === displaySegs.length - 1 && !seg.log.answeredWith} />;
+        if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ getTimelineRowIdentity(seg.log, seg.idx) }`} log={seg.log} isLive={isThinking && isLast && i === displaySegs.length - 1 && !seg.log.answeredWith} />;
         if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ getActionIdentity(seg.log, seg.idx) }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === displaySegs.length - 1} />;
         if (seg.kind === 'browser_phase') {
           const firstActions = seg.items.find((item: any) => item.kind === 'browser_action_group');
@@ -5179,7 +5200,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'action_group' && prevSeg?.kind === 'note') return null;
 
         const firstIdx = seg.firstIdx ?? seg.lastIdx ?? i;
-        const groupKey = `g-${ firstIdx }-${ getActionIdentity(seg.logs[0], firstIdx) }`;
+        const groupKey = `g-${ getActionIdentity(seg.logs[0], firstIdx) }`;
         return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === displaySegs.length - 1} isLast={isLast} allLogs={timelineLogs} isAgentBuilder={isAgentBuilder} />;
       })}
       {showLiveIndicator && isThinking && isLast && !browserPhaseOwnsLiveIndicator && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}

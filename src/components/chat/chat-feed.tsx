@@ -379,6 +379,13 @@ const chatFeedSurfaceStyles = `
   .eterx-chat-feed[data-agent-builder="true"] .eterx-thinking-process-stack {
     gap: 10px;
   }
+  .eterx-chat-feed .eterx-professional-thought {
+    will-change: auto;
+    transform: none;
+  }
+  .eterx-chat-feed .eterx-professional-thought.eterx-reveal-active {
+    will-change: opacity;
+  }
   .eterx-chat-feed-empty {
     --eterx-chat-feed-bg: transparent;
     background: transparent;
@@ -1787,16 +1794,20 @@ const ChatFeedMessageGroup = React.memo(({
   let currentThoughts: any[] = [];
   const segmentIdentity = (seg: { logs?: any[]; log?: any }, fallback: number) => {
     const anchor = seg.log || seg.logs?.[0];
+    const scope = String(anchor?.runId || anchor?.turnId || anchor?.ownerChatId || anchor?.chatId || 'current').trim();
     const primary = String(
-      anchor?.thoughtId ||
-      anchor?.noteId ||
-      anchor?.responseKey ||
-      anchor?.steeringId ||
-      anchor?.id ||
+      anchor?.traceId ??
+      anchor?.id ??
+      anchor?._traceIdx ??
+      anchor?.thoughtId ??
+      anchor?.noteId ??
+      anchor?.responseKey ??
+      anchor?.steeringId ??
       ''
     ).trim();
-    const timeAnchor = anchor?.startTime ?? anchor?.timestamp ?? anchor?._traceIdx ?? fallback;
-    return primary ? `${ primary }:${ String(timeAnchor) }` : String(timeAnchor);
+    if (primary) return `${ scope }:${ String(anchor?.type || 'segment') }:${ primary }`;
+    const timeAnchor = anchor?.startTime ?? anchor?.timestamp ?? fallback;
+    return `${ scope }:${ String(anchor?.type || 'segment') }:${ String(timeAnchor) }`;
   };
 
   visibleWorkLogs.forEach(log => {
@@ -1879,15 +1890,15 @@ const ChatFeedMessageGroup = React.memo(({
     >
       {segments.map((seg, segIdx) => {
         if (seg.type === 'context') {
-          return <ContextCompactionNotice key={`context-${groupIdx}-${segmentIdentity(seg, segIdx)}`} log={seg.log} />;
+          return <ContextCompactionNotice key={`context-${segmentIdentity(seg, segIdx)}`} log={seg.log} />;
         }
         if (seg.type === 'steering') {
-          return <SteeringFeedCard key={`steer-${ groupIdx }-${ segmentIdentity(seg, segIdx) }`} log={seg.log} isCompressed={isCompressed} onEdit={onEditUserMessage} />;
+          return <SteeringFeedCard key={`steer-${ segmentIdentity(seg, segIdx) }`} log={seg.log} isCompressed={isCompressed} onEdit={onEditUserMessage} />;
         }
         if (seg.type === 'ask_user') {
           return (
             <AskUserPrompt
-              key={`ask-${ groupIdx }-${ segmentIdentity(seg, segIdx) }`}
+              key={`ask-${ segmentIdentity(seg, segIdx) }`}
               question={seg.log.question}
               mode={seg.log.mode || 'text'}
               options={seg.log.options || []}
@@ -1924,7 +1935,7 @@ const ChatFeedMessageGroup = React.memo(({
 
         return (
           <ThoughtSequence
-            key={`thoughts-${ groupIdx }-${ segmentIdentity(seg, segIdx) }`}
+            key={`thoughts-${ segmentIdentity(seg, segIdx) }`}
             logs={seg.logs || []}
             liveLogs={isLastThoughts ? liveActionLogs : []}
             isThinking={groupIsThinking && isLastThoughts}
@@ -2226,11 +2237,11 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   }, [feedWorkActive, traceLogs]);
 
   const [activeTurnIdx, setActiveTurnIdx] = useState<number>(0);
-  const conversationIdentity = useMemo(() => {
-    const anchor = traceLogs.find((log) => log?.type === 'user_action') ?? traceLogs[0];
-    if (!anchor) return 'empty';
-    return String(anchor.id ?? anchor._traceIdx ?? anchor.timestamp ?? anchor.startTime ?? anchor.text ?? 'conversation');
-  }, [traceLogs]);
+  // A conversation's mount identity comes from its owner, never from a live
+  // trace. Optimistic and persisted versions of the first event can carry
+  // different IDs; deriving this key from that event remounted the full feed
+  // during reconciliation and discarded scroll/expansion state.
+  const conversationIdentity = String(chatId || 'new-chat');
 
   const userTurns = useMemo(() => {
     const ERROR_PATTERNS = ['agent stopped', 'execution failed', 'agent execution', '*agent', 'error:', 'failed:'];
@@ -2277,12 +2288,14 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const previewScrollRef = useRef<HTMLDivElement>(null);
   const feedContentRef = useRef<HTMLDivElement>(null);
   const prevTraceActivityRef = useRef('');
-  const shouldAutoFollowRef = useRef(true);
+  const shouldAutoFollowRef = useRef(false);
   const userScrollIntentUntilRef = useRef(0);
+  const lastScrollTopRef = useRef<number | null>(null);
   const lastFaceTraceRef = useRef('');
   const lastFaceLiveNotifyAtRef = useRef(0);
   const scrollUpdateFrameRef = useRef<number | null>(null);
   const autoFollowFrameRef = useRef<number | null>(null);
+  const scrollRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [previewUserMessage, setPreviewUserMessage] = useState<{ text: string; index: number } | null>(null);
   const [hoveredTurn, setHoveredTurn] = useState<{ turn: any; rect: DOMRect } | null>(null);
@@ -2309,13 +2322,52 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const pinLatestMessage = useCallback(() => {
     const container = scrollContainerRef.current;
     if (!container || !shouldAutoFollowRef.current) return;
-    container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const nextScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    if (Math.abs(container.scrollTop - nextScrollTop) < 1) return;
+    lastScrollTopRef.current = nextScrollTop;
+    container.scrollTop = nextScrollTop;
+  }, []);
+
+  const scheduleAutoFollow = useCallback(() => {
+    if (!shouldAutoFollowRef.current || autoFollowFrameRef.current !== null) return;
+    autoFollowFrameRef.current = window.requestAnimationFrame(() => {
+      autoFollowFrameRef.current = null;
+      pinLatestMessage();
+    });
+  }, [pinLatestMessage]);
+
+  const pauseAutoFollow = useCallback(() => {
+    shouldAutoFollowRef.current = false;
+    userScrollIntentUntilRef.current = performance.now() + 700;
+    if (autoFollowFrameRef.current !== null) {
+      window.cancelAnimationFrame(autoFollowFrameRef.current);
+      autoFollowFrameRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
     previousConversationIdentityRef.current = conversationIdentity;
     setPreviewUserMessage(null);
-    shouldAutoFollowRef.current = true;
+    shouldAutoFollowRef.current = false;
+    userScrollIntentUntilRef.current = 0;
+    lastScrollTopRef.current = null;
+    if (autoFollowFrameRef.current !== null) {
+      window.cancelAnimationFrame(autoFollowFrameRef.current);
+      autoFollowFrameRef.current = null;
+    }
+    if (scrollRestoreTimerRef.current !== null) clearTimeout(scrollRestoreTimerRef.current);
+    // The page restores each conversation's saved scroll position shortly
+    // after mounting. Do not race that restore by forcing the new feed to the
+    // bottom first; adopt bottom-follow only when the restored viewport is
+    // actually at the live tail.
+    scrollRestoreTimerRef.current = setTimeout(() => {
+      scrollRestoreTimerRef.current = null;
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      lastScrollTopRef.current = container.scrollTop;
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      if (distanceFromBottom <= AUTO_FOLLOW_THRESHOLD) shouldAutoFollowRef.current = true;
+    }, 90);
   }, [conversationIdentity]);
 
   useEffect(() => () => {
@@ -2360,14 +2412,8 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     prevTraceActivityRef.current = traceActivitySignature;
 
     if (!hasTraceActivity && !isThinking) return;
-    pinLatestMessage();
-
-    if (autoFollowFrameRef.current !== null) window.cancelAnimationFrame(autoFollowFrameRef.current);
-    autoFollowFrameRef.current = window.requestAnimationFrame(() => {
-      autoFollowFrameRef.current = null;
-      pinLatestMessage();
-    });
-  }, [traceActivitySignature, isThinking, pinLatestMessage]);
+    scheduleAutoFollow();
+  }, [traceActivitySignature, isThinking, scheduleAutoFollow]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -2378,18 +2424,12 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     // can all change geometry without adding a trace. Keep a bottom-following
     // reader pinned through those changes, but never move someone reading up.
     const observer = new ResizeObserver(() => {
-      if (!shouldAutoFollowRef.current) return;
-      pinLatestMessage();
-      if (autoFollowFrameRef.current !== null) window.cancelAnimationFrame(autoFollowFrameRef.current);
-      autoFollowFrameRef.current = window.requestAnimationFrame(() => {
-        autoFollowFrameRef.current = null;
-        pinLatestMessage();
-      });
+      scheduleAutoFollow();
     });
     observer.observe(container);
     if (content) observer.observe(content);
     return () => observer.disconnect();
-  }, [conversationIdentity, pinLatestMessage]);
+  }, [conversationIdentity, scheduleAutoFollow]);
 
   useEffect(() => {
     return () => {
@@ -2398,6 +2438,9 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       }
       if (autoFollowFrameRef.current !== null) {
         window.cancelAnimationFrame(autoFollowFrameRef.current);
+      }
+      if (scrollRestoreTimerRef.current !== null) {
+        clearTimeout(scrollRestoreTimerRef.current);
       }
     };
   }, []);
@@ -2430,10 +2473,17 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const handleScrollWrap = (e: React.UIEvent<HTMLDivElement>) => {
     const container = e.currentTarget;
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    const previousScrollTop = lastScrollTopRef.current;
+    const movedUp = previousScrollTop !== null && container.scrollTop < previousScrollTop - 1;
+    lastScrollTopRef.current = container.scrollTop;
     if (distanceFromBottom <= AUTO_FOLLOW_THRESHOLD) {
       shouldAutoFollowRef.current = true;
-    } else if (performance.now() <= userScrollIntentUntilRef.current) {
+    } else if (movedUp || performance.now() <= userScrollIntentUntilRef.current) {
       shouldAutoFollowRef.current = false;
+      if (autoFollowFrameRef.current !== null) {
+        window.cancelAnimationFrame(autoFollowFrameRef.current);
+        autoFollowFrameRef.current = null;
+      }
     }
     latestScrollContainerRef.current = container;
 
@@ -2623,7 +2673,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
           )}
           <div
             id="chat-container"
-            className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden eterx-scrollbar [overflow-anchor:none] [scrollbar-gutter:stable] ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
+            className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden eterx-scrollbar [scrollbar-gutter:stable] ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
               }`}
             style={{
               paddingBottom: 'max(10rem, var(--eterx-chat-composer-inset, 10rem))',
@@ -2631,19 +2681,21 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
             }}
             ref={scrollContainerRef}
             onScroll={handleScrollWrap}
+            onPointerDown={pauseAutoFollow}
             onWheel={(e) => {
               const container = e.currentTarget;
               const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
               userScrollIntentUntilRef.current = performance.now() + 500;
               if (e.deltaY < 0 || distanceFromBottom > AUTO_FOLLOW_THRESHOLD) {
-                shouldAutoFollowRef.current = false;
+                pauseAutoFollow();
               }
             }}
-            onTouchMove={(e) => {
-              const container = e.currentTarget;
-              const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-              userScrollIntentUntilRef.current = performance.now() + 500;
-              if (distanceFromBottom > AUTO_FOLLOW_THRESHOLD) shouldAutoFollowRef.current = false;
+            onTouchStart={pauseAutoFollow}
+            onTouchMove={pauseAutoFollow}
+            onKeyDownCapture={(event) => {
+              if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
+                pauseAutoFollow();
+              }
             }}
           >
 
@@ -2680,7 +2732,6 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                   return (
                     <div
                       key={`group-${ conversationIdentity }-${ getGroupMountIdentity(group, groupIdx) }`}
-                      style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 280px' }}
                     >
                       {showDateDivider && dateLabel && (
                         <ChatDateDivider label={dateLabel} />
