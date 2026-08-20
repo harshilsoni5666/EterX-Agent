@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
-import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, ChevronRight, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert } from 'lucide-react';
+import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert } from 'lucide-react';
 import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
@@ -117,72 +117,6 @@ const NakedCopyButton = React.memo(({ content }: { content: string }) => {
     </Tooltip>
   );
 });
-
-const StepCounterIcon = ({ live = false }: { live?: boolean }) => (
-  <svg
-    width="18"
-    height="16"
-    viewBox="0 0 18 16"
-    fill="none"
-    aria-hidden="true"
-    className="h-4 w-[18px] shrink-0 overflow-visible"
-  >
-    <path
-      d="M8.35 3.5h7.15M8.35 8h7.15M8.35 12.5h7.15"
-      stroke="currentColor"
-      strokeWidth="1.55"
-      strokeLinecap="round"
-      opacity="0.68"
-    />
-    <path
-      d="M2.05 3.55l1.28 1.28L5.95 2.1M2.05 8.05l1.28 1.28L5.95 6.6"
-      stroke={live ? "#DCD8D1" : "currentColor"}
-      strokeWidth="1.55"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      opacity="0.92"
-    />
-    {live ? (
-      <>
-        <circle
-          cx="3.85"
-          cy="12.5"
-          r="1.85"
-          stroke="#DCD8D1"
-          strokeWidth="1.3"
-          opacity="0.9"
-        />
-        <circle
-          cx="3.85"
-          cy="12.5"
-          r="0.58"
-          fill="#DCD8D1"
-          opacity="0.86"
-        />
-      </>
-    ) : (
-      <path
-        d="M2.05 12.55l1.28 1.28 2.62-2.73"
-        stroke="currentColor"
-        strokeWidth="1.55"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        opacity="0.92"
-      />
-    )}
-    {live && (
-      <path
-        d="M8.35 12.5h7.15"
-        stroke="#F2EFE9"
-        strokeWidth="1.55"
-        strokeLinecap="round"
-        opacity="0.5"
-      >
-        <animate attributeName="opacity" values="0.18;0.72;0.18" dur="1.55s" repeatCount="indefinite" />
-      </path>
-    )}
-  </svg>
-);
 
 /** Copy button that shows a checkmark for 2s after clicking */
 const CopyButton = ({ text }: { text: string }) => {
@@ -1229,8 +1163,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | 
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, hasInteractionBoundary = false, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, hasInteractionBoundary?: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
   // Start collapsed for completed turns, open for active/no-answer turns
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -1247,7 +1181,12 @@ const ThoughtSequence = ({
     [hasAnswer, isThinking, turnLogs],
   );
 
-  const setOpenPreservingViewport = React.useCallback((nextOpen: boolean) => {
+  const setOpenPreservingViewport = React.useCallback((nextOpen: boolean, preserveViewport = false) => {
+    if (!preserveViewport) {
+      setOpen(nextOpen);
+      return;
+    }
+
     const collapsible = containerRef.current;
     const chatContainer = collapsible?.closest<HTMLElement>('.eterx-chat-feed-scroll') ?? null;
     const messageGroup = collapsible?.closest<HTMLElement>('.eterx-chat-message-group') ?? null;
@@ -1279,24 +1218,24 @@ const ThoughtSequence = ({
   React.useEffect(() => {
     if (userControlledOpenRef.current) return;
     if (isLiveThinking) {
-      setOpenPreservingViewport(true);
+      setOpenPreservingViewport(true, false);
       return;
     }
     // Answer just arrived for the first time â€” collapse
     if (hasAnswer && !hasAnswerLatchRef.current) {
-      setOpenPreservingViewport(false);
+      setOpenPreservingViewport(false, false);
       hasAnswerLatchRef.current = true;
       return;
     }
     // Only re-open if we never had an answer (new turn without answer yet)
     if (!hasAnswer && !hasAnswerLatchRef.current) {
-      setOpenPreservingViewport(true);
+      setOpenPreservingViewport(true, false);
     }
   }, [hasAnswer, isLiveThinking, setOpenPreservingViewport]);
 
   const toggleOpen = () => {
     userControlledOpenRef.current = true;
-    setOpenPreservingViewport(!open);
+    setOpenPreservingViewport(!open, true);
   };
 
   const isOpen = open;
@@ -1313,44 +1252,23 @@ const ThoughtSequence = ({
 
   if (isSettledNarrativeOnly || (!shouldShowWorkflowSequence(stepCount) && !isLiveThinking && !hasNarrativeWorkNote)) return null;
 
-  const hasCounter = hasRealActions || hasNarrativeWorkNote;
-  const isCollapsedWithAnswer = hasAnswer && !isOpen;
-  const isLiveWorkCounter = isLiveThinking;
-  const hasTerminalBoundary = hasAnswer || hasInteractionBoundary || turnLogs.some(isTerminalWorkTrace);
-  const showWorkedSummary = !isLiveThinking && hasRealActions && hasTerminalBoundary;
-  const counterColor = 'var(--muted-foreground)';
-  const counterBackground = 'var(--muted)';
-  const counterHoverBackground = 'var(--secondary)';
-  const counterOutline = 'var(--border)';
-  const counterShadow = 'none';
-  const compactCounterStyle: React.CSSProperties = {
-    padding: '4px 8px 4px 6px', borderRadius: 13, border: 'none', background: counterBackground,
-    outline: `1px solid ${ counterOutline }`, backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
-    boxShadow: counterShadow, color: counterColor,
-  };
-
   return (
     <div className="relative" ref={containerRef}>
-      {showWorkedSummary && (
-        <div className="eterx-worked-summary eterx-worked-summary-complete mb-1 flex w-full items-center gap-3 pt-0">
-          <button
-            type="button"
-            onClick={toggleOpen}
-            aria-expanded={isOpen}
-            className="eterx-worked-summary-button inline-flex shrink-0 items-center gap-1.5 rounded-md py-1 text-left outline-none transition-colors"
-          >
-            <span className="eterx-worked-summary-label py-[1px] text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]">
-              <span>Worked for&nbsp;</span>
-              <RollingTimeDisplay label={workElapsedLabel} />
-            </span>
-            <ChevronDown className={`eterx-worked-summary-chevron h-3.5 w-3.5 transition-transform ${ isOpen ? '' : '-rotate-90' }`} aria-hidden="true" />
-          </button>
-          <div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" />
-        </div>
-      )}
-      {hasCounter && !showWorkedSummary && <div className={`eterx-process-summary-row ${ isCollapsedWithAnswer ? 'mb-1.5' : 'mb-1' } flex w-full items-center py-1`}>
-        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border border-[var(--border)] bg-[var(--muted)] px-3 text-[13px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-none backdrop-blur-[12px] transition-[background,border-color,color,box-shadow] duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer active={false} className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-0 pb-[1px] leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><span>Working for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer' }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{stepCount > 0 ? <><span className="eterx-professional-number">{stepCount}</span> action{stepCount !== 1 ? 's' : ''}</> : 'Work update'}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
-      </div>}
+      <div className={`eterx-worked-summary eterx-worked-summary-complete ${ isLiveThinking ? 'eterx-worked-summary-live' : '' } mb-1 flex w-full items-center gap-3 pt-0`}>
+        <button
+          type="button"
+          onClick={toggleOpen}
+          aria-expanded={isOpen}
+          className="eterx-worked-summary-button inline-flex shrink-0 items-center gap-1.5 rounded-md py-1 text-left outline-none transition-colors"
+        >
+          <span className="eterx-worked-summary-label py-[1px] text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]">
+            <span>{isLiveThinking ? 'Working for\u00a0' : 'Worked for\u00a0'}</span>
+            <RollingTimeDisplay label={workElapsedLabel} />
+          </span>
+          <ChevronDown className={`eterx-worked-summary-chevron h-3.5 w-3.5 transition-transform ${ isOpen ? '' : '-rotate-90' }`} aria-hidden="true" />
+        </button>
+        <div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" />
+      </div>
 
       {isOpen && (
         <div className="overflow-hidden">
@@ -1359,7 +1277,6 @@ const ThoughtSequence = ({
             liveLogs={liveLogs}
             isThinking={isLiveThinking}
             isLast={isLast}
-            showLiveIndicator={isLiveThinking && isLast && !hasCounter}
             onOpenAgentTeam={onOpenAgentTeam}
             assetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
@@ -1886,7 +1803,6 @@ const ChatFeedMessageGroup = React.memo(({
 
         const thoughtPhaseKey = `thoughts-phase-${ thoughtSegmentOrdinal++ }`;
         const isLastThoughts = segIdx === segments.length - 1 || segments.slice(segIdx + 1).every(s => s.type !== 'thoughts');
-        const hasInteractionBoundary = segments.slice(segIdx + 1).some(s => s.type === 'steering' || s.type === 'ask_user');
         const stepCount = countVisibleWorkflowActions([
           ...(seg.logs || []),
           ...(isLastThoughts ? liveActionLogs : []),
@@ -1910,7 +1826,6 @@ const ChatFeedMessageGroup = React.memo(({
             isThinking={groupIsThinking && isLastThoughts}
             isLast={isLastThoughts}
             hasAnswer={hasSettledAnswer && isLastThoughts}
-            hasInteractionBoundary={hasInteractionBoundary}
             stepCount={stepCount}
             turnEndedAt={hasSettledAnswer ? displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null : null}
             onOpenAgentTeam={onOpenAgentTeam}
@@ -2281,7 +2196,13 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     const container = scrollContainerRef.current;
     if (!container || !shouldAutoFollowRef.current) return;
     const nextScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
-    if (Math.abs(container.scrollTop - nextScrollTop) < 1) return;
+    // Work panels and the floating composer can both shrink during a live
+    // transition. Never issue an upward scroll for that temporary geometry;
+    // the browser will clamp naturally if the document really became shorter.
+    if (nextScrollTop <= container.scrollTop + 1) {
+      lastScrollTopRef.current = container.scrollTop;
+      return;
+    }
     lastScrollTopRef.current = nextScrollTop;
     container.scrollTop = nextScrollTop;
   }, []);
@@ -2431,12 +2352,12 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const handleScrollWrap = (e: React.UIEvent<HTMLDivElement>) => {
     const container = e.currentTarget;
     const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-    const previousScrollTop = lastScrollTopRef.current;
-    const movedUp = previousScrollTop !== null && container.scrollTop < previousScrollTop - 1;
     lastScrollTopRef.current = container.scrollTop;
     if (distanceFromBottom <= AUTO_FOLLOW_THRESHOLD) {
       shouldAutoFollowRef.current = true;
-    } else if (movedUp || performance.now() <= userScrollIntentUntilRef.current) {
+    } else if (performance.now() <= userScrollIntentUntilRef.current) {
+      // Pointer, wheel, touch, and keyboard handlers establish intent before
+      // scrolling. Geometry-only scroll events must not disable live follow.
       shouldAutoFollowRef.current = false;
       if (autoFollowFrameRef.current !== null) {
         window.cancelAnimationFrame(autoFollowFrameRef.current);
