@@ -29,6 +29,7 @@ import {
   MODEL_PROVIDER_MODE,
   MODEL_SELECTOR_STORAGE_KEY,
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
+  MODEL_THINKING_LEVELS_STORAGE_KEY,
   entriesToModelCatalog,
   ensureModelSelectorEntry,
   isEmbeddedModelLabel,
@@ -44,7 +45,6 @@ import { getFileIconPath } from '../../lib/utils/file-icon-utils';
 
 const MODEL_API_KEY_STORAGE_KEY = API_KEY_PRESENCE_STORAGE_KEY;
 const SETTINGS_CHANNEL = 'eterx-settings';
-const MODEL_THINKING_LEVELS_STORAGE_KEY = 'eterx-model-thinking-levels';
 
 // Model selection is configuration, not a chat credential payload. Keep its
 // server update on the single Settings gateway used for all runtime config.
@@ -420,10 +420,11 @@ const readModelThinkingLevels = (): Record<string, MainAgentThinkingLevel> => {
   try {
     const parsed = JSON.parse(appStorage.getItem(MODEL_THINKING_LEVELS_STORAGE_KEY) || '{}');
     if (!parsed || typeof parsed !== 'object') return {};
+    const validLevels = new Set<MainAgentThinkingLevel>(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
     return Object.fromEntries(
       Object.entries(parsed as Record<string, unknown>)
-        .map(([key, value]) => [key, normalizeMainAgentThinkingLevel(value)] as const)
-        .filter(([, value]) => Boolean(value)),
+        .filter(([key, value]) => Boolean(parseModelEntryKey(key)) && validLevels.has(value as MainAgentThinkingLevel))
+        .map(([key, value]) => [key, value as MainAgentThinkingLevel] as const),
     );
   } catch {
     return {};
@@ -1394,6 +1395,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   const refreshStoredModelSettings = useCallback(() => {
     const loaded = readStoredModelSettings();
+    const storedThinkingLevels = readModelThinkingLevels();
+    const usableModelKeys = new Set(loaded.modelEntries.map(entry => modelEntryKey(entry.provider, entry.modelId)));
+    const loadedThinkingLevels = Object.fromEntries(
+      Object.entries(storedThinkingLevels).filter(([modelKey]) => usableModelKeys.has(modelKey)),
+    ) as Record<string, MainAgentThinkingLevel>;
     const cleanOverrides = Object.fromEntries(
       Object.entries(loaded.modelOverrides).filter(([, modelId]) => !isEmbeddedModelLabel(modelId)),
     ) as Partial<Record<MainAgentProvider, string>>;
@@ -1416,6 +1422,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (durableValues.some(([key, value]) => appStorage.getItem(key) !== value)) {
       appStorage.setItems(durableSnapshot);
     }
+    if (JSON.stringify(storedThinkingLevels) !== JSON.stringify(loadedThinkingLevels)) {
+      persistModelThinkingLevels(loadedThinkingLevels);
+    }
 
     setStoredModelSettings({
       ...loaded,
@@ -1423,6 +1432,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       modelCatalog: cleanCatalog,
       chatModelSelection: cleanSelection,
     });
+    setModelThinkingLevels(previous =>
+      JSON.stringify(previous) === JSON.stringify(loadedThinkingLevels)
+        ? previous
+        : loadedThinkingLevels
+    );
   }, []);
   const textareaMaxHeight = isCompressed ? 180 : 240;
   const isModelLocked = isThinking;
@@ -1546,6 +1560,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   useEffect(() => {
     if (isModelLocked) {
+      setShowModelMenu(false);
       setShowThinkingLevels(false);
     }
   }, [isModelLocked]);
@@ -2530,22 +2545,30 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [getThinkingTarget]);
 
   const allModelOptions = modelOptions;
-  const safeThinkingLevel = normalizeMainAgentThinkingLevel(thinkingLevel);
   const activeThinkingOptions = useMemo(() => getThinkingLevelOptions(selectedModel), [selectedModel, getThinkingLevelOptions]);
-  const activeModelThinkingLevel = selectedModel
-    ? modelThinkingLevels[selectedModel.optionKey] || safeThinkingLevel
-    : safeThinkingLevel;
-  const normalizedActiveThinkingLevel = useMemo(() => {
-    if (activeThinkingOptions.length === 0 || !selectedModel) return null;
-    const target = getThinkingTarget(selectedModel);
+  const getEffectiveThinkingLevel = useCallback((option: ChatModelOption | null) => {
+    if (!option) return null;
+    const target = getThinkingTarget(option);
     if (!target) return null;
+    const options = getThinkingLevelOptions(option);
+    if (options.length === 0) return null;
+    const storedLevel = modelThinkingLevels[option.optionKey];
+    const requestedLevel = storedLevel
+      || target.capabilities?.defaultLevel
+      || options.find(item => item.id === 'medium')?.id
+      || options.find(item => item.id === 'low')?.id
+      || options.find(item => item.id !== 'off')?.id
+      || options[0].id;
     return normalizeThinkingLevelForModel(
-      activeModelThinkingLevel,
+      requestedLevel,
       target.provider,
       target.modelName,
       target.capabilities,
     );
-  }, [activeModelThinkingLevel, activeThinkingOptions, getThinkingTarget, selectedModel]);
+  }, [getThinkingLevelOptions, getThinkingTarget, modelThinkingLevels]);
+  const normalizedActiveThinkingLevel = useMemo(() => {
+    return getEffectiveThinkingLevel(selectedModel);
+  }, [getEffectiveThinkingLevel, selectedModel]);
   const selectedThinkingLevel = useMemo(() => {
     return normalizedActiveThinkingLevel
       ? activeThinkingOptions.find(option => option.id === normalizedActiveThinkingLevel) || activeThinkingOptions[0]
@@ -2565,20 +2588,30 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       persistModelThinkingLevels(next);
       return next;
     });
-    if (normalizedActiveThinkingLevel !== safeThinkingLevel) {
+    if (normalizedActiveThinkingLevel !== normalizeMainAgentThinkingLevel(thinkingLevel)) {
       onThinkingLevelChange(normalizedActiveThinkingLevel);
     }
-  }, [normalizedActiveThinkingLevel, onThinkingLevelChange, safeThinkingLevel, selectedModel]);
+  }, [normalizedActiveThinkingLevel, onThinkingLevelChange, selectedModel, thinkingLevel]);
 
-  const handleModelThinkingChange = useCallback((optionKey: string, level: MainAgentThinkingLevel) => {
-    const safeLevel = normalizeMainAgentThinkingLevel(level);
-    setModelThinkingLevels(previous => {
-      const next = { ...previous, [optionKey]: safeLevel };
-      persistModelThinkingLevels(next);
-      return next;
+  const handleModelThinkingChange = useCallback((option: ChatModelOption, level: MainAgentThinkingLevel) => {
+    const target = getThinkingTarget(option);
+    if (!target) return;
+    const normalizedLevel = normalizeThinkingLevelForModel(
+      level,
+      target.provider,
+      target.modelName,
+      target.capabilities,
+    );
+    const next = { ...readModelThinkingLevels(), [option.optionKey]: normalizedLevel };
+    persistModelThinkingLevels(next);
+    setModelThinkingLevels(next);
+    onThinkingLevelChange(normalizedLevel);
+    emitModelSettingsUpdate({
+      type: 'model-thinking-level-updated',
+      modelKey: option.optionKey,
+      thinkingLevel: normalizedLevel,
     });
-    onThinkingLevelChange(safeLevel);
-  }, [onThinkingLevelChange]);
+  }, [getThinkingTarget, onThinkingLevelChange]);
 
   useEffect(() => {
     if (!showModelMenu || !showThinkingLevels || !thinkingMenuModelKey) return;
@@ -2685,9 +2718,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     });
     syncRuntimeModelOverrides(nextOverrides);
     onModeChange(option.id);
+    setShowModelMenu(false);
+    setModelSearch('');
     setShowThinkingLevels(false);
     setThinkingMenuModelKey(null);
-  }, [agentMode, onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides, onModelSelectionChange]);
+  }, [onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides, onModelSelectionChange]);
   useEffect(() => {
     if (isModelLocked) return;
     if (modelOptions.some(option => option.optionKey === activeModelSelection)) return;
@@ -2707,10 +2742,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const slashMenuVisible = !!slashTrigger && !slashPanel && liveState === 'idle' && !isRecording && !isProcessingVoice;
   const thinkingMenuOption = allModelOptions.find(option => option.optionKey === thinkingMenuModelKey) || null;
   const thinkingMenuOptions = getThinkingLevelOptions(thinkingMenuOption);
-  const thinkingMenuTarget = getThinkingTarget(thinkingMenuOption);
-  const thinkingMenuSelectedId = thinkingMenuOption?.optionKey === selectedModel?.optionKey
-    ? selectedThinkingLevel?.id || null
-    : thinkingMenuTarget?.capabilities?.defaultLevel || null;
+  const thinkingMenuSelectedId = getEffectiveThinkingLevel(thinkingMenuOption);
 
     return (<div ref={composerDockRef} className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }` : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]` }`}
       data-home={isEmptyHome ? 'true' : 'false'}
@@ -3865,7 +3897,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   other agent chat. Keeping this control mounted lets a builder chat
                   switch provider/model immediately for its next turn. */}
               <div ref={modelSelectorRef} className="eterx-model-selector relative min-w-0">
-                <div
+                <button
+                  type="button"
+                  disabled={isModelLocked}
                   onClick={() => {
                     if (allModelOptions.length === 0) {
                       setShowModelMenu(false);
@@ -3876,7 +3910,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     setModelSearch('');
                   }}
                   data-open={showModelMenu ? 'true' : undefined}
-                  className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] pl-2.5 pr-1' : 'mr-1 pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer ${ showModelMenu ? '!bg-[#333333] !border-transparent !text-white' : '' }`}
+                  aria-expanded={showModelMenu}
+                  aria-haspopup="dialog"
+                  aria-label={isModelLocked ? 'Model selection is locked while the agent is running' : `Selected model: ${modelDisplayLabel}`}
+                  className={`eterx-model-button ${ isCompressed ? 'mr-0 max-w-[160px] pl-2.5 pr-1' : 'mr-1 pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer disabled:cursor-not-allowed disabled:opacity-55 ${ showModelMenu ? '!bg-[#333333] !border-transparent !text-white' : '' }`}
                 >
                   <div className="flex min-w-0 items-center gap-1.5">
                       <svg
@@ -3904,7 +3941,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   <span className="eterx-selector-chevron-wrapper flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[#BDB8B0] transition-colors duration-100 ease-out">
                     <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-transform duration-150 group-hover:text-white ${ showModelMenu ? 'rotate-180' : '' }`} strokeWidth={2.1} />
                   </span>
-                </div>
+                </button>
 
                 {showModelMenu && (
                   <div
@@ -3939,23 +3976,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         const selected = option.optionKey === selectedModel?.optionKey;
                         const optionLabel = getModelOptionLabel(option);
                         const optionThinkingOptions = getThinkingLevelOptions(option);
-                        const optionThinkingTarget = getThinkingTarget(option);
-                        const optionThinkingLevel = optionThinkingTarget
-                          ? selected
-                            ? normalizeThinkingLevelForModel(
-                              safeThinkingLevel,
-                              optionThinkingTarget.provider,
-                              optionThinkingTarget.modelName,
-                              optionThinkingTarget.capabilities,
-                            )
-                            : optionThinkingTarget.capabilities?.defaultLevel
-                              || optionThinkingOptions.find(item => item.id === 'medium')?.id
-                              || optionThinkingOptions[0]?.id
-                              || null
-                          : null;
-                        const optionSelectedThinkingId = selected
-                          ? selectedThinkingLevel?.id || optionThinkingLevel
-                          : optionThinkingLevel;
+                        const optionSelectedThinkingId = getEffectiveThinkingLevel(option);
                         const optionThinkingLabel =
                           optionThinkingOptions.find(item => item.id === optionSelectedThinkingId)?.label || null;
                         const thinkingMenuOpen = thinkingMenuModelKey === option.optionKey && showThinkingLevels;
@@ -3995,13 +4016,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                               </span>
                               {optionThinkingOptions.length > 0 && (
                                 <span
-                                  className={`eterx-model-thinking-trigger flex h-[18px] w-[18px] shrink-0 items-center justify-center text-white/45 transition-colors duration-100 ${ thinkingMenuOpen ? 'text-white' : '' }`}
+                                  role="button"
+                                  tabIndex={0}
+                                  className={`eterx-model-thinking-trigger flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded text-white/45 transition-colors duration-100 hover:text-white focus-visible:text-white focus-visible:outline-none ${ thinkingMenuOpen ? 'text-white' : '' }`}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     const row = (event.currentTarget as HTMLElement).closest('.eterx-model-option-row') as HTMLElement | null;
                                     if (row) openThinkingMenuForRow(option.optionKey, row, optionThinkingOptions.length);
                                   }}
+                                  onKeyDown={(event) => {
+                                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    const row = (event.currentTarget as HTMLElement).closest('.eterx-model-option-row') as HTMLElement | null;
+                                    if (row) openThinkingMenuForRow(option.optionKey, row, optionThinkingOptions.length);
+                                  }}
                                   aria-label={`Choose thinking level for ${optionLabel}`}
+                                  aria-haspopup="menu"
+                                  aria-expanded={thinkingMenuOpen}
                                 >
                                   <ChevronRight className="h-3.5 w-3.5" strokeWidth={2.1} />
                                 </span>
@@ -4046,7 +4078,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         type="button"
                         onClick={() => {
                           selectChatModelOption(thinkingMenuOption);
-                          handleModelThinkingChange(thinkingMenuOption.optionKey, thinkingOption.id);
+                          handleModelThinkingChange(thinkingMenuOption, thinkingOption.id);
                           setThinkingMenuModelKey(null);
                           setThinkingMenuPosition(null);
                           setShowThinkingLevels(false);
