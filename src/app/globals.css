@@ -10973,6 +10973,17 @@ body.eterx-gateway-view section.mt-8 > main {
   margin-left: auto !important;
 }
 
+/* Agent Builder hides the agent selector but keeps the same model picker.
+   Its attachment action and model picker form the same right-side cluster. */
+.eterx-composer-shell[data-agent-builder="true"] .eterx-agent-builder-attach {
+  order: 3 !important;
+  margin-left: auto !important;
+}
+
+.eterx-composer-shell[data-agent-builder="true"] .eterx-chat-controls-right > .eterx-model-selector {
+  margin-left: 0 !important;
+}
+
 .eterx-composer-shell[data-new-chat="true"] .eterx-chat-controls-right > *:has(.eterx-composer-dictation-button) {
   order: 5 !important;
 }

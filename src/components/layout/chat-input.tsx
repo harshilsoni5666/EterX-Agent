@@ -2775,6 +2775,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           data-composer-controls={showComposerControls ? undefined : 'hidden'}
           data-force-collapse={forceCollapse ? 'true' : undefined}
          data-new-chat={isNewChatHome ? 'true' : undefined}
+         data-agent-builder={isAgentBuilder ? 'true' : undefined}
          data-typing={hasPromptText ? 'true' : undefined}
          onDragStart={handleComposerDragStart}
       >
@@ -3489,7 +3490,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           {!isLiveActive && (
           <div className={`eterx-chat-controls ${ isCompressed ? 'px-2.5' : 'px-3.5' } mt-0 relative z-10 transition-all duration-300`}>
             <div className="eterx-chat-controls-left">
-              <Tooltip text="Attach images, PDFs, Office files, code, audio, or video" side="top">
+              {!isAgentBuilder && <Tooltip text="Attach images, PDFs, Office files, code, audio, or video" side="top">
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -3499,7 +3500,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   <div className={inputControlSheen} />
                   <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white" strokeWidth={1.85} />
                 </button>
-              </Tooltip>
+              </Tooltip>}
               <div className="relative eterx-pin-control hidden">
                 <Tooltip text="Pin folder or files" side="top" disabled={showPinMenu}>
                   <button
@@ -3552,6 +3553,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             </div>
 
             <div className="eterx-chat-controls-right flex items-center gap-1.5">
+              {isAgentBuilder && (
+                <div className="eterx-agent-builder-attach">
+                  <Tooltip text="Attach images, PDFs, Office files, code, audio, or video" side="top">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      aria-label="Attach files"
+                      className={inputControlButton}
+                    >
+                      <div className={inputControlSheen} />
+                      <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white" strokeWidth={1.85} />
+                    </button>
+                  </Tooltip>
+                </div>
+              )}
               {/* Context usage indicator: show the current chat's configured window and usage. */}
               {contextUsage && Number.isFinite(contextUsage.contextWindow) && contextUsage.contextWindow > 0 && (() => {
                 const safeContextWindow = Math.max(1, Math.round(contextUsage!.contextWindow));
