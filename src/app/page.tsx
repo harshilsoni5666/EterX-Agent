@@ -3119,6 +3119,7 @@ function DeepWorkUI() {
   const dictationShouldRunRef = useRef(false);
   const dictationRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dictationBaseTextRef = useRef('');
+  const dictationCommittedTextRef = useRef('');
   const inputValueRef = useRef(inputValue);
 
   useEffect(() => {
@@ -3137,10 +3138,56 @@ function DeepWorkUI() {
       recognition.onend = null;
       try { recognition.stop(); } catch { }
     }
+    void (window as any).electronAPI?.stopSpeechDictation?.();
     setIsRecording(false);
   }, []);
 
   useEffect(() => () => stopSpeechDictation(), [stopSpeechDictation]);
+
+  useEffect(() => {
+    const desktopApi = (window as any).electronAPI;
+    if (typeof desktopApi?.onSpeechDictationEvent !== 'function') return;
+
+    const joinDictationText = (...parts: string[]) => parts
+      .map(part => String(part || '').trim())
+      .filter(Boolean)
+      .join(' ');
+    const applyNativeTranscript = (speechText: string) => {
+      const base = dictationBaseTextRef.current;
+      const spoken = String(speechText || '').trim();
+      const nextText = !spoken
+        ? base
+        : `${base}${base && !/\s$/.test(base) ? ' ' : ''}${spoken}`;
+      inputValueRef.current = nextText;
+      updateInputValue(nextText);
+    };
+
+    return desktopApi.onSpeechDictationEvent((event: any) => {
+      if (!dictationShouldRunRef.current) return;
+      const type = String(event?.type || '');
+      const text = String(event?.text || '');
+
+      if (type === 'partial') {
+        applyNativeTranscript(joinDictationText(dictationCommittedTextRef.current, text));
+        return;
+      }
+      if (type === 'final') {
+        dictationCommittedTextRef.current = joinDictationText(dictationCommittedTextRef.current, text);
+        applyNativeTranscript(dictationCommittedTextRef.current);
+        return;
+      }
+      if (type === 'error') {
+        dictationShouldRunRef.current = false;
+        setIsRecording(false);
+        alert(text || 'Voice dictation could not start. Check your microphone and installed speech language.');
+        return;
+      }
+      if (type === 'stopped') {
+        dictationShouldRunRef.current = false;
+        setIsRecording(false);
+      }
+    });
+  }, [updateInputValue]);
 
   // ═══════════════════════════════════════════════════════════════
   // AGENT LIVE — provider-specific realtime voice conversations
@@ -8354,6 +8401,44 @@ function DeepWorkUI() {
       return;
     }
 
+    const desktopApi = (window as any).electronAPI;
+    const desktopPermission = await desktopApi?.requestLiveMediaPermissions?.();
+    if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
+      alert('Microphone access is blocked. Allow EterX to use the microphone in your system settings, restart the app, and try again.');
+      return;
+    }
+
+    const startingText = inputValue && !/\s$/.test(inputValue) ? `${inputValue} ` : inputValue;
+    dictationBaseTextRef.current = startingText;
+    dictationCommittedTextRef.current = '';
+    inputValueRef.current = startingText;
+    dictationShouldRunRef.current = true;
+    setIsRecording(true);
+
+    if (typeof desktopApi?.startSpeechDictation === 'function') {
+      try {
+        const nativeResult = await desktopApi.startSpeechDictation(navigator.language || 'en-US');
+        if (!dictationShouldRunRef.current) {
+          if (nativeResult?.started) void desktopApi.stopSpeechDictation?.();
+          return;
+        }
+        if (nativeResult?.started) return;
+        if (nativeResult?.supported !== false) {
+          dictationShouldRunRef.current = false;
+          setIsRecording(false);
+          alert(nativeResult?.error || 'Native voice dictation could not start.');
+          return;
+        }
+      } catch (error: any) {
+        if (desktopApi?.platform === 'windows') {
+          dictationShouldRunRef.current = false;
+          setIsRecording(false);
+          alert(String(error?.message || error || 'Windows voice dictation could not start.'));
+          return;
+        }
+      }
+    }
+
     const browserWindow = window as typeof window & {
       SpeechRecognition?: new () => any;
       webkitSpeechRecognition?: new () => any;
@@ -8362,21 +8447,48 @@ function DeepWorkUI() {
       browserWindow.SpeechRecognition || browserWindow.webkitSpeechRecognition;
 
     if (!SpeechRecognitionConstructor) {
-      alert('Live voice dictation is not supported by this browser. Please use the EterX desktop app, Chrome, Edge, or Safari.');
+      dictationShouldRunRef.current = false;
+      setIsRecording(false);
+      alert('Live voice dictation is unavailable in this browser. Use the EterX desktop app, Chrome, Edge, or Safari.');
       return;
     }
 
-    const desktopPermission = await (window as any).electronAPI?.requestLiveMediaPermissions?.();
-    if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
-      alert('Microphone access is blocked. Allow microphone access in your system settings, then try again.');
-      return;
+    if (navigator.mediaDevices?.getUserMedia) {
+      try {
+        const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        permissionStream.getTracks().forEach(track => track.stop());
+      } catch {
+        dictationShouldRunRef.current = false;
+        setIsRecording(false);
+        alert('Microphone access was not granted. Allow microphone access and try again.');
+        return;
+      }
     }
 
-    const startingText = inputValue && !/\s$/.test(inputValue) ? `${inputValue} ` : inputValue;
-    dictationBaseTextRef.current = startingText;
-    inputValueRef.current = startingText;
-    dictationShouldRunRef.current = true;
-    setIsRecording(true);
+    const recognitionLanguage = navigator.language || 'en-US';
+    let useOnDeviceRecognition = false;
+    const SpeechRecognitionApi = SpeechRecognitionConstructor as any;
+    if (typeof SpeechRecognitionApi.available === 'function') {
+      try {
+        let availability = await SpeechRecognitionApi.available({
+          langs: [recognitionLanguage],
+          processLocally: true,
+        });
+        if (availability === 'downloadable' && typeof SpeechRecognitionApi.install === 'function') {
+          const installed = await SpeechRecognitionApi.install({ langs: [recognitionLanguage] });
+          if (installed) {
+            availability = await SpeechRecognitionApi.available({
+              langs: [recognitionLanguage],
+              processLocally: true,
+            });
+          }
+        }
+        useOnDeviceRecognition = availability === 'available';
+      } catch {
+        // Older engines can expose the constructor without supporting local
+        // language packs. Their normal recognition path remains the fallback.
+      }
+    }
 
     const startRecognition = () => {
       if (!dictationShouldRunRef.current) return;
@@ -8386,7 +8498,10 @@ function DeepWorkUI() {
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.maxAlternatives = 1;
-      recognition.lang = navigator.language || 'en-US';
+      recognition.lang = recognitionLanguage;
+      if (useOnDeviceRecognition && 'processLocally' in recognition) {
+        recognition.processLocally = true;
+      }
 
       recognition.onresult = (event: any) => {
         let finalText = '';
@@ -8413,11 +8528,13 @@ function DeepWorkUI() {
         setIsRecording(false);
 
         if (error === 'not-allowed' || error === 'service-not-allowed') {
-          alert('Microphone access is blocked. Allow microphone access, then try voice dictation again.');
+          alert('Microphone or speech-recognition access is blocked. Allow access, then try again.');
         } else if (error === 'audio-capture') {
           alert('No working microphone was found. Check your selected input device and try again.');
+        } else if (error === 'language-not-supported' || error === 'language-unavailable') {
+          alert('Speech recognition is not installed for your current system language.');
         } else {
-          alert('Live voice dictation stopped because speech recognition is unavailable right now.');
+          alert('This browser could not reach its speech-recognition service. Try the EterX desktop app or install an on-device speech language.');
         }
       };
 
@@ -12137,6 +12254,8 @@ function DeepWorkUI() {
                     <div className="relative z-[70] min-w-0 overflow-visible [-webkit-app-region:no-drag]">
                       <div
                         data-open={headerMenuOpen ? 'true' : 'false'}
+                        aria-expanded={headerMenuOpen}
+                        aria-haspopup="menu"
                         onClick={() => {
                           if (!isEditingChatTitle) {
                             setChatActionMenuOpen(false);
@@ -12173,6 +12292,13 @@ function DeepWorkUI() {
                           />
                         ) : (
                           <span className="truncate max-w-[400px] select-none text-[#E8E6E3]">{titleText}</span>
+                        )}
+                        {!isEditingChatTitle && (
+                          <ChevronDown
+                            aria-hidden="true"
+                            className={`eterx-thread-tab-chevron ml-0.5 h-3.5 w-3.5 shrink-0 ${headerMenuOpen ? 'rotate-180' : ''}`}
+                            strokeWidth={2}
+                          />
                         )}
                         <div className="relative flex items-center justify-center">
                           <AnimatePresence>

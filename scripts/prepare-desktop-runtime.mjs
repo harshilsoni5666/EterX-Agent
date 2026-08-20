@@ -234,7 +234,20 @@ fs.cpSync(
 );
 
 if (process.platform === 'win32') {
-  const compiler = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
+  const windowsRoot = String(process.env.WINDIR || 'C:\\Windows');
+  const compiler = path.join(windowsRoot, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+  const systemSpeechAssembly = path.join(
+    windowsRoot,
+    'Microsoft.NET',
+    'assembly',
+    'GAC_MSIL',
+    'System.Speech',
+    'v4.0_4.0.0.0__31bf3856ad364e35',
+    'System.Speech.dll',
+  );
+  if (!fs.existsSync(systemSpeechAssembly)) {
+    throw new Error('Windows System.Speech is unavailable; the native dictation helper cannot be built.');
+  }
   const nativeRoot = path.join(assetsRoot, 'native', 'win');
   fs.mkdirSync(nativeRoot, { recursive: true });
   const nativePrograms = [
@@ -247,6 +260,11 @@ if (process.platform === 'win32') {
       source: path.join(repositoryRoot, 'src', 'lib', 'agent', 'computer', 'EterXScreenStream.cs'),
       output: path.join(nativeRoot, 'EterXScreenStream.exe'),
       references: ['System.Windows.Forms.dll', 'System.Drawing.dll'],
+    },
+    {
+      source: path.join(repositoryRoot, 'src', 'lib', 'desktop', 'EterXSpeechDictation.cs'),
+      output: path.join(nativeRoot, 'EterXSpeechDictation.exe'),
+      references: [systemSpeechAssembly],
     },
   ];
   for (const nativeProgram of nativePrograms) {

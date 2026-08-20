@@ -23,6 +23,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readClipboardText: () => ipcRenderer.invoke('clipboard-read-text'),
   readClipboardImage: () => ipcRenderer.invoke('clipboard-read-image'),
   requestLiveMediaPermissions: () => ipcRenderer.invoke('live-media-permissions'),
+  startSpeechDictation: (language) => ipcRenderer.invoke('speech-dictation-start', String(language || '')),
+  stopSpeechDictation: () => ipcRenderer.invoke('speech-dictation-stop'),
+  onSpeechDictationEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('speech-dictation-event', listener);
+    return () => ipcRenderer.removeListener('speech-dictation-event', listener);
+  },
   setNativeTheme: (theme) => ipcRenderer.send('native-theme-set', theme),
   getNativeTheme: () => ipcRenderer.invoke('native-theme-get'),
   getSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-get'),

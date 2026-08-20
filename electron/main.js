@@ -12,22 +12,6 @@ function logToFile(msg) {
   } catch (e) { }
 }
 
-// Attempt to read Google API Key from Next.js local environment variables to unlock Chromium's Speech Engine
-try {
-  const envPath = path.join(__dirname, '../.env.local');
-  if (fs.existsSync(envPath)) {
-    const envFile = fs.readFileSync(envPath, 'utf8');
-    const match = envFile.match(/VITE_SEARCH_API_KEY_1=([^\n\r]+)/) || envFile.match(/GEMINI_API_KEY_1=([^\n\r]+)/) || envFile.match(/VITE_API_KEY=([^\n\r]+)/);
-    if (match && match[1]) {
-      process.env.GOOGLE_API_KEY = match[1].trim();
-      process.env.GOOGLE_DEFAULT_CLIENT_ID = 'electron-dummy';
-      process.env.GOOGLE_DEFAULT_CLIENT_SECRET = 'electron-dummy';
-    }
-  }
-} catch (e) {
-  console.warn('Could not inject Google API key for Web Speech:', e);
-}
-
 const http = require('http');
 const https = require('https');
 const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, systemPreferences, Tray, clipboard, utilityProcess } = require('electron');
@@ -2611,6 +2595,41 @@ function configureDesktopPermissions(targetSession) {
   ));
 }
 
+let desktopSpeechDictation = null;
+
+function getWindowsSpeechDictationExecutable() {
+  if (process.platform !== 'win32') return null;
+  const relativePath = path.join('runtime', 'assets', 'native', 'win', 'EterXSpeechDictation.exe');
+  const candidates = app.isPackaged
+    ? [
+        path.join(process.resourcesPath, 'app.asar.unpacked', relativePath),
+        path.join(app.getAppPath(), relativePath),
+      ]
+    : [path.join(app.getAppPath(), 'desktop-runtime', 'assets', 'native', 'win', 'EterXSpeechDictation.exe')];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function stopDesktopSpeechDictation(requestingWebContents = null) {
+  const active = desktopSpeechDictation;
+  if (!active) return false;
+  if (requestingWebContents && active.ownerId !== requestingWebContents.id) return false;
+
+  desktopSpeechDictation = null;
+  try { active.child.stdin.end('\n'); } catch { }
+  const forceStopTimer = setTimeout(() => {
+    try {
+      if (!active.child.killed) active.child.kill();
+    } catch { }
+  }, 1500);
+  if (typeof forceStopTimer.unref === 'function') forceStopTimer.unref();
+  return true;
+}
+
+function sendDesktopDictationEvent(target, payload) {
+  if (!target || target.isDestroyed()) return;
+  target.send('speech-dictation-event', payload);
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -3815,6 +3834,92 @@ ipcMain.on('pet-reply', (_event, message) => {
   }
 });
 
+ipcMain.handle('speech-dictation-start', async (event, requestedLanguage) => {
+  if (!isTrustedRenderer(event.sender)) {
+    return { started: false, supported: false, error: 'Untrusted renderer origin.' };
+  }
+  if (process.platform !== 'win32') {
+    return { started: false, supported: false, platform: process.platform };
+  }
+
+  const microphone = typeof systemPreferences.getMediaAccessStatus === 'function'
+    ? systemPreferences.getMediaAccessStatus('microphone')
+    : 'unknown';
+  if (microphone === 'denied' || microphone === 'restricted') {
+    return {
+      started: false,
+      supported: true,
+      permission: microphone,
+      error: 'Windows microphone access is blocked for desktop applications.',
+    };
+  }
+
+  const executable = getWindowsSpeechDictationExecutable();
+  if (!executable) {
+    return {
+      started: false,
+      supported: false,
+      error: 'The native speech component is missing from this EterX build.',
+    };
+  }
+
+  stopDesktopSpeechDictation();
+  const owner = event.sender;
+  const language = String(requestedLanguage || '').trim().slice(0, 40);
+  const child = spawn(executable, language ? [language] : [], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  const active = { child, ownerId: owner.id };
+  desktopSpeechDictation = active;
+
+  let stdoutBuffer = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    stdoutBuffer += chunk;
+    const lines = stdoutBuffer.split(/\r?\n/);
+    stdoutBuffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        sendDesktopDictationEvent(owner, JSON.parse(line));
+      } catch {
+        logToFile(`[dictation] Ignored malformed native output: ${line.slice(0, 200)}`);
+      }
+    }
+  });
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    const message = String(chunk || '').trim();
+    if (message) logToFile(`[dictation] ${message.slice(0, 500)}`);
+  });
+  child.once('error', (error) => {
+    if (desktopSpeechDictation === active) desktopSpeechDictation = null;
+    sendDesktopDictationEvent(owner, {
+      type: 'error',
+      code: 'native-start-failed',
+      text: String(error?.message || error || 'Native speech recognition could not start.'),
+    });
+  });
+  child.once('exit', (code) => {
+    if (desktopSpeechDictation !== active) return;
+    desktopSpeechDictation = null;
+    sendDesktopDictationEvent(owner, {
+      type: code === 0 ? 'stopped' : 'error',
+      code: code === 0 ? '' : 'native-exit',
+      text: code === 0 ? '' : 'Windows speech recognition stopped unexpectedly.',
+    });
+  });
+  owner.once('destroyed', () => stopDesktopSpeechDictation(owner));
+
+  return { started: true, supported: true, engine: 'windows-native', microphone };
+});
+
+ipcMain.handle('speech-dictation-stop', (event) => {
+  if (!isTrustedRenderer(event.sender)) return false;
+  return stopDesktopSpeechDictation(event.sender);
+});
+
 ipcMain.handle('live-media-permissions', async (event) => {
   if (!isTrustedRenderer(event.sender)) return { microphone: 'denied', error: 'Untrusted renderer origin.' };
   try {
@@ -3868,6 +3973,7 @@ app.on('window-all-closed', function () {
 });
 
 app.on('before-quit', (event) => {
+  stopDesktopSpeechDictation();
   stopAutomaticDesktopUpdateChecks();
   if (desktopUpdateInstallWatchdog) clearTimeout(desktopUpdateInstallWatchdog);
   desktopUpdateInstallWatchdog = null;

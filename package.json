@@ -290,6 +290,7 @@
       "entitlements": "setup/entitlements.mac.plist",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "EterX uses the microphone only while you are using voice recording or Live Agent.",
+        "NSSpeechRecognitionUsageDescription": "EterX uses speech recognition only while you enable voice dictation.",
         "NSCameraUsageDescription": "EterX uses the camera only when you enable camera sharing in Live Agent.",
         "NSScreenCaptureUsageDescription": "EterX captures the screen only while you explicitly enable screen sharing in Live Agent."
       },
