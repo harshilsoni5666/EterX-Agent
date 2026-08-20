@@ -19,6 +19,7 @@ import {
   MODEL_SELECTOR_SCHEMA_VERSION,
   MODEL_SELECTOR_STORAGE_KEY,
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
+  MODEL_THINKING_LEVELS_STORAGE_KEY,
   composeApiKeysForSelections,
   entriesToModelCatalog,
   ensureModelSelectorEntry,
@@ -2232,6 +2233,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [modelOverrides, setModelOverrides] = useState<ModelOverrides>({});
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog>({});
   const [modelEntries, setModelEntries] = useState<ModelSelectorEntry[]>([]);
+  const [chatModelSelection, setChatModelSelection] = useState(AUTO_MODEL_SELECTION);
   const [contextChats, setContextChats] = useState<ContextChatSummary[]>([]);
   const [selectedContextChatId, setSelectedContextChatId] = useState('');
   const [activeContextChatId, setActiveContextChatId] = useState('');
@@ -3283,6 +3285,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       appStorage.setItem('eterx_settings', JSON.stringify(nextSettings));
       setModelEntries(resolvedModelEntries);
       setModelCatalog(resolvedModelCatalog);
+      setChatModelSelection(resolvedChatModelSelection);
       setModelApiKeys(normalizedModelApiKeys);
       setModelThinkingCapabilities(
         parsedThinkingCapabilities && typeof parsedThinkingCapabilities === 'object'
@@ -3388,8 +3391,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const storedOverrides = normalizeStringMap(readJson(MODEL_OVERRIDE_STORAGE_KEY, {}));
       const storedBaseURLs = normalizeStringMap(readJson(PROVIDER_BASE_URLS_STORAGE_KEY, {}));
       const storedThinking = readJson(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, {});
+      const storedChatModelSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
       const syncedEntries = normalizeModelSelectorEntries(storedEntries, storedCatalog);
       const syncedCatalog = entriesToModelCatalog(syncedEntries) as ModelCatalog;
+      const syncedChatModelSelection = parseModelEntryKey(storedChatModelSelection)
+        && syncedEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection)
+        ? storedChatModelSelection
+        : syncedEntries[0]
+          ? modelEntryKey(syncedEntries[0].provider, syncedEntries[0].modelId)
+          : AUTO_MODEL_SELECTION;
 
       let runtime: any = {};
       try {
@@ -3460,6 +3470,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       setModelOverrides(current => JSON.stringify(current) === JSON.stringify(nextOverrides) ? current : nextOverrides);
       setModelEntries(syncedEntries);
       setModelCatalog(syncedCatalog);
+      setChatModelSelection(syncedChatModelSelection);
       setModelThinkingCapabilities(syncedThinking);
       setProviderBaseURLs(current => JSON.stringify(current) === JSON.stringify(nextBaseURLs) ? current : nextBaseURLs);
       apiKeysRef.current = runtimeApiKeys;
@@ -3469,14 +3480,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       liveApiKeysRef.current = runtimeLiveApiKeys;
       modelApiKeysRef.current = runtimeModelApiKeys;
       modelOverridesRef.current = nextOverrides;
+      modelEntriesRef.current = syncedEntries;
       providerBaseURLsRef.current = nextBaseURLs;
     };
     const onExternalCommit = () => { void syncExternalSettings(); };
     window.addEventListener(FOLDER_STORAGE_READY_EVENT, onExternalCommit);
+    window.addEventListener('eterx-folder-storage-updated', onExternalCommit);
+    window.addEventListener('eterx-settings-updated', onExternalCommit);
     window.addEventListener('focus', onExternalCommit);
     return () => {
       cancelled = true;
       window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onExternalCommit);
+      window.removeEventListener('eterx-folder-storage-updated', onExternalCommit);
+      window.removeEventListener('eterx-settings-updated', onExternalCommit);
       window.removeEventListener('focus', onExternalCommit);
     };
   }, [hasChanges]);
@@ -3667,7 +3683,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   }, [selectedContextChatId]);
 
   const handleClose = useCallback(() => {
-    void performSync();
+    void performSync().finally(() => setHasChanges(false));
     onClose();
   }, [performSync, onClose]);
 
@@ -4246,6 +4262,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const chatModelSelection = effectiveProvider && effectiveModelId
       ? modelEntryKey(effectiveProvider, effectiveModelId)
       : AUTO_MODEL_SELECTION;
+    setChatModelSelection(chatModelSelection);
     appStorage.setItems({
       [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(next),
       [CHAT_MODEL_SELECTION_STORAGE_KEY]: chatModelSelection,
@@ -4274,10 +4291,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!isModelProvider(cleanProvider) || !cleanModelId) return;
 
     const existingEntries = modelEntriesRef.current;
-    const shouldActivateFirstModel = activate && existingEntries.length === 0;
     const nextEntries = saveModelEntries(ensureModelSelectorEntry(existingEntries, cleanProvider, cleanModelId));
     saveModelThinkingCapability(cleanProvider, cleanModelId);
-    if (shouldActivateFirstModel) selectCatalogModel(cleanProvider, cleanModelId, nextEntries);
+    if (activate) selectCatalogModel(cleanProvider, cleanModelId, nextEntries);
     setHasChanges(true);
     keysChangedRef.current = true;
   }, [saveModelEntries, saveModelThinkingCapability, selectCatalogModel]);
@@ -4297,6 +4313,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       broadcastEterxSettingsUpdate({ type: 'model-thinking-capabilities-updated', thinkingCapabilities: next });
       return next;
     });
+    try {
+      const storedLevels = JSON.parse(appStorage.getItem(MODEL_THINKING_LEVELS_STORAGE_KEY) || '{}');
+      if (storedLevels && typeof storedLevels === 'object' && removedKey in storedLevels) {
+        delete storedLevels[removedKey];
+        appStorage.setItem(MODEL_THINKING_LEVELS_STORAGE_KEY, JSON.stringify(storedLevels));
+      }
+    } catch { }
     settingsRevisionRef.current += 1;
     const nextModelKeys = { ...modelApiKeysRef.current };
     delete nextModelKeys[removedKey];
@@ -4317,6 +4340,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       setExactModelDraft('');
     } else if (currentChatModelSelection === removedKey) {
       appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, chatModelSelection);
+      setChatModelSelection(chatModelSelection);
     }
     queueRuntimeSync({
       apiKeys: apiKeysRef.current,
@@ -5007,7 +5031,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             info="Models saved here become the exact choices shown in the chat model selector. API keys are configured separately in the API tab."
                           />
                           <SettingsStack>
-                            <SettingsStackRow title="Provider" description="Choose the model provider used by the main agent runtime.">
+                            <SettingsStackRow title="Provider" description="Browse a provider and choose the exact model used by the main agent.">
                               <ProviderSelect
                                 value={selectedConnectionProvider}
                                 onChange={(value) => {
@@ -5023,7 +5047,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <SettingsStackRow
                               title="Model"
                               description={selectedProviderModel
-                                ? 'Exact model active for the next run.'
+                                ? modelEntryKey(selectedConnectionProvider, selectedProviderModel) === chatModelSelection
+                                  ? 'Exact model active for the next run.'
+                                  : 'Saved model for this provider. Select it to make it active.'
                                 : selectedProviderCanDiscover
                                   ? 'Choose a real model returned by the provider.'
                                   : 'Add an API key first; no default or placeholder model is selected.'}
@@ -5143,19 +5169,20 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 ) : (
                                   <div className="max-h-[280px] overflow-y-auto pr-1 eterx-scrollbar">
                                     {modelEntries.map(entry => {
-                                      const selected = modelOverrides[entry.provider] === entry.modelId;
+                                      const entryKey = modelEntryKey(entry.provider, entry.modelId);
+                                      const selected = chatModelSelection === entryKey;
                                       const entryProviderLabel = PROVIDER_LABEL[entry.provider] || entry.provider;
                                       const entryThinkingOptions = getModelThinkingOptions(
                                         entry.provider,
                                         entry.modelId,
-                                        modelThinkingCapabilities[modelEntryKey(entry.provider, entry.modelId)],
+                                        modelThinkingCapabilities[entryKey],
                                       );
                                       return (
-                                        <div key={modelEntryKey(entry.provider, entry.modelId)} className="flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-white/[0.04]">
+                                        <div key={entryKey} className={`flex items-center gap-2 rounded-lg px-2 py-2 transition-colors ${ selected ? 'bg-white/[0.055]' : 'hover:bg-white/[0.04]' }`}>
                                           <div className="min-w-0 flex-1">
                                             <div className="truncate font-mono text-[11.5px] font-semibold text-[#F1F1F1]">{entry.modelId}</div>
                                             <div className="mt-0.5 truncate text-[11px] text-[#777]">
-                                              {selected ? 'Active runtime target' : entryProviderLabel}
+                                              {selected ? 'Active chat model' : entryProviderLabel}
                                               {' · '}
                                               {entryThinkingOptions.length
                                                 ? `${ entryThinkingOptions.map(option => option.label).join(' / ') } reasoning`
