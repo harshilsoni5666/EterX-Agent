@@ -1350,8 +1350,24 @@ const ThoughtSequence = ({
 
   return (
     <div className="relative" ref={containerRef}>
-      {showWorkedSummary && <div className="eterx-worked-summary mb-1 flex w-full items-center gap-4 pt-0"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]"><span>Worked for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
-      {hasCounter && <div className={`eterx-process-summary-row ${ isCollapsedWithAnswer ? 'mb-1.5' : 'mb-1' } flex w-full items-center py-1`}>
+      {showWorkedSummary && (
+        <div className="eterx-worked-summary eterx-worked-summary-complete mb-1 flex w-full items-center gap-3 pt-0">
+          <button
+            type="button"
+            onClick={toggleOpen}
+            aria-expanded={isOpen}
+            className="eterx-worked-summary-button inline-flex shrink-0 items-center gap-1.5 rounded-md py-1 text-left outline-none transition-colors"
+          >
+            <span className="eterx-worked-summary-label py-[1px] text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]">
+              <span>Worked for&nbsp;</span>
+              <RollingTimeDisplay label={workElapsedLabel} />
+            </span>
+            <ChevronDown className={`eterx-worked-summary-chevron h-3.5 w-3.5 transition-transform ${ isOpen ? '' : '-rotate-90' }`} aria-hidden="true" />
+          </button>
+          <div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" />
+        </div>
+      )}
+      {hasCounter && !showWorkedSummary && <div className={`eterx-process-summary-row ${ isCollapsedWithAnswer ? 'mb-1.5' : 'mb-1' } flex w-full items-center py-1`}>
         {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border border-[var(--border)] bg-[var(--muted)] px-3 text-[13px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-none backdrop-blur-[12px] transition-[background,border-color,color,box-shadow] duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer active={false} className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-0 pb-[1px] leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><span>Working for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer' }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{stepCount > 0 ? <><span className="eterx-professional-number">{stepCount}</span> action{stepCount !== 1 ? 's' : ''}</> : 'Work update'}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
       </div>}
 
