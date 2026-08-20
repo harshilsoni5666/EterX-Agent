@@ -125,9 +125,11 @@
   border-top-color: transparent !important;
 }
 
-/* Keep the complete desktop title bar on one uninterrupted light surface. */
+/* The shell beneath already owns the white title-bar surface. Painting the
+   global drag layer white hides the sidebar toggle and EterX wordmark because
+   that layer intentionally sits above the sidebar. */
 :root[data-theme="light"] .eterx-global-topbar {
-  background: #FFFFFF !important;
+  background: transparent !important;
 }
 
 :root[data-theme="light"] .eterx-app-shell,
@@ -3102,11 +3104,20 @@
   color: var(--eterx-chat-muted) !important;
 }
 
-:root[data-theme="light"] .eterx-chat-feed-user-fade,
+:root[data-theme="light"] .eterx-chat-feed-user-fade {
+  background: linear-gradient(180deg, rgba(243, 243, 243, 0) 0%, rgba(243, 243, 243, 0.72) 70%, #F3F3F3 100%) !important;
+}
+
 :root[data-theme="light"] .eterx-user-message-action-fade {
   background:
     linear-gradient(90deg, rgba(243, 243, 243, 0) 0%, rgba(243, 243, 243, 0.82) 58%, #F3F3F3 100%),
     linear-gradient(180deg, rgba(243, 243, 243, 0) 0%, rgba(243, 243, 243, 0.78) 64%, #F3F3F3 100%) !important;
+}
+
+/* Long prompts keep a small scroll cue without washing out an entire line. */
+:root[data-theme="light"] .eterx-user-msg-fade {
+  height: 16px !important;
+  background: linear-gradient(180deg, rgba(243, 243, 243, 0) 0%, #F3F3F3 100%) !important;
 }
 
 :root[data-theme="light"] .eterx-user-message-action-button {
@@ -3533,6 +3544,26 @@
   color: #8D8D8D !important;
 }
 
+/* A running turn locks model selection, but locked controls must remain fully
+   legible. Tailwind's disabled opacity otherwise fades the entire selector. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:disabled {
+  opacity: 1 !important;
+  color: #606060 !important;
+  cursor: not-allowed !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:disabled .eterx-selector-label {
+  color: #5B5B5B !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:disabled .eterx-model-thinking-closed-label,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:disabled .eterx-selector-chevron,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:disabled .eterx-selector-chevron-wrapper,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-button:disabled .eterx-selector-icon {
+  color: #858585 !important;
+  opacity: 1 !important;
+}
+
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-control-icon:not(img),
 :root[data-theme="light"] .eterx-composer-shell .eterx-context-usage-trigger {
   color: #626262 !important;
@@ -3568,6 +3599,29 @@
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-icon {
   background: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-secondary,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-button:disabled {
+  width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  border: 0 !important;
+  background: #242424 !important;
+  color: #FFFFFF !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-secondary:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-secondary:focus-visible {
+  background: #111111 !important;
+  color: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-pending {
+  border-color: rgba(255, 255, 255, 0.34) !important;
+  border-top-color: #FFFFFF !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button[data-active="true"] {
