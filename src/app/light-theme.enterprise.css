@@ -3813,6 +3813,128 @@
   color: #929292 !important;
 }
 
+/* Light new-chat atmosphere
+
+   The empty feed is intentionally transparent so the animated field mounted
+   behind it can remain visible. The general chat-canvas rule above must not
+   repaint this one state with an opaque white surface. */
+:root[data-theme="light"] .eterx-chat-feed.eterx-chat-feed-empty,
+:root[data-theme="light"] .eterx-chat-feed.eterx-chat-feed-empty .eterx-chat-feed-scroll,
+:root[data-theme="light"] .eterx-chat-feed.eterx-chat-feed-empty .eterx-chat-feed-content {
+  background: transparent !important;
+}
+
+/* Keep the dark theme's animated depth and timing, translated to a clean
+   daylight palette with enough contrast to remain visible on a white canvas. */
+:root[data-theme="light"] .eterx-new-chat-motion-field {
+  filter: saturate(0.92) brightness(1.01) contrast(0.99) !important;
+  background:
+    radial-gradient(ellipse at 8% 110%, rgba(141, 158, 180, 0.24) 0%, rgba(141, 158, 180, 0.10) 38%, transparent 68%),
+    radial-gradient(ellipse at 58% 112%, rgba(100, 180, 190, 0.20) 0%, rgba(119, 169, 190, 0.09) 44%, transparent 73%),
+    linear-gradient(180deg, transparent 0%, transparent 40%, rgba(126, 155, 170, 0.06) 72%, rgba(102, 151, 164, 0.17) 100%) !important;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.15) 13%, rgba(0, 0, 0, 0.76) 34%, #000 100%) !important;
+  mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.15) 13%, rgba(0, 0, 0, 0.76) 34%, #000 100%) !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-field {
+  background: linear-gradient(180deg, transparent 0%, transparent 24%, rgba(218, 232, 235, 0.16) 64%, rgba(156, 201, 205, 0.34) 100%) !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-plasma {
+  opacity: 0.48 !important;
+  filter: blur(34px) saturate(0.96) brightness(1.01) !important;
+  mix-blend-mode: multiply !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-plasma-pink {
+  background: #C6B8D9 !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-plasma-emerald {
+  background: #77C9B7 !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-plasma-blue {
+  background: #75B4D5 !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-plasma-lime {
+  background: #B9C993 !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-wave-stage {
+  opacity: 0.84 !important;
+  filter: saturate(0.94) brightness(1.01) !important;
+  mix-blend-mode: multiply !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-wave-volume-back {
+  background:
+    radial-gradient(ellipse at 16% 64%, rgba(157, 133, 184, 0.18), transparent 49%),
+    radial-gradient(ellipse at 40% 58%, rgba(76, 172, 157, 0.28), transparent 58%),
+    radial-gradient(ellipse at 68% 52%, rgba(73, 146, 183, 0.27), transparent 61%),
+    radial-gradient(ellipse at 94% 62%, rgba(143, 164, 92, 0.14), transparent 49%) !important;
+  opacity: 0.42 !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-wave-volume-mid {
+  background:
+    radial-gradient(ellipse at 12% 68%, rgba(159, 131, 184, 0.20), transparent 49%),
+    radial-gradient(ellipse at 35% 58%, rgba(66, 181, 161, 0.38), transparent 59%),
+    radial-gradient(ellipse at 63% 53%, rgba(66, 160, 190, 0.38), transparent 61%),
+    radial-gradient(ellipse at 82% 56%, rgba(94, 145, 191, 0.30), transparent 59%),
+    radial-gradient(ellipse at 98% 65%, rgba(147, 169, 91, 0.17), transparent 49%) !important;
+  opacity: 0.58 !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-wave-volume-front {
+  background:
+    radial-gradient(ellipse at 12% 54%, rgba(159, 131, 184, 0.18), transparent 46%),
+    radial-gradient(ellipse at 38% 49%, rgba(65, 188, 166, 0.42), transparent 59%),
+    radial-gradient(ellipse at 66% 49%, rgba(70, 169, 195, 0.40), transparent 60%),
+    radial-gradient(ellipse at 84% 53%, rgba(100, 151, 198, 0.32), transparent 59%),
+    radial-gradient(ellipse at 99% 59%, rgba(151, 174, 93, 0.16), transparent 46%) !important;
+  opacity: 0.66 !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-lobe {
+  opacity: 0.46 !important;
+  filter: blur(22px) saturate(0.94) !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-lobe-left {
+  background: radial-gradient(ellipse at 50% 50%, rgba(154, 128, 182, 0.30), rgba(68, 181, 160, 0.18) 50%, transparent 76%) !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-lobe-center {
+  background: radial-gradient(ellipse at 50% 54%, rgba(63, 188, 167, 0.38), rgba(70, 163, 194, 0.25) 52%, transparent 76%) !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-lobe-right {
+  background: radial-gradient(ellipse at 50% 52%, rgba(89, 151, 198, 0.34), rgba(147, 173, 92, 0.18) 50%, transparent 76%) !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-wave-depth {
+  background: radial-gradient(ellipse at 50% 100%, rgba(74, 108, 123, 0.24), rgba(116, 151, 160, 0.14) 43%, transparent 72%) !important;
+  mix-blend-mode: multiply !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-wave-depth-back {
+  opacity: 0.30 !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-wave-depth-front {
+  opacity: 0.18 !important;
+}
+
+:root[data-theme="light"] .eterx-new-chat-motion-field .eterx-home-vignette {
+  opacity: 1 !important;
+  background:
+    linear-gradient(180deg, #FFFFFF 0%, rgba(255, 255, 255, 0.82) 13%, rgba(255, 255, 255, 0.16) 40%, transparent 58%),
+    radial-gradient(122% 104% at 50% 100%, transparent 0%, transparent 70%, rgba(255, 255, 255, 0.10) 86%, rgba(255, 255, 255, 0.32) 100%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.58) 0%, rgba(255, 255, 255, 0.12) 10%, transparent 23%, transparent 78%, rgba(255, 255, 255, 0.13) 90%, rgba(255, 255, 255, 0.58) 100%) !important;
+}
+
 @media (max-width: 768px) {
   :root[data-theme="light"] .eterx-chat-input-dock-active::before {
     height: 78px !important;
@@ -3832,5 +3954,421 @@
   :root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) {
     border-radius: 21px !important;
     box-shadow: 0 6px 22px rgba(31, 31, 31, 0.07) !important;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Theme geometry parity
+
+   Light and dark are palettes of the same product. Keep every layout-bearing
+   chat measurement aligned with the shared/default implementation; light-only
+   rules below this boundary are limited to paint, contrast, and elevation.
+------------------------------------------------------------------------- */
+:root[data-theme="light"] .eterx-chat-feed .eterx-chat-message-group.group\/user {
+  margin-top: 2rem !important;
+  margin-bottom: 1.25rem !important;
+}
+
+:root[data-theme="light"] .eterx-chat-message-group:not(.group\/user) {
+  margin-bottom: 1.25rem !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed-user-bubble {
+  max-width: 520px !important;
+  padding: 10px 16px !important;
+  border-radius: 18px !important;
+  font-size: 14.5px !important;
+  line-height: 1.52 !important;
+  letter-spacing: -0.004em !important;
+}
+
+:root[data-theme="light"] .eterx-steering-bubble {
+  max-width: 84% !important;
+  padding: 10px 16px !important;
+  border-radius: 18px !important;
+  border-top-right-radius: 7px !important;
+  font-size: 13.5px !important;
+  line-height: 1.5 !important;
+  letter-spacing: normal !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed[data-compressed="true"] .eterx-chat-feed-user-bubble,
+:root[data-theme="light"] .eterx-chat-feed[data-compressed="true"] .eterx-steering-bubble {
+  max-width: 92% !important;
+}
+
+:root[data-theme="light"] .eterx-assistant-answer-body,
+:root[data-theme="light"] .eterx-professional-answer {
+  font-size: 14.5px !important;
+  line-height: 1.58 !important;
+  letter-spacing: -0.004em !important;
+}
+
+:root[data-theme="light"] .eterx-professional-answer .eterx-answer-paragraph {
+  margin-bottom: 0.72rem !important;
+  line-height: 1.58 !important;
+}
+
+:root[data-theme="light"] .eterx-professional-answer .eterx-answer-list,
+:root[data-theme="light"] .eterx-professional-answer .eterx-answer-list-item {
+  line-height: 1.54 !important;
+}
+
+:root[data-theme="light"] .eterx-worked-summary-complete {
+  margin: 0 0 4px !important;
+  gap: 12px !important;
+}
+
+:root[data-theme="light"] .eterx-worked-summary-label {
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  line-height: 1.35 !important;
+  letter-spacing: normal !important;
+}
+
+:root[data-theme="light"] .eterx-process-summary-row {
+  padding: 4px 0 !important;
+}
+
+:root[data-theme="light"] .eterx-process-summary-chip-live {
+  min-height: 36px !important;
+  height: 36px !important;
+  padding: 0 12px !important;
+  border-radius: 10px !important;
+}
+
+:root[data-theme="light"] .eterx-process-summary-chip:not(.eterx-process-summary-chip-live) {
+  min-height: 30px !important;
+  height: 30px !important;
+  padding: 4px 8px 4px 6px !important;
+  border-radius: 13px !important;
+}
+
+/* Keep the same summary-container hierarchy as dark mode. The previous light
+   pass intentionally erased this surface, leaving the icon and label adrift. */
+:root[data-theme="light"] .eterx-process-summary-chip:not(.eterx-process-summary-chip-live) {
+  border: 0 !important;
+  outline: 1px solid rgba(31, 31, 31, 0.09) !important;
+  background: #F3F3F2 !important;
+  color: #626262 !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-theme="light"] .eterx-process-summary-chip-live {
+  border: 1px solid rgba(31, 31, 31, 0.09) !important;
+  outline: 0 !important;
+  background: #F3F3F2 !important;
+  color: #626262 !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+:root[data-theme="light"] .eterx-process-summary-chip:hover,
+:root[data-theme="light"] .eterx-process-summary-chip:focus-visible,
+:root[data-theme="light"] .eterx-process-summary-chip-live:hover,
+:root[data-theme="light"] .eterx-process-summary-chip-live:focus-visible {
+  background: #ECECE9 !important;
+  color: #303030 !important;
+}
+
+:root[data-theme="light"] .eterx-thinking-process-stack {
+  gap: 0.375rem !important;
+}
+
+:root[data-theme="light"] .eterx-phase-block {
+  gap: 0.15rem !important;
+}
+
+:root[data-theme="light"] .eterx-professional-note,
+:root[data-theme="light"] .eterx-work-note-block .eterx-professional-thought,
+:root[data-theme="light"] .eterx-work-note-block .eterx-answer-paragraph,
+:root[data-theme="light"] .eterx-work-note-block .eterx-answer-list-item {
+  font-size: 14.5px !important;
+  line-height: 1.58 !important;
+  letter-spacing: -0.004em !important;
+}
+
+:root[data-theme="light"] .eterx-thought-toggle {
+  min-height: 30px !important;
+  padding: 2px 10px !important;
+}
+
+:root[data-theme="light"] .eterx-browser-activity-header {
+  min-height: 38px !important;
+  padding: 8px 12px !important;
+}
+
+:root[data-theme="light"] .eterx-thought-toggle .eterx-thinking-shimmer {
+  font-size: 15.5px !important;
+  font-weight: 400 !important;
+  letter-spacing: 0.005em !important;
+}
+
+:root[data-theme="light"] .eterx-thought-expanded {
+  padding: 2px 12px 12px 42px !important;
+  font-size: 12.5px !important;
+  line-height: 1.5 !important;
+}
+
+:root[data-theme="light"] .eterx-action-chip,
+:root[data-theme="light"] .eterx-terminal-trace-row,
+:root[data-theme="light"] .eterx-file-change-row {
+  min-height: 34px !important;
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+}
+
+:root[data-theme="light"] .eterx-action-group .eterx-action-chip,
+:root[data-theme="light"] .eterx-action-group .eterx-terminal-trace-row,
+:root[data-theme="light"] .eterx-action-group .eterx-file-change-row,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-action-chip,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-terminal-trace-row,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-file-change-row {
+  min-height: 29px !important;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+}
+
+/* Preserve one outer action surface. Terminal/file wrappers inside a joined
+   group are structural rows, not additional cards. */
+:root[data-theme="light"] .eterx-action-card,
+:root[data-theme="light"] .eterx-terminal-trace,
+:root[data-theme="light"] .eterx-file-change-trace,
+:root[data-theme="light"] .eterx-agent-comm-card {
+  border-color: rgba(31, 31, 31, 0.09) !important;
+  background: #FBFBFA !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-action-group,
+:root[data-theme="light"] .eterx-browser-activity-group {
+  border-color: rgba(31, 31, 31, 0.09) !important;
+  background: #FBFBFA !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-action-group .eterx-action-card,
+:root[data-theme="light"] .eterx-action-group .eterx-terminal-trace,
+:root[data-theme="light"] .eterx-action-group .eterx-file-change-trace,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-action-card,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-terminal-trace,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-file-change-trace {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-action-group .eterx-action-chip,
+:root[data-theme="light"] .eterx-action-group .eterx-terminal-trace-row,
+:root[data-theme="light"] .eterx-action-group .eterx-file-change-row,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-action-chip,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-terminal-trace-row,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-file-change-row {
+  background: transparent !important;
+}
+
+:root[data-theme="light"] .eterx-action-group .eterx-action-chip:hover,
+:root[data-theme="light"] .eterx-action-group .eterx-terminal-trace-row:hover,
+:root[data-theme="light"] .eterx-action-group .eterx-file-change-row:hover,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-action-chip:hover,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-terminal-trace-row:hover,
+:root[data-theme="light"] .eterx-browser-activity-group .eterx-file-change-row:hover {
+  background: #F3F3F2 !important;
+}
+
+:root[data-theme="light"] .eterx-chat-input-dock-active::before {
+  height: 90px !important;
+}
+
+/* The full desktop feed uses the final compact reference scale. */
+@media (min-width: 769px) {
+  :root[data-theme="light"] .eterx-chat-input-dock-active:not([data-compressed="true"]) .eterx-composer-main:not([data-live="true"]) {
+    padding-top: 8px !important;
+    padding-bottom: 6px !important;
+    border-radius: 24px !important;
+  }
+
+  :root[data-theme="light"] .eterx-chat-input-dock-active:not([data-compressed="true"]) .eterx-composer-input-row {
+    min-height: 34px !important;
+    padding: 0 16px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls {
+    min-height: 34px !important;
+    margin-top: 6px !important;
+    padding: 0 14px !important;
+    gap: 6px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-chat-controls-left,
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-chat-controls-right {
+    gap: 6px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-chat-controls .eterx-control-button,
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-agent-button,
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-model-button {
+    width: 34px !important;
+    height: 34px !important;
+    min-height: 34px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-agent-selector > .eterx-agent-button {
+    width: fit-content !important;
+    max-width: 180px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-model-selector > .eterx-model-button {
+    width: fit-content !important;
+    max-width: min(360px, 42vw) !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-chat-controls-left > *:first-child .eterx-control-button {
+    width: 30px !important;
+    height: 30px !important;
+    min-height: 30px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-context-usage-trigger {
+    height: 34px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-composer-dictation-button {
+    width: 28px !important;
+    height: 30px !important;
+    min-height: 30px !important;
+    padding: 0 !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-composer-send-button {
+    width: 30px !important;
+    height: 30px !important;
+    min-height: 30px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-composer-stop-button,
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-composer-stop-secondary,
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-composer-live-button {
+    width: 34px !important;
+    height: 34px !important;
+    min-height: 34px !important;
+  }
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-selector-label {
+  font-size: 14px !important;
+  line-height: 1.35 !important;
+}
+
+/* Compressed composers retain the shared 32px target grid in both themes. */
+:root[data-theme="light"] .eterx-composer-shell[data-compressed="true"] .eterx-chat-controls .eterx-control-button,
+:root[data-theme="light"] .eterx-composer-shell[data-compressed="true"] .eterx-agent-button,
+:root[data-theme="light"] .eterx-composer-shell[data-compressed="true"] .eterx-model-button,
+:root[data-theme="light"] .eterx-composer-shell[data-compressed="true"] .eterx-composer-send-button,
+:root[data-theme="light"] .eterx-composer-shell[data-compressed="true"] .eterx-composer-stop-button,
+:root[data-theme="light"] .eterx-composer-shell[data-compressed="true"] .eterx-composer-stop-secondary {
+  width: 32px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-compressed="true"] .eterx-chat-controls,
+:root[data-theme="light"] .eterx-composer-shell[data-compressed="true"] .eterx-chat-controls-left,
+:root[data-theme="light"] .eterx-composer-shell[data-compressed="true"] .eterx-chat-controls-right {
+  gap: 6px !important;
+}
+
+/* New Chat has a shared joined status rail, so restore that exact geometry
+   after the standard composer parity rules above. */
+:root[data-theme="light"] .eterx-composer-shell[data-new-chat="true"] .eterx-composer-main:not([data-live="true"]) {
+  border-radius: 24px 24px 20px 20px !important;
+  padding-top: 8px !important;
+  padding-bottom: 6px !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-new-chat="true"] .eterx-composer-input-row {
+  min-height: 34px !important;
+  padding: 0 16px !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-new-chat="true"] .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls {
+  min-height: 34px !important;
+  margin-top: 6px !important;
+  gap: 6px !important;
+  padding-left: 12px !important;
+  padding-right: 12px !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-new-chat="true"] .eterx-chat-controls .eterx-control-button {
+  width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-new-chat="true"] .eterx-agent-button,
+:root[data-theme="light"] .eterx-composer-shell[data-new-chat="true"] .eterx-model-button {
+  height: 34px !important;
+  min-height: 34px !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-new-chat="true"] .eterx-chat-controls-left > *:first-child .eterx-control-button {
+  width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+}
+
+/* Standard phone/tablet composers keep the dark theme's larger touch grid.
+   Compact and New Chat variants are restored by their dedicated rules. */
+@media (max-width: 768px) {
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]):not([data-new-chat="true"]) .eterx-composer-main:not([data-live="true"]) {
+    padding-top: 10px !important;
+    padding-bottom: 8px !important;
+    border-radius: 24px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]):not([data-new-chat="true"]) .eterx-composer-input-row {
+    min-height: 38px !important;
+    padding: 0 16px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]):not([data-new-chat="true"]) .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls {
+    min-height: 36px !important;
+    margin-top: 7px !important;
+    padding: 0 12px !important;
+    gap: 8px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]):not([data-new-chat="true"]) .eterx-chat-controls .eterx-control-button,
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]):not([data-new-chat="true"]) .eterx-agent-button,
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]):not([data-new-chat="true"]) .eterx-model-button {
+    height: 38px !important;
+    min-height: 38px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]):not([data-new-chat="true"]) .eterx-chat-controls .eterx-control-button {
+    width: 38px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]):not([data-new-chat="true"]) .eterx-composer-main:not([data-live="true"]) {
+    padding-top: 9px !important;
+    padding-bottom: 7px !important;
+    border-radius: 22px !important;
+  }
+
+  :root[data-theme="light"] .eterx-composer-shell:not([data-compressed="true"]):not([data-new-chat="true"]) .eterx-composer-input-row {
+    padding-left: 13px !important;
+    padding-right: 13px !important;
+  }
+}
+
+@media (max-width: 520px) {
+  :root[data-theme="light"] .eterx-chat-feed-user-bubble {
+    max-width: min(94%, 560px) !important;
   }
 }
