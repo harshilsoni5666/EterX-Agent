@@ -1363,6 +1363,86 @@ const SegmentedControl = <T extends string,>({
   </div>
 );
 
+const ThemePreviewSelector: React.FC<{
+  value: AppSettings['theme'];
+  onChange: (value: AppSettings['theme']) => void;
+}> = ({ value, onChange }) => {
+  const options: Array<{ value: AppSettings['theme']; label: string }> = [
+    { value: 'system', label: 'System' },
+    { value: 'light', label: 'Light' },
+    { value: 'dark', label: 'Dark' },
+  ];
+
+  const preview = (theme: AppSettings['theme']) => {
+    const isSystem = theme === 'system';
+    const isDark = theme === 'dark';
+
+    return (
+      <div
+        className="relative aspect-[1.42/1] w-full overflow-hidden rounded-[11px]"
+        style={{ background: isSystem ? 'linear-gradient(90deg, #a8a8a8 0 50%, #626262 50% 100%)' : isDark ? '#626262' : '#f3f3f3' }}
+      >
+        <div
+          className="absolute left-[27%] top-[22%] h-[5%] w-[46%] rounded-full"
+          style={{ background: isSystem ? 'linear-gradient(90deg, #dadada 0 50%, #aaa 50% 100%)' : isDark ? '#aaa' : '#d1d1d1' }}
+        />
+        <div
+          className="absolute left-[15%] top-[30%] h-[3%] w-[70%] rounded-full"
+          style={{ background: isSystem ? 'linear-gradient(90deg, #e0e0e0 0 50%, #9a9a9a 50% 100%)' : isDark ? '#9c9c9c' : '#dedede' }}
+        />
+        <div
+          className="absolute left-[9%] top-[37%] h-[72%] w-[82%] overflow-hidden rounded-t-[14px]"
+          style={{ background: isSystem ? 'linear-gradient(90deg, #f5f5f5 0 50%, #373737 50% 100%)' : '#fff' }}
+        >
+          {[0, 1, 2].map(index => (
+            <div
+              key={index}
+              className="relative h-[28%] border-b"
+              style={{ borderColor: isSystem ? '#686868' : '#e8e8e8' }}
+            >
+              <span
+                className="absolute left-[5%] top-[24%] h-[20%] w-[29%] rounded-full"
+                style={{ background: isSystem ? 'linear-gradient(90deg, #d8d8d8 0 50%, #727272 50% 100%)' : '#d9d9d9' }}
+              />
+              <span
+                className="absolute left-[5%] top-[58%] h-[9%] w-[46%] rounded-full"
+                style={{ background: isSystem ? 'linear-gradient(90deg, #ececec 0 50%, #505050 50% 100%)' : '#eeeeee' }}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-3">
+      {options.map(option => {
+        const selected = value === option.value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={selected}
+            aria-label={`Use ${option.label.toLowerCase()} theme`}
+            onClick={() => onChange(option.value)}
+            className="group min-w-0 rounded-[13px] text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2F8BEF] focus-visible:ring-offset-2 focus-visible:ring-offset-[#202020]"
+          >
+            <div
+              className={`rounded-[13px] border-2 p-[2px] transition-all duration-200 ${selected ? 'border-[#2F8BEF]' : 'border-transparent group-hover:border-white/25'}`}
+            >
+              {preview(option.value)}
+            </div>
+            <span className={`mt-2 block text-[13px] font-medium transition-colors ${selected ? 'text-[#F4F4F4]' : 'text-[#A7A7A7] group-hover:text-[#E7E7E7]'}`}>
+              {option.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+};
+
 const SoftButton: React.FC<{ children: React.ReactNode; onClick?: () => void; disabled?: boolean }> = ({ children, onClick, disabled = false }) => (
   <button
     type="button"
@@ -4708,51 +4788,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         <div>
                           <SectionHeader title="Appearance" />
                           <SettingsStack>
-                            <SettingsStackRow title="Theme" description="Use light, dark, or match your system">
-                              <SegmentedControl
+                            <SettingsStackRow title="Theme" description="Choose a theme or follow your system appearance" tall>
+                              <ThemePreviewSelector
                                 value={settings.theme}
                                 onChange={(value) => updateSetting('theme', value)}
-                                options={[
-                                  { value: 'light', label: 'Light' },
-                                  { value: 'dark', label: 'Dark' },
-                                  { value: 'system', label: 'System' },
-                                ]}
                               />
                             </SettingsStackRow>
-                            <div className="border-b border-white/[0.07] px-2 pb-2">
-                              <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-[#141414] font-mono text-[12px] leading-7">
-                                <div className="grid grid-cols-2">
-                                  <div className="border-r border-white/[0.08]">
-                                    {[
-                                      ['1', 'const eterxTheme = {', 'text-[#C084FC]'],
-                                      ['2', '  surface: "sidebar",', 'bg-red-500/18 text-[#FF8A7A]'],
-                                      ['3', '  accent: "#2F8BEF",', 'bg-red-500/18 text-[#FFB86C]'],
-                                      ['4', '  contrast: 42,', 'bg-red-500/18 text-[#FFB86C]'],
-                                      ['5', '};', 'text-[#A7A7A7]'],
-                                    ].map(([line, code, tone]) => (
-                                      <div key={line} className={`grid grid-cols-[44px_1fr] px-2 ${tone}`}>
-                                        <span className="text-right text-[#777]">{line}</span>
-                                        <span className="pl-4">{code}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                  <div>
-                                    {[
-                                      ['1', 'const eterxTheme = {', 'text-[#C084FC]'],
-                                      ['2', '  surface: "panel",', 'bg-emerald-500/18 text-emerald-300'],
-                                      ['3', '  accent: "#2F8BEF",', 'bg-emerald-500/18 text-[#8BE38B]'],
-                                      ['4', '  contrast: 68,', 'bg-emerald-500/18 text-[#75C7FF]'],
-                                      ['5', '};', 'text-[#A7A7A7]'],
-                                    ].map(([line, code, tone]) => (
-                                      <div key={line} className={`grid grid-cols-[44px_1fr] px-2 ${tone}`}>
-                                        <span className="text-right text-[#777]">{line}</span>
-                                        <span className="pl-4">{code}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
 
                             <SettingsStackRow title="UI density" description="Adjust spacing and base text rhythm">
                               <SelectControl
