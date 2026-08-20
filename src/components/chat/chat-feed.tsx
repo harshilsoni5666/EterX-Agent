@@ -641,16 +641,18 @@ const dedupeFeedLogs = (logs: any[]) => {
   const liveUserTextIndexes = new Map<string, number>();
   const steeringIndexes = new Map<string, number>();
   let semanticIndexes = new Map<string, number>();
+  let boundaryScope = 0;
 
   logs.forEach((log: any) => {
     if (!log) return;
+    if (log.type === 'user_action') boundaryScope += 1;
     const runId = String(log.runId || log.turnId || '').trim();
     const turnId = String(log.turnId || '').trim();
-    const stableId = log._traceIdx ?? log.traceId ?? log.id ?? null;
+    const stableId = log.toolCallId ?? log.streamId ?? log.traceId ?? log.id ?? log._traceIdx ?? null;
     const stableType = log.type === 'tool_call' ? 'command' : String(log.type || '');
     const stableKey = stableId === null || stableId === undefined
       ? ''
-      : `${ runId }::${ String(stableId) }::${ stableType }`;
+      : `turn:${ boundaryScope }::${ runId }::${ String(stableId) }::${ stableType }`;
 
     if (stableKey && stableIndexes.has(stableKey)) {
       const index = stableIndexes.get(stableKey)!;
@@ -997,28 +999,6 @@ const getTraceActivitySignature = (logs: any[]) => {
     .join('|');
 };
 
-const getGroupMountIdentity = (group: any[], groupIdx: number) => {
-  const anchor = group[0];
-  if (!anchor) return `pending-${ groupIdx }`;
-  const scope = String(
-    anchor.turnId ||
-    anchor.runId ||
-    anchor.ownerChatId ||
-    anchor.chatId ||
-    `group-${ groupIdx }`
-  );
-  const event = String(
-    anchor.id ??
-    anchor.traceId ??
-    anchor._traceIdx ??
-    anchor.responseKey ??
-    anchor.timestamp ??
-    anchor.startTime ??
-    groupIdx
-  );
-  return `${ scope }:${ anchor.type || 'log' }:${ event }`;
-};
-
 const countVisibleWorkflowActions = (logs: any[]) => {
   const identities = new Set<string>();
   const fallbackOccurrences = new Map<string, number>();
@@ -1249,8 +1229,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | 
 };
 
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, hasInteractionBoundary = false, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, groupIdx = 0, onEditUserMessage, subAgentAssetIndexes
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, hasInteractionBoundary?: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, groupIdx?: number, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
+  logs, liveLogs = [], isThinking, isLast, hasAnswer, hasInteractionBoundary = false, stepCount, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, hasInteractionBoundary?: boolean, stepCount: number, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
   // Start collapsed for completed turns, open for active/no-answer turns
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -1266,12 +1246,6 @@ const ThoughtSequence = ({
     () => isTurnWorkActive(isThinking, hasAnswer, turnLogs),
     [hasAnswer, isThinking, turnLogs],
   );
-
-  // Reset latch when this component's group index changes (new conversation turn)
-  React.useEffect(() => {
-    hasAnswerLatchRef.current = false;
-    userControlledOpenRef.current = false;
-  }, [groupIdx]);
 
   const setOpenPreservingViewport = React.useCallback((nextOpen: boolean) => {
     const collapsible = containerRef.current;
@@ -1479,12 +1453,6 @@ const ChatFeedMessageGroup = React.memo(({
   // Retain only a fuller snapshot of an answer that is still present. An
   // explicit cancellation or turn replacement must be able to clear it.
   const lastKnownAnswerRef = React.useRef<any>(null);
-  // Reset latch when a genuinely new group mounts (groupIdx changes means a new turn)
-  const lastGroupIdxRef = React.useRef(groupIdx);
-  if (lastGroupIdxRef.current !== groupIdx) {
-    lastGroupIdxRef.current = groupIdx;
-    lastKnownAnswerRef.current = null;
-  }
   const first = group[0];
   if (first?.type === 'user_action') {
     const userText = String(first.text || '');
@@ -1631,12 +1599,10 @@ const ChatFeedMessageGroup = React.memo(({
       later.type === 'work_note' ||
       (WORKFLOW_COUNT_TYPES.has(later.type) && !HIDDEN_HELPER_TYPES.has(later.type) && shouldRenderProgressTrace(later))
     );
-    const shouldStayInWorkSequence =
-      isProvisionalAnswer ||
-      (
-        (log.isStreaming === true || log.isLiveTyping === true) &&
-        hasLaterWorkflowActivity
-      );
+    // An answer followed by real workflow activity is an intermediate model
+    // checkpoint even when its individual stream already settled. Only the
+    // last answer after all actions can own the final-answer surface.
+    const shouldStayInWorkSequence = isProvisionalAnswer || hasLaterWorkflowActivity;
     if (
       log.type !== 'answer' ||
       !shouldStayInWorkSequence
@@ -1882,6 +1848,8 @@ const ChatFeedMessageGroup = React.memo(({
     return null;
   }
 
+  let thoughtSegmentOrdinal = 0;
+
   return (
     <div
       data-chat-group-index={groupIdx}
@@ -1916,6 +1884,7 @@ const ChatFeedMessageGroup = React.memo(({
           );
         }
 
+        const thoughtPhaseKey = `thoughts-phase-${ thoughtSegmentOrdinal++ }`;
         const isLastThoughts = segIdx === segments.length - 1 || segments.slice(segIdx + 1).every(s => s.type !== 'thoughts');
         const hasInteractionBoundary = segments.slice(segIdx + 1).some(s => s.type === 'steering' || s.type === 'ask_user');
         const stepCount = countVisibleWorkflowActions([
@@ -1935,7 +1904,7 @@ const ChatFeedMessageGroup = React.memo(({
 
         return (
           <ThoughtSequence
-            key={`thoughts-${ segmentIdentity(seg, segIdx) }`}
+            key={thoughtPhaseKey}
             logs={seg.logs || []}
             liveLogs={isLastThoughts ? liveActionLogs : []}
             isThinking={groupIsThinking && isLastThoughts}
@@ -1948,7 +1917,6 @@ const ChatFeedMessageGroup = React.memo(({
             subAgentAssetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
             isAgentBuilder={isAgentBuilder}
-            groupIdx={groupIdx}
             onEditUserMessage={onEditUserMessage}
           />
         );
@@ -2131,25 +2099,37 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   // renderer's running flag, transport state, and the next trace batch. A
   // query should not lose its status pill just because those signals commit
   // on adjacent render frames.
+  const orderedTraceLogs = useMemo(() => {
+    // Ownership must be restored before semantic deduplication. Otherwise an
+    // old unscoped/live delivery appended after a newer query can be compared
+    // against that newer turn and either merge with it or render beneath it.
+    const ownershipOrdered = orderFeedTimelineLogs(traceLogs);
+    const boundaryReconciled = orderFeedTimelineLogs(dedupeFeedLogs(ownershipOrdered));
+    return dedupeFeedLogs(boundaryReconciled);
+  }, [traceLogs]);
   const activeFeedTurnLogs = useMemo(() => {
     let latestUserIndex = -1;
-    for (let index = traceLogs.length - 1; index >= 0; index -= 1) {
-      if (traceLogs[index]?.type === 'user_action') {
+    for (let index = orderedTraceLogs.length - 1; index >= 0; index -= 1) {
+      if (orderedTraceLogs[index]?.type === 'user_action') {
         latestUserIndex = index;
         break;
       }
     }
-    return traceLogs.slice(latestUserIndex >= 0 ? latestUserIndex : 0);
-  }, [traceLogs]);
+    return orderedTraceLogs.slice(latestUserIndex >= 0 ? latestUserIndex : 0);
+  }, [orderedTraceLogs]);
   const activeFeedRunLogs = useMemo(() => {
-    const latestRunId = [...activeFeedTurnLogs]
-      .reverse()
-      .map(log => String(log?.runId || log?.turnId || '').trim())
-      .find(Boolean);
-    if (!latestRunId) return activeFeedTurnLogs;
+    const boundary = activeFeedTurnLogs.find(log => log?.type === 'user_action');
+    const ownerIds = new Set(
+      [boundary?.turnId, boundary?.runId]
+        .map(value => String(value || '').trim())
+        .filter(Boolean)
+    );
+    if (ownerIds.size === 0) return activeFeedTurnLogs;
     return activeFeedTurnLogs.filter(log => {
-      const runId = String(log?.runId || log?.turnId || '').trim();
-      return !runId || runId === latestRunId;
+      const logIds = [log?.turnId, log?.runId]
+        .map(value => String(value || '').trim())
+        .filter(Boolean);
+      return logIds.length === 0 || logIds.some(identity => ownerIds.has(identity));
     });
   }, [activeFeedTurnLogs]);
   const activeTurnHasTerminalTrace = useMemo(
@@ -2181,13 +2161,10 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const groups = useMemo(() => {
     const nextGroups: any[][] = [];
     let currentGroup: any[] = [];
-    let currentTurnIdentity = '';
-    const assistantGroupsByTurn = new Map<string, any[]>();
     let hasUserBoundary = false;
-    const normalizedLogs = orderFeedTimelineLogs(dedupeFeedLogs(traceLogs));
-    const containsUserBoundary = normalizedLogs.some(log => log?.type === 'user_action');
+    const containsUserBoundary = orderedTraceLogs.some(log => log?.type === 'user_action');
 
-    normalizedLogs.forEach(log => {
+    orderedTraceLogs.forEach(log => {
       if (log.type === 'user_action') {
         // Startup/reconnect helper events can precede the authoritative user
         // boundary. If this conversation has a real user turn, those orphaned
@@ -2198,29 +2175,10 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
         nextGroups.push([log]);
         currentGroup = [];
         hasUserBoundary = true;
-        currentTurnIdentity = String(log.turnId || log.runId || '').trim();
-        if (currentTurnIdentity) assistantGroupsByTurn.set(currentTurnIdentity, currentGroup);
       } else {
-        const logTurnIdentity = String(log.turnId || log.runId || '').trim();
-        const owningGroup = logTurnIdentity && logTurnIdentity !== currentTurnIdentity
-          ? assistantGroupsByTurn.get(logTurnIdentity)
-          : null;
-        if (owningGroup) {
-          // Late polling can append an older run after a newer user boundary.
-          // Put it back beside its owning query instead of leaking it into the
-          // current conversation or hiding it.
-          if (!nextGroups.includes(owningGroup)) {
-            const ownerUserIndex = nextGroups.findLastIndex(candidate =>
-              candidate[0]?.type === 'user_action' &&
-              String(candidate[0]?.turnId || candidate[0]?.runId || '').trim() === logTurnIdentity
-            );
-            nextGroups.splice(ownerUserIndex >= 0 ? ownerUserIndex + 1 : nextGroups.length, 0, owningGroup);
-          }
-          owningGroup.push(log);
-          return;
-        }
-        // Child/delegated run IDs may not have their own visible user boundary;
-        // those actions correctly remain in the active owner's sequence.
+        // orderFeedTimelineLogs already placed every owned or timestamped
+        // event immediately after its user boundary. Group sequentially so a
+        // reused run ID cannot redirect an earlier query into a later group.
         currentGroup.push(log);
       }
     });
@@ -2234,7 +2192,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     }
 
     return nextGroups;
-  }, [feedWorkActive, traceLogs]);
+  }, [feedWorkActive, orderedTraceLogs]);
 
   const [activeTurnIdx, setActiveTurnIdx] = useState<number>(0);
   // A conversation's mount identity comes from its owner, never from a live
@@ -2524,6 +2482,27 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   // late-arriving turns, and silently windowing the head of the feed makes
   // users believe history was lost behind a "previous messages" affordance.
   const visibleGroups = groups;
+  const visibleGroupMountKeys = (() => {
+    const ownerOccurrences = new Map<string, number>();
+    let currentOwner = 'preamble';
+    return visibleGroups.map((group, groupIndex) => {
+      const boundary = group[0]?.type === 'user_action' ? group[0] : null;
+      if (boundary) {
+        const ownerBase = String(
+          boundary.turnId || boundary.runId || boundary.steeringId ||
+          boundary.id || boundary._traceIdx || boundary.timestamp || `turn-${ groupIndex }`
+        ).trim();
+        const occurrence = ownerOccurrences.get(ownerBase) || 0;
+        ownerOccurrences.set(ownerBase, occurrence + 1);
+        currentOwner = `${ ownerBase }:${ occurrence }`;
+        return `user:${ currentOwner }`;
+      }
+      // The pending empty group and the populated assistant group deliberately
+      // share this key, so the first live trace fills the existing turn instead
+      // of remounting it over the previous query.
+      return `assistant:${ currentOwner }`;
+    });
+  })();
   const isEmptyNewChatFeed = traceLogs.length === 0 && !isThinking;
   const navigateToTurn = (turn: { idx: number }, turnIndex: number) => {
     const scrollToTurn = () => {
@@ -2731,7 +2710,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
 
                   return (
                     <div
-                      key={`group-${ conversationIdentity }-${ getGroupMountIdentity(group, groupIdx) }`}
+                      key={`group-${ conversationIdentity }-${ visibleGroupMountKeys[visibleGroupIdx] }`}
                     >
                       {showDateDivider && dateLabel && (
                         <ChatDateDivider label={dateLabel} />

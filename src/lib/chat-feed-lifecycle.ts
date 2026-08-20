@@ -140,9 +140,13 @@ type TimelineEntry = {
   boundaryIndex: number;
 };
 
-const timelineIdentity = (log: any): string => String(
-  log?.turnId || log?.runId || ''
-).trim();
+const timelineIdentityAliases = (log: any): string[] => Array.from(new Set(
+  [log?.turnId, log?.runId]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+));
+
+const timelineIdentity = (log: any): string => timelineIdentityAliases(log)[0] || '';
 
 const timelineTraceIndex = (log: any): number | null => {
   const value = Number(log?._traceIdx);
@@ -150,8 +154,11 @@ const timelineTraceIndex = (log: any): number | null => {
 };
 
 const timelineTimestamp = (log: any): number | null => {
-  const value = Number(log?.startTime ?? log?.timestamp ?? log?.endTime);
-  return Number.isFinite(value) && value > 0 ? value : null;
+  let value = Number(log?.startTime ?? log?.timestamp ?? log?.endTime);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  while (value > 10_000_000_000_000) value /= 1000;
+  if (value < 10_000_000_000) value *= 1000;
+  return value;
 };
 
 const compareTimelineEntries = (left: TimelineEntry, right: TimelineEntry): number => {
@@ -278,51 +285,78 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
   const entriesByBoundary = boundaryEntries.map(entry => [entry] as TimelineEntry[]);
   const preamble: TimelineEntry[] = [];
   const boundariesByIdentity = new Map<string, TimelineEntry[]>();
-  const boundariesByTurn = new Map<string, TimelineEntry[]>();
   const boundaryIndexBySourceIndex = new Map<number, number>();
 
   boundaryEntries.forEach((boundary) => {
     boundaryIndexBySourceIndex.set(boundary.sourceIndex, boundary.boundaryIndex);
-    const identity = timelineIdentity(boundary.log);
-    if (!identity) return;
-    const identityEntries = boundariesByIdentity.get(identity) || [];
-    identityEntries.push(boundary);
-    boundariesByIdentity.set(identity, identityEntries);
-
-    const turnId = String(boundary.log?.turnId || '').trim();
-    if (!turnId) return;
-    const turnKey = `${ identity }::${ turnId }`;
-    const turnEntries = boundariesByTurn.get(turnKey) || [];
-    turnEntries.push(boundary);
-    boundariesByTurn.set(turnKey, turnEntries);
+    timelineIdentityAliases(boundary.log).forEach((identity) => {
+      const identityEntries = boundariesByIdentity.get(identity) || [];
+      identityEntries.push(boundary);
+      boundariesByIdentity.set(identity, identityEntries);
+    });
   });
 
   const selectNearestPrecedingBoundary = (matches: TimelineEntry[], log: any): number => {
     if (matches.length === 0) return -1;
     if (matches.length === 1) return matches[0].boundaryIndex;
+
+    // A long-lived Proxy run can host several user queries and may restart
+    // trace indices for each internal response. Event time is therefore the
+    // strongest separator when several boundaries share the same run alias.
+    const logTime = timelineTimestamp(log);
+    if (logTime !== null) {
+      let timedSelection: TimelineEntry | null = null;
+      let selectedTime = -Infinity;
+      for (const boundary of matches) {
+        const boundaryTime = timelineTimestamp(boundary.log);
+        if (boundaryTime === null || boundaryTime > logTime) continue;
+        if (boundaryTime >= selectedTime) {
+          timedSelection = boundary;
+          selectedTime = boundaryTime;
+        }
+      }
+      if (timedSelection) return timedSelection.boundaryIndex;
+    }
+
     let selected: TimelineEntry | null = null;
     for (const boundary of matches) {
       if (compareTimelinePositions(boundary.log, log) <= 0) selected = boundary;
     }
-    return (selected || matches[matches.length - 1]).boundaryIndex;
+    return (selected || matches[0]).boundaryIndex;
+  };
+
+  const selectNearestTimestampBoundary = (log: any): number => {
+    const logTime = timelineTimestamp(log);
+    if (logTime === null) return -1;
+    let selected: TimelineEntry | null = null;
+    let selectedTime = -Infinity;
+    for (const boundary of boundaryEntries) {
+      const boundaryTime = timelineTimestamp(boundary.log);
+      if (boundaryTime === null || boundaryTime > logTime) continue;
+      if (boundaryTime >= selectedTime) {
+        selected = boundary;
+        selectedTime = boundaryTime;
+      }
+    }
+    return selected?.boundaryIndex ?? -1;
   };
 
   const findOwnerBoundary = (log: any): number => {
-    const identity = timelineIdentity(log);
-    if (!identity) return -1;
-
-    const turnId = String(log?.turnId || '').trim();
-    const exactTurnMatches = turnId
-      ? boundariesByTurn.get(`${ identity }::${ turnId }`) || []
-      : [];
-    if (exactTurnMatches.length > 0) {
-      return selectNearestPrecedingBoundary(exactTurnMatches, log);
+    const matches = Array.from(new Set(
+      timelineIdentityAliases(log)
+        .flatMap(identity => boundariesByIdentity.get(identity) || [])
+    ));
+    if (matches.length > 0) {
+      // Proxy-backed runs can contain multiple user boundaries under one run
+      // ID. Use trace/timestamp position to select the nearest preceding one.
+      return selectNearestPrecedingBoundary(matches, log);
     }
 
-    // Proxy-backed runs can contain multiple user boundaries under one run
-    // ID. Use the trace/timestamp position to select the most recent boundary
-    // that precedes this event; otherwise transport order wins.
-    return selectNearestPrecedingBoundary(boundariesByIdentity.get(identity) || [], log);
+    // Some legacy/live helper rows arrive without run identity after their
+    // owning turn has already settled. Delivery order would attach those rows
+    // to the newest query, so use their event time before falling back to
+    // neighboring transport order.
+    return selectNearestTimestampBoundary(log);
   };
 
   let nearestBoundaryIndex = -1;
