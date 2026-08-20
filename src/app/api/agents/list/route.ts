@@ -10,7 +10,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { isSafeAgentId, jsonError, readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
 import { getEterxWorkspaceDir } from '../../../../lib/agent/storage-paths';
-import { deleteAgentFlowProfile, listAgentFlowProfiles, readAgentFlowProfile, writeAgentFlowProfile } from '../../../../lib/agent/builder-agent';
+import { applyAgentBuilderDefaults, deleteAgentFlowProfile, evaluateAgentBuilderProfile, listAgentFlowProfiles, readAgentBuilderProfile, readAgentFlowProfile, writeAgentBuilderProfile, writeAgentFlowProfile } from '../../../../lib/agent/builder-agent';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,8 +44,13 @@ export async function GET(req: NextRequest) {
         }
         return Response.json({ error: 'Agent profile not found.' }, { status: 404 });
       }
-      const profile = await fs.readJson(profilePath);
-      return Response.json({ success: true, kind: 'agent', profile });
+      const profile = await readAgentBuilderProfile(target.safeId);
+      return Response.json({
+        success: true,
+        kind: 'agent',
+        profile,
+        quality: evaluateAgentBuilderProfile(profile),
+      });
     }
 
     const entries = await fs.pathExists(AGENTS_ROOT)
@@ -59,7 +64,8 @@ export async function GET(req: NextRequest) {
       if (!await fs.pathExists(profilePath)) continue;
 
       try {
-        const profile = await fs.readJson(profilePath);
+        const profile = await readAgentBuilderProfile(entry.name);
+        const quality = evaluateAgentBuilderProfile(profile);
         agents.push({
           agentId: profile.agentId || entry.name,
           kind: 'agent',
@@ -70,6 +76,11 @@ export async function GET(req: NextRequest) {
           createdAt: profile.createdAt || '',
           updatedAt: profile.updatedAt || '',
           hasPrompt: !!profile.professionalPrompt && profile.professionalPrompt.length > 100,
+          qualityScore: quality.score,
+          readinessChecks: quality.checks.length,
+          readinessPassed: quality.checks.filter(check => check.passed).length,
+          presentation: profile.presentation,
+          skills: profile.skills?.slice(0, 8) || [],
         });
       } catch {
         // Skip corrupted profiles
@@ -166,16 +177,44 @@ export async function PUT(req: NextRequest) {
     }
 
     const profile = await fs.readJson(profilePath);
-    if (requestedStatus === 'draft' || requestedStatus === 'ready') profile.status = requestedStatus;
+    if (requestedStatus === 'draft' || requestedStatus === 'ready') profile.status = 'draft';
     if (typeof body?.name === 'string' && body.name.trim()) profile.name = body.name.trim();
     if (typeof body?.mission === 'string') profile.mission = body.mission;
     if (typeof body?.description === 'string' && !String(body?.mission || '').trim()) profile.mission = body.description;
     if (typeof body?.professionalPrompt === 'string' && body.professionalPrompt.trim()) profile.professionalPrompt = body.professionalPrompt;
+    if (body?.presentation && typeof body.presentation === 'object') {
+      profile.presentation = {
+        ...(profile.presentation || {}),
+        ...body.presentation,
+      };
+    }
     profile.updatedAt = new Date().toISOString();
 
-    await fs.writeJson(profilePath, profile, { spaces: 2 });
+    const normalizedProfile = applyAgentBuilderDefaults(profile);
+    if (requestedStatus === 'ready') {
+      const quality = evaluateAgentBuilderProfile(normalizedProfile);
+      if (!quality.ready) {
+        await writeAgentBuilderProfile(normalizedProfile);
+        return Response.json({
+          success: false,
+          error: `Agent is still a draft. Complete: ${quality.missing.join(', ')}.`,
+          agentId: target.safeId,
+          status: 'draft',
+          profile: normalizedProfile,
+          quality,
+        }, { status: 409 });
+      }
+      normalizedProfile.status = 'ready';
+    }
+    await writeAgentBuilderProfile(normalizedProfile);
 
-    return Response.json({ success: true, agentId: target.safeId, status: profile.status, profile });
+    return Response.json({
+      success: true,
+      agentId: target.safeId,
+      status: normalizedProfile.status,
+      profile: normalizedProfile,
+      quality: evaluateAgentBuilderProfile(normalizedProfile),
+    });
   } catch (err: any) {
     return Response.json({ success: false, error: err.message || 'Failed to update agent profile.' }, { status: 500 });
   }
@@ -227,6 +266,7 @@ export async function POST(req: NextRequest) {
       toolUsePolicy = '',
       completionCriteria = '',
       notes = [],
+      presentation = null,
       description = '' 
     } = body;
 
@@ -258,12 +298,22 @@ export async function POST(req: NextRequest) {
       completionCriteria: completionCriteria || 'All requirements of the user request have been successfully verified.',
       directMainTools: Array.isArray(directMainTools) ? directMainTools : [],
       customTools: Array.isArray(customTools) ? customTools : [],
-      notes: Array.isArray(notes) ? notes : ['Profile created via Agent Wizard.']
+      notes: Array.isArray(notes) ? notes : ['Profile created via Agent Wizard.'],
+      presentation: presentation && typeof presentation === 'object' ? presentation : {
+        description: description || mission || '',
+        starterPrompts: [],
+      },
     };
 
-    await fs.writeJson(profilePath, profile, { spaces: 2 });
+    const normalizedProfile = applyAgentBuilderDefaults(profile as any);
+    await writeAgentBuilderProfile(normalizedProfile);
 
-    return Response.json({ success: true, agentId: target.safeId, profile });
+    return Response.json({
+      success: true,
+      agentId: target.safeId,
+      profile: normalizedProfile,
+      quality: evaluateAgentBuilderProfile(normalizedProfile),
+    });
   } catch (err: any) {
     return Response.json({ success: false, error: err.message || 'Failed to create agent profile.' }, { status: 500 });
   }

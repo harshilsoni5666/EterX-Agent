@@ -226,8 +226,8 @@ export function resolveDirectTool(ref: AgentBuilderDirectTool): ResolvedTool | n
 }
 
 /**
- * Resolve a custom tool (prompt_macro / tool_chain) into a declaration.
- * agent_scoped_code tools are NOT executed — they generate prompt behavior only.
+ * Resolve a custom tool into a provider declaration and an agent-scoped
+ * executor. Code tools run only inside the restricted V8 context below.
  */
 export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool | null {
   if (custom.safetyStatus === 'blocked') return null;

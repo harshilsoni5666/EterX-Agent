@@ -16,6 +16,11 @@ interface Agent {
   stepCount?: number;
   preferredModel?: string;
   preferredThinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+  qualityScore?: number;
+  readinessPassed?: number;
+  readinessChecks?: number;
+  category?: string;
+  starterPrompts?: string[];
   builderMessages?: {role: 'user' | 'assistant', content: string}[];
 }
 
@@ -77,7 +82,7 @@ export const AgentsView = React.memo(({
             byId.set(id, {
               id,
               name: serverAgent.name || existing?.name || id,
-              description: serverAgent.mission || existing?.description || 'Ready custom agent.',
+              description: serverAgent.presentation?.description || serverAgent.mission || existing?.description || 'Custom agent.',
               accessType: existing?.accessType || 'Agent Decides',
               isSetup: serverAgent.status === 'ready',
               toolCount: serverAgent.toolCount,
@@ -85,6 +90,11 @@ export const AgentsView = React.memo(({
               stepCount: serverAgent.stepCount,
               preferredModel: existing?.preferredModel,
               preferredThinkingLevel: existing?.preferredThinkingLevel,
+              qualityScore: Number.isFinite(serverAgent.qualityScore) ? serverAgent.qualityScore : existing?.qualityScore,
+              readinessPassed: Number.isFinite(serverAgent.readinessPassed) ? serverAgent.readinessPassed : existing?.readinessPassed,
+              readinessChecks: Number.isFinite(serverAgent.readinessChecks) ? serverAgent.readinessChecks : existing?.readinessChecks,
+              category: serverAgent.presentation?.category || existing?.category,
+              starterPrompts: Array.isArray(serverAgent.presentation?.starterPrompts) ? serverAgent.presentation.starterPrompts : existing?.starterPrompts,
               builderMessages: existing?.builderMessages || [],
             });
           }
@@ -279,6 +289,11 @@ export const AgentsView = React.memo(({
             directMainTools: profile.directMainTools || [],
             customTools: profile.customTools || [],
             notes: profile.notes || [],
+            presentation: profile.presentation || {
+              description,
+              category: 'Imported',
+              starterPrompts: [],
+            },
             description
           })
         });
@@ -312,6 +327,8 @@ export const AgentsView = React.memo(({
         kind: isFlowPackage ? 'flow' : 'agent',
         toolCount,
         stepCount: isFlowPackage ? (profile.steps?.length || 0) : undefined,
+        category: profile.presentation?.category,
+        starterPrompts: profile.presentation?.starterPrompts || [],
         builderMessages: agentData.builderMessages || []
       };
 
@@ -428,6 +445,11 @@ export const AgentsView = React.memo(({
         description: purpose,
         professionalPrompt: `You are ${name}. Your mission is: ${purpose}\n\nThis is a draft. Agent Builder must complete the operating prompt, behavior, safety, tools, evidence rules, failure recovery, and completion criteria before finalization.`,
         directMainTools: attachedTools,
+        presentation: {
+          description: purpose,
+          category: newAgentTemplate === 'general' ? 'Custom' : newAgentTemplate.charAt(0).toUpperCase() + newAgentTemplate.slice(1),
+          starterPrompts: [],
+        },
       }),
       });
     } catch {
@@ -629,12 +651,19 @@ export const AgentsView = React.memo(({
                           {agent.description}
                         </p>
                         <div className="hidden md:flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] bg-white/[0.03] border border-white/[0.05]">
-                          <span className="text-[10px] text-[#A3A19E] font-medium tracking-normal">{agent.accessType}</span>
+                          <span className="text-[10px] text-[#A3A19E] font-medium tracking-normal">{agent.category || agent.accessType}</span>
                         </div>
                         {(agent.kind === 'flow' || typeof agent.toolCount === 'number') && (
                           <div className="hidden lg:flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] bg-white/[0.025] border border-white/[0.06]">
                             <span className="text-[10px] text-white/45 font-medium tracking-normal">
                               {agent.kind === 'flow' ? `${agent.stepCount || 0} steps` : `${agent.toolCount} tools`}
+                            </span>
+                          </div>
+                        )}
+                        {typeof agent.qualityScore === 'number' && (
+                          <div className="hidden lg:flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] bg-white/[0.025] border border-white/[0.06]">
+                            <span className="text-[10px] text-white/45 font-medium tracking-normal">
+                              {agent.qualityScore}% quality
                             </span>
                           </div>
                         )}
@@ -867,7 +896,35 @@ export const AgentsView = React.memo(({
                       </span>
                     </div>
                   )}
+                  {typeof settingsAgent.qualityScore === 'number' && (
+                    <div className="flex items-center justify-between gap-3 text-[13px]">
+                      <span className="text-[#8C8A88]">Builder quality</span>
+                      <span className="text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">
+                        {settingsAgent.qualityScore}% · {settingsAgent.readinessPassed || 0}/{settingsAgent.readinessChecks || 0} checks
+                      </span>
+                    </div>
+                  )}
+                  {settingsAgent.category && (
+                    <div className="flex items-center justify-between text-[13px]">
+                      <span className="text-[#8C8A88]">Category</span>
+                      <span className="text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">{settingsAgent.category}</span>
+                    </div>
+                  )}
                 </div>
+
+                {settingsAgent.starterPrompts && settingsAgent.starterPrompts.length > 0 && (
+                  <div className="flex flex-col gap-2 rounded-xl bg-white/[0.02] border border-white/5 p-4">
+                    <h4 className="text-[14px] font-medium text-[#E8E6E3]">Try this agent</h4>
+                    {settingsAgent.starterPrompts.slice(0, 4).map((prompt) => (
+                      <div
+                        key={prompt}
+                        className="rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2 text-left text-[12px] leading-5 text-white/65"
+                      >
+                        {prompt}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div className="w-full h-[1px] bg-white/5 my-2"></div>
 
