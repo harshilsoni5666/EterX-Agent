@@ -3170,7 +3170,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const loadRevision = settingsRevisionRef.current;
     const loadSettings = async () => {
       try {
-      await appStorageReady;
+      const storageLoaded = await appStorageReady;
+      // A transient storage failure must never turn an empty in-memory view
+      // into a saved empty model/settings snapshot. The storage-ready event
+      // below retries synchronization after the durable store recovers.
+      if (!storageLoaded || cancelled || settingsRevisionRef.current !== loadRevision) return;
       const saved = appStorage.getItem('eterx_settings');
       let nextSettings = normalizeAppSettings(saved ? JSON.parse(saved) : {});
       if (saved) {
@@ -6106,6 +6110,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     appStorage.removeItem(MODEL_API_KEYS_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_API_KEY_PRESENCE_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY);
+                                    appStorage.removeItem(MODEL_THINKING_LEVELS_STORAGE_KEY);
                                     appStorage.removeItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY);
                                     appStorage.removeItem(PROVIDER_BASE_URLS_STORAGE_KEY);
                                     appStorage.removeItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY);

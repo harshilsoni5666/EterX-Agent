@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   setNativeTheme: (theme) => ipcRenderer.send('native-theme-set', theme),
   getNativeTheme: () => ipcRenderer.invoke('native-theme-get'),
+  getRendererPreferences: () => ipcRenderer.invoke('renderer-preferences-get'),
+  updateRendererPreferences: (update) => ipcRenderer.invoke('renderer-preferences-update', update),
   getSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-get'),
   saveSecureRuntimeSettings: (settings) => ipcRenderer.invoke('secure-runtime-settings-save', settings),
   clearSecureRuntimeSettings: () => ipcRenderer.invoke('secure-runtime-settings-clear'),

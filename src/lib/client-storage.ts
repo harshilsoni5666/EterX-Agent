@@ -26,6 +26,59 @@ const durableFlushers = new Set<() => Promise<boolean | void> | boolean | void>(
 const isBrowser = typeof window !== 'undefined';
 const isSensitive = (key: string) => SENSITIVE_KEYS.has(key);
 
+type DesktopPreferencesApi = {
+  getRendererPreferences?: () => Promise<{ ok?: boolean; values?: unknown; error?: string }>;
+  updateRendererPreferences?: (update: { values: StorageValues; remove: string[] }) => Promise<{ ok?: boolean; error?: string }>;
+};
+
+const getDesktopPreferencesApi = (): DesktopPreferencesApi | null => {
+  if (!isBrowser) return null;
+  const api = (window as typeof window & { electronAPI?: DesktopPreferencesApi }).electronAPI;
+  return api && typeof api.getRendererPreferences === 'function' && typeof api.updateRendererPreferences === 'function'
+    ? api
+    : null;
+};
+
+const normalizeStoredValues = (raw: unknown): StorageValues | null => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return Object.fromEntries(
+    Object.entries(raw)
+      .filter(([key, value]) => !isSensitive(key) && typeof value === 'string')
+      .map(([key, value]) => [key, value as string]),
+  );
+};
+
+const loadStoredValues = async (): Promise<StorageValues | null> => {
+  const desktopApi = getDesktopPreferencesApi();
+  if (desktopApi?.getRendererPreferences) {
+    const payload = await desktopApi.getRendererPreferences();
+    if (payload?.ok === false) throw new Error(payload.error || 'Desktop preference read failed.');
+    return normalizeStoredValues(payload?.values);
+  }
+
+  const response = await fetch(PREFERENCES_ENDPOINT, { cache: 'no-store' });
+  const payload = await response.json();
+  if (!response.ok || !payload?.ok) throw new Error(payload?.error || `Preference read failed: ${response.status}`);
+  return normalizeStoredValues(payload.values);
+};
+
+const saveStoredValues = async (values: StorageValues, remove: string[]): Promise<void> => {
+  const desktopApi = getDesktopPreferencesApi();
+  if (desktopApi?.updateRendererPreferences) {
+    const payload = await desktopApi.updateRendererPreferences({ values, remove });
+    if (!payload?.ok) throw new Error(payload?.error || 'Desktop preference write failed.');
+    return;
+  }
+
+  const response = await fetch(PREFERENCES_ENDPOINT, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values, remove }),
+    keepalive: true,
+  });
+  if (!response.ok) throw new Error(`Preference write failed: ${response.status}`);
+};
+
 const getPendingPersistableMutations = () => {
   const values: StorageValues = {};
   const remove: string[] = [];
@@ -50,13 +103,7 @@ const enqueuePersist = (): Promise<boolean> => {
     // is still alive.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const response = await fetch(PREFERENCES_ENDPOINT, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ values, remove }),
-          keepalive: true,
-        });
-        if (!response.ok) throw new Error(`Preference write failed: ${response.status}`);
+        await saveStoredValues(values, remove);
         snapshot.forEach((value, key) => {
           if (pendingMutations.get(key) !== value) return;
           pendingMutations.delete(key);
@@ -200,14 +247,9 @@ export const appStorageReady = (async () => {
   let loaded = false;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const response = await fetch(PREFERENCES_ENDPOINT, { cache: 'no-store' });
-      const payload = await response.json();
-      if (response.ok && payload?.ok && payload.values && typeof payload.values === 'object') {
-        storedValues = Object.fromEntries(
-          Object.entries(payload.values)
-            .filter(([key, value]) => !isSensitive(key) && typeof value === 'string')
-            .map(([key, value]) => [key, value as string]),
-        );
+      const values = await loadStoredValues();
+      if (values) {
+        storedValues = values;
         loaded = true;
         break;
       }
@@ -252,16 +294,8 @@ export async function refreshAppStorage(): Promise<boolean> {
     let storedValues: StorageValues | null = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const response = await fetch(PREFERENCES_ENDPOINT, { cache: 'no-store' });
-        const payload = await response.json();
-        if (response.ok && payload?.ok && payload.values && typeof payload.values === 'object') {
-          storedValues = Object.fromEntries(
-            Object.entries(payload.values)
-              .filter(([key, value]) => !isSensitive(key) && typeof value === 'string')
-              .map(([key, value]) => [key, value as string]),
-          );
-          break;
-        }
+        storedValues = await loadStoredValues();
+        if (storedValues) break;
       } catch { }
       if (attempt < 2) await new Promise(resolve => window.setTimeout(resolve, 250 * (attempt + 1)));
     }

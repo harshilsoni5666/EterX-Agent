@@ -128,6 +128,136 @@ function getEterxDataRoot() {
 function getEterxSettingsRoot() {
   return path.join(getEterxDataRoot(), 'settings');
 }
+
+const RENDERER_PREFERENCES_FILE = 'preferences.json';
+const RENDERER_PREFERENCES_BACKUP_FILE = 'preferences.backup.json';
+const RENDERER_PREFERENCE_MAX_VALUE_BYTES = 10 * 1024 * 1024;
+const RESERVED_RENDERER_PREFERENCE_KEYS = new Set([
+  'eterx_api_keys',
+  'eterx_model_api_keys',
+]);
+let rendererPreferencesWriteChain = Promise.resolve();
+
+function rendererPreferencesPath(fileName = RENDERER_PREFERENCES_FILE) {
+  return path.join(getEterxSettingsRoot(), fileName);
+}
+
+function normalizeRendererPreferences(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return Object.fromEntries(
+    Object.entries(raw)
+      .filter(([key, value]) => (
+        !RESERVED_RENDERER_PREFERENCE_KEYS.has(key)
+        && key.length <= 180
+        && typeof value === 'string'
+      ))
+      .map(([key, value]) => [key, String(value)]),
+  );
+}
+
+function readRendererPreferences() {
+  let storedFileFound = false;
+  let lastError = null;
+  for (const source of [
+    rendererPreferencesPath(),
+    rendererPreferencesPath(RENDERER_PREFERENCES_BACKUP_FILE),
+  ]) {
+    try {
+      if (!fs.existsSync(source)) continue;
+      storedFileFound = true;
+      const preferences = normalizeRendererPreferences(JSON.parse(fs.readFileSync(source, 'utf8')));
+      if (preferences) return preferences;
+      lastError = new Error(`${path.basename(source)} does not contain a valid preference object.`);
+    } catch (error) {
+      lastError = error;
+      logToFile(`[preferences] Could not read ${path.basename(source)}: ${error?.message || error}`);
+    }
+  }
+  if (storedFileFound) {
+    throw lastError || new Error('Stored desktop preferences are unavailable.');
+  }
+  return {};
+}
+
+async function replaceRendererPreferencesFile(temporary, target) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      // POSIX rename replaces atomically. Windows requires the old file to be
+      // released first; the backup remains readable during this small window.
+      if (process.platform === 'win32') {
+        fs.rmSync(target, { force: true, maxRetries: 3, retryDelay: 100 });
+      }
+      fs.renameSync(temporary, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 5) {
+        await new Promise(resolve => setTimeout(resolve, 80 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError || new Error('Could not replace desktop preferences.');
+}
+
+async function writeRendererPreferences(preferences) {
+  const settingsRoot = getEterxSettingsRoot();
+  const target = rendererPreferencesPath();
+  const backup = rendererPreferencesPath(RENDERER_PREFERENCES_BACKUP_FILE);
+  const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
+  fs.mkdirSync(settingsRoot, { recursive: true });
+  fs.writeFileSync(temporary, `${JSON.stringify(preferences, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  if (fs.existsSync(target)) {
+    try { fs.copyFileSync(target, backup); } catch { }
+  }
+  try {
+    await replaceRendererPreferencesFile(temporary, target);
+  } catch (error) {
+    try { fs.rmSync(temporary, { force: true }); } catch { }
+    throw error;
+  }
+}
+
+async function updateRendererPreferences(rawUpdate) {
+  const submittedValues = rawUpdate?.values && typeof rawUpdate.values === 'object' && !Array.isArray(rawUpdate.values)
+    ? rawUpdate.values
+    : {};
+  for (const [key, value] of Object.entries(submittedValues)) {
+    if (
+      RESERVED_RENDERER_PREFERENCE_KEYS.has(key)
+      || key.length > 180
+      || typeof value !== 'string'
+    ) continue;
+    if (Buffer.byteLength(value, 'utf8') > RENDERER_PREFERENCE_MAX_VALUE_BYTES) {
+      throw new Error(`Preference ${key} is too large to save safely.`);
+    }
+  }
+
+  const current = readRendererPreferences();
+  for (const [key, value] of Object.entries(submittedValues)) {
+    if (
+      RESERVED_RENDERER_PREFERENCE_KEYS.has(key)
+      || key.length > 180
+      || typeof value !== 'string'
+    ) continue;
+    current[key] = value;
+  }
+  if (Array.isArray(rawUpdate?.remove)) {
+    rawUpdate.remove.slice(0, 500).forEach((key) => {
+      if (typeof key === 'string' && !RESERVED_RENDERER_PREFERENCE_KEYS.has(key)) delete current[key];
+    });
+  }
+  await writeRendererPreferences(current);
+}
+
+function queueRendererPreferencesUpdate(update) {
+  const write = async () => {
+    await updateRendererPreferences(update);
+    return true;
+  };
+  rendererPreferencesWriteChain = rendererPreferencesWriteChain.then(write, write);
+  return rendererPreferencesWriteChain;
+}
 Menu.setApplicationMenu(null);
 
 let mainWindow;
@@ -3243,12 +3373,32 @@ function createWindow() {
     }, { useSystemPicker: true });
   }
 
+  let closeAfterDurableFlush = false;
+  let durableClosePending = false;
   mainWindow.on('close', (event) => {
+    if (isQuitting || closeAfterDurableFlush) return;
     if (!isQuitting && gatewayDaemon?.config?.enabled && gatewayDaemon?.config?.keepRunningOnClose) {
       event.preventDefault();
+      void requestRendererDurableFlush(4000, 1);
       mainWindow.hide();
       ensureBackgroundTray();
+      return;
     }
+
+    // On Windows/Linux, window-all-closed is too late because the renderer has
+    // already gone. On macOS, closing the last window does not quit at all.
+    // Hold the native close briefly so every pending preference mutation can
+    // reach AppData first, then close exactly once on every desktop platform.
+    event.preventDefault();
+    if (durableClosePending) return;
+    durableClosePending = true;
+    const closingWindow = mainWindow;
+    void requestRendererDurableFlush(8000, 1).finally(() => {
+      durableClosePending = false;
+      if (!closingWindow || closingWindow.isDestroyed()) return;
+      closeAfterDurableFlush = true;
+      closingWindow.close();
+    });
   });
 
   mainWindow.on('hide', stopAutomaticDesktopUpdateChecks);
@@ -3566,6 +3716,29 @@ ipcMain.handle('native-theme-get', () => readNativeTheme());
 
 ipcMain.on('native-theme-set', (_event, theme) => {
   applyNativeWindowTheme(theme);
+});
+
+// Preferences use direct main-process AppData access in desktop builds. This
+// stays available while the packaged web server is starting or stopping and
+// uses the same OS-native data root on Windows, macOS, and Linux.
+ipcMain.handle('renderer-preferences-get', async () => {
+  try {
+    await rendererPreferencesWriteChain.catch(() => undefined);
+    return { ok: true, values: readRendererPreferences() };
+  } catch (error) {
+    logToFile(`[preferences] Could not load renderer preferences: ${error?.message || error}`);
+    return { ok: false, error: error?.message || 'Could not load desktop preferences.' };
+  }
+});
+
+ipcMain.handle('renderer-preferences-update', async (_event, update) => {
+  try {
+    await queueRendererPreferencesUpdate(update);
+    return { ok: true };
+  } catch (error) {
+    logToFile(`[preferences] Could not save renderer preferences: ${error?.message || error}`);
+    return { ok: false, error: error?.message || 'Could not save desktop preferences.' };
+  }
 });
 
 // Desktop credentials stay out of renderer storage. Electron encrypts this
