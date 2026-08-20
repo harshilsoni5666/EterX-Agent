@@ -1150,10 +1150,7 @@ const FileOperationSummaryPanel = ({
   rolledBack?: boolean;
   flush?: boolean;
 }) => {
-  const [selectedPath, setSelectedPath] = useState(changes[0]?.path || '');
-  useEffect(() => {
-    if (!selectedPath && changes[0]?.path) setSelectedPath(changes[0].path);
-  }, [changes, selectedPath]);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
   const totalFiles = filesModified.length + filesCreated.length + filesDeleted.length;
   const hasErrors = errors.length > 0;
   const success = totalFiles > 0 && !hasErrors;
@@ -1170,51 +1167,62 @@ const FileOperationSummaryPanel = ({
     ...filesModified.map(p => withDetail(p, 'modified')),
     ...filesDeleted.map(p => withDetail(p, 'deleted')),
   ];
-  const selectedFile = allFiles.find(file => file.path === selectedPath) || allFiles.find(file => Boolean(file.detail?.diff));
-  const selectedDiffLines = Array.isArray(selectedFile?.detail?.diffLines)
-    ? selectedFile.detail.diffLines
-    : selectedFile?.detail?.diff
-      ? fileDiffLines(selectedFile.detail.diff)
+
+  const getDiffLines = (file: FileEntry) => Array.isArray(file.detail?.diffLines)
+    ? file.detail.diffLines
+    : file.detail?.diff
+      ? fileDiffLines(file.detail.diff)
       : [];
 
+  const toggleFile = (filePath: string) => {
+    setExpandedPaths(current => {
+      const next = new Set(current);
+      if (next.has(filePath)) next.delete(filePath);
+      else next.add(filePath);
+      return next;
+    });
+  };
+
   const kindStyle = {
-    created: { bar: 'bg-emerald-500', verb: 'Created' },
-    modified: { bar: 'bg-sky-400', verb: 'Edited' },
-    deleted: { bar: 'bg-red-500', verb: 'Deleted' },
+    created: { bar: 'bg-emerald-400', verb: 'Created', text: 'text-emerald-300/80' },
+    modified: { bar: 'bg-sky-400', verb: 'Edited', text: 'text-sky-300/80' },
+    deleted: { bar: 'bg-red-400', verb: 'Deleted', text: 'text-red-300/80' },
   };
 
   if (success && allFiles.length === 1) {
     const file = allFiles[0];
     const filename = file.path.replace(/\\/g, '/').split('/').pop() || file.path;
-    if (selectedDiffLines.length > 0) {
+    const diffLines = getDiffLines(file);
+    if (diffLines.length > 0) {
       return (
         <InlineDiffView
           filename={filename}
           filepath={file.path}
-          diffLines={selectedDiffLines}
+          diffLines={diffLines}
           showExpand={false}
           flush
         />
       );
     }
-    if (file.detail?.readback) {
+    if (file.kind === 'deleted' && !file.detail?.readback) {
       return (
-        <InlineCodeView
+        <InlineMissingDiffView
           filename={filename}
-          content={file.detail.readback}
           filepath={file.path}
-          stats={{ added: Number(file.detail.additions || 0), removed: Number(file.detail.deletions || 0) }}
-          showExpand={false}
-          created={file.kind === 'created'}
+          stats={{ added: Number(file.detail?.additions || 0), removed: Number(file.detail?.deletions || 0) }}
           flush
         />
       );
     }
     return (
-      <InlineMissingDiffView
+      <InlineCodeView
         filename={filename}
+        content={file.detail?.readback || ''}
         filepath={file.path}
         stats={{ added: Number(file.detail?.additions || 0), removed: Number(file.detail?.deletions || 0) }}
+        showExpand={false}
+        fetchFull
+        created={file.kind === 'created'}
         flush
       />
     );
@@ -1222,38 +1230,85 @@ const FileOperationSummaryPanel = ({
 
   return (
     <div className={`eterx-patch-summary-panel flex flex-col overflow-hidden shadow-none ${ flush ? 'border-t border-white/[0.052] bg-transparent' : 'mx-3 mt-1.5 mb-2 rounded-[12px] border border-white/[0.07] bg-[#151514]' }`}>
-      {allFiles.map((f, i) => {
-                const style = kindStyle[f.kind];
-                const pathParts = f.path.replace(/\\/g, '/').split('/');
-                const name = pathParts.pop() || f.path;
-                const parentPath = pathParts.slice(-3).join('/');
-                return (
-                  <button
-                    type="button"
-                    key={`${ f.kind }-${ f.path }-${ i }`}
-                    className={`group flex w-full items-center gap-0 border-t border-white/[0.045] text-left first:border-t-0 hover:bg-white/[0.025] ${ selectedFile?.path === f.path ? 'bg-white/[0.035]' : '' }`}
-                    onClick={() => {
-                      if (f.kind === 'deleted') return;
-                      setSelectedPath(f.path);
-                    }}
-                    title={f.kind === 'deleted' ? f.path : `Show changes in ${ f.path }`}
-                  >
-                    <div className={`w-[3px] self-stretch shrink-0 ${ style.bar }`} />
-                    <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-[5px]">
-                      <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                        <span className="truncate text-[12px] font-medium text-[#A9D2E5]">{style.verb} {name}</span>
-                        {parentPath ? <span className="mt-0.5 truncate text-[9.5px] text-[#69645E]">{parentPath}</span> : null}
-                      </span>
-                      {f.detail && (f.detail.additions || f.detail.deletions) ? (
-                        <span className="flex shrink-0 items-center gap-1.5 text-[10px] tabular-nums">
-                          <span className="text-emerald-300">+{f.detail.additions || 0}</span>
-                          <span className="text-red-300">−{f.detail.deletions || 0}</span>
-                        </span>
-                      ) : null}
-                      {f.kind !== 'deleted' ? <ChevronRight className={`h-3 w-3 shrink-0 text-[#716B64] transition-transform ${ selectedFile?.path === f.path ? 'rotate-90 text-[#B2AAA0]' : '' }`} /> : null}
-                    </div>
-                  </button>
-                );
+      {allFiles.map((file) => {
+        const style = kindStyle[file.kind];
+        const pathParts = file.path.replace(/\\/g, '/').split('/');
+        const name = pathParts.pop() || file.path;
+        const parentPath = pathParts.slice(-3).join('/');
+        const diffLines = getDiffLines(file);
+        const canOpen = file.kind !== 'deleted' || diffLines.length > 0 || Boolean(file.detail?.readback);
+        const isExpanded = canOpen && expandedPaths.has(file.path);
+        return (
+          <React.Fragment key={`${ file.kind }-${ file.path }`}>
+            <button
+              type="button"
+              className={`group flex w-full items-stretch border-t border-white/[0.045] text-left first:border-t-0 transition-colors ${ canOpen ? 'cursor-pointer hover:bg-white/[0.025]' : 'cursor-default' } ${ isExpanded ? 'bg-white/[0.028]' : '' }`}
+              onClick={() => { if (canOpen) toggleFile(file.path); }}
+              aria-expanded={canOpen ? isExpanded : undefined}
+              title={canOpen ? `${ isExpanded ? 'Hide' : 'Show' } ${ name }` : file.path}
+            >
+              <span className={`w-[2px] shrink-0 ${ style.bar }`} />
+              <span className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.035] text-[#A9A198] ring-1 ring-inset ring-white/[0.045]">
+                  <LocalFileIcon fileName={name} size="sm" />
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-tight">
+                  <span className="truncate text-[12px] font-medium text-[#C7DDEA]">{name}</span>
+                  <span className="flex min-w-0 items-center gap-1.5 text-[9.5px]">
+                    <span className={`shrink-0 ${ style.text }`}>{style.verb}</span>
+                    {parentPath ? (
+                      <>
+                        <span className="text-[#4F4A45]">·</span>
+                        <span className="truncate text-[#716B64]">{parentPath}</span>
+                      </>
+                    ) : null}
+                  </span>
+                </span>
+                {file.detail && (file.detail.additions || file.detail.deletions) ? (
+                  <span className="flex shrink-0 items-center gap-1.5 text-[10px] tabular-nums">
+                    <span className="text-emerald-300">+{file.detail.additions || 0}</span>
+                    <span className="text-red-300">−{file.detail.deletions || 0}</span>
+                  </span>
+                ) : null}
+                {canOpen ? (
+                  <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#716B64] transition-transform duration-150 ${ isExpanded ? 'rotate-90 text-[#C0B8AE]' : 'group-hover:text-[#9A938B]' }`} />
+                ) : null}
+              </span>
+            </button>
+            <AnimatePresence initial={false}>
+              {isExpanded ? (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+                  className="overflow-hidden border-t border-white/[0.052] bg-black/[0.08]"
+                >
+                  {diffLines.length > 0 ? (
+                    <InlineDiffView
+                      filename={name}
+                      filepath={file.path}
+                      diffLines={diffLines}
+                      showExpand={false}
+                      flush
+                    />
+                  ) : (
+                    <InlineCodeView
+                      filename={name}
+                      content={file.detail?.readback || ''}
+                      filepath={file.path}
+                      stats={{ added: Number(file.detail?.additions || 0), removed: Number(file.detail?.deletions || 0) }}
+                      showExpand={false}
+                      fetchFull
+                      created={file.kind === 'created'}
+                      flush
+                    />
+                  )}
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
+          </React.Fragment>
+        );
       })}
       {hasErrors && errors.map((err, i) => (
         <div key={`err-${ i }`} className="flex items-start gap-0 border-t border-white/[0.045]">
@@ -1264,29 +1319,6 @@ const FileOperationSummaryPanel = ({
           </div>
         </div>
       ))}
-      {selectedFile && selectedDiffLines.length > 0 ? (
-        <div className="border-t border-white/[0.055] bg-[#151514] px-2 pb-1 pt-0.5">
-          <InlineDiffView
-            filename={selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path}
-            filepath={selectedFile.path}
-            diffLines={selectedDiffLines}
-            showExpand={false}
-            flush
-          />
-        </div>
-      ) : selectedFile?.detail?.readback ? (
-        <div className="border-t border-white/[0.055] bg-[#151514]">
-          <InlineCodeView
-            filename={selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path}
-            content={selectedFile.detail.readback}
-            filepath={selectedFile.path}
-            stats={{ added: Number(selectedFile.detail.additions || 0), removed: Number(selectedFile.detail.deletions || 0) }}
-            showExpand={false}
-            created={selectedFile.kind === 'created'}
-            flush
-          />
-        </div>
-      ) : null}
     </div>
   );
 };
