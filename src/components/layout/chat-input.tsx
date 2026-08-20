@@ -990,8 +990,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const isLiveActive = liveState !== 'idle' && liveState !== 'error';
   const hasAnyLiveSession = isLiveActive || hasBackgroundLiveSession;
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const pinFileInputRef = useRef<HTMLInputElement>(null);
-  const pinFolderInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const goalTextareaRef = useRef<HTMLTextAreaElement>(null);
   const textareaWidthRef = useRef(0);
@@ -1017,6 +1015,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [thinkingMenuModelKey, setThinkingMenuModelKey] = useState<string | null>(null);
   const [thinkingMenuPosition, setThinkingMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const thinkingMenuAnchorRef = useRef<HTMLElement | null>(null);
+  const thinkingMenuPortalRef = useRef<HTMLDivElement | null>(null);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
   const [openStatusMenu, setOpenStatusMenu] = useState<StatusRailMenu>(null);
   const [projectSearch, setProjectSearch] = useState('');
@@ -1491,9 +1490,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
     const handlePointerDown = (event: PointerEvent) => {
       const selector = modelSelectorRef.current;
+      const thinkingMenu = thinkingMenuPortalRef.current;
       const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
       const target = event.target as Node | null;
       if (selector && (selector.contains(target) || path.includes(selector))) return;
+      if (thinkingMenu && (thinkingMenu.contains(target) || path.includes(thinkingMenu))) return;
       setShowModelMenu(false);
       setShowThinkingLevels(false);
     };
@@ -1791,7 +1792,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
   }, [liveState]);
 
-  // Save pasted/browser files as binary FormData so the renderer never base64-encodes media.
+  // Save pasted and dropped files as binary FormData so the renderer never
+  // base64-encodes media.
   const saveFileForAgent = useCallback(async (file: File, attachmentId: string, displayName: string) => {
     try {
       const filePath = getNativeFilePath(file);
@@ -1954,72 +1956,69 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   const handlePinFolder = async () => {
     setShowPinMenu(false);
-    const electronAPI = (window as any).electronAPI;
-    if (electronAPI?.isElectron && typeof electronAPI.selectFolder === 'function') {
-      const folderPath = await electronAPI.selectFolder();
-      if (folderPath) {
-        const sysIcon = typeof electronAPI.getFileIcon === 'function'
-          ? await electronAPI.getFileIcon(folderPath).catch(() => null)
-          : null;
-        setPinnedItems(prev => {
-          if (prev.some(item => item.path === folderPath)) return prev;
-          return [...prev, {
-            id: genId(),
-            type: 'folder',
-            path: folderPath,
-            name: folderPath.split(/[/\\]/).pop() || 'Folder',
-            systemIcon: sysIcon || undefined,
-          }];
-        });
-      }
-    } else {
-      // Browsers cannot expose real local paths. Import the selected folder
-      // files as attachments instead, preserving agent access on every device.
-      pinFolderInputRef.current?.click();
+    const desktopApi = (window as any).electronAPI;
+    if (typeof desktopApi?.selectFolder !== 'function') {
+      showComposerNotice('Desktop picker unavailable', 'Open the EterX desktop app to pin a workspace folder.');
+      return;
+    }
+
+    try {
+      const folderPath = await desktopApi.selectFolder();
+      if (!folderPath) return;
+      const sysIcon = typeof desktopApi.getFileIcon === 'function'
+        ? await desktopApi.getFileIcon(folderPath).catch(() => null)
+        : null;
+      setPinnedItems(prev => {
+        if (prev.some(item => item.path === folderPath)) return prev;
+        return [...prev, {
+          id: genId(),
+          type: 'folder',
+          path: folderPath,
+          name: folderPath.split(/[/\\]/).pop() || 'Folder',
+          systemIcon: sysIcon || undefined,
+        }];
+      });
+    } catch {
+      showComposerNotice('Folder picker unavailable', 'EterX could not open the desktop folder picker.');
     }
   };
 
   const handlePinFiles = async () => {
     setShowPinMenu(false);
-    const electronAPI = (window as any).electronAPI;
-    if (electronAPI?.isElectron && typeof electronAPI.selectFiles === 'function') {
-      const filePaths = await electronAPI.selectFiles();
-      if (filePaths && filePaths.length > 0) {
-        const newItems = await Promise.all(filePaths.map(async (fp: string) => {
-          const sysIcon = typeof electronAPI.getFileIcon === 'function'
-            ? await electronAPI.getFileIcon(fp).catch(() => null)
-            : null;
-          return {
-            id: genId(),
-            type: 'file',
-            path: fp,
-            name: fp.split(/[/\\]/).pop() || 'File',
-            systemIcon: sysIcon || undefined
-          };
-        }));
-
-        if (newItems.length > 0) {
-          setPinnedItems(prev => {
-            const existingPaths = new Set(prev.map(item => item.path));
-            const uniqueItems = newItems.filter(item => {
-              if (existingPaths.has(item.path)) return false;
-              existingPaths.add(item.path);
-              return true;
-            });
-            return uniqueItems.length > 0 ? [...prev, ...uniqueItems] : prev;
-          });
-        }
-      }
-    } else {
-      // Browser file pickers provide File objects rather than OS paths. Upload
-      // them through the same attachment pipeline used by paste and drag/drop.
-      pinFileInputRef.current?.click();
+    const desktopApi = (window as any).electronAPI;
+    if (typeof desktopApi?.selectFiles !== 'function') {
+      showComposerNotice('Desktop picker unavailable', 'Open the EterX desktop app to pin local files.');
+      return;
     }
-  };
 
-  const handleBrowserPinSelection = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files?.length) addFilesAndUpload(Array.from(event.target.files));
-    event.target.value = '';
+    try {
+      const filePaths = await desktopApi.selectFiles();
+      if (!Array.isArray(filePaths) || filePaths.length === 0) return;
+      const newItems = await Promise.all(filePaths.map(async (filePath: string) => {
+        const sysIcon = typeof desktopApi.getFileIcon === 'function'
+          ? await desktopApi.getFileIcon(filePath).catch(() => null)
+          : null;
+        return {
+          id: genId(),
+          type: 'file',
+          path: filePath,
+          name: filePath.split(/[/\\]/).pop() || 'File',
+          systemIcon: sysIcon || undefined,
+        };
+      }));
+
+      setPinnedItems(prev => {
+        const existingPaths = new Set(prev.map(item => item.path));
+        const uniqueItems = newItems.filter(item => {
+          if (existingPaths.has(item.path)) return false;
+          existingPaths.add(item.path);
+          return true;
+        });
+        return uniqueItems.length > 0 ? [...prev, ...uniqueItems] : prev;
+      });
+    } catch {
+      showComposerNotice('File picker unavailable', 'EterX could not open the desktop file picker.');
+    }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2054,7 +2053,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const eventText = e.clipboardData.getData('text/plain') || e.clipboardData.getData('text');
 
     // Cancel before the first await. React does not await event handlers, so
-    // waiting first would let the browser perform a second native paste.
+    // waiting first would allow the native paste to run a second time.
     e.preventDefault();
     if (!eventText) {
       const nativeImage = await safeReadImageFromClipboard();
@@ -2216,9 +2215,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter also finalizes IME composition. Do not submit while the browser is
-    // still composing a character (keyCode 229 covers browsers that omit the
-    // native isComposing flag).
+    // Enter also finalizes IME composition. Do not submit while an input method
+    // is still composing a character (keyCode 229 covers missing native
+    // composition flags).
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 
     if (slashTrigger) {
@@ -2500,13 +2499,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const next = { ...readModelThinkingLevels(), [option.optionKey]: normalizedLevel };
     persistModelThinkingLevels(next);
     setModelThinkingLevels(next);
-    onThinkingLevelChange(normalizedLevel);
+    if (option.optionKey === selectedModel?.optionKey) {
+      onThinkingLevelChange(normalizedLevel);
+    }
     emitModelSettingsUpdate({
       type: 'model-thinking-level-updated',
       modelKey: option.optionKey,
       thinkingLevel: normalizedLevel,
     });
-  }, [getThinkingTarget, onThinkingLevelChange]);
+  }, [getThinkingTarget, onThinkingLevelChange, selectedModel?.optionKey]);
 
   useEffect(() => {
     if (!showModelMenu || !showThinkingLevels || !thinkingMenuModelKey) return;
@@ -2960,15 +2961,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           data-live={isLiveActive ? 'true' : undefined}
         >
           <input type="file" multiple ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
-          <input type="file" multiple ref={pinFileInputRef} onChange={handleBrowserPinSelection} className="hidden" />
-          <input
-            type="file"
-            multiple
-            ref={pinFolderInputRef}
-            onChange={handleBrowserPinSelection}
-            className="hidden"
-            {...({ webkitdirectory: '', directory: '' } as any)}
-          />
 
           {/* ═══ LIVE MODE HEADER BANNER (Disabled per user request) ═══ */}
           {false && isLiveActive && (
@@ -3956,6 +3948,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
               {showModelMenu && showThinkingLevels && thinkingMenuOption && thinkingMenuOptions.length > 0 && thinkingMenuPosition && typeof window !== 'undefined' && createPortal(
                 <div
+                  ref={thinkingMenuPortalRef}
                   className="eterx-model-thinking-popout eterx-composer-popout fixed z-[10000] overflow-hidden"
                   style={{ top: `${ thinkingMenuPosition.top }px`, left: `${ thinkingMenuPosition.left }px`, zIndex: 2147483000 }}
                   onMouseEnter={handleThinkingMouseEnter}
@@ -3970,7 +3963,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         key={thinkingOption.id}
                         type="button"
                         onClick={() => {
-                          selectChatModelOption(thinkingMenuOption);
                           handleModelThinkingChange(thinkingMenuOption, thinkingOption.id);
                           setThinkingMenuModelKey(null);
                           setThinkingMenuPosition(null);
