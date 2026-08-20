@@ -591,7 +591,9 @@ const loadStoredAgents = async (): Promise<SavedAgentSummary[]> => {
       .map((agent: any) => ({
         id: String(agent.agentId),
         name: String(agent.name),
-        description: agent.mission ? String(agent.mission) : '',
+        description: agent.presentation?.description
+          ? String(agent.presentation.description)
+          : agent.mission ? String(agent.mission) : '',
         accessType: agent.accessType ? String(agent.accessType) : '',
         isSetup: agent.status === 'ready',
         kind: agent.kind === 'flow' ? 'flow' : 'agent',
@@ -1366,7 +1368,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const storedAgent = storedAgents.find(agent => agent.id === selectedAgent);
     return {
       label: serverAgent?.name || storedAgent?.name || selectedAgentName || selectedAgent,
-      description: serverAgent?.mission || storedAgent?.description || 'Custom-built agent',
+      description: serverAgent?.presentation?.description || serverAgent?.mission || storedAgent?.description || 'Custom-built agent',
       activeClass: 'border-white/[0.18] bg-white/[0.065] text-white hover:bg-white/[0.09] hover:border-white/[0.26]',
     };
   }, [availableAgents, chatMode, selectedAgent, selectedAgentName, storedAgents]);
@@ -3752,7 +3754,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                   : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
                                   }`}
                               >
-                                <span className="flex-1 truncate text-[12px] font-normal">{agent.name}</span>
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-[12px] font-normal">{agent.name}</span>
+                                  {(agent.presentation?.category || agent.presentation?.description || agent.mission) && (
+                                    <span className="block truncate text-[9.5px] font-normal text-white/38">
+                                      {agent.presentation?.category || agent.presentation?.description || agent.mission}
+                                    </span>
+                                  )}
+                                </span>
                                 {selectedAgent === agent.agentId && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
                               </button>
                             ))}

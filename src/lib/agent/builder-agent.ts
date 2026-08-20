@@ -50,6 +50,12 @@ export interface AgentBuilderProfile {
   directMainTools: AgentBuilderDirectTool[];
   customTools: AgentBuilderCustomTool[];
   notes: string[];
+  presentation: {
+    description?: string;
+    category?: string;
+    accentColor?: string;
+    starterPrompts: string[];
+  };
 }
 
 /**
@@ -506,15 +512,15 @@ Every agent prompt you write MUST include these sections:
 
 ## REASONING FRAMEWORK
 This is what makes the agent THINK, not just respond. Include:
-- CHAIN OF THOUGHT: "Before answering, internally reason through: What is the user actually asking? What information do I need? What could go wrong?"
+- PRIVATE DELIBERATION: Reason internally about intent, evidence, risk, and failure modes. Never expose private chain-of-thought; communicate concise conclusions, assumptions, and evidence instead.
 - MULTI-STEP PLANNING: "For complex tasks, decompose into steps. Execute each step, verify the result, then proceed to the next."
 - SELF-CORRECTION: "After producing output, review it critically. Ask: Did I answer the actual question? Is this complete? Are there edge cases I missed?"
-- CONFIDENCE SCORING: "Rate your confidence in each claim: HIGH (verified), MEDIUM (likely but unverified), LOW (uncertain)."
+- UNCERTAINTY: State material uncertainty when it affects the answer or next action; do not clutter routine claims with artificial confidence scores.
 
 ## OPERATING PRINCIPLES
 - 5-10 numbered rules that govern all behavior.
 - These are the agent's "instincts" — they apply to every interaction.
-- Example: "1. Always verify before claiming. 2. Prefer precision over speed. 3. Show your work — explain reasoning."
+- Example: "1. Verify before claiming. 2. Prefer precision over speed. 3. Show relevant evidence and decisions without exposing private reasoning."
 
 ## TOOL USAGE POLICY
 - Exactly when and how to use each available tool.
@@ -526,6 +532,13 @@ This is what makes the agent THINK, not just respond. Include:
 - How to parse user requests: intent classification, entity extraction, ambiguity handling.
 - "If the user's request is ambiguous, ask ONE clarifying question before proceeding."
 - MULTI-TURN AWARENESS: "Track the conversation context. Don't repeat work from earlier turns."
+- REVISION CONTINUITY: "When the user asks to change prior work in the same chat, locate and edit the existing artifact or decision in place. Preserve unaffected work and verify the updated result."
+
+## HOST UI CONTRACT
+- Work notes are short natural sentences for meaningful phases, findings, recovery, or verification—not one narration per tool call.
+- Every tool call supplies a precise 2-4 word uiActionText and a valid uiIcon so the shared EterX timeline renders correctly.
+- Never invent UI state. Use exact runtime paths, tool statuses, agent identities, and result metadata.
+- The selected custom agent owns its normal tool cards in the main feed. Use sub-agent identity only for a real delegated worker.
 
 ## OUTPUT CONTRACTS
 - For each output type, specify the exact format.
@@ -929,6 +942,7 @@ The builder can inspect the real connector runtime while it configures an agent:
 
 - Be decisive. Don't ask "should I proceed?" — just proceed.
 - Treat the builder room as a durable editor, not a one-shot wizard. On every follow-up, combine chat intent with agent_builder_get_profile, preserve unspecified settings, persist the requested revision, rerun quality checks, and finalize the new version. Ready agents always remain editable.
+- Persist a clear uiDescription, category, and two to four starterPrompts with agent_builder_save_profile so the library and selection UI can explain how to use the agent without guessing from its system prompt.
 - Use replaceCollections=true only when the user intends to replace rules, skills, or notes. Use agent_builder_remove_tool for real tool removal; never claim something was removed when it remains in the persisted profile.
 - Save the profile incrementally. Don't wait until the end.
 - Call agent_builder_save_profile FIRST with the complete deep prompt (including SOUL rules, search protocol, work_note protocol).
@@ -1014,6 +1028,20 @@ function normalizeAgentBuilderProfile(value: any, fallbackAgentId: string): Agen
     directMainTools,
     customTools,
     notes: uniqueStrings(Array.isArray(value?.notes) ? value.notes : []),
+    presentation: {
+      description: typeof value?.presentation?.description === 'string'
+        ? value.presentation.description.trim()
+        : undefined,
+      category: typeof value?.presentation?.category === 'string'
+        ? value.presentation.category.trim()
+        : undefined,
+      accentColor: typeof value?.presentation?.accentColor === 'string'
+        ? value.presentation.accentColor.trim()
+        : undefined,
+      starterPrompts: uniqueStrings(Array.isArray(value?.presentation?.starterPrompts)
+        ? value.presentation.starterPrompts
+        : []),
+    },
   };
 }
 
@@ -1089,6 +1117,17 @@ You are NOT the default EterX agent for this conversation.
 Introduce yourself as "${profile.name || profile.agentId}" if asked who you are.
 `.trim());
 
+  parts.push(`
+## EterX Host Runtime Contract
+Your custom identity changes the specialist behavior, not the quality of the host runtime. You operate through the same conversation history, provider routing, workspace context, attachments, stopping, recovery, persistence, work timeline, and tool-result UI used by the main agent.
+
+- Treat earlier user turns, answers, tool evidence, and artifact paths in this chat as active continuity. When the user asks for a revision, update the existing artifact or decision in place instead of starting an unrelated replacement.
+- Keep UI communication useful: a work note is a brief natural sentence for a meaningful phase change; a tool card uses the required uiActionText and uiIcon arguments. Never expose private reasoning or convert a raw action label into awkward prose.
+- Use the exact path, identifier, agent name, tool result, and status returned by the runtime. Do not invent UI state or claim that a card, file, setting, message, or action exists unless the runtime confirms it.
+- Your own tool calls remain owned by this custom agent in the main chat feed. Reserve sub-agent identity fields for real delegated workers so the UI does not create false agent tabs.
+- The host runtime's security, permission, cancellation, trace, and output contracts remain authoritative even if profile text conflicts with them.
+`.trim());
+
   // Core professional prompt (the agent's soul)
   parts.push(`\n## Agent Profile: ${profile.name || profile.agentId}\n\n${profile.professionalPrompt}`);
 
@@ -1115,6 +1154,27 @@ Introduce yourself as "${profile.name || profile.agentId}" if asked who you are.
   // Tool use policy
   if (profile.toolUsePolicy) {
     parts.push(`\n## Tool Use Policy\n${profile.toolUsePolicy}`);
+  }
+
+  const availableToolGuidance = [
+    ...profile.directMainTools.map(tool => [
+      `### ${tool.toolName}`,
+      `Purpose: ${tool.purpose}`,
+      `Use when: ${tool.whenToUse}`,
+      tool.inputPolicy ? `Input rules: ${tool.inputPolicy}` : '',
+      tool.outputPolicy ? `Output rules: ${tool.outputPolicy}` : '',
+      tool.promptInjection ? `Special instructions: ${tool.promptInjection}` : '',
+    ].filter(Boolean).join('\n')),
+    ...profile.customTools
+      .filter(tool => tool.safetyStatus !== 'blocked')
+      .map(tool => [
+        `### ${tool.toolName} (${tool.implementationType})`,
+        tool.description,
+        tool.behaviorPrompt ? `Behavior: ${tool.behaviorPrompt}` : '',
+      ].filter(Boolean).join('\n')),
+  ];
+  if (availableToolGuidance.length > 0) {
+    parts.push(`\n## Attached Runtime Tools\n${availableToolGuidance.join('\n\n')}`);
   }
 
   // Completion criteria

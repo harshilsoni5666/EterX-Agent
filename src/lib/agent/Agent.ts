@@ -78,6 +78,7 @@ import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improv
 import { readTaskTracker, readTaskTrackerMarkdown, trackerToTrace, writeTaskTrackerJson } from './task-tracker-store';
 import { normalizeTimeoutMs, secondsFromTimeoutMs } from './tools/core/terminal_timeout';
 import { buildAgentBuilderRuntimePrompt, getCustomAgentAllowedToolNames, isAgentBuilderRuntimeContext, shouldExposeToolToRuntime, isCustomAgentRuntimeContext, buildCustomAgentRuntimePrompt, loadCustomAgentProfile } from './builder-agent';
+import { resolveAgentTools, type ResolvedTool } from './tool-injector';
 import { buildCodingAgentPromptContext, buildCodingAgentRootPrompt, isCodingAgentProfile } from './coding-agent-profile';
 import { getCodingAgentToolSummary } from '../code/code-agent-runtime';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
@@ -2292,7 +2293,10 @@ export class GeminiAgentClient {
 
     const canonicalToolName = normalizeRegistryToolName(name);
     const tool = globalToolRegistry.getTool(canonicalToolName);
-    if (!tool) return { error: `Tool ${ canonicalToolName } not found in registry.` };
+    const agentScopedTool = tool ? null : this.resolveAgentScopedRuntimeTool(context, canonicalToolName);
+    if (!tool && !agentScopedTool?.execute) {
+      return { error: `Tool ${ canonicalToolName } is not available to this agent.` };
+    }
 
     if (canonicalToolName === 'task_decomposer' && globalSessionManager.getStateForChat(conversationScopeId).taskDecomposerUsed) {
       return {
@@ -2315,22 +2319,24 @@ export class GeminiAgentClient {
         error: `Tool ${canonicalToolName} is not attached to custom agent ${String((context as any).customAgentId || '').trim() || 'profile'}.`,
       });
     }
-    const validation = validateRegistryToolArgs(tool, effectiveArgs);
-    if (!validation.success) {
-      const missingArguments = getMissingRequiredToolArguments(canonicalToolName, effectiveArgs);
-      if (missingArguments.missing.length > 0) {
-        return recordRejectedTool({
-          success: true,
-          needsArguments: true,
-          toolName: canonicalToolName,
-          requiredArguments: missingArguments.missing,
-          inputSchema: missingArguments.inputSchema,
-          message: `Supply ${missingArguments.missing.join(', ')} and call ${canonicalToolName} again.`,
-        });
+    if (tool) {
+      const validation = validateRegistryToolArgs(tool, effectiveArgs);
+      if (!validation.success) {
+        const missingArguments = getMissingRequiredToolArguments(canonicalToolName, effectiveArgs);
+        if (missingArguments.missing.length > 0) {
+          return recordRejectedTool({
+            success: true,
+            needsArguments: true,
+            toolName: canonicalToolName,
+            requiredArguments: missingArguments.missing,
+            inputSchema: missingArguments.inputSchema,
+            message: `Supply ${missingArguments.missing.join(', ')} and call ${canonicalToolName} again.`,
+          });
+        }
+        return recordRejectedTool({ error: validation.error });
       }
-      return recordRejectedTool({ error: validation.error });
+      effectiveArgs = validation.args;
     }
-    effectiveArgs = validation.args;
 
     const governorDecision = executionGovernor?.beforeTool(canonicalToolName, effectiveArgs);
     if (governorDecision && !governorDecision.allowed) {
@@ -2398,7 +2404,8 @@ export class GeminiAgentClient {
     (toolExec.context as any).ownerTraceId = actionTraceId;
     try {
       toolExec.throwIfCancelled();
-      let output = await tool.execute(effectiveArgs, toolExec.context);
+      const execute = tool?.execute || agentScopedTool!.execute!;
+      let output = await execute(effectiveArgs, toolExec.context);
       toolExec.throwIfCancelled();
       const rawOutput = output;
       // Keep every provider on the same bounded tool-result path. Returning a
@@ -4226,7 +4233,7 @@ export class GeminiAgentClient {
     // caching, never from guessing the user's intent or hiding capabilities.
     void taskText;
     const routedTools = [...eligibleTools];
-    return routedTools
+    const declarations = routedTools
       .map(tool => {
         const rawSchema = zodToJsonSchema(tool.inputSchema);
         const cleaned = this.cleanSchemaStructure(rawSchema);
@@ -4258,6 +4265,44 @@ export class GeminiAgentClient {
           parameters: cleaned
         };
       });
+
+    // Agent-scoped tools are persisted inside the custom profile, not in the
+    // global registry. Add their real declarations to the shared Main Agent
+    // provider surface so custom agents retain full runtime/provider parity.
+    if (customAgentToolSet && context?._customAgentProfile) {
+      const declaredNames = new Set(declarations.map(tool => tool.name));
+      const { tools: profileTools } = resolveAgentTools(context._customAgentProfile);
+      for (const resolved of profileTools) {
+        if (declaredNames.has(resolved.name) || globalToolRegistry.getTool(resolved.name)) continue;
+        const parameters = this.cleanSchemaStructure(resolved.declaration.parameters || {
+          type: 'object',
+          properties: {},
+        });
+        parameters.properties = parameters.properties || {};
+        parameters.properties.uiActionText = {
+          type: 'string',
+          description: 'Precise 2-4 word timeline label. Plain words; no step numbers, brackets, code, or generic filler.',
+        };
+        parameters.properties.uiIcon = {
+          type: 'string',
+          enum: ['computer', 'agent', 'terminal', 'image', 'clock', 'file_read', 'file_create', 'file_edit', 'folder_read', 'folder_create', 'search', 'web_search', 'verification', 'connector'],
+          description: 'Timeline action category.',
+        };
+        parameters.required = Array.from(new Set([
+          ...(Array.isArray(parameters.required) ? parameters.required : []),
+          'uiActionText',
+          'uiIcon',
+        ]));
+        declarations.push({
+          name: resolved.name,
+          description: this.compactText(resolved.description, 220),
+          parameters,
+        });
+        declaredNames.add(resolved.name);
+      }
+    }
+
+    return declarations;
   }
 
   /**
@@ -4265,6 +4310,12 @@ export class GeminiAgentClient {
    */
   public buildToolsConfig(isBuilder: boolean = false, context: any = null, taskText = ''): any[] {
     return [{ functionDeclarations: this.buildFunctionDeclarations(isBuilder, context, taskText) }];
+  }
+
+  private resolveAgentScopedRuntimeTool(context: any, toolName: string): ResolvedTool | null {
+    if (!isCustomAgentRuntimeContext(context) || !context?._customAgentProfile) return null;
+    const canonicalName = normalizeRegistryToolName(toolName);
+    return resolveAgentTools(context._customAgentProfile).tools.find(tool => tool.name === canonicalName) || null;
   }
 
   /**
@@ -8125,6 +8176,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         console.log(`[GeminiClient] âš¡ ${ call.name } (#${ currentCount })`);
         const canonicalToolName = normalizeRegistryToolName(call.name);
         const tool = globalToolRegistry.getTool(canonicalToolName);
+        const agentScopedTool = tool ? null : this.resolveAgentScopedRuntimeTool(context, canonicalToolName);
         let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, call.args);
         let preflightError = '';
         let argumentRequest: any = null;
@@ -8190,7 +8242,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             error: `EXECUTION_GOVERNOR: ${ governorDecision.reason || 'This repeated action is blocked.' }`,
             recovery: governorDecision.recovery,
           };
-        } else if (tool) {
+        } else if (tool || agentScopedTool?.execute) {
           // === INTELLIGENT CACHE: Check for cached result first ===
           const cacheScope = this.getToolCacheScope(context);
           const cachedResult = sharedCacheDisabled ? null : intelligentCache.get(canonicalToolName, effectiveArgs, cacheScope);
@@ -8217,7 +8269,8 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             try {
               // No timeout â€” tools run until complete. User has Stop button for manual cancel.
               toolExec.throwIfCancelled();
-              toolOutput = await tool.execute(effectiveArgs as any, toolExec.context);
+              const execute = tool?.execute || agentScopedTool!.execute!;
+              toolOutput = await execute(effectiveArgs as any, toolExec.context);
               toolExec.throwIfCancelled();
               rawToolOutput = toolOutput;
               toolOutput = toolResultCompactor.compact(canonicalToolName, effectiveArgs || {}, toolOutput);
