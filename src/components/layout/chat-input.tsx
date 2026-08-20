@@ -3055,7 +3055,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 onClick={submitPrompt}
                 disabled={liveState === 'connecting' || !inputValue.trim()}
                 aria-label="Send live message"
-                className={`w-[34px] h-[34px] mb-0.5 shrink-0 flex items-center justify-center rounded-full transition-all duration-200 ${
+                className={`eterx-live-message-send-button w-[34px] h-[34px] mb-0.5 shrink-0 flex items-center justify-center rounded-full transition-all duration-200 ${
                   liveState !== 'connecting' && inputValue.trim()
                     ? 'bg-[#F2EFEA] text-black hover:bg-white shadow-none active:scale-95 cursor-pointer'
                     : 'bg-[#2D2D2D] text-[#8C8984] hover:bg-[#333333] hover:text-white cursor-pointer opacity-70'

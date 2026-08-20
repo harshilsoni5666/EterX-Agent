@@ -13908,7 +13908,7 @@ function DeepWorkUI() {
                                       <button
                                         type="submit"
                                         disabled={proxyChatLoading || !selectedModel || (!proxyChatInput.trim() && proxyAttachments.length === 0 && proxyPinnedItems.length === 0) || !activeChatId}
-                                        className="h-7 w-7 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white/80 flex items-center justify-center transition-colors focus:outline-none"
+                                        className="eterx-proxy-send-button h-7 w-7 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white/80 flex items-center justify-center transition-colors focus:outline-none"
                                       >
                                         <ArrowUp className="h-4 w-4" />
                                       </button>

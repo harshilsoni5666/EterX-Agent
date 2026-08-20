@@ -4467,3 +4467,48 @@
   border-color: rgba(255, 255, 255, 0.32) !important;
   border-top-color: #FFFFFF !important;
 }
+
+/* Secondary chat composers previously inherited translucent white actions
+   from their dark surfaces. Give every send path the same decisive light-
+   theme contrast, including a readable disabled state. */
+:root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-proxy-send-button,
+:root[data-theme="light"] .eterx-project-conversation-send,
+:root[data-theme="light"] .eterx-composer-shell .eterx-live-message-send-button:not(:disabled) {
+  border: 0 !important;
+  background: #292929 !important;
+  background-color: #292929 !important;
+  color: #FFFFFF !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-proxy-send-button:hover:not(:disabled),
+:root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-proxy-send-button:focus-visible:not(:disabled),
+:root[data-theme="light"] .eterx-project-conversation-send:hover:not(:disabled),
+:root[data-theme="light"] .eterx-project-conversation-send:focus-visible:not(:disabled),
+:root[data-theme="light"] .eterx-composer-shell .eterx-live-message-send-button:hover:not(:disabled),
+:root[data-theme="light"] .eterx-composer-shell .eterx-live-message-send-button:focus-visible:not(:disabled) {
+  background: #373737 !important;
+  background-color: #373737 !important;
+  color: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-proxy-send-button:disabled,
+:root[data-theme="light"] .eterx-project-conversation-send:disabled,
+:root[data-theme="light"] .eterx-composer-shell .eterx-live-message-send-button:disabled {
+  border: 0 !important;
+  background: #E3E3E1 !important;
+  background-color: #E3E3E1 !important;
+  color: #7A7A76 !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+  cursor: default !important;
+}
+
+:root[data-theme="light"] .eterx-proxy-input-wrapper .eterx-proxy-send-button svg,
+:root[data-theme="light"] .eterx-project-conversation-send svg,
+:root[data-theme="light"] .eterx-composer-shell .eterx-live-message-send-button svg {
+  color: currentColor !important;
+  opacity: 1 !important;
+  filter: none !important;
+}

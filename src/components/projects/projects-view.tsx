@@ -1246,7 +1246,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                           <button
                             type="submit"
                             disabled={!inputValue.trim()}
-                            className="w-[32px] h-[32px] rounded-full bg-white/20 disabled:bg-white/5 disabled:text-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-all active:scale-[0.96] cursor-pointer"
+                            className="eterx-project-conversation-send w-[32px] h-[32px] rounded-full bg-white/20 disabled:bg-white/5 disabled:text-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-all active:scale-[0.96] cursor-pointer"
                           >
                             <ArrowUp className="w-[16px] h-[16px]" strokeWidth={2.2} />
                           </button>
