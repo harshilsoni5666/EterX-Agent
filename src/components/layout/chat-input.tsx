@@ -1102,15 +1102,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const slashDragFrameRef = useRef<number | null>(null);
   const modelSelectorRef = useRef<HTMLDivElement>(null);
   const initialFocusAppliedRef = useRef(false);
-  const queuedSendRef = useRef(false);
+  // Attachment preparation may outlive a chat switch. Scope the deferred send
+  // to the composer that requested it instead of letting it fire in whichever
+  // chat happens to be visible later.
+  const queuedSendRef = useRef<string | null>(null);
   const [showPinMenu, setShowPinMenu] = useState(false);
   const [openPillDrop, setOpenPillDrop] = useState<'files' | 'folders' | null>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
   const [isAtTop, setIsAtTop] = useState(true);
   const [isAtBottom, setIsAtBottom] = useState(false);
   const [isLogoHovered, setIsLogoHovered] = useState(false);
-  const [isStopping, setIsStopping] = useState(false);
-  const stopRequestRef = useRef<Promise<void> | null>(null);
+  const [stoppingChatIds, setStoppingChatIds] = useState<Set<string>>(new Set());
+  const stopRequestsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const activeComposerChatKey = activeChatId || 'new_chat';
+  const isStopping = stoppingChatIds.has(activeComposerChatKey);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
   const [thinkingMenuModelKey, setThinkingMenuModelKey] = useState<string | null>(null);
@@ -1538,10 +1543,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       document.removeEventListener('keydown', escHandler);
     };
   }, [showAgentMenu]);
-
-  useEffect(() => {
-    if (!isThinking && !canStop) setIsStopping(false);
-  }, [canStop, isThinking]);
 
   useEffect(() => {
     if (isModelLocked) {
@@ -2209,9 +2210,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const getAttachmentCompatibilityIssue = useCallback((): { title: string; message: string } | null => null, []);
 
   const handleStopClick = useCallback(() => {
-    if (stopRequestRef.current) return;
+    const chatKey = activeChatId || 'new_chat';
+    if (stopRequestsRef.current.has(chatKey)) return;
 
-    setIsStopping(true);
+    setStoppingChatIds(previous => new Set(previous).add(chatKey));
     const stopPromise = (async () => {
       try {
         const accepted = await handleStop();
@@ -2221,24 +2223,29 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       } catch (error: unknown) {
         showComposerNotice('Could not stop the run', String(error instanceof Error ? error.message : error || 'Please try again.').slice(0, 180));
       } finally {
-        stopRequestRef.current = null;
-        setIsStopping(false);
+        stopRequestsRef.current.delete(chatKey);
+        setStoppingChatIds(previous => {
+          if (!previous.has(chatKey)) return previous;
+          const next = new Set(previous);
+          next.delete(chatKey);
+          return next;
+        });
       }
     })();
 
-    stopRequestRef.current = stopPromise;
-  }, [handleStop, showComposerNotice]);
+    stopRequestsRef.current.set(chatKey, stopPromise);
+  }, [activeChatId, handleStop, showComposerNotice]);
 
   useEffect(() => {
-    if (!queuedSendRef.current || hasPreparingAttachments || hasErroredAttachments) return;
+    if (queuedSendRef.current !== activeComposerChatKey || hasPreparingAttachments || hasErroredAttachments) return;
     if (!inputValue.trim() && attachments.length === 0) return;
     if (isNetworkPaused) return;
     if (!isThinking && !activeConfiguredChatModel) {
-      queuedSendRef.current = false;
+      queuedSendRef.current = null;
       showComposerNotice('No model configured', 'Add an API key in Settings > API, then choose a live model in Settings > Models.');
       return;
     }
-    queuedSendRef.current = false;
+    queuedSendRef.current = null;
     const attachmentIssue = getAttachmentCompatibilityIssue();
     if (attachmentIssue) {
       showComposerNotice(attachmentIssue.title, attachmentIssue.message);
@@ -2250,7 +2257,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     notifyAgentFaceSend();
     handleSend();
-  }, [activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, showComposerNotice]);
+  }, [activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isNetworkPaused, isThinking, showComposerNotice]);
 
   const submitPrompt = useCallback(() => {
     if (isNetworkPaused) {
@@ -2258,7 +2265,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       return;
     }
     if (hasPreparingAttachments) {
-      queuedSendRef.current = true;
+      queuedSendRef.current = activeComposerChatKey;
       showComposerNotice('Preparing attachments', 'Your message will send as soon as every attachment is ready.');
       return;
     }
@@ -2296,7 +2303,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (!hasComposerPayload) return;
     notifyAgentFaceSend();
     handleSend();
-  }, [activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
+  }, [activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, inputValue, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter also finalizes IME composition. Do not submit while the browser is

@@ -1084,9 +1084,10 @@ function DeepWorkUI() {
     });
   }, []);
 
-  const updateComposerState = useCallback((updater: (prev: ChatComposerState) => ChatComposerState) => {
-    const chatKey = activeChatIdRef.current || 'new_chat';
-    const key = composerStateKey(chatKey, activeComposerSurfaceRef.current);
+  const updateComposerStateAtKey = useCallback((
+    key: string,
+    updater: (prev: ChatComposerState) => ChatComposerState,
+  ) => {
     setComposerStates(prevStates => {
       const defaultState: ChatComposerState = {
         inputValue: '',
@@ -1101,10 +1102,20 @@ function DeepWorkUI() {
       const currentState = prevStates[key] || defaultState;
       const nextState = updater(currentState);
       const nextStates = { ...prevStates, [key]: nextState };
+      // Navigation can happen before React commits this update. Keep the
+      // imperative snapshot current so the next chat load never reads an old
+      // draft or writes this update into the newly selected chat.
+      composerStatesRef.current = nextStates;
       try { appStorage.setItem('eterx_chat_composer_states', JSON.stringify(nextStates)); } catch { }
       return nextStates;
     });
   }, []);
+
+  const updateComposerState = useCallback((updater: (prev: ChatComposerState) => ChatComposerState) => {
+    const chatKey = activeChatIdRef.current || 'new_chat';
+    const key = composerStateKey(chatKey, activeComposerSurfaceRef.current);
+    updateComposerStateAtKey(key, updater);
+  }, [updateComposerStateAtKey]);
 
   const clearDraftComposerState = useCallback((targetChatId?: string | null) => {
     const visibleComposerKey = activeChatIdRef.current || 'new_chat';
@@ -1134,6 +1145,7 @@ function DeepWorkUI() {
         inputValue: '',
         attachments: [],
       };
+      composerStatesRef.current = nextStates;
       try { appStorage.setItem('eterx_chat_composer_states', JSON.stringify(nextStates)); } catch { }
       return nextStates;
     });
@@ -1185,28 +1197,34 @@ function DeepWorkUI() {
   }, []);
 
   const updateInputValue = useCallback((value: string | ((prev: string) => string)) => {
+    const chatKey = activeChatIdRef.current || 'new_chat';
+    const key = composerStateKey(chatKey, activeComposerSurfaceRef.current);
     setInputValue(prev => {
       const resolved = typeof value === 'function' ? value(prev) : value;
-      updateComposerState(state => ({ ...state, inputValue: resolved }));
+      updateComposerStateAtKey(key, state => ({ ...state, inputValue: resolved }));
       return resolved;
     });
-  }, [updateComposerState]);
+  }, [updateComposerStateAtKey]);
 
   const updateAttachments = useCallback((value: ComposerAttachment[] | ((prev: ComposerAttachment[]) => ComposerAttachment[])) => {
+    const chatKey = activeChatIdRef.current || 'new_chat';
+    const key = composerStateKey(chatKey, activeComposerSurfaceRef.current);
     setAttachments(prev => {
       const resolved = typeof value === 'function' ? value(prev) : value;
-      updateComposerState(state => ({ ...state, attachments: resolved }));
+      updateComposerStateAtKey(key, state => ({ ...state, attachments: resolved }));
       return resolved;
     });
-  }, [updateComposerState]);
+  }, [updateComposerStateAtKey]);
 
   const updatePinnedItems = useCallback((value: PinnedItem[] | ((prev: PinnedItem[]) => PinnedItem[])) => {
+    const chatKey = activeChatIdRef.current || 'new_chat';
+    const key = composerStateKey(chatKey, activeComposerSurfaceRef.current);
     setPinnedItems(prev => {
       const resolved = typeof value === 'function' ? value(prev) : value;
-      updateComposerState(state => ({ ...state, pinnedItems: resolved }));
+      updateComposerStateAtKey(key, state => ({ ...state, pinnedItems: resolved }));
       return resolved;
     });
-  }, [updateComposerState]);
+  }, [updateComposerStateAtKey]);
 
   const handleAgentModeChange = useCallback((mode: MainAgentMode) => {
     composerRuntimeSelectionRef.current.agentMode = mode;
@@ -5456,6 +5474,9 @@ function DeepWorkUI() {
     // Mark as stopping so reconcileDetachedPollers won't re-add during the cleanup race window
     stoppingChatsRef.current.add(chatId);
     setTimeout(() => stoppingChatsRef.current.delete(chatId), 4000);
+    const currentRunningChats = new Set(runningChatsRef.current);
+    currentRunningChats.delete(chatId);
+    runningChatsRef.current = currentRunningChats;
     setRunningChats(prev => {
       if (!prev.has(chatId)) return prev;
       const next = new Set(prev);
@@ -8981,17 +9002,19 @@ function DeepWorkUI() {
       }
     }
 
-    // Generate the title before starting agent work so a new chat is named
-    // immediately. Naming is best-effort: a provider failure must not prevent
-    // the requested run from starting.
-    await runPendingTitleGeneration(chatIdToUse!);
-
     if (!runOptionsOverride?.backgroundChat) clearUnreadChat(chatIdToUse);
 
     if (!runOptionsOverride?.backgroundChat && window.innerWidth < 960) setSidebarOpen(false);
 
-    // Mark this chat as running
+    // The user turn owns the chat as soon as it is committed. Reflect that in
+    // both the synchronous lifecycle ref and React state before doing any
+    // optional work, so Stop and follow-up steering work immediately.
+    runningChatsRef.current = new Set(runningChatsRef.current).add(chatIdToUse!);
     setRunningChats(prev => new Set(prev).add(chatIdToUse!));
+
+    // Naming is independent metadata. Never hold agent startup, Send, Stop, or
+    // steering behind a slow title provider request.
+    void runPendingTitleGeneration(chatIdToUse!);
 
     // Build chat history for context
     const chatHistory = buildBoundedAgentHistory(historySourceLogs);
