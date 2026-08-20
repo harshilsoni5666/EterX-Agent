@@ -84,11 +84,16 @@ internal static class EterXSpeechDictation
             using (var recognizer = new SpeechRecognitionEngine(recognizerInfo))
             {
                 recognizer.LoadGrammar(new DictationGrammar());
+                recognizer.InitialSilenceTimeout = TimeSpan.FromMinutes(30);
+                recognizer.BabbleTimeout = TimeSpan.FromMinutes(30);
+                recognizer.EndSilenceTimeout = TimeSpan.FromSeconds(1.1);
+                recognizer.EndSilenceTimeoutAmbiguous = TimeSpan.FromSeconds(1.7);
+                recognizer.MaxAlternates = 3;
                 recognizer.SpeechHypothesized += (_, eventArgs) =>
                     Emit("partial", eventArgs.Result == null ? String.Empty : eventArgs.Result.Text);
                 recognizer.SpeechRecognized += (_, eventArgs) =>
                 {
-                    if (eventArgs.Result != null && eventArgs.Result.Confidence >= 0.12f)
+                    if (eventArgs.Result != null && !String.IsNullOrWhiteSpace(eventArgs.Result.Text))
                         Emit("final", eventArgs.Result.Text);
                 };
                 recognizer.RecognizeCompleted += (_, __) => Emit("stopped", String.Empty);

@@ -325,6 +325,44 @@ const makeFollowUpAdmissionKey = (
   selectedAgent?.chatMode === true,
 ]);
 
+const speechWordKey = (word: string) => word.toLocaleLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
+
+const getSpeechWordOverlap = (existingWords: string[], incomingWords: string[]) => {
+  const maximumOverlap = Math.min(existingWords.length, incomingWords.length, 24);
+  for (let size = maximumOverlap; size > 0; size -= 1) {
+    const existingTail = existingWords.slice(-size).map(speechWordKey);
+    const incomingHead = incomingWords.slice(0, size).map(speechWordKey);
+    if (existingTail.every((word, index) => word && word === incomingHead[index])) return size;
+  }
+  return 0;
+};
+
+const mergeSpeechText = (existingText: string, incomingText: string) => {
+  const existing = String(existingText || '').trim();
+  const incoming = String(incomingText || '').trim();
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+
+  const existingWords = existing.split(/\s+/);
+  const incomingWords = incoming.split(/\s+/);
+  const overlap = getSpeechWordOverlap(existingWords, incomingWords);
+
+  return [...existingWords, ...incomingWords.slice(overlap)].join(' ');
+};
+
+const appendSpeechToDraft = (draftText: string, speechText: string) => {
+  const draft = String(draftText || '');
+  const speech = String(speechText || '').trim();
+  if (!speech) return draft;
+  if (!draft) return speech;
+  const incomingWords = speech.split(/\s+/);
+  const draftWords = draft.trim().split(/\s+/);
+  const newSpeech = incomingWords.slice(getSpeechWordOverlap(draftWords, incomingWords)).join(' ');
+  if (!newSpeech) return draft;
+  if (/\s$/.test(draft)) return `${draft}${newSpeech}`;
+  return `${draft} ${newSpeech}`;
+};
+
 type TaskTrackerStep = {
   id?: string;
   step: number;
@@ -3120,10 +3158,35 @@ function DeepWorkUI() {
   const dictationRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dictationBaseTextRef = useRef('');
   const dictationCommittedTextRef = useRef('');
+  const lastDictationRenderRef = useRef<string | null>(null);
+  const dictationRenderedValuesRef = useRef<Set<string>>(new Set());
   const inputValueRef = useRef(inputValue);
+
+  const rememberDictationRender = useCallback((value: string) => {
+    const renderedValues = dictationRenderedValuesRef.current;
+    renderedValues.add(value);
+    while (renderedValues.size > 12) {
+      const oldest = renderedValues.values().next().value;
+      if (typeof oldest !== 'string') break;
+      renderedValues.delete(oldest);
+    }
+  }, []);
 
   useEffect(() => {
     inputValueRef.current = inputValue;
+    if (dictationRenderedValuesRef.current.delete(inputValue)) return;
+    if (
+      dictationShouldRunRef.current &&
+      lastDictationRenderRef.current !== null &&
+      inputValue !== lastDictationRenderRef.current
+    ) {
+      // The user edited the composer while dictation was active. Make that
+      // exact draft the new base so a later speech event cannot restore an old
+      // value or erase the edit.
+      dictationBaseTextRef.current = inputValue;
+      dictationCommittedTextRef.current = '';
+      lastDictationRenderRef.current = inputValue;
+    }
   }, [inputValue]);
 
   const stopSpeechDictation = useCallback(() => {
@@ -3139,6 +3202,8 @@ function DeepWorkUI() {
       try { recognition.stop(); } catch { }
     }
     void (window as any).electronAPI?.stopSpeechDictation?.();
+    lastDictationRenderRef.current = null;
+    dictationRenderedValuesRef.current.clear();
     setIsRecording(false);
   }, []);
 
@@ -3148,17 +3213,11 @@ function DeepWorkUI() {
     const desktopApi = (window as any).electronAPI;
     if (typeof desktopApi?.onSpeechDictationEvent !== 'function') return;
 
-    const joinDictationText = (...parts: string[]) => parts
-      .map(part => String(part || '').trim())
-      .filter(Boolean)
-      .join(' ');
     const applyNativeTranscript = (speechText: string) => {
-      const base = dictationBaseTextRef.current;
-      const spoken = String(speechText || '').trim();
-      const nextText = !spoken
-        ? base
-        : `${base}${base && !/\s$/.test(base) ? ' ' : ''}${spoken}`;
+      const nextText = appendSpeechToDraft(dictationBaseTextRef.current, speechText);
       inputValueRef.current = nextText;
+      lastDictationRenderRef.current = nextText;
+      rememberDictationRender(nextText);
       updateInputValue(nextText);
     };
 
@@ -3168,26 +3227,28 @@ function DeepWorkUI() {
       const text = String(event?.text || '');
 
       if (type === 'partial') {
-        applyNativeTranscript(joinDictationText(dictationCommittedTextRef.current, text));
+        applyNativeTranscript(mergeSpeechText(dictationCommittedTextRef.current, text));
         return;
       }
       if (type === 'final') {
-        dictationCommittedTextRef.current = joinDictationText(dictationCommittedTextRef.current, text);
+        dictationCommittedTextRef.current = mergeSpeechText(dictationCommittedTextRef.current, text);
         applyNativeTranscript(dictationCommittedTextRef.current);
         return;
       }
       if (type === 'error') {
         dictationShouldRunRef.current = false;
+        lastDictationRenderRef.current = null;
         setIsRecording(false);
         alert(text || 'Voice dictation could not start. Check your microphone and installed speech language.');
         return;
       }
       if (type === 'stopped') {
         dictationShouldRunRef.current = false;
+        lastDictationRenderRef.current = null;
         setIsRecording(false);
       }
     });
-  }, [updateInputValue]);
+  }, [rememberDictationRender, updateInputValue]);
 
   // ═══════════════════════════════════════════════════════════════
   // AGENT LIVE — provider-specific realtime voice conversations
@@ -8412,32 +8473,31 @@ function DeepWorkUI() {
     dictationBaseTextRef.current = startingText;
     dictationCommittedTextRef.current = '';
     inputValueRef.current = startingText;
+    lastDictationRenderRef.current = startingText;
+    dictationRenderedValuesRef.current.clear();
+    rememberDictationRender(startingText);
     dictationShouldRunRef.current = true;
     setIsRecording(true);
 
-    if (typeof desktopApi?.startSpeechDictation === 'function') {
+    const startNativeDictation = async () => {
+      if (typeof desktopApi?.startSpeechDictation !== 'function') return false;
       try {
         const nativeResult = await desktopApi.startSpeechDictation(navigator.language || 'en-US');
         if (!dictationShouldRunRef.current) {
           if (nativeResult?.started) void desktopApi.stopSpeechDictation?.();
-          return;
+          return false;
         }
-        if (nativeResult?.started) return;
+        if (nativeResult?.started) return true;
         if (nativeResult?.supported !== false) {
-          dictationShouldRunRef.current = false;
-          setIsRecording(false);
-          alert(nativeResult?.error || 'Native voice dictation could not start.');
-          return;
+          throw new Error(nativeResult?.error || 'Native voice dictation could not start.');
         }
       } catch (error: any) {
         if (desktopApi?.platform === 'windows') {
-          dictationShouldRunRef.current = false;
-          setIsRecording(false);
-          alert(String(error?.message || error || 'Windows voice dictation could not start.'));
-          return;
+          throw error;
         }
       }
-    }
+      return false;
+    };
 
     const browserWindow = window as typeof window & {
       SpeechRecognition?: new () => any;
@@ -8447,9 +8507,19 @@ function DeepWorkUI() {
       browserWindow.SpeechRecognition || browserWindow.webkitSpeechRecognition;
 
     if (!SpeechRecognitionConstructor) {
+      try {
+        if (await startNativeDictation()) return;
+      } catch (error: any) {
+        dictationShouldRunRef.current = false;
+        lastDictationRenderRef.current = null;
+        setIsRecording(false);
+        alert(String(error?.message || error || 'Native voice dictation could not start.'));
+        return;
+      }
       dictationShouldRunRef.current = false;
+      lastDictationRenderRef.current = null;
       setIsRecording(false);
-      alert('Live voice dictation is unavailable in this browser. Use the EterX desktop app, Chrome, Edge, or Safari.');
+      alert('Live voice dictation is unavailable on this device. Install an on-device speech language and try again.');
       return;
     }
 
@@ -8514,8 +8584,11 @@ function DeepWorkUI() {
           else interimText += transcript;
         }
 
-        const nextText = dictationBaseTextRef.current + finalText + interimText;
+        const recognizedText = mergeSpeechText(finalText, interimText);
+        const nextText = appendSpeechToDraft(dictationBaseTextRef.current, recognizedText);
         inputValueRef.current = nextText;
+        lastDictationRenderRef.current = nextText;
+        rememberDictationRender(nextText);
         updateInputValue(nextText);
       };
 
@@ -8523,11 +8596,32 @@ function DeepWorkUI() {
         const error = String(event?.error || '');
         if (error === 'no-speech' || error === 'aborted') return;
 
+        if (error === 'network' || error === 'service-not-allowed') {
+          recognition.onend = null;
+          speechRecognitionRef.current = null;
+          void startNativeDictation()
+            .then(started => {
+              if (started || !dictationShouldRunRef.current) return;
+              dictationShouldRunRef.current = false;
+              lastDictationRenderRef.current = null;
+              setIsRecording(false);
+              alert('No working on-device speech recognizer is available. Install a system speech language and try again.');
+            })
+            .catch((nativeError: any) => {
+              dictationShouldRunRef.current = false;
+              lastDictationRenderRef.current = null;
+              setIsRecording(false);
+              alert(String(nativeError?.message || nativeError || 'On-device voice dictation could not start.'));
+            });
+          return;
+        }
+
         dictationShouldRunRef.current = false;
         speechRecognitionRef.current = null;
+        lastDictationRenderRef.current = null;
         setIsRecording(false);
 
-        if (error === 'not-allowed' || error === 'service-not-allowed') {
+        if (error === 'not-allowed') {
           alert('Microphone or speech-recognition access is blocked. Allow access, then try again.');
         } else if (error === 'audio-capture') {
           alert('No working microphone was found. Check your selected input device and try again.');
@@ -8555,7 +8649,21 @@ function DeepWorkUI() {
       try {
         recognition.start();
       } catch {
-        recognition.onend();
+        recognition.onend = null;
+        void startNativeDictation()
+          .then(started => {
+            if (started || !dictationShouldRunRef.current) return;
+            dictationShouldRunRef.current = false;
+            lastDictationRenderRef.current = null;
+            setIsRecording(false);
+            alert('Voice dictation could not start on this device.');
+          })
+          .catch((nativeError: any) => {
+            dictationShouldRunRef.current = false;
+            lastDictationRenderRef.current = null;
+            setIsRecording(false);
+            alert(String(nativeError?.message || nativeError || 'On-device voice dictation could not start.'));
+          });
       }
     };
 
