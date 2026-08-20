@@ -4166,15 +4166,11 @@ const BrowserActivityGroup = ({
   );
 };
 
-const CollapsibleActionGroup = ({
-  logs, isActiveGroup, isLast, allLogs, isAgentBuilder = false
+const JoinedActionGroup = ({
+  logs, isActiveGroup, allLogs
 }: {
-  logs: any[], isActiveGroup: boolean, isLast: boolean, allLogs: any[], isAgentBuilder?: boolean
+  logs: any[], isActiveGroup: boolean, allLogs: any[]
 }) => {
-  // Action batches and terminal/file details are user-controlled. Polling can
-  // change liveness without changing this state, so a manual expansion stays
-  // stable and a background action never opens UI on the user's behalf.
-  const [open, setOpen] = useState(false);
   const visibleLogs = logs.filter(Boolean);
   if (visibleLogs.length === 0) return null;
 
@@ -4184,7 +4180,6 @@ const CollapsibleActionGroup = ({
   const terminalOnly = cardLogs.length === 1 && isTerminalActionLike(cardLogs[0]);
   const fileChangeOnly = cardLogs.length === 1 && cardLogs[0]?.type === 'file_edit';
   const useStandaloneRows = terminalOnly || fileChangeOnly;
-  const connectorIds = Array.from(new Set(cardLogs.map(log => getConnectorId(log)).filter(Boolean))) as string[];
   const explicitLiveCardIndex = cardLogs.findLastIndex(isLiveActionEvent);
   const currentCardIndex = isActiveGroup
     ? (explicitLiveCardIndex >= 0 ? explicitLiveCardIndex : cardLogs.length - 1)
@@ -4200,45 +4195,21 @@ const CollapsibleActionGroup = ({
         <div
           className={useStandaloneRows ? 'w-full' : `${ ACTION_CARD_CLASS } eterx-action-group`}
         >
-          {!useStandaloneRows && cardLogs.length > 1 && (
-            <button
-              type="button"
-              aria-expanded={open}
-              onClick={() => setOpen(value => !value)}
-              className="eterx-action-group-header flex min-h-[30px] w-full items-center gap-1.5 border-b border-white/[0.055] px-2.5 py-1.5 text-left text-[11px] font-medium text-white/60 hover:bg-white/[0.028] hover:text-white/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+          {cardLogs.map((log, i) => (
+            <div
+              key={getActionIdentity(log, i)}
+              className={i > 0 ? ACTION_ROW_DIVIDER_CLASS : ''}
             >
-              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${ open ? '' : '-rotate-90' }`} aria-hidden="true" />
-              <span className="flex items-center gap-1.5">
-                <span>{isActiveGroup ? (isAgentBuilder ? 'Builder activity' : 'Live activity') : `${ cardLogs.length } action${ cardLogs.length === 1 ? '' : 's' }`}</span>
-              </span>
-              {connectorIds.length > 0 && (
-                <span className="ml-auto flex items-center gap-1.5" aria-label={`${ connectorIds.length } connected service${ connectorIds.length === 1 ? '' : 's' }`}>
-                  {connectorIds.slice(0, 4).map(connectorId => (
-                    <span key={connectorId} className="grid h-4 w-4 place-items-center rounded-[5px] border border-white/[0.08] bg-white/[0.03]" title={`${ connectorId.replace(/_/g, ' ') } connector`}>
-                      <ConnectorIcon connectorId={connectorId} size={11} />
-                    </span>
-                  ))}
-                  {connectorIds.length > 4 && <span className="text-[10px] text-white/35">+{ connectorIds.length - 4 }</span>}
-                </span>
-              )}
-              <span className={`${ connectorIds.length === 0 ? 'ml-auto' : '' } text-[10px] text-white/35`}>{open ? 'Hide' : 'Show'}</span>
-            </button>
-          )}
-          {(open || useStandaloneRows || cardLogs.length === 1) && cardLogs.map((log, i) => (
-              <div
-                key={getActionIdentity(log, i)}
-                className={i > 0 ? ACTION_ROW_DIVIDER_CLASS : ''}
-              >
-                <ActionChip
-                  log={log}
-                  isLastChip={i === currentCardIndex}
-                  isActiveGroup={isActiveGroup}
-                  allLogs={allLogs}
-                  isNested={i > 0}
-                  inCard={!useStandaloneRows}
-                />
-              </div>
-            ))}
+              <ActionChip
+                log={log}
+                isLastChip={i === currentCardIndex}
+                isActiveGroup={isActiveGroup}
+                allLogs={allLogs}
+                isNested={i > 0}
+                inCard={!useStandaloneRows}
+              />
+            </div>
+          ))}
         </div>
       )}
 
@@ -4835,7 +4806,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, assetIndexes }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes }) => {
+export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
   const isFlowLog = (l: any) => {
@@ -5150,12 +5121,10 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
             >
               <WorkNoteBlock text={seg.log.text} isActive={phaseIsActive} isProxyStatus={seg.log.type === 'autonomy_proxy_status'} />
               <div>
-                  <CollapsibleActionGroup
+                  <JoinedActionGroup
                     logs={nextSeg.logs}
                     isActiveGroup={phaseIsActive}
-                    isLast={isLast}
                     allLogs={timelineLogs}
-                    isAgentBuilder={isAgentBuilder}
                 />
               </div>
             </div>
@@ -5201,7 +5170,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
 
         const firstIdx = seg.firstIdx ?? seg.lastIdx ?? i;
         const groupKey = `g-${ getActionIdentity(seg.logs[0], firstIdx) }`;
-        return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === displaySegs.length - 1} isLast={isLast} allLogs={timelineLogs} isAgentBuilder={isAgentBuilder} />;
+        return <JoinedActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === displaySegs.length - 1} allLogs={timelineLogs} />;
       })}
       {showLiveIndicator && isThinking && isLast && !browserPhaseOwnsLiveIndicator && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
     </div>
