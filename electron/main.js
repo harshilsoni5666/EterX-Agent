@@ -3,7 +3,7 @@ const fs = require('fs');
 const net = require('net');
 const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
-const { pathToFileURL } = require('url');
+const { fileURLToPath, pathToFileURL } = require('url');
 
 function logToFile(msg) {
   try {
@@ -3405,16 +3405,109 @@ ipcMain.handle('clipboard-read-image', () => {
   }
 });
 
-// IPC: Open URL in system default browser
-ipcMain.handle('open-path', async (event, rawPath) => {
+function decodeNativeOpenPath(rawPath) {
+  if (typeof rawPath !== 'string' || !rawPath.trim() || rawPath.includes('\0')) return null;
+
+  let target = rawPath.trim().replace(/^<([\s\S]*)>$/, '$1');
+  if ((target.startsWith('"') && target.endsWith('"')) ||
+      (target.startsWith("'") && target.endsWith("'"))) {
+    target = target.slice(1, -1).trim();
+  }
+
+  const localLink = target.match(/^#?eterx-local-file:([\s\S]*)$/i);
+  if (localLink) {
+    try {
+      target = decodeURIComponent(localLink[1]);
+    } catch {
+      target = localLink[1];
+    }
+  }
+
+  if (/^file:/i.test(target)) {
+    try {
+      target = fileURLToPath(target);
+    } catch {
+      // Chromium can serialize a Windows drive URL as file://C:/path. Repair
+      // that form before rejecting the target as an invalid native path.
+      const windowsFileUrl = target.match(/^file:(?:\/){2,3}([A-Za-z]:[\\/][\s\S]*)$/i);
+      if (!windowsFileUrl) return null;
+      try {
+        target = decodeURIComponent(windowsFileUrl[1]).replace(/\//g, '\\');
+      } catch {
+        target = windowsFileUrl[1].replace(/\//g, '\\');
+      }
+    }
+  }
+
+  if (target === '~') target = app.getPath('home');
+  else if (/^~[\\/]/.test(target)) target = path.join(app.getPath('home'), target.slice(2));
+
+  if (!path.isAbsolute(target)) return null;
+  return path.normalize(target);
+}
+
+function getExistingNativeOpenTarget(rawPath) {
+  const targetPath = decodeNativeOpenPath(rawPath);
+  if (!targetPath) return null;
+  if (fs.existsSync(targetPath)) return targetPath;
+
+  // A generated artifact may have been renamed between rendering and click.
+  // Preserve the previous helpful behavior of opening its existing parent.
+  const parentPath = path.dirname(targetPath);
+  return parentPath !== targetPath && fs.existsSync(parentPath) ? parentPath : null;
+}
+
+function launchPathWithSystem(targetPath) {
+  const candidates = process.platform === 'win32'
+    ? [['explorer.exe', [targetPath]]]
+    : process.platform === 'darwin'
+      ? [['/usr/bin/open', [targetPath]]]
+      : [
+          ['xdg-open', [targetPath]],
+          ['gio', ['open', targetPath]],
+        ];
+
+  const tryCandidate = (index) => new Promise((resolve) => {
+    const candidate = candidates[index];
+    if (!candidate) {
+      resolve(false);
+      return;
+    }
+
+    const [command, args] = candidate;
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.once('error', () => {
+      void tryCandidate(index + 1).then(resolve);
+    });
+    child.once('spawn', () => {
+      child.unref();
+      resolve(true);
+    });
+  });
+
+  return tryCandidate(0);
+}
+
+// Open local file and folder links through the operating system. Packaged
+// builds use this IPC path while browser development uses /api/files/open.
+ipcMain.handle('open-path', async (_event, rawPath) => {
   try {
-    if (typeof rawPath !== 'string' || !rawPath.trim() || rawPath.includes('\0')) return false;
-    const targetPath = path.resolve(rawPath.trim());
-    const target = fs.existsSync(targetPath) ? targetPath : path.dirname(targetPath);
-    if (!target || !fs.existsSync(target)) return false;
+    const target = getExistingNativeOpenTarget(rawPath);
+    if (!target) return false;
+
+    // The explicit OS launchers match the reliable browser-development path.
+    // Electron remains a portable fallback for unusual desktop environments.
+    if (await launchPathWithSystem(target)) return true;
     const error = await shell.openPath(target);
-    return !error;
-  } catch {
+    if (!error) return true;
+    logToFile(`[open-path] Could not open ${target}: ${error}`);
+    return false;
+  } catch (error) {
+    logToFile(`[open-path] Failed: ${error?.message || error}`);
     return false;
   }
 });

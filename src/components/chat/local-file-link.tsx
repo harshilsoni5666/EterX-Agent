@@ -151,20 +151,29 @@ export const openLocalFilePath = async (filePath: string) => {
   const target = String(filePath || '').trim();
   if (!target) return false;
 
-  const electronApi = (window as any).electronAPI;
+  const electronApi = typeof window !== 'undefined' ? (window as any).electronAPI : null;
   if (electronApi?.openPath) {
-    const result = await electronApi.openPath(target);
-    return result !== false;
+    try {
+      const result = await electronApi.openPath(target);
+      if (result === true || result?.ok === true) return true;
+    } catch {
+      // A packaged renderer can outlive a restarting native bridge. Continue
+      // through the bundled local server instead of leaving the chip inert.
+    }
   }
 
-  const response = await fetch('/api/files/open', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ path: target }),
-  });
-  const result = await response.json().catch(() => ({}));
-  return response.ok && result?.ok !== false;
+  try {
+    const response = await fetch('/api/files/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ path: target }),
+    });
+    const result = await response.json().catch(() => ({}));
+    return response.ok && result?.ok !== false;
+  } catch {
+    return false;
+  }
 };
 
 export const LocalFileIcon = React.memo(({ fileName, size = 'md' }: { fileName: string; size?: 'sm' | 'md' }) => {
