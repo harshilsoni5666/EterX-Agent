@@ -28,6 +28,11 @@ async function main() {
     directMainTools: [],
     customTools: [],
     notes: [],
+    presentation: {
+      description: 'Adaptive operational support for professional teams.',
+      category: 'Operations',
+      starterPrompts: [],
+    },
   });
 
   const quality = evaluateAgentBuilderProfile(profile);

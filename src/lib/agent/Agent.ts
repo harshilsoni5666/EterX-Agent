@@ -8177,6 +8177,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         const canonicalToolName = normalizeRegistryToolName(call.name);
         const tool = globalToolRegistry.getTool(canonicalToolName);
         const agentScopedTool = tool ? null : this.resolveAgentScopedRuntimeTool(context, canonicalToolName);
+        const executeTool = tool?.execute ?? agentScopedTool?.execute;
         let effectiveArgs = normalizeRegistryToolArgs(canonicalToolName, call.args);
         let preflightError = '';
         let argumentRequest: any = null;
@@ -8242,7 +8243,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             error: `EXECUTION_GOVERNOR: ${ governorDecision.reason || 'This repeated action is blocked.' }`,
             recovery: governorDecision.recovery,
           };
-        } else if (tool || agentScopedTool?.execute) {
+        } else if (executeTool) {
           // === INTELLIGENT CACHE: Check for cached result first ===
           const cacheScope = this.getToolCacheScope(context);
           const cachedResult = sharedCacheDisabled ? null : intelligentCache.get(canonicalToolName, effectiveArgs, cacheScope);
@@ -8269,8 +8270,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
             try {
               // No timeout â€” tools run until complete. User has Stop button for manual cancel.
               toolExec.throwIfCancelled();
-              const execute = tool?.execute || agentScopedTool!.execute!;
-              toolOutput = await execute(effectiveArgs as any, toolExec.context);
+              toolOutput = await executeTool(effectiveArgs as any, toolExec.context);
               toolExec.throwIfCancelled();
               rawToolOutput = toolOutput;
               toolOutput = toolResultCompactor.compact(canonicalToolName, effectiveArgs || {}, toolOutput);
@@ -8707,7 +8707,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
                 // exception. Stateful failures return to the model first.
                 try {
                   toolExec.throwIfCancelled();
-                  toolOutput = await tool.execute(effectiveArgs as any, toolExec.context);
+                  toolOutput = await executeTool(effectiveArgs as any, toolExec.context);
                   toolExec.throwIfCancelled();
                   rawToolOutput = toolOutput;
                   toolOutput = toolResultCompactor.compact(canonicalToolName, effectiveArgs || {}, toolOutput);

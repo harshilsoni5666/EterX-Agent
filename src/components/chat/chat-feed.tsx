@@ -1514,17 +1514,22 @@ const ChatFeedMessageGroup = React.memo(({
     );
   }
 
-  const answerTokenCount = (() => {
+  const answerTokenUsage = (() => {
     const seen = new Set<string>();
-    return group.reduce((total: number, log: any) => {
-      if (log?.type !== 'model_usage') return total;
+    return group.reduce((usage: { input: number; output: number }, log: any) => {
+      if (log?.type !== 'model_usage') return usage;
       const tokenTotal = Number(log.totalTokens ?? log.total_tokens ?? 0);
-      if (!Number.isFinite(tokenTotal) || tokenTotal <= 0) return total;
+      if (!Number.isFinite(tokenTotal) || tokenTotal <= 0) return usage;
       const key = String(log.usageId || log._traceIdx || `${log.runId || log.turnId || ''}:${log.provider || ''}:${log.model || ''}:${log.interaction ?? ''}:${log.timestamp || ''}:${tokenTotal}`);
-      if (seen.has(key)) return total;
+      if (seen.has(key)) return usage;
       seen.add(key);
-      return total + tokenTotal;
-    }, 0);
+      const input = Number(log.promptTokens ?? log.prompt_tokens ?? log.inputTokens ?? log.input_tokens ?? 0);
+      const output = Number(log.outputTokens ?? log.output_tokens ?? log.completionTokens ?? log.completion_tokens ?? 0);
+      return {
+        input: usage.input + (Number.isFinite(input) && input > 0 ? input : 0),
+        output: usage.output + (Number.isFinite(output) && output > 0 ? output : 0),
+      };
+    }, { input: 0, output: 0 });
   })();
 
   // Bug 9: Empty groups (appended for live thinking indicator) must not
@@ -1927,9 +1932,11 @@ const ChatFeedMessageGroup = React.memo(({
                           {formatShortTime(displayFinalAnswer.endTime ?? displayFinalAnswer.timestamp)}
                         </span>
                       )}
-                      {showTokenCount && answerTokenCount > 0 && (
-                        <span className="eterx-professional-number ml-1.5 text-[11px] font-medium leading-none text-[#746F67] select-none whitespace-nowrap" title="Provider-reported processed tokens across this run; cached prompt tokens are included in the processed total.">
-                          {formatProviderTokenCount(answerTokenCount)} processed tokens
+                      {showTokenCount && (answerTokenUsage.input > 0 || answerTokenUsage.output > 0) && (
+                        <span className="eterx-professional-number ml-1.5 inline-flex items-center gap-1.5 text-[11px] font-medium leading-none text-[#746F67] select-none whitespace-nowrap" title="Provider-reported token usage across this run. Cached prompt tokens are included in input.">
+                          <span>Input {formatProviderTokenCount(answerTokenUsage.input)}</span>
+                          <span className="text-[#514D47]" aria-hidden="true">|</span>
+                          <span>Output {formatProviderTokenCount(answerTokenUsage.output)}</span>
                         </span>
                       )}
                     </div>

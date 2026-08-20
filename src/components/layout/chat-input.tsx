@@ -576,6 +576,19 @@ type SavedAgentSummary = {
   stepCount?: number;
 };
 
+type AvailableAgentSummary = {
+  agentId: string;
+  name: string;
+  status: string;
+  mission?: string;
+  presentation?: {
+    description?: string;
+    category?: string;
+    accentColor?: string;
+    starterPrompts?: string[];
+  };
+};
+
 const CHAT_GOALS_STORAGE_KEY = 'eterx_chat_goals';
 const NEW_CHAT_GOAL_KEY = 'new-chat';
 
@@ -1021,7 +1034,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [projectSearch, setProjectSearch] = useState('');
   const [agentMenuXOffset, setAgentMenuXOffset] = useState(0);
   const [modelMenuXOffset, setModelMenuXOffset] = useState(0);
-  const [availableAgents, setAvailableAgents] = useState<Array<{ agentId: string; name: string; status: string; mission: string }>>([]);
+  const [availableAgents, setAvailableAgents] = useState<AvailableAgentSummary[]>([]);
   const agentSelectorRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const composerShellRef = useRef<HTMLDivElement>(null);
