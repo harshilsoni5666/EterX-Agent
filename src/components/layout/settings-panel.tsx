@@ -72,6 +72,7 @@ import {
 } from '../../lib/video/video-generation-config';
 
 type SettingsGlyphProps = React.SVGProps<SVGSVGElement> & { strokeWidth?: number };
+const SETTINGS_CHANNEL = 'eterx-settings';
 const PROVIDER_BASE_URLS_STORAGE_KEY = 'eterx_provider_base_urls';
 const SEARCH_CAPABILITY_LABELS: Record<'search' | 'read' | 'crawl' | 'map', string> = {
   search: 'Search',
@@ -3486,16 +3487,54 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const onExternalCommit = () => { void syncExternalSettings(); };
     window.addEventListener(FOLDER_STORAGE_READY_EVENT, onExternalCommit);
     window.addEventListener('eterx-folder-storage-updated', onExternalCommit);
-    window.addEventListener('eterx-settings-updated', onExternalCommit);
     window.addEventListener('focus', onExternalCommit);
     return () => {
       cancelled = true;
       window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onExternalCommit);
       window.removeEventListener('eterx-folder-storage-updated', onExternalCommit);
-      window.removeEventListener('eterx-settings-updated', onExternalCommit);
       window.removeEventListener('focus', onExternalCommit);
     };
   }, [hasChanges]);
+
+  // Active model selection is small, conflict-free state. Keep it live even
+  // while the panel protects other in-progress edits from a full reload.
+  useEffect(() => {
+    const applySelection = (detail?: unknown) => {
+      const requested = detail && typeof detail === 'object'
+        && typeof (detail as { chatModelSelection?: unknown }).chatModelSelection === 'string'
+        ? String((detail as { chatModelSelection: string }).chatModelSelection)
+        : appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+      const entries = modelEntriesRef.current;
+      const nextSelection = parseModelEntryKey(requested)
+        && entries.some(entry => modelEntryKey(entry.provider, entry.modelId) === requested)
+        ? requested
+        : entries[0]
+          ? modelEntryKey(entries[0].provider, entries[0].modelId)
+          : AUTO_MODEL_SELECTION;
+      setChatModelSelection(current => current === nextSelection ? current : nextSelection);
+    };
+    const onLocalUpdate = (event: Event) => applySelection((event as CustomEvent).detail);
+    const onStorageUpdate = () => applySelection();
+
+    window.addEventListener('eterx-settings-updated', onLocalUpdate);
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, onStorageUpdate);
+    window.addEventListener('eterx-folder-storage-updated', onStorageUpdate);
+
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel(SETTINGS_CHANNEL);
+      channel.onmessage = event => applySelection(event.data?.settings);
+    } catch {
+      channel = null;
+    }
+
+    return () => {
+      window.removeEventListener('eterx-settings-updated', onLocalUpdate);
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onStorageUpdate);
+      window.removeEventListener('eterx-folder-storage-updated', onStorageUpdate);
+      channel?.close();
+    };
+  }, []);
 
   useEffect(() => {
     providerBaseURLsRef.current = providerBaseURLs;
