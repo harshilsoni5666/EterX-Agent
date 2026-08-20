@@ -3467,8 +3467,10 @@ function DeepWorkUI() {
         const newTraceLogs: any[] = [];
         if (cleanUserText) {
           newTraceLogs.push({
+            id: `live-user-${ turnId }`,
             type: 'user_action',
             text: cleanUserText,
+            source: 'human',
             chatId: currentChatId,
             isLive: true,
             runId: turnId,
@@ -3489,6 +3491,8 @@ function DeepWorkUI() {
         })));
         if (cleanModelText) {
           newTraceLogs.push({
+            id: `live-answer-${ turnId }`,
+            answerId: `live-answer-${ turnId }`,
             type: 'answer',
             text: cleanModelText,
             chatId: currentChatId,
@@ -4846,8 +4850,10 @@ function DeepWorkUI() {
     if (!turnId) return logs;
     if (liveInputText) {
       logs.push({
+        id: `live-user-${ turnId }`,
         type: 'user_action',
         text: liveInputText,
+        source: 'human',
         chatId: liveChatId,
         isLive: true,
         runId: turnId,
@@ -4868,6 +4874,8 @@ function DeepWorkUI() {
     const visibleOutputText = liveOutputText.trim() || liveSpokenText.trim();
     if (visibleOutputText) {
       logs.push({
+        id: `live-answer-${ turnId }`,
+        answerId: `live-answer-${ turnId }`,
         type: 'answer',
         text: visibleOutputText,
         chatId: liveChatId,
@@ -5130,17 +5138,54 @@ function DeepWorkUI() {
     const canonicalLogs = canonicalizeThoughtStreamLogs(
       normalizeBuilderUserActionLogs(normalizeSelfOwnedRuntimeLogs(logs, ownerChatId)),
     );
-    const seenLiveTranscriptKeys = new Set<string>();
-    return orderFeedTimelineLogs(canonicalLogs.filter(log => {
-      if (!log?.isLive || (log.type !== 'user_action' && log.type !== 'answer')) return true;
+    const transcriptIndexes = new Map<string, number>();
+    const reconciledLogs: any[] = [];
+    canonicalLogs.forEach(log => {
+      if (log?.type !== 'user_action' && log?.type !== 'answer') {
+        reconciledLogs.push(log);
+        return;
+      }
       const turnId = String(log.turnId || log.runId || '').trim();
       const text = String(log.text || '').trim();
-      if (!turnId || !text) return true;
-      const key = `${ turnId }:${ log.type }:${ text }`;
-      if (seenLiveTranscriptKeys.has(key)) return false;
-      seenLiveTranscriptKeys.add(key);
-      return true;
-    }));
+      const stableId = String(log.id || log.answerId || '').trim();
+      if (!turnId || (!stableId && (!log?.isLive || !text))) {
+        reconciledLogs.push(log);
+        return;
+      }
+      const key = stableId
+        ? `${ turnId }:${ log.type }:id:${ stableId }`
+        : `${ turnId }:${ log.type }:text:${ text }`;
+      const previousIndex = transcriptIndexes.get(key);
+      if (previousIndex === undefined) {
+        transcriptIndexes.set(key, reconciledLogs.length);
+        reconciledLogs.push(log);
+        return;
+      }
+
+      const previous = reconciledLogs[previousIndex];
+      const previousText = String(previous?.text || '');
+      const previousSettled =
+        previous?.type === 'user_action' ||
+        previous?.isStreaming === false ||
+        (
+          previous?.type === 'answer' &&
+          previous?.isStreaming !== true &&
+          previous?.isLiveTyping !== true &&
+          previous?.streamState !== 'open' &&
+          previous?.isLive !== true
+        );
+      const incomingOpen = log?.isStreaming === true || log?.isLiveTyping === true;
+      reconciledLogs[previousIndex] = {
+        ...previous,
+        ...log,
+        text: text.length >= previousText.length ? log.text : previous.text,
+        startTime: previous.startTime || previous.timestamp || log.startTime || log.timestamp,
+        ...(previousSettled && incomingOpen
+          ? { isStreaming: false, isLiveTyping: false, isLive: false, streamState: 'closed' }
+          : {}),
+      };
+    });
+    return orderFeedTimelineLogs(reconciledLogs);
   };
   const getConsoleOutputText = (log: any) => {
     const candidates = [log?.output, log?.content, log?.outputPreview];
@@ -6276,8 +6321,12 @@ function DeepWorkUI() {
         if (existingUserIdx >= 0) {
           const optimisticUserLog = logs[existingUserIdx];
           logs[existingUserIdx] = {
-            ...processedLog,
             ...optimisticUserLog,
+            ...processedLog,
+            attachments: processedLog.attachments || optimisticUserLog.attachments,
+            selectedAgentId: processedLog.selectedAgentId || optimisticUserLog.selectedAgentId,
+            selectedAgentName: processedLog.selectedAgentName || optimisticUserLog.selectedAgentName,
+            chatMode: processedLog.chatMode ?? optimisticUserLog.chatMode,
             id: processedLog.id || optimisticUserLog.id,
             source: processedLog.source || optimisticUserLog.source,
             delegatedBy: processedLog.delegatedBy || optimisticUserLog.delegatedBy,
@@ -6332,7 +6381,12 @@ function DeepWorkUI() {
             ) {
               break;
             }
-            logs[i] = { ...logs[i], _streamingCancelled: true };
+            logs[i] = {
+              ...logs[i],
+              _streamingCancelled: true,
+              _cancelTraceIdx: trace._traceIdx,
+              _cancelledAt: processedLog.timestamp,
+            };
             break;
           }
         }
@@ -6366,8 +6420,23 @@ function DeepWorkUI() {
               mergeIdx = i;
               break;
             }
-            // Merge final note into a streaming-cancelled placeholder
-            if (logs[i]._streamingCancelled && incomingIsFinal) {
+            const cancellationTraceIdx = Number(logs[i]._cancelTraceIdx);
+            const incomingTraceIdx = Number(trace._traceIdx);
+            const cancelledAt = Number(logs[i]._cancelledAt || logs[i].endTime || logs[i].timestamp || 0);
+            const incomingAt = Number(processedLog.startTime || processedLog.timestamp || 0);
+            const orderedCancellation =
+              !Number.isFinite(cancellationTraceIdx) ||
+              !Number.isFinite(incomingTraceIdx) ||
+              incomingTraceIdx >= cancellationTraceIdx;
+            const closeInTime = !cancelledAt || !incomingAt || Math.abs(incomingAt - cancelledAt) <= 15_000;
+            const isAdjacentCancelledPlaceholder = Boolean(
+              logs[i]._streamingCancelled &&
+              incomingIsFinal &&
+              i === logs.length - 1 &&
+              orderedCancellation &&
+              closeInTime
+            );
+            if (isAdjacentCancelledPlaceholder) {
               mergeIdx = i;
               break;
             }
@@ -6415,6 +6484,8 @@ function DeepWorkUI() {
             startTime: logs[mergeIdx].startTime || processedLog.startTime,
             endTime: Math.max(Number(logs[mergeIdx].endTime || 0), traceAt),
             _streamingCancelled: undefined,
+            _cancelTraceIdx: undefined,
+            _cancelledAt: undefined,
           };
         } else {
           logs.push({ ...processedLog, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: processedLog.startTime, endTime: traceAt });
@@ -7075,10 +7146,24 @@ function DeepWorkUI() {
             // Prevents duplicate action containers by deduplicating on _traceIdx
             // ═══════════════════════════════════════════
             const processTraces = (existingLogs: any[]): any[] => {
+              const activeRunId = serverRunId || expectedRunId || '';
+              const hasRunScopedSnapshot = Boolean(activeRunId) && data.traces.every((trace: any) =>
+                String(trace?.runId || trace?.turnId || '').trim() === activeRunId
+              );
+              // Current task-store snapshots are run-scoped. Route them through
+              // the shared semantic upsert so active/background polling cannot
+              // drift into different feed behavior. The legacy processor below
+              // remains only for old unscoped persisted traces.
+              if (hasRunScopedSnapshot) {
+                return mergeServerRunLogs(stripAgentConnectionLogs(existingLogs), data.traces, {
+                  chatId,
+                  runId: activeRunId,
+                  startedAt: serverRunStart,
+                });
+              }
               let logs = canonicalizeThoughtStreamLogs(
                 normalizeBuilderUserActionLogs(stripAgentConnectionLogs([...existingLogs])),
               );
-              const activeRunId = serverRunId || expectedRunId || '';
               const latestExistingUser = [...logs].reverse().find((log: any) => log?.type === 'user_action');
               const latestExistingRunId = String(latestExistingUser?.runId || latestExistingUser?.turnId || '').trim();
               const hasAuthoritativeSuccessorTurn = Boolean(
@@ -7162,8 +7247,12 @@ function DeepWorkUI() {
                   if (existingUserIdx >= 0) {
                     const optimisticUserLog = logs[existingUserIdx];
                     logs[existingUserIdx] = {
-                      ...timedTrace,
                       ...optimisticUserLog,
+                      ...timedTrace,
+                      attachments: timedTrace.attachments || optimisticUserLog.attachments,
+                      selectedAgentId: timedTrace.selectedAgentId || optimisticUserLog.selectedAgentId,
+                      selectedAgentName: timedTrace.selectedAgentName || optimisticUserLog.selectedAgentName,
+                      chatMode: timedTrace.chatMode ?? optimisticUserLog.chatMode,
                       id: timedTrace.id || optimisticUserLog.id,
                       source: timedTrace.source || optimisticUserLog.source,
                       delegatedBy: timedTrace.delegatedBy || optimisticUserLog.delegatedBy,
@@ -7222,7 +7311,12 @@ function DeepWorkUI() {
                       ) {
                         break;
                       }
-                      logs[i] = { ...logs[i], _streamingCancelled: true };
+                      logs[i] = {
+                        ...logs[i],
+                        _streamingCancelled: true,
+                        _cancelTraceIdx: trace._traceIdx,
+                        _cancelledAt: timedTrace.timestamp,
+                      };
                       break;
                     }
                   }
@@ -7256,8 +7350,22 @@ function DeepWorkUI() {
                         mergeIdx = i;
                         break;
                       }
-                      // Merge final note into a streaming-cancelled placeholder (same subAgent, no noteId match needed)
-                      if (logs[i]._streamingCancelled && incomingIsFinal) {
+                      const cancellationTraceIdx = Number(logs[i]._cancelTraceIdx);
+                      const incomingTraceIdx = Number(trace._traceIdx);
+                      const cancelledAt = Number(logs[i]._cancelledAt || logs[i].endTime || logs[i].timestamp || 0);
+                      const incomingAt = Number(timedTrace.startTime || timedTrace.timestamp || 0);
+                      const orderedCancellation =
+                        !Number.isFinite(cancellationTraceIdx) ||
+                        !Number.isFinite(incomingTraceIdx) ||
+                        incomingTraceIdx >= cancellationTraceIdx;
+                      const closeInTime = !cancelledAt || !incomingAt || Math.abs(incomingAt - cancelledAt) <= 15_000;
+                      if (
+                        logs[i]._streamingCancelled &&
+                        incomingIsFinal &&
+                        i === logs.length - 1 &&
+                        orderedCancellation &&
+                        closeInTime
+                      ) {
                         mergeIdx = i;
                         break;
                       }
@@ -7305,6 +7413,8 @@ function DeepWorkUI() {
                       startTime: logs[mergeIdx].startTime || timedTrace.startTime,
                       endTime: Math.max(Number(logs[mergeIdx].endTime || 0), traceAt),
                       _streamingCancelled: undefined,
+                      _cancelTraceIdx: undefined,
+                      _cancelledAt: undefined,
                     };
                   } else {
                     logs.push({ ...timedTrace, type: 'work_note', text: noteText, subAgent, noteId, _traceIdx: trace._traceIdx, startTime: timedTrace.startTime, endTime: traceAt });
@@ -8754,8 +8864,10 @@ function DeepWorkUI() {
     const runStartedAt = Date.now();
     const clientRunId = crypto.randomUUID();
     const userLog = {
+      id: `user-turn-${ clientRunId }`,
       type: 'user_action',
       text: promptText,
+      source: 'human',
       attachments: userLogAttachments,
       runId: clientRunId,
       turnId: clientRunId,
@@ -10334,7 +10446,7 @@ function DeepWorkUI() {
       liveLogs = [];
     }
 
-    return [...filteredLogs, ...liveLogs];
+    return canonicalizeClientTraceLogs([...filteredLogs, ...liveLogs], activeChatId || undefined);
   }, [activeChatId, liveChatId, isLiveSessionActive, traceLogs, getLiveTraceLogs]);
 
   const activeTurnTraceLogs = useMemo(() => {

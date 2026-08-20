@@ -277,52 +277,69 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
   }));
   const entriesByBoundary = boundaryEntries.map(entry => [entry] as TimelineEntry[]);
   const preamble: TimelineEntry[] = [];
+  const boundariesByIdentity = new Map<string, TimelineEntry[]>();
+  const boundariesByTurn = new Map<string, TimelineEntry[]>();
+  const boundaryIndexBySourceIndex = new Map<number, number>();
 
-  const findOwnerBoundary = (log: any, sourceIndex: number): number => {
+  boundaryEntries.forEach((boundary) => {
+    boundaryIndexBySourceIndex.set(boundary.sourceIndex, boundary.boundaryIndex);
+    const identity = timelineIdentity(boundary.log);
+    if (!identity) return;
+    const identityEntries = boundariesByIdentity.get(identity) || [];
+    identityEntries.push(boundary);
+    boundariesByIdentity.set(identity, identityEntries);
+
+    const turnId = String(boundary.log?.turnId || '').trim();
+    if (!turnId) return;
+    const turnKey = `${ identity }::${ turnId }`;
+    const turnEntries = boundariesByTurn.get(turnKey) || [];
+    turnEntries.push(boundary);
+    boundariesByTurn.set(turnKey, turnEntries);
+  });
+
+  const selectNearestPrecedingBoundary = (matches: TimelineEntry[], log: any): number => {
+    if (matches.length === 0) return -1;
+    if (matches.length === 1) return matches[0].boundaryIndex;
+    let selected: TimelineEntry | null = null;
+    for (const boundary of matches) {
+      if (compareTimelinePositions(boundary.log, log) <= 0) selected = boundary;
+    }
+    return (selected || matches[matches.length - 1]).boundaryIndex;
+  };
+
+  const findOwnerBoundary = (log: any): number => {
     const identity = timelineIdentity(log);
     if (!identity) return -1;
 
-    const exactTurnMatches = boundaryEntries.filter(boundary =>
-      String(boundary.log?.turnId || '').trim() === String(log?.turnId || '').trim() &&
-      String(log?.turnId || '').trim() !== '' &&
-      timelineIdentity(boundary.log) === identity
-    );
+    const turnId = String(log?.turnId || '').trim();
+    const exactTurnMatches = turnId
+      ? boundariesByTurn.get(`${ identity }::${ turnId }`) || []
+      : [];
     if (exactTurnMatches.length > 0) {
-      if (exactTurnMatches.length === 1) return exactTurnMatches[0].boundaryIndex;
-      const preceding = exactTurnMatches.filter(boundary =>
-        compareTimelinePositions(boundary.log, log) <= 0
-      );
-      return (preceding.length > 0 ? preceding : exactTurnMatches)[
-        (preceding.length > 0 ? preceding : exactTurnMatches).length - 1
-      ].boundaryIndex;
+      return selectNearestPrecedingBoundary(exactTurnMatches, log);
     }
-
-    const runMatches = boundaryEntries.filter(boundary => timelineIdentity(boundary.log) === identity);
-    if (runMatches.length === 0) return -1;
-    if (runMatches.length === 1) return runMatches[0].boundaryIndex;
 
     // Proxy-backed runs can contain multiple user boundaries under one run
     // ID. Use the trace/timestamp position to select the most recent boundary
     // that precedes this event; otherwise transport order wins.
-    const preceding = runMatches.filter(boundary => compareTimelinePositions(boundary.log, log) <= 0);
-    return (preceding.length > 0 ? preceding : runMatches)[
-      (preceding.length > 0 ? preceding : runMatches).length - 1
-    ].boundaryIndex;
+    return selectNearestPrecedingBoundary(boundariesByIdentity.get(identity) || [], log);
   };
 
+  let nearestBoundaryIndex = -1;
   source.forEach((log, sourceIndex) => {
-    if (!log || log.type === 'user_action') return;
-    const boundaryIndex = findOwnerBoundary(log, sourceIndex);
+    if (!log) return;
+    if (log.type === 'user_action') {
+      nearestBoundaryIndex = boundaryIndexBySourceIndex.get(sourceIndex) ?? nearestBoundaryIndex;
+      return;
+    }
+    const boundaryIndex = findOwnerBoundary(log);
     const entry = { log, sourceIndex, boundaryIndex };
     if (boundaryIndex >= 0) entriesByBoundary[boundaryIndex].push(entry);
     else if (sourceIndex < boundaryEntries[0].sourceIndex) preamble.push(entry);
     else {
       // Truly unscoped helper rows stay with their original neighboring turn.
       // They are not safe to move across a user boundary.
-      const nearestBoundary = boundaryEntries.reduce((nearest, boundary) =>
-        boundary.sourceIndex <= sourceIndex ? boundary : nearest,
-      boundaryEntries[0]);
-      entriesByBoundary[nearestBoundary.boundaryIndex].push(entry);
+      entriesByBoundary[Math.max(0, nearestBoundaryIndex)].push(entry);
     }
   });
 

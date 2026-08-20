@@ -578,9 +578,19 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
   const incomingStart = Number(incoming?.startTime || incoming?.timestamp || 0);
   const previousEnd = Number(previous?.endTime || previous?.timestamp || 0);
   const incomingEnd = Number(incoming?.endTime || incoming?.timestamp || 0);
-  const previousNarrativeClosed =
-    (previous?.type === 'thought_stream' || previous?.type === 'work_note') &&
-    (previous?.isStreaming === false || previous?.streamState === 'closed');
+  const terminalStatuses = new Set(['completed', 'done', 'success', 'failed', 'error', 'stopped', 'closed']);
+  const previousClosed =
+    previous?.isStreaming === false ||
+    previous?.streamState === 'closed' ||
+    previous?.final === true ||
+    previous?.done === true ||
+    terminalStatuses.has(String(previous?.status || '').toLowerCase());
+  const incomingOpen =
+    incoming?.isStreaming === true ||
+    incoming?.isLiveTyping === true ||
+    incoming?.streamState === 'open' ||
+    ['running', 'working', 'pending'].includes(String(incoming?.status || '').toLowerCase());
+  const preserveClosedLifecycle = previousClosed && incomingOpen;
   const narrativeRank = (type: any) =>
     type === 'autonomy_proxy_status' ? 3 : type === 'work_note' ? 2 : type === 'thought_stream' ? 1 : 0;
   const preferredType = narrativeRank(previous?.type) > narrativeRank(incoming?.type)
@@ -594,12 +604,15 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
     startTime: previousStart > 0 && incomingStart > 0
       ? Math.min(previousStart, incomingStart)
       : previousStart || incomingStart || undefined,
-    endTime: (previousNarrativeClosed ? previousEnd || incomingEnd : Math.max(previousEnd, incomingEnd)) || undefined,
-    ...(previousNarrativeClosed
+    endTime: (preserveClosedLifecycle ? previousEnd || incomingEnd : Math.max(previousEnd, incomingEnd)) || undefined,
+    ...(preserveClosedLifecycle
       ? {
         timestamp: previous?.timestamp ?? previous?.endTime ?? incoming?.timestamp,
         isStreaming: false,
+        isLiveTyping: false,
+        isLive: false,
         streamState: 'closed',
+        status: previous?.status,
       }
       : {}),
     wasStreaming: Boolean(
@@ -646,13 +659,33 @@ const dedupeFeedLogs = (logs: any[]) => {
         ? userBoundaryTurnIndexes.get(explicitTurnKey)
         : undefined;
       if (priorExplicitTurnIndex !== undefined) {
-        // Streaming transcription can replace a partial user sentence with a
-        // longer final sentence under the same turn ID. Update the existing
-        // bubble in place instead of creating a second conversation turn.
-        deduped[priorExplicitTurnIndex] = mergeDuplicateFeedLog(deduped[priorExplicitTurnIndex], log);
-        if (stableKey) stableIndexes.set(stableKey, priorExplicitTurnIndex);
-        if (normalizedUserText) liveUserTextIndexes.set(`${ source }::${ normalizedUserText }`, priorExplicitTurnIndex);
-        return;
+        const priorBoundary = deduped[priorExplicitTurnIndex];
+        const priorText = normalizeTraceText(priorBoundary?.text);
+        const compatibleTranscript = Boolean(
+          priorText && normalizedUserText &&
+          (priorText === normalizedUserText || priorText.startsWith(normalizedUserText) || normalizedUserText.startsWith(priorText))
+        );
+        const hasAssistantResponseBetween = deduped.slice(priorExplicitTurnIndex + 1).some(candidate =>
+          candidate?.type === 'answer' ||
+          ['command', 'tool_call', 'exploration', 'file_edit', 'browser'].includes(candidate?.type)
+        );
+        const isTransportReconciliation = Boolean(
+          priorBoundary?._traceIdx === undefined ||
+          priorBoundary?._traceIdx === null ||
+          log?._traceIdx === undefined ||
+          log?._traceIdx === null ||
+          priorBoundary?.isLive ||
+          log?.isLive
+        );
+        // A live transcription can replace its own partial sentence. A Proxy
+        // run may reuse the same turn id for several real user boundaries, so
+        // an id match alone cannot collapse later messages into the first one.
+        if (!hasAssistantResponseBetween && compatibleTranscript && isTransportReconciliation) {
+          deduped[priorExplicitTurnIndex] = mergeDuplicateFeedLog(priorBoundary, log);
+          if (stableKey) stableIndexes.set(stableKey, priorExplicitTurnIndex);
+          if (normalizedUserText) liveUserTextIndexes.set(`${ source }::${ normalizedUserText }`, priorExplicitTurnIndex);
+          return;
+        }
       }
       const liveUserKey = `${ source }::${ normalizedUserText }`;
       const priorLiveIndex = liveUserTextIndexes.get(liveUserKey);
@@ -683,13 +716,12 @@ const dedupeFeedLogs = (logs: any[]) => {
         const priorBoundary = deduped[priorBoundaryIndex];
         const priorIsOptimistic = priorBoundary?._traceIdx === undefined || priorBoundary?._traceIdx === null;
         const incomingIsOptimistic = log._traceIdx === undefined || log._traceIdx === null;
-        const priorTurnId = String(priorBoundary?.turnId || '').trim();
         // Live snapshots and persisted traces can carry different delivery
         // indices while still representing the exact same user boundary.
-        // An explicit turn ID is authoritative; the broader run ID is not,
-        // because proxy runs may legitimately contain several user turns.
-        const sameExplicitTurn = Boolean(turnId && priorTurnId && turnId === priorTurnId);
-        if (sameExplicitTurn || priorIsOptimistic || incomingIsOptimistic) {
+        // Only an optimistic/live boundary is safe to reconcile here. Two
+        // persisted events with different stable IDs are distinct even when a
+        // Proxy runtime reused the same turn id and text.
+        if (priorIsOptimistic || incomingIsOptimistic || priorBoundary?.isLive || log?.isLive) {
           deduped[priorBoundaryIndex] = mergeDuplicateFeedLog(priorBoundary, log);
           if (stableKey) stableIndexes.set(stableKey, priorBoundaryIndex);
           return;
@@ -961,15 +993,23 @@ const getTraceActivitySignature = (logs: any[]) => {
 const getGroupMountIdentity = (group: any[], groupIdx: number) => {
   const anchor = group[0];
   if (!anchor) return `pending-${ groupIdx }`;
-  return String(
+  const scope = String(
+    anchor.turnId ||
+    anchor.runId ||
+    anchor.ownerChatId ||
+    anchor.chatId ||
+    `group-${ groupIdx }`
+  );
+  const event = String(
     anchor.id ??
+    anchor.traceId ??
     anchor._traceIdx ??
-    anchor.turnId ??
     anchor.responseKey ??
     anchor.timestamp ??
     anchor.startTime ??
-    `${ anchor.type || 'log' }-${ groupIdx }`
+    groupIdx
   );
+  return `${ scope }:${ anchor.type || 'log' }:${ event }`;
 };
 
 const countVisibleWorkflowActions = (logs: any[]) => {
@@ -1142,6 +1182,13 @@ const getWorkElapsedFromBounds = (start: number | null, end: number | null) => {
   return Math.floor(elapsedMs / 1000);
 };
 
+const hasVisibleWorkNote = (logs: any[]) => (Array.isArray(logs) ? logs : []).some(log =>
+  log?.type === 'work_note' &&
+  !isHiddenStatusOnlyLog(log) &&
+  Boolean(String(log?.text || '').trim()) &&
+  !isInternalWorkNoteNoise(log?.text)
+);
+
 const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | null) => {
   const [seconds, setSeconds] = React.useState(0);
   const sessionStartRef = React.useRef<number | null>(null);
@@ -1201,6 +1248,7 @@ const ThoughtSequence = ({
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const anchorFrameRef = React.useRef<number | null>(null);
+  const userControlledOpenRef = React.useRef(false);
   // Latch: once hasAnswer becomes true, never re-open on a transient false
   const hasAnswerLatchRef = React.useRef(false);
   // The trace stream is more precise than the briefly stale global running
@@ -1215,6 +1263,7 @@ const ThoughtSequence = ({
   // Reset latch when this component's group index changes (new conversation turn)
   React.useEffect(() => {
     hasAnswerLatchRef.current = false;
+    userControlledOpenRef.current = false;
   }, [groupIdx]);
 
   const setOpenPreservingViewport = React.useCallback((nextOpen: boolean) => {
@@ -1247,6 +1296,7 @@ const ThoughtSequence = ({
   }, []);
 
   React.useEffect(() => {
+    if (userControlledOpenRef.current) return;
     if (isLiveThinking) {
       setOpenPreservingViewport(true);
       return;
@@ -1264,24 +1314,25 @@ const ThoughtSequence = ({
   }, [hasAnswer, isLiveThinking, setOpenPreservingViewport]);
 
   const toggleOpen = () => {
+    userControlledOpenRef.current = true;
     setOpenPreservingViewport(!open);
   };
 
   const isOpen = open;
   const hasRealActions = stepCount > 0;
-  // A direct answer can still carry a provider-generated thought/work-note
-  // trace. Once the answer is settled, that narrative is not user-visible
-  // work and must not create a fake Working chip or duration summary.
-  const isSettledNarrativeOnly = hasAnswer && !isLiveThinking && !hasRealActions;
+  const hasNarrativeWorkNote = hasVisibleWorkNote(turnLogs);
+  // Hide provider-only narration after a direct answer, but retain explicit
+  // user-facing work notes so completed progress does not disappear.
+  const isSettledNarrativeOnly = hasAnswer && !isLiveThinking && !hasRealActions && !hasNarrativeWorkNote;
   // Start the timer as soon as the turn is active. Waiting for the first
   // trace made the live pill appear late, then disappear/reappear as polling
   // swapped between an empty group and its first streamed event.
   const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, turnLogs, turnEndedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
-  if (isSettledNarrativeOnly || (!shouldShowWorkflowSequence(stepCount) && !isLiveThinking)) return null;
+  if (isSettledNarrativeOnly || (!shouldShowWorkflowSequence(stepCount) && !isLiveThinking && !hasNarrativeWorkNote)) return null;
 
-  const hasCounter = hasRealActions;
+  const hasCounter = hasRealActions || hasNarrativeWorkNote;
   const isCollapsedWithAnswer = hasAnswer && !isOpen;
   const isLiveWorkCounter = isLiveThinking;
   const hasTerminalBoundary = hasAnswer || hasInteractionBoundary || turnLogs.some(isTerminalWorkTrace);
@@ -1301,7 +1352,7 @@ const ThoughtSequence = ({
     <div className="relative" ref={containerRef}>
       {showWorkedSummary && <div className="eterx-worked-summary mb-1 flex w-full items-center gap-4 pt-0"><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /><span className="eterx-worked-summary-label shrink-0 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]"><span>Worked for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></span><div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" /></div>}
       {hasCounter && <div className={`eterx-process-summary-row ${ isCollapsedWithAnswer ? 'mb-1.5' : 'mb-1' } flex w-full items-center py-1`}>
-        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border border-[var(--border)] bg-[var(--muted)] px-3 text-[13px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-none backdrop-blur-[12px] transition-[background,border-color,color,box-shadow] duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer active={false} className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-0 pb-[1px] leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><span>Working for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer' }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{stepCount > 0 ? <><span className="eterx-professional-number">{stepCount}</span> action{stepCount !== 1 ? 's' : ''}</> : 'Working'}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
+        {isLiveWorkCounter ? <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip eterx-process-summary-chip-live group inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-[10px] border border-[var(--border)] bg-[var(--muted)] px-3 text-[13px] font-medium leading-none tracking-[-0.01em] text-[var(--muted-foreground)] shadow-none backdrop-blur-[12px] transition-[background,border-color,color,box-shadow] duration-150 hover:border-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]"><Shimmer active={false} className="eterx-process-summary-label inline-flex -translate-y-[0.5px] items-center gap-0 pb-[1px] leading-none" style={{ color: 'var(--eterx-ui-working-text)' }}><span>Working for&nbsp;</span><RollingTimeDisplay label={workElapsedLabel} /></Shimmer>{isOpen ? <ChevronDown className="h-3 w-3 -translate-y-[0.5px] opacity-50" /> : <ChevronRight className="h-3 w-3 -translate-y-[0.5px] opacity-50" />}</button> : <button type="button" onClick={toggleOpen} aria-expanded={isOpen} className="eterx-process-summary-chip inline-flex h-[30px] items-center gap-1.5 transition-all duration-200" style={{ ...compactCounterStyle, cursor: 'pointer' }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = 'var(--foreground)'; (e.currentTarget as HTMLElement).style.background = counterHoverBackground; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = counterColor; (e.currentTarget as HTMLElement).style.background = counterBackground; }}><span className="eterx-process-summary-icon" style={{ display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 8, color: 'inherit', background: 'var(--border)', outline: '1px solid var(--border)' }}><StepCounterIcon live={isLiveThinking} /></span><Shimmer active={isLiveThinking} className="eterx-process-summary-label" style={{ fontSize: 13, fontWeight: 650, letterSpacing: 0, lineHeight: 1 } as any}>{stepCount > 0 ? <><span className="eterx-professional-number">{stepCount}</span> action{stepCount !== 1 ? 's' : ''}</> : 'Work update'}</Shimmer>{isOpen ? <ChevronDown style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} /> : <ChevronRight style={{ width: 9, height: 9, flexShrink: 0, opacity: 0.6 }} />}</button>}
       </div>}
 
       {isOpen && (
@@ -1844,11 +1895,15 @@ const ChatFeedMessageGroup = React.memo(({
           ...(seg.logs || []),
           ...(isLastThoughts ? liveActionLogs : []),
         ]);
+        const segmentHasWorkNote = hasVisibleWorkNote([
+          ...(seg.logs || []),
+          ...(isLastThoughts ? liveActionLogs : []),
+        ]);
 
         // A settled or streaming direct answer may have a provider narration
         // row but no actual workflow action. Keep that answer on the normal
         // answer surface instead of manufacturing a thought-sequence card.
-        if (displayFinalAnswer && stepCount === 0) return null;
+        if (displayFinalAnswer && stepCount === 0 && !segmentHasWorkNote) return null;
         if (stepCount === 0 && (seg.logs || []).length === 0 && !(groupIsThinking && isLastThoughts)) return null;
 
         return (

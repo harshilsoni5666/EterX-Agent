@@ -1150,7 +1150,6 @@ const FileOperationSummaryPanel = ({
   rolledBack?: boolean;
   flush?: boolean;
 }) => {
-  const [expanded, setExpanded] = useState(false);
   const [selectedPath, setSelectedPath] = useState(changes[0]?.path || '');
   useEffect(() => {
     if (!selectedPath && changes[0]?.path) setSelectedPath(changes[0].path);
@@ -1158,13 +1157,6 @@ const FileOperationSummaryPanel = ({
   const totalFiles = filesModified.length + filesCreated.length + filesDeleted.length;
   const hasErrors = errors.length > 0;
   const success = totalFiles > 0 && !hasErrors;
-  const operationLabel = filesCreated.length > 0 && filesModified.length === 0 && filesDeleted.length === 0
-    ? 'Created'
-    : filesModified.length > 0 && filesCreated.length === 0 && filesDeleted.length === 0
-      ? 'Edited'
-      : filesDeleted.length > 0 && filesCreated.length === 0 && filesModified.length === 0
-        ? 'Deleted'
-        : 'Updated';
 
   type FileEntry = { path: string; kind: 'modified' | 'created' | 'deleted'; detail?: FileChangeDetail };
   const detailByPath = new Map(changes.map(change => [change.path.replace(/\\/g, '/').toLowerCase(), change]));
@@ -1191,56 +1183,46 @@ const FileOperationSummaryPanel = ({
     deleted: { bar: 'bg-red-500', verb: 'Deleted' },
   };
 
-  return (
-    <div>
-      <div className={`eterx-patch-summary-panel flex flex-col font-mono shadow-none ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514]' }`}>
-        {/* Header */}
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-white/[0.02] border-b border-white/[0.045] px-3 py-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-            <span className={`h-2 w-2 rounded-full flex-shrink-0 ${ success ? 'bg-emerald-400 shadow-none' : hasErrors ? 'bg-red-400 shadow-none' : 'bg-amber-400' }`} />
-            <span className="text-[12px] font-semibold text-[#C8C2BB]">
-              {success ? `${ operationLabel } ${ totalFiles } file${ totalFiles !== 1 ? 's' : '' }` : hasErrors ? `${ rolledBack ? 'Changes rolled back' : 'File operation failed' } · ${ errors.length }` : 'No file changes'}
-            </span>
-            {/* Stat pills */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              {rolledBack && (
-                <span className="rounded-[5px] border border-amber-500/25 bg-amber-500/15 px-1.5 py-[1px] text-[10.5px] font-semibold text-amber-300">rolled back</span>
-              )}
-              {filesCreated.length > 0 && (
-                <span className="rounded-[5px] border px-1.5 py-[1px] text-[10.5px] font-semibold bg-emerald-500/15 text-emerald-300 border-emerald-500/25">+{filesCreated.length} new</span>
-              )}
-              {filesModified.length > 0 && (
-                <span className="rounded-[5px] border px-1.5 py-[1px] text-[10.5px] font-semibold bg-sky-500/15 text-sky-300 border-sky-500/25">~{filesModified.length} edited</span>
-              )}
-              {filesDeleted.length > 0 && (
-                <span className="rounded-[5px] border px-1.5 py-[1px] text-[10.5px] font-semibold bg-red-500/15 text-red-300 border-red-500/25">−{filesDeleted.length} deleted</span>
-              )}
-            </div>
-          </div>
-          {(allFiles.length > 0 || hasErrors) && (
-            <button
-              type="button"
-              onClick={() => setExpanded(v => !v)}
-              className="eterx-action-icon-button flex h-6 w-6 items-center justify-center rounded-[6px] border border-white/[0.06] bg-white/[0.028] text-[#9A9389] transition-colors hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-[#DAD4CA]"
-              aria-label={expanded ? 'Collapse' : 'Expand'}
-            >
-              <ChevronRight className={`h-3 w-3 transition-transform ${ expanded ? 'rotate-90' : '' }`} />
-            </button>
-          )}
-        </div>
+  if (success && allFiles.length === 1) {
+    const file = allFiles[0];
+    const filename = file.path.replace(/\\/g, '/').split('/').pop() || file.path;
+    if (selectedDiffLines.length > 0) {
+      return (
+        <InlineDiffView
+          filename={filename}
+          filepath={file.path}
+          diffLines={selectedDiffLines}
+          showExpand={false}
+          flush
+        />
+      );
+    }
+    if (file.detail?.readback) {
+      return (
+        <InlineCodeView
+          filename={filename}
+          content={file.detail.readback}
+          filepath={file.path}
+          stats={{ added: Number(file.detail.additions || 0), removed: Number(file.detail.deletions || 0) }}
+          showExpand={false}
+          created={file.kind === 'created'}
+          flush
+        />
+      );
+    }
+    return (
+      <InlineMissingDiffView
+        filename={filename}
+        filepath={file.path}
+        stats={{ added: Number(file.detail?.additions || 0), removed: Number(file.detail?.deletions || 0) }}
+        flush
+      />
+    );
+  }
 
-        {/* Expandable file list */}
-        <AnimatePresence initial={false}>
-          {expanded && (
-            <motion.div
-              key="patch-files"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-              className="overflow-hidden"
-            >
-              {allFiles.map((f, i) => {
+  return (
+    <div className={`eterx-patch-summary-panel flex flex-col overflow-hidden shadow-none ${ flush ? 'border-t border-white/[0.052] bg-transparent' : 'mx-3 mt-1.5 mb-2 rounded-[12px] border border-white/[0.07] bg-[#151514]' }`}>
+      {allFiles.map((f, i) => {
                 const style = kindStyle[f.kind];
                 const pathParts = f.path.replace(/\\/g, '/').split('/');
                 const name = pathParts.pop() || f.path;
@@ -1272,31 +1254,39 @@ const FileOperationSummaryPanel = ({
                     </div>
                   </button>
                 );
-              })}
-              {hasErrors && errors.map((err, i) => (
-                <div key={`err-${ i }`} className="flex items-start gap-0 border-t border-white/[0.045]">
-                  <div className="w-[3px] self-stretch shrink-0 bg-red-500" />
-                  <div className="flex min-w-0 flex-1 items-start gap-2 px-3 py-[5px]">
-                    <span className="shrink-0 rounded-[4px] border border-red-500/25 bg-red-500/15 px-1.5 py-[1px] text-[10px] font-semibold text-red-300">error</span>
-                    <span className="min-w-0 flex-1 break-words text-[11.5px] leading-[1.45] text-[#E6AAA4]">{err}</span>
-                  </div>
-                </div>
-              ))}
-              {selectedFile && selectedDiffLines.length > 0 ? (
-                <div className="border-t border-white/[0.055] bg-[#151514] px-2 pb-1 pt-0.5">
-                  <InlineDiffView
-                    filename={selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path}
-                    filepath={selectedFile.path}
-                    diffLines={selectedDiffLines}
-                    showExpand
-                    flush
-                  />
-                </div>
-              ) : null}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+      })}
+      {hasErrors && errors.map((err, i) => (
+        <div key={`err-${ i }`} className="flex items-start gap-0 border-t border-white/[0.045]">
+          <div className="w-[3px] self-stretch shrink-0 bg-red-500" />
+          <div className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2">
+            <span className="shrink-0 text-[11px] font-medium text-red-300">{rolledBack ? 'Rolled back' : 'Error'}</span>
+            <span className="min-w-0 flex-1 break-words text-[11.5px] leading-[1.45] text-[#E6AAA4]">{err}</span>
+          </div>
+        </div>
+      ))}
+      {selectedFile && selectedDiffLines.length > 0 ? (
+        <div className="border-t border-white/[0.055] bg-[#151514] px-2 pb-1 pt-0.5">
+          <InlineDiffView
+            filename={selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path}
+            filepath={selectedFile.path}
+            diffLines={selectedDiffLines}
+            showExpand={false}
+            flush
+          />
+        </div>
+      ) : selectedFile?.detail?.readback ? (
+        <div className="border-t border-white/[0.055] bg-[#151514]">
+          <InlineCodeView
+            filename={selectedFile.path.replace(/\\/g, '/').split('/').pop() || selectedFile.path}
+            content={selectedFile.detail.readback}
+            filepath={selectedFile.path}
+            stats={{ added: Number(selectedFile.detail.additions || 0), removed: Number(selectedFile.detail.deletions || 0) }}
+            showExpand={false}
+            created={selectedFile.kind === 'created'}
+            flush
+          />
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -2542,7 +2532,10 @@ const getActionLookupIdentity = (log: any) => [
 ].join('|');
 
 const getStableActionEventId = (log: any) => {
-  const value = log?.traceId ?? log?.id ?? log?._traceIdx ?? log?.toolCallId ?? log?.streamId ?? log?.taskId ?? log?.backgroundTaskId ?? null;
+  // Tool/stream ownership survives the optimistic-to-persisted handoff while
+  // transport trace ids can change. Prefer that semantic identity so an open
+  // terminal or file detail does not remount and collapse mid-update.
+  const value = log?.toolCallId ?? log?.streamId ?? log?.taskId ?? log?.backgroundTaskId ?? log?.traceId ?? log?.id ?? log?._traceIdx ?? null;
   return value === null || value === undefined ? '' : String(value);
 };
 
@@ -2890,23 +2883,6 @@ const TerminalTraceCard = ({
   // Terminal output is always opt-in. Streaming output must never expand the
   // inline console or steal attention from the live action sequence.
   const [isExpanded, setIsExpanded] = useState(false);
-  const userSetExpansionRef = useRef(false);
-  const commandIdentity = [
-    log?.streamId ?? preview?.streamId
-      ?? log?.taskId ?? log?.backgroundTaskId ?? preview?.taskId ?? preview?.backgroundTaskId
-      ?? log?.ownerTraceId ?? preview?.ownerTraceId
-      ?? log?.traceId ?? log?.id ?? log?._traceIdx ?? '',
-    command,
-  ].join('|');
-  const lastCommandIdentityRef = useRef(commandIdentity);
-
-  useEffect(() => {
-    if (commandIdentity !== lastCommandIdentityRef.current) {
-      lastCommandIdentityRef.current = commandIdentity;
-      userSetExpansionRef.current = false;
-      setIsExpanded(false);
-    }
-  }, [commandIdentity]);
 
   // If this is a timer/schedule log, render an unopenable static status row with seconds/mins
   if (isTimer) {
@@ -2951,7 +2927,6 @@ const TerminalTraceCard = ({
         type="button"
         onClick={(event) => {
           event.stopPropagation();
-          userSetExpansionRef.current = true;
           setIsExpanded(open => !open);
         }}
         aria-expanded={isExpanded}
@@ -3028,12 +3003,13 @@ const FileChangeTraceCard = ({
         const previewPath = normalizePath(item?.filepath || item?.filename);
         return previewPath && (previewPath === changePath || previewPath.endsWith(`/${ changePath }`) || changePath.endsWith(`/${ previewPath }`));
       });
-      if (!matchingPreview || !Array.isArray(matchingPreview.diffLines)) return change;
+      if (!matchingPreview) return change;
       return {
         ...change,
         additions: Number.isFinite(Number(matchingPreview.linesAdded)) ? Number(matchingPreview.linesAdded) : change.additions,
         deletions: Number.isFinite(Number(matchingPreview.linesRemoved)) ? Number(matchingPreview.linesRemoved) : change.deletions,
-        diffLines: matchingPreview.diffLines,
+        diffLines: Array.isArray(matchingPreview.diffLines) ? matchingPreview.diffLines : change.diffLines,
+        readback: change.readback || getPreviewContent(matchingPreview),
       };
     });
     const filesModified = (src?.filesModified ?? structuredChanges.filter(change => change.action === 'modified').map(change => change.path)) as string[];
@@ -3379,10 +3355,6 @@ const ActionChip = ({
     return null;
   }, [allLogs, displayToolName, isEdit, isRead, log, logFileTargets]);
   const [isExpanded, setIsExpanded] = useState(false);
-  const actionIdentity = `${ getStableActionEventId(log) }|${ getActionLookupIdentity(log) }`;
-  useEffect(() => {
-    setIsExpanded(false);
-  }, [actionIdentity]);
   const fileTargets = useMemo(() => collectFileTargets(log, preview), [log, preview]);
   const primaryTarget = fileTargets[0] || null;
   const rawPath = primaryTarget?.filepath || '';
@@ -4000,17 +3972,10 @@ const CollapsibleActionGroup = ({
 }: {
   logs: any[], isActiveGroup: boolean, isLast: boolean, allLogs: any[], isAgentBuilder?: boolean
 }) => {
-  // Live work should be inspectable immediately. Larger completed batches
-  // stay compact when a user reopens the work sequence.
-  const [open, setOpen] = useState(() => isActiveGroup || logs.length <= 3);
-  const wasActiveRef = useRef(isActiveGroup);
-  useEffect(() => {
-    // A group can be created before the transport marks it live. Open it once
-    // that transition arrives, but preserve a user's manual collapse while it
-    // remains active on subsequent polling updates.
-    if (isActiveGroup && !wasActiveRef.current) setOpen(true);
-    wasActiveRef.current = isActiveGroup;
-  }, [isActiveGroup]);
+  // Action batches and terminal/file details are user-controlled. Polling can
+  // change liveness without changing this state, so a manual expansion stays
+  // stable and a background action never opens UI on the user's behalf.
+  const [open, setOpen] = useState(false);
   const visibleLogs = logs.filter(Boolean);
   if (visibleLogs.length === 0) return null;
 

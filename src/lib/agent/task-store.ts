@@ -252,20 +252,29 @@ function trimTask(task: PersistedTask, compactAll = false): void {
   if (compactAll) task.traceLogs = task.traceLogs.map(compactTraceEvent);
 }
 
-function settleOrphanedLiveTraces(traceLogs: any[], completedAt: number): any[] {
+function settleOrphanedLiveTraces(traceLogs: any[], completedAt: number, interrupted = true): any[] {
   return (Array.isArray(traceLogs) ? traceLogs : []).map((trace: any) => {
-    if (trace?.type !== 'console_output' || trace?.isStreaming !== true) return trace;
+    const isLive =
+      trace?.isStreaming === true ||
+      trace?.isLiveTyping === true ||
+      trace?.isDelta === true ||
+      trace?.streamState === 'open';
+    const canRemainLive = ['console_output', 'work_note', 'thought_stream', 'answer'].includes(String(trace?.type || ''));
+    if (!isLive || !canRemainLive) return trace;
     const startedAt = Number(trace.startTime || trace.timestamp || completedAt);
-    return {
+    const settled = {
       ...trace,
       isStreaming: false,
+      isLiveTyping: false,
       isDelta: false,
       streamState: 'closed',
-      exitCode: typeof trace.exitCode === 'number' ? trace.exitCode : 1,
       endTime: completedAt,
       durationMs: Math.max(0, completedAt - startedAt),
-      interrupted: true,
+      interrupted,
     };
+    return trace.type === 'console_output'
+      ? { ...settled, exitCode: typeof trace.exitCode === 'number' ? trace.exitCode : interrupted ? 1 : 0 }
+      : settled;
   });
 }
 
@@ -435,7 +444,28 @@ export const taskStore = {
       closeThoughtStreamsForBoundary(task.traceLogs, timedEvent);
     }
 
-    if (timedEvent?.type === 'thought_stream') {
+    if (timedEvent?.type === 'user_action') {
+      const eventId = String(timedEvent.id || '').trim();
+      const eventRunId = String(timedEvent.runId || timedEvent.turnId || task.runId || '').trim();
+      const traceIndex = timedEvent._traceIdx;
+      const existingUserIndex = task.traceLogs.findIndex((log: any) => {
+        if (log?.type !== 'user_action') return false;
+        const logRunId = String(log.runId || log.turnId || '').trim();
+        if (eventRunId && logRunId && eventRunId !== logRunId) return false;
+        const sameId = eventId && String(log.id || '').trim() === eventId;
+        const sameTraceIndex = traceIndex !== undefined && traceIndex !== null && log._traceIdx === traceIndex;
+        return Boolean(sameId || sameTraceIndex);
+      });
+      if (existingUserIndex >= 0) {
+        task.traceLogs[existingUserIndex] = {
+          ...task.traceLogs[existingUserIndex],
+          ...timedEvent,
+          startTime: task.traceLogs[existingUserIndex].startTime || timedEvent.startTime || timedEvent.timestamp,
+        };
+      } else {
+        task.traceLogs.push(timedEvent);
+      }
+    } else if (timedEvent?.type === 'thought_stream') {
       mergeThoughtStreamTrace(task.traceLogs, timedEvent);
     } else if (timedEvent?.type === 'answer_cancel') {
       const answerId = String(timedEvent.answerId || '').trim();
@@ -515,7 +545,19 @@ export const taskStore = {
           (log.subAgentChatId || log.subAgentId || log.subAgent || null) === subAgentIdentity &&
           (!noteId || log.noteId === noteId)
         ) {
-          task.traceLogs[i] = { ...log, _streamingCancelled: true };
+          const existingTraceIdx = Number(log._traceIdx);
+          const cancellationTraceIdx = Number(timedEvent._traceIdx);
+          if (
+            Number.isFinite(existingTraceIdx) &&
+            Number.isFinite(cancellationTraceIdx) &&
+            cancellationTraceIdx < existingTraceIdx
+          ) break;
+          task.traceLogs[i] = {
+            ...log,
+            _streamingCancelled: true,
+            _cancelTraceIdx: timedEvent._traceIdx,
+            _cancelledAt: timedEvent.timestamp,
+          };
           break;
         }
       }
@@ -536,8 +578,25 @@ export const taskStore = {
         ) continue;
         const sameNote = noteId && log.noteId && log.noteId === noteId;
         const sameText = String(log.text || '').trim() === noteText.trim();
-        // Also merge final note into a streaming-cancelled placeholder
-        const isCancelledPlaceholder = log._streamingCancelled && incomingIsFinal;
+        // A cancellation may be immediately followed by the permanent form of
+        // the same streamed note. Do not reuse an older cancelled row after an
+        // action or a later phase has already started.
+        const cancellationTraceIdx = Number(log._cancelTraceIdx);
+        const incomingTraceIdx = Number(timedEvent._traceIdx);
+        const cancelledAt = Number(log._cancelledAt || log.endTime || log.timestamp || 0);
+        const incomingAt = Number(timedEvent.startTime || timedEvent.timestamp || 0);
+        const orderedCancellation =
+          !Number.isFinite(cancellationTraceIdx) ||
+          !Number.isFinite(incomingTraceIdx) ||
+          incomingTraceIdx >= cancellationTraceIdx;
+        const closeInTime = !cancelledAt || !incomingAt || Math.abs(incomingAt - cancelledAt) <= 15_000;
+        const isCancelledPlaceholder = Boolean(
+          log._streamingCancelled &&
+          incomingIsFinal &&
+          i === task.traceLogs.length - 1 &&
+          orderedCancellation &&
+          closeInTime
+        );
         if (sameNote || sameText || isCancelledPlaceholder) {
           mergeIdx = i;
           break;
@@ -561,6 +620,8 @@ export const taskStore = {
             Number(timedEvent.timestamp || 0),
           ),
           _streamingCancelled: undefined,
+          _cancelTraceIdx: undefined,
+          _cancelledAt: undefined,
         };
       } else {
         task.traceLogs.push({ ...timedEvent, text: noteText, noteId, subAgent });
@@ -614,7 +675,8 @@ export const taskStore = {
     task.status = statusOverride || (success ? 'completed' : 'failed');
     task.finalAnswer = finalAnswer;
     task.completedAt = Date.now();
-    task.lastUpdatedAt = Date.now();
+    task.lastUpdatedAt = task.completedAt;
+    task.traceLogs = settleOrphanedLiveTraces(task.traceLogs, task.completedAt, task.status !== 'completed');
     trimTask(task);
     
     // Cancel any pending debounced write and flush immediately
@@ -639,7 +701,8 @@ export const taskStore = {
     task.status = 'stopped';
     task.finalAnswer = finalAnswer;
     task.completedAt = Date.now();
-    task.lastUpdatedAt = Date.now();
+    task.lastUpdatedAt = task.completedAt;
+    task.traceLogs = settleOrphanedLiveTraces(task.traceLogs, task.completedAt);
     trimTask(task);
     
     const timer = writeTimers.get(chatId);

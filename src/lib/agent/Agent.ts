@@ -3979,15 +3979,22 @@ export class GeminiAgentClient {
         .trim();
     }).filter(Boolean);
     if (labels.length === 0) return '';
-    const phrase = [labels[0] || 'continuing work']
-      .map(label => label.charAt(0).toLowerCase() + label.slice(1).replace(/[.!?]+$/, ''))
-      .join(labels.length > 1 ? ' and ' : '')
+    const rawPhrase = String(labels[0] || 'continuing work')
+      .replace(/[.!?]+$/, '')
+      .replace(/^(?:i['’]?m|i am|i['’]?ll|i will|let me|now)\s+/i, '')
+      .trim();
+    const phraseWords = (rawPhrase || 'continuing work')
       .split(/\s+/)
-      .slice(0, 3)
-      .join(' ');
-    const note = `I’m ${phrase}.`;
+      .filter(Boolean)
+      .slice(0, 4);
+    const phrase = phraseWords.length === 1
+      ? `Working on ${ phraseWords[0] }`
+      : phraseWords.join(' ');
+    const note = `${ phrase.charAt(0).toUpperCase() }${ phrase.slice(1) }.`;
     const recentNotes = new Set((communicationContext.previousNotes || []).slice(-3).map(value => value.trim().toLowerCase()));
-    return recentNotes.has(note.toLowerCase()) ? `I’m continuing with ${phrase}.` : note;
+    if (!recentNotes.has(note.toLowerCase())) return note;
+    const continuation = ['Continuing', ...phraseWords.slice(0, 3)].join(' ');
+    return `${ continuation.charAt(0).toUpperCase() }${ continuation.slice(1) }.`;
   }
 
   private cleanSchemaStructure(obj: any, path = ''): any {
