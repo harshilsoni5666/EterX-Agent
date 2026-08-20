@@ -130,6 +130,11 @@
   background: #FFFFFF !important;
 }
 
+:root[data-theme="light"] .eterx-app-shell,
+:root[data-theme="light"] .eterx-app-shell .eterx-workspace-shell {
+  background-color: #FFFFFF !important;
+}
+
 :root[data-theme="light"] .eterx-sidebar-profile-card {
   background: transparent !important;
   border-color: transparent !important;
