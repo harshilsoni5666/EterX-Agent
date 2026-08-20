@@ -4383,7 +4383,8 @@
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button,
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button,
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary,
-:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button {
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button:not([data-active="true"]) {
   border: 0 !important;
   background: #292929 !important;
   background-color: #292929 !important;
@@ -4400,7 +4401,9 @@
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary:hover,
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary:focus-visible,
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button:hover,
-:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button:focus-visible {
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button:not([data-active="true"]):hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button:not([data-active="true"]):focus-visible {
   border: 0 !important;
   background: #373737 !important;
   background-color: #373737 !important;
@@ -4412,6 +4415,7 @@
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button:active,
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary:active,
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button:active,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button:not([data-active="true"]):active,
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button:disabled {
   background: #222222 !important;
   background-color: #222222 !important;
@@ -4420,7 +4424,8 @@
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button .eterx-composer-control-icon,
-:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button .eterx-composer-control-icon {
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button:not([data-active="true"]) .eterx-composer-live-icon {
   color: #FFFFFF !important;
   background-color: transparent !important;
   opacity: 1 !important;
@@ -4431,6 +4436,28 @@
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary > span {
   color: #FFFFFF !important;
   background-color: #FFFFFF !important;
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button[data-active="true"] {
+  border-color: rgba(16, 185, 129, 0.34) !important;
+  background: #252525 !important;
+  background-color: #252525 !important;
+  color: #10B981 !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button[data-active="true"]:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button[data-active="true"]:focus-visible {
+  border-color: rgba(16, 185, 129, 0.46) !important;
+  background: #303030 !important;
+  background-color: #303030 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button[data-active="true"] .eterx-composer-live-icon {
+  color: #10B981 !important;
   opacity: 1 !important;
   filter: none !important;
 }

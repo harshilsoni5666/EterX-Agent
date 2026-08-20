@@ -4082,7 +4082,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           onClick={handleStopClick}
                           aria-label={isStopping ? 'Stopping agent' : 'Stop agent'}
                           aria-busy={isStopping}
-                          className={`eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#F2EFEA] text-black transition-all duration-200 shadow-none group overflow-hidden relative ${ isStopping ? 'cursor-wait' : 'cursor-pointer hover:bg-[#F2EFEA] active:scale-[0.96]' }`}
+                          className={`eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#292929] text-white transition-all duration-200 shadow-none group overflow-hidden relative ${ isStopping ? 'cursor-wait' : 'cursor-pointer hover:bg-[#373737] active:scale-[0.96]' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
                           {isStopping ? (
@@ -4106,10 +4106,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           type="button"
                           onClick={submitPrompt}
                           aria-label={isThinking ? 'Send follow-up' : 'Send message'}
-                          className={`eterx-control-button eterx-composer-send-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#F2EFEA] text-black hover:bg-white shadow-none active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
+                          className={`eterx-control-button eterx-composer-send-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#292929] text-white hover:bg-[#373737] shadow-none active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-black group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
+                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-white group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
                         </button>
                       </Tooltip>
                     </motion.div>
@@ -4125,10 +4125,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         <button
                           onClick={isLiveActive ? onLiveStop : onLiveStart}
                           disabled={isNetworkPaused}
-                          className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white disabled:cursor-not-allowed disabled:opacity-45 ${ hasAnyLiveSession ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-none' : '' }`}
+                          data-active={hasAnyLiveSession ? 'true' : undefined}
+                          className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#292929] text-white shadow-none transition-all duration-150 active:bg-[#222222] cursor-pointer group relative overflow-hidden hover:bg-[#373737] hover:border-transparent hover:text-white disabled:cursor-not-allowed disabled:opacity-45 ${ hasAnyLiveSession ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-none' : '' }`}
                         >
                           <div className={inputControlSheen} />
-                          <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ hasAnyLiveSession ? '!text-[#10B981] scale-[1.05]' : 'text-white' }`} strokeWidth={1.85} />
+                          <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon relative z-[1] w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ hasAnyLiveSession ? '!text-[#10B981] scale-[1.05]' : '!text-white' }`} strokeWidth={1.85} />
                         </button>
                       </Tooltip>
                     </motion.div>
