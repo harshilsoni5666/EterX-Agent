@@ -2552,6 +2552,39 @@ const isLiveActionEvent = (log: any) => Boolean(
   ['running', 'working', 'pending'].includes(String(log?.status || '').toLowerCase())
 );
 
+const BROWSER_ACTIVITY_TOOL_NAMES = new Set([
+  'browser',
+  'browser_control',
+  'browser_use',
+  'computer',
+  'computer_control',
+  'computer_use',
+  'screen_agent',
+  'screenshot_capture',
+]);
+
+const isBrowserActivityAction = (log: any) => {
+  if (!log) return false;
+  if (log.type === 'browser') return true;
+  const toolName = String(normalizeToolTraceName(log.tool || log.toolName || log.name || ''))
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  return BROWSER_ACTIVITY_TOOL_NAMES.has(toolName);
+};
+
+const isExplicitlySettledAction = (log: any) => Boolean(
+  log && (
+    log.isStreaming === false ||
+    log.streamState === 'closed' ||
+    log.done === true ||
+    log.final === true ||
+    ['completed', 'done', 'success', 'failed', 'error', 'stopped', 'closed'].includes(
+      String(log.phase || log.status || '').toLowerCase(),
+    )
+  )
+);
+
 /**
  * Live polling and the settled transcript briefly overlap during hand-off.
  * Build several transport identities so the UI can replace that overlap in
@@ -3967,6 +4000,119 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
   );
 };
 
+const BrowserActivityGroup = ({
+  items,
+  isActive,
+  allLogs,
+}: {
+  items: any[];
+  isActive: boolean;
+  allLogs: any[];
+}) => {
+  const actionLogs = items.flatMap(item => item.kind === 'browser_action_group' ? item.logs : []);
+  const latestAction = actionLogs[actionLogs.length - 1];
+  const latestActionSettled = isExplicitlySettledAction(latestAction);
+  const activityIsActive = isActive && !latestActionSettled;
+  const [open, setOpen] = useState(activityIsActive);
+  const wasActiveRef = useRef(activityIsActive);
+  useEffect(() => {
+    if (activityIsActive && !wasActiveRef.current) setOpen(true);
+    if (!activityIsActive && wasActiveRef.current) setOpen(false);
+    wasActiveRef.current = activityIsActive;
+  }, [activityIsActive]);
+
+  const explicitLiveIndex = actionLogs.findLastIndex(log =>
+    log?.isStreaming === true ||
+    log?.isLiveTyping === true ||
+    log?.streamState === 'open' ||
+    ['running', 'working', 'pending', 'started'].includes(String(log?.phase || log?.status || '').toLowerCase())
+  );
+  const currentActionIndex = activityIsActive
+    ? (explicitLiveIndex >= 0 ? explicitLiveIndex : actionLogs.length - 1)
+    : -1;
+  const { Icon: BrowserIcon } = resolveAgentIcon('Browser use', 'Using browser', 'browser');
+  let actionIndex = 0;
+
+  return (
+    <div className={`${ ACTION_CARD_CLASS } eterx-browser-activity-group`} data-active={activityIsActive ? 'true' : undefined}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(value => !value)}
+        className="eterx-browser-activity-header flex min-h-[38px] w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.028] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/25"
+      >
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center" aria-hidden="true">
+          {activityIsActive ? (
+            <span className="h-[15px] w-[15px] rounded-full border-[1.7px] border-white/18 border-t-[#DAD6CF] animate-spin" />
+          ) : (
+            <BrowserIcon size={16.5} color="#DAD6CF" />
+          )}
+        </span>
+        <Shimmer
+          active={activityIsActive}
+          className="min-w-0 flex-1 truncate text-[12.75px] font-medium tracking-[-0.01em] text-[#D5CFC7]"
+        >
+          Browser use
+        </Shimmer>
+        <ChevronDown
+          className={`h-3.5 w-3.5 shrink-0 text-[#8F897F] transition-transform duration-200 ${ open ? '' : '-rotate-90' }`}
+          aria-hidden="true"
+        />
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            key="browser-activity-content"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+            className="overflow-hidden border-t border-white/[0.055]"
+          >
+            {items.map((item, itemIndex) => {
+              if (item.kind === 'note') {
+                const noteIsLatest = itemIndex === items.length - 1;
+                return (
+                  <div
+                    key={`browser-note-${ getStreamRowIdentity(item.log, item.idx) }`}
+                    className="border-b border-white/[0.045] px-3 py-2 last:border-b-0"
+                  >
+                    <WorkNoteBlock
+                      text={item.log.text}
+                      isActive={activityIsActive && noteIsLatest}
+                      isProxyStatus={false}
+                    />
+                  </div>
+                );
+              }
+
+              return item.logs.map((log: any) => {
+                const currentIndex = actionIndex++;
+                return (
+                  <div
+                    key={getActionIdentity(log, currentIndex)}
+                    className={currentIndex > 0 ? ACTION_ROW_DIVIDER_CLASS : ''}
+                  >
+                    <ActionChip
+                      log={log}
+                      isLastChip={currentIndex === currentActionIndex}
+                      isActiveGroup={activityIsActive}
+                      allLogs={allLogs}
+                      isNested={currentIndex > 0}
+                      inCard
+                    />
+                  </div>
+                );
+              });
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 const CollapsibleActionGroup = ({
   logs, isActiveGroup, isLast, allLogs, isAgentBuilder = false
 }: {
@@ -4670,7 +4816,10 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   const liveFlowLogs = liveLogs.filter(isFlowLog);
   const timelineLogs = reconcileLiveActionLogs(flowLogs, liveFlowLogs);
   const statusLogs = timelineLogs;
-  const segs: any[] = []; let aBuf: any[] = []; let aBufFirstIdx = -1;
+  const segs: any[] = [];
+  let aBuf: any[] = [];
+  let aBufFirstIdx = -1;
+  let aBufKind: 'browser' | 'standard' | null = null;
   const SPEC = new Set(['file_preview', 'console_output', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_comm', 'safety_warning', 'tool_result_preview']);
   const flush = (idx: number) => {
     if (aBuf.length > 0) {
@@ -4696,13 +4845,22 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         identities.forEach(identity => identityIndexes.set(identity, nextIndex));
         unique.push({ ...log, occurrenceCount: Math.max(1, Number(log.occurrenceCount || 1)) });
       });
-      segs.push({ kind: 'action_group', logs: unique, firstIdx: aBufFirstIdx === -1 ? idx : aBufFirstIdx, lastIdx: idx });
+      segs.push({
+        kind: aBufKind === 'browser' ? 'browser_action_group' : 'action_group',
+        logs: unique,
+        firstIdx: aBufFirstIdx === -1 ? idx : aBufFirstIdx,
+        lastIdx: idx,
+      });
       aBuf = [];
       aBufFirstIdx = -1;
+      aBufKind = null;
     }
   };
   const pushActionLog = (log: any, idx: number) => {
+    const nextKind = isBrowserActivityAction(log) ? 'browser' : 'standard';
+    if (aBuf.length > 0 && aBufKind !== nextKind) flush(idx - 1);
     if (aBuf.length === 0) aBufFirstIdx = idx;
+    aBufKind = nextKind;
     aBuf.push(log);
   };
   // Group and individual lifecycle events can arrive in either order. Reconcile
@@ -4857,12 +5015,70 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     else { pushActionLog(log, idx); }
   });
   flush(timelineLogs.length - 1);
+
+  // Browser/computer work is one visible phase until a different action
+  // family begins. Work notes emitted between browser calls remain inside the
+  // same parent; a later browser phase after another tool gets a new parent.
+  const displaySegs: any[] = [];
+  for (let index = 0; index < segs.length; index += 1) {
+    const segment = segs[index];
+    if (segment.kind !== 'browser_action_group') {
+      displaySegs.push(segment);
+      continue;
+    }
+
+    const items = [segment];
+    let cursor = index + 1;
+    while (cursor < segs.length) {
+      const candidate = segs[cursor];
+      const isBrowserActions = candidate.kind === 'browser_action_group';
+      const isBrowserWorkNote = candidate.kind === 'note' && candidate.log?.type === 'work_note';
+      if (!isBrowserActions && !isBrowserWorkNote) break;
+      if (isBrowserWorkNote) {
+        let nextBoundary = cursor + 1;
+        while (
+          nextBoundary < segs.length &&
+          segs[nextBoundary].kind === 'note' &&
+          segs[nextBoundary].log?.type === 'work_note'
+        ) nextBoundary += 1;
+        const nextSegment = segs[nextBoundary];
+        // Keep a trailing live note in the open browser phase, and keep notes
+        // between related browser calls. If another tool follows, leave the
+        // note outside so it remains paired with that new action phase.
+        if (nextSegment && nextSegment.kind !== 'browser_action_group') break;
+      }
+      items.push(candidate);
+      cursor += 1;
+    }
+    const tail = items[items.length - 1];
+    displaySegs.push({
+      kind: 'browser_phase',
+      items,
+      firstIdx: segment.firstIdx,
+      lastIdx: tail.lastIdx ?? tail.idx ?? segment.lastIdx,
+    });
+    index = cursor - 1;
+  }
+  const latestDisplaySegment = displaySegs[displaySegs.length - 1];
+  const latestBrowserActions = latestDisplaySegment?.kind === 'browser_phase'
+    ? [...latestDisplaySegment.items]
+      .reverse()
+      .find((item: any) => item.kind === 'browser_action_group')
+    : null;
+  const latestBrowserAction = latestBrowserActions?.logs?.[latestBrowserActions.logs.length - 1];
+  const browserPhaseOwnsLiveIndicator = Boolean(
+    isThinking &&
+    isLast &&
+    latestDisplaySegment?.kind === 'browser_phase' &&
+    !isExplicitlySettledAction(latestBrowserAction)
+  );
+
   return (
     <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-3 py-0">
-      {segs.map((seg, i) => {
-        const nextSeg = segs[i + 1];
-        const prevSeg = segs[i - 1];
-        const phaseIsLastVisible = i === segs.length - 1 || (seg.kind === 'note' && nextSeg?.kind === 'action_group' && i + 1 === segs.length - 1);
+      {displaySegs.map((seg, i) => {
+        const nextSeg = displaySegs[i + 1];
+        const prevSeg = displaySegs[i - 1];
+        const phaseIsLastVisible = i === displaySegs.length - 1 || (seg.kind === 'note' && nextSeg?.kind === 'action_group' && i + 1 === displaySegs.length - 1);
         const phaseIsActive = isThinking && isLast && phaseIsLastVisible;
 
         if (seg.kind === 'thought') {
@@ -4892,7 +5108,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
             </div>
           );
         }
-        if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isActive={isThinking && isLast && i === segs.length - 1} isProxyStatus={seg.log.type === 'autonomy_proxy_status'} />;
+        if (seg.kind === 'note') return <WorkNoteBlock key={`n-${ getStreamRowIdentity(seg.log, seg.idx) }`} text={seg.log.text} isActive={isThinking && isLast && i === displaySegs.length - 1} isProxyStatus={seg.log.type === 'autonomy_proxy_status'} />;
         if (seg.kind === 'safety') return <SafetyBanner key={`sf-${ seg.idx }`} log={seg.log} />;
         if (seg.kind === 'steering') return <SteeringCard key={`steer-${ seg.idx }`} log={seg.log} onEdit={onEditUserMessage} />;
         if (seg.kind === 'subagent') return null;
@@ -4912,15 +5128,29 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (seg.kind === 'subagent_status') {
           return <SubAgentCard key={`ss-${ seg.idx }`} log={seg.log} onOpenAgentTeam={onOpenAgentTeam} assetIndexes={assetIndexes} />;
         }
-        if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === segs.length - 1 && !seg.log.answeredWith} />;
-        if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ getActionIdentity(seg.log, seg.idx) }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === segs.length - 1} />;
+        if (seg.kind === 'ask_user') return <AskUserTimelineCard key={`ask-tl-${ seg.idx }`} log={seg.log} isLive={isThinking && isLast && i === displaySegs.length - 1 && !seg.log.answeredWith} />;
+        if (seg.kind === 'console') return <TerminalTraceCard key={`console-${ getActionIdentity(seg.log, seg.idx) }`} log={seg.log} preview={seg.log} isLiveChip={isThinking && isLast && i === displaySegs.length - 1} />;
+        if (seg.kind === 'browser_phase') {
+          const firstActions = seg.items.find((item: any) => item.kind === 'browser_action_group');
+          if (!firstActions?.logs?.[0]) return null;
+          const firstIdx = firstActions?.firstIdx ?? seg.firstIdx ?? i;
+          const phaseKey = `browser-${ getActionIdentity(firstActions.logs[0], firstIdx) }`;
+          return (
+            <BrowserActivityGroup
+              key={phaseKey}
+              items={seg.items}
+              isActive={phaseIsActive}
+              allLogs={timelineLogs}
+            />
+          );
+        }
         if (seg.kind === 'action_group' && prevSeg?.kind === 'note') return null;
 
         const firstIdx = seg.firstIdx ?? seg.lastIdx ?? i;
         const groupKey = `g-${ firstIdx }-${ getActionIdentity(seg.logs[0], firstIdx) }`;
-        return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === segs.length - 1} isLast={isLast} allLogs={timelineLogs} isAgentBuilder={isAgentBuilder} />;
+        return <CollapsibleActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === displaySegs.length - 1} isLast={isLast} allLogs={timelineLogs} isAgentBuilder={isAgentBuilder} />;
       })}
-      {showLiveIndicator && isThinking && isLast && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
+      {showLiveIndicator && isThinking && isLast && !browserPhaseOwnsLiveIndicator && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
     </div>
   );
 };
