@@ -4372,3 +4372,71 @@
     max-width: min(94%, 560px) !important;
   }
 }
+
+/* -------------------------------------------------------------------------
+   Light composer primary actions
+
+   Send, stop, and network status are one stable dark action family. Keep the
+   resting state decisive and use a restrained charcoal hover instead of the
+   old pale-to-black jump caused by competing generic control rules.
+------------------------------------------------------------------------- */
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button {
+  border: 0 !important;
+  background: #292929 !important;
+  background-color: #292929 !important;
+  color: #FFFFFF !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+  transition: background-color 150ms ease, color 150ms ease, transform 120ms ease !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button:focus-visible {
+  border: 0 !important;
+  background: #373737 !important;
+  background-color: #373737 !important;
+  color: #FFFFFF !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button:active,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button:active,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary:active,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button:active,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button:disabled {
+  background: #222222 !important;
+  background-color: #222222 !important;
+  color: #FFFFFF !important;
+  opacity: 1 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-button .eterx-composer-control-icon {
+  color: #FFFFFF !important;
+  background-color: transparent !important;
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-icon,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-secondary > span {
+  color: #FFFFFF !important;
+  background-color: #FFFFFF !important;
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-stop-pending,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-status-button .eterx-composer-spinner {
+  border-color: rgba(255, 255, 255, 0.32) !important;
+  border-top-color: #FFFFFF !important;
+}
