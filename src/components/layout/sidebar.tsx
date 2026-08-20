@@ -425,8 +425,8 @@ const lightweightSidebarCss = `
   }
 
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile {
-    background: rgba(255, 255, 255, 0.62) !important;
-    border-top-color: rgba(31, 31, 29, 0.08) !important;
+    background: transparent !important;
+    border-top-color: transparent !important;
     -webkit-backdrop-filter: none !important;
     backdrop-filter: none !important;
   }

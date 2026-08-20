@@ -1942,8 +1942,8 @@ function nativeThemeColors(theme) {
     };
   }
   return {
-    background: '#F7F7F5',
-    titleBar: '#F7F7F5',
+    background: '#FFFFFF',
+    titleBar: '#FFFFFF',
     titleSymbol: '#1F1F1D',
   };
 }
