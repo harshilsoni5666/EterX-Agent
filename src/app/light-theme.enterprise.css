@@ -133,7 +133,7 @@
 }
 
 :root[data-theme="light"] .eterx-app-shell,
-:root[data-theme="light"] .eterx-app-shell .eterx-workspace-shell {
+:root[data-theme="light"] .eterx-app-shell[data-sidebar-open="false"] .eterx-workspace-shell {
   background-color: #FFFFFF !important;
 }
 
