@@ -543,6 +543,17 @@ const useThinkTimer = (isLive: boolean, startedAt?: number, updatedAt?: number) 
     latestUpdateRef.current = updateMs;
   }, [updateMs]);
 
+  // A settled trace may receive its authoritative end timestamp one polling
+  // frame after the live flag closes. Recalculate from that timestamp instead
+  // of keeping the later renderer clock value forever.
+  useEffect(() => {
+    if (isLive || startMs === null || updateMs === null) return;
+    const measured = Math.max(1, Math.ceil(Math.max(0, updateMs - startMs) / 1000));
+    frozenRef.current = measured;
+    lastElapsedRef.current = measured;
+    setSecs(measured);
+  }, [isLive, startMs, updateMs]);
+
   useEffect(() => {
     if (startMs !== null) {
       fallbackStartRef.current = fallbackStartRef.current === null

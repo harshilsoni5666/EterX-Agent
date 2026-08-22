@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { getEterxDataDir } from './agent/storage-paths';
 import { filterUserVisibleTraces } from './agent/trace-visibility';
+import { mergeFeedTraceHistories, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles } from './chat-feed-lifecycle';
 
 const CHAT_STORE_DIR = path.join(getEterxDataDir(), 'chats');
 const CHAT_STORE_PATH = path.join(CHAT_STORE_DIR, 'chats.json');
@@ -56,6 +57,8 @@ function normalizeChatTitle(value: unknown): string {
 function normalizePersistedChat(chat: any): any | null {
   if (!chat || typeof chat !== 'object' || chat.id === undefined || chat.id === null) return null;
 
+  const title = normalizeChatTitle(chat.title || chat.name);
+
   const sourceLogs = Array.isArray(chat.traceLogs)
     ? chat.traceLogs
     : Array.isArray(chat.logs)
@@ -63,7 +66,7 @@ function normalizePersistedChat(chat: any): any | null {
       : Array.isArray(chat.messages)
         ? chat.messages
         : [];
-  const traceLogs = filterUserVisibleTraces(sourceLogs.map((message: any, index: number) => {
+  const traceLogs = settleFeedTraceLifecycles(recoverMissingUserTurnBoundaries(filterUserVisibleTraces(sourceLogs.map((message: any, index: number) => {
     if (message && typeof message.type === 'string') return message;
     const role = String(message?.role || message?.sender || message?.author || '').toLowerCase();
     return {
@@ -73,12 +76,12 @@ function normalizePersistedChat(chat: any): any | null {
       id: String(message?.id || `${String(chat.id)}-legacy-${index}`),
       ...(Number.isFinite(message?.timestamp) ? { timestamp: message.timestamp } : {}),
     };
-  }));
+  })), title));
 
   return {
     ...chat,
     id: String(chat.id),
-    title: normalizeChatTitle(chat.title || chat.name),
+    title,
     updatedAt: Number.isFinite(chat.updatedAt)
       ? chat.updatedAt
       : Number.isFinite(chat.updated_at)
@@ -248,8 +251,23 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
     const current = await readFromDisk();
     if (mutationId && current.lastMutationId === mutationId) return { ...current, applied: true };
     if (requested.savedAt < current.savedAt) return { ...current, applied: false };
+    const currentById = new Map((current.chats as any[]).map(chat => [chat.id, chat]));
+    const mergedChats = (requested.chats as any[]).map(chat => {
+      const durable = currentById.get(chat.id);
+      if (!durable) return chat;
+      return {
+        ...durable,
+        ...chat,
+        traceLogs: mergeFeedTraceHistories(
+          durable.traceLogs || [],
+          chat.traceLogs || [],
+          chat.title || durable.title,
+        ),
+      };
+    });
     const next = normalizeSnapshot({
       ...requested,
+      chats: mergedChats,
       savedAt: Math.max(requested.savedAt, current.savedAt + 1),
       lastMutationId: mutationId,
     });
@@ -281,7 +299,18 @@ export async function patchChatSnapshot(
     if (mutationId && current.lastMutationId === mutationId) return { ...current, applied: true };
     if (savedAt < current.savedAt) return { ...current, applied: false };
     const byId = new Map((current.chats as any[]).map(chat => [chat.id, chat]));
-    for (const chat of changed) byId.set(chat.id, chat);
+    for (const chat of changed) {
+      const durable = byId.get(chat.id);
+      byId.set(chat.id, durable ? {
+        ...durable,
+        ...chat,
+        traceLogs: mergeFeedTraceHistories(
+          durable.traceLogs || [],
+          chat.traceLogs || [],
+          chat.title || durable.title,
+        ),
+      } : chat);
+    }
     deletedIds.forEach(id => byId.delete(id));
     const orderedIds = new Set(safeIds);
     const next = normalizeSnapshot({

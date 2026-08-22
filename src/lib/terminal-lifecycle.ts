@@ -9,10 +9,13 @@ export type TerminalLifecycleInput = {
 
 function explicitLifecycleState(value: any): 'running' | 'settled' | null {
   if (!value || typeof value !== 'object') return null;
+  const status = String(value.status || value.phase || '').trim().toLowerCase();
+  const activeStatus = ['running', 'working', 'pending', 'streaming', 'spawning'].includes(status);
+  const terminalStatus = ['completed', 'complete', 'done', 'success', 'failed', 'error', 'stopped', 'closed', 'cancelled', 'canceled'].includes(status);
   if (typeof value.exitCode === 'number' || typeof value.code === 'number') return 'settled';
+  if (value.done === true || value.final === true || value.streamState === 'closed' || terminalStatus) return 'settled';
   if (value.isStreaming === false || value.running === false || value.stillRunning === false) return 'settled';
-  if (value.status && value.status !== 'running') return 'settled';
-  if (value.isStreaming === true || value.running === true || value.stillRunning === true || value.status === 'running') {
+  if (value.isStreaming === true || value.running === true || value.stillRunning === true || value.streamState === 'open' || activeStatus) {
     return 'running';
   }
   return null;
@@ -31,4 +34,3 @@ export function isTerminalTraceStreaming(input: TerminalLifecycleInput): boolean
   if (input.exitCode !== undefined || input.hasResult) return false;
   return input.isLiveChip === true;
 }
-

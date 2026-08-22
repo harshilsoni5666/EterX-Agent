@@ -10,7 +10,7 @@ import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
 import { LocalFileLinkChip, decodeLocalFileHref } from './local-file-link';
-import { isInternalWorkNoteNoise, isTerminalWorkTrace, isTurnWorkActive, orderFeedTimelineLogs, shouldRenderContextCompactionEvent, shouldRenderProgressTrace, shouldShowWorkflowSequence } from '../../lib/chat-feed-lifecycle';
+import { isInternalWorkNoteNoise, isTerminalWorkTrace, isTurnWorkActive, orderFeedTimelineLogs, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles, shouldRenderContextCompactionEvent, shouldRenderProgressTrace, shouldShowWorkflowSequence } from '../../lib/chat-feed-lifecycle';
 import { shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
 import { isPrivateReasoningTrace } from '../../lib/agent/trace-visibility';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
@@ -554,6 +554,10 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
     )
   );
   const preserveClosedLifecycle = previousClosed && incomingOpen;
+  const previousStatus = String(previous?.status || '').trim().toLowerCase();
+  const settledStatus = ['running', 'working', 'pending', 'streaming', 'spawning'].includes(previousStatus)
+    ? 'completed'
+    : previous?.status;
   const narrativeRank = (type: any) =>
     type === 'autonomy_proxy_status' ? 3 : type === 'work_note' ? 2 : type === 'thought_stream' ? 1 : 0;
   const preferredType = narrativeRank(previous?.type) > narrativeRank(incoming?.type)
@@ -578,7 +582,7 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
         isLiveTyping: false,
         isLive: false,
         streamState: 'closed',
-        status: previous?.status,
+        status: settledStatus,
       }
       : {}),
     ...(resolvesCancelledWorkNote
@@ -2097,13 +2101,15 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   // state update arrives during navigation.
   const traceLogs = useMemo(
     () => normalizeInternalUserActionLogs(
-      (Array.isArray(incomingTraceLogs) ? incomingTraceLogs : [])
-        .filter(log => {
-          const owners = [log?.chatId, log?.ownerChatId]
-            .map(value => String(value || '').trim())
-            .filter(Boolean);
-          return owners.length === 0 || owners.includes(String(chatId || '').trim());
-        }),
+      settleFeedTraceLifecycles(recoverMissingUserTurnBoundaries(
+        (Array.isArray(incomingTraceLogs) ? incomingTraceLogs : [])
+          .filter(log => {
+            const owners = [log?.chatId, log?.ownerChatId]
+              .map(value => String(value || '').trim())
+              .filter(Boolean);
+            return owners.length === 0 || owners.includes(String(chatId || '').trim());
+          }),
+      )),
     ),
     [chatId, incomingTraceLogs]
   );

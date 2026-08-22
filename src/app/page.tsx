@@ -69,7 +69,7 @@ import { formatVisibleWorkNote } from '../lib/agent/work-note';
 import { isPrivateReasoningTrace } from '../lib/agent/trace-visibility';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../lib/agent/tool-trace';
 import { canonicalizeThoughtStreamLogs, closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
-import { agentIdentitiesOverlap, isTurnWorkActive, orderFeedTimelineLogs } from '../lib/chat-feed-lifecycle';
+import { agentIdentitiesOverlap, isTurnWorkActive, mergeFeedTraceHistories, orderFeedTimelineLogs, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles } from '../lib/chat-feed-lifecycle';
 import { resolveChatSendTarget } from '../lib/chat-send-lifecycle';
 import {
   GENERAL_AGENT_SELECTION,
@@ -1014,35 +1014,15 @@ const enforceChatTraceOwnership = (chat: ChatSession): ChatSession => {
 };
 
 const mergeCachedChatIntoDurable = (durable: ChatSession, cached: ChatSession): ChatSession => {
-  const durableLogs = durable.traceLogs || [];
-  const cachedLogs = cached.traceLogs || [];
-  if (durableLogs.length === 0 || cachedLogs.length === 0) {
-    return {
-      ...durable,
-      ...cached,
-      traceLogs: cachedLogs.length ? cachedLogs : durableLogs,
-    };
-  }
-  const firstCachedIdentity = traceLogIdentity(cachedLogs[0]);
-  let overlapIndex = -1;
-  for (let i = durableLogs.length - 1; i >= 0; i -= 1) {
-    if (traceLogIdentity(durableLogs[i]) === firstCachedIdentity) {
-      overlapIndex = i;
-      break;
-    }
-  }
-  const mergedLogs = overlapIndex >= 0
-    ? (() => {
-        const lastCachedIdentity = traceLogIdentity(cachedLogs[cachedLogs.length - 1]);
-        const lastCachedIndex = durableLogs.findIndex(
-          (log, index) => index >= overlapIndex && traceLogIdentity(log) === lastCachedIdentity
-        );
-        return lastCachedIndex >= overlapIndex
-          ? durableLogs
-          : [...durableLogs.slice(0, overlapIndex), ...cachedLogs];
-      })()
-    : durableLogs.length >= cachedLogs.length ? durableLogs : cachedLogs;
-  return { ...durable, ...cached, traceLogs: mergedLogs };
+  return {
+    ...durable,
+    ...cached,
+    traceLogs: mergeFeedTraceHistories(
+      durable.traceLogs || [],
+      cached.traceLogs || [],
+      cached.title || durable.title,
+    ),
+  };
 };
 
 const getCatchyGreeting = () => {
@@ -5433,7 +5413,9 @@ function DeepWorkUI() {
   });
   const canonicalizeClientTraceLogs = (logs: any[] = [], ownerChatId?: string) => {
     const canonicalLogs = canonicalizeThoughtStreamLogs(
-      normalizeBuilderUserActionLogs(normalizeSelfOwnedRuntimeLogs(logs, ownerChatId)),
+      settleFeedTraceLifecycles(recoverMissingUserTurnBoundaries(
+        normalizeBuilderUserActionLogs(normalizeSelfOwnedRuntimeLogs(logs, ownerChatId)),
+      )),
     );
     const transcriptIndexes = new Map<string, number>();
     const reconciledLogs: any[] = [];
@@ -5472,13 +5454,22 @@ function DeepWorkUI() {
           previous?.isLive !== true
         );
       const incomingOpen = log?.isStreaming === true || log?.isLiveTyping === true;
+      const previousStatus = String(previous?.status || '').trim().toLowerCase();
       reconciledLogs[previousIndex] = {
         ...previous,
         ...log,
         text: text.length >= previousText.length ? log.text : previous.text,
         startTime: previous.startTime || previous.timestamp || log.startTime || log.timestamp,
         ...(previousSettled && incomingOpen
-          ? { isStreaming: false, isLiveTyping: false, isLive: false, streamState: 'closed' }
+          ? {
+            isStreaming: false,
+            isLiveTyping: false,
+            isLive: false,
+            streamState: 'closed',
+            status: ['running', 'working', 'pending', 'streaming', 'spawning'].includes(previousStatus)
+              ? 'completed'
+              : previous?.status,
+          }
           : {}),
       };
     });
@@ -11067,20 +11058,47 @@ function DeepWorkUI() {
 
   const currentSubAgents = useMemo(() => {
     const agentMap = new Map<string, any>();
-    const getSubAgentIdentity = (log: any, name: string) =>
-      String(log?.subAgentChatId || log?.subAgentId || log?.agentId || name);
-    const findLatestAgentKeyByName = (name: string) =>
-      [...agentMap.entries()].reverse().find(([, agent]) => String(agent?.name || '').toLowerCase() === name.toLowerCase())?.[0];
-    const findExistingAgentKey = (log: any, name: string) =>
-      [...agentMap.entries()].reverse().find(([key, agent]) =>
+    const getAgentTurnScope = (log: any) => String(log?.turnId || log?.runId || '').trim();
+    const getSubAgentIdentity = (log: any, name: string) => {
+      const explicit = String(log?.subAgentChatId || log?.subAgentId || log?.agentId || '').trim();
+      if (explicit) return explicit;
+      const scope = getAgentTurnScope(log);
+      return scope ? `${ scope }::legacy-agent::${ name }` : name;
+    };
+    const findLatestAgentKeyByName = (name: string, scope = '') =>
+      [...agentMap.entries()].reverse().find(([, agent]) =>
+        String(agent?.name || '').toLowerCase() === name.toLowerCase() &&
+        (!scope || agent?.turnScope === scope)
+      )?.[0];
+    const findExistingAgentKey = (log: any, name: string) => {
+      const scope = getAgentTurnScope(log);
+      const hasExplicitIdentity = Boolean(log?.subAgentChatId || log?.subAgentId || log?.agentId);
+      return [...agentMap.entries()].reverse().find(([key, agent]) =>
+        (hasExplicitIdentity || !scope || agent?.turnScope === scope) &&
         agentIdentitiesOverlap(
           { ...agent, id: key },
           { ...log, agentName: name, subAgent: name },
         )
       )?.[0];
+    };
     const getTraceEventTime = (log: any) => {
       const at = Number(log?.startTime || log?.timestamp || log?.endTime || 0);
       return Number.isFinite(at) && at > 0 ? at : 0;
+    };
+    const settleSubAgentState = (agent: any, log: any, status: 'completed' | 'error' | 'closed') => {
+      if (!agent) return;
+      const completedAt = Number(log?.endTime || log?.timestamp || 0);
+      const explicitDuration = Number(log?.durationMs || 0);
+      const measuredDuration = Number.isFinite(completedAt) && completedAt > 0 && Number(agent.startedAt) > 0
+        ? Math.max(0, completedAt - Number(agent.startedAt))
+        : 0;
+      agent.status = status;
+      agent.completedAt = Number.isFinite(completedAt) && completedAt > 0 ? completedAt : agent.completedAt;
+      agent.durationMs = Number.isFinite(explicitDuration) && explicitDuration > 0
+        ? explicitDuration
+        : measuredDuration || Number(agent.durationMs || 0);
+      agent.stepCount = Number(log?.stepCount || agent.stepCount || 0);
+      agent.unreadCount = Number(log?.unreadCount ?? agent.unreadCount ?? 0);
     };
     let firstTraceAt = Date.now();
     // Subagent tabs represent the whole chat, not only the newest user turn.
@@ -11128,13 +11146,18 @@ function DeepWorkUI() {
         for (const detail of log.agentDetails) {
           const detailName = String(detail?.name || '').trim();
           if (!detailName) continue;
-          const detailIdentity = String(detail?.subAgentChatId || detail?.subAgentId || detail?.agentId || detailName);
+          const detailScope = getAgentTurnScope(log);
+          const detailIdentity = String(
+            detail?.subAgentChatId || detail?.subAgentId || detail?.agentId ||
+            (detailScope ? `${ detailScope }::legacy-agent::${ detailName }` : detailName)
+          );
           const existing = agentMap.get(detailIdentity);
           agentMap.set(detailIdentity, {
             id: detailIdentity,
             subAgentId: detail?.subAgentId || detail?.agentId || existing?.subAgentId,
             subAgentChatId: detail?.subAgentChatId || existing?.subAgentChatId,
             name: detailName,
+            turnScope: detailScope || existing?.turnScope,
             status: ['completed', 'error', 'closed', 'paused'].includes(String(existing?.status))
               ? existing.status
               : String(detail?.status || 'working'),
@@ -11159,10 +11182,11 @@ function DeepWorkUI() {
       // the tab from any real sub-agent lifecycle event so it never vanishes or
       // misses the first updates.
       const explicitIdentity = log.subAgentChatId || log.subAgentId;
+      const turnScope = getAgentTurnScope(log);
       const existingAgentKey = findExistingAgentKey(log, name);
       const agentIdentity = existingAgentKey || (explicitIdentity
         ? getSubAgentIdentity(log, name)
-        : findLatestAgentKeyByName(name) || name);
+        : findLatestAgentKeyByName(name, turnScope) || getSubAgentIdentity(log, name));
       const hasSubAgentIdentity = Boolean(log.subAgentChatId || log.subAgentId || log.subAgent);
 
       if (!agentMap.has(agentIdentity) && (
@@ -11174,6 +11198,7 @@ function DeepWorkUI() {
           subAgentId: log.subAgentId,
           subAgentChatId: log.subAgentChatId,
           name,
+          turnScope,
           status: ['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete'].includes(log.type) ? 'completed'
             : log.type === 'sub_agent_error' ? 'error'
               : log.type === 'sub_agent_pause' ? 'paused'
@@ -11194,6 +11219,7 @@ function DeepWorkUI() {
           subAgentId: log.subAgentId || existing?.subAgentId,
           subAgentChatId: log.subAgentChatId || existing?.subAgentChatId,
           name,
+          turnScope: turnScope || existing?.turnScope,
           status: ['completed', 'error', 'closed', 'paused'].includes(String(existing?.status)) ? existing.status : 'working',
           task: log.task || log.secondary || log.text || '',
           unreadCount: Number(log.unreadCount ?? existing?.unreadCount ?? 0),
@@ -11212,10 +11238,10 @@ function DeepWorkUI() {
         }
       } else if (['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete'].includes(log.type)) {
         const a = agentMap.get(agentIdentity);
-        if (a) { a.status = 'completed'; a.durationMs = log.durationMs || 0; a.stepCount = log.stepCount || a.stepCount; a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0); }
+        settleSubAgentState(a, log, 'completed');
       } else if (log.type === 'sub_agent_error') {
         const a = agentMap.get(agentIdentity);
-        if (a) { a.status = 'error'; a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0); }
+        settleSubAgentState(a, log, 'error');
       } else if (log.type === 'sub_agent_pause') {
         const a = agentMap.get(agentIdentity);
         if (a) { a.status = 'paused'; a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0); }
@@ -11224,7 +11250,7 @@ function DeepWorkUI() {
         if (a && !['completed', 'error', 'closed'].includes(String(a.status))) { a.status = 'working'; a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0); }
       } else if (log.type === 'sub_agent_close') {
         const a = agentMap.get(agentIdentity);
-        if (a) { a.status = 'closed'; a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0); }
+        settleSubAgentState(a, log, 'closed');
       } else if (String(log.agentStatus || '').trim().toLowerCase() === 'paused') {
         const a = agentMap.get(agentIdentity);
         if (a) { a.status = 'paused'; }

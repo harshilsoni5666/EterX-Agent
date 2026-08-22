@@ -61,12 +61,14 @@ export const shouldRenderProgressTrace = (log: any): boolean => {
 export const isTerminalWorkTrace = (log: any): boolean => {
   if (!log) return false;
 
-  const agentName = String(log.agentName || '').trim().toLowerCase();
+  const type = String(log.type || '').trim().toLowerCase();
+  const explicitChildTrace = /^sub_agent_|^inter_agent_/.test(type) ||
+    Boolean(log.subAgent || log.subAgentId || log.subAgentChatId || log.terminalTask);
   const isMainAgentTrace = !log.subAgent &&
     !log.subAgentId &&
     !log.subAgentChatId &&
     !log.terminalTask &&
-    (!agentName || agentName === 'main');
+    !explicitChildTrace;
   const status = String(log.status || '').trim().toLowerCase();
   if (
     TERMINAL_WORK_STATUSES.has(status) &&
@@ -74,7 +76,6 @@ export const isTerminalWorkTrace = (log: any): boolean => {
     (log.mainTurnTerminal === true || ['done', 'error', 'agent_status', 'run_status'].includes(String(log.type || '').toLowerCase()))
   ) return true;
 
-  const type = String(log.type || '').trim().toLowerCase();
   if (TERMINAL_WORK_TYPES.has(type) && isMainAgentTrace) return true;
 
   const text = String(log.text || log.message || '').trim();
@@ -147,6 +148,382 @@ const timelineIdentityAliases = (log: any): string[] => Array.from(new Set(
 ));
 
 const timelineIdentity = (log: any): string => timelineIdentityAliases(log)[0] || '';
+
+const normalizedTimelineType = (log: any): string =>
+  String(log?.type || '').trim().toLowerCase() === 'tool_call'
+    ? 'command'
+    : String(log?.type || '').trim().toLowerCase();
+
+const timelineContentSignature = (log: any): string => String(
+  log?.text ?? log?.question ?? log?.command ?? log?.output ?? log?.secondary ?? ''
+).replace(/\s+/g, ' ').trim().slice(0, 320);
+
+const timelineStableKey = (log: any): string => {
+  const type = normalizedTimelineType(log);
+  const scope = String(log?.turnId || log?.runId || '').trim();
+  if (!type) return '';
+  if (type === 'user_action') {
+    const stableId = String(log?.id || '').trim();
+    return stableId
+      ? `user:${ scope }:${ stableId }`
+      : `user:${ scope }:${ String(log?.source || 'human') }:${ timelineContentSignature(log) }`;
+  }
+  const stableId = String(
+    log?.toolCallId ??
+    log?.streamId ??
+    log?.noteId ??
+    log?.thoughtId ??
+    log?.answerId ??
+    log?.traceId ??
+    log?.responseKey ??
+    log?.messageId ??
+    log?.id ??
+    ''
+  ).trim();
+  if (stableId) return `trace:${ scope }:${ type }:${ stableId }`;
+  const traceIndex = timelineTraceIndex(log);
+  if (traceIndex !== null) return `trace:${ scope }:${ type }:index:${ traceIndex }`;
+  const timestamp = timelineTimestamp(log);
+  return timestamp !== null
+    ? `trace:${ scope }:${ type }:time:${ timestamp }:${ timelineContentSignature(log) }`
+    : '';
+};
+
+const mergeTimelineTrace = (previous: any, incoming: any): any => {
+  const terminalStatuses = new Set(['completed', 'complete', 'done', 'success', 'failed', 'error', 'stopped', 'cancelled', 'canceled', 'closed']);
+  const previousClosed = previous?.final === true || previous?.done === true || previous?.isStreaming === false ||
+    previous?.streamState === 'closed' || terminalStatuses.has(String(previous?.status || '').toLowerCase());
+  const incomingOpen = incoming?.isStreaming === true || incoming?.isLiveTyping === true || incoming?.streamState === 'open' ||
+    ['running', 'working', 'pending', 'streaming'].includes(String(incoming?.status || '').toLowerCase());
+  const previousText = String(previous?.text || '');
+  const incomingText = String(incoming?.text || '');
+  const previousOutput = String(previous?.output || '');
+  const incomingOutput = String(incoming?.output || '');
+  const preserveSettledLifecycle = previousClosed && incomingOpen;
+  const previousStatus = String(previous?.status || '').trim().toLowerCase();
+  const settledStatus = ['running', 'working', 'pending', 'streaming', 'spawning'].includes(previousStatus)
+    ? 'completed'
+    : previous?.status;
+
+  return {
+    ...previous,
+    ...incoming,
+    text: incomingText.length >= previousText.length ? incoming.text : previous.text,
+    ...(previousOutput || incomingOutput
+      ? { output: incomingOutput.length >= previousOutput.length ? incoming.output : previous.output }
+      : {}),
+    startTime: previous?.startTime || previous?.timestamp || incoming?.startTime || incoming?.timestamp,
+    ...(preserveSettledLifecycle ? {
+      isStreaming: false,
+      isLiveTyping: false,
+      isLive: false,
+      streamState: 'closed',
+      status: settledStatus,
+      final: previous?.final,
+      done: previous?.done,
+      endTime: previous?.endTime || previous?.timestamp || incoming?.endTime,
+      timestamp: previous?.timestamp || previous?.endTime || incoming?.timestamp,
+    } : {}),
+  };
+};
+
+const RECOVERABLE_MAIN_RUN_TYPES = new Set([
+  'model_selection',
+  'thought_stream',
+  'work_note',
+  'command',
+  'exploration',
+  'file_edit',
+  'progress',
+  'browser',
+  'communication',
+  'ask_user',
+  'context_compaction',
+  'answer',
+  'done',
+  'error',
+  'agent_status',
+  'run_status',
+]);
+
+const isMainRunTrace = (log: any): boolean => {
+  const type = normalizedTimelineType(log);
+  return !log?.subAgent &&
+    !log?.subAgentId &&
+    !log?.subAgentChatId &&
+    !log?.terminalTask &&
+    !/^sub_agent_|^inter_agent_/.test(type);
+};
+
+const LIVE_LIFECYCLE_TYPES = new Set([
+  'thought_stream',
+  'work_note',
+  'command',
+  'tool_call',
+  'exploration',
+  'file_edit',
+  'progress',
+  'browser',
+  'communication',
+  'console_output',
+  'sub_agent_action',
+]);
+
+const ACTIVE_LIFECYCLE_STATUSES = new Set(['running', 'working', 'pending', 'streaming', 'spawning']);
+const SUB_AGENT_TERMINAL_TYPES = new Set([
+  'sub_agent_answer',
+  'sub_agent_result',
+  'sub_agent_complete',
+  'sub_agent_error',
+  'sub_agent_close',
+]);
+
+const subAgentLifecycleIdentity = (log: any): string => String(
+  log?.subAgentChatId || log?.subAgentId || log?.agentId || log?.subAgent || log?.agentName || ''
+).trim().toLowerCase();
+
+const isOpenLifecycleTrace = (log: any): boolean => Boolean(
+  LIVE_LIFECYCLE_TYPES.has(normalizedTimelineType(log)) && (
+    log?.isLive === true ||
+    log?.isStreaming === true ||
+    log?.isLiveTyping === true ||
+    log?.streamState === 'open' ||
+    ACTIVE_LIFECYCLE_STATUSES.has(String(log?.status || log?.agentStatus || '').trim().toLowerCase())
+  )
+);
+
+const settleLifecycleTrace = (log: any, endedAt: number, status = 'completed'): any => {
+  if (!isOpenLifecycleTrace(log)) return log;
+  const startedAt = timelineTimestamp(log);
+  const existingEnd = (() => {
+    const value = Number(log?.endTime);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    let normalized = value;
+    while (normalized > 10_000_000_000_000) normalized /= 1000;
+    if (normalized < 10_000_000_000) normalized *= 1000;
+    return normalized;
+  })();
+  const safeEnd = existingEnd !== null &&
+    (!startedAt || existingEnd >= startedAt) &&
+    existingEnd <= endedAt
+      ? existingEnd
+      : Math.max(startedAt || 1, endedAt);
+  return {
+    ...log,
+    isLive: false,
+    isStreaming: false,
+    isLiveTyping: false,
+    streamState: 'closed',
+    status: status === 'error' ? 'error' : 'completed',
+    endTime: safeEnd,
+  };
+};
+
+/**
+ * Freeze stale live rows at the event that actually ended their lifecycle.
+ * Reconnect snapshots can arrive out of order and otherwise revive an old
+ * command, thought, or delegated worker after it already completed.
+ */
+export const settleFeedTraceLifecycles = (logs: any[]): any[] => {
+  const source = Array.isArray(logs) ? logs : [];
+  if (source.length === 0) return [];
+  const settled = source.slice();
+  let turnStart = 0;
+
+  const settleMainRange = (endExclusive: number, endedAt: number, status = 'completed') => {
+    for (let index = turnStart; index < endExclusive; index += 1) {
+      if (!isMainRunTrace(settled[index])) continue;
+      settled[index] = settleLifecycleTrace(settled[index], endedAt, status);
+    }
+  };
+
+  source.forEach((log, index) => {
+    if (!log) return;
+    const type = normalizedTimelineType(log);
+    const eventAt = timelineTimestamp(log) || Date.now();
+
+    if (type === 'user_action') {
+      if (index > turnStart) settleMainRange(index, Math.max(1, eventAt - 1));
+      turnStart = index + 1;
+      return;
+    }
+
+    if (SUB_AGENT_TERMINAL_TYPES.has(type)) {
+      const identity = subAgentLifecycleIdentity(log);
+      if (identity) {
+        const terminalStatus = type === 'sub_agent_error' ? 'error' : 'completed';
+        for (let priorIndex = turnStart; priorIndex < index; priorIndex += 1) {
+          if (subAgentLifecycleIdentity(settled[priorIndex]) !== identity) continue;
+          settled[priorIndex] = settleLifecycleTrace(settled[priorIndex], eventAt, terminalStatus);
+        }
+      }
+    }
+
+    const settledAnswer = type === 'answer' &&
+      String(log?.text || '').trim().length > 0 &&
+      log?.isStreaming !== true &&
+      log?.isLiveTyping !== true &&
+      log?.streamState !== 'open';
+    if (settledAnswer || isTerminalWorkTrace(log)) {
+      const terminalStatus = type === 'error' || ['failed', 'error', 'stopped', 'cancelled', 'canceled'].includes(
+        String(log?.status || '').trim().toLowerCase(),
+      ) ? 'error' : 'completed';
+      settleMainRange(index, eventAt, terminalStatus);
+    }
+  });
+
+  return settled;
+};
+
+/**
+ * Recover a presentation boundary when an older/stale chat snapshot retained
+ * a run's actions but lost its opening user_action. Without this boundary the
+ * feed treats those real actions as an orphan preamble and hides them.
+ */
+export const recoverMissingUserTurnBoundaries = (
+  logs: any[],
+  fallbackTitle = 'Earlier request',
+): any[] => {
+  const source = Array.isArray(logs) ? logs : [];
+  if (source.length === 0) return [];
+
+  const boundaryTurnIds = new Set<string>();
+  const boundaryRunIds = new Set<string>();
+  source.forEach(log => {
+    if (log?.type !== 'user_action') return;
+    const turnId = String(log?.turnId || '').trim();
+    const runId = String(log?.runId || '').trim();
+    if (turnId) boundaryTurnIds.add(turnId);
+    if (runId) boundaryRunIds.add(runId);
+  });
+
+  const candidates = new Map<string, { firstIndex: number; firstLog: any; qualifies: boolean }>();
+  source.forEach((log, index) => {
+    if (!log || log.type === 'user_action') return;
+    const turnId = String(log.turnId || '').trim();
+    const runId = String(log.runId || '').trim();
+    const identity = turnId || runId;
+    if (!identity) return;
+    const alreadyOwned = turnId ? boundaryTurnIds.has(turnId) : boundaryRunIds.has(runId);
+    if (alreadyOwned) return;
+    const candidate = candidates.get(identity) || { firstIndex: index, firstLog: log, qualifies: false };
+    candidate.qualifies ||= isMainRunTrace(log) && RECOVERABLE_MAIN_RUN_TYPES.has(normalizedTimelineType(log));
+    candidates.set(identity, candidate);
+  });
+
+  const missing = Array.from(candidates.entries())
+    .filter(([, candidate]) => candidate.qualifies)
+    .sort((left, right) => left[1].firstIndex - right[1].firstIndex);
+  if (missing.length === 0) return source.slice();
+
+  const normalizedTitle = String(fallbackTitle || '').trim();
+  const recoveredTitle = normalizedTitle && !/^new chat$/i.test(normalizedTitle)
+    ? normalizedTitle
+    : 'Earlier request';
+  const insertions = new Map<number, any[]>();
+  missing.forEach(([identity, candidate], recoveryIndex) => {
+    const firstTimestamp = timelineTimestamp(candidate.firstLog);
+    const turnId = String(candidate.firstLog?.turnId || candidate.firstLog?.runId || identity).trim();
+    const runId = String(candidate.firstLog?.runId || turnId || identity).trim();
+    const boundary = {
+      id: `recovered-user-turn-${ turnId }`,
+      type: 'user_action',
+      text: recoveryIndex === 0 ? recoveredTitle : 'Earlier request',
+      source: 'recovered',
+      _recoveredBoundary: true,
+      ...(candidate.firstLog?.ownerChatId ? { ownerChatId: candidate.firstLog.ownerChatId } : {}),
+      ...(candidate.firstLog?.chatId ? { chatId: candidate.firstLog.chatId } : {}),
+      ...(runId ? { runId } : {}),
+      ...(turnId ? { turnId } : {}),
+      ...(firstTimestamp !== null ? {
+        timestamp: Math.max(1, firstTimestamp - 1),
+        startTime: Math.max(1, firstTimestamp - 1),
+        endTime: Math.max(1, firstTimestamp - 1),
+      } : {}),
+    };
+    const atIndex = insertions.get(candidate.firstIndex) || [];
+    atIndex.push(boundary);
+    insertions.set(candidate.firstIndex, atIndex);
+  });
+
+  const repaired: any[] = [];
+  source.forEach((log, index) => {
+    if (insertions.has(index)) repaired.push(...insertions.get(index)!);
+    repaired.push(log);
+  });
+  return repaired;
+};
+
+/**
+ * Merge two snapshots as an append-only conversation ledger. A newer window
+ * may update one run while holding an older copy of another; replacing the
+ * whole trace array would erase earlier user boundaries and overlap turns.
+ */
+export const mergeFeedTraceHistories = (
+  durableLogs: any[],
+  incomingLogs: any[],
+  fallbackTitle = 'Earlier request',
+): any[] => {
+  const merged: any[] = [];
+  const indexes = new Map<string, number>();
+  const recoveredBoundaryByScope = new Map<string, number>();
+  const realBoundaryByTurn = new Map<string, number>();
+  const realBoundaryScopes = new Set<string>();
+
+  const append = (log: any) => {
+    if (!log || typeof log !== 'object') return;
+    const turnId = String(log.turnId || '').trim();
+    const scope = String(turnId || log.runId || '').trim();
+    if (log.type === 'user_action' && scope) {
+      if (log._recoveredBoundary === true) {
+        if (realBoundaryScopes.has(scope)) return;
+        const existingRecoveredIndex = recoveredBoundaryByScope.get(scope);
+        if (existingRecoveredIndex !== undefined) {
+          merged[existingRecoveredIndex] = mergeTimelineTrace(merged[existingRecoveredIndex], log);
+          return;
+        }
+        recoveredBoundaryByScope.set(scope, merged.length);
+      } else {
+        realBoundaryScopes.add(scope);
+        const recoveredIndex = recoveredBoundaryByScope.get(scope);
+        if (recoveredIndex !== undefined) {
+          merged[recoveredIndex] = log;
+          recoveredBoundaryByScope.delete(scope);
+          const key = timelineStableKey(log);
+          if (key) indexes.set(key, recoveredIndex);
+          if (turnId) realBoundaryByTurn.set(turnId, recoveredIndex);
+          return;
+        }
+        const existingTurnIndex = turnId ? realBoundaryByTurn.get(turnId) : undefined;
+        if (existingTurnIndex !== undefined) {
+          merged[existingTurnIndex] = mergeTimelineTrace(merged[existingTurnIndex], log);
+          const key = timelineStableKey(log);
+          if (key) indexes.set(key, existingTurnIndex);
+          return;
+        }
+      }
+    }
+
+    const key = timelineStableKey(log);
+    const existingIndex = key ? indexes.get(key) : undefined;
+    if (existingIndex !== undefined) {
+      merged[existingIndex] = mergeTimelineTrace(merged[existingIndex], log);
+      return;
+    }
+    const index = merged.length;
+    merged.push(log);
+    if (key) indexes.set(key, index);
+    if (log.type === 'user_action' && log._recoveredBoundary !== true && turnId) {
+      realBoundaryByTurn.set(turnId, index);
+    }
+  };
+
+  (Array.isArray(durableLogs) ? durableLogs : []).forEach(append);
+  (Array.isArray(incomingLogs) ? incomingLogs : []).forEach(append);
+  return settleFeedTraceLifecycles(
+    orderFeedTimelineLogs(recoverMissingUserTurnBoundaries(merged, fallbackTitle)),
+  );
+};
 
 const timelineTraceIndex = (log: any): number | null => {
   const value = Number(log?._traceIdx);
