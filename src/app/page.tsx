@@ -1147,6 +1147,11 @@ function DeepWorkUI() {
   const [contextSettingsRevision, setContextSettingsRevision] = useState(0);
   const [proxyModelSelection, setProxyModelSelection] = useState<string>(AUTO_MODEL_SELECTION);
   const [proxyRuntimeModelSelection, setProxyRuntimeModelSelection] = useState<string>(AUTO_MODEL_SELECTION);
+  // Every Proxy control source (local restore, server restore, and user input)
+  // is revision-owned per chat. Late work for one chat must never overwrite a
+  // newer choice or leak into the controls for another open chat.
+  const proxyControlRevisionsRef = useRef<Record<string, number>>({});
+  const proxyManagerModelRevisionsRef = useRef<Record<string, number>>({});
   const [showProxyAttachMenu, setShowProxyAttachMenu] = useState(false);
   const [copiedProxyMsgId, setCopiedProxyMsgId] = useState<string | null>(null);
   const proxyMessageFeedRef = useRef<HTMLDivElement | null>(null);
@@ -1339,25 +1344,42 @@ function DeepWorkUI() {
       })).find(candidate => candidate.optionKey === selection);
     if (!option) return;
 
+    const chatKey = activeChatIdRef.current || 'new_chat';
+    proxyManagerModelRevisionsRef.current[chatKey] = (proxyManagerModelRevisionsRef.current[chatKey] || 0) + 1;
     setProxyModelSelection(option.optionKey);
+    if (activeChatIdRef.current) {
+      try { appStorage.setItem(`eterx_proxy_manager_model_${ chatKey }`, option.optionKey); } catch { }
+    }
   }, [proxyModelEntries]);
 
   const handleProxyRuntimeModelSelectionChange = useCallback((selection: string) => {
     const valid = proxyModelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === selection);
-    if (!valid) return;
+    if (!valid || selection === proxyRuntimeModelSelection) return;
+    const previousSelection = proxyRuntimeModelSelection;
+    const chatId = activeChatIdRef.current;
+    const chatKey = chatId || 'new_chat';
+    const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
+    proxyControlRevisionsRef.current[chatKey] = revision;
     setProxyRuntimeModelSelection(selection);
     try {
-      appStorage.setItem(`eterx_proxy_runtime_model_${ activeChatIdRef.current || 'new_chat' }`, selection);
+      appStorage.setItem(`eterx_proxy_runtime_model_${ chatKey }`, selection);
     } catch { }
-    const chatId = activeChatIdRef.current;
     if (chatId) {
-      fetch('/api/agent/proxy', {
+      void fetch('/api/agent/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chatId, action: 'model', modelSelection: selection }),
-      }).catch(() => undefined);
+      }).then(async response => response.ok && Boolean((await response.json().catch(() => ({}))).success))
+        .catch(() => false)
+        .then(success => {
+          if (success || proxyControlRevisionsRef.current[chatKey] !== revision) return;
+          try { appStorage.setItem(`eterx_proxy_runtime_model_${ chatKey }`, previousSelection); } catch { }
+          if ((activeChatIdRef.current || 'new_chat') === chatKey) {
+            setProxyRuntimeModelSelection(previousSelection);
+          }
+        });
     }
-  }, [proxyModelEntries]);
+  }, [proxyModelEntries, proxyRuntimeModelSelection]);
 
   useEffect(() => {
     const refreshProxyModels = () => {
@@ -2490,40 +2512,69 @@ function DeepWorkUI() {
     } catch { }
   }, [updateComposerState]);
 
-  const updateProxyControl = useCallback(async (action: 'pause' | 'resume' | 'intervention', level?: 'minimal' | 'normal' | 'high') => {
-    if (!activeChatId) return false;
+  const updateProxyControl = useCallback(async (chatId: string, action: 'pause' | 'resume' | 'intervention', level?: 'minimal' | 'normal' | 'high') => {
     try {
       const response = await fetch('/api/agent/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: activeChatId, action, level }),
+        body: JSON.stringify({ chatId, action, level }),
       });
       return response.ok && Boolean((await response.json().catch(() => ({}))).success);
     } catch {
       return false;
     }
-  }, [activeChatId]);
+  }, []);
 
   const handleProxyToggle = useCallback(async () => {
+    const previousEnabled = proxyEnabled;
     const nextEnabled = !proxyEnabled;
+    const targetChatId = activeChatId;
+    const chatKey = targetChatId || 'new_chat';
+    const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
+    proxyControlRevisionsRef.current[chatKey] = revision;
     setProxyEnabled(nextEnabled);
-    try { appStorage.setItem(`eterx_proxy_controls_${ activeChatId || 'new_chat' }`, JSON.stringify({ enabled: nextEnabled, intervention: proxyIntervention })); } catch { }
-    if (activeChatId) await updateProxyControl(nextEnabled ? 'resume' : 'pause');
+    try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: nextEnabled, intervention: proxyIntervention })); } catch { }
+    if (
+      targetChatId &&
+      !await updateProxyControl(targetChatId, nextEnabled ? 'resume' : 'pause') &&
+      proxyControlRevisionsRef.current[chatKey] === revision
+    ) {
+      try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: previousEnabled, intervention: proxyIntervention })); } catch { }
+      if ((activeChatIdRef.current || 'new_chat') === chatKey) setProxyEnabled(previousEnabled);
+    }
   }, [activeChatId, proxyEnabled, proxyIntervention, updateProxyControl]);
 
   const handleProxyInterventionChange = useCallback(async (level: 'minimal' | 'normal' | 'high') => {
+    if (level === proxyIntervention) return;
     const previousLevel = proxyIntervention;
+    const targetChatId = activeChatId;
+    const chatKey = targetChatId || 'new_chat';
+    const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
+    proxyControlRevisionsRef.current[chatKey] = revision;
     setProxyIntervention(level);
-    try { appStorage.setItem(`eterx_proxy_controls_${ activeChatId || 'new_chat' }`, JSON.stringify({ enabled: proxyEnabled, intervention: level })); } catch { }
-    if (activeChatId && !await updateProxyControl('intervention', level)) {
-      setProxyIntervention(previousLevel);
-      try { appStorage.setItem(`eterx_proxy_controls_${ activeChatId }`, JSON.stringify({ enabled: proxyEnabled, intervention: previousLevel })); } catch { }
+    try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: proxyEnabled, intervention: level })); } catch { }
+    if (
+      targetChatId &&
+      !await updateProxyControl(targetChatId, 'intervention', level) &&
+      proxyControlRevisionsRef.current[chatKey] === revision
+    ) {
+      try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: proxyEnabled, intervention: previousLevel })); } catch { }
+      if ((activeChatIdRef.current || 'new_chat') === chatKey) setProxyIntervention(previousLevel);
     }
   }, [activeChatId, proxyEnabled, proxyIntervention, updateProxyControl]);
 
   useEffect(() => {
-    const key = `eterx_proxy_controls_${ activeChatId || 'new_chat' }`;
+    const chatKey = activeChatId || 'new_chat';
+    const key = `eterx_proxy_controls_${ chatKey }`;
+    const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
+    proxyControlRevisionsRef.current[chatKey] = revision;
+    let cancelled = false;
     const restoreProxyControls = () => {
+      if (
+        cancelled ||
+        (activeChatIdRef.current || 'new_chat') !== chatKey ||
+        proxyControlRevisionsRef.current[chatKey] !== revision
+      ) return;
       try {
         const saved = JSON.parse(appStorage.getItem(key) || '{}');
         setProxyEnabled(saved.enabled !== false);
@@ -2535,6 +2586,7 @@ function DeepWorkUI() {
     };
     restoreProxyControls();
     void appStorageReady.then(restoreProxyControls);
+    return () => { cancelled = true; };
   }, [activeChatId]);
 
   useEffect(() => {
@@ -2564,15 +2616,24 @@ function DeepWorkUI() {
   }, [activeChatId, showProxyChat]);
 
   useEffect(() => {
+    const chatKey = activeChatId || 'new_chat';
+    const revision = proxyControlRevisionsRef.current[chatKey] || 0;
+    let cancelled = false;
     const restoreProxyRuntimeModel = () => {
+      if (
+        cancelled ||
+        (activeChatIdRef.current || 'new_chat') !== chatKey ||
+        proxyControlRevisionsRef.current[chatKey] !== revision
+      ) return;
       try {
-      setProxyRuntimeModelSelection(appStorage.getItem(`eterx_proxy_runtime_model_${ activeChatId || 'new_chat' }`) || AUTO_MODEL_SELECTION);
+      setProxyRuntimeModelSelection(appStorage.getItem(`eterx_proxy_runtime_model_${ chatKey }`) || AUTO_MODEL_SELECTION);
       } catch {
         setProxyRuntimeModelSelection(AUTO_MODEL_SELECTION);
       }
     };
     restoreProxyRuntimeModel();
     void appStorageReady.then(restoreProxyRuntimeModel);
+    return () => { cancelled = true; };
   }, [activeChatId]);
 
   const proxyCardRef = useRef<HTMLDivElement>(null);
@@ -2704,6 +2765,11 @@ function DeepWorkUI() {
       setProxyLiveTurn(null);
       return;
     }
+    const targetChatId = activeChatId;
+    const controlRevisionAtRequest = proxyControlRevisionsRef.current[targetChatId] || 0;
+    const managerModelRevisionAtRestore = (proxyManagerModelRevisionsRef.current[targetChatId] || 0) + 1;
+    proxyManagerModelRevisionsRef.current[targetChatId] = managerModelRevisionAtRestore;
+    let cancelled = false;
     setProxyChatMessages([]);
     setProxyChatHistoryChatId(null);
     setProxyChatInput('');
@@ -2713,30 +2779,51 @@ function DeepWorkUI() {
     setProxyChatLoading(proxyLoadingChatIdsRef.current.has(activeChatId));
     setProxyLiveTurn(proxyLiveTurnsRef.current.get(activeChatId) || null);
     const restoreProxyManagerModel = () => {
+      if (
+        cancelled ||
+        activeChatIdRef.current !== targetChatId ||
+        proxyManagerModelRevisionsRef.current[targetChatId] !== managerModelRevisionAtRestore
+      ) return;
       try {
-        setProxyModelSelection(appStorage.getItem(`eterx_proxy_manager_model_${ activeChatId }`) || AUTO_MODEL_SELECTION);
+        setProxyModelSelection(appStorage.getItem(`eterx_proxy_manager_model_${ targetChatId }`) || AUTO_MODEL_SELECTION);
       } catch { setProxyModelSelection(AUTO_MODEL_SELECTION); }
     };
     restoreProxyManagerModel();
     void appStorageReady.then(restoreProxyManagerModel);
-    let cancelled = false;
-    fetch(`/api/agent/proxy-manager?chatId=${ encodeURIComponent(activeChatId) }`)
+    fetch(`/api/agent/proxy-manager?chatId=${ encodeURIComponent(targetChatId) }`)
       .then(response => response.ok ? response.json() : Promise.reject(new Error('history unavailable')))
       .then(data => {
-        if (cancelled) return;
-        if (data.control && typeof data.control === 'object') {
+        if (cancelled || activeChatIdRef.current !== targetChatId) return;
+        if (
+          data.control &&
+          typeof data.control === 'object' &&
+          proxyControlRevisionsRef.current[targetChatId] === controlRevisionAtRequest
+        ) {
           setProxyEnabled(data.control.enabled !== false);
+          const restoredIntervention = ['minimal', 'normal', 'high'].includes(data.control.intervention)
+            ? data.control.intervention
+            : 'normal';
+          setProxyIntervention(restoredIntervention);
           if (['minimal', 'normal', 'high'].includes(data.control.intervention)) {
-            setProxyIntervention(data.control.intervention);
+            try {
+              appStorage.setItem(`eterx_proxy_controls_${ targetChatId }`, JSON.stringify({
+                enabled: data.control.enabled !== false,
+                intervention: restoredIntervention,
+              }));
+            } catch { }
           }
           if (typeof data.control.modelSelection === 'string' && data.control.modelSelection) {
             setProxyRuntimeModelSelection(data.control.modelSelection);
+            try { appStorage.setItem(`eterx_proxy_runtime_model_${ targetChatId }`, data.control.modelSelection); } catch { }
           }
+          // The canonical server restore owns this revision. This prevents a
+          // later desktop-storage hydration callback from replaying old state.
+          proxyControlRevisionsRef.current[targetChatId] = controlRevisionAtRequest + 1;
         }
         setProxyManagerContext(data.context || null);
         const canonicalMessages = normalizeProxyHistoryMessages(data.messages);
         setProxyChatMessages(previous => reconcileProxyChatMessages(previous, canonicalMessages));
-        setProxyChatHistoryChatId(activeChatId);
+        setProxyChatHistoryChatId(targetChatId);
       })
       .catch(() => { /* Keep any optimistic/live messages already on screen. */ });
     return () => { cancelled = true; };

@@ -1684,9 +1684,16 @@ class AgentRegistry {
     const proxySnapshot = getUserProxyManagerSnapshot(projectId);
     if (proxySnapshot) proxySnapshot.interventionLevel = proxyControl.intervention;
     const visibleTypes = new Set(['task_plan', 'plan', 'work_note', 'tool_call', 'tool_result', 'tool_result_preview', 'file_preview', 'evidence', 'error', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'sub_agent_spawn', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_message', 'answer', 'done']);
+    const internalProxyControlPhases = new Set(['independent_supervision', 'watching', 'policy_changed', 'model_changed']);
     const activity = (execution?.traceBuffer || [])
       .map(entry => ({ ...entry.data, timestamp: entry.timestamp }))
-      .filter(trace => visibleTypes.has(String(trace?.type || '')))
+      .filter(trace =>
+        visibleTypes.has(String(trace?.type || '')) &&
+        !(
+          trace?.type === 'autonomy_proxy_status' &&
+          internalProxyControlPhases.has(String(trace?.phase || '').trim().toLowerCase())
+        )
+      )
       .slice(-36)
       .map(trace => {
         const delegation = delegationTelemetryFromTrace(trace);

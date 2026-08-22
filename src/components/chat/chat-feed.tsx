@@ -1059,8 +1059,26 @@ const countVisibleWorkflowActions = (logs: any[]) => {
  */
 const HIDDEN_MODEL_STATUS_PATTERN = /^(?:(?:using|starting|selected)\s+)?(?:model\s*:?\s*)?(?:gemini[\s-]*3(?:\.5)?[\s-]*flash|gemini-3\.5-flash|mistral\s+devstral\s+2|devstral-2512)(?:\s+(?:is\s+)?(?:starting|loading|initializing|selected|ready|working))?(?:\s+model)?$/i;
 const DASH_ONLY_STATUS_PATTERN = /^[\s\-â€“â€”]{2,}$/;
+const INTERNAL_PROXY_CONTROL_PHASES = new Set([
+  'independent_supervision',
+  'watching',
+  'policy_changed',
+  'model_changed',
+]);
+const INTERNAL_PROXY_CONTROL_TEXT_PATTERN = /^(?:proxy-agent independently supervising this task|user proxy resumed|proxy intervention set to (?:minimal|normal|high)|proxy model updated for the next supervision review)$/i;
+
+const isInternalProxyControlTrace = (log: any) => (
+  log?.type === 'autonomy_proxy_status' && (
+    INTERNAL_PROXY_CONTROL_PHASES.has(String(log?.phase || '').trim().toLowerCase()) ||
+    INTERNAL_PROXY_CONTROL_TEXT_PATTERN.test(String(log?.text || '').trim())
+  )
+);
 
 const isHiddenStatusOnlyLog = (log: any) => {
+  // Proxy preferences and lifecycle presence are control state, not agent
+  // work. Keep real interventions/directives visible while removing these
+  // historical divider rows and preventing live layout/scroll churn.
+  if (isInternalProxyControlTrace(log)) return true;
   if (log?.type === 'progress' && !shouldRenderProgressTrace(log)) return true;
   if (log?.type === 'model_usage') return true;
   if (log?.type === 'work_note_cancel') return true;

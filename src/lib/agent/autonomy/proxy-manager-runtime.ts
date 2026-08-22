@@ -267,8 +267,13 @@ async function runProxyManagerTurn(input: {
         startedAt: persisted.startedAt,
         finalAnswer: compact(persisted.finalAnswer, 5000),
       };
+      const internalProxyControlPhases = new Set(['independent_supervision', 'watching', 'policy_changed', 'model_changed']);
       live.activity = (persisted.traceLogs || []).filter((trace: any) =>
-        ['task_plan', 'plan', 'work_note', 'tool_call', 'tool_result', 'tool_result_preview', 'file_preview', 'evidence', 'error', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'sub_agent_spawn', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_message', 'answer', 'done'].includes(String(trace?.type || '')),
+        ['task_plan', 'plan', 'work_note', 'tool_call', 'tool_result', 'tool_result_preview', 'file_preview', 'evidence', 'error', 'steering_received', 'steering_applied', 'autonomy_proxy_status', 'sub_agent_spawn', 'sub_agent_complete', 'sub_agent_error', 'inter_agent_message', 'answer', 'done'].includes(String(trace?.type || '')) &&
+        !(
+          trace?.type === 'autonomy_proxy_status' &&
+          internalProxyControlPhases.has(String(trace?.phase || '').trim().toLowerCase())
+        ),
       ).slice(-36).map((trace: any) => {
         const delegation = delegationTelemetryFromTrace(trace);
         return {

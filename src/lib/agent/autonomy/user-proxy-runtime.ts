@@ -596,13 +596,6 @@ export class UserProxyRuntime {
   start(): void {
     this.state.status = 'watching';
     this.bootstrapReviewPending = true;
-    this.options.onTrace?.({
-      type: 'autonomy_proxy_status',
-      phase: 'independent_supervision',
-      text: 'Proxy-Agent independently supervising this task',
-      _autonomyProxy: true,
-      timestamp: Date.now(),
-    });
     this.schedulePersist();
     if (this.state.managerDirectives.some(item => item.status === 'active')) {
       this.reviewScore = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].scoreThreshold;
@@ -634,12 +627,15 @@ export class UserProxyRuntime {
     if (this.stopped) return;
     this.paused = false;
     this.state.status = 'watching';
-    this.options.onTrace?.({ type: 'autonomy_proxy_status', phase: 'watching', text: 'User Proxy resumed', _autonomyProxy: true, timestamp: Date.now() });
     this.schedulePersist();
   }
 
   setIntervention(level: ProxyInterventionLevel): void {
     const cadence = level === 'minimal' ? 'quiet' : level === 'high' ? 'close' : 'normal';
+    // Control-plane refreshes can repeat the already active preference when a
+    // chat is restored or a run reconnects. Treat that as a no-op so it cannot
+    // reschedule supervision or create another conversation timeline event.
+    if (this.selectedIntervention === level && this.state.adaptivePolicy.cadence === cadence) return;
     this.selectedIntervention = level;
     this.state.adaptivePolicy.cadence = cadence;
     if (this.reviewTimer) {
@@ -654,7 +650,6 @@ export class UserProxyRuntime {
       if (level === 'high') this.reviewScore = Math.max(this.reviewScore, threshold);
       if (this.reviewScore >= threshold) this.scheduleReview('intervention_changed');
     }
-    this.options.onTrace?.({ type: 'autonomy_proxy_status', phase: 'policy_changed', text: `Proxy intervention set to ${level}`, _autonomyProxy: true, timestamp: Date.now() });
     this.schedulePersist();
   }
 
@@ -666,13 +661,6 @@ export class UserProxyRuntime {
     this.options.mode = input.mode;
     this.options.apiKey = input.apiKey;
     this.options.runtimeSettings = input.runtimeSettings;
-    this.options.onTrace?.({
-      type: 'autonomy_proxy_status',
-      phase: 'model_changed',
-      text: 'Proxy model updated for the next supervision review',
-      _autonomyProxy: true,
-      timestamp: Date.now(),
-    });
   }
 
   receiveManagerDirective(input: Omit<ProxyManagerDirective, 'id' | 'createdAt' | 'status'>): { accepted: boolean; status: ProxyManagerDirective['status']; id?: string } {
