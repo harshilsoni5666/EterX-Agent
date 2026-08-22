@@ -1071,7 +1071,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
         {/* Full width command block till end right of container, max-h-[84px], INVISIBLE scrollbar */}
         <div className="eterx-scrollbar-hidden max-h-[68px] w-full overflow-y-auto pr-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <div className="eterx-terminal-console-command flex items-start gap-1.5 text-[#E4DDD3]">
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11.5px] font-medium leading-[1.4] text-[#F0EAE0] select-all">{command}</span>
+            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11.5px] font-medium leading-[1.4] text-[#F0EAE0] select-text">{command}</span>
           </div>
         </div>
       </div>
@@ -3003,7 +3003,7 @@ const TerminalTraceCard = ({
             {headerLabel}
           </Shimmer>
           {displayCollapsed && (
-            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-tight text-[#857E73] select-all">
+            <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-tight text-[#857E73] select-text">
               {displayCollapsed}
             </span>
           )}
@@ -3040,7 +3040,7 @@ const TerminalTraceCard = ({
           {headerLabel}
         </Shimmer>
         {!isExpanded && (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-tight text-[#857E73] select-all">
+          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-tight text-[#857E73] select-text">
             {collapsedCommand || '(no command)'}
           </span>
         )}
