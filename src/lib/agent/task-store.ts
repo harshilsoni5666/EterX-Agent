@@ -495,8 +495,10 @@ export const taskStore = {
         if (log?.type === 'user_action') break;
         if (
           log?.type === 'answer' &&
-          (log.isStreaming || log.isLiveTyping) &&
-          (!answerId || String(log.answerId || '') === answerId)
+          (
+            (answerId && String(log.answerId || '') === answerId) ||
+            (!answerId && (log.isStreaming || log.isLiveTyping || log.streamState === 'open'))
+          )
         ) {
           task.traceLogs.splice(i, 1);
         }

@@ -255,6 +255,81 @@ const isMainRunTrace = (log: any): boolean => {
     !/^sub_agent_|^inter_agent_/.test(type);
 };
 
+const PROVISIONAL_ANSWER_CONTINUATION_TYPES = new Set([
+  'work_note',
+  'command',
+  'exploration',
+  'file_edit',
+  'browser',
+  'communication',
+  'ask_user',
+  'sub_agent_spawn',
+]);
+
+const feedTraceOwnershipMatches = (left: any, right: any): boolean => {
+  const leftChat = String(left?.ownerChatId || left?.chatId || '').trim();
+  const rightChat = String(right?.ownerChatId || right?.chatId || '').trim();
+  if (leftChat && rightChat && leftChat !== rightChat) return false;
+  const leftScope = String(left?.turnId || left?.runId || '').trim();
+  const rightScope = String(right?.turnId || right?.runId || '').trim();
+  return !leftScope || !rightScope || leftScope === rightScope;
+};
+
+/**
+ * A provider can stream ordinary text before revealing a function call. That
+ * text starts life as a provisional answer, then answer_cancel + work_note
+ * transitions it into the narration for the tool phase. Reconcile that state
+ * transition here so stale append-only snapshots cannot retain both forms.
+ */
+const reconcileProvisionalAnswerTransitions = (logs: any[]): any[] => {
+  const source = Array.isArray(logs) ? logs : [];
+  if (source.length === 0) return [];
+  const superseded = new Set<number>();
+
+  source.forEach((log, index) => {
+    if (
+      log?.type !== 'answer' ||
+      !(
+        log?.isStreaming === true ||
+        log?.isLiveTyping === true ||
+        log?.streamState === 'open'
+      )
+    ) return;
+
+    const answerId = String(log?.answerId || '').trim();
+    for (let laterIndex = index + 1; laterIndex < source.length; laterIndex += 1) {
+      const later = source[laterIndex];
+      if (later?.type === 'user_action') break;
+      if (!feedTraceOwnershipMatches(log, later)) continue;
+      const laterType = normalizedTimelineType(later);
+      const explicitlyCancelled = laterType === 'answer_cancel' && (
+        !answerId || String(later?.answerId || '').trim() === answerId
+      );
+      if (explicitlyCancelled || PROVISIONAL_ANSWER_CONTINUATION_TYPES.has(laterType)) {
+        superseded.add(index);
+        break;
+      }
+      // A settled update for this same answer means the response remained a
+      // direct answer; normal stable-ID merging handles that lifecycle.
+      if (
+        laterType === 'answer' &&
+        answerId &&
+        String(later?.answerId || '').trim() === answerId &&
+        later?.isStreaming !== true &&
+        later?.isLiveTyping !== true &&
+        later?.streamState !== 'open'
+      ) break;
+    }
+  });
+
+  if (superseded.size === 0) return source.slice();
+  const reconciled: any[] = [];
+  source.forEach((log, index) => {
+    if (!superseded.has(index)) reconciled.push(log);
+  });
+  return reconciled;
+};
+
 const LIVE_LIFECYCLE_TYPES = new Set([
   'thought_stream',
   'work_note',
@@ -325,7 +400,7 @@ const settleLifecycleTrace = (log: any, endedAt: number, status = 'completed'): 
  * command, thought, or delegated worker after it already completed.
  */
 export const settleFeedTraceLifecycles = (logs: any[]): any[] => {
-  const source = Array.isArray(logs) ? logs : [];
+  const source = reconcileProvisionalAnswerTransitions(Array.isArray(logs) ? logs : []);
   if (source.length === 0) return [];
   const settled = source.map(log => {
     if (

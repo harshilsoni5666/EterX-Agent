@@ -265,6 +265,22 @@ class AgentRegistry {
         turnId: traceEvent.turnId || execution.activeTurnId || execution.runId,
       };
     }
+    if (traceEvent?.type === 'answer_cancel') {
+      const answerId = String(traceEvent.answerId || '').trim();
+      for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
+        const existing = execution.traceBuffer[index]?.data;
+        if (existing?.type === 'user_action') break;
+        if (existing?.type !== 'answer') continue;
+        const existingScope = String(existing.turnId || existing.runId || '').trim();
+        const cancelScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
+        if (existingScope && cancelScope && existingScope !== cancelScope) continue;
+        const sameAnswer = answerId
+          ? String(existing.answerId || '').trim() === answerId
+          : existing.isStreaming === true || existing.isLiveTyping === true || existing.streamState === 'open';
+        if (!sameAnswer) continue;
+        execution.traceBuffer.splice(index, 1);
+      }
+    }
     if (traceEvent?.type === 'file_preview') {
       let existingIdx = -1;
       for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
