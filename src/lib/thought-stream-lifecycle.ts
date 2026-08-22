@@ -116,7 +116,7 @@ const getThoughtStreamChatId = (trace: any): string => String(
 ).trim();
 
 const getThoughtStreamRunId = (trace: any): string => String(
-  trace?.runId || trace?.turnId || trace?.originRunId || ''
+  trace?.turnId || trace?.runId || trace?.originTurnId || trace?.originRunId || ''
 ).trim();
 
 const hasThoughtStreamScope = (trace: any): boolean => Boolean(

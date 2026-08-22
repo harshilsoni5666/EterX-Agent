@@ -193,6 +193,21 @@ const getVisibleUserActionText = (log: any): string => {
   return match ? String(match[1] || '').trim() : text;
 };
 
+const traceTurnOwnershipMatches = (left: any, right: any): boolean => {
+  const leftChatId = String(left?.ownerChatId || left?.chatId || '').trim();
+  const rightChatId = String(right?.ownerChatId || right?.chatId || '').trim();
+  if (leftChatId || rightChatId) {
+    if (!leftChatId || !rightChatId || leftChatId !== rightChatId) return false;
+  }
+  const leftTurnId = String(left?.turnId || '').trim();
+  const rightTurnId = String(right?.turnId || '').trim();
+  if (leftTurnId || rightTurnId) return Boolean(leftTurnId && rightTurnId && leftTurnId === rightTurnId);
+  const leftRunId = String(left?.runId || '').trim();
+  const rightRunId = String(right?.runId || '').trim();
+  if (leftRunId || rightRunId) return Boolean(leftRunId && rightRunId && leftRunId === rightRunId);
+  return true;
+};
+
 const normalizeBuilderUserActionLogs = (logs: any[] = []): any[] => {
   const source = Array.isArray(logs) ? logs : [];
   const visibleRunIds = new Set(
@@ -344,6 +359,10 @@ type QueuedRunOptions = {
   selectedAgent: SelectedAgentState;
   thinkingLevel: MainAgentThinkingLevel;
   pinnedItems: PinnedItem[];
+  clientRunId?: string;
+  userSource?: string;
+  delegatedBy?: string;
+  scheduledTaskId?: string;
 };
 
 const makeFollowUpAdmissionKey = (
@@ -2324,7 +2343,46 @@ function DeepWorkUI() {
             !runningChatsRef.current.has(task.chatId)
           ) {
             const latestRun = task.history?.[task.history.length - 1];
-            if (latestRun && now - latestRun.startedAt > 2 * 60 * 1000) {
+            const taskChat = chatsRef.current.find(chat => chat.id === task.chatId);
+            const runLogs = latestRun
+              ? (taskChat?.traceLogs || []).filter((log: any) =>
+                String(log?.runId || log?.turnId || '').trim() === latestRun.id
+              )
+              : [];
+            const terminalLog = [...runLogs].reverse().find((log: any) =>
+              log?.mainTurnTerminal === true ||
+              ['done', 'error'].includes(String(log?.type || '').toLowerCase()) ||
+              ['completed', 'failed', 'error', 'stopped', 'cancelled', 'canceled'].includes(String(log?.status || '').toLowerCase())
+            );
+            const settledAnswer = [...runLogs].reverse().find((log: any) =>
+              log?.type === 'answer' &&
+              String(log.text || '').trim() &&
+              log.isStreaming !== true &&
+              log.isLiveTyping !== true
+            );
+            if (latestRun && (terminalLog || settledAnswer)) {
+              const terminalStatus = String(terminalLog?.status || terminalLog?.type || 'completed').toLowerCase();
+              const failed = ['failed', 'error', 'stopped', 'cancelled', 'canceled'].includes(terminalStatus);
+              const completedAt = Number(terminalLog?.endTime || terminalLog?.timestamp || settledAnswer?.endTime || settledAnswer?.timestamp || now);
+              latestRun.status = failed ? 'failed' : 'completed';
+              latestRun.completedAt = completedAt;
+              latestRun.error = failed
+                ? String(terminalLog?.detail || terminalLog?.text || `Task ${terminalStatus}.`)
+                : undefined;
+              const recoveredNextRun = computeNextScheduledRun(task.recurrence, completedAt);
+              task.status = recoveredNextRun === null ? latestRun.status : 'scheduled';
+              if (recoveredNextRun !== null) {
+                task.scheduledTimestamp = recoveredNextRun;
+                const nextDate = new Date(recoveredNextRun);
+                task.triggerTime = `${String(nextDate.getHours()).padStart(2, '0')}:${String(nextDate.getMinutes()).padStart(2, '0')}`;
+                task.customDate = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(nextDate.getDate()).padStart(2, '0')}`;
+                task.dateOption = 'custom';
+              }
+              task.executedAt = completedAt;
+              task.updatedAt = now;
+              task.lastError = latestRun.error;
+              updated = true;
+            } else if (latestRun && now - latestRun.startedAt > 2 * 60 * 1000) {
               latestRun.status = 'failed';
               latestRun.completedAt = now;
               latestRun.error = 'The app restarted before this scheduled run could be reattached. Review its chat before running it again.';
@@ -2872,6 +2930,11 @@ function DeepWorkUI() {
               activePollersRef.current.has(requestChatId) ||
               (pollGenerationRef.current.get(requestChatId) || 0) !== observedPollGeneration
             ) return;
+            if (isTerminalAgentStatus(poll.status)) {
+              setChatLogsById(requestChatId, previous => mergeAgentPollSnapshot(previous, poll, requestChatId));
+              removeRunningChat(requestChatId);
+              return;
+            }
             if (poll.status !== 'running') {
               if (attempt < 11) window.setTimeout(() => connectProxyRun(attempt + 1), 500);
               return;
@@ -5254,28 +5317,31 @@ function DeepWorkUI() {
   const stripAgentConnectionLogs = (logs: any[] = []) => logs.filter(log => !isAgentConnectionLog(log));
   const normalizeSelfOwnedRuntimeLogs = (logs: any[] = [], ownerChatId?: string) => logs.map((log: any) => {
     if (!log || typeof log !== 'object') return log;
-    const type = String(log.type || '');
+    const chatOwnedLog = ownerChatId && !log.chatId && !log.ownerChatId
+      ? { ...log, ownerChatId }
+      : log;
+    const type = String(chatOwnedLog.type || '');
     const hasRealChildIdentity = Boolean(
-      log.subAgentId
-      || log.subAgentChatId
-      || log.auxiliaryRuntime
+      chatOwnedLog.subAgentId
+      || chatOwnedLog.subAgentChatId
+      || chatOwnedLog.auxiliaryRuntime
       || /^sub_agent_/.test(type)
       || ['inter_agent_comm', 'inter_agent_message'].includes(type),
     );
-    const isCustomRuntime = log.agentRuntime === 'custom_agent' || Boolean(log.customAgentId);
-    const isBuilderRuntime = log.agentRuntime === 'agent_builder'
+    const isCustomRuntime = chatOwnedLog.agentRuntime === 'custom_agent' || Boolean(chatOwnedLog.customAgentId);
+    const isBuilderRuntime = chatOwnedLog.agentRuntime === 'agent_builder'
       || String(ownerChatId || '').startsWith('agent_builder_')
-      || /^builder_(?:note|answer)_/.test(String(log.noteId || log.answerId || ''));
-    if (hasRealChildIdentity || (!isCustomRuntime && !isBuilderRuntime)) return log;
+      || /^builder_(?:note|answer)_/.test(String(chatOwnedLog.noteId || chatOwnedLog.answerId || ''));
+    if (hasRealChildIdentity || (!isCustomRuntime && !isBuilderRuntime)) return chatOwnedLog;
 
     // Older custom and Builder traces used `subAgent` for the selected
     // runtime itself. That field is reserved for actual delegated workers.
-    const { subAgent: _ownedSubAgent, ...ownedLog } = log;
+    const { subAgent: _ownedSubAgent, ...ownedLog } = chatOwnedLog;
     return {
       ...ownedLog,
-      ...(log.agentName || log.subAgent ? { agentName: log.agentName || log.subAgent } : {}),
-      ...(isCustomRuntime && !log.agentRuntime ? { agentRuntime: 'custom_agent' } : {}),
-      ...(isBuilderRuntime && !log.agentRuntime ? { agentRuntime: 'agent_builder' } : {}),
+      ...(chatOwnedLog.agentName || chatOwnedLog.subAgent ? { agentName: chatOwnedLog.agentName || chatOwnedLog.subAgent } : {}),
+      ...(isCustomRuntime && !chatOwnedLog.agentRuntime ? { agentRuntime: 'custom_agent' } : {}),
+      ...(isBuilderRuntime && !chatOwnedLog.agentRuntime ? { agentRuntime: 'agent_builder' } : {}),
     };
   });
   const canonicalizeClientTraceLogs = (logs: any[] = [], ownerChatId?: string) => {
@@ -5648,6 +5714,7 @@ function DeepWorkUI() {
     title: string,
     detail: string,
     at = Date.now(),
+    scope: { ownerChatId?: string; runId?: string; turnId?: string; mainTurnTerminal?: boolean } = {},
   ) => ({
     type: 'agent_status',
     status,
@@ -5657,6 +5724,7 @@ function DeepWorkUI() {
     timestamp: at,
     startTime: at,
     endTime: at,
+    ...scope,
   });
 
   const removeRunningChat = (chatId: string) => {
@@ -5831,11 +5899,7 @@ function DeepWorkUI() {
                 if (activeChatIdRef.current === id) {
                   setTraceLogs(previousLogs =>
                     activeChatIdRef.current === id
-                        ? mergeServerRunLogs(previousLogs, data.traces, {
-                          chatId: id,
-                          runId: data.runId,
-                          startedAt: data.startedAt,
-                        })
+                        ? mergeAgentPollSnapshot(previousLogs, data, id)
                       : previousLogs
                   );
                 }
@@ -5843,11 +5907,7 @@ function DeepWorkUI() {
                   const updated = prev.map(c => c.id === id
                     ? {
                         ...c,
-                        traceLogs: mergeServerRunLogs(c.traceLogs || [], data.traces, {
-                          chatId: id,
-                          runId: data.runId,
-                          startedAt: data.startedAt,
-                        }),
+                        traceLogs: mergeAgentPollSnapshot(c.traceLogs || [], data, id),
                       }
                     : c);
                   persistChats(updated);
@@ -5856,6 +5916,20 @@ function DeepWorkUI() {
               }
               setRunningChats(prev => new Set(prev).add(id));
               startPolling(id, getPollCursor(data), data.startedAt, data.runId);
+            } else if (isTerminalAgentStatus(data.status)) {
+              if (activeChatIdRef.current === id) {
+                setTraceLogs(previousLogs => activeChatIdRef.current === id
+                  ? mergeAgentPollSnapshot(previousLogs, data, id)
+                  : previousLogs);
+              }
+              setChats(prev => {
+                const updated = prev.map(c => c.id === id
+                  ? { ...c, traceLogs: mergeAgentPollSnapshot(c.traceLogs || [], data, id) }
+                  : c);
+                persistChats(updated);
+                return updated;
+              });
+              removeRunningChat(id);
             }
           })
           .catch(() => { /* offline — just show local state */ });
@@ -5865,7 +5939,9 @@ function DeepWorkUI() {
         const container = document.getElementById('chat-container');
         if (container) {
           const savedScroll = chatScrollPositionsRef.current[id];
-          if (savedScroll !== undefined) {
+          if (runningChatsRef.current.has(id)) {
+            container.scrollTop = container.scrollHeight;
+          } else if (savedScroll !== undefined) {
             container.scrollTop = savedScroll;
           } else {
             container.scrollTop = container.scrollHeight;
@@ -6321,7 +6397,7 @@ function DeepWorkUI() {
     let planIdx = -1;
     for (let i = logs.length - 1; i >= 0; i--) {
       if (logs[i]?.type === 'user_action') break;
-      if (logs[i]?.type === 'task_plan') {
+      if (logs[i]?.type === 'task_plan' && traceTurnOwnershipMatches(logs[i], trace)) {
         planIdx = i;
         break;
       }
@@ -6494,6 +6570,7 @@ function DeepWorkUI() {
           if (logs[i].type === 'user_action') break;
           if (
             logs[i].type === 'answer' &&
+            traceTurnOwnershipMatches(logs[i], processedLog) &&
             (logs[i].isStreaming || logs[i].isLiveTyping) &&
             (!answerId || String(logs[i].answerId || '') === answerId)
           ) {
@@ -6513,6 +6590,7 @@ function DeepWorkUI() {
           if (logs[i].type === 'user_action') break;
           if (
             logs[i].type === 'work_note' &&
+            traceTurnOwnershipMatches(logs[i], processedLog) &&
             (logs[i].subAgentChatId || logs[i].subAgentId || logs[i].subAgent || null) === subAgentIdentity &&
             (!noteId || logs[i].noteId === noteId)
           ) {
@@ -6566,6 +6644,7 @@ function DeepWorkUI() {
           }
           if (
             logs[i].type === 'work_note' &&
+            traceTurnOwnershipMatches(logs[i], processedLog) &&
             (logs[i].subAgentChatId || logs[i].subAgentId || logs[i].subAgent || null) === subAgentIdentity
           ) {
             const existingText = String(logs[i].text || '').trim();
@@ -6656,6 +6735,7 @@ function DeepWorkUI() {
         for (let i = logs.length - 1; i >= 0; i--) {
           if (logs[i].type === 'user_action') break;
           if (logs[i].type !== 'ask_user') continue;
+          if (!traceTurnOwnershipMatches(logs[i], processedLog)) continue;
           const sameResponseKey = responseKey && logs[i].responseKey === responseKey;
           const sameQuestion = String(logs[i].question || '').trim() === question;
           if (sameResponseKey || sameQuestion) {
@@ -6666,6 +6746,7 @@ function DeepWorkUI() {
 
         const existingAsk = dedupScope.find((l: any) =>
           l.type === 'ask_user' &&
+          traceTurnOwnershipMatches(l, processedLog) &&
           (responseKey ? l.responseKey === responseKey : String(l.question || '').trim() === question)
         );
 
@@ -6711,7 +6792,7 @@ function DeepWorkUI() {
         let answerIdx = -1;
         for (let i = logs.length - 1; i >= 0; i--) {
           if (logs[i].type === 'user_action') break;
-          if (logs[i].type === 'answer') { answerIdx = i; break; }
+          if (logs[i].type === 'answer' && traceTurnOwnershipMatches(logs[i], processedLog)) { answerIdx = i; break; }
         }
         if (answerIdx >= 0) {
           const existingTraceIdx = Number(logs[answerIdx]._traceIdx);
@@ -6752,7 +6833,7 @@ function DeepWorkUI() {
         }
       } else if (trace.type === 'file_preview') {
         const stablePreviewRelativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
-          l.type === 'file_preview' && (
+          l.type === 'file_preview' && traceTurnOwnershipMatches(l, processedLog) && (
             (trace._traceIdx !== undefined && trace._traceIdx !== null && l._traceIdx === trace._traceIdx) ||
             (trace.traceId && l.traceId === trace.traceId) ||
             (trace.id && l.id === trace.id)
@@ -6769,6 +6850,7 @@ function DeepWorkUI() {
             ? (() => {
               const relativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
                 l.type === 'file_preview' &&
+                traceTurnOwnershipMatches(l, processedLog) &&
                 l.ownerTraceId === trace.ownerTraceId &&
                 (!tracePreviewPath || String(l.filepath || l.filename || '') === tracePreviewPath)
               );
@@ -6777,7 +6859,7 @@ function DeepWorkUI() {
             : trace.dedupe !== false
               ? (() => {
                 const relativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
-                  l.type === 'file_preview' && l.filepath === trace.filepath && l.dedupe !== false
+                  l.type === 'file_preview' && traceTurnOwnershipMatches(l, processedLog) && l.filepath === trace.filepath && l.dedupe !== false
                 );
                 return relativeIdx >= 0 ? currentTurnStart + relativeIdx : -1;
               })()
@@ -6791,7 +6873,9 @@ function DeepWorkUI() {
       } else if (trace.type === 'console_output') {
         const currentTurnLogs = logs.slice(currentTurnStart);
         const relativeMergeIdx = findMergeableConsoleOutputIndex(currentTurnLogs, trace);
-        const mergeIdx = relativeMergeIdx >= 0 ? currentTurnStart + relativeMergeIdx : -1;
+        const mergeIdx = relativeMergeIdx >= 0 && traceTurnOwnershipMatches(currentTurnLogs[relativeMergeIdx], processedLog)
+          ? currentTurnStart + relativeMergeIdx
+          : -1;
         if (mergeIdx >= 0) {
           logs[mergeIdx] = {
             ...mergeConsoleOutputTrace(logs[mergeIdx], processedLog),
@@ -6804,12 +6888,22 @@ function DeepWorkUI() {
           logs.push(processedLog);
         }
       } else if (trace.type === 'done') {
-        // Skip — handled by polling completion
+        logs.push({
+          ...processedLog,
+          status: trace.status || 'completed',
+          mainTurnTerminal: true,
+          timestamp: traceAt,
+          endTime: traceAt,
+        });
       } else if (trace.type === 'error') {
         logs.push({
           ...processedLog,
-          type: 'thought_stream',
-          text: `Error: ${ trace.data || trace.text || 'Unknown error' }`,
+          type: 'agent_status',
+          title: 'Run ended with an error',
+          detail: String(trace.data || trace.text || 'Unknown error'),
+          text: String(trace.data || trace.text || 'Unknown error'),
+          status: trace.status || 'failed',
+          mainTurnTerminal: true,
           _traceIdx: trace._traceIdx,
           timestamp: traceAt,
           startTime: traceAt,
@@ -6818,12 +6912,18 @@ function DeepWorkUI() {
       } else {
         // When a real (non-instant) action trace arrives, remove any preceding _instant preview
         if (!trace._instant && (trace.type === 'command' || trace.type === 'file_edit' || trace.type === 'exploration')) {
-          const relativeInstantIdx = logs.slice(currentTurnStart).findIndex(l => l._instant && l.type === trace.type);
+          const relativeInstantIdx = logs.slice(currentTurnStart).findIndex(l =>
+            l._instant && l.type === trace.type && traceTurnOwnershipMatches(l, processedLog)
+          );
           const instantIdx = relativeInstantIdx >= 0 ? currentTurnStart + relativeInstantIdx : -1;
           if (instantIdx >= 0) logs.splice(instantIdx, 1);
         }
         // Skip _instant traces if a real trace of same type already exists
-        if (trace._instant && logs.slice(currentTurnStart).some(l => !l._instant && (l.type === 'command' || l.type === 'file_edit' || l.type === 'exploration'))) {
+        if (trace._instant && logs.slice(currentTurnStart).some(l =>
+          !l._instant &&
+          (l.type === 'command' || l.type === 'file_edit' || l.type === 'exploration') &&
+          traceTurnOwnershipMatches(l, processedLog)
+        )) {
           continue;
         }
         logs.push(processedLog);
@@ -6901,7 +7001,9 @@ function DeepWorkUI() {
         const successorTraces = scopedTraces.map((trace: any) => ({
           ...trace,
           ...(incomingRunId && !String(trace?.runId || '').trim() ? { runId: incomingRunId } : {}),
-          ...(incomingRunId && !String(trace?.turnId || '').trim() ? { turnId: incomingRunId } : {}),
+          ...(!String(trace?.turnId || '').trim()
+            ? { turnId: trace?.type === 'user_action' ? trace?.id || incomingRunId : incomingRunId }
+            : {}),
         }));
         if (alreadyPresent) {
           return processServerTraces(successorTraces, existingLogs, runIdentity.chatId);
@@ -6922,9 +7024,100 @@ function DeepWorkUI() {
       ...trace,
       ...(runIdentity.chatId ? { ownerChatId: runIdentity.chatId } : {}),
       ...(runIdentity.runId && !String(trace?.runId || '').trim() ? { runId: runIdentity.runId } : {}),
-      ...(turnId && !String(trace?.turnId || '').trim() ? { turnId } : {}),
+      ...(!String(trace?.turnId || '').trim()
+        ? { turnId: trace?.type === 'user_action' ? trace?.id || turnId : turnId }
+        : {}),
     }));
     return processServerTraces(ownedTraces, existingLogs, runIdentity.chatId);
+  };
+
+  const mergeAgentPollSnapshot = (existingLogs: any[], data: any, chatId: string) => {
+    let mergedLogs = mergeServerRunLogs(existingLogs, data?.traces || [], {
+      chatId,
+      runId: data?.runId,
+      startedAt: data?.startedAt,
+    });
+    if (!isTerminalAgentStatus(data?.status)) return mergedLogs;
+
+    const runId = String(data?.runId || '').trim();
+    const boundaryIndex = mergedLogs.findLastIndex((log: any) => {
+      if (log?.type !== 'user_action') return false;
+      if (!runId) return true;
+      return String(log?.runId || log?.turnId || '').trim() === runId;
+    });
+    if (boundaryIndex < 0) return mergedLogs;
+
+    const boundary = mergedLogs[boundaryIndex];
+    const turnId = String(boundary?.turnId || boundary?.runId || runId).trim();
+    const completedAt = normalizeClientTraceTime(data?.completedAt || Date.now());
+    const ownedTerminalFields = {
+      ownerChatId: chatId,
+      ...(runId ? { runId } : {}),
+      ...(turnId ? { turnId } : {}),
+      mainTurnTerminal: true,
+    };
+    const turnLogs = mergedLogs.slice(boundaryIndex + 1);
+    const ownsTerminalTurn = (log: any) => {
+      const logTurnId = String(log?.turnId || '').trim();
+      const logRunId = String(log?.runId || '').trim();
+      if (turnId && logTurnId) return logTurnId === turnId;
+      if (runId && logRunId) return logRunId === runId;
+      return true;
+    };
+    const hasTerminalBoundary = turnLogs.some((log: any) =>
+      ownsTerminalTurn(log) && (
+        log?.mainTurnTerminal === true ||
+        ['done', 'error'].includes(String(log?.type || '').toLowerCase()) ||
+        ['completed', 'done', 'success', 'failed', 'error', 'stopped', 'cancelled', 'canceled'].includes(String(log?.status || '').toLowerCase())
+      )
+    );
+
+    if (data.status === 'completed' && String(data.finalAnswer || '').trim()) {
+      const hasAnswer = turnLogs.some((log: any) =>
+        ownsTerminalTurn(log) && log?.type === 'answer' && String(log.text || '').trim()
+      );
+      if (!hasAnswer) {
+        mergedLogs = [...mergedLogs, withTraceTiming({
+          type: 'answer',
+          text: String(data.finalAnswer),
+          isStreaming: false,
+          isLiveTyping: false,
+          ...ownedTerminalFields,
+          mainTurnTerminal: undefined,
+        }, completedAt)];
+      }
+    }
+
+    const hasVisibleTerminalNotice = turnLogs.some((log: any) => {
+      if (!ownsTerminalTurn(log)) return false;
+      const type = String(log?.type || '').toLowerCase();
+      const text = String(log?.detail || log?.text || '').trim();
+      return type === 'agent_status' || (type === 'thought' && text.length > 0);
+    });
+
+    if ((data.status === 'failed' || data.status === 'stopped') && !hasVisibleTerminalNotice) {
+      const detail = String(
+        data.finalAnswer || data.error || (data.status === 'stopped' ? 'The agent was stopped.' : 'The run ended with an error.')
+      );
+      mergedLogs = [...mergedLogs, {
+        ...agentStatusLog(
+          data.status,
+          data.status === 'stopped' ? 'Run stopped' : 'Run ended with an error',
+          detail,
+          completedAt,
+        ),
+        ...ownedTerminalFields,
+      }];
+    } else if (!hasTerminalBoundary) {
+      mergedLogs = [...mergedLogs, withTraceTiming({
+        type: 'run_status',
+        status: data.status,
+        text: '',
+        ...ownedTerminalFields,
+      }, completedAt)];
+    }
+
+    return orderFeedTimelineLogs(canonicalizeThoughtStreamLogs(mergedLogs));
   };
 
   // Debounced folder snapshot writer — prevents rapid concurrent writes.
@@ -7117,7 +7310,12 @@ function DeepWorkUI() {
       );
       setChatLogsById(chatId, logs => [
         ...stripAgentConnectionLogs(logs),
-        agentStatusLog('failed', 'Agent unavailable', message)
+        agentStatusLog('failed', 'Agent unavailable', message, Date.now(), {
+          ownerChatId: chatId,
+          runId: expectedRunId || pollRunIdRef.current.get(chatId),
+          turnId: [...logs].reverse().find((log: any) => log?.type === 'user_action')?.turnId || expectedRunId,
+          mainTurnTerminal: true,
+        })
       ]);
     };
 
@@ -7433,6 +7631,7 @@ function DeepWorkUI() {
                     if (logs[i].type === 'user_action') break;
                     if (
                       logs[i].type === 'answer' &&
+                      traceTurnOwnershipMatches(logs[i], timedTrace) &&
                       (logs[i].isStreaming || logs[i].isLiveTyping) &&
                       (!answerId || String(logs[i].answerId || '') === answerId)
                     ) {
@@ -7454,6 +7653,7 @@ function DeepWorkUI() {
                     if (logs[i].type === 'user_action') break;
                     if (
                       logs[i].type === 'work_note' &&
+                      traceTurnOwnershipMatches(logs[i], timedTrace) &&
                       (logs[i].subAgentChatId || logs[i].subAgentId || logs[i].subAgent || null) === subAgentIdentity &&
                       (!noteId || logs[i].noteId === noteId)
                     ) {
@@ -7506,6 +7706,7 @@ function DeepWorkUI() {
                     }
                     if (
                       logs[i].type === 'work_note' &&
+                      traceTurnOwnershipMatches(logs[i], timedTrace) &&
                       (logs[i].subAgentChatId || logs[i].subAgentId || logs[i].subAgent || null) === subAgentIdentity
                     ) {
                       const existingText = String(logs[i].text || '').trim();
@@ -7595,6 +7796,7 @@ function DeepWorkUI() {
                   for (let i = logs.length - 1; i >= 0; i--) {
                     if (logs[i].type === 'user_action') break;
                     if (logs[i].type !== 'ask_user') continue;
+                    if (!traceTurnOwnershipMatches(logs[i], timedTrace)) continue;
                     const sameResponseKey = responseKey && logs[i].responseKey === responseKey;
                     const sameQuestion = String(logs[i].question || '').trim() === question;
                     if (sameResponseKey || sameQuestion) {
@@ -7642,7 +7844,7 @@ function DeepWorkUI() {
                   let answerIdx = -1;
                   for (let i = logs.length - 1; i >= 0; i--) {
                     if (logs[i].type === 'user_action') break;
-                    if (logs[i].type === 'answer') { answerIdx = i; break; }
+                    if (logs[i].type === 'answer' && traceTurnOwnershipMatches(logs[i], timedTrace)) { answerIdx = i; break; }
                   }
                   if (answerIdx >= 0) {
                     const existingTraceIdx = Number(logs[answerIdx]._traceIdx);
@@ -7682,7 +7884,7 @@ function DeepWorkUI() {
                   }
                 } else if (trace.type === 'file_preview') {
                   const stablePreviewRelativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
-                    l.type === 'file_preview' && (
+                    l.type === 'file_preview' && traceTurnOwnershipMatches(l, timedTrace) && (
                       (trace._traceIdx !== undefined && trace._traceIdx !== null && l._traceIdx === trace._traceIdx) ||
                       (trace.traceId && l.traceId === trace.traceId) ||
                       (trace.id && l.id === trace.id)
@@ -7699,6 +7901,7 @@ function DeepWorkUI() {
                       ? (() => {
                         const relativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
                           l.type === 'file_preview' &&
+                          traceTurnOwnershipMatches(l, timedTrace) &&
                           l.ownerTraceId === trace.ownerTraceId &&
                           (!tracePreviewPath || String(l.filepath || l.filename || '') === tracePreviewPath)
                         );
@@ -7707,7 +7910,7 @@ function DeepWorkUI() {
                       : trace.dedupe !== false
                         ? (() => {
                           const relativeIdx = logs.slice(currentTurnStart).findLastIndex((l: any) =>
-                            l.type === 'file_preview' && l.filepath === trace.filepath && l.dedupe !== false
+                            l.type === 'file_preview' && traceTurnOwnershipMatches(l, timedTrace) && l.filepath === trace.filepath && l.dedupe !== false
                           );
                           return relativeIdx >= 0 ? currentTurnStart + relativeIdx : -1;
                         })()
@@ -7723,7 +7926,9 @@ function DeepWorkUI() {
                   // commands remain separate through stream/task ownership.
                   const currentOutputLogs = logs.slice(currentTurnStart);
                   const relativeMergeIdx = findMergeableConsoleOutputIndex(currentOutputLogs, trace);
-                  const mergeIdx = relativeMergeIdx >= 0 ? currentTurnStart + relativeMergeIdx : -1;
+                  const mergeIdx = relativeMergeIdx >= 0 && traceTurnOwnershipMatches(currentOutputLogs[relativeMergeIdx], timedTrace)
+                    ? currentTurnStart + relativeMergeIdx
+                    : -1;
                   if (mergeIdx >= 0) {
                     logs[mergeIdx] = {
                       ...mergeConsoleOutputTrace(logs[mergeIdx], timedTrace),
@@ -7736,16 +7941,40 @@ function DeepWorkUI() {
                     logs.push(timedTrace);
                   }
                 } else if (trace.type === 'done' || trace.type === 'error') {
-                  // Skip — handled by status check below
+                  logs.push(trace.type === 'error'
+                    ? {
+                      ...timedTrace,
+                      type: 'agent_status',
+                      title: 'Run ended with an error',
+                      detail: String(trace.data || trace.text || 'Unknown error'),
+                      text: String(trace.data || trace.text || 'Unknown error'),
+                      status: trace.status || 'failed',
+                      mainTurnTerminal: true,
+                      timestamp: traceAt,
+                      endTime: traceAt,
+                    }
+                    : {
+                      ...timedTrace,
+                      status: trace.status || 'completed',
+                      mainTurnTerminal: true,
+                      timestamp: traceAt,
+                      endTime: traceAt,
+                    });
                 } else {
                   // ALL other types (command, exploration, file_edit, etc.) — deduplicated by _traceIdx above
                   // Replace _instant preview with real trace
                   if (!trace._instant && (trace.type === 'command' || trace.type === 'file_edit' || trace.type === 'exploration')) {
-                    const relativeInstantIdx = logs.slice(currentTurnStart).findIndex(l => l._instant && l.type === trace.type);
+                    const relativeInstantIdx = logs.slice(currentTurnStart).findIndex(l =>
+                      l._instant && l.type === trace.type && traceTurnOwnershipMatches(l, timedTrace)
+                    );
                     const instantIdx = relativeInstantIdx >= 0 ? currentTurnStart + relativeInstantIdx : -1;
                     if (instantIdx >= 0) logs.splice(instantIdx, 1);
                   }
-                  if (trace._instant && logs.slice(currentTurnStart).some(l => !l._instant && (l.type === 'command' || l.type === 'file_edit' || l.type === 'exploration'))) {
+                  if (trace._instant && logs.slice(currentTurnStart).some(l =>
+                    !l._instant &&
+                    (l.type === 'command' || l.type === 'file_edit' || l.type === 'exploration') &&
+                    traceTurnOwnershipMatches(l, timedTrace)
+                  )) {
                     continue;
                   }
                   logs.push(timedTrace);
@@ -7774,63 +8003,12 @@ function DeepWorkUI() {
             data.status === 'stopped';
           if (isTerminalPollStatus) {
             flushBackgroundChatUpdates();
-          }
-
-          // A provider can finish after persisting finalAnswer but before its
-          // last answer trace is durably flushed. Recover that text only when
-          // the latest visible turn has the exact same run owner.
-          if (data.status === 'completed' && String(data.finalAnswer || '').trim()) {
-            const terminalRunId = String(serverRunId || expectedRunId || '').trim();
-            setChatLogsById(chatId, previous => {
-              const latestUserIndex = previous.findLastIndex((log: any) => log?.type === 'user_action');
-              if (latestUserIndex < 0) return previous;
-              const latestUser = previous[latestUserIndex];
-              const latestTurnId = String(latestUser.runId || latestUser.turnId || '').trim();
-              if (terminalRunId && latestTurnId && terminalRunId !== latestTurnId) return previous;
-              const currentTurn = previous.slice(latestUserIndex + 1);
-              if (currentTurn.some((log: any) => log?.type === 'answer' && String(log.text || '').trim())) {
-                return previous;
-              }
-              return [
-                ...previous,
-                withTraceTiming({
-                  type: 'answer',
-                  text: String(data.finalAnswer),
-                  runId: terminalRunId || latestTurnId,
-                  turnId: latestTurnId || terminalRunId,
-                  isStreaming: false,
-                  isLiveTyping: false,
-                }, data.completedAt),
-              ];
-            });
-          }
-
-          // CRITICAL: Only stop on TERMINAL states, NOT 'idle'
-          // 'idle' means agent hasn't started yet (race condition)
-          if (data.status === 'failed') {
-            // Show error trace so UI doesn't silently drop — this was causing the
-            // 'UI gets off while running' appearance (agent failed, no feedback)
-            const errMsg = data.finalAnswer || data.error || 'All API attempts exhausted or agent encountered a fatal error.';
-            const failureRunId = String(data.runId || serverRunId || expectedRunId || '').trim();
-            const failureText = String(errMsg).slice(0, 200);
-            const failureAt = normalizeClientTraceTime(data.completedAt);
-            setChatLogsById(chatId, previous => {
-              const alreadyMarked = previous.some((log: any) =>
-                log?.type === 'agent_status' &&
-                log?.status === 'failed' &&
-                (failureRunId
-                  ? String(log.runId || log.turnId || '').trim() === failureRunId
-                  : String(log.text || '').trim() === failureText && Number(log.timestamp || 0) === failureAt)
-              );
-              if (alreadyMarked) return previous;
-              return [
-                ...stripAgentConnectionLogs(previous),
-                {
-                  ...agentStatusLog('failed', 'Run ended with an error', failureText, failureAt),
-                  ...(failureRunId ? { runId: failureRunId, turnId: failureRunId } : {}),
-                },
-              ];
-            });
+            setChatLogsById(chatId, previous => mergeAgentPollSnapshot(
+              previous,
+              { ...data, runId: data.runId || serverRunId || expectedRunId, traces: [] },
+              chatId,
+            ));
+            flushBackgroundChatUpdates();
           }
           // The final answer/failure row above is queued through the same
           // lightweight commit path; flush it before a queued successor can
@@ -8070,12 +8248,8 @@ function DeepWorkUI() {
           ) continue;
           reconcileServerQueuedFollowUps(chatId, data.queuedFollowUps);
 
-          if (data.traces && data.traces.length > 0) {
-            setChatLogsById(chatId, previousLogs => mergeServerRunLogs(previousLogs, data.traces, {
-              chatId,
-              runId: data.runId,
-              startedAt: data.startedAt,
-            }));
+          if ((data.traces && data.traces.length > 0) || isTerminalAgentStatus(data.status)) {
+            setChatLogsById(chatId, previousLogs => mergeAgentPollSnapshot(previousLogs, data, chatId));
             debouncedSaveToFolder();
           }
 
@@ -8155,6 +8329,12 @@ function DeepWorkUI() {
         .find((log: any) => log?.type === 'user_action')
         ?.runId || ''
     ).trim();
+    const stopTurnId = String(
+      [...(chatsRef.current.find(chat => chat.id === chatId)?.traceLogs || [])]
+        .reverse()
+        .find((log: any) => log?.type === 'user_action')
+        ?.turnId || stopRunId
+    ).trim();
     setQueuedFollowUps(previous => previous.filter(message => message.chatId !== chatId));
     setPendingSteering(previous => previous.filter(message => message.chatId !== chatId));
 
@@ -8167,7 +8347,12 @@ function DeepWorkUI() {
       setChatLogsById(chatId, previous => {
         const clean = stripAgentConnectionLogs(previous);
         const alreadyMarked = clean.some(log => log?.type === 'agent_status' && log.status === 'stopped');
-        return alreadyMarked ? clean : [...clean, agentStatusLog('stopped', 'Chat stopped', 'Stopped by you.')];
+        return alreadyMarked ? clean : [...clean, agentStatusLog('stopped', 'Chat stopped', 'Stopped by you.', Date.now(), {
+          ownerChatId: chatId,
+          runId: stopRunId,
+          turnId: stopTurnId,
+          mainTurnTerminal: true,
+        })];
       });
       releaseQueuedAdmissions();
       return Promise.resolve(true);
@@ -8214,7 +8399,12 @@ function DeepWorkUI() {
             (log.type === 'agent_status' && log.status === 'stopped') ||
             (log.type === 'thought' && String(log.text || '').includes('Generation stopped by user.'))
           );
-          return alreadyMarked ? clean : [...clean, agentStatusLog('stopped', 'Run stopped', 'Stopped by you.')];
+          return alreadyMarked ? clean : [...clean, agentStatusLog('stopped', 'Run stopped', 'Stopped by you.', Date.now(), {
+            ownerChatId: chatId,
+            runId: stopRunId,
+            turnId: stopTurnId,
+            mainTurnTerminal: true,
+          })];
         });
         return true;
       } catch (error: any) {
@@ -8228,7 +8418,11 @@ function DeepWorkUI() {
         });
         setChatLogsById(chatId, previous => [
           ...stripAgentConnectionLogs(previous),
-          agentStatusLog('warning', 'Stop request failed', String(error?.message || error).slice(0, 180)),
+          agentStatusLog('warning', 'Stop request failed', String(error?.message || error).slice(0, 180), Date.now(), {
+            ownerChatId: chatId,
+            runId: stopRunId,
+            turnId: stopTurnId,
+          }),
         ]);
         return false;
       } finally {
@@ -8979,6 +9173,10 @@ function DeepWorkUI() {
       backgroundChat?: boolean;
       initialTitle?: string;
       pinnedItems?: PinnedItem[];
+      clientRunId?: string;
+      userSource?: string;
+      delegatedBy?: string;
+      scheduledTaskId?: string;
     },
   ) => {
     if (dictationShouldRunRef.current) stopSpeechDictation();
@@ -9080,6 +9278,10 @@ function DeepWorkUI() {
         selectedAgent: requestedSelection,
         thinkingLevel: runOptionsOverride?.thinkingLevel || composerContext.thinkingLevel,
         pinnedItems: [...(runOptionsOverride?.pinnedItems || targetComposerState?.pinnedItems || pinnedItems)],
+        clientRunId: runOptionsOverride?.clientRunId,
+        userSource: runOptionsOverride?.userSource,
+        delegatedBy: runOptionsOverride?.delegatedBy,
+        scheduledTaskId: runOptionsOverride?.scheduledTaskId,
       };
       return deliverFollowUpToRunningChat(
         targetChatIdAtSend,
@@ -9144,13 +9346,16 @@ function DeepWorkUI() {
     const currentAttachments = [...requestedAttachments];
     const userLogAttachments = currentAttachments.map(serializeComposerAttachment);
     const runStartedAt = Date.now();
-    const clientRunId = crypto.randomUUID();
+    const clientRunId = String(runOptionsOverride?.clientRunId || crypto.randomUUID()).trim();
     const userLog = {
       id: `user-turn-${ clientRunId }`,
       type: 'user_action',
       text: promptText,
-      source: 'human',
+      source: runOptionsOverride?.userSource || 'human',
+      ...(runOptionsOverride?.delegatedBy ? { delegatedBy: runOptionsOverride.delegatedBy } : {}),
+      ...(runOptionsOverride?.scheduledTaskId ? { scheduledTaskId: runOptionsOverride.scheduledTaskId } : {}),
       attachments: userLogAttachments,
+      ownerChatId: targetChatIdAtSend,
       runId: clientRunId,
       turnId: clientRunId,
       startTime: runStartedAt,
@@ -9413,7 +9618,12 @@ function DeepWorkUI() {
         if (error?.name === 'AbortError') return false;
         setChatLogsById(chatIdToUse!, previous => [
           ...stripAgentConnectionLogs(previous),
-          agentStatusLog('failed', 'Chat failed', String(error?.message || error).slice(0, 240)),
+          agentStatusLog('failed', 'Chat failed', String(error?.message || error).slice(0, 240), Date.now(), {
+            ownerChatId: chatIdToUse!,
+            runId: clientRunId,
+            turnId: clientRunId,
+            mainTurnTerminal: true,
+          }),
         ], { touchUpdatedAt: true });
         if (shouldRestoreComposer) {
           restoreComposerDraftIfEmpty(chatIdToUse, originalComposerInput, originalComposerAttachments);
@@ -9563,7 +9773,12 @@ function DeepWorkUI() {
         }
         setChatLogsById(chatIdToUse!, logs => [
           ...stripAgentConnectionLogs(logs),
-          agentStatusLog('failed', title, String(message || 'Custom agent failed.').slice(0, 240)),
+          agentStatusLog('failed', title, String(message || 'Custom agent failed.').slice(0, 240), Date.now(), {
+            ownerChatId: chatIdToUse!,
+            runId: clientRunId,
+            turnId: clientRunId,
+            mainTurnTerminal: true,
+          }),
         ], { touchUpdatedAt: true });
       };
 
@@ -9828,6 +10043,11 @@ function DeepWorkUI() {
             : executionProxyRuntimeModelSelection,
         },
       } : {}),
+      ...(runOptionsOverride?.userSource ? {
+        triggerSource: runOptionsOverride.userSource,
+        triggerDelegatedBy: runOptionsOverride.delegatedBy,
+        scheduledTaskId: runOptionsOverride.scheduledTaskId,
+      } : {}),
       ...(executionWorkspacePath ? {
         paths: [executionWorkspacePath, ...(runPinnedItems.length > 0 ? runPinnedItems.map(p => p.path) : [])],
         workspacePath: executionWorkspacePath,
@@ -9954,7 +10174,12 @@ function DeepWorkUI() {
         markChatUnreadIfBackground(chatIdToUse!, `run:${clientRunId}:start-error`);
         setChatLogsById(chatIdToUse!, prev => [
           ...stripAgentConnectionLogs(prev),
-          agentStatusLog('failed', 'Agent unavailable', message)
+          agentStatusLog('failed', 'Agent unavailable', message, Date.now(), {
+            ownerChatId: chatIdToUse!,
+            runId: clientRunId,
+            turnId: clientRunId,
+            mainTurnTerminal: true,
+          })
         ]);
         if (shouldRestoreComposer) {
           restoreComposerDraftIfEmpty(chatIdToUse, originalComposerInput, originalComposerAttachments);
@@ -10013,7 +10238,12 @@ function DeepWorkUI() {
           markChatUnreadIfBackground(chatIdToUse!, `run:${clientRunId}:connection-error`);
           setChatLogsById(chatIdToUse!, prev => [
             ...stripAgentConnectionLogs(prev),
-            agentStatusLog('failed', 'Agent connection failed', String(error.message || error).slice(0, 180))
+            agentStatusLog('failed', 'Agent connection failed', String(error.message || error).slice(0, 180), Date.now(), {
+              ownerChatId: chatIdToUse!,
+              runId: clientRunId,
+              turnId: clientRunId,
+              mainTurnTerminal: true,
+            })
           ]);
           if (shouldRestoreComposer) {
             restoreComposerDraftIfEmpty(chatIdToUse, originalComposerInput, originalComposerAttachments);
@@ -10323,9 +10553,15 @@ function DeepWorkUI() {
           path: source.path,
           name: source.name,
         })),
+        clientRunId: taskRunId,
+        userSource: 'scheduled_task',
+        delegatedBy: 'Scheduled task',
+        scheduledTaskId: task.id,
       });
 
       let hasStartedRunning = false;
+      let terminalMissingSince = 0;
+      let terminalProbeInFlight = false;
       let settled = false;
       const finishRun = (status: 'completed' | 'failed', error?: string) => {
         if (settled) return;
@@ -10362,20 +10598,66 @@ function DeepWorkUI() {
       };
       const checkInterval = window.setInterval(() => {
         const isRunning = runningChatsRef.current?.has(taskChatId);
+        const taskChat = chatsRef.current.find(chat => chat.id === taskChatId);
+        const runLogs = (taskChat?.traceLogs || []).filter((log: any) =>
+          String(log?.runId || log?.turnId || '').trim() === taskRunId
+        );
+        const terminalLog = [...runLogs].reverse().find((log: any) =>
+          log?.mainTurnTerminal === true ||
+          ['done', 'error'].includes(String(log?.type || '').toLowerCase()) ||
+          ['completed', 'failed', 'error', 'stopped', 'cancelled', 'canceled'].includes(String(log?.status || '').toLowerCase())
+        );
+        const settledAnswer = [...runLogs].reverse().find((log: any) =>
+          log?.type === 'answer' &&
+          String(log.text || '').trim() &&
+          log.isStreaming !== true &&
+          log.isLiveTyping !== true
+        );
         if (isRunning) {
           hasStartedRunning = true;
-        } else if (hasStartedRunning) {
-          const taskChat = chatsRef.current.find(chat => chat.id === taskChatId);
-          const terminalLog = [...(taskChat?.traceLogs || [])].reverse().find((log: any) =>
-            log?.type === 'agent_status' ||
-            ['completed', 'failed', 'error', 'stopped', 'cancelled', 'blocked'].includes(String(log?.status || '').toLowerCase())
-          );
-          const terminalStatus = String(terminalLog?.status || '').toLowerCase();
-          const failed = ['failed', 'error', 'stopped', 'cancelled', 'blocked'].includes(terminalStatus);
+          terminalMissingSince = 0;
+        }
+        if (terminalLog || (!isRunning && settledAnswer)) {
+          const terminalStatus = String(terminalLog?.status || terminalLog?.type || 'completed').toLowerCase();
+          const failed = ['failed', 'error', 'stopped', 'cancelled', 'canceled'].includes(terminalStatus);
           finishRun(
             failed ? 'failed' : 'completed',
             failed ? String(terminalLog?.secondary || terminalLog?.text || `Task ${terminalStatus}.`) : undefined,
           );
+        } else if (!isRunning && hasStartedRunning) {
+          // React state and the poll transport can settle in different frames.
+          // If the durable terminal row is still missing, query the registry
+          // instead of completing early or leaving the task stuck forever.
+          if (!terminalMissingSince) terminalMissingSince = Date.now();
+          if (Date.now() - terminalMissingSince >= 1_500 && !terminalProbeInFlight) {
+            terminalProbeInFlight = true;
+            void fetchAgentPoll(taskChatId, -1, 5000)
+              .then(data => {
+                reconcileServerQueuedFollowUps(taskChatId, data.queuedFollowUps);
+                if ((data.traces && data.traces.length > 0) || isTerminalAgentStatus(data.status)) {
+                  setChatLogsById(taskChatId, previous => mergeAgentPollSnapshot(previous, data, taskChatId));
+                }
+                if (data.status === 'running') {
+                  setRunningChats(previous => new Set(previous).add(taskChatId));
+                  if (!activePollersRef.current.has(taskChatId)) {
+                    startPolling(taskChatId, getPollCursor(data), data.startedAt, data.runId);
+                  }
+                  terminalMissingSince = 0;
+                  return;
+                }
+                if (isTerminalAgentStatus(data.status)) {
+                  const failed = data.status === 'failed' || data.status === 'stopped';
+                  finishRun(
+                    failed ? 'failed' : 'completed',
+                    failed ? String(data.error || data.finalAnswer || `Task ${data.status}.`) : undefined,
+                  );
+                }
+              })
+              .catch(() => undefined)
+              .finally(() => {
+                terminalProbeInFlight = false;
+              });
+          }
         }
       }, 500);
       scheduledTaskIntervalsRef.current.set(task.id, checkInterval);
@@ -10457,7 +10739,10 @@ function DeepWorkUI() {
 
         // Reconcile recent chats with persisted task traces. This also restores
         // the final UI state of work interrupted by an application restart.
-        for (const chat of savedChats.slice(0, 100)) {
+        const recoveryChats = savedChats.slice(0, 100);
+        for (let offset = 0; offset < recoveryChats.length; offset += 8) {
+          const recoveryBatch = recoveryChats.slice(offset, offset + 8);
+          await Promise.all(recoveryBatch.map(async (chat) => {
           try {
             const data = await fetchAgentPoll(chat.id, -1, 5000);
             reconcileServerQueuedFollowUps(chat.id, data.queuedFollowUps);
@@ -10466,50 +10751,7 @@ function DeepWorkUI() {
               setChats(prev => {
                 const updated = prev.map(c => {
                   if (c.id !== chat.id) return c;
-                  const runIdentity = { runId: data.runId, startedAt: data.startedAt };
-                  const ownsLatestTurn = canMergeServerRunIntoLatestTurn(c.traceLogs || [], runIdentity);
-                  let restoredLogs = mergeServerRunLogs(c.traceLogs || [], data.traces, {
-                    chatId: chat.id,
-                    runId: data.runId,
-                    startedAt: data.startedAt,
-                  });
-                  if (ownsLatestTurn && data.status === 'completed' && data.finalAnswer) {
-                    const lastUserIndex = restoredLogs.findLastIndex((log: any) => log?.type === 'user_action');
-                    const currentTurn = lastUserIndex >= 0 ? restoredLogs.slice(lastUserIndex + 1) : restoredLogs;
-                    if (!currentTurn.some((log: any) => log?.type === 'answer')) {
-                      const latestUserLog = lastUserIndex >= 0 ? restoredLogs[lastUserIndex] : null;
-                      restoredLogs = [...restoredLogs, withTraceTiming({
-                        type: 'answer',
-                        text: data.finalAnswer,
-                        runId: data.runId,
-                        turnId: latestUserLog?.turnId || latestUserLog?.runId || data.runId,
-                      }, data.completedAt)];
-                    }
-                  } else if (ownsLatestTurn && data.status === 'failed' && data.finalAnswer) {
-                    const interruptionText = String(data.finalAnswer);
-                    if (!restoredLogs.some((log: any) => String(log?.text || '').includes(interruptionText))) {
-                      restoredLogs = [
-                        ...restoredLogs,
-                        agentStatusLog('failed', 'Run ended with an error', interruptionText, normalizeClientTraceTime(data.completedAt)),
-                      ];
-                    }
-                  } else if (ownsLatestTurn && data.status === 'stopped') {
-                    const alreadyStopped = restoredLogs.some((log: any) =>
-                      (log?.type === 'agent_status' && log?.status === 'stopped') ||
-                      /generation stopped by user|agent stopped/i.test(String(log?.text || ''))
-                    );
-                    if (!alreadyStopped) {
-                      restoredLogs = [
-                        ...restoredLogs,
-                        agentStatusLog(
-                          'stopped',
-                          'Run stopped',
-                          String(data.finalAnswer || 'The agent was stopped.'),
-                          normalizeClientTraceTime(data.completedAt),
-                        ),
-                      ];
-                    }
-                  }
+                  const restoredLogs = mergeAgentPollSnapshot(c.traceLogs || [], data, chat.id);
                   return { ...c, traceLogs: restoredLogs };
                 });
                 persistChats(updated);
@@ -10532,6 +10774,7 @@ function DeepWorkUI() {
           } catch {
             // Skip — server might not be ready yet
           }
+          }));
         }
       } catch {
         // Silent — rehydration is optional
@@ -10570,15 +10813,12 @@ function DeepWorkUI() {
               setRunningChats(prev => new Set(prev).add(targetChatId));
 
               if (data.traces && data.traces.length > 0) {
-                setChatLogsById(targetChatId, previousLogs => mergeServerRunLogs(previousLogs, data.traces, {
-                  chatId: targetChatId,
-                  runId: data.runId,
-                  startedAt: data.startedAt,
-                }));
+                setChatLogsById(targetChatId, previousLogs => mergeAgentPollSnapshot(previousLogs, data, targetChatId));
               }
 
               startPolling(targetChatId, getPollCursor(data), data.startedAt, data.runId);
             } else if (isTerminalAgentStatus(data.status)) {
+              setChatLogsById(targetChatId, previousLogs => mergeAgentPollSnapshot(previousLogs, data, targetChatId));
               removeRunningChat(targetChatId);
             } else if (data.status === 'idle' && runningChatsRef.current.has(targetChatId)) {
               // Keep a pending startup alive; the poller owns the bounded
@@ -11333,12 +11573,20 @@ function DeepWorkUI() {
           subAgent: selectedAgentName,
           subAgentId: agentInfo.subAgentId || (String(agentInfo.id || '').includes('::sub-agent::') ? String(agentInfo.id).split('::sub-agent::').pop() : agentInfo.id),
           subAgentChatId: agentInfo.subAgentChatId || (String(agentInfo.id || '').includes('::sub-agent::') ? agentInfo.id : undefined),
+          ...(activeChatId ? { ownerChatId: activeChatId } : {}),
         },
-        ...filtered
+        ...filtered.map((log: any) => ({
+          ...log,
+          ...(log?.runId && String(log.runId) !== taskTurnId ? { originRunId: log.runId } : {}),
+          ...(log?.turnId && String(log.turnId) !== taskTurnId ? { originTurnId: log.turnId } : {}),
+          runId: taskTurnId,
+          turnId: taskTurnId,
+          ...(activeChatId ? { ownerChatId: activeChatId } : {}),
+        }))
       ];
     }
     return filtered;
-  }, [traceLogs, activeSubAgentTab, currentSubAgents]);
+  }, [activeChatId, traceLogs, activeSubAgentTab, currentSubAgents]);
 
   // Which logs to show in ChatFeed — main or sub-agent
   const autonomousSelected = selectedAgent === 'autonomous';
@@ -11347,20 +11595,22 @@ function DeepWorkUI() {
     let latestUserIndex = -1;
     for (let index = displayTraceLogs.length - 1; index >= 0; index -= 1) {
       const log = displayTraceLogs[index];
-      if (log?.type === 'user_action' && !isInjectedProxyBoundary(log)) {
+      if (log?.type === 'user_action') {
         latestUserIndex = index;
         break;
       }
     }
     const currentTurnLogs = displayTraceLogs.slice(latestUserIndex >= 0 ? latestUserIndex : 0);
-    const latestRunId = [...currentTurnLogs]
-      .reverse()
-      .map((log: any) => String(log?.runId || log?.turnId || '').trim())
-      .find(Boolean);
-    const activeRunLogs = latestRunId
+    const latestBoundary = latestUserIndex >= 0 ? displayTraceLogs[latestUserIndex] : null;
+    const latestTurnId = String(latestBoundary?.turnId || '').trim();
+    const latestRunId = String(latestBoundary?.runId || latestBoundary?.turnId || '').trim();
+    const activeRunLogs = latestTurnId || latestRunId
       ? currentTurnLogs.filter((log: any) => {
-        const runId = String(log?.runId || log?.turnId || '').trim();
-        return !runId || runId === latestRunId;
+        const turnId = String(log?.turnId || '').trim();
+        const runId = String(log?.runId || '').trim();
+        if (latestTurnId && turnId) return turnId === latestTurnId;
+        if (latestRunId && runId) return runId === latestRunId;
+        return true;
       })
       : currentTurnLogs;
     const hasFinalAnswer = activeRunLogs.some((log: any) =>

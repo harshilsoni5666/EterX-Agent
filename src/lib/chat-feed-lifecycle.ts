@@ -284,11 +284,25 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
   }));
   const entriesByBoundary = boundaryEntries.map(entry => [entry] as TimelineEntry[]);
   const preamble: TimelineEntry[] = [];
+  const boundariesByTurnId = new Map<string, TimelineEntry[]>();
+  const boundariesByRunId = new Map<string, TimelineEntry[]>();
   const boundariesByIdentity = new Map<string, TimelineEntry[]>();
   const boundaryIndexBySourceIndex = new Map<number, number>();
 
   boundaryEntries.forEach((boundary) => {
     boundaryIndexBySourceIndex.set(boundary.sourceIndex, boundary.boundaryIndex);
+    const turnId = String(boundary.log?.turnId || '').trim();
+    const runId = String(boundary.log?.runId || '').trim();
+    if (turnId) {
+      const turnEntries = boundariesByTurnId.get(turnId) || [];
+      turnEntries.push(boundary);
+      boundariesByTurnId.set(turnId, turnEntries);
+    }
+    if (runId) {
+      const runEntries = boundariesByRunId.get(runId) || [];
+      runEntries.push(boundary);
+      boundariesByRunId.set(runId, runEntries);
+    }
     timelineIdentityAliases(boundary.log).forEach((identity) => {
       const identityEntries = boundariesByIdentity.get(identity) || [];
       identityEntries.push(boundary);
@@ -342,10 +356,23 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
   };
 
   const findOwnerBoundary = (log: any): number => {
-    const matches = Array.from(new Set(
-      timelineIdentityAliases(log)
-        .flatMap(identity => boundariesByIdentity.get(identity) || [])
-    ));
+    const turnId = String(log?.turnId || '').trim();
+    const runId = String(log?.runId || '').trim();
+    // A run can contain several Main/Proxy queries. A real turn match is
+    // authoritative; the shared run ID is only a compatibility fallback for
+    // older traces that never carried a turn identity.
+    const exactTurnMatches = turnId ? boundariesByTurnId.get(turnId) || [] : [];
+    if (exactTurnMatches.length > 0) {
+      return selectNearestPrecedingBoundary(exactTurnMatches, log);
+    }
+    const matches = turnId
+      ? []
+      : runId
+        ? boundariesByRunId.get(runId) || []
+        : Array.from(new Set(
+          timelineIdentityAliases(log)
+            .flatMap(identity => boundariesByIdentity.get(identity) || [])
+        ));
     if (matches.length > 0) {
       // Proxy-backed runs can contain multiple user boundaries under one run
       // ID. Use trace/timestamp position to select the nearest preceding one.
@@ -369,7 +396,16 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     const boundaryIndex = findOwnerBoundary(log);
     const entry = { log, sourceIndex, boundaryIndex };
     if (boundaryIndex >= 0) entriesByBoundary[boundaryIndex].push(entry);
-    else if (sourceIndex < boundaryEntries[0].sourceIndex) preamble.push(entry);
+    else if (
+      sourceIndex < boundaryEntries[0].sourceIndex
+      || timelineTimestamp(log) !== null && compareTimelinePositions(log, boundaryEntries[0].log) < 0
+      || timelineIdentityAliases(log).length > 0
+    ) {
+      // Explicitly-owned events with no matching boundary are orphans from a
+      // different/older run. Keep them outside every visible query instead of
+      // silently moving them under the latest boundary by delivery order.
+      preamble.push(entry);
+    }
     else {
       // Truly unscoped helper rows stay with their original neighboring turn.
       // They are not safe to move across a user boundary.

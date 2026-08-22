@@ -488,17 +488,6 @@ const normalizeInternalUserActionLogs = (logs: any[]) => {
       next.push(log);
       return next;
     }
-    const source = String(log.source || '').trim().toLowerCase();
-    const steeringIds = [log.steeringId, ...(Array.isArray(log.steeringIds) ? log.steeringIds : [])]
-      .map(value => String(value || '').trim())
-      .filter(Boolean);
-    const isInjectedProxyBoundary =
-      (source === 'user_proxy' || source === 'proxy_manager') && steeringIds.length > 0;
-    // A steer is already represented by steering_received. Its internal
-    // context-injection boundary must never become a second user bubble or a
-    // new visual turn, even if the acknowledgement and boundary poll in on
-    // different frames.
-    if (isInjectedProxyBoundary) return next;
     const rawText = String(log.text || '');
     const match = rawText.match(AGENT_BUILDER_INTERNAL_REQUEST_PATTERN);
     if (!match) {
@@ -693,7 +682,27 @@ const dedupeFeedLogs = (logs: any[]) => {
         const incomingAt = Number(log?.startTime || log?.timestamp || 0);
         const closeInTime = priorAt > 0 && incomingAt > 0 && Math.abs(incomingAt - priorAt) <= 15_000;
         const isLiveReconciliation = Boolean(priorBoundary?.isLive || log?.isLive) && !hasAssistantResponseBetween;
-        if (!hasAssistantResponseBetween && (closeInTime || isLiveReconciliation)) {
+        const priorTurnId = String(priorBoundary?.turnId || '').trim();
+        const priorRunId = String(priorBoundary?.runId || '').trim();
+        const compatibleOwner = priorTurnId && turnId
+          ? priorTurnId === turnId
+          : priorRunId && runId
+            ? priorRunId === runId
+            : true;
+        const isTransportReconciliation = Boolean(
+          priorBoundary?._traceIdx === undefined ||
+          priorBoundary?._traceIdx === null ||
+          log?._traceIdx === undefined ||
+          log?._traceIdx === null ||
+          priorBoundary?.isLive ||
+          log?.isLive
+        );
+        if (
+          !hasAssistantResponseBetween &&
+          compatibleOwner &&
+          isTransportReconciliation &&
+          (closeInTime || isLiveReconciliation)
+        ) {
           deduped[priorLiveIndex] = mergeDuplicateFeedLog(priorBoundary, log);
           if (stableKey) stableIndexes.set(stableKey, priorLiveIndex);
           return;
@@ -721,8 +730,24 @@ const dedupeFeedLogs = (logs: any[]) => {
         }
       }
       const previous = deduped[deduped.length - 1];
+      const previousTurnId = String(previous?.turnId || '').trim();
+      const previousRunId = String(previous?.runId || '').trim();
+      const sameBoundaryOwner = previousTurnId && turnId
+        ? previousTurnId === turnId
+        : previousRunId && runId
+          ? previousRunId === runId
+          : false;
+      const hasOptimisticCopy = Boolean(
+        previous?._traceIdx === undefined ||
+        previous?._traceIdx === null ||
+        log?._traceIdx === undefined ||
+        log?._traceIdx === null ||
+        previous?.isLive ||
+        log?.isLive
+      );
       const sameOptimisticBoundary = previous?.type === 'user_action' &&
-        String(previous.runId || previous.turnId || '').trim() === runId &&
+        sameBoundaryOwner &&
+        hasOptimisticCopy &&
         String(previous.source || 'human') === String(log.source || 'human') &&
         String(previous.text || '').trim() === String(log.text || '').trim();
       if (sameOptimisticBoundary) {
@@ -769,9 +794,14 @@ const dedupeFeedLogs = (logs: any[]) => {
         ''
       ).trim();
       semanticKey = `narrative::${ identityScope }::${ owner }::${ normalizedText }::${ narrativeAnchor }`;
-    } else if (normalizedText && log.type === 'progress') {
-      // Retry transports can publish the same durable notice more than once.
-      // Preserve distinct messages, but collapse exact repeats within a turn.
+    } else if (
+      normalizedText &&
+      log.type === 'progress' &&
+      (log._traceIdx === undefined || log._traceIdx === null || log.isLive)
+    ) {
+      // Reconcile only transport-level previews. Two persisted provider
+      // failures with the same wording are still two real occurrences and
+      // must retain their own positions in the trace sequence.
       semanticKey = `progress::${ identityScope }::${ normalizedText }::${ normalizeTraceText(log.secondary) }`;
     } else if (normalizedText && log.type === 'agent_status') {
       semanticKey = `agent-status::${ identityScope }::${ String(log.status || '') }::${ normalizedText }`;
@@ -1364,7 +1394,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'phase', 'compactionId', 'beforeTokens', 'afterTokens', 'contextWindow', 'modelProvider',
   'provider', 'source', 'promptTokens', 'inputTokens', 'completionTokens', 'outputTokens',
   'totalTokens', 'cachedTokens', 'uncachedPromptTokens', 'cacheHitRatio',
-  'reasoningTokens', 'toolUsePromptTokens', 'interaction', 'usageId', 'runId', 'turnId', 'uiOnly',
+  'reasoningTokens', 'toolUsePromptTokens', 'interaction', 'usageId', 'runId', 'turnId', 'mainTurnTerminal', 'uiOnly',
 ] as const;
 
 const haveSameNestedValue = (left: unknown, right: unknown) => {
@@ -1594,9 +1624,6 @@ const ChatFeedMessageGroup = React.memo(({
       isLiveTyping: false,
     };
   });
-  const latestAgentStatusLog = [...standardLogs].reverse().find(isInternalStatusThought);
-  const agentRunNotice = latestAgentStatusLog ? getAgentRunNotice(latestAgentStatusLog) : null;
-
   let processLogs: any[] = [];
   let finalAnswer: any = null;
   let tailLogs: any[] = [];
@@ -1678,20 +1705,24 @@ const ChatFeedMessageGroup = React.memo(({
     !displayFinalAnswer.isStreaming
   );
 
-  // Status/interruptions have their own professional notice. Keeping them in
-  // the thinking timeline creates an empty "Thinking" pill because plain
-  // internal status thoughts are not actionable timeline rows.
-  const rawWorkLogs = [...displayProcessLogs, ...tailLogs].filter(log =>
-    !isInternalStatusThought(log) &&
-    shouldRenderProgressTrace(log) &&
-    !isPrivateReasoningTrace(log) &&
-    !(
-      log?.type === 'work_note' &&
-      /^direct_(?:thinking|search)_/i.test(String(log.noteId || ''))
-    ) &&
-    RENDERABLE_TIMELINE_TYPES.has(String(log?.type || '')) &&
-    (log?.type !== 'thought_stream' || shouldRenderThoughtStream(log))
+  const selectWorkLogs = (logs: any[]) => logs.filter(log =>
+    isInternalStatusThought(log) || (
+      shouldRenderProgressTrace(log) &&
+      !isPrivateReasoningTrace(log) &&
+      !(
+        log?.type === 'work_note' &&
+        /^direct_(?:thinking|search)_/i.test(String(log.noteId || ''))
+      ) &&
+      RENDERABLE_TIMELINE_TYPES.has(String(log?.type || '')) &&
+      (log?.type !== 'thought_stream' || shouldRenderThoughtStream(log))
+    )
   );
+  // Keep status rows that occurred before the final answer inside the normal
+  // sequence. Status rows emitted after the answer are rendered after it.
+  const rawWorkLogs = selectWorkLogs(displayProcessLogs);
+  const tailRunNotices = tailLogs
+    .map(log => getAgentRunNotice(log))
+    .filter((notice): notice is AgentRunNotice => Boolean(notice));
   const isAskUserInteractionLog = (log: any) =>
     log?.type === 'ask_user' &&
     typeof log.question === 'string' &&
@@ -1726,7 +1757,7 @@ const ChatFeedMessageGroup = React.memo(({
   const visibleWorkLogs = interactionFilteredWorkLogs.filter((log: any, index: number, logs: any[]) =>
     shouldRenderContextCompactionEvent(log, index, logs, isThinkingTurn)
   );
-  const segments: { type: 'thoughts' | 'steering' | 'ask_user' | 'context'; logs?: any[]; log?: any }[] = [];
+  const segments: { type: 'thoughts' | 'steering' | 'ask_user' | 'context' | 'status'; logs?: any[]; log?: any; notice?: AgentRunNotice }[] = [];
   let currentThoughts: any[] = [];
   const segmentIdentity = (seg: { logs?: any[]; log?: any }, fallback: number) => {
     const anchor = seg.log || seg.logs?.[0];
@@ -1747,7 +1778,15 @@ const ChatFeedMessageGroup = React.memo(({
   };
 
   visibleWorkLogs.forEach(log => {
-    if (log.type === 'context_compaction') {
+    if (isInternalStatusThought(log)) {
+      const notice = getAgentRunNotice(log);
+      if (!notice) return;
+      if (currentThoughts.length > 0) {
+        segments.push({ type: 'thoughts', logs: currentThoughts });
+        currentThoughts = [];
+      }
+      segments.push({ type: 'status', log, notice });
+    } else if (log.type === 'context_compaction') {
       if (currentThoughts.length > 0) {
         segments.push({ type: 'thoughts', logs: currentThoughts });
         currentThoughts = [];
@@ -1813,7 +1852,7 @@ const ChatFeedMessageGroup = React.memo(({
   // Helper-only groups (done markers, raw tool results, retry bookkeeping,
   // cancelled placeholders) have no visual row. Do not leave an empty
   // assistant container and its margin in the primary transcript.
-  if (segments.length === 0 && !agentRunNotice && !displayFinalAnswer) {
+  if (segments.length === 0 && tailRunNotices.length === 0 && !displayFinalAnswer) {
     return null;
   }
 
@@ -1826,6 +1865,9 @@ const ChatFeedMessageGroup = React.memo(({
       className="eterx-chat-message-group w-full flex flex-col mb-8 scroll-m-20 relative"
     >
       {segments.map((seg, segIdx) => {
+        if (seg.type === 'status' && seg.notice) {
+          return <AgentRunStatusNotice key={`status-${segmentIdentity(seg, segIdx)}`} notice={seg.notice} />;
+        }
         if (seg.type === 'context') {
           return <ContextCompactionNotice key={`context-${segmentIdentity(seg, segIdx)}`} log={seg.log} />;
         }
@@ -1863,6 +1905,13 @@ const ChatFeedMessageGroup = React.memo(({
           ...(seg.logs || []),
           ...(isLastThoughts ? liveActionLogs : []),
         ]);
+        const terminalTurnEndedAt = [
+          ...(seg.logs || []),
+          ...(isLastThoughts ? liveActionLogs : []),
+        ].reduce((latest: number, log: any) => {
+          if (!isTerminalWorkTrace(log)) return latest;
+          return Math.max(latest, Number(log?.endTime || log?.timestamp || 0));
+        }, 0) || null;
 
         // A settled or streaming direct answer may have a provider narration
         // row but no actual workflow action. Keep that answer on the normal
@@ -1879,7 +1928,9 @@ const ChatFeedMessageGroup = React.memo(({
             isLast={isLastThoughts}
             hasAnswer={hasSettledAnswer && isLastThoughts}
             stepCount={stepCount}
-            turnEndedAt={hasSettledAnswer ? displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? null : null}
+            turnEndedAt={hasSettledAnswer
+              ? displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? terminalTurnEndedAt
+              : terminalTurnEndedAt}
             onOpenAgentTeam={onOpenAgentTeam}
             subAgentAssetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
@@ -1888,8 +1939,6 @@ const ChatFeedMessageGroup = React.memo(({
           />
         );
       })}
-
-      {agentRunNotice && <AgentRunStatusNotice notice={agentRunNotice} />}
 
       {displayFinalAnswer && (
         <div className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
@@ -1947,6 +1996,10 @@ const ChatFeedMessageGroup = React.memo(({
           </div>
         </div>
       )}
+
+      {tailRunNotices.map((notice, index) => (
+        <AgentRunStatusNotice key={`tail-status-${index}-${notice.tone}-${notice.title}`} notice={notice} />
+      ))}
     </div>
   );
 }, (previous, next) => {
@@ -2088,17 +2141,15 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   }, [orderedTraceLogs]);
   const activeFeedRunLogs = useMemo(() => {
     const boundary = activeFeedTurnLogs.find(log => log?.type === 'user_action');
-    const ownerIds = new Set(
-      [boundary?.turnId, boundary?.runId]
-        .map(value => String(value || '').trim())
-        .filter(Boolean)
-    );
-    if (ownerIds.size === 0) return activeFeedTurnLogs;
+    const boundaryTurnId = String(boundary?.turnId || '').trim();
+    const boundaryRunId = String(boundary?.runId || '').trim();
+    if (!boundaryTurnId && !boundaryRunId) return activeFeedTurnLogs;
     return activeFeedTurnLogs.filter(log => {
-      const logIds = [log?.turnId, log?.runId]
-        .map(value => String(value || '').trim())
-        .filter(Boolean);
-      return logIds.length === 0 || logIds.some(identity => ownerIds.has(identity));
+      const logTurnId = String(log?.turnId || '').trim();
+      const logRunId = String(log?.runId || '').trim();
+      if (boundaryTurnId && logTurnId) return boundaryTurnId === logTurnId;
+      if (boundaryRunId && logRunId) return boundaryRunId === logRunId;
+      return true;
     });
   }, [activeFeedTurnLogs]);
   const activeTurnHasTerminalTrace = useMemo(
@@ -2117,15 +2168,22 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const liveTransportActive = !isSubAgentTab && !isFeedActivityPaused &&
     liveState !== undefined && liveState !== 'idle' && liveState !== 'error';
   const transportWorkActive = !isFeedActivityPaused && Boolean(isThinking || liveTransportActive);
-  const workActivityLatchRef = useRef(false);
-  if (activeTurnHasTerminalTrace || activeTurnHasSettledAnswer || isFeedActivityPaused) {
-    workActivityLatchRef.current = false;
-  } else if (transportWorkActive) {
-    workActivityLatchRef.current = true;
-  }
+  const [transportHandoffActive, setTransportHandoffActive] = useState(false);
+  useEffect(() => {
+    if (activeTurnHasTerminalTrace || activeTurnHasSettledAnswer || isFeedActivityPaused) {
+      setTransportHandoffActive(false);
+      return;
+    }
+    if (transportWorkActive) {
+      setTransportHandoffActive(true);
+      return;
+    }
+    const handoffTimer = window.setTimeout(() => setTransportHandoffActive(false), 700);
+    return () => window.clearTimeout(handoffTimer);
+  }, [activeTurnHasSettledAnswer, activeTurnHasTerminalTrace, isFeedActivityPaused, transportWorkActive]);
   const feedWorkActive = !activeTurnHasTerminalTrace &&
     !activeTurnHasSettledAnswer &&
-    (transportWorkActive || workActivityLatchRef.current);
+    (transportWorkActive || transportHandoffActive);
 
   const groups = useMemo(() => {
     const nextGroups: any[][] = [];
@@ -2242,6 +2300,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     }, 90);
   }, []);
   const previousConversationIdentityRef = useRef(conversationIdentity);
+  const autoFollowActivationRef = useRef({ identity: conversationIdentity, thinking: isThinking });
   const isHydratingConversation = previousConversationIdentityRef.current !== conversationIdentity;
   const AUTO_FOLLOW_THRESHOLD = 24;
   const traceActivitySignature = useMemo(() => getTraceActivitySignature(traceLogs), [traceLogs]);
@@ -2277,6 +2336,21 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       autoFollowFrameRef.current = null;
     }
   }, []);
+
+  React.useLayoutEffect(() => {
+    const previous = autoFollowActivationRef.current;
+    const openedRunningConversation = isThinking && previous.identity !== conversationIdentity;
+    const recoveredRunningConversation = isThinking && !previous.thinking;
+    autoFollowActivationRef.current = { identity: conversationIdentity, thinking: isThinking };
+    if (!openedRunningConversation && !recoveredRunningConversation) return;
+
+    // Switching to an active background run, or recovering one after app
+    // startup, should reveal its live tail once. Manual upward scrolling after
+    // that remains respected because an unchanged running state cannot
+    // reactivate follow mode.
+    shouldAutoFollowRef.current = true;
+    scheduleAutoFollow();
+  }, [conversationIdentity, isThinking, scheduleAutoFollow]);
 
   useEffect(() => {
     previousConversationIdentityRef.current = conversationIdentity;

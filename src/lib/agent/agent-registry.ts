@@ -59,6 +59,8 @@ interface AgentExecution {
   chatId: string;
   /** Stable client/server run identity. Prevents an old poll response from being applied to a newer run. */
   runId: string;
+  /** Visible query boundary currently receiving events inside this long-lived run. */
+  activeTurnId: string;
   prompt: string;
   status: 'running' | 'completed' | 'failed' | 'stopped';
   startedAt: number;
@@ -255,6 +257,14 @@ class AgentRegistry {
   }
 
   public appendTrace(execution: AgentExecution, traceEvent: any, persistToTaskStore = true): TraceEvent {
+    if (traceEvent && typeof traceEvent === 'object') {
+      traceEvent = {
+        ...traceEvent,
+        ownerChatId: traceEvent.ownerChatId || execution.chatId,
+        runId: traceEvent.runId || execution.runId,
+        turnId: traceEvent.turnId || execution.activeTurnId || execution.runId,
+      };
+    }
     if (traceEvent?.type === 'file_preview') {
       let existingIdx = -1;
       for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
@@ -483,6 +493,7 @@ class AgentRegistry {
     const execution: AgentExecution = {
       chatId,
       runId: requestedRunId || randomUUID(),
+      activeTurnId: '',
       prompt,
       status: 'running',
       startedAt: Date.now(),
@@ -515,6 +526,7 @@ class AgentRegistry {
         runtimeSettings,
       },
     };
+    execution.activeTurnId = execution.runId;
 
     // Make the new run authoritative before emitting its first trace. A
     // completed predecessor remains in the map until this replacement; if
@@ -525,15 +537,25 @@ class AgentRegistry {
     // Build the trace callback that writes to the buffer
     const onTrace = (traceEvent: any) => {
       if (traceEvent && typeof traceEvent === 'object') {
-        const reportedRunId = String(traceEvent.runId || traceEvent.turnId || '').trim();
+        const reportedRunId = String(traceEvent.runId || '').trim();
+        const reportedTurnId = String(traceEvent.turnId || '').trim();
+        if (traceEvent.type === 'user_action') {
+          execution.activeTurnId = reportedTurnId
+            || String(traceEvent.id || '').trim()
+            || execution.activeTurnId
+            || execution.runId;
+        }
         traceEvent = {
           ...traceEvent,
           ...(reportedRunId && reportedRunId !== execution.runId
             ? { originRunId: reportedRunId }
             : {}),
+          ...(reportedTurnId && reportedTurnId !== execution.activeTurnId
+            ? { originTurnId: reportedTurnId }
+            : {}),
           ownerChatId: chatId,
           runId: execution.runId,
-          turnId: execution.runId,
+          turnId: execution.activeTurnId || execution.runId,
         };
       }
       const isConsoleTrace = traceEvent?.type === 'console_output';
@@ -591,6 +613,8 @@ class AgentRegistry {
     };
 
     const proxyOrigin = pinnedContext?.autonomy?.origin === 'proxy_manager';
+    const triggerSource = String(pinnedContext?.triggerSource || '').trim();
+    const triggerDelegatedBy = String(pinnedContext?.triggerDelegatedBy || '').trim();
     // Every Main run begins with the same canonical user boundary. Human runs
     // may already have an optimistic local bubble; the client upserts this
     // server-owned trace by run ID. Proxy-started work therefore follows the
@@ -603,9 +627,10 @@ class AgentRegistry {
       text: proxyOrigin
         ? String(pinnedContext?.autonomy?.proxyTaskPrompt || prompt)
         : getVisibleRunPrompt(prompt),
-      source: proxyOrigin ? 'proxy_manager' : 'human',
-      delegatedBy: proxyOrigin ? 'Side Proxy-Agent' : undefined,
+      source: proxyOrigin ? 'proxy_manager' : triggerSource || 'human',
+      delegatedBy: proxyOrigin ? 'Side Proxy-Agent' : triggerDelegatedBy || undefined,
       proxyTaskId: proxyOrigin ? pinnedContext?.autonomy?.proxyTaskId : undefined,
+      scheduledTaskId: pinnedContext?.scheduledTaskId || undefined,
       runId: execution.runId,
       turnId: execution.runId,
       startTime: execution.startedAt,
@@ -954,7 +979,14 @@ class AgentRegistry {
 
         // Emit done event to trace buffer
         if (!execution.cancelled) {
-          onTrace({ type: 'done', data: response });
+          onTrace({
+            type: 'done',
+            data: response,
+            status: terminalStatus,
+            mainTurnTerminal: true,
+            timestamp: execution.completedAt,
+            endTime: execution.completedAt,
+          });
         }
 
         // Persist to TaskStore
@@ -992,7 +1024,17 @@ class AgentRegistry {
 
           // Emit error to trace buffer.
           try {
-            this.appendTrace(execution, { type: 'error', data: error.message }, !pinnedContext?.disableTaskStore);
+            this.appendTrace(execution, {
+              type: 'error',
+              data: error.message,
+              ownerChatId: chatId,
+              runId: execution.runId,
+              turnId: execution.activeTurnId || execution.runId,
+              status: 'failed',
+              mainTurnTerminal: true,
+              timestamp: execution.completedAt,
+              endTime: execution.completedAt,
+            }, !pinnedContext?.disableTaskStore);
           } catch { /* buffer push failed, ignore */ }
 
           console.error(`[AgentRegistry] ❌ Agent failed for chat ${ chatId.substring(0, 8) }...: ${ error.message.substring(0, 100) }`);
@@ -1189,7 +1231,13 @@ class AgentRegistry {
       type: metadata?._autonomyProxy ? 'autonomy_proxy_status' : 'thought',
       phase: metadata?._autonomyProxy ? 'main_stopped' : undefined,
       text: metadata?._autonomyProxy ? `Proxy-Agent stopped Main: ${reason}` : '\n\n*Generation stopped by user.*',
-      timestamp: Date.now(),
+      ownerChatId: chatId,
+      runId: execution.runId,
+      turnId: execution.activeTurnId || execution.runId,
+      status: 'stopped',
+      mainTurnTerminal: true,
+      timestamp: execution.completedAt,
+      endTime: execution.completedAt,
       ...(metadata || {}),
     });
 
@@ -1251,7 +1299,7 @@ class AgentRegistry {
       steeringSource,
       ownerChatId: execution.chatId,
       runId: execution.runId,
-      turnId: execution.runId,
+      turnId: execution.activeTurnId || execution.runId,
     };
     if (execution.steeringQueue.length >= MAX_STEERING_QUEUE) {
       console.warn(`[AgentRegistry] Steering queue full for chat ${ chatId.substring(0, 8) }...; rejecting new guidance so the client can retain it.`);
