@@ -1,14 +1,24 @@
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
-import { getEterxDataDir } from './agent/storage-paths';
+import { gunzip } from 'zlib';
+import { promisify } from 'util';
+import { stableScopeSegment } from './agent/context-scope';
+import { getEterxDataDir, getEterxWorkspaceDir } from './agent/storage-paths';
 import { filterUserVisibleTraces } from './agent/trace-visibility';
-import { mergeFeedTraceHistories, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles } from './chat-feed-lifecycle';
+import {
+  mergeFeedTraceHistories,
+  recoverMissingUserTurnBoundaries,
+  settleFeedTraceLifecycles,
+  type RecoveredUserRequest,
+} from './chat-feed-lifecycle';
 
 const CHAT_STORE_DIR = path.join(getEterxDataDir(), 'chats');
 const CHAT_STORE_PATH = path.join(CHAT_STORE_DIR, 'chats.json');
 const CHAT_STORE_BACKUP_PATH = path.join(CHAT_STORE_DIR, 'chats.backup.json');
 const CHAT_STORE_VERSION = 1;
+const CONTEXT_FABRIC_ROOT = getEterxWorkspaceDir('.context', 'fabric');
+const gunzipAsync = promisify(gunzip);
 
 export interface PersistedChatSnapshot {
   version: number;
@@ -76,7 +86,7 @@ function normalizePersistedChat(chat: any): any | null {
       id: String(message?.id || `${String(chat.id)}-legacy-${index}`),
       ...(Number.isFinite(message?.timestamp) ? { timestamp: message.timestamp } : {}),
     };
-  })), title));
+  }))));
 
   return {
     ...chat,
@@ -91,6 +101,125 @@ function normalizePersistedChat(chat: any): any | null {
           : 0,
     traceLogs,
   };
+}
+
+function normalizeRecoveredRequestText(value: unknown): string {
+  return String(value || '')
+    .replace(/^\s*\[USER REQUEST\]\s*(?:\r?\n)?/i, '')
+    .trim();
+}
+
+function requestPayload(value: unknown): any | null {
+  if (value && typeof value === 'object') return value;
+  const serialized = String(value || '').trim();
+  if (!serialized) return null;
+  try {
+    return JSON.parse(serialized);
+  } catch {
+    return null;
+  }
+}
+
+function resolveContextPagePath(scopeDir: string, pageRef: unknown): string | null {
+  const normalized = String(pageRef || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalized.startsWith('pages/') || normalized.includes('..')) return null;
+  const scopeRoot = path.resolve(scopeDir);
+  const absolute = path.resolve(scopeRoot, normalized);
+  return absolute.startsWith(`${scopeRoot}${path.sep}`) ? absolute : null;
+}
+
+async function readContextPage(scopeDir: string, pageRef: unknown): Promise<any | null> {
+  const absolute = resolveContextPagePath(scopeDir, pageRef);
+  if (!absolute) return null;
+  try {
+    let serialized = '';
+    if (absolute.endsWith('.manifest.json')) {
+      const manifest = await fs.readJson(absolute);
+      const chunks: Buffer[] = [];
+      for (const chunkRef of Array.isArray(manifest?.chunks) ? manifest.chunks : []) {
+        const chunkPath = resolveContextPagePath(scopeDir, chunkRef);
+        if (!chunkPath) return null;
+        chunks.push(await gunzipAsync(await fs.readFile(chunkPath)));
+      }
+      serialized = Buffer.concat(chunks).toString('utf8');
+    } else {
+      serialized = (await gunzipAsync(await fs.readFile(absolute))).toString('utf8');
+    }
+    return requestPayload(serialized);
+  } catch {
+    return null;
+  }
+}
+
+async function loadRecoveredUserRequests(chatId: string): Promise<RecoveredUserRequest[]> {
+  const scopeDir = path.join(CONTEXT_FABRIC_ROOT, stableScopeSegment(chatId));
+  const episodes = new Map<string, any>();
+
+  try {
+    const lines = String(await fs.readFile(path.join(scopeDir, 'events.jsonl'), 'utf8')).split(/\r?\n/);
+    lines.forEach(line => {
+      if (!line.trim()) return;
+      try {
+        const event = JSON.parse(line);
+        const episode = event?.operation === 'episode' ? event.episode : null;
+        if (episode?.source !== 'user') return;
+        episodes.set(String(episode.id || episode.contentHash || `${episode.createdAt}:${episodes.size}`), episode);
+      } catch {
+        // A partially appended tail line must not prevent older requests from
+        // repairing the transcript after an interrupted desktop shutdown.
+      }
+    });
+  } catch {
+    // The compact snapshot below is the fallback for migrated fabrics that
+    // predate the append-only event ledger.
+  }
+
+  try {
+    const snapshot = await fs.readJson(path.join(scopeDir, 'snapshot.json'));
+    (Array.isArray(snapshot?.episodes) ? snapshot.episodes : []).forEach((episode: any) => {
+      if (episode?.source !== 'user') return;
+      episodes.set(String(episode.id || episode.contentHash || `${episode.createdAt}:${episodes.size}`), episode);
+    });
+  } catch {
+    // An events-only fabric is valid while its debounced snapshot is pending.
+  }
+
+  const recovered: RecoveredUserRequest[] = [];
+  const seen = new Set<string>();
+  for (const episode of episodes.values()) {
+    const header = String(episode?.header || '').trim();
+    if (!/^user request\b/i.test(header) || /\bretry\b/i.test(header)) continue;
+    const preview = requestPayload(episode?.contentPreview);
+    if (String(preview?.mode || '').toLowerCase() === 'retry') continue;
+    const full = await readContextPage(scopeDir, episode?.pageRef);
+    const payload = full || preview;
+    if (payload?.mode && String(payload.mode).toLowerCase() !== 'new') continue;
+    const text = normalizeRecoveredRequestText(payload?.request);
+    if (!text) continue;
+    const timestamp = Number(episode?.createdAt || 0);
+    const identity = `${Number.isFinite(timestamp) ? timestamp : 0}:${text}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    recovered.push({ text, ...(Number.isFinite(timestamp) && timestamp > 0 ? { timestamp } : {}) });
+  }
+  return recovered.sort((left, right) => Number(left.timestamp || 0) - Number(right.timestamp || 0));
+}
+
+async function hydrateRecoveredUserBoundaries(snapshot: PersistedChatSnapshot): Promise<PersistedChatSnapshot> {
+  const chats = await Promise.all((snapshot.chats as any[]).map(async chat => {
+    const traceLogs = Array.isArray(chat?.traceLogs) ? chat.traceLogs : [];
+    const needsExactRequest = traceLogs.some(log =>
+      (log?._recoveredBoundary === true && log?._recoveredExactText !== true) ||
+      (log?.type === 'user_action' && !String(log?.text || '').trim()),
+    );
+    if (!needsExactRequest) return chat;
+    const requests = await loadRecoveredUserRequests(String(chat.id || ''));
+    return {
+      ...chat,
+      traceLogs: settleFeedTraceLifecycles(recoverMissingUserTurnBoundaries(traceLogs, requests)),
+    };
+  }));
+  return { ...snapshot, chats };
 }
 
 function normalizeSnapshot(value: any): PersistedChatSnapshot {
@@ -174,7 +303,7 @@ async function readFromDisk(): Promise<PersistedChatSnapshot> {
     )) {
       throw new Error('Invalid chat snapshot');
     }
-    const normalized = normalizeSnapshot(raw);
+    const normalized = await hydrateRecoveredUserBoundaries(normalizeSnapshot(raw));
     // A first launch may have created an empty marker before the legacy
     // location was discovered. An unsaved empty marker is not authoritative;
     // import real legacy chats when they still exist.
@@ -197,7 +326,7 @@ async function readFromDisk(): Promise<PersistedChatSnapshot> {
         return cachedSnapshot;
       }
       try {
-        cachedSnapshot = normalizeSnapshot(await fs.readJson(CHAT_STORE_BACKUP_PATH));
+        cachedSnapshot = await hydrateRecoveredUserBoundaries(normalizeSnapshot(await fs.readJson(CHAT_STORE_BACKUP_PATH)));
         cachedSnapshotFileSignature = null;
         return cachedSnapshot;
       } catch {
@@ -213,7 +342,7 @@ async function readFromDisk(): Promise<PersistedChatSnapshot> {
       console.warn(`[ChatStore] Preserved unreadable chat data at ${corruptPath}`);
     }
     try {
-      cachedSnapshot = normalizeSnapshot(await fs.readJson(CHAT_STORE_BACKUP_PATH));
+      cachedSnapshot = await hydrateRecoveredUserBoundaries(normalizeSnapshot(await fs.readJson(CHAT_STORE_BACKUP_PATH)));
     } catch {
       cachedSnapshot = emptySnapshot();
     }
@@ -261,16 +390,15 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
           chat.traceLogs || [],
-          chat.title || durable.title,
         ),
       };
     });
-    const next = normalizeSnapshot({
+    const next = await hydrateRecoveredUserBoundaries(normalizeSnapshot({
       ...requested,
       chats: mergedChats,
       savedAt: Math.max(requested.savedAt, current.savedAt + 1),
       lastMutationId: mutationId,
-    });
+    }));
     await writeAtomic(next);
     cachedSnapshot = next;
     cachedSnapshotFileSignature = null;
@@ -307,13 +435,12 @@ export async function patchChatSnapshot(
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
           chat.traceLogs || [],
-          chat.title || durable.title,
         ),
       } : chat);
     }
     deletedIds.forEach(id => byId.delete(id));
     const orderedIds = new Set(safeIds);
-    const next = normalizeSnapshot({
+    const next = await hydrateRecoveredUserBoundaries(normalizeSnapshot({
       savedAt: Math.max(savedAt, current.savedAt + 1),
       lastMutationId: mutationId,
       // The client list can be stale while a restore or another tab is in
@@ -323,7 +450,7 @@ export async function patchChatSnapshot(
         ...safeIds.map(id => byId.get(id)).filter(Boolean),
         ...(current.chats as any[]).filter(chat => !orderedIds.has(chat.id) && byId.has(chat.id)),
       ],
-    });
+    }));
     await writeAtomic(next);
     cachedSnapshot = next;
     cachedSnapshotFileSignature = null;

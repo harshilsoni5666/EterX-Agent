@@ -1417,6 +1417,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'provider', 'source', 'promptTokens', 'inputTokens', 'completionTokens', 'outputTokens',
   'totalTokens', 'cachedTokens', 'uncachedPromptTokens', 'cacheHitRatio',
   'reasoningTokens', 'toolUsePromptTokens', 'interaction', 'usageId', 'runId', 'turnId', 'mainTurnTerminal', 'uiOnly',
+  '_recoveredBoundary', '_recoveredExactText', '_hiddenRecoveredBoundary',
 ] as const;
 
 const haveSameNestedValue = (left: unknown, right: unknown) => {
@@ -1474,7 +1475,11 @@ const ChatFeedMessageGroup = React.memo(({
   const lastKnownAnswerRef = React.useRef<any>(null);
   const first = group[0];
   if (first?.type === 'user_action') {
-    const userText = String(first.text || '');
+    const userText = String(first.text || '').trim();
+    // A metadata-only recovered boundary keeps orphaned actions attached to
+    // their original turn, but must never manufacture a visible user message.
+    // The server replaces it with exact durable prompt text when available.
+    if (!userText || first._hiddenRecoveredBoundary === true) return null;
     const { isLong } = getUserQueryPreview(userText);
     const delegatedSource = first.source === 'proxy_manager'
       ? 'Side Proxy-Agent'
@@ -2256,7 +2261,11 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     const ERROR_PATTERNS = ['agent stopped', 'execution failed', 'agent execution', '*agent', 'error:', 'failed:'];
     const isErrorText = (t: string) => ERROR_PATTERNS.some(p => t.toLowerCase().startsWith(p));
     return groups.map((g, idx) => {
-      if (g[0]?.type === 'user_action') {
+      if (
+        g[0]?.type === 'user_action' &&
+        g[0]?._hiddenRecoveredBoundary !== true &&
+        String(g[0]?.text || '').trim()
+      ) {
         const nextGroup = groups[idx + 1] || [];
         const answerLog = [...nextGroup].reverse().find((l: any) => l.type === 'answer' && l.text && !isErrorText(l.text));
         const fallbackLog = [...nextGroup].reverse().find((l: any) => l.text && l.type !== 'user_action' && !isErrorText(l.text));
@@ -2778,7 +2787,11 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                   const thisDateKey = getGroupDateKey(group);
                   const prevGroup = visibleGroupIdx > 0 ? visibleGroups[visibleGroupIdx - 1] : null;
                   const prevDateKey = prevGroup ? getGroupDateKey(prevGroup) : '';
-                  const showDateDivider = thisDateKey && thisDateKey !== prevDateKey;
+                  const hiddenRecoveredBoundary = group[0]?.type === 'user_action' && (
+                    group[0]?._hiddenRecoveredBoundary === true ||
+                    !String(group[0]?.text || '').trim()
+                  );
+                  const showDateDivider = !hiddenRecoveredBoundary && thisDateKey && thisDateKey !== prevDateKey;
                   const dateLabel = showDateDivider ? formatDateLabel(thisDateKey) : '';
 
                   return (

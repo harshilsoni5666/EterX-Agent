@@ -327,7 +327,34 @@ const settleLifecycleTrace = (log: any, endedAt: number, status = 'completed'): 
 export const settleFeedTraceLifecycles = (logs: any[]): any[] => {
   const source = Array.isArray(logs) ? logs : [];
   if (source.length === 0) return [];
-  const settled = source.slice();
+  const settled = source.map(log => {
+    if (
+      log?.type !== 'work_note' ||
+      log?._streamingCancelled !== true ||
+      !String(log?.text || '').trim() ||
+      isInternalWorkNoteNoise(log?.text)
+    ) return log;
+
+    // Cancellation closes a provisional note; it does not retract words the
+    // agent already presented to the user. Some providers never send the
+    // replacement/final note after this event, which previously made the
+    // first meaningful update disappear before the first tool action.
+    const cancelledAt = timelineTimestamp({
+      timestamp: log?._cancelledAt ?? log?.endTime ?? log?.timestamp,
+    });
+    return {
+      ...log,
+      isLive: false,
+      isStreaming: false,
+      isLiveTyping: false,
+      streamState: 'closed',
+      status: 'completed',
+      ...(cancelledAt !== null ? { endTime: cancelledAt } : {}),
+      _streamingCancelled: undefined,
+      _cancelTraceIdx: undefined,
+      _cancelledAt: undefined,
+    };
+  });
   let turnStart = 0;
 
   const settleMainRange = (endExclusive: number, endedAt: number, status = 'completed') => {
@@ -380,16 +407,110 @@ export const settleFeedTraceLifecycles = (logs: any[]): any[] => {
  * a run's actions but lost its opening user_action. Without this boundary the
  * feed treats those real actions as an orphan preamble and hides them.
  */
+export interface RecoveredUserRequest {
+  text: string;
+  timestamp?: number;
+}
+
+const normalizedRequestText = (value: unknown): string => String(value || '')
+  .replace(/^\s*\[USER REQUEST\]\s*(?:\r?\n)?/i, '')
+  .trim();
+
+const normalizedRequestTimestamp = (value: unknown): number | null =>
+  timelineTimestamp({ timestamp: value });
+
 export const recoverMissingUserTurnBoundaries = (
   logs: any[],
-  fallbackTitle = 'Earlier request',
+  recoveredRequests: RecoveredUserRequest[] = [],
 ): any[] => {
   const source = Array.isArray(logs) ? logs : [];
   if (source.length === 0) return [];
 
+  const requests = (Array.isArray(recoveredRequests) ? recoveredRequests : [])
+    .map((request, index) => ({
+      index,
+      text: normalizedRequestText(request?.text),
+      timestamp: normalizedRequestTimestamp(request?.timestamp),
+    }))
+    .filter(request => Boolean(request.text))
+    .sort((left, right) => {
+      if (left.timestamp !== null && right.timestamp !== null) return left.timestamp - right.timestamp;
+      if (left.timestamp !== null) return -1;
+      if (right.timestamp !== null) return 1;
+      return left.index - right.index;
+    });
+  const usedRequestIndexes = new Set<number>();
+  const requestDistance = (request: typeof requests[number], log: any): number => {
+    const logAt = timelineTimestamp(log);
+    if (request.timestamp === null || logAt === null) return Number.MAX_SAFE_INTEGER;
+    return Math.abs(request.timestamp - logAt);
+  };
+  const claimRequest = (log: any, preferText = '') => {
+    const normalizedPreferredText = normalizedRequestText(preferText).toLowerCase();
+    let best: typeof requests[number] | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const request of requests) {
+      if (usedRequestIndexes.has(request.index)) continue;
+      const exactText = Boolean(
+        normalizedPreferredText && request.text.toLowerCase() === normalizedPreferredText,
+      );
+      const distance = requestDistance(request, log);
+      const score = (exactText ? 0 : 1_000_000_000_000_000) + distance;
+      if (score < bestScore) {
+        best = request;
+        bestScore = score;
+      }
+    }
+    if (!best) return null;
+    usedRequestIndexes.add(best.index);
+    return best;
+  };
+
+  // Reserve durable requests already represented by genuine boundaries so a
+  // missing older run cannot borrow a later prompt merely because it is close
+  // in time. Existing synthetic boundaries are rehydrated in the next pass.
+  const reservedRequestsByBoundary = new Map<number, typeof requests[number]>();
+  source.forEach((log, index) => {
+    if (log?.type !== 'user_action' || log?._recoveredBoundary === true) return;
+    const request = claimRequest(log, log.text);
+    if (request) reservedRequestsByBoundary.set(index, request);
+  });
+
+  const hydratedSource = source.map((log, index) => {
+    if (
+      log?.type === 'user_action' &&
+      log?._recoveredBoundary !== true &&
+      !normalizedRequestText(log.text)
+    ) {
+      const request = reservedRequestsByBoundary.get(index);
+      return request
+        ? { ...log, text: request.text, source: log.source || 'human' }
+        : log;
+    }
+    if (log?.type !== 'user_action' || log?._recoveredBoundary !== true) return log;
+    if (log?._recoveredExactText === true && normalizedRequestText(log.text)) return log;
+    const request = claimRequest(log);
+    if (!request) {
+      return {
+        ...log,
+        text: '',
+        source: 'recovered',
+        _recoveredExactText: undefined,
+        _hiddenRecoveredBoundary: true,
+      };
+    }
+    return {
+      ...log,
+      text: request.text,
+      source: 'human',
+      _recoveredExactText: true,
+      _hiddenRecoveredBoundary: undefined,
+    };
+  });
+
   const boundaryTurnIds = new Set<string>();
   const boundaryRunIds = new Set<string>();
-  source.forEach(log => {
+  hydratedSource.forEach(log => {
     if (log?.type !== 'user_action') return;
     const turnId = String(log?.turnId || '').trim();
     const runId = String(log?.runId || '').trim();
@@ -398,7 +519,7 @@ export const recoverMissingUserTurnBoundaries = (
   });
 
   const candidates = new Map<string, { firstIndex: number; firstLog: any; qualifies: boolean }>();
-  source.forEach((log, index) => {
+  hydratedSource.forEach((log, index) => {
     if (!log || log.type === 'user_action') return;
     const turnId = String(log.turnId || '').trim();
     const runId = String(log.runId || '').trim();
@@ -414,23 +535,23 @@ export const recoverMissingUserTurnBoundaries = (
   const missing = Array.from(candidates.entries())
     .filter(([, candidate]) => candidate.qualifies)
     .sort((left, right) => left[1].firstIndex - right[1].firstIndex);
-  if (missing.length === 0) return source.slice();
+  if (missing.length === 0) return hydratedSource.slice();
 
-  const normalizedTitle = String(fallbackTitle || '').trim();
-  const recoveredTitle = normalizedTitle && !/^new chat$/i.test(normalizedTitle)
-    ? normalizedTitle
-    : 'Earlier request';
   const insertions = new Map<number, any[]>();
-  missing.forEach(([identity, candidate], recoveryIndex) => {
+  missing.forEach(([identity, candidate]) => {
     const firstTimestamp = timelineTimestamp(candidate.firstLog);
     const turnId = String(candidate.firstLog?.turnId || candidate.firstLog?.runId || identity).trim();
     const runId = String(candidate.firstLog?.runId || turnId || identity).trim();
+    const request = claimRequest(candidate.firstLog);
     const boundary = {
       id: `recovered-user-turn-${ turnId }`,
       type: 'user_action',
-      text: recoveryIndex === 0 ? recoveredTitle : 'Earlier request',
-      source: 'recovered',
+      text: request?.text || '',
+      source: request ? 'human' : 'recovered',
       _recoveredBoundary: true,
+      ...(request
+        ? { _recoveredExactText: true }
+        : { _hiddenRecoveredBoundary: true }),
       ...(candidate.firstLog?.ownerChatId ? { ownerChatId: candidate.firstLog.ownerChatId } : {}),
       ...(candidate.firstLog?.chatId ? { chatId: candidate.firstLog.chatId } : {}),
       ...(runId ? { runId } : {}),
@@ -447,7 +568,7 @@ export const recoverMissingUserTurnBoundaries = (
   });
 
   const repaired: any[] = [];
-  source.forEach((log, index) => {
+  hydratedSource.forEach((log, index) => {
     if (insertions.has(index)) repaired.push(...insertions.get(index)!);
     repaired.push(log);
   });
@@ -462,7 +583,7 @@ export const recoverMissingUserTurnBoundaries = (
 export const mergeFeedTraceHistories = (
   durableLogs: any[],
   incomingLogs: any[],
-  fallbackTitle = 'Earlier request',
+  recoveredRequests: RecoveredUserRequest[] | string = [],
 ): any[] => {
   const merged: any[] = [];
   const indexes = new Map<string, number>();
@@ -521,7 +642,10 @@ export const mergeFeedTraceHistories = (
   (Array.isArray(durableLogs) ? durableLogs : []).forEach(append);
   (Array.isArray(incomingLogs) ? incomingLogs : []).forEach(append);
   return settleFeedTraceLifecycles(
-    orderFeedTimelineLogs(recoverMissingUserTurnBoundaries(merged, fallbackTitle)),
+    orderFeedTimelineLogs(recoverMissingUserTurnBoundaries(
+      merged,
+      Array.isArray(recoveredRequests) ? recoveredRequests : [],
+    )),
   );
 };
 
