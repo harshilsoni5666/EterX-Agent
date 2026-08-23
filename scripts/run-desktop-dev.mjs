@@ -29,41 +29,6 @@ const childProcesses = new Set();
 const expectedElectronExits = new WeakSet();
 const sourceWatchers = [];
 
-function prepareWindowsSpeechDictation() {
-  if (process.platform !== 'win32') return;
-  const windowsRoot = String(process.env.WINDIR || 'C:\\Windows');
-  const compiler = path.join(windowsRoot, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
-  const speechAssembly = path.join(
-    windowsRoot,
-    'Microsoft.NET',
-    'assembly',
-    'GAC_MSIL',
-    'System.Speech',
-    'v4.0_4.0.0.0__31bf3856ad364e35',
-    'System.Speech.dll',
-  );
-  const source = path.join(repositoryRoot, 'src', 'lib', 'desktop', 'EterXSpeechDictation.cs');
-  const output = path.join(repositoryRoot, 'desktop-runtime', 'assets', 'native', 'win', 'EterXSpeechDictation.exe');
-  if (![compiler, speechAssembly, source].every(candidate => fs.existsSync(candidate))) {
-    throw new Error('Windows speech recognition prerequisites are unavailable.');
-  }
-  const outputIsCurrent = fs.existsSync(output)
-    && fs.statSync(output).mtimeMs >= fs.statSync(source).mtimeMs;
-  if (outputIsCurrent) return;
-
-  fs.mkdirSync(path.dirname(output), { recursive: true });
-  const compile = spawnSync(compiler, [
-    '/nologo',
-    '/target:exe',
-    `/r:${speechAssembly}`,
-    `/out:${output}`,
-    source,
-  ], { cwd: repositoryRoot, stdio: 'inherit', windowsHide: true });
-  if (compile.status !== 0) {
-    throw new Error(`Windows speech helper compilation failed (exit ${compile.status ?? 'unknown'}).`);
-  }
-}
-
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -327,7 +292,6 @@ function createDevEnvironment(overrides = {}) {
 
 async function main() {
   acquireLauncherLock();
-  prepareWindowsSpeechDictation();
 
   if (process.env.ELECTRON_URL) {
     devEnvironment = createDevEnvironment();

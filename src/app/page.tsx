@@ -45,16 +45,14 @@ import {
   MODEL_API_KEY_PRESENCE_STORAGE_KEY,
   MODEL_CATALOG_STORAGE_KEY,
   MODEL_CONTEXT_WINDOWS_STORAGE_KEY,
-  MODEL_OVERRIDE_STORAGE_KEY,
   MODEL_PROVIDER_MODE,
   MODEL_SELECTOR_STORAGE_KEY,
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
+  MODEL_WIRE_CAPABILITIES_STORAGE_KEY,
   modelEntryKey,
-  isEmbeddedModelLabel,
   isModelProvider,
   normalizeModelSelectorEntries,
   parseModelEntryKey,
-  pickAutoModelEntry,
   type ModelSelectorEntry,
 } from '../lib/agent/model-selector-store';
 import {
@@ -307,6 +305,18 @@ const TaskStatusGlyphMini = React.memo(({ status, active }: { status?: string; a
     );
   }
 
+  if (status === 'skipped') {
+    return <span className="block h-3.5 w-3.5 shrink-0 rounded-full border border-dashed border-white/35" />;
+  }
+
+  if (status === 'failed') {
+    return (
+      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border border-red-400/50 text-red-300/85">
+        <X className="h-2 w-2" strokeWidth={2.8} />
+      </span>
+    );
+  }
+
   if (active || status === 'in_progress') {
     return (
       <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
@@ -383,7 +393,7 @@ const makeFollowUpAdmissionKey = (
 const speechWordKey = (word: string) => word.toLocaleLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
 
 const getSpeechWordOverlap = (existingWords: string[], incomingWords: string[]) => {
-  const maximumOverlap = Math.min(existingWords.length, incomingWords.length, 24);
+  const maximumOverlap = Math.min(existingWords.length, incomingWords.length, 160);
   for (let size = maximumOverlap; size > 0; size -= 1) {
     const existingTail = existingWords.slice(-size).map(speechWordKey);
     const incomingHead = incomingWords.slice(0, size).map(speechWordKey);
@@ -400,6 +410,15 @@ const mergeSpeechText = (existingText: string, incomingText: string) => {
 
   const existingWords = existing.split(/\s+/);
   const incomingWords = incoming.split(/\s+/);
+  const existingKeys = existingWords.map(speechWordKey);
+  const incomingKeys = incomingWords.map(speechWordKey);
+  const commonPrefixLength = Math.min(existingKeys.length, incomingKeys.length);
+  const hasCommonPrefix = existingKeys
+    .slice(0, commonPrefixLength)
+    .every((word, index) => word && word === incomingKeys[index]);
+  if (hasCommonPrefix) {
+    return incomingKeys.length >= existingKeys.length ? incoming : existing;
+  }
   const overlap = getSpeechWordOverlap(existingWords, incomingWords);
 
   return [...existingWords, ...incomingWords.slice(overlap)].join(' ');
@@ -423,7 +442,7 @@ type TaskTrackerStep = {
   step: number;
   name: string;
   description?: string;
-  status: 'pending' | 'in_progress' | 'done' | 'skipped';
+  status: 'pending' | 'blocked' | 'in_progress' | 'done' | 'skipped' | 'failed';
   tools?: string[];
   done_when?: string;
   step_type?: string;
@@ -434,7 +453,7 @@ type TaskTrackerStep = {
 
 type TaskTrackerState = {
   goal?: string;
-  phase?: 'generating' | 'generated' | 'progress' | 'complete';
+  phase?: 'generating' | 'generated' | 'progress' | 'complete' | 'failed';
   status?: 'generating' | 'in_progress' | 'completed' | 'failed' | 'stopped';
   complexity?: string;
   estimatedMinutes?: number;
@@ -686,33 +705,33 @@ const readRuntimeModelThinkingCapability = (selection = readRuntimeChatModelSele
   }
 };
 
+const readRuntimeModelWireCapabilities = (selection = readRuntimeChatModelSelection()): string[] => {
+  if (typeof window === 'undefined') return [];
+  const entry = parseModelEntryKey(selection);
+  if (!entry) return [];
+  try {
+    const raw = JSON.parse(appStorage.getItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY) || '{}');
+    const values = raw?.[modelEntryKey(entry.provider, entry.modelId)];
+    return Array.isArray(values)
+      ? Array.from(new Set(values.map((value: unknown) => String(value || '').trim()).filter(Boolean))).slice(0, 100)
+      : [];
+  } catch {
+    return [];
+  }
+};
+
 const readRuntimeModelOverrides = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   const selection = readRuntimeChatModelSelection();
   const exactEntry = parseModelEntryKey(selection);
   if (exactEntry) return { [exactEntry.provider]: exactEntry.modelId };
-  const autoEntry = pickAutoModelEntry(readRuntimeModelEntries(), readRuntimeBaseApiKeys(), readRuntimeModelApiKeys());
-  if (autoEntry) return { [autoEntry.provider]: autoEntry.modelId };
-
-  try {
-    const saved = appStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY);
-    const parsed = saved ? JSON.parse(saved) : {};
-    if (!parsed || typeof parsed !== 'object') return {};
-    return Object.fromEntries(
-      Object.entries(parsed as Record<string, unknown>)
-        .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
-        .filter(([, value]) => Boolean(value) && !isEmbeddedModelLabel(value)),
-    );
-  } catch {
-    return {};
-  }
+  return {};
 };
 
 const readRuntimeAgentMode = (fallbackMode: MainAgentMode, selection = readRuntimeChatModelSelection()): MainAgentMode => {
   const exactEntry = parseModelEntryKey(selection);
   if (exactEntry) return MODEL_PROVIDER_MODE[exactEntry.provider];
-  const autoEntry = pickAutoModelEntry(readRuntimeModelEntries(), readRuntimeBaseApiKeys(), readRuntimeModelApiKeys());
-  return autoEntry ? MODEL_PROVIDER_MODE[autoEntry.provider] : fallbackMode;
+  return fallbackMode;
 };
 
 type SelectedAgentState = ChatAgentSelection;
@@ -735,9 +754,7 @@ const resolveRuntimeModelSelection = (selection: unknown): string => {
   if (parsed && usableEntries.some(entry =>
     modelEntryKey(entry.provider, entry.modelId) === requested
   )) return requested;
-  return usableEntries[0]
-    ? modelEntryKey(usableEntries[0].provider, usableEntries[0].modelId)
-    : AUTO_MODEL_SELECTION;
+  return AUTO_MODEL_SELECTION;
 };
 
 const isDefaultChatTitle = (title?: string | null) => {
@@ -3317,13 +3334,14 @@ function DeepWorkUI() {
   const notifiedChatIdsRef = useRef<Set<string>>(new Set());
   const gatewayReplyRunIdsRef = useRef<Set<string>>(new Set());
 
-  // Dictation stays live until the user turns it off. Chromium desktop builds
-  // use the prefixed constructor while newer browsers expose the standard one.
+  // Dictation stays live until the user turns it off. The desktop app captures
+  // clean PCM here and sends it to the bundled local whisper.cpp runtime.
   const speechRecognitionRef = useRef<any>(null);
   const dictationShouldRunRef = useRef(false);
   const dictationRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dictationBaseTextRef = useRef('');
   const dictationCommittedTextRef = useRef('');
+  const dictationTranscriptAnchorRef = useRef('');
   const lastDictationRenderRef = useRef<string | null>(null);
   const dictationRenderedValuesRef = useRef<Set<string>>(new Set());
   const inputValueRef = useRef(inputValue);
@@ -3350,7 +3368,7 @@ function DeepWorkUI() {
       // exact draft the new base so a later speech event cannot restore an old
       // value or erase the edit.
       dictationBaseTextRef.current = inputValue;
-      dictationCommittedTextRef.current = '';
+      dictationTranscriptAnchorRef.current = dictationCommittedTextRef.current;
       lastDictationRenderRef.current = inputValue;
     }
   }, [inputValue]);
@@ -3364,13 +3382,13 @@ function DeepWorkUI() {
     const recognition = speechRecognitionRef.current;
     speechRecognitionRef.current = null;
     if (recognition) {
-      recognition.onend = null;
-      try { recognition.stop(); } catch { }
+      try { recognition.stop?.(); } catch { }
     }
-    void (window as any).electronAPI?.stopSpeechDictation?.();
-    lastDictationRenderRef.current = null;
-    dictationRenderedValuesRef.current.clear();
     setIsRecording(false);
+    void (window as any).electronAPI?.stopSpeechDictation?.().finally?.(() => {
+      lastDictationRenderRef.current = null;
+      dictationRenderedValuesRef.current.clear();
+    });
   }, []);
 
   useEffect(() => () => stopSpeechDictation(), [stopSpeechDictation]);
@@ -3380,7 +3398,11 @@ function DeepWorkUI() {
     if (typeof desktopApi?.onSpeechDictationEvent !== 'function') return;
 
     const applyNativeTranscript = (speechText: string) => {
-      const nextText = appendSpeechToDraft(dictationBaseTextRef.current, speechText);
+      const anchor = dictationTranscriptAnchorRef.current.trim();
+      const anchoredSpeech = anchor && speechText.toLocaleLowerCase().startsWith(anchor.toLocaleLowerCase())
+        ? speechText.slice(anchor.length).trimStart()
+        : speechText;
+      const nextText = appendSpeechToDraft(dictationBaseTextRef.current, anchoredSpeech);
       inputValueRef.current = nextText;
       lastDictationRenderRef.current = nextText;
       rememberDictationRender(nextText);
@@ -3388,12 +3410,13 @@ function DeepWorkUI() {
     };
 
     return desktopApi.onSpeechDictationEvent((event: any) => {
-      if (!dictationShouldRunRef.current) return;
       const type = String(event?.type || '');
       const text = String(event?.text || '');
+      if (!dictationShouldRunRef.current && type !== 'final' && type !== 'stopped') return;
 
       if (type === 'partial') {
-        applyNativeTranscript(mergeSpeechText(dictationCommittedTextRef.current, text));
+        dictationCommittedTextRef.current = mergeSpeechText(dictationCommittedTextRef.current, text);
+        applyNativeTranscript(dictationCommittedTextRef.current);
         return;
       }
       if (type === 'final') {
@@ -3402,10 +3425,8 @@ function DeepWorkUI() {
         return;
       }
       if (type === 'error') {
-        dictationShouldRunRef.current = false;
-        lastDictationRenderRef.current = null;
-        setIsRecording(false);
-        alert(text || 'Voice dictation could not start. Check your microphone and installed speech language.');
+        stopSpeechDictation();
+        alert(text || 'Local voice dictation could not start. Check microphone permission and try again.');
         return;
       }
       if (type === 'stopped') {
@@ -3414,7 +3435,7 @@ function DeepWorkUI() {
         setIsRecording(false);
       }
     });
-  }, [rememberDictationRender, updateInputValue]);
+  }, [rememberDictationRender, stopSpeechDictation, updateInputValue]);
 
   // ═══════════════════════════════════════════════════════════════
   // AGENT LIVE — provider-specific realtime voice conversations
@@ -4343,7 +4364,7 @@ function DeepWorkUI() {
               const resolveTaskModel = (requested: unknown): { value?: string; error?: string } => {
                 const modelId = String(requested || '').trim();
                 if (!modelId || modelId === AUTO_MODEL_SELECTION || modelId.toLowerCase() === 'auto') {
-                  return { value: AUTO_MODEL_SELECTION };
+                  return { error: 'Select one exact added model; automatic model selection is not supported.' };
                 }
                 const match = readRuntimeModelEntries().find(entry =>
                   modelEntryKey(entry.provider, entry.modelId) === modelId ||
@@ -4589,7 +4610,7 @@ function DeepWorkUI() {
               const resolveAgentModel = (requested: unknown): { value?: string; error?: string } => {
                 const modelId = String(requested || '').trim();
                 if (!modelId || modelId === AUTO_MODEL_SELECTION || modelId.toLowerCase() === 'auto') {
-                  return { value: AUTO_MODEL_SELECTION };
+                  return { error: 'Select one exact added model; automatic model selection is not supported.' };
                 }
                 const match = readRuntimeModelEntries().find(entry =>
                   modelEntryKey(entry.provider, entry.modelId) === modelId ||
@@ -6126,14 +6147,14 @@ function DeepWorkUI() {
     const storedState = composerStatesRef.current['new_chat'];
     const hasSavedDraft = Boolean(storedState?.inputValue?.trim() || storedState?.attachments?.length);
     if (storedState && !hasSavedDraft) {
-      const defaultModelSelection = readRuntimeChatModelSelection();
+      const storedModelSelection = readRuntimeChatModelSelection();
       const refreshedState: ChatComposerState = {
         ...storedState,
         // Agent identity is chat-scoped. New chat begins on General unless it
         // contains an actual saved draft whose intended runtime must survive.
         selectedAgent: { ...GENERAL_AGENT_SELECTION },
-        chatModelSelection: defaultModelSelection,
-        agentMode: readRuntimeAgentMode(storedState.agentMode || 'think', defaultModelSelection),
+        chatModelSelection: storedModelSelection,
+        agentMode: readRuntimeAgentMode(storedState.agentMode || 'think', storedModelSelection),
       };
       applyComposerState(refreshedState);
       updateComposerState(() => refreshedState);
@@ -8794,13 +8815,18 @@ function DeepWorkUI() {
     const desktopApi = (window as any).electronAPI;
     const desktopPermission = await desktopApi?.requestLiveMediaPermissions?.();
     if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
-      alert('Microphone access is blocked. Allow EterX to use the microphone in your system settings, restart the app, and try again.');
+      if (typeof desktopApi?.showMicrophonePermissionHelp === 'function') {
+        await desktopApi.showMicrophonePermissionHelp();
+      } else {
+        alert('Microphone access is blocked. Allow EterX to use the microphone in system settings and try again.');
+      }
       return;
     }
 
     const startingText = inputValue && !/\s$/.test(inputValue) ? `${inputValue} ` : inputValue;
     dictationBaseTextRef.current = startingText;
     dictationCommittedTextRef.current = '';
+    dictationTranscriptAnchorRef.current = '';
     inputValueRef.current = startingText;
     lastDictationRenderRef.current = startingText;
     dictationRenderedValuesRef.current.clear();
@@ -8808,195 +8834,85 @@ function DeepWorkUI() {
     dictationShouldRunRef.current = true;
     setIsRecording(true);
 
-    const startNativeDictation = async () => {
-      if (typeof desktopApi?.startSpeechDictation !== 'function') return false;
-      try {
-        const nativeResult = await desktopApi.startSpeechDictation(navigator.language || 'en-US');
-        if (!dictationShouldRunRef.current) {
-          if (nativeResult?.started) void desktopApi.stopSpeechDictation?.();
-          return false;
-        }
-        if (nativeResult?.started) return true;
-        if (nativeResult?.supported !== false) {
-          throw new Error(nativeResult?.error || 'Native voice dictation could not start.');
-        }
-      } catch (error: any) {
-        if (desktopApi?.platform === 'windows') {
-          throw error;
-        }
-      }
-      return false;
-    };
-
-    const browserWindow = window as typeof window & {
-      SpeechRecognition?: new () => any;
-      webkitSpeechRecognition?: new () => any;
-    };
-    const SpeechRecognitionConstructor =
-      browserWindow.SpeechRecognition || browserWindow.webkitSpeechRecognition;
-
-    if (!SpeechRecognitionConstructor) {
-      try {
-        if (await startNativeDictation()) return;
-      } catch (error: any) {
-        dictationShouldRunRef.current = false;
-        lastDictationRenderRef.current = null;
-        setIsRecording(false);
-        alert(String(error?.message || error || 'Native voice dictation could not start.'));
-        return;
-      }
+    if (
+      typeof desktopApi?.startSpeechDictation !== 'function' ||
+      typeof desktopApi?.pushSpeechDictationAudio !== 'function'
+    ) {
       dictationShouldRunRef.current = false;
-      lastDictationRenderRef.current = null;
       setIsRecording(false);
-      alert('Live voice dictation is unavailable on this device. Install an on-device speech language and try again.');
+      alert('Local whisper.cpp dictation is available in the EterX desktop app.');
       return;
     }
 
-    if (navigator.mediaDevices?.getUserMedia) {
-      try {
-        const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        permissionStream.getTracks().forEach(track => track.stop());
-      } catch {
-        dictationShouldRunRef.current = false;
-        setIsRecording(false);
-        alert('Microphone access was not granted. Allow microphone access and try again.');
-        return;
-      }
-    }
-
-    const recognitionLanguage = navigator.language || 'en-US';
-    let useOnDeviceRecognition = false;
-    const SpeechRecognitionApi = SpeechRecognitionConstructor as any;
-    if (typeof SpeechRecognitionApi.available === 'function') {
-      try {
-        let availability = await SpeechRecognitionApi.available({
-          langs: [recognitionLanguage],
-          processLocally: true,
-        });
-        if (availability === 'downloadable' && typeof SpeechRecognitionApi.install === 'function') {
-          const installed = await SpeechRecognitionApi.install({ langs: [recognitionLanguage] });
-          if (installed) {
-            availability = await SpeechRecognitionApi.available({
-              langs: [recognitionLanguage],
-              processLocally: true,
-            });
-          }
-        }
-        useOnDeviceRecognition = availability === 'available';
-      } catch {
-        // Older engines can expose the constructor without supporting local
-        // language packs. Their normal recognition path remains the fallback.
-      }
-    }
-
-    const startRecognition = () => {
-      if (!dictationShouldRunRef.current) return;
-
-      const recognition = new SpeechRecognitionConstructor();
-      speechRecognitionRef.current = recognition;
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
-      recognition.lang = recognitionLanguage;
-      if (useOnDeviceRecognition && 'processLocally' in recognition) {
-        recognition.processLocally = true;
-      }
-
-      recognition.onresult = (event: any) => {
-        let finalText = '';
-        let interimText = '';
-
-        for (let index = 0; index < event.results.length; index++) {
-          const result = event.results[index];
-          const transcript = String(result?.[0]?.transcript || '');
-          if (result.isFinal) finalText += transcript;
-          else interimText += transcript;
-        }
-
-        const recognizedText = mergeSpeechText(finalText, interimText);
-        const nextText = appendSpeechToDraft(dictationBaseTextRef.current, recognizedText);
-        inputValueRef.current = nextText;
-        lastDictationRenderRef.current = nextText;
-        rememberDictationRender(nextText);
-        updateInputValue(nextText);
-      };
-
-      recognition.onerror = (event: any) => {
-        const error = String(event?.error || '');
-        if (error === 'no-speech' || error === 'aborted') return;
-
-        if (error === 'network' || error === 'service-not-allowed') {
-          recognition.onend = null;
-          speechRecognitionRef.current = null;
-          void startNativeDictation()
-            .then(started => {
-              if (started || !dictationShouldRunRef.current) return;
-              dictationShouldRunRef.current = false;
-              lastDictationRenderRef.current = null;
-              setIsRecording(false);
-              alert('No working on-device speech recognizer is available. Install a system speech language and try again.');
-            })
-            .catch((nativeError: any) => {
-              dictationShouldRunRef.current = false;
-              lastDictationRenderRef.current = null;
-              setIsRecording(false);
-              alert(String(nativeError?.message || nativeError || 'On-device voice dictation could not start.'));
-            });
-          return;
-        }
-
-        dictationShouldRunRef.current = false;
-        speechRecognitionRef.current = null;
-        lastDictationRenderRef.current = null;
-        setIsRecording(false);
-
-        if (error === 'not-allowed') {
-          alert('Microphone or speech-recognition access is blocked. Allow access, then try again.');
-        } else if (error === 'audio-capture') {
-          alert('No working microphone was found. Check your selected input device and try again.');
-        } else if (error === 'language-not-supported' || error === 'language-unavailable') {
-          alert('Speech recognition is not installed for your current system language.');
-        } else {
-          alert('This browser could not reach its speech-recognition service. Try the EterX desktop app or install an on-device speech language.');
-        }
-      };
-
-      recognition.onend = () => {
-        speechRecognitionRef.current = null;
-        if (!dictationShouldRunRef.current) {
-          setIsRecording(false);
-          return;
-        }
-
-        dictationBaseTextRef.current = inputValueRef.current;
-        dictationRestartTimerRef.current = setTimeout(() => {
-          dictationRestartTimerRef.current = null;
-          startRecognition();
-        }, 150);
-      };
-
-      try {
-        recognition.start();
-      } catch {
-        recognition.onend = null;
-        void startNativeDictation()
-          .then(started => {
-            if (started || !dictationShouldRunRef.current) return;
-            dictationShouldRunRef.current = false;
-            lastDictationRenderRef.current = null;
-            setIsRecording(false);
-            alert('Voice dictation could not start on this device.');
-          })
-          .catch((nativeError: any) => {
-            dictationShouldRunRef.current = false;
-            lastDictationRenderRef.current = null;
-            setIsRecording(false);
-            alert(String(nativeError?.message || nativeError || 'On-device voice dictation could not start.'));
-          });
-      }
+    let microphoneStream: MediaStream | null = null;
+    let audioContext: AudioContext | null = null;
+    let sourceNode: MediaStreamAudioSourceNode | null = null;
+    let processorNode: ScriptProcessorNode | null = null;
+    let silentGain: GainNode | null = null;
+    const releaseMicrophone = () => {
+      try { processorNode?.disconnect(); } catch { }
+      try { sourceNode?.disconnect(); } catch { }
+      try { silentGain?.disconnect(); } catch { }
+      microphoneStream?.getTracks().forEach(track => track.stop());
+      if (audioContext && audioContext.state !== 'closed') void audioContext.close();
     };
 
-    startRecognition();
+    try {
+      microphoneStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      const nativeResult = await desktopApi.startSpeechDictation(navigator.language || 'auto');
+      if (!dictationShouldRunRef.current) {
+        releaseMicrophone();
+        if (nativeResult?.started) void desktopApi.stopSpeechDictation?.();
+        return;
+      }
+      if (!nativeResult?.started) throw new Error(nativeResult?.error || 'Local whisper.cpp could not start.');
+
+      audioContext = new AudioContext({ latencyHint: 'interactive' });
+      sourceNode = audioContext.createMediaStreamSource(microphoneStream);
+      processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+      silentGain = audioContext.createGain();
+      silentGain.gain.value = 0;
+      processorNode.onaudioprocess = event => {
+        if (!dictationShouldRunRef.current || !audioContext) return;
+        const input = event.inputBuffer.getChannelData(0);
+        const ratio = audioContext.sampleRate / 16000;
+        const outputLength = Math.max(1, Math.floor(input.length / ratio));
+        const pcm = new Int16Array(outputLength);
+        for (let index = 0; index < outputLength; index++) {
+          const start = Math.floor(index * ratio);
+          const end = Math.min(input.length, Math.max(start + 1, Math.floor((index + 1) * ratio)));
+          let sum = 0;
+          for (let sourceIndex = start; sourceIndex < end; sourceIndex++) sum += input[sourceIndex];
+          const sample = Math.max(-1, Math.min(1, sum / (end - start)));
+          pcm[index] = sample < 0 ? sample * 32768 : sample * 32767;
+        }
+        desktopApi.pushSpeechDictationAudio(pcm.buffer);
+      };
+      sourceNode.connect(processorNode);
+      processorNode.connect(silentGain);
+      silentGain.connect(audioContext.destination);
+      speechRecognitionRef.current = { stop: releaseMicrophone };
+    } catch (error: any) {
+      releaseMicrophone();
+      dictationShouldRunRef.current = false;
+      speechRecognitionRef.current = null;
+      lastDictationRenderRef.current = null;
+      setIsRecording(false);
+      void desktopApi.stopSpeechDictation?.();
+      const message = String(error?.message || error || 'Local voice dictation could not start.');
+      if (/permission|notallowed/i.test(message) && typeof desktopApi?.showMicrophonePermissionHelp === 'function') {
+        await desktopApi.showMicrophonePermissionHelp();
+      } else {
+        alert(message);
+      }
+    }
   };
   const handleOpenAgentTeam = useCallback((agentNameOrId?: string) => {
     if (agentNameOrId) {
@@ -9394,10 +9310,7 @@ function DeepWorkUI() {
     const runtimeEntries = readRuntimeModelEntries();
     const runtimeProviderKeys = readRuntimeBaseApiKeys();
     const runtimeModelKeys = readRuntimeModelApiKeys();
-    const requestedRunModelEntry = parseModelEntryKey(runModelSelection)
-      || (runModelSelection === AUTO_MODEL_SELECTION
-        ? pickAutoModelEntry(runtimeEntries, runtimeProviderKeys, runtimeModelKeys)
-        : null);
+    const requestedRunModelEntry = parseModelEntryKey(runModelSelection);
     const requestedRunModelSelection = requestedRunModelEntry
       ? modelEntryKey(requestedRunModelEntry.provider, requestedRunModelEntry.modelId)
       : runModelSelection;
@@ -9596,6 +9509,9 @@ function DeepWorkUI() {
             mode: runAgentMode,
             thinkingLevel: runThinkingLevel,
             modelThinkingCapability: readRuntimeModelThinkingCapability(
+              runModelEntry ? modelEntryKey(runModelEntry.provider, runModelEntry.modelId) : runModelSelection
+            ),
+            modelWireCapabilities: readRuntimeModelWireCapabilities(
               runModelEntry ? modelEntryKey(runModelEntry.provider, runModelEntry.modelId) : runModelSelection
             ),
             runId: clientRunId,
@@ -9900,6 +9816,10 @@ function DeepWorkUI() {
             model: runModelEntry?.modelId,
             runLocation: runLocationVal,
             pinnedContext: {
+              thinkingLevel: runThinkingLevel,
+              modelThinkingCapability: readRuntimeModelThinkingCapability(
+                runModelEntry ? modelEntryKey(runModelEntry.provider, runModelEntry.modelId) : runModelSelection
+              ),
               terminalShell: readStoredTerminalShell(),
               allowBrowserControl: readStoredBrowserAccess(),
               allowHostControl: readStoredComputerUse(),
@@ -10173,6 +10093,9 @@ function DeepWorkUI() {
           mode: runAgentMode,
           thinkingLevel: runThinkingLevel,
           modelThinkingCapability: readRuntimeModelThinkingCapability(
+            runModelEntry ? modelEntryKey(runModelEntry.provider, runModelEntry.modelId) : runModelSelection
+          ),
+          modelWireCapabilities: readRuntimeModelWireCapabilities(
             runModelEntry ? modelEntryKey(runModelEntry.provider, runModelEntry.modelId) : runModelSelection
           ),
           selectedModel: runModelEntry ? { provider: runModelEntry.provider, modelId: runModelEntry.modelId } : null,
@@ -11739,11 +11662,8 @@ function DeepWorkUI() {
     // first real user boundary and remains isolated to this active chat.
     if (!traceLogs.some((log: any) => log?.type === 'user_action')) return null;
 
-    const explicitEntry = parseModelEntryKey(activeModelSelection);
-    const autoEntry = explicitEntry
-      ? null
-      : pickAutoModelEntry(proxyModelEntries, readRuntimeBaseApiKeys(), readRuntimeModelApiKeys());
-    const selectedEntry = explicitEntry || autoEntry;
+    const selectedEntry = parseModelEntryKey(activeModelSelection);
+    if (!selectedEntry) return null;
     const fallbackConfig = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === agentMode) || MAIN_AGENT_MODEL_OPTIONS[0];
     const provider = selectedEntry?.provider || fallbackConfig.provider;
     const modelId = selectedEntry?.modelId || fallbackConfig.modelName;
@@ -11990,7 +11910,7 @@ function DeepWorkUI() {
   const todoCounterText = useMemo(() => {
     const tracker = lastTaskTracker || currentTaskTracker;
     if (!tracker?.steps || tracker.steps.length === 0) return '';
-    const completed = tracker.steps.filter(s => s.status === 'done').length;
+    const completed = tracker.completedSteps ?? tracker.steps.filter(s => s.status === 'done' || s.status === 'skipped').length;
     const total = tracker.steps.length;
     return `${ completed }/${ total }`;
   }, [lastTaskTracker, currentTaskTracker]);
@@ -12410,11 +12330,29 @@ function DeepWorkUI() {
 
       {/* Global Top Bar UI Container */}
       <div className="eterx-global-topbar pointer-events-none absolute top-0 h-[var(--eterx-shell-topbar-height)] z-[999] flex items-center overflow-hidden">
-        {/* Drag spacer — pointer-events-none so sidebar toggle clicks pass through */}
-        <div className="eterx-topbar-sidebar-spacer shrink-0 pointer-events-none transition-[width] duration-300" />
+        {sidebarOpen ? (
+          /* The open sidebar owns its title-bar toggle; reserve its width. */
+          <div className="eterx-topbar-sidebar-spacer shrink-0 pointer-events-none transition-[width] duration-300" />
+        ) : (
+          /* Keep the closed toggle in normal title-bar flow so it can never
+             overlap API/Models at narrow window widths. */
+          <div className="eterx-sidebar-closed-toggle-shell pointer-events-auto shrink-0">
+            <Tooltip text="Open sidebar" side="right">
+              <button
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={() => setSidebarOpen(true)}
+                aria-label="Open sidebar"
+                className="eterx-sidebar-closed-toggle group flex h-8 w-8 items-center justify-center rounded-[8px] border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] cursor-pointer [-webkit-app-region:no-drag]"
+              >
+                <HeaderSidebarOpenIcon />
+              </button>
+            </Tooltip>
+          </div>
+        )}
 
         {/* Action buttons — API | Models | Theme | Help | Updates */}
-        <div className="pointer-events-auto flex items-center gap-0 min-w-0 overflow-hidden [-webkit-app-region:no-drag]">
+        <div className="eterx-topbar-actions pointer-events-auto flex min-w-0 items-center gap-0 overflow-hidden [-webkit-app-region:no-drag]">
           {/* API */}
           <button type="button"
             onClick={() => { setSettingsInitialTab('api'); setIsSettingsOpen(true); }}
@@ -12702,23 +12640,6 @@ function DeepWorkUI() {
       )}
 
       <SettingsPanel isOpen={isSettingsOpen} initialTab={settingsInitialTab as any} onClose={() => setIsSettingsOpen(false)} />
-      {!sidebarOpen && (
-        <>
-          <div className="eterx-sidebar-closed-toggle-shell">
-            <Tooltip text="Open sidebar" side="right">
-              <button
-                type="button"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={() => setSidebarOpen(true)}
-                aria-label="Open sidebar"
-                className="eterx-sidebar-closed-toggle group flex h-8 w-8 items-center justify-center rounded-[8px] border border-transparent bg-transparent text-[var(--sidebar-muted-text)] transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] cursor-pointer [-webkit-app-region:no-drag]"
-              >
-                <HeaderSidebarOpenIcon />
-              </button>
-            </Tooltip>
-          </div>
-        </>
-      )}
 
       <div className="eterx-workspace-shell flex-1 flex flex-col relative overflow-hidden z-10 transition-colors duration-300">
         {/* Absolute Header (Draggable Region for Electron) */}
@@ -13510,7 +13431,7 @@ function DeepWorkUI() {
                                                 <span className="shrink-0">
                                                   <TaskStatusGlyphMini status={step.status} active={activeWorking} />
                                                 </span>
-                                                <Shimmer active={activeWorking} className={`truncate flex-1 ${ step.status === 'done' ? 'line-through text-white/45' : activeWorking ? 'text-white font-medium' : 'text-white/70' }`}>
+                                                <Shimmer active={activeWorking} className={`truncate flex-1 ${ step.status === 'done' || step.status === 'skipped' ? 'line-through text-white/45' : step.status === 'failed' ? 'text-red-300/80' : activeWorking ? 'text-white font-medium' : 'text-white/70' }`}>
                                                   {step.name || `Task ${ step.step }`}
                                                 </Shimmer>
                                               </div>

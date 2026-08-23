@@ -118,7 +118,7 @@ jobs:
         run: npm ci --legacy-peer-deps --no-audit --fund=false
 
       - name: Compile application
-        run: npm run build
+        run: npm run desktop:prepare-whisper && npm run build
 
       - name: Prepare self-contained desktop runtime
         run: npm run desktop:prepare-runtime

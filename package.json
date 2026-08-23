@@ -100,12 +100,13 @@
   },
   "scripts": {
     "dev": "next dev",
-    "desktop": "node scripts/run-desktop-dev.mjs",
+    "desktop": "npm run desktop:prepare-whisper && node scripts/run-desktop-dev.mjs",
+    "desktop:prepare-whisper": "node scripts/prepare-whisper-runtime.mjs",
     "desktop:prepare-runtime": "node scripts/prepare-desktop-runtime.mjs",
-    "desktop:build": "npm run build && npm run desktop:prepare-runtime && electron-builder",
-    "desktop:build:win": "cross-env ETERX_RUNTIME_TARGETS=win32:x64,win32:arm64 npm run build && cross-env ETERX_RUNTIME_TARGETS=win32:x64,win32:arm64 npm run desktop:prepare-runtime && electron-builder --win --x64 --arm64",
-    "desktop:build:linux": "cross-env ETERX_RUNTIME_TARGETS=linux:x64,linux:arm64 npm run build && cross-env ETERX_RUNTIME_TARGETS=linux:x64,linux:arm64 npm run desktop:prepare-runtime && electron-builder --linux --x64 --arm64",
-    "desktop:build:mac": "cross-env ETERX_RUNTIME_TARGETS=darwin:x64,darwin:arm64 npm run build && cross-env ETERX_RUNTIME_TARGETS=darwin:x64,darwin:arm64 npm run desktop:prepare-runtime && electron-builder --mac --x64 --arm64",
+    "desktop:build": "npm run desktop:prepare-whisper && npm run build && npm run desktop:prepare-runtime && electron-builder",
+    "desktop:build:win": "cross-env ETERX_RUNTIME_TARGETS=win32:x64,win32:arm64 npm run desktop:prepare-whisper && npm run build && cross-env ETERX_RUNTIME_TARGETS=win32:x64,win32:arm64 npm run desktop:prepare-runtime && electron-builder --win --x64 --arm64",
+    "desktop:build:linux": "cross-env ETERX_RUNTIME_TARGETS=linux:x64,linux:arm64 npm run desktop:prepare-whisper && npm run build && cross-env ETERX_RUNTIME_TARGETS=linux:x64,linux:arm64 npm run desktop:prepare-runtime && electron-builder --linux --x64 --arm64",
+    "desktop:build:mac": "cross-env ETERX_RUNTIME_TARGETS=darwin:x64,darwin:arm64 npm run desktop:prepare-whisper && npm run build && cross-env ETERX_RUNTIME_TARGETS=darwin:x64,darwin:arm64 npm run desktop:prepare-runtime && electron-builder --mac --x64 --arm64",
     "build": "node scripts/build-production.mjs",
     "start": "next start",
     "test": "npm run test:ci",
@@ -289,8 +290,7 @@
       "gatekeeperAssess": false,
       "entitlements": "setup/entitlements.mac.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "EterX uses the microphone only while you are using voice recording or Live Agent.",
-        "NSSpeechRecognitionUsageDescription": "EterX uses speech recognition only while you enable voice dictation.",
+        "NSMicrophoneUsageDescription": "EterX uses the microphone only while you enable local voice dictation or Live Agent.",
         "NSCameraUsageDescription": "EterX uses the camera only when you enable camera sharing in Live Agent.",
         "NSScreenCaptureUsageDescription": "EterX captures the screen only while you explicitly enable screen sharing in Live Agent."
       },
