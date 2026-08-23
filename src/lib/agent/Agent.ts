@@ -1727,10 +1727,16 @@ export class GeminiAgentClient {
   }
 
   private formatLiveSteering(messages: Array<{ id?: string; text: string; metadata?: Record<string, any> }>): string {
-    return messages.map((item, index) => {
+    return messages.map((item) => {
       if (item.metadata?._autonomyProxy) return item.text.trim();
-      return `[LIVE GUIDANCE ${index + 1}${item.id ? ` | id=${item.id}` : ''} | source=human]\n${item.text}\n[/LIVE GUIDANCE]`;
+      return `The user sent this additional request while you were working. Apply it now as part of the current task, continue the work, and do not repeat this delivery note in your response:\n\n${item.text.trim()}`;
     }).join('\n\n');
+  }
+
+  private isLiveSteeringEcho(text: string): boolean {
+    const normalized = String(text || '').trim();
+    return /^\[LIVE GUIDANCE\b/i.test(normalized) ||
+      /^The user sent this additional request while you were working\./i.test(normalized);
   }
 
   private getToolCacheScope(context: ProjectContext): string {
@@ -3083,6 +3089,15 @@ export class GeminiAgentClient {
       const toolCalls = Array.isArray(assistantMessage.tool_calls) ? assistantMessage.tool_calls : [];
 
       if (toolCalls.length === 0) {
+        if (this.isLiveSteeringEcho(contentText)) {
+          cancelProvisionalAnswer();
+          messages.push({ role: 'assistant', content: contentText });
+          messages.push({
+            role: 'user',
+            content: '[SYSTEM] The preceding text was an internal delivery note, not a final answer. Apply the user\'s added request and continue the task. Never quote or expose delivery wrappers.',
+          });
+          continue;
+        }
         const delegatedHandoffs = await this.drainDelegatedWorkBeforeCompletion(
           context, interactions, trace, onTrace, message,
         );
@@ -3782,6 +3797,21 @@ export class GeminiAgentClient {
       if (toolUses.length > 0) cancelProvisionalAnswer();
 
       if (toolUses.length === 0) {
+        if (this.isLiveSteeringEcho(contentText)) {
+          cancelProvisionalAnswer();
+          messages.push({
+            role: 'assistant',
+            content: contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: contentText }],
+          });
+          messages.push({
+            role: 'user',
+            content: [{
+              type: 'text',
+              text: '[SYSTEM] The preceding text was an internal delivery note, not a final answer. Apply the user\'s added request and continue the task. Never quote or expose delivery wrappers.',
+            }],
+          });
+          continue;
+        }
         const delegatedHandoffs = await this.drainDelegatedWorkBeforeCompletion(
           context, interactions, trace, onTrace, message,
         );
@@ -7638,6 +7668,19 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
         if (accumulatedText) {
           // Final answer â€” emit immediately, no reflection/critic overhead
           const finalText = accumulatedText;
+          if (this.isLiveSteeringEcho(finalText)) {
+            cancelProvisionalAnswer();
+            if (fullResponseContent) contents.push(fullResponseContent);
+            contents.push({
+              role: 'user',
+              parts: [{
+                text: '[SYSTEM] The preceding text was an internal delivery note, not a final answer. Apply the user\'s added request and continue the task. Never quote or expose delivery wrappers.',
+              }],
+            });
+            accumulatedText = '';
+            accumulatedThought = '';
+            continue;
+          }
           if (isSyntheticLoopCompletionText(finalText)) {
             console.warn('[GeminiClient] Ignoring synthetic loop completion text and continuing work.');
             if (fullResponseContent) contents.push(fullResponseContent);

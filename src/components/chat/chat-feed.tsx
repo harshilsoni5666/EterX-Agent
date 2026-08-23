@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
-import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, MessageSquarePlus, Activity, Minimize2, CornerDownLeft, CircleStop, TriangleAlert } from 'lucide-react';
+import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, MessageSquarePlus, Activity, Minimize2, CircleStop, TriangleAlert } from 'lucide-react';
 import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
@@ -241,35 +241,7 @@ const UserMessageActions = React.memo(({ text, onEdit, timestamp }: { text: stri
 });
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// SteeringFeedCard â€” left-aligned enterprise card shown in the main
-// chat feed whenever the user sends a live steering message while the
-// agent is running. Feels native to the conversation thread.
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-const SteeringFeedCard = React.memo(({ log, isCompressed = false, onEdit }: { log: any; isCompressed?: boolean; onEdit?: (text: string) => void }) => {
-  const isProxy = log?._autonomyProxy === true || log?.source === 'user_proxy' || log?.source === 'proxy_manager';
-  const text = String(log?.text || '').trim();
-  if (!text) return null;
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, x: 12, y: 4 }}
-      animate={{ opacity: 1, x: 0, y: 0 }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
-      className="group/steer relative z-10 my-1.5 flex w-full justify-end"
-    >
-      <div
-        className={`eterx-steering-bubble relative ml-auto flex items-end gap-2.5 rounded-[18px] rounded-tr-[7px] border px-4 py-2.5 text-[13.5px] leading-[1.5] text-[#F4F2EE] shadow-none ${ isProxy ? 'border-[#34383D] bg-[#16181A]' : 'border-white/[0.065] bg-[#20201F]' } ${ isCompressed ? 'max-w-[92%]' : 'max-w-[84%]' }`}
-        data-proxy={isProxy ? 'true' : undefined}
-        aria-label={isProxy ? 'Proxy guidance' : 'Guidance sent to the running agent'}
-      >
-        <UserMessageActions text={text} onEdit={isProxy ? undefined : onEdit} />
-        <span className="min-w-0 whitespace-pre-wrap break-words text-left [overflow-wrap:anywhere]">{text}</span>
-        <CornerDownLeft className="mb-0.5 h-4 w-4 shrink-0 select-none text-[#8F887E]" strokeWidth={2.15} aria-hidden="true" />
-      </div>
-    </motion.div>
-  );
-});
-
 const liveMotionStyles = `
   @keyframes blink { 0%,100%{opacity:0.7} 50%{opacity:0} }
   @keyframes wi-spin { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }
@@ -484,6 +456,35 @@ const normalizeInternalUserActionLogs = (logs: any[]) => {
   );
 
   return logs.reduce<any[]>((next, log) => {
+    if (log?.type === 'answer' && /\[LIVE GUIDANCE\b/i.test(String(log.text || ''))) {
+      const rawText = String(log.text || '');
+      const envelopePattern = /\[LIVE GUIDANCE\s+\d+(?:\s*\|\s*id=([^\]|]+))?(?:\s*\|\s*source=([^\]]+))?\]\s*([\s\S]*?)\s*\[\/LIVE GUIDANCE\]/gi;
+      let match: RegExpExecArray | null;
+      let ordinal = 0;
+      while ((match = envelopePattern.exec(rawText)) !== null) {
+        const text = String(match[3] || '').trim();
+        if (!text) continue;
+        const steeringId = String(match[1] || '').trim() || `recovered-${ String(log.answerId || log._traceIdx || log.timestamp || 'guidance') }-${ ordinal }`;
+        next.push({
+          ...log,
+          type: 'steering_received',
+          text,
+          steeringId,
+          steeringIds: [steeringId],
+          source: String(match[2] || 'human').trim() || 'human',
+          steeringSource: String(match[2] || 'human').trim() || 'human',
+          timestamp: Number(log.timestamp || log.startTime || Date.now()) + ordinal,
+          answerId: undefined,
+          isStreaming: false,
+          isLiveTyping: false,
+          _recoveredGuidanceEnvelope: true,
+        });
+        ordinal += 1;
+      }
+      const remainingAnswer = rawText.replace(envelopePattern, '').trim();
+      if (remainingAnswer) next.push({ ...log, text: remainingAnswer });
+      return next;
+    }
     if (log?.type !== 'user_action') {
       next.push(log);
       return next;
@@ -1474,7 +1475,7 @@ const ChatFeedMessageGroup = React.memo(({
   // explicit cancellation or turn replacement must be able to clear it.
   const lastKnownAnswerRef = React.useRef<any>(null);
   const first = group[0];
-  if (first?.type === 'user_action') {
+  if (first?.type === 'user_action' || first?.type === 'steering_received') {
     const userText = String(first.text || '').trim();
     // A metadata-only recovered boundary keeps orphaned actions attached to
     // their original turn, but must never manufacture a visible user message.
@@ -1784,7 +1785,7 @@ const ChatFeedMessageGroup = React.memo(({
   const visibleWorkLogs = interactionFilteredWorkLogs.filter((log: any, index: number, logs: any[]) =>
     shouldRenderContextCompactionEvent(log, index, logs, isThinkingTurn)
   );
-  const segments: { type: 'thoughts' | 'steering' | 'ask_user' | 'context' | 'status'; logs?: any[]; log?: any; notice?: AgentRunNotice }[] = [];
+  const segments: { type: 'thoughts' | 'ask_user' | 'context' | 'status'; logs?: any[]; log?: any; notice?: AgentRunNotice }[] = [];
   let currentThoughts: any[] = [];
   const segmentIdentity = (seg: { logs?: any[]; log?: any }, fallback: number) => {
     const anchor = seg.log || seg.logs?.[0];
@@ -1819,12 +1820,6 @@ const ChatFeedMessageGroup = React.memo(({
         currentThoughts = [];
       }
       segments.push({ type: 'context', log });
-    } else if (log.type === 'steering_received') {
-      if (currentThoughts.length > 0) {
-        segments.push({ type: 'thoughts', logs: currentThoughts });
-        currentThoughts = [];
-      }
-      segments.push({ type: 'steering', log });
     } else if (isAskUserInteractionLog(log)) {
       if (currentThoughts.length > 0) {
         segments.push({ type: 'thoughts', logs: currentThoughts });
@@ -1897,9 +1892,6 @@ const ChatFeedMessageGroup = React.memo(({
         }
         if (seg.type === 'context') {
           return <ContextCompactionNotice key={`context-${segmentIdentity(seg, segIdx)}`} log={seg.log} />;
-        }
-        if (seg.type === 'steering') {
-          return <SteeringFeedCard key={`steer-${ segmentIdentity(seg, segIdx) }`} log={seg.log} isCompressed={isCompressed} onEdit={onEditUserMessage} />;
         }
         if (seg.type === 'ask_user') {
           return (
@@ -2218,10 +2210,11 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     const nextGroups: any[][] = [];
     let currentGroup: any[] = [];
     let hasUserBoundary = false;
-    const containsUserBoundary = orderedTraceLogs.some(log => log?.type === 'user_action');
+    const isVisibleUserBoundary = (log: any) => log?.type === 'user_action' || log?.type === 'steering_received';
+    const containsUserBoundary = orderedTraceLogs.some(isVisibleUserBoundary);
 
     orderedTraceLogs.forEach(log => {
-      if (log.type === 'user_action') {
+      if (isVisibleUserBoundary(log)) {
         // Startup/reconnect helper events can precede the authoritative user
         // boundary. If this conversation has a real user turn, those orphaned
         // preamble rows must not become a separate assistant/thought group.
@@ -2243,7 +2236,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     // If the agent is currently thinking and the last recorded log is the user's prompt,
     // append an empty group so the UI instantly renders the Agent's "Thinking" container
     // before the first stream chunk arrives.
-    if (feedWorkActive && nextGroups.length > 0 && nextGroups[nextGroups.length - 1][0]?.type === 'user_action') {
+    if (feedWorkActive && nextGroups.length > 0 && isVisibleUserBoundary(nextGroups[nextGroups.length - 1][0])) {
       nextGroups.push([]);
     }
 
@@ -2262,13 +2255,13 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     const isErrorText = (t: string) => ERROR_PATTERNS.some(p => t.toLowerCase().startsWith(p));
     return groups.map((g, idx) => {
       if (
-        g[0]?.type === 'user_action' &&
+        (g[0]?.type === 'user_action' || g[0]?.type === 'steering_received') &&
         g[0]?._hiddenRecoveredBoundary !== true &&
         String(g[0]?.text || '').trim()
       ) {
         const nextGroup = groups[idx + 1] || [];
         const answerLog = [...nextGroup].reverse().find((l: any) => l.type === 'answer' && l.text && !isErrorText(l.text));
-        const fallbackLog = [...nextGroup].reverse().find((l: any) => l.text && l.type !== 'user_action' && !isErrorText(l.text));
+        const fallbackLog = [...nextGroup].reverse().find((l: any) => l.text && l.type !== 'user_action' && l.type !== 'steering_received' && !isErrorText(l.text));
         const firstAttachment = g[0]?.attachments?.[0];
         const attachmentName = firstAttachment?.name || firstAttachment?.file?.name || null;
         return {
@@ -2568,7 +2561,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     const ownerOccurrences = new Map<string, number>();
     let currentOwner = 'preamble';
     return visibleGroups.map((group, groupIndex) => {
-      const boundary = group[0]?.type === 'user_action' ? group[0] : null;
+      const boundary = group[0]?.type === 'user_action' || group[0]?.type === 'steering_received' ? group[0] : null;
       if (boundary) {
         const ownerBase = String(
           boundary.turnId || boundary.runId || boundary.steeringId ||

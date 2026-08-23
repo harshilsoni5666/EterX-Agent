@@ -4034,18 +4034,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 null /* Cancel/Stop is already rendered in the live overlay above */
               ) : (
                 <>
-                  {(isThinking || canStop) && hasComposerPayload && !isStopping && !isNetworkPaused && (
-                    <Tooltip text="Stop agent" side="top">
-                      <button
-                        type="button"
-                        onClick={handleStopClick}
-                        aria-label="Stop agent"
-                        className="eterx-control-button eterx-composer-stop-secondary h-[38px] w-[38px] shrink-0 rounded-full border border-white/[0.08] bg-[#2D2D2D] text-white/82 transition-all duration-150 hover:bg-[#373737] hover:text-white active:scale-[0.96]"
-                      >
-                        <span className="mx-auto block h-[11px] w-[11px] rounded-[2.5px] bg-current" aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                  )}
                   <AnimatePresence mode="wait">
                   {isNetworkPaused ? (
                     <motion.div key="network-paused"
