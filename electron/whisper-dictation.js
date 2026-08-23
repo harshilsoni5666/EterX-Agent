@@ -14,7 +14,7 @@ const MIN_RMS = 0.006;
 const MODEL_NAME = 'ggml-base.bin';
 const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin';
 const MODEL_BYTES = 147951465;
-const MODEL_SHA256 = '2f62d18b50c3f3feafbf990eec23a93d319660b1efbdd3fff55e52b7cde2e374';
+const MODEL_SHA256 = '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe';
 
 function delay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -137,6 +137,17 @@ class WhisperDictation {
     return path.join(this.app.getPath('userData'), 'models', 'whisper.cpp', MODEL_NAME);
   }
 
+  bundledModelPath() {
+    const relative = path.join('runtime', 'assets', 'native', 'whisper', 'models', MODEL_NAME);
+    const candidates = this.app.isPackaged
+      ? [
+          path.join(process.resourcesPath, 'app.asar.unpacked', relative),
+          path.join(this.app.getAppPath(), relative),
+        ]
+      : [path.join(this.app.getAppPath(), 'desktop-runtime', 'assets', 'native', 'whisper', 'models', MODEL_NAME)];
+    return candidates.find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).size === MODEL_BYTES) || null;
+  }
+
   async verifyFile(filePath, expectedBytes, expectedHash) {
     if (!fs.existsSync(filePath) || fs.statSync(filePath).size !== expectedBytes) return false;
     const hash = crypto.createHash('sha256');
@@ -145,6 +156,8 @@ class WhisperDictation {
   }
 
   async ensureModel(owner) {
+    const bundled = this.bundledModelPath();
+    if (bundled) return bundled;
     const destination = this.modelPath();
     if (await this.verifyFile(destination, MODEL_BYTES, MODEL_SHA256)) return destination;
     if (this.modelDownload) return this.modelDownload;

@@ -13,6 +13,11 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const outputRoot = path.join(repositoryRoot, 'desktop-runtime', 'assets', 'native', 'whisper');
 const releaseTag = 'b4938';
 const releaseBase = `https://github.com/ggml-org/whisper.cpp/releases/download/${releaseTag}`;
+const model = {
+  url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
+  sha256: '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe',
+  bytes: 147951465,
+};
 const assets = {
   'win32-x64': {
     url: `${releaseBase}/whisper-bin-x64.zip`,
@@ -57,6 +62,23 @@ async function downloadVerified(url, sha256, destination) {
   const actual = crypto.createHash('sha256').update(bytes).digest('hex');
   if (actual !== sha256) throw new Error(`whisper.cpp runtime checksum mismatch: ${actual}`);
   fs.writeFileSync(destination, bytes);
+}
+
+function fileMatches(filePath, expectedBytes, expectedHash) {
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).size !== expectedBytes) return false;
+  const hash = crypto.createHash('sha256');
+  const descriptor = fs.openSync(filePath, 'r');
+  const chunk = Buffer.allocUnsafe(4 * 1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(descriptor, chunk, 0, chunk.length, null);
+      if (bytesRead) hash.update(chunk.subarray(0, bytesRead));
+    } while (bytesRead);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return hash.digest('hex') === expectedHash;
 }
 
 function copyRuntimeFiles(sourceRoot, destination, platform) {
@@ -160,6 +182,20 @@ for (const requestedTarget of requestedTargets) {
   if (requestedTarget !== target) {
     fs.cpSync(path.join(outputRoot, target), path.join(outputRoot, requestedTarget), { recursive: true, force: true });
   }
+}
+
+const bundledModelPath = path.join(outputRoot, 'models', 'ggml-base.bin');
+if (!fileMatches(bundledModelPath, model.bytes, model.sha256)) {
+  fs.mkdirSync(path.dirname(bundledModelPath), { recursive: true });
+  const temporaryModelPath = `${bundledModelPath}.download`;
+  fs.rmSync(temporaryModelPath, { force: true });
+  await downloadVerified(model.url, model.sha256, temporaryModelPath);
+  if (fs.statSync(temporaryModelPath).size !== model.bytes) {
+    fs.rmSync(temporaryModelPath, { force: true });
+    throw new Error('The whisper.cpp model has an unexpected size.');
+  }
+  fs.rmSync(bundledModelPath, { force: true });
+  fs.renameSync(temporaryModelPath, bundledModelPath);
 }
 
 console.log(`Prepared whisper.cpp ${releaseTag} for ${requestedTargets.join(', ')}.`);
