@@ -3725,7 +3725,6 @@ const ActionChip = ({
 const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpenAgentTeam?: (name?: string) => void; assetIndexes?: SubAgentAssetIndexes }) => {
   const agentName = log.agentName || log.subAgent || log.secondary || 'Sub-agent';
   const isComplete = ['sub_agent_complete', 'sub_agent_result', 'sub_agent_answer'].includes(log.type) || log.agentStatus === 'completed' || log.status === 'done';
-  const [open, setOpen] = useState(isComplete);
   const isClosed = log.type === 'sub_agent_close' || log.agentStatus === 'closed' || log.status === 'closed';
   const isPaused = log.type === 'sub_agent_pause' || log.agentStatus === 'paused' || log.status === 'paused';
   const isFailed = !isClosed && !isPaused && (log.type === 'sub_agent_error' || log.agentStatus === 'failed' || log.status === 'error');
@@ -3742,67 +3741,21 @@ const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpen
     ? 'Closed by control'
     : isPaused
       ? 'Paused at a safe boundary'
-      : [durationLabel, stepLabel].filter(Boolean).join(' · ') || (isWorking ? 'Working...' : 'Parallel worker');
-  const displayText = log.resultSummary || log.result || log.taskSummary || log.content || log.text || '';
-
-  const statusBadge = isComplete
-    ? { bg: 'bg-emerald-500/8 border-emerald-500/15', text: 'text-emerald-400', label: 'Done' }
-    : isFailed
-      ? { bg: 'bg-red-500/8 border-red-500/15', text: 'text-red-400', label: 'Error' }
-      : isClosed
-        ? { bg: 'bg-white/[0.035] border-white/[0.10]', text: 'text-[#AFA79C]', label: 'Closed' }
-        : isPaused
-          ? { bg: 'bg-amber-500/8 border-amber-500/15', text: 'text-amber-300', label: 'Paused' }
-          : isWorking
-            ? { bg: 'bg-amber-500/8 border-amber-500/15', text: 'text-amber-400', label: 'Working' }
-            : { bg: 'bg-white/[0.035] border-white/[0.07]', text: 'text-[#AFA79C]', label: 'Agent' };
+      : [durationLabel, stepLabel].filter(Boolean).join(' · ') || (isWorking ? 'Working' : 'Parallel worker');
+  const statusLabel = isComplete ? 'completed' : isFailed ? 'failed' : isClosed ? 'closed' : isPaused ? 'paused' : isWorking ? 'working' : 'ready';
   return (
-    <div className="my-1.5 overflow-hidden">
-      <div className={`w-full flex min-h-[50px] items-center gap-2 rounded-[12px] px-3 py-2.5 transition-colors border ${ open ? 'bg-[#181817]/80 border-white/[0.10]' : 'bg-white/[0.012] border-white/[0.045] hover:bg-white/[0.024] hover:border-white/[0.075]' }`}>
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen(value => !value)}
-          className="flex min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16"
-        >
-          <SubAgentIdentityIcon name={agentName} status={identityStatus} size={34} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
-
-          {/* Info */}
-          <span className="min-w-0 flex-1 text-left">
-            <span className="flex items-center gap-2">
-              <span className="truncate text-[13px] font-medium tracking-normal text-[#D8D1C8]">{agentName}</span>
-              <span className={`shrink-0 inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.08em] ${ statusBadge.bg } ${ statusBadge.text }`}>
-                {isWorking ? <Shimmer>{statusBadge.label}</Shimmer> : statusBadge.label}
-              </span>
-            </span>
-            <span className={`mt-0.5 block truncate text-[11px] font-medium ${ isWorking ? 'text-[#BDB5AA]' : 'text-[#7E766C]' }`}>
-              {metaText}
-            </span>
-          </span>
-
-          <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#6F685F] transition-all ${ open ? 'rotate-90 text-[#B6AEA3]' : '' }`} />
-        </button>
-        {onOpenAgentTeam && (
-          <button
-            type="button"
-            onClick={() => onOpenAgentTeam(log.subAgentChatId || log.subAgentId || agentName)}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] text-[#756D63] transition-colors hover:bg-white/[0.045] hover:text-[#CFC8BD] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16"
-            aria-label={`View ${ agentName }`}
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-      <AnimatePresence>
-        {open && displayText && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-            <div className="ml-7 border-l border-white/[0.075] pl-4 pb-3 pt-2 text-[12px] text-[#918A80] leading-relaxed whitespace-pre-wrap font-mono max-h-[350px] overflow-y-auto eterx-scrollbar">
-              {displayText}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+    <button
+      type="button"
+      onClick={() => onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || agentName)}
+      className="group/subagent my-1 flex max-w-full items-center gap-2 rounded-full px-1.5 py-1 text-left text-[12px] text-[#8F887E] transition-colors hover:bg-white/[0.035] hover:text-[#D7D1C8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
+      aria-label={`Open ${ agentName } conversation`}
+    >
+      <SubAgentIdentityIcon name={agentName} status={identityStatus} size={23} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
+      <span className="max-w-[220px] truncate font-medium text-[#C9C3BA]">{agentName}</span>
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${ isFailed ? 'bg-red-400/75' : isPaused ? 'bg-amber-300/70' : isWorking ? 'bg-emerald-300/75' : 'bg-white/30' }`} />
+      <span className="shrink-0">{statusLabel}</span>
+      {metaText && <span className="min-w-0 truncate text-[#716B63]">· {metaText}</span>}
+    </button>
   );
 };
 
@@ -3824,25 +3777,24 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
     : [{ name: singleName || 'Agent', identity: log.subAgentChatId || log.subAgentId || log.agentId || singleName || 'Agent' }];
 
   return (
-    <div className="flex w-full flex-col gap-2">
-      {displayList.map((agent: { name: string; identity: string }, index: number) => {
+    <div className="my-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#8D877F]">
+      {displayList.slice(0, 3).map((agent: { name: string; identity: string }, index: number) => {
         const { name, identity } = agent;
         return (
-          <div key={identity}>
-            <button
-              type="button"
-              onClick={() => onOpenAgentTeam?.(identity)}
-              className={`w-full flex min-h-[29px] items-center gap-2 rounded-[8px] px-2.5 py-0.5 bg-white/[0.012] border border-white/[0.04] text-left transition-all hover:bg-white/[0.024] hover:border-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 cursor-pointer group ${ ACTION_CARD_CLASS }`}
-              aria-label={`View agent ${ name }`}
-            >
-              <SubAgentIdentityIcon name={name} status="spawning" size={21} assetIndex={getSubAgentAssetIndex(assetIndexes, name) ?? index} />
-              <span className="text-[11.5px] font-medium text-[#C8C1B8] group-hover:text-[#E0DAD2] transition-colors">
-                Created <span className="text-[#E0DAD2]">{name}</span>
-              </span>
-            </button>
-          </div>
+          <button
+            key={identity}
+            type="button"
+            onClick={() => onOpenAgentTeam?.(identity)}
+            className="inline-flex h-8 max-w-[190px] items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.025] px-2.5 text-[#BEB8B0] transition-colors hover:border-white/[0.13] hover:bg-white/[0.055] hover:text-[#EEEAE4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
+            aria-label={`Open ${ name } conversation`}
+          >
+            <SubAgentIdentityIcon name={name} status="working" size={20} assetIndex={getSubAgentAssetIndex(assetIndexes, name) ?? index} />
+            <span className="truncate font-medium">{name}</span>
+          </button>
         );
       })}
+      {displayList.length > 3 && <span>and {displayList.length - 3} other subagents</span>}
+      <span>started working</span>
     </div>
   );
 };
@@ -4728,6 +4680,10 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const NOISE_PATTERN = /reconnect|retrying|stalled|stream interrupted|model error|fallback|cancelled/i;
+  const hasTeamSpawn = [...logs, ...liveLogs].some((log: any) =>
+    log?.type === 'sub_agent_spawn' &&
+    (Array.isArray(log.agentDetails) || Array.isArray(log.spawnedAgents))
+  );
   const isFlowLog = (l: any) => {
     const agentName = String(l?.agentName || l?.subAgent || '').trim().toLowerCase();
     const explicitlyMain = agentName === 'main';
@@ -4737,8 +4693,8 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       (l?.subAgent && agentName),
     );
     const highLevelSubAgentTypes = new Set([
-      'work_note', 'progress', 'sub_agent_spawn', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_complete', 'sub_agent_error',
-      'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close', 'inter_agent_comm', 'inter_agent_message',
+      'sub_agent_spawn', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_complete', 'sub_agent_error',
+      'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close',
     ]);
     // Detailed worker actions belong to the selected worker tab. Keeping them
     // out of Main prevents a parallel run from looking like Main performed
@@ -4746,8 +4702,11 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     if (!isSubAgentTab && subAgentOwned && !highLevelSubAgentTypes.has(String(l?.type || ''))) return false;
     const redundantAgentNarration = l?.type === 'work_note' && !isSubAgentTab &&
       /\b(?:I\s+(?:will|'ll)|let me)\s+(?:spawn|create|collect|check|poll|wait for)\b.{0,100}\b(?:sub-?agent|agent(?:'s)?\s+(?:status|result|report))/i.test(String(l?.text || ''));
+    const redundantSpawnAction = !isSubAgentTab && hasTeamSpawn &&
+      ['spawn_sub_agent', 'spawn_sub_agents'].includes(normalizeToolTraceName(l?.tool || l?.name || ''));
     return ['thought_stream', 'work_note', 'command', 'tool_call', 'exploration', 'file_edit', 'progress', 'browser', 'safety_warning', 'communication', 'autonomy_proxy_status', 'sub_agent_answer', 'sub_agent_result', 'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete', 'sub_agent_error', 'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close', 'inter_agent_comm', 'inter_agent_message', 'file_preview', 'console_output', 'ask_user', 'tool_result_preview'].includes(l.type) &&
     !redundantAgentNarration &&
+    !redundantSpawnAction &&
     shouldRenderProgressTrace(l) &&
     !(['progress', 'command', 'exploration'].includes(l.type) && /analyz(?:e|ing) task complexity/i.test(String(l.text || ''))) &&
     !(l.type === 'progress' && NOISE_PATTERN.test(String(l.text || '')) && !isApiKeyTrace(String(l.text || ''))) &&

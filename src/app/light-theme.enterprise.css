@@ -1305,15 +1305,15 @@
 
 /* Light theme overrides for sub-agent tab dock (eterx-agent-dock) */
 :root[data-theme="light"] .eterx-agent-dock {
-  border: 1px solid rgba(31, 31, 29, 0.12) !important;
-  background: rgba(255, 255, 255, 0.94) !important;
-  box-shadow: 0 10px 30px rgba(31, 31, 29, 0.06) !important;
-  -webkit-backdrop-filter: blur(16px) saturate(1.1) !important;
-  backdrop-filter: blur(16px) saturate(1.1) !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 :root[data-theme="light"] .eterx-agent-dock::before {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.8), transparent 45%) !important;
+  content: none !important;
 }
 
 :root[data-theme="light"] .eterx-agent-tab-active {
@@ -1322,12 +1322,10 @@
 
 :root[data-theme="light"] .eterx-agent-tab-active-bg {
   border: 1px solid rgba(31, 31, 29, 0.10) !important;
-  background: #F4F4F3 !important;
+  background: rgba(31, 31, 29, 0.055) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.60),
-    0 2px 8px rgba(31, 31, 29, 0.04) !important;
+  box-shadow: none !important;
 }
 
 :root[data-theme="light"] .eterx-agent-tab-idle {

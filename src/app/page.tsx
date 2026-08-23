@@ -11251,7 +11251,7 @@ function DeepWorkUI() {
   }, [orderedRealSubAgents]);
 
   const headerSubAgentTabs = useMemo(() => {
-    const maxVisibleTabs = activeSubAgentTab ? 3 : 4;
+    const maxVisibleTabs = 4;
     if (orderedRealSubAgents.length <= maxVisibleTabs) return orderedRealSubAgents;
 
     const activeIndex = orderedRealSubAgents.findIndex((agent: any) => (agent.id || agent.name) === activeSubAgentTab);
@@ -11282,22 +11282,6 @@ function DeepWorkUI() {
   };
 
   const handleSelectHiddenAgent = (agentId: string) => {
-    const maxVisibleTabs = activeSubAgentTab ? 3 : 4;
-    setSubAgentOrder(prev => {
-      const visibleNames = prev.slice(0, maxVisibleTabs);
-      const activeIdx = visibleNames.indexOf(activeSubAgentTab || '');
-      const swapTargetIdx = activeIdx !== -1 ? activeIdx : (maxVisibleTabs - 1);
-
-      const newOrder = [...prev];
-      const targetAgentName = newOrder[swapTargetIdx];
-      const hiddenAgentIdx = newOrder.indexOf(agentId);
-
-      if (hiddenAgentIdx !== -1 && swapTargetIdx < newOrder.length) {
-        newOrder[swapTargetIdx] = agentId;
-        newOrder[hiddenAgentIdx] = targetAgentName;
-      }
-      return newOrder;
-    });
     setActiveSubAgentTab(agentId);
   };
 
@@ -11528,9 +11512,7 @@ function DeepWorkUI() {
     if (matchingAgent) {
       const canonicalIdentity = String(matchingAgent.id || matchingAgent.name);
       if (canonicalIdentity !== activeSubAgentTab) setActiveSubAgentTab(canonicalIdentity);
-      return;
     }
-    setActiveSubAgentTab(null);
   }, [activeSubAgentTab, realSubAgents]);
 
   useEffect(() => {
@@ -11542,44 +11524,74 @@ function DeepWorkUI() {
     if (!activeSubAgentTab) return [];
     const selectedAgent = currentSubAgents.find(agent => agentIdentitiesOverlap(agent, activeSubAgentTab));
     const selectedAgentName = selectedAgent?.name || activeSubAgentTab;
-    const filtered = traceLogs.filter(log => {
+    const selectedStrongIds = new Set([
+      selectedAgent?.subAgentChatId,
+      selectedAgent?.subAgentId,
+      String(selectedAgent?.id || '').includes('::sub-agent::') ? selectedAgent?.id : '',
+      String(activeSubAgentTab).includes('::sub-agent::') ? activeSubAgentTab : '',
+      String(activeSubAgentTab).includes('::sub-agent::') ? String(activeSubAgentTab).split('::sub-agent::').pop() : '',
+    ].map(value => String(value || '').trim().toLowerCase()).filter(Boolean));
+    const belongsToSelectedWorker = (log: any) => {
       if (!log) return false;
-      const agentName = log.agentName || log.subAgent;
-      if (log.type === 'inter_agent_message') {
-        const selectedIds = new Set([
-          String(activeSubAgentTab || ''),
-          String(activeSubAgentTab || '').includes('::sub-agent::')
-            ? String(activeSubAgentTab).split('::sub-agent::').pop() || ''
-            : '',
-        ].filter(Boolean));
-        const participantIds = [
-          log.subAgentId,
-          log.subAgentChatId,
-          log.senderSubAgentId,
-          log.senderSubAgentChatId,
-          log.recipientAgentId,
-          log.recipientSubAgentChatId,
-        ].map((value: unknown) => String(value || '')).filter(Boolean);
-        if (log.to === '*' || log.broadcast === true) {
-          const broadcastRecipients = Array.isArray(log.broadcastRecipientRuns) ? log.broadcastRecipientRuns : [];
-          if (broadcastRecipients.length === 0) return true;
-          if (broadcastRecipients.some((recipient: any) => {
-            const recipientIds = [recipient?.agentId, recipient?.subAgentChatId].map((value: unknown) => String(value || '')).filter(Boolean);
-            return recipientIds.some((identity: string) => selectedIds.has(identity));
-          })) return true;
-          return false;
-        }
-        if (participantIds.some((identity: string) => selectedIds.has(identity))) return true;
+      const logStrongIds = [
+        log.subAgentChatId,
+        log.subAgentId,
+        log.senderSubAgentChatId,
+        log.senderSubAgentId,
+        log.recipientSubAgentChatId,
+        log.recipientAgentId,
+      ].map((value: unknown) => String(value || '').trim().toLowerCase()).filter(Boolean);
+      if (selectedStrongIds.size > 0 && logStrongIds.length > 0) {
+        return logStrongIds.some(identity => selectedStrongIds.has(identity));
       }
-      return agentIdentitiesOverlap(
-        log,
-        selectedAgent || { id: activeSubAgentTab, name: selectedAgentName },
-      ) || (
-        !log.subAgentChatId &&
-        !log.subAgentId &&
-        String(agentName || '').toLowerCase() === String(selectedAgentName || '').toLowerCase()
-      );
-    });
+      if (logStrongIds.length > 0) return false;
+      const agentName = String(log.agentName || log.subAgent || '').trim().toLowerCase();
+      return Boolean(agentName && agentName === String(selectedAgentName || '').trim().toLowerCase());
+    };
+    const ownedLogs = traceLogs.filter(belongsToSelectedWorker);
+    const terminalTypes = new Set(['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete']);
+    const terminalPriority: Record<string, number> = { sub_agent_complete: 1, sub_agent_answer: 2, sub_agent_result: 3 };
+    const terminalLog = ownedLogs
+      .filter(log => terminalTypes.has(String(log?.type || '')))
+      .sort((left, right) => (terminalPriority[String(right.type)] || 0) - (terminalPriority[String(left.type)] || 0))[0];
+    const filtered = ownedLogs.reduce<any[]>((next, log) => {
+      const type = String(log?.type || '');
+      if (['sub_agent_spawn', 'sub_agent_action', 'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close'].includes(type)) return next;
+      if (terminalTypes.has(type)) {
+        if (log !== terminalLog) return next;
+        const answerText = String(log.resultSummary || log.result || log.content || log.taskSummary || log.text || '').trim();
+        if (!answerText) return next;
+        next.push({
+          ...log,
+          type: 'answer',
+          text: answerText,
+          answerId: log.answerId || `subagent-answer:${ String(selectedAgent?.id || activeSubAgentTab) }`,
+          isStreaming: false,
+          isLiveTyping: false,
+        });
+        return next;
+      }
+      if (type === 'sub_agent_error') {
+        next.push({ ...log, type: 'error', mainTurnTerminal: false });
+        return next;
+      }
+      if (type === 'inter_agent_message') {
+        const from = String(log.from || log.senderAgentName || '').trim().toLowerCase();
+        const selectedName = String(selectedAgentName || '').trim().toLowerCase();
+        if (from === selectedName) return next;
+        const messageText = String(log.body || log.content || log.text || '').trim();
+        if (messageText) next.push({
+          ...log,
+          type: 'user_action',
+          text: messageText,
+          id: log.messageId || log.id,
+          source: log.source || 'human',
+        });
+        return next;
+      }
+      next.push(log);
+      return next;
+    }, []);
 
     // Prepend a synthetic user_action log with the sub-agent's full task brief
     const agentInfo = selectedAgent;
@@ -11613,10 +11625,6 @@ function DeepWorkUI() {
         },
         ...filtered.map((log: any) => ({
           ...log,
-          ...(log?.runId && String(log.runId) !== taskTurnId ? { originRunId: log.runId } : {}),
-          ...(log?.turnId && String(log.turnId) !== taskTurnId ? { originTurnId: log.turnId } : {}),
-          runId: taskTurnId,
-          turnId: taskTurnId,
           ...(activeChatId ? { ownerChatId: activeChatId } : {}),
         }))
       ];
@@ -11772,11 +11780,6 @@ function DeepWorkUI() {
   const selectedSubAgentStatus = String(selectedSubAgentState?.status || '').toLowerCase();
   const selectedSubAgentActive = ['planned', 'spawning', 'running', 'working'].includes(selectedSubAgentStatus);
   const selectedSubAgentTerminal = ['completed', 'failed', 'error', 'closed', 'cancelled'].includes(selectedSubAgentStatus);
-  const selectedSubAgentTerminalLabel = selectedSubAgentStatus === 'completed'
-    ? 'Run completed'
-    : selectedSubAgentStatus === 'closed' || selectedSubAgentStatus === 'cancelled'
-      ? 'Run closed'
-      : 'Run ended with an error';
   const selectedFeedPaused = activeSubAgentTab && !autonomousSelected
     ? !selectedSubAgentActive
     : mainAgentPaused;
@@ -12956,7 +12959,7 @@ function DeepWorkUI() {
                   >
                     {headerSubAgentTabs.map((agent: any, index: number) => {
                       const agentIdentity = agent.id || agent.name;
-                      const isActive = activeSubAgentTab === agentIdentity;
+                      const isActive = agentIdentitiesOverlap(agent, activeSubAgentTab);
                       const isClosed = agent.status === 'closed';
                       const isWorking = agent.status === 'working' || agent.status === 'spawning';
                       return (
@@ -12981,11 +12984,6 @@ function DeepWorkUI() {
                             setActiveSubAgentTab(agentIdentity);
                             setOverflowDropdownOpen(false);
                           }}
-                          onPointerDown={(event: React.PointerEvent) => {
-                            if (event.button !== 0) return;
-                            setActiveSubAgentTab(agentIdentity);
-                            setOverflowDropdownOpen(false);
-                          }}
                           onKeyDown={(event: React.KeyboardEvent) => {
                             if (event.key !== 'Enter' && event.key !== ' ') return;
                             event.preventDefault();
@@ -12995,7 +12993,7 @@ function DeepWorkUI() {
                           role="tab"
                           tabIndex={0}
                           aria-selected={isActive}
-                          title={`${agent.name} · run ${agent.subAgentId || agentIdentity}`}
+                          title={agent.name}
                           className={`eterx-agent-tab min-w-0 select-none relative
                           ${ isActive
                               ? 'eterx-agent-tab-active'
@@ -13066,7 +13064,7 @@ function DeepWorkUI() {
                                   setOverflowDropdownOpen(false);
                                 }}
                                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] font-medium text-white/70 transition-all hover:bg-white/5 hover:text-white active:scale-[0.98]"
-                                title={`${agent.name} · run ${agent.subAgentId || agent.id || agent.name}`}
+                                title={agent.name}
                               >
                                 <SubAgentAvatar name={agent.name} status={agent.status} size="xs" assetIndex={subAgentAssetIndexes[agent.name] ?? headerSubAgentTabs.length + index} />
                                 <span className="truncate flex-1">{agent.name}</span>
@@ -14237,90 +14235,8 @@ function DeepWorkUI() {
                       liveState={isLiveSessionActive ? liveState : 'idle'}
                     />
 
-                    {activeSubAgentTab && (
-                      <div className={`eterx-chat-auxiliary-stack px-4 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' } w-full max-w-[760px] mx-auto pb-2`}>
-                        <div className="flex min-h-[38px] flex-wrap items-center justify-between gap-2 rounded-[8px] border border-white/[0.07] bg-[#181818]/88 px-3 py-1.5 shadow-none">
-                          <span className="flex min-w-0 items-center gap-2">
-                            <MessageSquare className="h-3.5 w-3.5 shrink-0 text-white/48" strokeWidth={2.1} />
-                            <span className="min-w-0 truncate text-[12px] font-semibold text-white/82">{activeSubAgentInfo?.name || activeSubAgentTab}</span>
-                            {activeSubAgentInfo?.subAgentId && (
-                              <span className="shrink-0 font-mono text-[8px] text-white/25" title={activeSubAgentInfo.subAgentId}>
-                                #{String(activeSubAgentInfo.subAgentId).slice(-6)}
-                              </span>
-                            )}
-                          </span>
-                          <span className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-                            <span className={`h-1.5 w-1.5 rounded-full ${ effectiveIsThinking ? 'bg-emerald-300/80' : selectedSubAgentStatus === 'completed' ? 'bg-emerald-300/55' : ['failed', 'error'].includes(selectedSubAgentStatus) ? 'bg-red-300/65' : selectedSubAgentStatus === 'paused' ? 'bg-amber-300/65' : 'bg-white/28' }`} />
-                            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/38">
-                              {selectedSubAgentState?.status === 'paused'
-                                ? 'Paused'
-                                : selectedSubAgentState?.status === 'closed'
-                                  ? 'Closed'
-                                  : selectedSubAgentTerminal
-                                    ? selectedSubAgentTerminalLabel
-                                  : effectiveIsThinking
-                                    ? <Shimmer className="text-[var(--eterx-ui-working-text)]">Working</Shimmer>
-                                    : selectedSubAgentState?.status || 'Ready'}
-                            </span>
-                            <span className="mx-0.5 h-4 w-px bg-white/10" />
-                            {!selectedSubAgentTerminal && <button
-                              type="button"
-                              onClick={() => setSubAgentMessageTarget(current => current === 'selected' ? 'team' : 'selected')}
-                              className={`rounded-md border px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.06em] transition ${ subAgentMessageTarget === 'team' ? 'border-sky-300/25 bg-sky-300/10 text-sky-200/90' : 'border-white/10 bg-white/[0.035] text-white/55 hover:text-white/80' }`}
-                              title={subAgentMessageTarget === 'team' ? 'Send an update to every running and planned agent' : 'Send guidance to this exact worker run at its next safe boundary'}
-                            >
-                              {subAgentMessageTarget === 'team' ? 'All agents' : 'This agent'}
-                            </button>}
-                            {['working', 'spawning', 'paused'].includes(String(selectedSubAgentState?.status || '')) && (
-                              <>
-                                <button
-                                  type="button"
-                                  disabled={Boolean(subAgentControlPending)}
-                                  onClick={() => void handleSelectedSubAgentControl(selectedSubAgentState?.status === 'paused' ? 'resume' : 'pause')}
-                                  className="flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/[0.035] text-white/55 transition hover:bg-white/[0.07] hover:text-white/85 disabled:cursor-wait disabled:opacity-35"
-                                  aria-label={selectedSubAgentState?.status === 'paused' ? `Resume ${activeSubAgentInfo?.name || 'agent'}` : `Pause ${activeSubAgentInfo?.name || 'agent'}`}
-                                  title={selectedSubAgentState?.status === 'paused' ? 'Resume exact agent run' : 'Pause at the next safe boundary'}
-                                >
-                                  {selectedSubAgentState?.status === 'paused' ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={Boolean(subAgentControlPending)}
-                                  onClick={() => void handleSelectedSubAgentControl('close')}
-                                  className="flex h-6 w-6 items-center justify-center rounded-md border border-red-300/15 bg-red-400/[0.045] text-red-200/55 transition hover:bg-red-400/10 hover:text-red-100/90 disabled:cursor-wait disabled:opacity-35"
-                                  aria-label={`Stop ${activeSubAgentInfo?.name || 'agent'}`}
-                                  title="Stop exact agent run"
-                                >
-                                  <Power className="h-3 w-3" />
-                                </button>
-                              </>
-                            )}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-
-                    {selectedSubAgentTerminal ? (
-                      <div className={`w-full px-4 pb-3 ${ isRightPanelVisible ? 'sm:px-4' : 'sm:px-12' }`}>
-                        <div className="mx-auto flex min-h-[58px] w-full max-w-[760px] items-center gap-3 rounded-[14px] border border-white/[0.075] bg-[#171717]/92 px-4 py-3 shadow-none">
-                          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${ selectedSubAgentStatus === 'completed' ? 'border-emerald-300/15 bg-emerald-400/[0.07] text-emerald-200/75' : selectedSubAgentStatus === 'closed' || selectedSubAgentStatus === 'cancelled' ? 'border-white/10 bg-white/[0.035] text-white/45' : 'border-red-300/15 bg-red-400/[0.06] text-red-200/75' }`}>
-                            {selectedSubAgentStatus === 'completed' ? <CheckCircle2 className="h-4 w-4" /> : selectedSubAgentStatus === 'closed' || selectedSubAgentStatus === 'cancelled' ? <Power className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block text-[12px] font-semibold text-white/82">{selectedSubAgentTerminalLabel}</span>
-                            <span className="mt-0.5 block text-[10.5px] text-white/38">This worker conversation is read-only. Its complete activity and messages remain available above.</span>
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setActiveSubAgentTab(null)}
-                            className="shrink-0 rounded-[8px] border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[10px] font-semibold text-white/58 transition hover:bg-white/[0.075] hover:text-white/88"
-                          >
-                            Return to Main
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                    <ChatInput
+                    {!selectedSubAgentTerminal && (
+                      <ChatInput
                       inputValue={inputValue}
                       setInputValue={updateInputValue}
                       isThinking={effectiveIsThinking}
