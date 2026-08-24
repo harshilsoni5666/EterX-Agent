@@ -24,8 +24,6 @@ const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isF
   const textViewportRef = React.useRef<HTMLDivElement>(null);
   const textRef = React.useRef<HTMLSpanElement>(null);
   const [overflowDistance, setOverflowDistance] = React.useState(0);
-  const [isHovered, setIsHovered] = React.useState(false);
-  const reduceMotion = useReducedMotion();
 
   const measureOverflow = React.useCallback(() => {
     const viewport = textViewportRef.current;
@@ -55,29 +53,25 @@ const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isF
   }, [measureOverflow]);
 
   const marqueeDuration = Math.max(6, Math.min(18, 4.5 + overflowDistance * 0.16));
+  const marqueeStyle = overflowDistance > 0 ? {
+    '--eterx-sidebar-marquee-distance': `-${ overflowDistance }px`,
+    '--eterx-sidebar-marquee-duration': `${ marqueeDuration + 2.8 }s`,
+  } as React.CSSProperties : undefined;
 
   return (
     <div
       ref={containerRef}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
       className="eterx-sidebar-chat-title-wrap flex min-w-0 flex-1 items-center overflow-hidden relative z-10"
     >
       {isFavorite && <PremiumStar className="eterx-sidebar-favorite-icon w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0" />}
       <div ref={textViewportRef} className="min-w-0 flex-1 overflow-hidden">
-        <motion.span
+        <span
           ref={textRef}
-          animate={(overflowDistance > 0 && isHovered && !reduceMotion) ? { x: [0, -overflowDistance, -overflowDistance, 0] } : { x: 0 }}
-          transition={(overflowDistance > 0 && isHovered && !reduceMotion) ? {
-            duration: marqueeDuration,
-            ease: [0.25, 1, 0.5, 1],
-            repeat: Infinity,
-            repeatDelay: 2.8,
-          } : { duration: 0.12, ease: 'easeOut' }}
-          className="eterx-sidebar-chat-title text-current leading-normal whitespace-nowrap"
+          style={marqueeStyle}
+          className={`eterx-sidebar-chat-title text-current leading-normal whitespace-nowrap ${ overflowDistance > 0 ? 'eterx-sidebar-chat-title-overflow' : '' }`}
         >
           {title}
-        </motion.span>
+        </span>
       </div>
     </div>
   );
@@ -300,6 +294,10 @@ const lightweightSidebarCss = `
   }
 
   .eterx-sidebar-project-filter {
+    width: max-content;
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 1 auto;
     min-height: 26px;
     -webkit-tap-highlight-color: transparent;
     background: transparent;
@@ -666,6 +664,23 @@ const lightweightSidebarCss = `
     display: inline-block !important;
     white-space: nowrap !important;
     overflow: visible !important;
+    will-change: auto;
+  }
+
+  @keyframes eterx-sidebar-title-marquee {
+    0%, 10% {
+      transform: translate3d(0, 0, 0);
+    }
+    38%, 64% {
+      transform: translate3d(var(--eterx-sidebar-marquee-distance), 0, 0);
+    }
+    86%, 100% {
+      transform: translate3d(0, 0, 0);
+    }
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-chat-row:hover .eterx-sidebar-chat-title-overflow {
+    animation: eterx-sidebar-title-marquee var(--eterx-sidebar-marquee-duration) cubic-bezier(0.25, 1, 0.5, 1) 420ms infinite;
     will-change: transform;
   }
 
@@ -747,6 +762,41 @@ const lightweightSidebarCss = `
     }
   }
 
+  /* Match the CSS-only response of the chat rows inside All Chats search
+     across every sidebar interaction. Keeping this scoped here prevents the
+     app-wide hover policy from reintroducing slower filters or transforms. */
+  @media (hover: hover) and (pointer: fine) {
+    .eterx-sidebar-shell button:not(:disabled),
+    .eterx-sidebar-shell [role="button"]:not([aria-disabled="true"]),
+    .eterx-sidebar-project-menu button:not(:disabled),
+    .eterx-sidebar-menu button:not(:disabled) {
+      transition-property: background-color, border-color, color, opacity !important;
+      transition-duration: 120ms !important;
+      transition-timing-function: ease-out !important;
+      transition-delay: 0ms !important;
+      will-change: auto !important;
+    }
+
+    .eterx-sidebar-shell button [class*="transition-colors"],
+    .eterx-sidebar-shell [role="button"] [class*="transition-colors"],
+    .eterx-sidebar-project-menu button [class*="transition-colors"],
+    .eterx-sidebar-menu button [class*="transition-colors"],
+    .eterx-sidebar-shell .eterx-sidebar-chat-time {
+      transition-property: background-color, border-color, color, opacity !important;
+      transition-duration: 120ms !important;
+      transition-timing-function: ease-out !important;
+      transition-delay: 0ms !important;
+    }
+
+    .eterx-sidebar-shell button:hover,
+    .eterx-sidebar-shell [role="button"]:hover,
+    .eterx-sidebar-project-menu button:hover,
+    .eterx-sidebar-menu button:hover {
+      transform: none !important;
+      filter: none !important;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .eterx-sidebar-shell *,
     .eterx-sidebar-menu,
@@ -759,6 +809,11 @@ const lightweightSidebarCss = `
 
     .eterx-sidebar-shell .eterx-sidebar-running-indicator {
       animation: none;
+    }
+
+    .eterx-sidebar-shell .eterx-sidebar-chat-title-overflow {
+      animation: none !important;
+      transform: none !important;
     }
   }
 
@@ -1573,7 +1628,7 @@ export const Sidebar = React.memo<SidebarProps>(
             <div className="eterx-sidebar-recents flex-1 mt-2 ml-1 mr-1 mb-1 bg-transparent rounded-[16px] border border-transparent flex flex-col py-3 overflow-hidden relative">
               <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-transparent" />
               <div className="flex items-center justify-between pl-3.5 pr-1.5 mb-1.5 min-h-[26px] relative z-30">
-                <div ref={projectMenuRef} className="relative min-w-0">
+                <div ref={projectMenuRef} className="relative flex min-w-0 flex-1">
                   {isSelectMode ? (
                     <span className="eterx-sidebar-section-title text-[13px] font-medium text-[var(--sidebar-muted-text)] tracking-normal shrink-0 transition-colors duration-150">
                       {`${ selectedCount } selected`}
@@ -1594,7 +1649,7 @@ export const Sidebar = React.memo<SidebarProps>(
                         });
                         setProjectMenuOpen(open => !open);
                       }}
-                      className={`eterx-sidebar-project-filter group/filter inline-flex max-w-[180px] items-center gap-1 rounded-full border border-transparent px-2 py-1 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ projectMenuOpen ? 'is-open' : '' }`}
+                      className={`eterx-sidebar-project-filter group/filter flex min-w-0 max-w-full items-center gap-1 rounded-full border border-transparent px-2 py-1 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ projectMenuOpen ? 'is-open' : '' }`}
                     >
                       <span className="eterx-sidebar-section-title min-w-0 truncate">
                         {activeProject?.name || 'Recents'}
@@ -1655,7 +1710,7 @@ export const Sidebar = React.memo<SidebarProps>(
                     document.body
                   )}
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex shrink-0 items-center gap-1">
                   <Tooltip text="Search all chats · Ctrl K" side="right">
                     <button
                       type="button"

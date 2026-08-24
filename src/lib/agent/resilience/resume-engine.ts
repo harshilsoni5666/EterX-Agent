@@ -12,7 +12,7 @@
  *   different chats that bleed in when continuation is detected.
  *   Fix: Validate task identity before injecting any session context.
  *        If the memory topic doesn't match the last actual work done,
- *        BLOCK it and use only lifetime brain for this chatId.
+ *        BLOCK it and use only verified session evidence for this chatId.
  *
  * FAILURE 2 — RE-EXPLORATION LOOP
  *   Agent created 10+ analysis scripts then on "continue" re-ran
@@ -32,7 +32,6 @@
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
-import { lifetimeBrain, type LifetimeEvent } from '../memory/lifetime';
 
 const USERPROFILE = os.homedir();
 const DESKTOP_PATHS = [
@@ -132,7 +131,6 @@ export interface ResumeBriefResult {
 
 export async function buildResumeBrief(opts: ResumeBriefOptions): Promise<ResumeBriefResult> {
   const {
-    chatId,
     currentMessage,
     lastUserMessageInSession = '',
     sessionFileRecords = [],
@@ -158,21 +156,13 @@ export async function buildResumeBrief(opts: ResumeBriefOptions): Promise<Resume
     }
   }
 
-  // ── STEP 2: Get lifetime brain data for THIS chatId only ──
-  const brainEvents = lifetimeBrain.recall({
-    chatId,
-    projectId: chatId,
-    limit: 50,
-    types: ['file_write', 'file_edit', 'terminal_cmd', 'task_complete', 'task_failed', 'error', 'error_fixed'],
-  }).sort((a, b) => a.ts - b.ts); // Oldest first
-
-  // ── STEP 3: Scan Desktop for recently created files ──
+  // ── STEP 2: Scan Desktop for recently created files ──
   let recentDesktopFiles: Awaited<ReturnType<typeof getRecentDesktopFiles>> = [];
   try {
     recentDesktopFiles = await getRecentDesktopFiles(8 * 60 * 60 * 1000); // Last 8 hours
   } catch { /* silent */ }
 
-  // ── STEP 4: Build ALREADY DONE list ──
+  // ── STEP 3: Build ALREADY DONE list ──
   const alreadyDoneFiles: string[] = [];
 
   // From session file records
@@ -181,36 +171,16 @@ export async function buildResumeBrief(opts: ResumeBriefOptions): Promise<Resume
     alreadyDoneFiles.push(`${basename} (${rec.action}) — ${rec.purpose.substring(0, 60)}`);
   }
 
-  // From lifetime brain events for this chat
-  for (const evt of brainEvents) {
-    if (evt.type === 'file_write' || evt.type === 'file_edit') {
-      const fname = evt.metadata?.filename || '';
-      const basename = fname.split(/[/\\]/).pop() || fname;
-      if (basename && !alreadyDoneFiles.some(f => f.startsWith(basename))) {
-        alreadyDoneFiles.push(`${basename} (${evt.type.replace('file_', '')}) — ${evt.title.substring(0, 60)}`);
-      }
-    }
-  }
-
   // From Desktop scan
   const desktopMadeFiles = recentDesktopFiles.map(f =>
     `${f.name} (${f.sizeKb}KB, ${f.minsAgo}m ago)${f.isDeliverable ? ' ← DELIVERABLE' : ' ← helper script'}`
   );
 
-  // ── STEP 5: Determine pending deliverable ──
+  // ── STEP 4: Determine pending deliverable ──
   const deliverableDesktopFiles = recentDesktopFiles.filter(f => f.isDeliverable);
   const hasPendingDeliverable = deliverableDesktopFiles.length === 0 && alreadyDoneFiles.length > 0;
 
-  // ── STEP 6: Extract last terminal commands ──
-  const terminalEvents = brainEvents.filter(e => e.type === 'terminal_cmd').slice(-6);
-  const terminalLines = terminalEvents.map(e => {
-    const icon = e.metadata?.exitCode === 0 ? '✅' : '❌';
-    const cmd = String(e.metadata?.command || e.title).substring(0, 80);
-    const out = String(e.metadata?.output || '').substring(0, 100).replace(/\n/g, ' ');
-    return `  ${icon} ${cmd}${out ? ` → ${out}` : ''}`;
-  });
-
-  // ── STEP 7: Determine NEXT LOGICAL STEP ──
+  // ── STEP 5: Determine NEXT LOGICAL STEP ──
   let nextLogicalStep = '';
 
   // From task plan (pending steps)
@@ -225,17 +195,11 @@ export async function buildResumeBrief(opts: ResumeBriefOptions): Promise<Resume
     nextLogicalStep = `Create the FINAL DELIVERABLE. You have already done the exploration (${intermediateNames}). Now produce the actual output file requested by the user.`;
   }
 
-  // From last error
-  const lastError = brainEvents.filter(e => e.type === 'error').slice(-1)[0];
-  if (lastError && !nextLogicalStep) {
-    nextLogicalStep = `Fix the error from last session: "${lastError.title.substring(0, 80)}"`;
-  }
-
   if (!nextLogicalStep) {
     nextLogicalStep = 'Continue from the last completed action. Do NOT restart from scratch.';
   }
 
-  // ── STEP 8: Build the final brief string ──
+  // ── STEP 6: Build the final brief string ──
   const parts: string[] = ['━━━ SMART RESUME ENGINE ━━━'];
 
   if (isContaminated) {
@@ -246,13 +210,8 @@ export async function buildResumeBrief(opts: ResumeBriefOptions): Promise<Resume
     );
   }
 
-  // What was the last task
-  const lastTask = lifetimeBrain.recall({ chatId, types: ['session_start'], limit: 1 })[0];
-  if (lastTask) {
-    const agoMin = Math.round((Date.now() - lastTask.ts) / 60000);
-    const agoStr = agoMin < 60 ? `${agoMin}m ago` : `${Math.round(agoMin / 60)}h ago`;
-    parts.push(`📋 LAST TASK (${agoStr}): ${lastTask.detail?.substring(0, 120) || lastTask.title}`);
-  } else if (lastUserMessageInSession && !isContaminated) {
+  // What was the last task, from the session ledger only.
+  if (lastUserMessageInSession && !isContaminated) {
     parts.push(`📋 LAST TASK: ${lastUserMessageInSession.substring(0, 120)}`);
   }
 
@@ -272,11 +231,6 @@ export async function buildResumeBrief(opts: ResumeBriefOptions): Promise<Resume
   // Desktop files (ground truth)
   if (desktopMadeFiles.length > 0) {
     parts.push('📁 CONFIRMED ON DESKTOP:', ...desktopMadeFiles.slice(0, 10).map(f => `  ${f}`));
-  }
-
-  // Terminal history
-  if (terminalLines.length > 0) {
-    parts.push('💻 TERMINAL HISTORY (already run — do NOT repeat these):', ...terminalLines);
   }
 
   // Action summary

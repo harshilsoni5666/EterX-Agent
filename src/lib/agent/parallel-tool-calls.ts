@@ -26,6 +26,24 @@ const READ_ONLY_TOOLS = new Set([
   'image_asset_search',
 ]);
 
+const READ_ONLY_ACTIONS: Record<string, Set<string>> = {
+  connector_mcp: new Set(['guide', 'list_connectors', 'list_mcp_servers', 'list_tools']),
+  channel_agent: new Set(['guide', 'status', 'inbox', 'read', 'prepare_reply']),
+  gateway_bridge: new Set([
+    'conversations_list',
+    'conversation_get',
+    'messages_read',
+    'attachments_fetch',
+    'events_poll',
+    'channels_list',
+    'agent_profile_get',
+    'permissions_list_open',
+  ]),
+};
+
+const CONNECTOR_MUTATION_PATTERN = /(?:^|[_-])(send|create|update|delete|remove|destroy|write|upload|invite|react|comment|publish|trigger|execute|run|add|move|archive|cancel|post|put|patch|sync)(?:$|[_-])/i;
+const CONNECTOR_READ_PATTERN = /^(?:get|list|read|fetch|search|find|lookup|retrieve|describe|inspect|check|verify|health|status|whoami|view|show|count|query|load)(?:$|[_-])/i;
+
 const STATEFUL_NAME_PARTS = [
   'write',
   'edit',
@@ -96,13 +114,26 @@ export function isParallelSafeToolCall(call: ParallelToolCallLike): boolean {
   const args = getParallelToolCallArgs(call);
 
   if (READ_ONLY_TOOLS.has(name)) return true;
+  const action = String(args.action || '').toLowerCase();
+  if (READ_ONLY_ACTIONS[name]?.has(action)) return true;
+  if (name === 'connector_mcp' && action === 'api_request') {
+    return String(args.method || 'GET').toUpperCase() === 'GET';
+  }
+  if (name === 'connector_mcp' && action === 'call_tool') {
+    const remoteToolName = String(args.tool_name || '').trim();
+    return Boolean(remoteToolName)
+      && !CONNECTOR_MUTATION_PATTERN.test(remoteToolName)
+      && CONNECTOR_READ_PATTERN.test(remoteToolName);
+  }
   if (lowerName === 'workspace_run_command') {
     const mode = String(args.mode || 'run').toLowerCase();
     if (mode === 'check' || mode === 'list') return true;
-    if (args.background === true) return true;
+    // A background launch mutates the runtime process registry. Keep it as an
+    // ordering barrier so a same-turn check/list cannot race registration.
+    if (args.background === true) return false;
     const commands = Array.isArray(args.commands) ? args.commands : [];
     if (commands.length > 0) {
-      return commands.every((entry: any) => entry?.background === true || isReadOnlyShellCommand(String(entry?.command || '')));
+      return commands.every((entry: any) => entry?.background !== true && isReadOnlyShellCommand(String(entry?.command || '')));
     }
     return isReadOnlyShellCommand(String(args.command || ''));
   }

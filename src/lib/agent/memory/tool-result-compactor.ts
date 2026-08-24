@@ -16,9 +16,9 @@ interface CompactionResult {
 }
 
 /** Size thresholds for compaction activation */
-const COMPACT_THRESHOLD = 12_000;     // Compact before one result dominates the next turn
-const MAX_COMPACT_SIZE = 14_000;      // Roughly 3.5K tokens for one fresh result
-const MAX_TOOL_BATCH_SIZE = 24_000;    // Roughly 6K tokens across a parallel batch
+const COMPACT_THRESHOLD = 8_000;      // Compact before one result dominates the next turn
+const MAX_COMPACT_SIZE = 10_000;      // Roughly 2.5K tokens for one fresh result
+const MAX_TOOL_BATCH_SIZE = 18_000;    // Roughly 4.5K tokens across a parallel batch
 const SEARCH_RESULT_LIMIT = 20;
 const SHELL_TAIL_LINES = 60;
 const SHELL_HEAD_LINES = 16;
@@ -68,7 +68,10 @@ export class ToolResultCompactor {
         : compacted;
     } catch {
       // Fallback to generic compaction
-      return this.compactGeneric(result);
+      const fallback = this.compactGeneric(result);
+      return this.estimateSize(fallback) > MAX_COMPACT_SIZE
+        ? this.compactToBudget(toolName, args, fallback, MAX_COMPACT_SIZE)
+        : fallback;
     }
   }
 
@@ -175,7 +178,13 @@ export class ToolResultCompactor {
     const compacted = { ...result, _compacted: true };
     if (typeof result.stdout === 'string') compacted.stdout = compact(result.stdout);
     if (typeof result.stderr === 'string') compacted.stderr = compact(result.stderr);
-    if (typeof result.output === 'string') compacted.output = compact(result.output);
+    if (typeof result.output === 'string') {
+      if (result.output === result.stdout || result.output === result.stderr) {
+        delete compacted.output;
+      } else {
+        compacted.output = compact(result.output);
+      }
+    }
     return compacted;
   }
 

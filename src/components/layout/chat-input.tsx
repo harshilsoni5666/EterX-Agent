@@ -42,6 +42,12 @@ import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../l
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { buildFilePreviewUrl, getNativeFilePath } from '../../lib/path-utils';
 import { getFileIconPath } from '../../lib/utils/file-icon-utils';
+import {
+  CONTEXT_USAGE_CATEGORIES,
+  formatContextUsageTokenCount,
+  normalizeContextUsageBreakdown,
+  type ContextUsageBreakdown,
+} from '../../lib/context-usage-breakdown';
 
 const MODEL_API_KEY_STORAGE_KEY = API_KEY_PRESENCE_STORAGE_KEY;
 const SETTINGS_CHANNEL = 'eterx-settings';
@@ -189,9 +195,7 @@ const readStoredModelSettings = (): StoredModelSettings => {
     modelEntryKey(entry.provider, entry.modelId) === storedChatModelSelection
   )
     ? storedChatModelSelection
-    : usableEntries[0]
-      ? modelEntryKey(usableEntries[0].provider, usableEntries[0].modelId)
-      : AUTO_MODEL_SELECTION;
+    : AUTO_MODEL_SELECTION;
 
   return {
     apiKeys,
@@ -303,7 +307,7 @@ interface TaskTrackerStep {
   step: number;
   name: string;
   description?: string;
-  status: 'pending' | 'in_progress' | 'done' | 'skipped';
+  status: 'pending' | 'blocked' | 'in_progress' | 'done' | 'skipped' | 'failed';
   tools?: string[];
   done_when?: string;
   step_type?: string;
@@ -314,7 +318,7 @@ interface TaskTrackerStep {
 
 interface TaskTrackerState {
   goal?: string;
-  phase?: 'generating' | 'generated' | 'progress' | 'complete';
+  phase?: 'generating' | 'generated' | 'progress' | 'complete' | 'failed';
   status?: 'generating' | 'in_progress' | 'completed' | 'failed' | 'stopped';
   complexity?: string;
   estimatedMinutes?: number;
@@ -370,6 +374,9 @@ interface ChatInputProps {
   onToggleSpeakerMute?: () => void;
   isCompressed?: boolean;
   showComposerControls?: boolean;
+  executionContextLocked?: boolean;
+  allowModelSelectionWhileThinking?: boolean;
+  modelSelectionScope?: 'global' | 'surface';
   taskTracker?: TaskTrackerState | null;
   isNetworkPaused?: boolean;
   onNetworkPausedAction?: () => void;
@@ -395,6 +402,15 @@ interface ChatInputProps {
     usedTokens: number;
     contextWindow: number;
     utilizationPct: number;
+    breakdown?: ContextUsageBreakdown;
+    providerMetrics?: {
+      cacheHitRatio?: number;
+      cachedInputTokens?: number;
+      uncachedInputTokens?: number;
+      outputTokens?: number;
+      reasoningTokens?: number;
+      cacheWriteTokens?: number;
+    };
     isEstimated?: boolean;
   } | null;
   queuedFollowUps?: QueuedFollowUpItem[];
@@ -833,6 +849,22 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
     );
   }
 
+  if (status === 'skipped') {
+    return (
+      <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full border border-white/25 text-white/45">
+        <CircleSlash className="h-[11px] w-[11px]" strokeWidth={2.2} />
+      </span>
+    );
+  }
+
+  if (status === 'failed') {
+    return (
+      <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full border border-red-400/45 text-red-300/85">
+        <X className="h-[11px] w-[11px]" strokeWidth={2.5} />
+      </span>
+    );
+  }
+
   if (active || status === 'in_progress') {
     return <ProgressLoader />;
   }
@@ -971,6 +1003,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   onLiveSendText,
   isCompressed = false,
   showComposerControls = true,
+  executionContextLocked = false,
+  allowModelSelectionWhileThinking = false,
+  modelSelectionScope = 'global',
   taskTracker = null,
   isNetworkPaused = false,
   onNetworkPausedAction = () => { },
@@ -1030,6 +1065,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const thinkingMenuAnchorRef = useRef<HTMLElement | null>(null);
   const thinkingMenuPortalRef = useRef<HTMLDivElement | null>(null);
   const [showAgentMenu, setShowAgentMenu] = useState(false);
+  const [showContextUsagePanel, setShowContextUsagePanel] = useState(false);
   const [openStatusMenu, setOpenStatusMenu] = useState<StatusRailMenu>(null);
   const [projectSearch, setProjectSearch] = useState('');
   const [agentMenuXOffset, setAgentMenuXOffset] = useState(0);
@@ -1038,7 +1074,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const agentSelectorRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const composerShellRef = useRef<HTMLDivElement>(null);
-  const [forceCollapse, setForceCollapse] = useState(false);
+  const contextUsagePanelRef = useRef<HTMLElement>(null);
+  const contextUsageTriggerRef = useRef<HTMLButtonElement>(null);
   const [sendingQueuedFollowUpId, setSendingQueuedFollowUpId] = useState<string | null>(null);
   const [showThinkingLevels, setShowThinkingLevels] = useState(false);
   const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, MainAgentThinkingLevel>>(readModelThinkingLevels);
@@ -1180,6 +1217,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     thinkingCapabilities: {},
     chatModelSelection: AUTO_MODEL_SELECTION,
   }));
+  const thinkingCatalogFetchesRef = useRef<Set<string>>(new Set());
   const activeConfiguredChatModel = useMemo(() => {
     const selection = propChatModelSelection !== undefined
       ? propChatModelSelection
@@ -1345,8 +1383,73 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         : loadedThinkingLevels
     );
   }, []);
+
+  const refreshComposerThinkingCapabilities = useCallback(async () => {
+    const eligibleEntries = storedModelSettings.modelEntries.filter(entry =>
+      isLocalModelProvider(entry.provider)
+      || Boolean(storedModelSettings.apiKeys[entry.provider])
+      || Boolean(storedModelSettings.modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
+    );
+    const providers = Array.from(new Set(eligibleEntries.map(entry => entry.provider))).sort();
+    if (providers.length === 0) return;
+    const signature = eligibleEntries
+      .map(entry => modelEntryKey(entry.provider, entry.modelId))
+      .sort()
+      .join('|');
+    if (!signature || thinkingCatalogFetchesRef.current.has(signature)) return;
+    thinkingCatalogFetchesRef.current.add(signature);
+
+    try {
+      const response = await fetch('/api/settings/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providers }),
+      });
+      if (!response.ok) throw new Error(`Model capability discovery failed (${response.status})`);
+      const payload = await response.json();
+      const next = { ...readThinkingCapabilityRecord() };
+      let changed = false;
+      Object.values(payload?.providers || {}).forEach((providerValue: any) => {
+        const provider = String(providerValue?.provider || '');
+        (Array.isArray(providerValue?.models) ? providerValue.models : []).forEach((model: any) => {
+          const modelId = String(model?.id || '').trim();
+          if (!provider || !modelId) return;
+          const key = modelEntryKey(provider as MainAgentProvider, modelId);
+          const capability = normalizeModelThinkingCapabilities(model?.thinking);
+          if (!capability) {
+            if (Object.prototype.hasOwnProperty.call(next, key)) {
+              delete next[key];
+              changed = true;
+            }
+            return;
+          }
+          if (JSON.stringify(next[key]) === JSON.stringify(capability)) return;
+          next[key] = capability;
+          changed = true;
+        });
+      });
+      if (!changed) return;
+      appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
+      setStoredModelSettings(previous => ({ ...previous, thinkingCapabilities: next }));
+      emitModelSettingsUpdate({ type: 'model-thinking-capabilities-updated', thinkingCapabilities: next });
+    } catch {
+      // A later menu open retries a transient provider/network error.
+    } finally {
+      // The set is an in-flight guard, not a permanent cache: reopening the
+      // menu refreshes provider metadata and removes capabilities withdrawn
+      // from a model's current catalog entry.
+      thinkingCatalogFetchesRef.current.delete(signature);
+    }
+  }, [storedModelSettings.apiKeys, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
+  // Let the editor grow with the draft, but keep long prompts from taking over
+  // the chat. Once this bound is reached, the textarea itself becomes the
+  // scroll viewport and the rest of the composer stays in place.
+  const textareaMinHeight = 26;
   const textareaMaxHeight = isCompressed ? 180 : 240;
-  const isModelLocked = isThinking;
+  // Agent identity and model selection have different lifecycles. A worker's
+  // identity stays fixed, while choosing a model during its current response
+  // is a valid request for the next continuation turn.
+  const isModelLocked = isThinking && !allowModelSelectionWhileThinking;
   const activeAgentDisplay = useMemo(() => {
     if (chatMode) {
       return {
@@ -1397,6 +1500,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   useEffect(() => {
     if (showAgentMenu) refreshAvailableAgents();
   }, [refreshAvailableAgents, showAgentMenu]);
+
+  useEffect(() => {
+    if (!showModelMenu) return;
+    void refreshComposerThinkingCapabilities();
+  }, [refreshComposerThinkingCapabilities, showModelMenu]);
 
 
   useEffect(() => {
@@ -1466,11 +1574,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [showAgentMenu]);
 
   useEffect(() => {
+    setShowContextUsagePanel(false);
+  }, [activeChatId]);
+
+  useEffect(() => {
+    if (!showContextUsagePanel) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (contextUsagePanelRef.current?.contains(target)) return;
+      if (contextUsageTriggerRef.current?.contains(target)) return;
+      setShowContextUsagePanel(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowContextUsagePanel(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [showContextUsagePanel]);
+
+  useEffect(() => {
     if (isModelLocked) {
       setShowModelMenu(false);
       setShowThinkingLevels(false);
     }
   }, [isModelLocked]);
+  useEffect(() => {
+    if (executionContextLocked) setShowAgentMenu(false);
+  }, [executionContextLocked]);
   useEffect(() => {
     if (!showModelMenu) {
       setShowThinkingLevels(false);
@@ -1926,10 +2060,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (!textarea) return;
 
     textarea.style.overflowY = 'hidden';
-    textarea.style.height = '1px';
+    textarea.style.height = '0px';
     const contentHeight = Math.ceil(textarea.scrollHeight);
-    const overflowing = textarea.value.length > 0 && contentHeight > textareaMaxHeight + 1;
-    const nextHeight = Math.max(24, Math.min(contentHeight, textareaMaxHeight));
+    const overflowing = contentHeight > textareaMaxHeight + 1;
+    const nextHeight = Math.max(
+      textareaMinHeight,
+      Math.min(contentHeight, textareaMaxHeight),
+    );
 
     textarea.style.height = `${ nextHeight }px`;
     textarea.style.overflowY = overflowing ? 'auto' : 'hidden';
@@ -1942,7 +2079,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       setIsAtTop(true);
       setIsAtBottom(true);
     }
-  }, [handleTextareaScroll, textareaMaxHeight]);
+  }, [handleTextareaScroll, textareaMaxHeight, textareaMinHeight]);
 
   useEffect(() => {
     syncTextareaOverflow();
@@ -2433,12 +2570,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // The static agent mode config is for request routing; it is not a real
   // selectable model and must never be rendered as one by the composer.
   const activeModelSelection = propChatModelSelection !== undefined ? propChatModelSelection : storedModelSettings.chatModelSelection;
-  // `auto` and stale per-chat selections must still resolve to a real usable
-  // entry. The API empty state belongs exclusively to a genuinely empty
-  // model directory, never to a selection-reconciliation frame.
-  const selectedModel = modelOptions.find(option => option.optionKey === activeModelSelection)
-    || modelOptions[0]
-    || null;
+  const selectedModel = modelOptions.find(option => option.optionKey === activeModelSelection) || null;
   
   const getThinkingTarget = useCallback((option: ChatModelOption | null) => option ? ({
     provider: option.provider,
@@ -2481,7 +2613,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       ? activeThinkingOptions.find(option => option.id === normalizedActiveThinkingLevel) || activeThinkingOptions[0]
       : undefined;
   }, [activeThinkingOptions, normalizedActiveThinkingLevel]);
-  const modelDisplayLabel = selectedModel ? getModelOptionLabel(selectedModel) : 'Add API to load models';
+  const modelDisplayLabel = selectedModel
+    ? getModelOptionLabel(selectedModel)
+    : modelOptions.length > 0
+      ? 'Select a model'
+      : 'Add API to load models';
 
   // A level belongs to the concrete model, not to the provider or the
   // previous model. Reconcile the stored value as soon as the selector
@@ -2552,11 +2688,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const observer = new ResizeObserver((entries) => {
       for (let entry of entries) {
         const width = entry.contentRect.width;
-        const isCustomAgent = selectedAgent && selectedAgent !== 'coding';
-        const requiredWidth = isCustomAgent ? 474 : 424;
-
         updateComposerWidth(width);
-        setForceCollapse(width < requiredWidth);
       }
     });
 
@@ -2566,7 +2698,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       observer.disconnect();
       dock?.style.removeProperty('--eterx-composer-actual-width');
     };
-  }, [selectedAgent]);
+  }, []);
 
   // The composer is an absolute overlay. Keep the feed's bottom inset equal
   // to the complete dock height, including the queued-follow-up rail, so the
@@ -2600,6 +2732,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (onModelSelectionChange) {
       onModelSelectionChange(option.optionKey);
     }
+    if (modelSelectionScope === 'surface') {
+      setShowModelMenu(false);
+      setModelSearch('');
+      setShowThinkingLevels(false);
+      setThinkingMenuModelKey(null);
+      return;
+    }
     const nextOverrides = { ...storedModelSettings.modelOverrides, [option.provider]: option.modelId || option.modelName };
     const nextEntries = ensureModelSelectorEntry(storedModelSettings.modelEntries, option.provider, option.modelId || option.modelName);
     const nextCatalog = entriesToModelCatalog(nextEntries);
@@ -2631,17 +2770,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     setModelSearch('');
     setShowThinkingLevels(false);
     setThinkingMenuModelKey(null);
-  }, [onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides, onModelSelectionChange]);
+  }, [modelSelectionScope, onModeChange, storedModelSettings.modelEntries, storedModelSettings.modelOverrides, onModelSelectionChange]);
   useEffect(() => {
     if (isModelLocked) return;
     if (modelOptions.some(option => option.optionKey === activeModelSelection)) return;
-    const nextSelection = modelOptions[0]?.optionKey || AUTO_MODEL_SELECTION;
+    const nextSelection = AUTO_MODEL_SELECTION;
     if (activeModelSelection === nextSelection) return;
+    if (modelSelectionScope === 'surface') {
+      onModelSelectionChange?.(nextSelection);
+      return;
+    }
     appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, nextSelection);
     setStoredModelSettings(previous => ({ ...previous, chatModelSelection: nextSelection }));
     onModelSelectionChange?.(nextSelection);
     emitModelSettingsUpdate({ type: 'model-selection-reconciled', chatModelSelection: nextSelection });
-  }, [isModelLocked, modelOptions, activeModelSelection, onModelSelectionChange]);
+  }, [isModelLocked, modelOptions, activeModelSelection, modelSelectionScope, onModelSelectionChange]);
   const controlPopoutVerticalClass = 'bottom-[calc(100%+8px)]';
   const selectorPopoutVerticalClass = isNewChatHome ? 'top-[calc(100%+10px)]' : 'bottom-[calc(100%+10px)]';
   const selectorMenuOffset = 8;
@@ -2652,6 +2795,63 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const thinkingMenuOption = allModelOptions.find(option => option.optionKey === thinkingMenuModelKey) || null;
   const thinkingMenuOptions = getThinkingLevelOptions(thinkingMenuOption);
   const thinkingMenuSelectedId = getEffectiveThinkingLevel(thinkingMenuOption);
+  const contextUsageBreakdown = contextUsage
+    ? normalizeContextUsageBreakdown(contextUsage.breakdown, contextUsage.usedTokens)
+    : null;
+  const contextUsageRows = contextUsageBreakdown
+    ? CONTEXT_USAGE_CATEGORIES
+        .filter(category => category.key !== 'rules' && category.key !== 'providerOverhead')
+        .map(category => ({
+          ...category,
+          label: category.key === 'skills'
+            ? 'Loaded skills'
+            : category.key === 'subagentDefinitions' ? 'Subagent activity' : category.label,
+          tokens: category.key === 'systemPrompt'
+            ? contextUsageBreakdown.systemPrompt + contextUsageBreakdown.rules
+            : contextUsageBreakdown[category.key],
+        }))
+    : [];
+  const providerMetrics = contextUsage?.providerMetrics;
+  const providerMetricRows = contextUsage
+    ? [
+        {
+          label: 'Cache hit',
+          value: providerMetrics?.cacheHitRatio !== undefined
+            ? `${Math.round(providerMetrics.cacheHitRatio * 100)}%`
+            : '—',
+        },
+        {
+          label: 'Cached',
+          value: providerMetrics?.cachedInputTokens !== undefined
+            ? formatContextTokenCount(providerMetrics.cachedInputTokens)
+            : '—',
+        },
+        {
+          label: 'Uncached',
+          value: providerMetrics?.uncachedInputTokens !== undefined
+            ? formatContextTokenCount(providerMetrics.uncachedInputTokens)
+            : '—',
+        },
+        {
+          label: 'Output',
+          value: providerMetrics?.outputTokens !== undefined
+            ? formatContextTokenCount(providerMetrics.outputTokens)
+            : '—',
+        },
+        {
+          label: 'Reasoning',
+          value: providerMetrics?.reasoningTokens !== undefined
+            ? formatContextTokenCount(providerMetrics.reasoningTokens)
+            : '—',
+        },
+        {
+          label: 'Cache write',
+          value: providerMetrics?.cacheWriteTokens !== undefined
+            ? formatContextTokenCount(providerMetrics.cacheWriteTokens)
+            : '—',
+        },
+      ]
+    : [];
 
     return (<div ref={composerDockRef} className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }` : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]` }`}
       data-home={isEmptyHome ? 'true' : 'false'}
@@ -2786,7 +2986,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
          style={!isCompressed ? { width: '100%' } : undefined}
           data-compressed={isCompressed ? 'true' : undefined}
           data-composer-controls={showComposerControls ? undefined : 'hidden'}
-          data-force-collapse={forceCollapse ? 'true' : undefined}
          data-new-chat={isNewChatHome ? 'true' : undefined}
          data-agent-builder={isAgentBuilder ? 'true' : undefined}
          data-typing={hasPromptText ? 'true' : undefined}
@@ -2808,6 +3007,87 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           isThinking={isThinking}
           isCompressed={isCompressed}
         />
+
+        <AnimatePresence>
+          {showContextUsagePanel && contextUsage && contextUsageBreakdown && contextUsage.contextWindow > 0 && (() => {
+            const safeUsedTokens = Math.max(0, Math.round(contextUsage.usedTokens));
+            const safeContextWindow = Math.max(1, Math.round(contextUsage.contextWindow));
+            const utilization = Math.max(0, Math.min(100, (safeUsedTokens / safeContextWindow) * 100));
+            return (
+              <motion.section
+                ref={contextUsagePanelRef}
+                role="dialog"
+                aria-label="Context usage details"
+                initial={{ opacity: 0, y: 8, scale: 0.985 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 6, scale: 0.99 }}
+                transition={{ duration: 0.16, ease: [0.2, 0.8, 0.2, 1] }}
+                className="eterx-context-usage-panel eterx-scrollbar absolute bottom-[calc(100%+10px)] left-0 z-[85] w-full overflow-y-auto rounded-[16px] border px-3.5 pb-3.5 pt-2 shadow-2xl"
+                onClick={event => event.stopPropagation()}
+              >
+                <div className="flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <h2 className="eterx-context-panel-title text-[14px] font-semibold tracking-[-0.01em]">Context usage</h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowContextUsagePanel(false)}
+                    aria-label="Close context usage"
+                    className="eterx-context-panel-close flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors"
+                  >
+                    <X className="h-4 w-4" strokeWidth={1.9} />
+                  </button>
+                </div>
+
+                {providerMetricRows.length > 0 && (
+                  <div
+                    className="eterx-context-provider-metrics mt-2.5 grid gap-1.5"
+                    style={{ gridTemplateColumns: `repeat(${Math.min(6, providerMetricRows.length)}, minmax(0, 1fr))` }}
+                  >
+                    {providerMetricRows.map(metric => (
+                      <div key={metric.label} className="eterx-context-provider-metric min-w-0 rounded-[8px] px-2 py-1.5">
+                        <div className="eterx-context-provider-metric-label truncate text-[10px] font-medium">{metric.label}</div>
+                        <div className="eterx-context-provider-metric-value mt-0.5 truncate text-[11px] font-semibold tabular-nums">{metric.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className={`${providerMetricRows.length > 0 ? 'mt-3' : 'mt-4'} flex items-end justify-between gap-4 tabular-nums`}>
+                  <div className="eterx-context-panel-percent text-[13px] font-semibold">{Math.round(utilization)}% full</div>
+                  <div className="eterx-context-panel-total text-right text-[12px] font-medium">
+                    {contextUsage.isEstimated ? '~' : ''}{formatContextUsageTokenCount(safeUsedTokens)} / {formatContextUsageTokenCount(safeContextWindow)} tokens
+                  </div>
+                </div>
+
+                <div className="eterx-context-panel-track mt-2 h-1.5 overflow-hidden rounded-full">
+                  <div className="flex h-full min-w-[2px] overflow-hidden rounded-full" style={{ width: `${utilization}%` }}>
+                    {contextUsageRows.filter(row => row.tokens > 0).map(row => (
+                      <span
+                        key={row.key}
+                        className="h-full min-w-[2px] border-r border-black/20 last:border-r-0"
+                        style={{ backgroundColor: row.color, width: `${(row.tokens / Math.max(1, safeUsedTokens)) * 100}%` }}
+                        aria-hidden="true"
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <div className="eterx-context-panel-rows mt-3 grid grid-cols-1 gap-x-6 gap-y-0.5 sm:grid-cols-2">
+                  {contextUsageRows.map(row => (
+                    <div key={row.key} className="eterx-context-panel-row flex h-7 items-center gap-2.5 rounded-[8px] px-1.5">
+                      <span className="h-3 w-3 shrink-0 rounded-[3px]" style={{ backgroundColor: row.color }} aria-hidden="true" />
+                      <span className="eterx-context-panel-row-label min-w-0 flex-1 truncate text-[12px] font-medium">{row.label}</span>
+                      <span className="eterx-context-panel-row-value shrink-0 text-[12px] font-medium tabular-nums">
+                        {formatContextUsageTokenCount(row.tokens, { prefixTilde: row.tokens > 0 })}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </motion.section>
+            );
+          })()}
+        </AnimatePresence>
 
         {slashPanel === 'agents' && (
           <div
@@ -3211,7 +3491,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               ) : (
                 <div className="eterx-composer-textarea-wrap relative w-full">
                   {planModeActive && (
-                    <div className="group mb-2 flex min-h-[36px] select-none items-center justify-between gap-3 rounded-[14px] border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-[#F2F0EC] shadow-none">
+                    <div className="eterx-plan-mode-banner group mb-2 flex min-h-[36px] select-none items-center justify-between gap-3 rounded-[14px] border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-[#F2F0EC] shadow-none">
                       <span className="flex min-w-0 items-center gap-2.5">
                         <img
                           src="/icons/agent-ui/commands/plan-mode.svg"
@@ -3441,14 +3721,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       })}
                     </div>
                   )}
-                  {isOverflowing && !isAtTop && (
-                    <div className="eterx-composer-overflow-fade-top absolute -top-1 left-0 right-3 h-6 bg-gradient-to-b from-[#2F2F2F] via-[#2F2F2F]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
-                  )}
-                  <div className="relative">
+                  <div className="relative min-w-0">
+                    {isOverflowing && !isAtTop && (
+                      <div className="eterx-composer-overflow-fade-top pointer-events-none absolute inset-x-0 top-0 z-10 h-4 bg-gradient-to-b from-[#2F2F2F] via-[#2F2F2F]/90 to-transparent transition-opacity duration-200" />
+                    )}
                     {!inputValue && (
                       <span
                         aria-hidden="true"
-                        className="pointer-events-none absolute inset-x-0 top-1 z-10 select-none text-[14.5px] font-normal leading-[1.45] text-[#8B8984]"
+                        className="pointer-events-none absolute inset-x-0 top-0 z-10 select-none text-[14.5px] font-normal leading-[1.45] text-[#8B8984]"
                       >
                         {resolvedComposerPlaceholder}
                       </span>
@@ -3484,7 +3764,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       style={{
                         ['--eterx-composer-textarea-max' as any]: `${ textareaMaxHeight }px`,
                         caretColor: '#F0F0F0',
-                        height: '26px',
                         maxHeight: textareaMaxHeight,
                         outline: 'none',
                         boxShadow: 'none',
@@ -3492,7 +3771,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       }}
                     />
                     {isOverflowing && !isAtBottom && (
-                      <div className="eterx-composer-overflow-fade-bottom absolute -bottom-1 left-0 right-3 h-6 bg-gradient-to-t from-[#242424] via-[#242424]/90 to-transparent pointer-events-none z-10 transition-opacity duration-200" />
+                      <div className="eterx-composer-overflow-fade-bottom pointer-events-none absolute inset-x-0 bottom-0 z-10 h-4 bg-gradient-to-t from-[#242424] via-[#242424]/90 to-transparent transition-opacity duration-200" />
                     )}
                   </div>
                 </div>
@@ -3611,9 +3890,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     </div>
                   )}
                 >
-                  <span
+                  <button
+                    ref={contextUsageTriggerRef}
+                    type="button"
+                    onClick={() => setShowContextUsagePanel(open => !open)}
                     className="eterx-context-usage-trigger relative grid h-[38px] w-[24px] shrink-0 place-items-center"
                     aria-label={`${contextUsage!.isEstimated ? 'Estimated context' : 'Context window'} ${usedPercent} percent used`}
+                    aria-expanded={showContextUsagePanel}
+                    aria-haspopup="dialog"
                   >
                     <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] -rotate-90" aria-hidden="true">
                       <circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" strokeWidth="2.4" opacity="0.22" />
@@ -3629,7 +3913,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         strokeDasharray={`${exactUtilization} 100`}
                       />
                     </svg>
-                  </span>
+                  </button>
                 </Tooltip>
                 );
               })()}
@@ -3638,20 +3922,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <div ref={agentSelectorRef} className="eterx-agent-selector relative min-w-0">
                   <div
                     onClick={() => {
+                      if (executionContextLocked) return;
                       setShowAgentMenu(prev => !prev);
                     }}
+                    aria-disabled={executionContextLocked}
+                    title={executionContextLocked ? `${activeAgentDisplay.label} is the active worker for this tab` : undefined}
                     data-open={showAgentMenu ? 'true' : undefined}
-                    className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] pl-2.5 pr-1' : 'max-w-[232px] pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group cursor-pointer ${ showAgentMenu ? '!bg-[#333333] !border-transparent !text-white' : '' }`}
+                    className={`eterx-agent-button ${ isCompressed ? 'max-w-[160px] pl-2.5 pr-1' : 'max-w-[232px] pl-3.5 pr-1' } flex h-[38px] w-full min-w-0 items-center justify-between gap-1.5 rounded-full border border-transparent bg-[#2D2D2D] text-[#F4F4F4] transition-colors duration-150 hover:bg-[#333333] hover:text-white hover:border-transparent active:bg-[#333333] group ${ executionContextLocked ? 'cursor-default' : 'cursor-pointer' } ${ showAgentMenu ? '!bg-[#333333] !border-transparent !text-white' : '' }`}
                   >
-                    <AnimatePresence mode="wait">
-                      <motion.div
-                        key={chatMode ? 'chat' : selectedAgent || 'general'}
-                        initial={{ opacity: 0, scale: 0.85 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.85 }}
-                        transition={{ duration: 0.18 }}
-                        className="flex min-w-0 items-center gap-1.5"
-                      >
+                    <div className="flex min-w-0 items-center gap-1.5">
                         <svg
                           viewBox="0 0 24 24"
                           fill="none"
@@ -3667,14 +3946,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         <span className="eterx-selector-label min-w-0 truncate text-[14px] font-semibold tracking-normal transition-colors text-[#F4F4F4]">
                           {activeAgentDisplay.label}
                         </span>
-                      </motion.div>
-                    </AnimatePresence>
+                    </div>
                     <span className="eterx-selector-chevron-wrapper flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[#BDB8B0] transition-colors duration-100 ease-out">
                       <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-transform duration-150 text-[#F0F0F0] group-hover:text-white ${ showAgentMenu ? 'rotate-180' : '' }`} strokeWidth={2.1} />
                     </span>
                   </div>
 
-                  {showAgentMenu && (
+                  {showAgentMenu && !executionContextLocked && (
                     <div
                       style={{ transform: `translateX(${ agentMenuX })` }}
                       className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex w-[224px] max-h-[280px] overflow-y-auto max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-none`}
@@ -4029,19 +4307,15 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </button>
               </Tooltip>}
 
-              {/* Send / Stop / Stopping-Spinner Button — 3-state with smooth AnimatePresence */}
+              {/* Send / Stop / Stopping-Spinner Button — instant state changes */}
               {liveState !== 'idle' && liveState !== 'error' ? (
                 null /* Cancel/Stop is already rendered in the live overlay above */
               ) : (
                 <>
-                  <AnimatePresence mode="wait">
-                  {isNetworkPaused ? (
-                    <motion.div key="network-paused"
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.7 }}
-                       transition={hasPromptText ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
-                    >
+                  <div className="eterx-composer-action-slot">
+                    <>
+                    {isNetworkPaused ? (
+                    <div key="network-paused">
                       <Tooltip text="Waiting for network" side="top">
                         <button
                           onClick={onNetworkPausedAction}
@@ -4054,15 +4328,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           />
                         </button>
                       </Tooltip>
-                    </motion.div>
+                    </div>
                   ) : isStopping || ((isThinking || canStop) && !hasComposerPayload) ? (
                     /* ── STOP button (agent running, draft or empty) ── */
-                    <motion.div key="stop"
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.7 }}
-                       transition={hasPromptText ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
-                    >
+                    <div key="stop">
                       <Tooltip text={isStopping ? "Stopping agent" : "Stop agent"} side="top">
                         <button
                           type="button"
@@ -4080,35 +4349,25 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           )}
                         </button>
                       </Tooltip>
-                    </motion.div>
+                    </div>
                   ) : hasComposerPayload ? (
                     /* ── SEND button ── */
-                    <motion.div key="send"
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.7 }}
-                       transition={hasPromptText ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
-                    >
+                    <div key="send">
                       <Tooltip text={hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : isThinking ? "Queue or steer follow-up" : "Send message"} side="top">
                         <button
                           type="button"
                           onClick={submitPrompt}
                           aria-label={isThinking ? 'Send follow-up' : 'Send message'}
-                          className={`eterx-control-button eterx-composer-send-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-all duration-200 bg-[#292929] text-white hover:bg-[#373737] shadow-none active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
+                          className={`eterx-control-button eterx-composer-send-button eterx-composer-action-send w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-none bg-[#292929] text-white shadow-none active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
-                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-white group-hover:scale-[1.04] transition-all duration-200 ease-out" strokeWidth={2.05} />
+                          <PremiumSend className="eterx-composer-control-icon w-[20px] h-[20px] text-white" strokeWidth={2.05} />
                         </button>
                       </Tooltip>
-                    </motion.div>
+                    </div>
                   ) : (
                     /* Empty composer: live replaces send until text is entered. */
-                    <motion.div key="live"
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.7 }}
-                       transition={hasPromptText ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
-                    >
+                    <div key="live">
                       <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : "Start Live Conversation"} side="top">
                         <button
                           onClick={isLiveActive ? onLiveStop : onLiveStart}
@@ -4120,9 +4379,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           <PremiumAudioLines className={`eterx-composer-control-icon eterx-composer-live-icon relative z-[1] w-[20px] h-[20px] transition-all duration-200 ease-out group-hover:scale-[1.04] ${ hasAnyLiveSession ? '!text-[#10B981] scale-[1.05]' : '!text-white' }`} strokeWidth={1.85} />
                         </button>
                       </Tooltip>
-                    </motion.div>
-                  )}
-                  </AnimatePresence>
+                    </div>
+                    )}
+                    </>
+                  </div>
                 </>
               )}
             </div>

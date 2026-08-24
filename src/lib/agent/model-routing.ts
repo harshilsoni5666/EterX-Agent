@@ -6,13 +6,9 @@
  * NEVER hardcode model names. All model resolution goes through here.
  * If Google/Mistral renames a model, you only change .env.local — zero code changes.
  *
- * Resolution Order (highest priority first):
- *   1. Environment variable (ETERX_THINK_MODEL, ETERX_FAST_MODEL, etc.)
- *   2. Detected live model from last successful call (proven model cache)
- *   3. Static fallback chain (newest → oldest known-stable)
- *
- * Fallback chains are tried automatically when any model returns
- * 404 / 501 / "model not found" / "model deprecated" errors.
+ * User turns must carry a concrete model selected from a live provider
+ * catalog. Environment/scoped overrides remain for explicit automation
+ * configuration; this module never invents or substitutes a model id.
  */
 
 import {
@@ -20,7 +16,6 @@ import {
   getScopedModelOverride,
   type ScopedRuntimeSettings,
 } from './runtime-api-keys';
-import { getProviderRuntime } from './provider-runtime';
 
 export type MainAgentProvider =
   | 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq'
@@ -44,6 +39,8 @@ export type ModelThinkingOption = {
 export type ModelThinkingParameter =
   | 'thinkingLevel'
   | 'thinkingBudget'
+  | 'thinking.type'
+  | 'enable_thinking'
   | 'reasoning_effort'
   | 'reasoning'
   | 'output_config.effort';
@@ -65,77 +62,6 @@ export type MainAgentModelConfig = {
   selectable: boolean;
 };
 
-// ─── Static fallback chains (newest → oldest stable) ─────────────────────────
-// These are tried IN ORDER when the primary model fails with a model-not-found error.
-export const GEMINI_THINK_FALLBACK_CHAIN: readonly string[] = [
-  'gemini-3.5-flash',
-  'gemini-3-flash-preview',
-  'gemini-3.1-pro-preview',
-  'gemini-3.1-flash-lite',
-  'gemini-2.5-pro',
-];
-
-export const GEMINI_FAST_FALLBACK_CHAIN: readonly string[] = [
-  'gemini-3.5-flash',
-  'gemini-3-flash-preview',
-  'gemini-3.1-flash-lite',
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
-];
-
-export const MISTRAL_FALLBACK_CHAIN: readonly string[] = [
-  'mistral-medium-3-5',
-  'mistral-medium-2508',
-  'mistral-large-2512',
-  'mistral-small-2603',
-  'ministral-14b-2512',
-  'ministral-8b-2512',
-  'codestral-2508',
-];
-
-export const OPENAI_FALLBACK_CHAIN: readonly string[] = [
-  'gpt-5.6-sol',
-  'gpt-5.6-luna',
-  'gpt-5.6-terra',
-  'gpt-5.5',
-  'gpt-5.5-pro',
-  'o3-pro',
-  'o3',
-  'o4-mini',
-  'gpt-5.4-pro',
-  'gpt-5.4-mini',
-  'gpt-4o',
-  'gpt-4o-mini',
-];
-
-export const OPENROUTER_FALLBACK_CHAIN: readonly string[] = [
-  'openai/gpt-oss-120b',
-  'openai/gpt-oss-20b',
-  'openai/gpt-5.6-sol',
-  'openai/gpt-5.6-luna',
-  'openai/gpt-5.6-terra',
-  'anthropic/claude-sonnet-5',
-  'anthropic/claude-fable-5',
-  'google/gemini-3.5-flash',
-  'x-ai/grok-4.5',
-];
-
-export const ANTHROPIC_FALLBACK_CHAIN: readonly string[] = [
-  'claude-sonnet-5',
-  'claude-fable-5',
-  'claude-mythos-5',
-  'claude-opus-4-8',
-  'claude-opus-4-6',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-5',
-];
-
-export const GROQ_FALLBACK_CHAIN: readonly string[] = [
-  'openai/gpt-oss-120b',
-  'openai/gpt-oss-20b',
-  'qwen/qwen3.6-27b',
-];
-
 // ─── Proven model cache — survives the entire process lifetime ────────────────
 // When a model call succeeds, we record it here so the next call uses the proven name.
 const _provenModels: Map<string, string> = new Map();
@@ -156,7 +82,8 @@ export function clearProvenModel(mode: MainAgentMode): void {
 
 /**
  * Resolve the active model name for a mode.
- * Reads env vars first, then proven cache, then first chain entry.
+ * Reads only explicit scoped or environment configuration. A previously
+ * successful model is telemetry, never an implicit selection.
  */
 export function resolveModelName(mode: MainAgentMode, runtimeSettings?: ScopedRuntimeSettings | null): string {
   const overrides = getRuntimeModelOverrides();
@@ -165,53 +92,53 @@ export function resolveModelName(mode: MainAgentMode, runtimeSettings?: ScopedRu
     const scopedOverride = getScopedModelOverride(runtimeSettings, provider);
     if (scopedOverride) return scopedOverride;
     if (overrides[provider]) return overrides[provider];
-    return getProvenModel(mode) || getProviderRuntime(provider)?.defaultModel || '';
+    return '';
   }
   switch (mode) {
     case 'think': {
       const scopedOverride = getScopedModelOverride(runtimeSettings, 'gemini');
       if (scopedOverride) return scopedOverride;
       if (overrides.gemini) return overrides.gemini;
-      return getProvenModel('think') || GEMINI_THINK_FALLBACK_CHAIN[0];
+      return '';
     }
     case 'fast': {
       const scopedOverride = getScopedModelOverride(runtimeSettings, 'gemini');
       if (scopedOverride) return scopedOverride;
       if (overrides.gemini) return overrides.gemini;
-      return getProvenModel('fast') || GEMINI_FAST_FALLBACK_CHAIN[0];
+      return '';
     }
     case 'mistral': {
       const scopedOverride = getScopedModelOverride(runtimeSettings, 'mistral');
       if (scopedOverride) return scopedOverride;
       if (overrides.mistral) return overrides.mistral;
-      return getProvenModel('mistral') || MISTRAL_FALLBACK_CHAIN[0];
+      return '';
     }
     case 'openai': {
       const scopedOverride = getScopedModelOverride(runtimeSettings, 'openai');
       if (scopedOverride) return scopedOverride;
       if (overrides.openai) return overrides.openai;
-      return getProvenModel('openai') || OPENAI_FALLBACK_CHAIN[0];
+      return '';
     }
     case 'openrouter': {
       const scopedOverride = getScopedModelOverride(runtimeSettings, 'openrouter');
       if (scopedOverride) return scopedOverride;
       if (overrides.openrouter) return overrides.openrouter;
-      return getProvenModel('openrouter') || OPENROUTER_FALLBACK_CHAIN[0];
+      return '';
     }
     case 'anthropic': {
       const scopedOverride = getScopedModelOverride(runtimeSettings, 'anthropic');
       if (scopedOverride) return scopedOverride;
       if (overrides.anthropic) return overrides.anthropic;
-      return getProvenModel('anthropic') || ANTHROPIC_FALLBACK_CHAIN[0];
+      return '';
     }
     case 'groq': {
       const scopedOverride = getScopedModelOverride(runtimeSettings, 'groq');
       if (scopedOverride) return scopedOverride;
       if (overrides.groq) return overrides.groq;
-      return getProvenModel('groq') || GROQ_FALLBACK_CHAIN[0];
+      return '';
     }
     default:
-      return GEMINI_THINK_FALLBACK_CHAIN[0];
+      return '';
   }
 }
 
@@ -219,64 +146,10 @@ export function resolveModelName(mode: MainAgentMode, runtimeSettings?: ScopedRu
  * Get the full fallback chain for a mode.
  * Used by GeminiAgentClient to try next model when primary fails.
  */
-export function getFallbackChain(mode: MainAgentMode, runtimeSettings?: ScopedRuntimeSettings | null): string[] {
-  const primary = resolveModelName(mode, runtimeSettings);
-  switch (mode) {
-    case 'think': {
-      const chain = GEMINI_THINK_FALLBACK_CHAIN.filter(m => m !== primary);
-      return [primary, ...chain];
-    }
-    case 'fast': {
-      const chain = GEMINI_FAST_FALLBACK_CHAIN.filter(m => m !== primary);
-      return [primary, ...chain];
-    }
-    case 'mistral': {
-      const chain = MISTRAL_FALLBACK_CHAIN.filter(m => m !== primary);
-      return [primary, ...chain];
-    }
-    case 'openai': {
-      const chain = OPENAI_FALLBACK_CHAIN.filter(m => m !== primary);
-      return [primary, ...chain];
-    }
-    case 'openrouter': {
-      const chain = OPENROUTER_FALLBACK_CHAIN.filter(m => m !== primary);
-      return [primary, ...chain];
-    }
-    case 'anthropic': {
-      const chain = ANTHROPIC_FALLBACK_CHAIN.filter(m => m !== primary);
-      return [primary, ...chain];
-    }
-    case 'groq': {
-      const chain = GROQ_FALLBACK_CHAIN.filter(m => m !== primary);
-      return [primary, ...chain];
-    }
-    default:
-      return [primary];
-  }
-}
-
 /**
  * Detect if an error message indicates a model is deprecated/not-found.
  * These errors should trigger fallback chain traversal, NOT key rotation.
  */
-export function isModelDeprecatedError(errorMsg: string): boolean {
-  const lower = errorMsg.toLowerCase();
-  return (
-    lower.includes('model not found') ||
-    lower.includes('model_not_found') ||
-    lower.includes('not supported') ||
-    lower.includes('deprecated') ||
-    lower.includes('no longer available') ||
-    lower.includes('invalid model') ||
-    lower.includes('unsupported model') ||
-    lower.includes('does not exist') ||
-    // Gemini-specific
-    lower.includes('models/gemini') && lower.includes('not found') ||
-    // HTTP 404 specifically on model endpoint
-    (lower.includes('404') && (lower.includes('model') || lower.includes('generate')))
-  );
-}
-
 // ─── Static mode config (display labels etc.) ────────────────────────────────
 
 export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig> = {
@@ -299,7 +172,7 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   mistral: {
     id: 'mistral',
     provider: 'mistral',
-    label: 'Mistral Medium 3.5',
+    label: 'Mistral AI',
     compactLabel: 'Mistral',
     get modelName() { return resolveModelName('mistral'); },
     selectable: true,
@@ -307,7 +180,7 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   openai: {
     id: 'openai',
     provider: 'openai',
-    label: 'GPT-5.6 Sol',
+    label: 'OpenAI',
     compactLabel: 'OpenAI',
     get modelName() { return resolveModelName('openai'); },
     selectable: true,
@@ -323,7 +196,7 @@ export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig>
   anthropic: {
     id: 'anthropic',
     provider: 'anthropic',
-    label: 'Claude Sonnet 5',
+    label: 'Anthropic Claude',
     compactLabel: 'Claude',
     get modelName() { return resolveModelName('anthropic'); },
     selectable: true,
@@ -399,13 +272,13 @@ const normalizeAdvertisedThinkingLevel = (value: unknown): MainAgentThinkingLeve
 };
 
 export const isOpenAIReasoningModel = (model: string) =>
-  /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|gpt-oss|luna|terra|sol/i.test(model);
+  /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|gpt-oss/i.test(model);
 
 const isClaudeEffortModel = (model: string) =>
-  /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-5|opus-4-(?:5|6|7|8)))/i.test(model);
+  /claude-(?:sonnet|opus)-(?:4|5)(?:[.-]|$)/i.test(model);
 
 const isClaudeXHighModel = (model: string) =>
-  /(?:claude-(?:fable|mythos|sonnet-5|opus-5|opus-4-(?:7|8)))/i.test(model);
+  /claude-(?:sonnet|opus)-5(?:[.-]|$)/i.test(model);
 
 const isMistralReasoningModel = (model: string) =>
   /(?:mistral-small(?:-latest)?|mistral-medium-3-5)/i.test(model);
@@ -431,14 +304,25 @@ export function getModelThinkingOptions(
     // Gemini 3 uses thinkingLevel. "minimal" is the lowest effort; these
     // models do not provide a true thinking-off setting.
     if (model.includes('gemini-3.1-flash-lite-image')) return thinkingOptions('minimal', 'high');
-    if (model.includes('gemini-3') && model.includes('pro')) return thinkingOptions('low', 'medium', 'high');
+    if (model.includes('gemini-3.7-flash')) return thinkingOptions('low', 'medium', 'high');
+    if (/gemini-3(?:-pro|\.0-pro)/.test(model)) return thinkingOptions('low', 'high');
+    if (/gemini-3\.1-pro/.test(model)) return thinkingOptions('low', 'medium', 'high');
     if (model.includes('gemini-3')) {
       return thinkingOptions('minimal', 'low', 'medium', 'high');
     }
     // Gemini 2.5 uses thinkingBudget, not thinkingLevel.
     if (model.includes('gemini-2.5-pro')) return thinkingOptions('low', 'medium', 'high');
-    if (model.includes('gemini-2.5-flash-lite')) return thinkingOptions('low', 'medium', 'high');
+    if (model.includes('gemini-2.5-flash-lite')) return thinkingOptions('off', 'low', 'medium', 'high');
     if (model.includes('gemini-2.5-flash')) return thinkingOptions('off', 'low', 'medium', 'high');
+    return [];
+  }
+
+  if (provider === 'deepseek') {
+    // DeepSeek V4 is a hybrid model: the native API exposes an explicit
+    // thinking toggle plus high/max effort. The legacy reasoner alias is an
+    // always-thinking route, so it must not advertise a false Off setting.
+    if (/deepseek-v4-(?:flash|pro)/i.test(model)) return thinkingOptions('off', 'high', 'max');
+    if (/deepseek-reasoner|deepseek-r1/i.test(model)) return thinkingOptions('high', 'max');
     return [];
   }
 
@@ -463,7 +347,6 @@ export function getModelThinkingOptions(
   if (provider === 'openai') {
     if (!isOpenAIReasoningModel(model)) return [];
     if (/gpt-5(?:\.[0-9]+)?[-.]pro(?:$|[-.])/i.test(model)) return thinkingOptions('high');
-    if (model.includes('gpt-5.6')) return thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max');
     if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
     return thinkingOptions('off', 'low', 'medium', 'high');
   }
@@ -485,7 +368,6 @@ export function getModelThinkingOptions(
     }
     if (isOpenAIReasoningModel(model) || model.includes('grok')) {
       if (/gpt-5(?:\.[0-9]+)?[-.]pro(?:$|[-.])/i.test(model)) return thinkingOptions('high');
-      if (model.includes('gpt-5.6')) return thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max');
       if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
       return thinkingOptions('off', 'low', 'medium', 'high');
     }
@@ -494,21 +376,79 @@ export function getModelThinkingOptions(
   if (provider === 'groq' && model.includes('gpt-oss')) {
     return thinkingOptions('low', 'medium', 'high');
   }
-
-  if (provider === 'deepseek' && /deepseek-(?:v4|reasoner)/.test(model)) {
-    return thinkingOptions('off', 'low', 'medium', 'high');
+  if ((provider === 'together' || provider === 'nvidia') && model.includes('gpt-oss')) {
+    return thinkingOptions('low', 'medium', 'high');
   }
+
   if (provider === 'grok' && /grok-(?:4|3)/.test(model)) {
     return thinkingOptions('off', 'low', 'medium', 'high');
   }
-  if (
-    ['cerebras', 'together', 'fireworks', 'sambanova', 'deepinfra', 'huggingface', 'nvidia', 'cloudflare', 'ollama', 'lmstudio', 'vllm', 'llamacpp', 'novita', 'qwen', 'mimo', 'tokenhub', 'zai', 'kimi', 'stepfun', 'minimax', 'ollamacloud', 'arcee', 'gmi', 'kilo', 'opencode', 'upstage', 'custom'].includes(provider)
-    && /(?:gpt-oss|deepseek|reason|thinking|qwq|qwen3)/.test(model)
-  ) {
+  if (provider === 'qwen' && /(?:qwen3|qwq|thinking)/.test(model)) {
+    return thinkingOptions('off', 'low', 'medium', 'high');
+  }
+  if (provider === 'llamacpp' && /(?:gpt-oss|deepseek|reason|thinking|qwq|qwen3)/.test(model)) {
     return thinkingOptions('off', 'low', 'medium', 'high');
   }
 
+  // A gateway may expose an always-reasoning model without exposing a
+  // controllable wire parameter. Show its truthful fixed state, but do not
+  // invent a request field. Adjustable levels are supplied through live
+  // capability metadata and handled by the discovered branch above.
+  if (/(?:deepseek-(?:r1|reasoner)|\bqwq\b|[-_/]thinking(?:[-_/]|$)|reasoning(?:[-_/]|$))/i.test(model)) {
+    return thinkingOptions('high');
+  }
+
   return [];
+}
+
+/**
+ * Produce request-shape metadata only for model/provider combinations whose
+ * native control is known. A fixed High option may intentionally have no
+ * parameter: it describes an always-reasoning model without sending a field
+ * the gateway did not advertise.
+ */
+export function inferModelThinkingCapabilities(
+  provider: MainAgentProvider,
+  modelName: string,
+): ModelThinkingCapabilities | null {
+  const model = String(modelName || '').trim().toLowerCase();
+  const levels = getModelThinkingOptions(provider, model).map(option => option.id);
+  if (levels.length === 0) return null;
+
+  let parameter: ModelThinkingParameter | undefined;
+  if (provider === 'gemini') {
+    parameter = model.includes('gemini-2.5') ? 'thinkingBudget' : 'thinkingLevel';
+  } else if (provider === 'deepseek') {
+    parameter = /deepseek-v4-(?:flash|pro)/i.test(model) ? 'thinking.type' : 'reasoning_effort';
+  } else if (provider === 'anthropic') {
+    parameter = 'output_config.effort';
+  } else if (provider === 'openrouter') {
+    parameter = 'reasoning';
+  } else if (provider === 'qwen') {
+    parameter = 'enable_thinking';
+  } else if (provider === 'mistral' || provider === 'openai' || provider === 'grok') {
+    parameter = 'reasoning_effort';
+  } else if ((provider === 'groq' || provider === 'together' || provider === 'nvidia') && /gpt-oss/i.test(model)) {
+    parameter = 'reasoning_effort';
+  } else if (provider === 'llamacpp') {
+    // llama.cpp expects this inside chat_template_kwargs; its adapter applies
+    // that native shape when no top-level parameter is declared.
+    parameter = undefined;
+  }
+
+  const defaultLevel = levels.includes('medium')
+    ? 'medium'
+    : levels.includes('low')
+      ? 'low'
+      : levels.includes('high')
+        ? 'high'
+        : levels.find(level => level !== 'off') || levels[0];
+  return {
+    levels,
+    defaultLevel,
+    ...(parameter ? { parameter } : {}),
+    source: 'inferred',
+  };
 }
 
 export function doesModelSupportThinking(
@@ -538,7 +478,7 @@ export function getGeminiThinkingConfig(
 
   if (parameter === 'thinkingBudget' || model.includes('gemini-2.5')) {
     if (model.includes('gemini-2.5-pro')) {
-      const thinkingBudget = level === 'low' ? 4096 : level === 'high' ? 32768 : 16384;
+      const thinkingBudget = level === 'low' ? 1024 : level === 'high' ? 24576 : 8192;
       return { thinkingBudget, includeThoughts };
     }
     if (level === 'off') return { thinkingBudget: 0, includeThoughts };
@@ -573,7 +513,7 @@ export function normalizeModelThinkingCapabilities(value: unknown): ModelThinkin
 
   const rawDefault = source.defaultLevel ?? source.default_effort ?? source.defaultThinkingLevel;
   const defaultLevel = rawDefault === undefined ? undefined : normalizeAdvertisedThinkingLevel(rawDefault);
-  const parameter = source.parameter === 'thinkingLevel' || source.parameter === 'thinkingBudget' || source.parameter === 'reasoning_effort' || source.parameter === 'reasoning' || source.parameter === 'output_config.effort'
+  const parameter = source.parameter === 'thinkingLevel' || source.parameter === 'thinkingBudget' || source.parameter === 'thinking.type' || source.parameter === 'enable_thinking' || source.parameter === 'reasoning_effort' || source.parameter === 'reasoning' || source.parameter === 'output_config.effort'
     ? source.parameter
     : undefined;
   const sourceKind = source.source === 'inferred' ? 'inferred' : 'provider';
@@ -633,7 +573,7 @@ export function getAnthropicThinkingBudget(level: MainAgentThinkingLevel): numbe
 }
 
 export function isAnthropicAdaptiveThinkingModel(modelName: string): boolean {
-  return /(?:claude-(?:fable|mythos|sonnet-5|sonnet-4-6|opus-5|opus-4-(?:6|7|8)))/i.test(modelName);
+  return /claude-(?:sonnet|opus)-(?:4|5)(?:[.-]|$)/i.test(modelName);
 }
 
 export function isOpenAIMiniReasoningModel(modelName: string): boolean {

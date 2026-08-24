@@ -232,11 +232,20 @@ async function captureFrame(cfg: Required<StreamConfig>): Promise<string | null>
   });
 }
 
-// Register process exit listeners for safety
-if (typeof process !== 'undefined') {
-  process.on('exit', cleanupChild);
-  process.on('SIGINT', () => { cleanupChild(); process.exit(); });
-  process.on('SIGTERM', () => { cleanupChild(); process.exit(); });
+// Register one process listener set across dev-server module reloads. The
+// callback pointer is refreshed so the current module instance is cleaned up.
+const globalForLiveStream = globalThis as typeof globalThis & {
+  __eterxLiveStreamCleanup?: () => void;
+  __eterxLiveStreamExitListeners?: boolean;
+};
+globalForLiveStream.__eterxLiveStreamCleanup?.();
+globalForLiveStream.__eterxLiveStreamCleanup = cleanupChild;
+
+if (typeof process !== 'undefined' && !globalForLiveStream.__eterxLiveStreamExitListeners) {
+  globalForLiveStream.__eterxLiveStreamExitListeners = true;
+  process.on('exit', () => globalForLiveStream.__eterxLiveStreamCleanup?.());
+  process.on('SIGINT', () => { globalForLiveStream.__eterxLiveStreamCleanup?.(); process.exit(); });
+  process.on('SIGTERM', () => { globalForLiveStream.__eterxLiveStreamCleanup?.(); process.exit(); });
 }
 
 // ─── Global singleton stream state ───────────────────────────────────────────

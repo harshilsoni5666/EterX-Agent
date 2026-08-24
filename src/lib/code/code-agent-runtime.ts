@@ -28,7 +28,9 @@ const BUDGET_WARN_THRESHOLD = 350;
 
 export const CODING_AGENT_SPEED_RULES = `
 CODING FAST MODE:
-- Use task_decomposer, sub-agents, and background scouting only when they create real leverage: broad scope, independent review, long-running checks, or UI/server workflows.
+- Use task_decomposer autonomously when broad scope, dependent stages, multiple files/systems, or a separate verification phase makes live tracking materially safer. The user does not need to request plan mode.
+- Once planned, use task_checkpoint to advance each item only after its done_when condition has evidence; revise changed work and never finalize an unresolved plan.
+- Use sub-agents and background scouting only when they create real leverage: independent review, long-running checks, or UI/server workflows.
 - Explore with workspace_semantic_search + workspace_search_text before broad reads.
 - Batch reads with workspace_read_many_files. Never read the same file twice in one task unless it changed.
 - Use workspace_write_file only for a new file.

@@ -40,9 +40,9 @@ import { estimateRequestTokenBudget } from './request-token-budget';
 import { writeRuntimeTrace } from './runtime-trace';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import {
-  GEMINI_FAST_FALLBACK_CHAIN,
-  GEMINI_THINK_FALLBACK_CHAIN,
-  resolveModelName,
+  getGeminiThinkingConfig,
+  normalizeModelThinkingCapabilities,
+  normalizeThinkingLevelForModel,
   type MainAgentMode,
 } from './model-routing';
 import { mergeStreamingText } from '../streaming-lifecycle';
@@ -98,41 +98,14 @@ type AsyncSettlement<T> =
   | { status: 'fulfilled'; value: T }
   | { status: 'rejected'; error: any };
 
-/**
- * Returns true only for Gemini models that support thinkingBudget.
- * Only gemini-2.5-pro and gemini-2.5-flash (non-lite) variants support it.
- * Sending thinkingBudget to any other model causes a 400 INVALID_ARGUMENT.
- */
-function modelSupportsThinking(modelName: string): boolean {
-  const lower = modelName.toLowerCase();
-  if (lower.includes('lite')) return false;
-  // gemini-2.5, gemini-3, gemini-3.1, gemini-3.5 models support thinking
-  return (
-    lower.includes('gemini-2.5') ||
-    lower.includes('gemini-3.') ||
-    lower.includes('gemini-3-')
-  );
-}
-
 function isGoogleGenAIModelName(modelName: string): boolean {
   return /^(?:models\/)?gemini[-_]/i.test(modelName.trim());
-}
-
-function normalizeGeminiRunnerMode(mode?: MainAgentMode): 'think' | 'fast' {
-  return mode === 'fast' ? 'fast' : 'think';
 }
 
 function resolveGeminiRunnerModel(config: AgentRunnerConfig): string {
   const requestedModel = String(config.model || '').trim();
   if (requestedModel && isGoogleGenAIModelName(requestedModel)) return requestedModel;
-
-  const runnerMode = normalizeGeminiRunnerMode(config.mode);
-  const resolved = resolveModelName(runnerMode, config.runtimeSettings);
-  if (isGoogleGenAIModelName(resolved)) return resolved;
-
-  return runnerMode === 'fast'
-    ? GEMINI_FAST_FALLBACK_CHAIN[0]
-    : GEMINI_THINK_FALLBACK_CHAIN[0];
+  throw new Error('MODEL_SELECTION_REQUIRED: select an added Gemini model before running this agent.');
 }
 
 function serializeToolResult(result: unknown, maxLength: number): string {
@@ -316,7 +289,7 @@ ${persistedSnapshot}
 
 Your tool calls are rendered in the same professional work timeline as the main EterX agent.
 
-Before non-trivial tool work, write one brief user-facing progress note, normally 3-4 plain words describing the live action. It is never private reasoning, a request restatement, a raw tool name, an approval question, or a miniature final answer. A trivial immediate action may rely on its action card; use ask_user only when input truly blocks progress.
+Work notes beside tool calls are optional. Use one when it adds real context such as intent, a finding, rationale, recovery, a meaningful phase change, or verification; otherwise call the tool silently. On longer work, let one note lead a coherent action batch, then add another when evidence changes the approach, a failure or recovery occurs, or work enters a new phase; do not stop after one opening note or narrate every call. Describe your own actions naturally in first person when relevant, but let the situation choose the opening and length. Never copy or paraphrase a tool name or uiActionText, expose private reasoning, or claim unverified results.
 
 Every tool call must include:
 - uiActionText: a precise 2-4 word action label for the timeline. No step numbers, no brackets, no punctuation-heavy text, no code dumps. Examples: "Reading fetch script", "Finding dataset URL", "Running CSV inspection", "Verifying generated file".
@@ -604,7 +577,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     const requestedMaxIterations = Number(config.maxIterations);
     const maxIter = Number.isFinite(requestedMaxIterations) && requestedMaxIterations > 0
       ? Math.floor(requestedMaxIterations)
-      : Number.POSITIVE_INFINITY;
+      : 128;
     const agentName = this.profile?.name || config.pinnedContext?.agentName || config.agentId;
 
     // Lease an API key
@@ -754,7 +727,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       let providerAttempts = 0;
       let totalToolCalls = 0;
       let generateConfig: any = null; // Hoisted so catch block can inspect/modify it
-      let thinkingConfigDisabled = false;
       let cacheRecoveryAttempts = 0;
       let hadSuccessfulModelResponse = false;
       let completedNaturally = false;
@@ -775,8 +747,31 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           break;
         }
 
+        let accumulatedThought = '';
+        let thoughtStartTime = 0;
+        let thoughtId = '';
+        let thoughtClosed = false;
+        const closeThoughtEvent = () => {
+          if (thoughtClosed || !thoughtId || !thoughtStartTime) return null;
+          thoughtClosed = true;
+          const endedAt = Date.now();
+          return {
+            type: 'thought_stream',
+            text: accumulatedThought,
+            isDelta: false,
+            uiOnly: !accumulatedThought,
+            isStreaming: false,
+            streamState: 'closed',
+            final: true,
+            thoughtId,
+            startTime: thoughtStartTime,
+            endTime: endedAt,
+            agentName,
+            timestamp: endedAt,
+          } as AgentRunnerEvent;
+        };
+
         try {
-          const supportsThinking = modelSupportsThinking(resolvedModel);
           // Builder tools are intentionally mutable. Finalized custom agents
           // are normally stable, but may explicitly attach agent_tool_load;
           // when that changes the real surface, move to the matching
@@ -856,15 +851,22 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             },
           };
 
-          // Only add thinkingConfig for models that support it
-          if (supportsThinking && !thinkingConfigDisabled) {
-            const level = config.pinnedContext?.thinkingLevel || config.pinnedContext?.selectedThinkingLevel || 'medium';
-            let budget = 2048;
-            if (level === 'low') budget = 1024;
-            else if (level === 'high') budget = 4096;
-            else if (level === 'max') budget = 8192;
-            generateConfig.config.thinkingConfig = { thinkingBudget: budget };
-          }
+          const thinkingCapabilities = normalizeModelThinkingCapabilities(
+            config.pinnedContext?.modelThinkingCapability,
+          );
+          const thinkingLevel = normalizeThinkingLevelForModel(
+            config.pinnedContext?.thinkingLevel || config.pinnedContext?.selectedThinkingLevel,
+            'gemini',
+            resolvedModel,
+            thinkingCapabilities,
+          );
+          const thinkingConfig = getGeminiThinkingConfig(
+            thinkingLevel,
+            resolvedModel,
+            true,
+            thinkingCapabilities,
+          );
+          if (thinkingConfig) generateConfig.config.thinkingConfig = thinkingConfig;
 
           // Add tools if we have any
           if (funcDecls.length > 0 && !customAgentCachedContent) {
@@ -884,14 +886,26 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           });
 
           modelRequestStarted = true;
+          thoughtStartTime = Date.now();
+          thoughtId = `thought_${ config.agentId }_${ iteration + 1 }_${ thoughtStartTime }_${ Math.random().toString(36).slice(2, 8) }`;
+          yield {
+            type: 'thought_stream',
+            text: '',
+            isDelta: false,
+            uiOnly: true,
+            isStreaming: true,
+            isLiveTyping: true,
+            streamState: 'open',
+            thoughtId,
+            startTime: thoughtStartTime,
+            endTime: thoughtStartTime,
+            agentName,
+            timestamp: thoughtStartTime,
+          };
           const responseStream = await ai.models.generateContentStream(generateConfig);
           const streamedParts: any[] = [];
           let latestCandidate: any = null;
           let latestUsageMetadata: any = null;
-          let streamedThought = false;
-          let accumulatedThought = '';
-          let thoughtStartTime = 0;
-          const thoughtId = `thought_${ config.agentId }_${ iteration + 1 }`;
           let bufferedVisibleText = '';
           for await (const chunk of responseStream as any) {
             latestCandidate = chunk?.candidates?.[0] || latestCandidate;
@@ -899,15 +913,15 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             const parts = latestCandidate?.content?.parts || [];
             for (const part of parts) {
               streamedParts.push(part);
-              if (part.thought && part.text) {
-                streamedThought = true;
-                if (!thoughtStartTime) thoughtStartTime = Date.now();
+              if (part.thought && part.text && !thoughtClosed) {
                 accumulatedThought = mergeStreamingText(accumulatedThought, String(part.text), true);
                 yield {
                   type: 'thought_stream',
                   text: accumulatedThought,
                   isDelta: false,
                   isStreaming: true,
+                  isLiveTyping: true,
+                  streamState: 'open',
                   thoughtId,
                   startTime: thoughtStartTime,
                   endTime: Date.now(),
@@ -926,22 +940,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           // error while executing tools or assembling the next turn must not
           // spend another API-key route or replay work.
           modelRequestStarted = false;
-          if (accumulatedThought) {
-            const endedAt = Date.now();
-            yield {
-              type: 'thought_stream',
-              text: accumulatedThought,
-              isDelta: false,
-              isStreaming: false,
-              streamState: 'closed',
-              final: true,
-              thoughtId,
-              startTime: thoughtStartTime,
-              endTime: endedAt,
-              agentName,
-              timestamp: endedAt,
-            };
-          }
+          const completedThought = closeThoughtEvent();
+          if (completedThought) yield completedThought;
           const response: any = {
             candidates: [{
               ...(latestCandidate || {}),
@@ -962,6 +962,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                 model: resolvedModel,
                 ...normalizedUsage,
                 interaction: iteration + 1,
+                agentId: config.agentId,
                 agentName,
                 timestamp: Date.now(),
               } as any;
@@ -1016,20 +1017,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                   agentName,
                   timestamp: Date.now(),
                 };
-          }
-
-          if (responseHasToolCalls && !bufferedVisibleText.trim()) {
-            const calls = candidate.content.parts.filter((part: any) => part?.functionCall).map((part: any) => part.functionCall);
-            const labels = calls.map((call: any) => String(call?.args?.uiActionText || '').trim()).filter(Boolean);
-            const fallback = labels.length > 0
-              ? `I’m ${labels.slice(0, 2).map((label: string) => label.charAt(0).toLowerCase() + label.slice(1)).join(labels.length > 1 ? ' and ' : '')}.`
-              : 'I’m moving into the next concrete action now and will check the result before continuing.';
-            yield {
-              type: 'work_note',
-              text: fallback,
-              agentName,
-              timestamp: Date.now(),
-            };
           }
 
           for (const part of candidate.content.parts) {
@@ -1243,6 +1230,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           break;
 
         } catch (err: any) {
+          const interruptedThought = closeThoughtEvent();
+          if (interruptedThought) yield interruptedThought;
           const errMsg = String(err.message || err);
           const lowerErrMsg = errMsg.toLowerCase();
 
@@ -1268,20 +1257,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               : null;
             cacheRecoveryAttempts++;
             continue;
-          }
-
-          // If the model doesn't support thinkingBudget, strip it and retry immediately
-          if (
-            errMsg.toLowerCase().includes('thinking budget is not supported') ||
-            errMsg.toLowerCase().includes('thinkingconfig') ||
-            (errMsg.includes('400') && errMsg.toLowerCase().includes('thinking'))
-          ) {
-            if (generateConfig?.config?.thinkingConfig) {
-              delete generateConfig.config.thinkingConfig;
-              thinkingConfigDisabled = true;
-              console.warn(`[AgentRunner] thinkingConfig not supported by model "${generateConfig.model}" — retrying without it`);
-              continue;
-            }
           }
 
           // Detect schema/declaration errors specifically

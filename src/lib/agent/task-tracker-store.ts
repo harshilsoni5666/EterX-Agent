@@ -47,8 +47,12 @@ export type TaskTrackerStep = {
   expected_output?: string;
   risk?: string;
   artifacts?: string[];
-  status: 'pending' | 'in_progress' | 'done' | 'skipped';
+  status: 'pending' | 'blocked' | 'in_progress' | 'done' | 'skipped' | 'failed';
+  startedAt?: number | null;
   completedAt: number | null;
+  completionReason?: string | null;
+  completionEvidence?: string[];
+  failureReason?: string | null;
 };
 
 export type TaskTrackerData = {
@@ -92,6 +96,51 @@ export async function writeTaskTracker(chatId: string | undefined | null, data: 
   return paths;
 }
 
+export function renderTaskTrackerMarkdown(data: TaskTrackerData): string {
+  const lines = [
+    '# TASK TRACKER',
+    '',
+    `**Goal:** ${data.goal}`,
+    `**Created:** ${new Date(data.createdAt).toISOString()}`,
+    `**Updated:** ${new Date(data.updatedAt || data.createdAt).toISOString()}`,
+    `**Complexity:** ${data.complexity}`,
+    `**Est. Time:** ~${data.estimatedMinutes} minutes`,
+    `**Status:** ${data.status.toUpperCase()}`,
+    '',
+    '---',
+    '',
+  ];
+
+  for (const step of data.steps || []) {
+    const marker = step.status === 'done' ? '[x]'
+      : step.status === 'in_progress' ? '[-]'
+        : step.status === 'skipped' ? '[~]'
+          : step.status === 'failed' ? '[!]'
+            : '[ ]';
+    lines.push(`- ${marker} **Step ${step.step}: ${step.name}**`);
+    lines.push(`  - Status: ${step.status}`);
+    lines.push(`  - Action: ${step.description}`);
+    if (step.step_type) lines.push(`  - Type: ${step.step_type}`);
+    if (step.expected_output) lines.push(`  - Expected output: ${step.expected_output}`);
+    lines.push(`  - Tools: ${step.tools?.length ? step.tools.join(', ') : 'none'}`);
+    lines.push(`  - Done when: ${step.done_when}`);
+    if (step.completionReason) lines.push(`  - Completion: ${step.completionReason}`);
+    if (step.completionEvidence?.length) lines.push(`  - Evidence: ${step.completionEvidence.join('; ')}`);
+    if (step.failureReason) lines.push(`  - Failure: ${step.failureReason}`);
+    if (step.risk) lines.push(`  - Risk: ${step.risk}`);
+    if (step.artifacts?.length) lines.push(`  - Artifacts: ${step.artifacts.join(', ')}`);
+    if (step.depends_on?.length) lines.push(`  - Depends on: Step ${step.depends_on.join(', Step ')}`);
+    lines.push('');
+  }
+
+  lines.push('---', '', '> This file is runtime-owned and updates with every task checkpoint.', '');
+  return lines.join('\n');
+}
+
+export async function writeTaskTrackerState(chatId: string | undefined | null, data: TaskTrackerData): Promise<TaskTrackerPaths> {
+  return writeTaskTracker(chatId, data, renderTaskTrackerMarkdown(data));
+}
+
 export function readTaskTracker(chatId?: string | null): { data: TaskTrackerData; mtime: number; paths: TaskTrackerPaths } | null {
   const paths = getTaskTrackerPaths(chatId);
   if (!fs.existsSync(paths.jsonPath)) return null;
@@ -111,9 +160,12 @@ export function writeTaskTrackerJson(chatId: string | undefined | null, data: Ta
   return writeJsonAtomic(paths.jsonPath, data);
 }
 
-export function trackerToTrace(data: TaskTrackerData, phase: 'generating' | 'generated' | 'progress' | 'complete' = 'progress') {
+export function trackerToTrace(data: TaskTrackerData, phase: 'generating' | 'generated' | 'progress' | 'complete' | 'failed' = 'progress') {
   const steps = Array.isArray(data.steps) ? data.steps : [];
-  const completedSteps = steps.filter(step => step.status === 'done').length;
+  const doneSteps = steps.filter(step => step.status === 'done').length;
+  const skippedSteps = steps.filter(step => step.status === 'skipped').length;
+  const failedSteps = steps.filter(step => step.status === 'failed').length;
+  const completedSteps = doneSteps + skippedSteps;
   const totalSteps = steps.length;
   const activeStep = steps.find(step => step.status === 'in_progress') || steps.find(step => step.status === 'pending') || null;
 
@@ -125,6 +177,8 @@ export function trackerToTrace(data: TaskTrackerData, phase: 'generating' | 'gen
         ? 'Task plan generated'
         : phase === 'complete'
           ? 'Task plan complete'
+          : phase === 'failed'
+            ? 'Task plan failed'
           : 'Task plan updated',
     phase,
     goal: data.goal,
@@ -132,6 +186,9 @@ export function trackerToTrace(data: TaskTrackerData, phase: 'generating' | 'gen
     complexity: data.complexity,
     estimatedMinutes: data.estimatedMinutes,
     completedSteps,
+    doneSteps,
+    skippedSteps,
+    failedSteps,
     totalSteps,
     activeStepId: activeStep?.id || null,
     activeStepName: activeStep?.name || null,

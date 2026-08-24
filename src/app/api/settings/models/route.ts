@@ -9,10 +9,12 @@ import {
 } from '../../../../lib/agent/runtime-api-keys';
 import {
   getModelThinkingOptions,
+  inferModelThinkingCapabilities,
   normalizeModelThinkingCapabilities,
   type MainAgentProvider,
   type ModelThinkingCapabilities,
 } from '../../../../lib/agent/model-routing';
+import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import {
   applyRuntimeProviderBaseURLs,
   getProviderBaseURL,
@@ -78,7 +80,7 @@ const isExpired = (value: unknown) => {
 
 const isAgentCompatibleModel = (model: ProviderModel) => {
   const id = String(model.id || '').trim();
-  if (!id || id.toLowerCase() === 'openrouter/auto' || NON_CONCRETE_MODEL_ID.test(id) || NON_AGENT_MODEL_ID.test(id) || isExpired(model.deprecationDate)) return false;
+  if (!id || id.toLowerCase() === 'openrouter/auto' || id.toLowerCase().startsWith('kilo-auto/') || NON_CONCRETE_MODEL_ID.test(id) || NON_AGENT_MODEL_ID.test(id) || isExpired(model.deprecationDate)) return false;
   const lifecycle = String(model.lifecycle || '').toLowerCase();
   return !['deprecated', 'retired', 'disabled', 'expired', 'unavailable'].some(status => lifecycle.includes(status));
 };
@@ -93,35 +95,10 @@ const trimModels = (models: ProviderModel[]) => {
 };
 
 const preferredModelScore = (provider: string, model: ProviderModel) => {
+  void provider;
   const id = model.id.toLowerCase();
   let score = Number(model.createdAt || 0) / 1_000_000_000;
   if (/preview|experimental|\bexp\b/.test(id)) score -= 20;
-  if (provider === 'gemini') {
-    if (id.startsWith('gemini-3.5-flash')) score += 900;
-    else if (id.startsWith('gemini-3.1-pro')) score += 850;
-    else if (id.startsWith('gemini-3')) score += 800;
-    else if (id.startsWith('gemini-2.5')) score += 600;
-  } else if (provider === 'openai') {
-    if (id === 'gpt-5.6' || id === 'gpt-5.6-sol') score += 1000;
-    else if (id.includes('gpt-5.6-terra')) score += 900;
-    else if (id.includes('gpt-5.6-luna')) score += 850;
-    else if (id.startsWith('gpt-5')) score += 700;
-  } else if (provider === 'openrouter') {
-    if (id === 'openai/gpt-oss-120b') score += 1000;
-    else if (id === 'openai/gpt-oss-20b') score += 900;
-  } else if (provider === 'groq') {
-    if (id === 'openai/gpt-oss-120b') score += 1000;
-    else if (id === 'openai/gpt-oss-20b') score += 900;
-    else if (id === 'qwen/qwen3.6-27b') score += 800;
-  } else if (provider === 'anthropic') {
-    if (id.includes('claude-sonnet-5')) score += 1000;
-    else if (id.includes('claude-opus-5')) score += 950;
-    else if (id.includes('claude-fable-5')) score += 900;
-  } else if (provider === 'mistral') {
-    if (id.includes('mistral-medium-3-5')) score += 1000;
-    else if (id.includes('mistral-large')) score += 900;
-    else if (id.includes('mistral-small')) score += 800;
-  }
   return score;
 };
 
@@ -130,6 +107,12 @@ const resultWithExcluded = (
   rawModels: ProviderModel[],
 ): ProviderModelResult => {
   const models = trimModels(rawModels)
+    .map(model => {
+      const providerId = String(provider);
+      if (model.thinking || !isModelProvider(providerId)) return model;
+      const inferred = inferModelThinkingCapabilities(providerId, model.id);
+      return inferred ? { ...model, thinking: inferred } : model;
+    })
     .map((model, index) => ({ model, index }))
     .sort((a, b) => preferredModelScore(provider, b.model) - preferredModelScore(provider, a.model) || a.index - b.index)
     .map(({ model }) => model);
@@ -161,6 +144,58 @@ const readThinkingCapabilities = (model: any, parameter: ModelThinkingCapabiliti
       || model?.default_reasoning_effort,
     parameter,
   });
+};
+
+const readAdvertisedThinkingCapabilities = (
+  model: any,
+  provider: MainAgentProvider,
+  fallbackParameter: ModelThinkingCapabilities['parameter'],
+): ModelThinkingCapabilities | null => {
+  const explicit = readThinkingCapabilities(model, fallbackParameter);
+  if (explicit) return explicit;
+
+  const supported = Array.isArray(model?.supported_parameters)
+    ? model.supported_parameters.map((value: unknown) => String(value || '').trim().toLowerCase())
+    : [];
+  const has = (...names: string[]) => names.some(name => supported.includes(name));
+  const parameter: ModelThinkingCapabilities['parameter'] | undefined = has('thinking_level', 'thinkinglevel')
+    ? 'thinkingLevel'
+    : has('thinking_budget', 'thinkingbudget')
+      ? 'thinkingBudget'
+      : has('enable_thinking', 'thinking_enabled')
+        ? 'enable_thinking'
+        : has('output_config.effort')
+          ? 'output_config.effort'
+          : has('reasoning_effort', 'reasoning.effort')
+            ? 'reasoning_effort'
+            : has('reasoning')
+              ? 'reasoning'
+              : provider === 'deepseek' && has('thinking')
+                ? 'thinking.type'
+                : undefined;
+  if (!parameter) return inferModelThinkingCapabilities(provider, String(model?.id || model?.name || ''));
+
+  const inferred = inferModelThinkingCapabilities(provider, String(model?.id || model?.name || ''));
+  const levels: ModelThinkingCapabilities['levels'] = inferred?.levels?.length
+    ? [...inferred.levels]
+    : parameter === 'thinking.type'
+      ? ['off', 'high', 'max']
+      : parameter === 'enable_thinking'
+        ? ['off', 'high']
+        : parameter === 'thinkingLevel' || parameter === 'thinkingBudget' || parameter === 'reasoning'
+          ? ['off', 'low', 'medium', 'high']
+          : ['high'];
+  const defaultLevel = levels.includes('medium')
+    ? 'medium'
+    : levels.includes('high')
+      ? 'high'
+      : levels.find(level => level !== 'off') || levels[0];
+  return {
+    levels: [...levels],
+    defaultLevel,
+    parameter,
+    source: 'provider',
+  };
 };
 
 const providerError = (provider: RuntimeApiKeyProvider, error: unknown): ProviderModelResult => ({
@@ -402,16 +437,26 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
 
   try {
     const baseUrl = getProviderBaseURL('anthropic');
-    const res = await withTimeout(fetch(`${baseUrl.replace(/\/+$/, '')}/v1/models`, {
-      cache: 'no-store',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-    }));
-    if (!res.ok) throw new Error(`Anthropic models request failed (${ res.status })`);
-    const data = await res.json();
-    const mappedModels = (data.data || []).map((model: any) => {
+    const discoveredModels: any[] = [];
+    let afterId = '';
+    for (let page = 0; page < 20; page++) {
+      const query = new URLSearchParams({ limit: '100' });
+      if (afterId) query.set('after_id', afterId);
+      const res = await withTimeout(fetch(`${baseUrl.replace(/\/+$/, '')}/v1/models?${query.toString()}`, {
+        cache: 'no-store',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+      }));
+      if (!res.ok) throw new Error(`Anthropic models request failed (${res.status})`);
+      const data = await res.json();
+      const pageModels = Array.isArray(data?.data) ? data.data : [];
+      discoveredModels.push(...pageModels);
+      if (!data?.has_more || !data?.last_id || pageModels.length === 0) break;
+      afterId = String(data.last_id);
+    }
+    const mappedModels = discoveredModels.map((model: any) => {
       const capabilities = model.capabilities && typeof model.capabilities === 'object'
         ? Object.entries(model.capabilities)
           .filter(([, value]) => Boolean((value as any)?.supported ?? value))
@@ -460,7 +505,7 @@ async function fetchDeepSeekModels(): Promise<ProviderModelResult> {
       name: String(model.id || ''),
       description: model.owned_by ? `Owned by ${model.owned_by}` : undefined,
     })));
-    return { provider: 'deepseek' as any, connected: true, source: 'live', models };
+    return resultWithExcluded('deepseek' as any, models);
   } catch (error) {
     return providerError('deepseek' as any, error);
   }
@@ -481,7 +526,7 @@ async function fetchGrokModels(): Promise<ProviderModelResult> {
       name: String(model.id || ''),
       description: 'xAI Grok Model',
     })));
-    return { provider: 'grok' as any, connected: true, source: 'live', models };
+    return resultWithExcluded('grok' as any, models);
   } catch (error) {
     return providerError('grok' as any, error);
   }
@@ -502,7 +547,7 @@ async function fetchCerebrasModels(): Promise<ProviderModelResult> {
       name: String(model.id || ''),
       description: 'Cerebras Wafer Engine Model',
     })));
-    return { provider: 'cerebras' as any, connected: true, source: 'live', models };
+    return resultWithExcluded('cerebras' as any, models);
   } catch (error) {
     return providerError('cerebras' as any, error);
   }
@@ -525,7 +570,7 @@ async function fetchTogetherModels(): Promise<ProviderModelResult> {
       description: model.description || 'Together AI Model',
       contextLength: model.context_length,
     })));
-    return { provider: 'together' as any, connected: true, source: 'live', models };
+    return resultWithExcluded('together' as any, models);
   } catch (error) {
     return providerError('together' as any, error);
   }
@@ -548,7 +593,7 @@ async function fetchElevenLabsVoices(): Promise<ProviderModelResult> {
       name: `${voice.name} (${voice.category || 'voice'})`,
       description: voice.description || `ElevenLabs ${voice.category || 'voice'}`,
     })));
-    return { provider: 'elevenlabs' as any, connected: true, source: 'live', models };
+    return resultWithExcluded('elevenlabs' as any, models);
   } catch (error) {
     return providerError('elevenlabs' as any, error);
   }
@@ -580,7 +625,7 @@ async function fetchOllamaModels(): Promise<ProviderModelResult> {
       description: model.details?.parameter_size ? `Local (${model.details.parameter_size})` : 'Local Ollama Model',
       contextLength: Number(model.context_length || model.details?.context_length || 0) || undefined,
     })));
-    return { provider: 'ollama' as any, connected: true, source: 'live', models };
+    return resultWithExcluded('ollama' as any, models);
   } catch (error) {
     return providerError('ollama' as any, error);
   }
@@ -610,7 +655,7 @@ async function fetchLMStudioModels(): Promise<ProviderModelResult> {
       name: String(model.id || model.key || model.model_id || ''),
       description: 'LM Studio Desktop Local Server',
     })));
-    return { provider: 'lmstudio' as any, connected: true, source: 'live', models };
+    return resultWithExcluded('lmstudio' as any, models);
   } catch (error) {
     return providerError('lmstudio' as any, error);
   }
@@ -650,28 +695,39 @@ async function fetchCompatibleModels(provider: MainAgentProvider): Promise<Provi
     if (!res.ok) throw new Error(`${provider} models request failed (${res.status})`);
     const payload = await res.json();
     const raw = Array.isArray(payload) ? payload : payload?.data || payload?.models || [];
-    return resultWithExcluded(runtimeProvider, raw.map((model: any) => ({
+    const thinkingParameter: ModelThinkingCapabilities['parameter'] = provider === 'qwen'
+      ? 'enable_thinking'
+      : provider === 'perplexity'
+        ? 'reasoning'
+        : 'reasoning_effort';
+    return resultWithExcluded(runtimeProvider, raw.map((model: any) => {
+      const supportedParameters = Array.isArray(model?.supported_parameters)
+        ? model.supported_parameters.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+        : null;
+      const reportedCapabilities = Array.isArray(model?.capabilities)
+        ? model.capabilities
+        : model?.capabilities && typeof model.capabilities === 'object'
+          ? Object.entries(model.capabilities).filter(([, enabled]) => enabled === true).map(([name]) => name)
+          : [];
+      const capabilities = [
+        ...reportedCapabilities,
+        ...(supportedParameters || []),
+        ...(supportedParameters && !supportedParameters.some((value: string) => /^(?:tools?|tool_choice|function_call(?:ing)?)$/i.test(value))
+          ? ['tool-calling:false']
+          : []),
+      ];
+      return {
       id: String(model?.id || model?.name || model?.model || ''),
       name: String(model?.display_name || model?.name || model?.id || model?.model || ''),
       description: model?.description || model?.owned_by || undefined,
       contextLength: Number(model?.context_length || model?.max_context_length || model?.max_model_len || 0) || undefined,
       createdAt: Number(model?.created || model?.created_at || 0) || undefined,
-      capabilities: Array.isArray(model?.capabilities)
-        ? model.capabilities
-        : model?.capabilities && typeof model.capabilities === 'object'
-          ? Object.entries(model.capabilities).filter(([, enabled]) => enabled === true).map(([name]) => name)
-          : undefined,
-      thinking: readThinkingCapabilities(model, 'reasoning_effort')
-        || (getModelThinkingOptions(provider, String(model?.id || model?.name || '')).length
-          ? {
-              levels: getModelThinkingOptions(provider, String(model?.id || model?.name || '')).map(option => option.id),
-              defaultLevel: getModelThinkingOptions(provider, String(model?.id || model?.name || '')).find(option => option.id === 'medium')?.id
-                || getModelThinkingOptions(provider, String(model?.id || model?.name || ''))[0]?.id,
-              parameter: 'reasoning_effort',
-              source: 'inferred',
-            } as ModelThinkingCapabilities
-          : undefined),
-    })));
+      capabilities: capabilities.length > 0 ? capabilities : undefined,
+      // Generic catalogs are not allowed to invent reasoning_effort support.
+      // Only provider-returned capability metadata is promoted into the UI.
+      thinking: readAdvertisedThinkingCapabilities(model, provider, thinkingParameter) || undefined,
+      };
+    }));
   } catch (error) {
     return providerError(runtimeProvider, error);
   }

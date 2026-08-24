@@ -11,6 +11,7 @@ export const MODEL_SELECTOR_STORAGE_KEY = 'eterx_model_selector_entries';
 export const MODEL_SELECTOR_SCHEMA_STORAGE_KEY = 'eterx_model_selector_schema';
 export const MODEL_SELECTOR_SCHEMA_VERSION = '2';
 export const MODEL_THINKING_CAPABILITIES_STORAGE_KEY = 'eterx_model_thinking_capabilities';
+export const MODEL_WIRE_CAPABILITIES_STORAGE_KEY = 'eterx_model_wire_capabilities';
 export const MODEL_THINKING_LEVELS_STORAGE_KEY = 'eterx-model-thinking-levels';
 export const MODEL_CONTEXT_WINDOWS_STORAGE_KEY = 'eterx_model_context_windows';
 export const MODEL_API_KEYS_STORAGE_KEY = 'eterx_model_api_keys';
@@ -18,7 +19,9 @@ export const API_KEY_PRESENCE_STORAGE_KEY = 'eterx_api_key_presence';
 export const MODEL_API_KEY_PRESENCE_STORAGE_KEY = 'eterx_model_api_key_presence';
 export const CHAT_MODEL_SELECTION_STORAGE_KEY = 'eterx_chat_model_selection';
 export const CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY = 'eterx_chat_context_window_overrides';
-export const AUTO_MODEL_SELECTION = 'auto';
+// Legacy symbol name retained to avoid a storage-schema break. Its value is
+// an empty selection, never a provider model id and never an automatic route.
+export const AUTO_MODEL_SELECTION = '';
 
 // This was an old display-only placeholder, not a provider model id. Keep it
 // out of every selector/catalog migration so it cannot reappear from folder
@@ -32,6 +35,7 @@ export const isConcreteModelId = (value: unknown) => {
   return Boolean(id)
     && id !== AUTO_MODEL_SELECTION
     && id !== 'openrouter/auto'
+    && !id.startsWith('kilo-auto/')
     && !/^(auto|default|latest|recommended)(?:[\s_-]|$)/i.test(id);
 };
 
@@ -202,8 +206,7 @@ export const composeApiKeysForSelection = (
   selectionKey: string = AUTO_MODEL_SELECTION,
 ) => {
   const next: Record<string, string> = { ...baseApiKeys };
-  const selectedEntry = parseModelEntryKey(selectionKey)
-    || (selectionKey === AUTO_MODEL_SELECTION ? pickAutoModelEntry(entries, baseApiKeys, modelApiKeys) : null);
+  const selectedEntry = parseModelEntryKey(selectionKey);
 
   if (!selectedEntry) return next;
 
@@ -228,8 +231,7 @@ export const composeApiKeysForSelections = (
   const selectedByProvider = new Map<MainAgentProvider, string[]>();
 
   selectionKeys.forEach(selectionKey => {
-    const selectedEntry = parseModelEntryKey(selectionKey)
-      || (selectionKey === AUTO_MODEL_SELECTION ? pickAutoModelEntry(entries, baseApiKeys, modelApiKeys) : null);
+    const selectedEntry = parseModelEntryKey(selectionKey);
     if (!selectedEntry) return;
     const selectedPool = splitStoredKeyPool(modelApiKeys[modelEntryKey(selectedEntry.provider, selectedEntry.modelId)]);
     if (selectedPool.length === 0) return;
@@ -255,13 +257,3 @@ export const composeApiKeysForSelections = (
   return composed;
 };
 
-export const pickAutoModelEntry = (
-  entries: ModelSelectorEntry[],
-  apiKeys: Record<string, string>,
-  modelApiKeys: Record<string, string>,
-) => {
-  return entries.find(entry => splitStoredKeyPool(modelApiKeys[modelEntryKey(entry.provider, entry.modelId)]).length > 0)
-    || entries.find(entry => splitStoredKeyPool(apiKeys[entry.provider]).length > 0)
-    || entries[0]
-    || null;
-};

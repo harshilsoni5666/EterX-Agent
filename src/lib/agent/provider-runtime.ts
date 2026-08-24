@@ -5,7 +5,6 @@ export type OpenAICompatibleProvider = Exclude<MainAgentProvider, 'gemini' | 'an
 type ProviderRuntimeDefinition = {
   label: string;
   compactLabel: string;
-  defaultModel: string;
   baseURL: string | (() => string);
   local?: boolean;
   visionModelPattern?: RegExp;
@@ -17,6 +16,37 @@ const LOCAL_OPENAI_PROVIDERS = new Set<MainAgentProvider>([
   'vllm',
   'llamacpp',
 ]);
+
+const PROVIDER_ROOT_SUFFIX: Partial<Record<MainAgentProvider, string>> = {
+  mistral: '/v1',
+  openai: '/v1',
+  openrouter: '/api/v1',
+  groq: '/openai/v1',
+  deepseek: '/v1',
+  grok: '/v1',
+  cerebras: '/v1',
+  together: '/v1',
+  fireworks: '/inference/v1',
+  sambanova: '/v1',
+  perplexity: '/v1',
+  deepinfra: '/v1/openai',
+  huggingface: '/v1',
+  nvidia: '/v1',
+  novita: '/openai',
+  qwen: '/compatible-mode/v1',
+  mimo: '/v1',
+  tokenhub: '/v1',
+  zai: '/api/paas/v4',
+  kimi: '/v1',
+  stepfun: '/step_plan/v1',
+  minimax: '/v1',
+  ollamacloud: '/v1',
+  arcee: '/api/v1',
+  gmi: '/v1',
+  kilo: '/api/gateway',
+  opencode: '/zen/v1',
+  upstage: '/v1',
+};
 
 /**
  * Users commonly paste either a server root (`http://localhost:11434`), an
@@ -47,6 +77,8 @@ export function normalizeProviderBaseURL(provider: MainAgentProvider, value: unk
       pathname = pathname.replace(/\/api(?:\/tags)?$/i, '');
       if (!pathname || pathname === '/') pathname = '/v1';
       else if (!/\/v1$/i.test(pathname)) pathname = `${pathname}/v1`;
+    } else if (!pathname || pathname === '/') {
+      pathname = PROVIDER_ROOT_SUFFIX[provider] || '';
     }
 
     url.pathname = pathname || '';
@@ -91,101 +123,86 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
   mistral: {
     label: 'Mistral AI',
     compactLabel: 'Mistral',
-    defaultModel: 'mistral-medium-3-5',
     baseURL: envOr('mistral', 'MISTRAL_BASE_URL', process.env.MISTRAL_API_BASE_URL || 'https://api.mistral.ai/v1'),
     visionModelPattern: /(pixtral|vision|ministral|mistral-(?:small|medium)-3)/i,
   },
   openai: {
     label: 'OpenAI',
     compactLabel: 'OpenAI',
-    defaultModel: 'gpt-5.6-sol',
     baseURL: envOr('openai', 'OPENAI_BASE_URL', 'https://api.openai.com/v1'),
     visionModelPattern: /\b(gpt-4o|gpt-4\.1|gpt-5|o[134](?:\b|-)|chatgpt)/i,
   },
   openrouter: {
     label: 'OpenRouter',
     compactLabel: 'Router',
-    defaultModel: 'openai/gpt-oss-120b',
     baseURL: envOr('openrouter', 'OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1'),
     visionModelPattern: /(gemini|claude|gpt-4o|gpt-4\.1|gpt-5|grok|pixtral|qwen.*(?:3\.6|vl|vision)|llama-4|vision)/i,
   },
   groq: {
     label: 'Groq',
     compactLabel: 'Groq',
-    defaultModel: 'openai/gpt-oss-120b',
     baseURL: envOr('groq', 'GROQ_BASE_URL', 'https://api.groq.com/openai/v1'),
     visionModelPattern: /(qwen\/qwen3\.6|qwen.*(?:vl|vision)|llama-4|vision)/i,
   },
   deepseek: {
     label: 'DeepSeek',
     compactLabel: 'DeepSeek',
-    defaultModel: 'deepseek-v4-pro',
     baseURL: envOr('deepseek', 'DEEPSEEK_BASE_URL', 'https://api.deepseek.com/v1'),
   },
   grok: {
     label: 'xAI Grok',
     compactLabel: 'Grok',
-    defaultModel: 'grok-4.5',
     baseURL: envOr('grok', 'XAI_BASE_URL', 'https://api.x.ai/v1'),
     visionModelPattern: /(grok-(?:4|3|2)|vision)/i,
   },
   cerebras: {
     label: 'Cerebras',
     compactLabel: 'Cerebras',
-    defaultModel: 'gpt-oss-120b',
     baseURL: envOr('cerebras', 'CEREBRAS_BASE_URL', 'https://api.cerebras.ai/v1'),
   },
   together: {
     label: 'Together AI',
     compactLabel: 'Together',
-    defaultModel: 'openai/gpt-oss-120b',
-    baseURL: envOr('together', 'TOGETHER_BASE_URL', 'https://api.together.xyz/v1'),
+    baseURL: envOr('together', 'TOGETHER_BASE_URL', 'https://api.together.ai/v1'),
     visionModelPattern: /(vision|vl|llama-4|gemma-4|qwen3\.6)/i,
   },
   fireworks: {
     label: 'Fireworks AI',
     compactLabel: 'Fireworks',
-    defaultModel: 'accounts/fireworks/models/gpt-oss-120b',
     baseURL: envOr('fireworks', 'FIREWORKS_BASE_URL', 'https://api.fireworks.ai/inference/v1'),
     visionModelPattern: /(vision|vl|llama-4|qwen3\.6)/i,
   },
   sambanova: {
     label: 'SambaNova',
     compactLabel: 'SambaNova',
-    defaultModel: 'DeepSeek-V4',
     baseURL: envOr('sambanova', 'SAMBANOVA_BASE_URL', 'https://api.sambanova.ai/v1'),
   },
   perplexity: {
     label: 'Perplexity',
     compactLabel: 'Perplexity',
-    defaultModel: 'sonar-pro',
-    baseURL: envOr('perplexity', 'PERPLEXITY_BASE_URL', 'https://api.perplexity.ai'),
+    baseURL: envOr('perplexity', 'PERPLEXITY_BASE_URL', 'https://api.perplexity.ai/v1'),
   },
   deepinfra: {
     label: 'DeepInfra',
     compactLabel: 'DeepInfra',
-    defaultModel: 'openai/gpt-oss-120b',
     baseURL: envOr('deepinfra', 'DEEPINFRA_BASE_URL', 'https://api.deepinfra.com/v1/openai'),
     visionModelPattern: /(vision|vl|llama-4|gemma-4|qwen3\.6)/i,
   },
   huggingface: {
     label: 'Hugging Face',
     compactLabel: 'HF',
-    defaultModel: 'openai/gpt-oss-120b:fastest',
     baseURL: envOr('huggingface', 'HUGGINGFACE_BASE_URL', 'https://router.huggingface.co/v1'),
     visionModelPattern: /(vision|vl|gemma-4|qwen3\.6|glm-.*v)/i,
   },
   nvidia: {
     label: 'NVIDIA NIM',
     compactLabel: 'NVIDIA',
-    defaultModel: 'openai/gpt-oss-120b',
     baseURL: envOr('nvidia', 'NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1'),
     visionModelPattern: /(vision|vl|llama-4|nemotron.*vl)/i,
   },
   cloudflare: {
     label: 'Cloudflare Workers AI',
     compactLabel: 'Cloudflare',
-    defaultModel: '@cf/openai/gpt-oss-120b',
     baseURL: () => {
       const explicit = normalizeProviderBaseURL('cloudflare', String(process.env.CLOUDFLARE_AI_BASE_URL || ''));
       if (explicit) return explicit;
@@ -199,7 +216,6 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
   ollama: {
     label: 'Ollama Local',
     compactLabel: 'Ollama',
-    defaultModel: 'gpt-oss:20b',
     baseURL: envOr('ollama', 'OLLAMA_OPENAI_BASE_URL', 'http://127.0.0.1:11434/v1'),
     local: true,
     visionModelPattern: /(vision|llava|bakllava|moondream|qwen.*vl|gemma3|gemma4)/i,
@@ -207,7 +223,6 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
   lmstudio: {
     label: 'LM Studio Local',
     compactLabel: 'LM Studio',
-    defaultModel: 'openai/gpt-oss-20b',
     baseURL: envOr('lmstudio', 'LMSTUDIO_OPENAI_BASE_URL', 'http://127.0.0.1:1234/v1'),
     local: true,
     visionModelPattern: /(vision|vl|llava|gemma|qwen)/i,
@@ -215,7 +230,6 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
   vllm: {
     label: 'vLLM Local',
     compactLabel: 'vLLM',
-    defaultModel: 'openai/gpt-oss-20b',
     baseURL: envOr('vllm', 'VLLM_BASE_URL', 'http://127.0.0.1:8000/v1'),
     local: true,
     visionModelPattern: /(vision|vl|llava|gemma|qwen)/i,
@@ -223,7 +237,6 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
   llamacpp: {
     label: 'llama.cpp Local',
     compactLabel: 'llama.cpp',
-    defaultModel: 'local-model',
     baseURL: envOr('llamacpp', 'LLAMACPP_BASE_URL', 'http://127.0.0.1:8080/v1'),
     local: true,
     visionModelPattern: /(vision|vl|llava|gemma|qwen)/i,
@@ -231,104 +244,89 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
   novita: {
     label: 'Novita AI',
     compactLabel: 'Novita',
-    defaultModel: 'deepseek/deepseek-v3.2',
     baseURL: envOr('novita', 'NOVITA_BASE_URL', 'https://api.novita.ai/openai'),
     visionModelPattern: /(vision|vl|llava|qwen.*vl)/i,
   },
   qwen: {
     label: 'Qwen Cloud',
     compactLabel: 'Qwen',
-    defaultModel: 'qwen-plus',
     baseURL: envOr('qwen', 'QWEN_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1'),
     visionModelPattern: /(qwen.*vl|omni|vision)/i,
   },
   mimo: {
     label: 'Xiaomi MiMo',
     compactLabel: 'MiMo',
-    defaultModel: 'mimo-v2.5-pro',
     baseURL: envOr('mimo', 'MIMO_BASE_URL', 'https://api.xiaomimimo.com/v1'),
     visionModelPattern: /(omni|vision|vl)/i,
   },
   tokenhub: {
     label: 'Tencent TokenHub',
     compactLabel: 'TokenHub',
-    defaultModel: 'hy3-preview',
     baseURL: envOr('tokenhub', 'TOKENHUB_BASE_URL', 'https://tokenhub.tencentmaas.com/v1'),
     visionModelPattern: /(vision|vl|omni)/i,
   },
   zai: {
     label: 'Z.AI / GLM',
     compactLabel: 'GLM',
-    defaultModel: 'glm-5',
     baseURL: envOr('zai', 'ZAI_BASE_URL', 'https://api.z.ai/api/paas/v4'),
     visionModelPattern: /(glm-.*v|vision|vl)/i,
   },
   kimi: {
     label: 'Kimi / Moonshot',
     compactLabel: 'Kimi',
-    defaultModel: 'kimi-k2.5',
     baseURL: envOr('kimi', 'KIMI_BASE_URL', 'https://api.moonshot.ai/v1'),
     visionModelPattern: /(kimi-k2\.[5-9]|vision|vl)/i,
   },
   stepfun: {
     label: 'StepFun Step Plan',
     compactLabel: 'StepFun',
-    defaultModel: 'step-3.5-flash',
-    baseURL: envOr('stepfun', 'STEPFUN_BASE_URL', 'https://api.stepfun.ai/step_plan/v1'),
+    baseURL: envOr('stepfun', 'STEPFUN_BASE_URL', 'https://api.stepfun.com/step_plan/v1'),
     visionModelPattern: /(vision|vl|omni)/i,
   },
   minimax: {
     label: 'MiniMax',
     compactLabel: 'MiniMax',
-    defaultModel: 'MiniMax-M2.7',
     baseURL: envOr('minimax', 'MINIMAX_BASE_URL', 'https://api.minimaxi.com/v1'),
     visionModelPattern: /(vision|vl|omni)/i,
   },
   ollamacloud: {
     label: 'Ollama Cloud',
     compactLabel: 'Ollama Cloud',
-    defaultModel: 'gpt-oss:120b-cloud',
     baseURL: envOr('ollamacloud', 'OLLAMA_CLOUD_BASE_URL', 'https://ollama.com/v1'),
     visionModelPattern: /(vision|vl|llava|gemma|qwen)/i,
   },
   arcee: {
     label: 'Arcee AI',
     compactLabel: 'Arcee',
-    defaultModel: 'trinity-mini',
     baseURL: envOr('arcee', 'ARCEE_BASE_URL', 'https://api.arcee.ai/api/v1'),
   },
   gmi: {
     label: 'GMI Cloud',
     compactLabel: 'GMI',
-    defaultModel: 'deepseek-ai/DeepSeek-V3',
-    baseURL: envOr('gmi', 'GMI_BASE_URL', ''),
+    baseURL: envOr('gmi', 'GMI_BASE_URL', 'https://api.gmi-serving.com/v1'),
     visionModelPattern: /(vision|vl|omni)/i,
   },
   kilo: {
     label: 'Kilo Gateway',
     compactLabel: 'Kilo',
-    defaultModel: 'auto',
-    baseURL: envOr('kilo', 'KILO_BASE_URL', ''),
+    baseURL: envOr('kilo', 'KILO_BASE_URL', 'https://api.kilo.ai/api/gateway'),
     visionModelPattern: /(vision|vl|omni|gemini|claude|gpt|grok)/i,
   },
   opencode: {
     label: 'OpenCode Zen',
     compactLabel: 'OpenCode',
-    defaultModel: 'deepseek-v4-flash-free',
     baseURL: envOr('opencode', 'OPENCODE_BASE_URL', 'https://opencode.ai/zen/v1'),
     visionModelPattern: /(vision|vl|omni|gemini|gpt|grok)/i,
   },
   upstage: {
     label: 'Upstage Solar',
     compactLabel: 'Upstage',
-    defaultModel: 'solar-pro2',
     baseURL: envOr('upstage', 'UPSTAGE_BASE_URL', 'https://api.upstage.ai/v1'),
     visionModelPattern: /(vision|document|ocr)/i,
   },
   custom: {
     label: 'Custom OpenAI-compatible endpoint',
     compactLabel: 'Custom',
-    defaultModel: 'default',
     baseURL: envOr('custom', 'ETERX_CUSTOM_OPENAI_BASE_URL', ''),
     visionModelPattern: /(vision|vl|omni|gemini|claude|gpt|grok|llava)/i,
   },
@@ -344,7 +342,8 @@ export function getProviderBaseURL(provider: MainAgentProvider): string {
   const override = runtimeBaseURLs[provider];
   if (override) return override;
   if (provider === 'anthropic') {
-    return normalizeProviderBaseURL('anthropic', String(process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'));
+    return normalizeProviderBaseURL('anthropic', String(process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'))
+      .replace(/\/v1$/i, '');
   }
   const value = getProviderRuntime(provider)?.baseURL;
   return typeof value === 'function'

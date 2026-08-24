@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenAI } from '@google/genai';
@@ -16,20 +17,26 @@ import {
   type ModelThinkingCapabilities,
   getAnthropicThinkingBudget,
   getGeminiThinkingConfig,
-  getMainAgentModelConfig,
   getModelThinkingOptions,
   isAnthropicAdaptiveThinkingModel,
   isOpenAIReasoningModel,
   normalizeThinkingLevelForModel,
   normalizeModelThinkingCapabilities,
-  normalizeMainAgentMode,
   toAnthropicEffort,
-  toMistralReasoningEffort,
-  toOpenAIReasoningEffort,
 } from '../agent/model-routing';
 import { ConversationCompressor } from '../agent/adaptive';
 import { getProviderBaseURL, isLocalModelProvider } from '../agent/provider-runtime';
-import { providerAcceptsDirectVideo } from '../agent/attachment-pipeline';
+import {
+  assertProviderAttachmentsSupported,
+  classifyProviderAttachment,
+  providerAcceptsDirectVideo,
+} from '../agent/attachment-pipeline';
+import {
+  applyCompatibleThinkingParameters,
+  assertSuccessfulCompatibleFinish,
+  providerSupportsStreamUsage,
+  splitCompatibleDeltaContent,
+} from '../agent/provider-capabilities';
 import { normalizeProviderCacheUsage } from '../agent/provider-prompt-cache';
 import {
   executeSearchWithFailover,
@@ -37,6 +44,7 @@ import {
   type SearchExecutionInput,
 } from '../search/search-runtime';
 import { mergeStreamingText } from '../streaming-lifecycle';
+import { createProviderChatStream } from '../agent/provider-stream-adapter';
 
 export type DirectChatHistoryMessage = {
   role: 'user' | 'model';
@@ -60,6 +68,7 @@ export type DirectChatRequest = {
   selectedModel?: { provider?: string; modelId?: string; modelName?: string } | null;
   thinkingLevel?: string;
   modelThinkingCapability?: ModelThinkingCapabilities | null;
+  modelWireCapabilities?: string[];
   runId?: string;
   runtimeSettings?: ScopedRuntimeSettings | null;
 };
@@ -69,6 +78,7 @@ export type DirectChatTraceHandler = (trace: Record<string, unknown>) => void;
 type PreparedAttachment = DirectChatAttachment & {
   base64?: string;
   fileUri?: string;
+  fileId?: string;
   mimeType: string;
 };
 
@@ -151,7 +161,13 @@ async function prepareAttachments(
   provider?: MainAgentProvider,
   apiKey?: string,
   modelName?: string,
+  modelWireCapabilities?: string[],
 ): Promise<PreparedAttachment[]> {
+  assertProviderAttachmentsSupported(provider || 'custom', modelName || '', attachments.map(item => ({
+    name: item.name,
+    path: item.path || item.name,
+    mimeType: item.mimeType,
+  })), modelWireCapabilities);
   const prepared: PreparedAttachment[] = [];
 
   let geminiClient: GoogleGenAI | null = null;
@@ -166,12 +182,12 @@ async function prepareAttachments(
       && Boolean(attachment.path)
       && !mimeType.startsWith('image/')
       && (!mimeType.startsWith('video/') || providerAcceptsDirectVideo(provider, modelName || ''));
-    if (!base64 && attachment.path && !canUseGeminiFileInput) {
+    if (!base64 && attachment.path && !canUseGeminiFileInput && provider !== 'openai' && provider !== 'anthropic') {
       try {
         const stat = await fs.stat(attachment.path);
         if (stat.isFile()) base64 = (await fs.readFile(attachment.path)).toString('base64');
-      } catch {
-        // The visible attachment name is still included in the user turn below.
+      } catch (error: any) {
+        throw new Error(`ATTACHMENT_PREPARATION_FAILED: cannot read ${attachment.name}: ${error?.message || error}`);
       }
     }
 
@@ -186,26 +202,43 @@ async function prepareAttachments(
           config: { mimeType },
         }));
         fileUri = String((uploaded as any)?.uri || '').trim() || undefined;
-      } catch {
-        // The model still receives the stable attachment name if the provider
-        // rejects a native file input.
+      } catch (error: any) {
+        throw new Error(`ATTACHMENT_PREPARATION_FAILED: Gemini could not upload ${attachment.name}: ${error?.message || error}`);
       }
     }
 
-    prepared.push({ ...attachment, mimeType, base64: base64 || undefined, fileUri });
+    let fileId: string | undefined;
+    if ((provider === 'openai' || provider === 'anthropic') && attachment.path) {
+      try {
+        if (provider === 'openai') {
+          const client = new OpenAI({ apiKey });
+          const uploaded = await client.files.create({ file: createReadStream(attachment.path), purpose: 'user_data' });
+          fileId = uploaded.id;
+        } else {
+          const client = new Anthropic({ apiKey, baseURL: getProviderBaseURL('anthropic'), maxRetries: 0 });
+          const uploaded = await client.beta.files.upload({ file: createReadStream(attachment.path) });
+          fileId = uploaded.id;
+        }
+      } catch (error: any) {
+        throw new Error(`ATTACHMENT_PREPARATION_FAILED: ${provider} could not upload ${attachment.name}: ${error?.message || error}`);
+      }
+    }
+
+    if (!base64 && !fileUri && !fileId) {
+      throw new Error(`ATTACHMENT_PREPARATION_FAILED: no provider-readable content for ${attachment.name}.`);
+    }
+    const attachmentKind = classifyProviderAttachment(attachment.name, mimeType);
+    if (provider === 'gemini' && (attachmentKind === 'pdf' || attachmentKind === 'document') && !fileUri) {
+      throw new Error(`ATTACHMENT_PREPARATION_FAILED: Gemini document input requires a native file upload path for ${attachment.name}.`);
+    }
+    if (provider === 'anthropic' && attachmentKind === 'document' && !fileId) {
+      throw new Error(`ATTACHMENT_PREPARATION_FAILED: Anthropic document input requires a native Files API upload path for ${attachment.name}.`);
+    }
+    prepared.push({ ...attachment, mimeType, base64: base64 || undefined, fileUri, fileId });
   }
 
   return prepared;
 }
-
-const attachmentNames = (attachments: PreparedAttachment[]) => attachments
-  .map((attachment, index) => `- Attachment ${index + 1}: ${attachment.name || path.basename(attachment.path || 'attachment')}${attachment.id ? ` [${attachment.id}]` : ''}`)
-  .join('\n');
-
-const withAttachmentNames = (prompt: string, attachments: PreparedAttachment[]) => {
-  if (attachments.length === 0) return prompt;
-  return `${prompt || 'Please review the attached file or media and help me with it.'}\n\n[Attached files]\n${attachmentNames(attachments)}`;
-};
 
 const appendGeminiMediaParts = (parts: any[], attachments: PreparedAttachment[]) => {
   for (const attachment of attachments) {
@@ -290,18 +323,13 @@ const resolveDirectModel = (request: DirectChatRequest) => {
   const requestedModel = String(
     request.selectedModel?.modelId || request.selectedModel?.modelName || '',
   ).trim();
-  const hasExactModel = Boolean(requestedProvider && requestedModel);
-  const normalizedMode = normalizeMainAgentMode(request.mode);
-  const fallback = getMainAgentModelConfig(normalizedMode, request.runtimeSettings);
-
-  if (hasExactModel) {
-    return {
-      provider: requestedProvider as MainAgentProvider,
-      model: requestedModel.slice(0, 200),
-    };
+  if (!requestedProvider || !requestedModel) {
+    throw new Error('MODEL_SELECTION_REQUIRED: add a concrete model from a live provider catalog and select it before sending.');
   }
-
-  return { provider: fallback.provider, model: fallback.modelName };
+  return {
+    provider: requestedProvider as MainAgentProvider,
+    model: requestedModel.slice(0, 200),
+  };
 };
 
 type DirectThinking = {
@@ -322,55 +350,15 @@ const resolveDirectThinking = (
   };
 };
 
-const isUnsupportedThinkingError = (error: unknown) =>
-  /(?:thinking(?:config|budget|level)?|reasoning(?:_effort)?|output_config).{0,120}(?:unknown|unsupported|unrecognized|invalid|not allowed)|(?:unknown|unsupported|unrecognized|invalid|not allowed).{0,120}(?:thinking(?:config|budget|level)?|reasoning(?:_effort)?|output_config)/i
-    .test(String((error as any)?.message || error || ''));
-
 const applyOpenAiCompatibleThinking = (
   params: Record<string, any>,
   provider: MainAgentProvider,
   model: string,
   thinking: DirectThinking,
 ) => {
-  if (!thinking) return;
-  const level = thinking.level;
-  const parameter = thinking.capabilities?.parameter;
-  if (parameter === 'thinkingLevel') {
-    params.thinkingLevel = level;
-  } else if (parameter === 'thinkingBudget') {
-    params.thinkingBudget = level === 'off'
-      ? 0
-      : level === 'low'
-        ? 1024
-        : level === 'high' || level === 'max'
-          ? 24576
-          : 8192;
-  } else if (parameter === 'reasoning') {
-    params.reasoning = {
-      effort: level === 'off' ? 'none' : level,
-      exclude: true,
-    };
-  } else if (parameter === 'reasoning_effort') {
-    params.reasoning_effort = toOpenAIReasoningEffort(level);
-  } else if (parameter === 'output_config.effort') {
-    params.output_config = { effort: level === 'off' ? 'none' : level };
-  } else if (provider === 'mistral') {
-    params.reasoning_effort = toMistralReasoningEffort(level);
-  } else if (provider === 'openrouter') {
-    params.reasoning = {
-      effort: level === 'off' ? 'none' : level,
-      exclude: true,
-    };
-  } else if (provider === 'llamacpp') {
-    params.chat_template_kwargs = {
-      ...(params.chat_template_kwargs || {}),
-      reasoning_effort: toOpenAIReasoningEffort(level),
-    };
-  } else {
-    params.reasoning_effort = toOpenAIReasoningEffort(level);
-  }
+  applyCompatibleThinkingParameters(params, provider, model, thinking);
 
-  if (provider === 'openai' && isOpenAIReasoningModel(model)) {
+  if (thinking && provider === 'openai' && isOpenAIReasoningModel(model)) {
     params.max_completion_tokens = MAX_OUTPUT_TOKENS;
     delete params.max_tokens;
   }
@@ -406,9 +394,6 @@ async function runGeminiDirect(
   }));
   const currentParts: any[] = [{ text: currentText }];
   appendGeminiMediaParts(currentParts, attachments);
-  if (attachments.some(attachment => !attachment.base64 && !attachment.fileUri)) {
-    currentParts.push({ text: `[Attached files]\n${attachmentNames(attachments)}` });
-  }
   contents.push({ role: 'user', parts: currentParts });
 
   const thinkingConfig = thinking ? getGeminiThinkingConfig(thinking.level, model, false, thinking.capabilities) : null;
@@ -417,14 +402,8 @@ async function runGeminiDirect(
     contents,
     ...(thinkingConfig ? { config: { thinkingConfig } } : {}),
   };
-  let response: any;
-  try {
-    response = await ai.models.generateContent(request);
-  } catch (error) {
-    if (!thinkingConfig || !isUnsupportedThinkingError(error)) throw error;
-    delete request.config;
-    response = await ai.models.generateContent(request);
-  }
+  const response: any = await ai.models.generateContent(request);
+  assertSuccessfulCompatibleFinish(response?.candidates?.[0]?.finishReason, false);
   return String((response as any)?.text || '').trim();
 }
 
@@ -456,40 +435,31 @@ async function runOpenAiCompatibleDirect(
       : undefined,
   });
 
-  const content: any[] = [{ type: 'text', text: currentText }];
-  for (const attachment of attachments) {
-    if (attachment.base64 && attachment.mimeType.startsWith('image/')) {
-      content.push({
-        type: 'image_url',
-        image_url: { url: asDataUrl(attachment.mimeType, attachment.base64.replace(/^data:[^;]+;base64,/, '')), detail: 'auto' },
-      });
-    }
-  }
-
   const params: any = {
     model,
     messages: [
       ...openAiHistory(history),
-      { role: 'user', content: attachments.length > 0 ? content : currentText },
+      { role: 'user', content: buildOpenAiContent(currentText, attachments) },
     ],
     ...(provider === 'openai' && isOpenAIReasoningModel(model)
       ? { max_completion_tokens: MAX_OUTPUT_TOKENS }
       : { max_tokens: MAX_OUTPUT_TOKENS }),
   };
   applyOpenAiCompatibleThinking(params, provider, model, thinking);
-  let response: any;
-  try {
-    response = await client.chat.completions.create(params);
-  } catch (error) {
-    if (!thinking || !isUnsupportedThinkingError(error)) throw error;
-    delete params.reasoning_effort;
-    delete params.reasoning;
-    delete params.chat_template_kwargs;
-    delete params.thinkingLevel;
-    delete params.thinkingBudget;
-    delete params.output_config;
-    response = await client.chat.completions.create(params);
+  if (provider === 'perplexity') {
+    const stream = await createProviderChatStream(client, provider, params);
+    let text = '';
+    let finishReason: unknown;
+    for await (const chunk of stream as any) {
+      const choice = chunk?.choices?.[0];
+      text = mergeStreamingText(text, toProviderText(choice?.delta?.content), true);
+      finishReason = choice?.finish_reason ?? finishReason;
+    }
+    assertSuccessfulCompatibleFinish(finishReason, false);
+    return text.trim();
   }
+  const response: any = await client.chat.completions.create(params);
+  assertSuccessfulCompatibleFinish(response?.choices?.[0]?.finish_reason, false);
   return String(response.choices?.[0]?.message?.content || '').trim();
 }
 
@@ -506,20 +476,6 @@ async function runAnthropicDirect(
     baseURL: getProviderBaseURL('anthropic'),
     maxRetries: 0,
   });
-  const content: any[] = [{ type: 'text', text: currentText }];
-  for (const attachment of attachments) {
-    if (attachment.base64 && attachment.mimeType.startsWith('image/')) {
-      content.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: attachment.mimeType,
-          data: attachment.base64.replace(/^data:[^;]+;base64,/, ''),
-        },
-      });
-    }
-  }
-
   const params: any = {
     model,
     max_tokens: MAX_OUTPUT_TOKENS,
@@ -528,20 +484,16 @@ async function runAnthropicDirect(
         role: message.role === 'model' ? 'assistant' as const : 'user' as const,
         content: message.text,
       })),
-      { role: 'user', content: attachments.length > 0 ? content : currentText },
+      { role: 'user', content: buildAnthropicContent(currentText, attachments) },
     ],
   };
   applyAnthropicThinking(params, model, thinking);
-  let response: any;
-  try {
-    response = await client.messages.create(params);
-  } catch (error) {
-    if (!thinking || !isUnsupportedThinkingError(error)) throw error;
-    delete params.thinking;
-    delete params.output_config;
-    params.max_tokens = MAX_OUTPUT_TOKENS;
-    delete params.temperature;
-    response = await client.messages.create(params);
+  const response: any = attachments.some(item => item.fileId)
+    ? await client.beta.messages.create(params)
+    : await client.messages.create(params);
+  const stopReason = String(response?.stop_reason || '');
+  if (!stopReason || (stopReason !== 'end_turn' && stopReason !== 'stop_sequence')) {
+    throw new Error(`MODEL_STREAM_INCOMPLETE: Anthropic ended the response with stop_reason=${stopReason || 'missing'}.`);
   }
   return response.content
     .filter((block: any) => block?.type === 'text')
@@ -562,8 +514,8 @@ export async function runDirectChat(request: DirectChatRequest): Promise<{
     provider,
     request.runtimeSettings,
     async key => {
-      const attachments = await prepareAttachments(request.mediaAttachments || [], provider, key, model);
-      const currentText = withAttachmentNames(String(request.prompt || '').trim(), attachments);
+      const attachments = await prepareAttachments(request.mediaAttachments || [], provider, key, model, request.modelWireCapabilities);
+      const currentText = String(request.prompt || '').trim() || 'Please review the attached file or media and help me with it.';
       return provider === 'gemini'
         ? runGeminiDirect(model, key, history, currentText, attachments, thinking)
         : provider === 'anthropic'
@@ -586,9 +538,6 @@ const buildGeminiContents = (
   }));
   const currentParts: any[] = [{ text: currentText }];
   appendGeminiMediaParts(currentParts, attachments);
-  if (attachments.some(attachment => !attachment.base64 && !attachment.fileUri)) {
-    currentParts.push({ text: `[Attached files]\n${attachmentNames(attachments)}` });
-  }
   contents.push({ role: 'user', parts: currentParts });
   return contents;
 };
@@ -596,6 +545,10 @@ const buildGeminiContents = (
 const buildOpenAiContent = (currentText: string, attachments: PreparedAttachment[]) => {
   const content: any[] = [{ type: 'text', text: currentText }];
   for (const attachment of attachments) {
+    if (attachment.fileId) {
+      content.push({ type: 'file', file: { file_id: attachment.fileId, filename: attachment.name } });
+      continue;
+    }
     if (attachment.base64 && attachment.mimeType.startsWith('image/')) {
       content.push({
         type: 'image_url',
@@ -604,6 +557,17 @@ const buildOpenAiContent = (currentText: string, attachments: PreparedAttachment
           detail: 'auto',
         },
       });
+      continue;
+    }
+    if (attachment.base64 && attachment.mimeType === 'application/pdf') {
+      content.push({
+        type: 'file',
+        file: {
+          filename: attachment.name,
+          file_data: asDataUrl(attachment.mimeType, attachment.base64.replace(/^data:[^;]+;base64,/, '')),
+        },
+      });
+      continue;
     }
   }
   return attachments.length > 0 ? content : currentText;
@@ -612,12 +576,29 @@ const buildOpenAiContent = (currentText: string, attachments: PreparedAttachment
 const buildAnthropicContent = (currentText: string, attachments: PreparedAttachment[]) => {
   const content: any[] = [{ type: 'text', text: currentText }];
   for (const attachment of attachments) {
+    if (attachment.fileId) {
+      content.push(attachment.mimeType.startsWith('image/')
+        ? { type: 'image', source: { type: 'file', file_id: attachment.fileId } }
+        : { type: 'document', title: attachment.name, source: { type: 'file', file_id: attachment.fileId } });
+      continue;
+    }
     if (attachment.base64 && attachment.mimeType.startsWith('image/')) {
       content.push({
         type: 'image',
         source: {
           type: 'base64',
           media_type: attachment.mimeType,
+          data: attachment.base64.replace(/^data:[^;]+;base64,/, ''),
+        },
+      });
+      continue;
+    }
+    if (attachment.base64 && attachment.mimeType === 'application/pdf') {
+      content.push({
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: 'application/pdf',
           data: attachment.base64.replace(/^data:[^;]+;base64,/, ''),
         },
       });
@@ -691,10 +672,11 @@ const streamGeminiDirect = async (
   attachments: PreparedAttachment[],
   thinking: DirectThinking,
   onDelta: (delta: string) => void,
+  onReasoningDelta: (delta: string) => void,
   signal?: AbortSignal,
 ): Promise<DirectProviderStreamResult> => {
   const ai = new GoogleGenAI({ apiKey: key });
-  const thinkingConfig = thinking ? getGeminiThinkingConfig(thinking.level, model, false, thinking.capabilities) : null;
+  const thinkingConfig = thinking ? getGeminiThinkingConfig(thinking.level, model, true, thinking.capabilities) : null;
   const request: any = {
     model,
     contents: buildGeminiContents(history, currentText, attachments),
@@ -704,21 +686,29 @@ const streamGeminiDirect = async (
       ...(thinkingConfig ? { thinkingConfig } : {}),
     },
   };
-  let stream: any;
-  try {
-    stream = await ai.models.generateContentStream(request);
-  } catch (error) {
-    if (!thinkingConfig || !isUnsupportedThinkingError(error)) throw error;
-    request.config = signal ? { abortSignal: signal } : undefined;
-    stream = await ai.models.generateContentStream(request);
-  }
+  const stream: any = await ai.models.generateContentStream(request);
   let text = '';
+  let reasoningText = '';
   let usage: unknown;
+  let finishReason: unknown;
   for await (const chunk of stream as any) {
     throwIfAborted(signal);
-    text = appendProviderText(text, chunk?.text || toProviderText(chunk?.candidates?.[0]?.content), onDelta);
+    const parts = Array.isArray(chunk?.candidates?.[0]?.content?.parts)
+      ? chunk.candidates[0].content.parts
+      : [];
+    const visibleChunk = parts.length > 0
+      ? parts.filter((part: any) => !part?.thought).map((part: any) => String(part?.text || '')).join('')
+      : chunk?.text || toProviderText(chunk?.candidates?.[0]?.content);
+    const reasoningChunk = parts
+      .filter((part: any) => Boolean(part?.thought))
+      .map((part: any) => String(part?.text || ''))
+      .join('');
+    reasoningText = appendProviderText(reasoningText, reasoningChunk, onReasoningDelta);
+    text = appendProviderText(text, visibleChunk, onDelta);
     if (chunk?.usageMetadata) usage = chunk.usageMetadata;
+    finishReason = chunk?.candidates?.[0]?.finishReason ?? finishReason;
   }
+  assertSuccessfulCompatibleFinish(finishReason, false);
   return { text, usage };
 };
 
@@ -731,6 +721,7 @@ const streamOpenAiCompatibleDirect = async (
   attachments: PreparedAttachment[],
   thinking: DirectThinking,
   onDelta: (delta: string) => void,
+  onReasoningDelta: (delta: string) => void,
   signal?: AbortSignal,
 ): Promise<DirectProviderStreamResult> => {
   const baseURL = getProviderBaseURL(provider);
@@ -754,39 +745,17 @@ const streamOpenAiCompatibleDirect = async (
       { role: 'user', content: buildOpenAiContent(currentText, attachments) },
     ],
     stream: true,
-    // Ask every OpenAI-compatible endpoint for the final usage chunk. A few
-    // local gateways reject this optional parameter; creation below retries
-    // without it while preserving streaming.
-    stream_options: { include_usage: true },
+    ...(providerSupportsStreamUsage(provider) ? { stream_options: { include_usage: true } } : {}),
     ...(provider === 'openai' && isOpenAIReasoningModel(model)
       ? { max_completion_tokens: MAX_OUTPUT_TOKENS }
       : { max_tokens: MAX_OUTPUT_TOKENS }),
-    ...(signal ? { signal } : {}),
   };
   applyOpenAiCompatibleThinking(params, provider, model, thinking);
-  let stream: any;
-  try {
-    stream = await (client.chat.completions.create as any)(params);
-  } catch (error: any) {
-    const message = String(error?.message || error || '');
-    const streamOptionsError = /stream_options.{0,100}(?:unknown|unsupported|unrecognized|invalid)|(?:unknown|unsupported|unrecognized|invalid).{0,100}stream_options/i.test(message);
-    const thinkingError = Boolean(thinking && isUnsupportedThinkingError(error));
-    if (!streamOptionsError && !thinkingError) {
-      throw error;
-    }
-    if (streamOptionsError) delete params.stream_options;
-    if (thinkingError) {
-      delete params.reasoning_effort;
-      delete params.reasoning;
-      delete params.chat_template_kwargs;
-      delete params.thinkingLevel;
-      delete params.thinkingBudget;
-      delete params.output_config;
-    }
-    stream = await (client.chat.completions.create as any)(params);
-  }
+  const stream: any = await createProviderChatStream(client, provider, params, signal);
   let text = '';
+  let reasoningText = '';
   let usage: unknown;
+  let finishReason: unknown;
   for await (const chunk of stream as any) {
     throwIfAborted(signal);
     const choice = chunk?.choices?.[0];
@@ -794,15 +763,27 @@ const streamOpenAiCompatibleDirect = async (
     // delta, while some local proxies send cumulative message snapshots.
     // Normalize both forms before merging so neither duplicates nor blanks
     // appear in the chat feed.
-    const chunkText = toProviderText(
-      choice?.delta?.content ??
+    const deltaContent = splitCompatibleDeltaContent(choice?.delta?.content);
+    const reasoningChunk = toProviderText(
+      choice?.delta?.reasoning_content
+      ?? choice?.delta?.reasoning
+      ?? choice?.delta?.thinking
+      ?? choice?.delta?.thought
+      ?? choice?.delta?.analysis
+      ?? choice?.message?.reasoning_content
+      ?? choice?.message?.reasoning,
+    ) || deltaContent.reasoning;
+    reasoningText = appendProviderText(reasoningText, reasoningChunk, onReasoningDelta);
+    const chunkText = deltaContent.text || toProviderText(
       choice?.message?.content ??
       choice?.text ??
       chunk?.output_text,
     );
     text = appendProviderText(text, chunkText, onDelta);
     if (chunk?.usage) usage = chunk.usage;
+    finishReason = choice?.finish_reason ?? finishReason;
   }
+  assertSuccessfulCompatibleFinish(finishReason, false);
   return { text, usage };
 };
 
@@ -814,6 +795,7 @@ const streamAnthropicDirect = async (
   attachments: PreparedAttachment[],
   thinking: DirectThinking,
   onDelta: (delta: string) => void,
+  onReasoningDelta: (delta: string) => void,
   signal?: AbortSignal,
 ): Promise<DirectProviderStreamResult> => {
   const client = new Anthropic({
@@ -832,31 +814,38 @@ const streamAnthropicDirect = async (
       })),
       { role: 'user', content: buildAnthropicContent(currentText, attachments) },
     ],
-    ...(signal ? { signal } : {}),
   };
   applyAnthropicThinking(params, model, thinking);
-  let runner: any;
-  try {
-    runner = client.messages.stream(params);
-  } catch (error) {
-    if (!thinking || !isUnsupportedThinkingError(error)) throw error;
-    delete params.thinking;
-    delete params.output_config;
-    params.max_tokens = MAX_OUTPUT_TOKENS;
-    delete params.temperature;
-    runner = client.messages.stream(params);
-  }
+  const requestOptions = signal ? { signal } : undefined;
+  const runner: any = attachments.some(item => item.fileId)
+    ? client.beta.messages.stream(params, requestOptions)
+    : client.messages.stream(params, requestOptions);
   let text = '';
+  let reasoningText = '';
   let usage: unknown;
   for await (const event of runner as any) {
     throwIfAborted(signal);
     if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
       text = appendProviderText(text, event.delta.text, onDelta);
     }
+    if (event?.type === 'content_block_delta' && event?.delta?.type === 'thinking_delta') {
+      reasoningText = appendProviderText(reasoningText, event.delta.thinking, onReasoningDelta);
+    }
     if (event?.type === 'message_delta' && event?.usage) usage = event.usage;
   }
   const finalMessage = await (runner as any).finalMessage();
+  const finalReasoning = Array.isArray(finalMessage?.content)
+    ? finalMessage.content
+      .filter((block: any) => block?.type === 'thinking')
+      .map((block: any) => String(block?.thinking || ''))
+      .join('')
+    : '';
+  reasoningText = appendProviderText(reasoningText, finalReasoning, onReasoningDelta);
   if (finalMessage?.usage) usage = finalMessage.usage;
+  const stopReason = String(finalMessage?.stop_reason || '');
+  if (!stopReason || (stopReason !== 'end_turn' && stopReason !== 'stop_sequence')) {
+    throw new Error(`MODEL_STREAM_INCOMPLETE: Anthropic ended the stream with stop_reason=${stopReason || 'missing'}.`);
+  }
   return { text, usage };
 };
 
@@ -876,9 +865,9 @@ export async function streamDirectChat(
   const history = flattenHistory(request.history || []);
   const firstKey = getProviderKeyRound(provider, request.runtimeSettings)[0] || getProviderKey(provider, request.runtimeSettings);
   const key = firstKey;
-  const attachments = await prepareAttachments(request.mediaAttachments || [], provider, key, model);
+  const attachments = await prepareAttachments(request.mediaAttachments || [], provider, key, model, request.modelWireCapabilities);
   const prompt = String(request.prompt || '').trim();
-  let currentText = withAttachmentNames(prompt, attachments);
+  let currentText = prompt || 'Please review the attached file or media and help me with it.';
   let traceIndex = 0;
   const emit = (trace: Record<string, unknown>) => {
     const timestamp = Number(trace.timestamp || Date.now());
@@ -893,17 +882,6 @@ export async function streamDirectChat(
   };
   if (attachments.length > 0) emit(mediaViewTrace(attachments));
   const thinkingNoteId = `direct_thinking_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const thinkingStartedAt = Date.now();
-  emit({
-    type: 'thought_stream',
-    thoughtId: thinkingNoteId,
-    text: '',
-    uiOnly: true,
-    isStreaming: true,
-    isLiveTyping: true,
-    streamState: 'open',
-    startTime: thinkingStartedAt,
-  });
 
   if (shouldUseDirectSearch(prompt)) {
     const searchStartedAt = Date.now();
@@ -974,24 +952,59 @@ export async function streamDirectChat(
     }
   }
 
+  const thinkingStartedAt = Date.now();
+  let reasoningText = '';
+  let thinkingClosed = false;
   emit({
     type: 'thought_stream',
     thoughtId: thinkingNoteId,
     text: '',
     uiOnly: true,
-    isStreaming: false,
-    isLiveTyping: false,
-    streamState: 'closed',
-    final: true,
+    isStreaming: true,
+    isLiveTyping: true,
+    streamState: 'open',
     startTime: thinkingStartedAt,
-    endTime: Date.now(),
   });
+  const closeThinkingStream = () => {
+    if (thinkingClosed) return;
+    thinkingClosed = true;
+    emit({
+      type: 'thought_stream',
+      thoughtId: thinkingNoteId,
+      text: reasoningText,
+      isDelta: false,
+      uiOnly: true,
+      isStreaming: false,
+      isLiveTyping: false,
+      streamState: 'closed',
+      final: true,
+      startTime: thinkingStartedAt,
+      endTime: Date.now(),
+    });
+  };
+  const onReasoningDelta = (delta: string) => {
+    if (!delta || thinkingClosed) return;
+    reasoningText = mergeStreamingText(reasoningText, delta, true);
+    emit({
+      type: 'thought_stream',
+      thoughtId: thinkingNoteId,
+      text: reasoningText,
+      isDelta: false,
+      uiOnly: true,
+      isStreaming: true,
+      isLiveTyping: true,
+      streamState: 'open',
+      startTime: thinkingStartedAt,
+      timestamp: Date.now(),
+    });
+  };
 
   let answerText = '';
   const answerId = `direct_answer_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const answerStartedAt = Date.now();
   const onDelta = (delta: string) => {
     if (!delta) return;
+    closeThinkingStream();
     const merged = mergeStreamingText(answerText, delta, true);
     const visibleDelta = merged.startsWith(answerText) ? merged.slice(answerText.length) : delta;
     answerText = merged;
@@ -1011,29 +1024,34 @@ export async function streamDirectChat(
   };
 
   throwIfAborted(signal);
-  const providerResult = await runWithProviderKeyRounds(
-    provider,
-    request.runtimeSettings,
-    async attemptKey => {
-      const attemptAttachments = attemptKey === firstKey
-        ? attachments
-        : await prepareAttachments(request.mediaAttachments || [], provider, attemptKey, model);
-      const attemptText = currentText;
-      return provider === 'gemini'
-        ? streamGeminiDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, signal)
-        : provider === 'anthropic'
-          ? streamAnthropicDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, signal)
-          : streamOpenAiCompatibleDirect(provider, model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, signal);
-    },
-    signal,
-    (attempt, totalAttempts, error) => {
-      emit({
-        type: 'progress',
-        text: `Provider request failed; trying API route ${attempt + 1} of ${totalAttempts}.`,
-        detail: String((error as any)?.message || error || '').slice(0, 180),
-      });
-    },
-  );
+  let providerResult: DirectProviderStreamResult;
+  try {
+    providerResult = await runWithProviderKeyRounds(
+      provider,
+      request.runtimeSettings,
+      async attemptKey => {
+        const attemptAttachments = attemptKey === firstKey
+          ? attachments
+          : await prepareAttachments(request.mediaAttachments || [], provider, attemptKey, model, request.modelWireCapabilities);
+        const attemptText = currentText;
+        return provider === 'gemini'
+          ? streamGeminiDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, signal)
+          : provider === 'anthropic'
+            ? streamAnthropicDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, signal)
+            : streamOpenAiCompatibleDirect(provider, model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, signal);
+      },
+      signal,
+      (attempt, totalAttempts, error) => {
+        emit({
+          type: 'progress',
+          text: `Provider request failed; trying API route ${attempt + 1} of ${totalAttempts}.`,
+          detail: String((error as any)?.message || error || '').slice(0, 180),
+        });
+      },
+    );
+  } finally {
+    closeThinkingStream();
+  }
   answerText = mergeStreamingText(answerText, providerResult.text || '', false);
   const finalText = answerText.trim() || 'I could not generate a response for that request.';
   if (!answerText.trim()) {

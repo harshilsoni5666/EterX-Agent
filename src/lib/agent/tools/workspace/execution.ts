@@ -12,9 +12,9 @@ import {
 import { resolveTerminalShell } from '../core/shell_resolver';
 import { referencesDesktopHelperScript } from '../shared/desktop_guard';
 
-const DEFAULT_MODEL_OUTPUT_CHARS = 60_000;
+const DEFAULT_MODEL_OUTPUT_CHARS = 24_000;
 const MIN_MODEL_OUTPUT_CHARS = 4_000;
-const MAX_MODEL_OUTPUT_CHARS = 2_000_000;
+const MAX_MODEL_OUTPUT_CHARS = 256_000;
 
 type TerminalCommandRequest = {
   command: string;
@@ -49,6 +49,7 @@ type WorkspaceTerminalInput = Omit<TerminalCommandRequest, 'command'> & {
   command?: string;
   commands?: TerminalCommandRequest[];
   taskId?: string;
+  sinceOffset?: number;
   parallel?: boolean;
 };
 
@@ -208,10 +209,11 @@ export const workspaceRunCommandTool: ToolDefinition = {
     command: z.string().min(1).optional().describe('Single-command mode. Exact command for the runtime OS and selected shell. Use for file discovery, targeted reads, text search, metadata, scripts, builds, linting, and tests.'),
     commands: z.array(commandRequestSchema).min(1).max(32).optional().describe('Batch mode for independent terminal operations, especially parallel file reads and searches. Do not also provide command.'),
     taskId: z.string().optional().describe('Managed terminal task ID required by mode=check or mode=kill.'),
+    sinceOffset: z.number().int().min(0).optional().describe('For mode=check, return only output produced after this offset. Reuse outputEnd from the previous check.'),
     cwd: z.string().optional().describe('Shared working directory. Prefer an absolute path, or use a path relative to the active user workspace. With no selected workspace, the runtime scratch root is used.'),
     timeoutSeconds: z.number().optional().describe('Shared foreground check-in in seconds, up to 120. This is not a kill deadline: a still-running command is handed off as a managed background task.'),
     background: z.boolean().optional().describe('Shared background default for installations, servers, watchers, and other long-running work.'),
-    maxOutputChars: z.number().int().min(MIN_MODEL_OUTPUT_CHARS).max(MAX_MODEL_OUTPUT_CHARS).optional().describe('Maximum recent terminal characters returned to the model. Default 60000. In batch mode this also bounds the combined response.'),
+    maxOutputChars: z.number().int().min(MIN_MODEL_OUTPUT_CHARS).max(MAX_MODEL_OUTPUT_CHARS).optional().describe('Maximum recent terminal characters returned to the model. Default 24000. In batch mode this also bounds the combined response.'),
     parallel: z.boolean().optional().describe('Batch mode only. Run commands concurrently by default; set false when one command depends on an earlier command.'),
   }),
   outputSchema: z.object({
@@ -228,6 +230,9 @@ export const workspaceRunCommandTool: ToolDefinition = {
     backgroundTaskId: z.string().optional(),
     totalOutputChars: z.number().optional(),
     droppedOutputChars: z.number().optional(),
+    outputStart: z.number().optional(),
+    outputEnd: z.number().optional(),
+    hasNewOutput: z.boolean().optional(),
     cwd: z.string().optional(),
     shell: z.string().optional(),
     batch: z.boolean().optional(),
@@ -275,7 +280,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
         };
       }
       const task = mode === 'check'
-        ? await getTerminalBackgroundTaskStatus(taskId, ownerChatId(context))
+        ? await getTerminalBackgroundTaskStatus(taskId, ownerChatId(context), input.sinceOffset)
         : await killTerminalBackgroundTask(taskId, ownerChatId(context));
       if (!task?.terminalTask) {
         return {
@@ -290,10 +295,13 @@ export const workspaceRunCommandTool: ToolDefinition = {
       const running = Boolean(task.running || task.status === 'running');
       const status = String(task.status || (running ? 'running' : 'unknown'));
       const killed = status === 'killed';
+      const output = String(task.output ?? task.stdout ?? '');
       return {
         success: mode === 'kill' ? killed : running || task.success !== false,
-        stdout: String(task.stdout || task.output || ''),
-        stderr: String(task.stderr || ''),
+        // `output` is the chronological combined stream. Returning stdout,
+        // stderr, and output repeated the same terminal text up to three times.
+        stdout: output,
+        stderr: '',
         exitCode: running ? null : task.exitCode ?? (task.success === false ? 1 : 0),
         timedOut: Boolean(task.timedOut),
         stillRunning: running,
@@ -303,6 +311,9 @@ export const workspaceRunCommandTool: ToolDefinition = {
         nextActionNote: task.nextActionNote,
         totalOutputChars: task.totalOutputChars,
         droppedOutputChars: task.droppedOutputChars,
+        outputStart: task.outputStart,
+        outputEnd: task.outputEnd,
+        hasNewOutput: task.hasNewOutput,
         cwd: task.cwd,
         shell: task.shell,
         mode,

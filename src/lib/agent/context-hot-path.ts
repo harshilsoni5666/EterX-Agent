@@ -8,6 +8,7 @@ const DEFAULT_RETAIN_RECENT_TOOL_BATCHES = 1;
 const DEFAULT_STALE_RESULT_CHARS = 1_200;
 const DEFAULT_MAX_HOT_MESSAGES = 14;
 const DEFAULT_KEEP_HOT_MESSAGES = 8;
+const DEFAULT_ROLLED_HISTORY_CHARS = 3_200;
 
 type CompactedEvidence = {
   __eterxContextDigest: true;
@@ -177,7 +178,7 @@ export function rollGeminiHistory(
     .map(turn => `${String(turn?.role || 'turn').toUpperCase()}: ${geminiTurnText(turn)}`)
     .filter(line => line.length > 12)
     .join('\n')
-    .slice(-6_000);
+    .slice(-DEFAULT_ROLLED_HISTORY_CHARS);
   const effectiveLedger = ledgerSummary || extractiveFallback || 'Older protocol turns completed; retained recent turns are authoritative.';
   const capsule = {
     role: 'user',
@@ -242,7 +243,7 @@ export function rollProviderHistory(
     .map(message => `${String(message?.role || 'turn').toUpperCase()}: ${providerMessageText(message)}`)
     .filter(line => line.length > 12)
     .join('\n')
-    .slice(-6_000);
+    .slice(-DEFAULT_ROLLED_HISTORY_CHARS);
   const effectiveLedger = ledgerSummary || extractiveFallback || 'Older protocol turns completed; retained recent turns are authoritative.';
   const marker = `${ROLLED_HISTORY_PREFIX}\n${effectiveLedger}\n[END ROLLED EXECUTION HISTORY]`;
 

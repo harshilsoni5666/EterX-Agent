@@ -19,6 +19,7 @@ import {
   MODEL_SELECTOR_SCHEMA_VERSION,
   MODEL_SELECTOR_STORAGE_KEY,
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
+  MODEL_WIRE_CAPABILITIES_STORAGE_KEY,
   MODEL_THINKING_LEVELS_STORAGE_KEY,
   composeApiKeysForSelections,
   entriesToModelCatalog,
@@ -74,6 +75,38 @@ import {
 type SettingsGlyphProps = React.SVGProps<SVGSVGElement> & { strokeWidth?: number };
 const SETTINGS_CHANNEL = 'eterx-settings';
 const PROVIDER_BASE_URLS_STORAGE_KEY = 'eterx_provider_base_urls';
+const lightweightSettingsHoverCss = `
+  /* Use the same CSS-only interaction path as the rows in All Chats search.
+     This changes response timing only; each tab keeps its existing colors,
+     spacing, radius, and selected state. */
+  @media (hover: hover) and (pointer: fine) {
+    .eterx-settings-dialog .eterx-settings-tab,
+    .eterx-settings-dialog .eterx-settings-back-button {
+      transition-property: background-color, border-color, color, opacity !important;
+      transition-duration: 120ms !important;
+      transition-timing-function: ease-out !important;
+      transition-delay: 0ms !important;
+      transform: none !important;
+      filter: none !important;
+      will-change: auto !important;
+    }
+
+    .eterx-settings-dialog .eterx-settings-tab [class*="transition-colors"],
+    .eterx-settings-dialog .eterx-settings-back-button [class*="transition-colors"] {
+      transition-property: background-color, border-color, color, opacity !important;
+      transition-duration: 120ms !important;
+      transition-timing-function: ease-out !important;
+      transition-delay: 0ms !important;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .eterx-settings-dialog .eterx-settings-tab,
+    .eterx-settings-dialog .eterx-settings-back-button {
+      transition-duration: 0.01ms !important;
+    }
+  }
+`;
 const SEARCH_CAPABILITY_LABELS: Record<'search' | 'read' | 'crawl' | 'map', string> = {
   search: 'Search',
   read: 'Page reading',
@@ -695,57 +728,79 @@ const PROVIDER_ACCENT: Record<string, string> = {
   anthropic: 'text-zinc-200 border-white/[0.10] bg-white/[0.045]',
 };
 
+// These are checked-in brand assets fetched from the providers or established
+// brand libraries. Missing entries intentionally use the neutral provider glyph
+// below instead of displaying an invented provider-specific logo.
 const PROVIDER_ICON_PATH: Record<string, string> = {
   gemini: '/icons/providers/gemini.svg',
   openai: '/icons/providers/openai.svg',
   anthropic: '/icons/providers/anthropic.svg',
   grok: '/icons/providers/grok.svg',
-  deepseek: '/icons/providers/deepseek.svg',
-  mistral: '/icons/providers/mistral.svg',
+  deepseek: '/icons/providers/deepseek.ico',
+  mistral: '/icons/providers/mistral.ico',
   groq: '/icons/providers/groq.svg',
   cerebras: '/icons/providers/cerebras.svg',
-  sambanova: '/icons/providers/sambanova.svg',
-  together: '/icons/providers/together.svg',
-  fireworks: '/icons/providers/fireworks.svg',
+  sambanova: '/icons/providers/sambanova.ico',
+  together: '/icons/providers/together-favicon.ico',
+  fireworks: '/icons/providers/fireworks.ico',
   openrouter: '/icons/providers/openrouter.svg',
   perplexity: '/icons/providers/perplexity.svg',
-  cohere: '/icons/providers/cohere.svg',
-  deepinfra: '/icons/providers/deepinfra.svg',
+  cohere: '/icons/providers/cohere.ico',
+  deepinfra: '/icons/providers/deepinfra.ico',
   replicate: '/icons/providers/replicate.svg',
-  novita: '/icons/providers/novita.svg',
-  huggingface: '/icons/providers/huggingface.svg',
+  novita: '/icons/providers/novita.ico',
+  huggingface: '/icons/providers/huggingface.ico',
   elevenlabs: '/icons/providers/elevenlabs.svg',
-  deepgram: '/icons/providers/deepgram.svg',
-  hume: '/icons/providers/hume.svg',
-  cartesia: '/icons/providers/cartesia.svg',
-  playht: '/icons/providers/playht.svg',
+  deepgram: '/icons/providers/deepgram.ico',
+  hume: '/icons/providers/hume.ico',
+  cartesia: '/icons/providers/cartesia.ico',
+  playht: '/icons/providers/playht.ico',
   ollama: '/icons/providers/ollama.svg',
-  lmstudio: '/icons/providers/lmstudio.svg',
-  vllm: '/icons/providers/vllm.svg',
+  lmstudio: '/icons/providers/lmstudio.ico',
+  vllm: '/icons/providers/vllm.ico',
   llamacpp: '/icons/providers/llamacpp.svg',
   cloudflare: '/icons/providers/cloudflare.svg',
-  nvidia: '/icons/providers/nvidia.svg',
+  nvidia: '/icons/providers/nvidia.ico',
   qwen: '/icons/providers/qwen.svg',
-  mimo: '/icons/providers/mimo.svg',
-  tokenhub: '/icons/providers/tokenhub.svg',
+  mimo: '/icons/providers/mimo.ico',
+  tokenhub: '/icons/providers/tokenhub.ico',
   zai: '/icons/providers/zai.svg',
-  kimi: '/icons/providers/kimi.svg',
+  kimi: '/icons/providers/kimi.ico',
   stepfun: '/icons/providers/stepfun.svg',
-  minimax: '/icons/providers/minimax.svg',
-  ollamacloud: '/icons/providers/ollamacloud.svg',
-  arcee: '/icons/providers/arcee.svg',
-  gmi: '/icons/providers/gmi.svg',
-  kilo: '/icons/providers/kilo.svg',
+  minimax: '/icons/providers/minimax.ico',
+  ollamacloud: '/icons/providers/ollama.svg',
+  arcee: '/icons/providers/arcee.ico',
+  gmi: '/icons/providers/gmi.ico',
+  kilo: '/icons/providers/kilo.ico',
   opencode: '/icons/providers/opencode.svg',
-  upstage: '/icons/providers/upstage.svg',
+  upstage: '/icons/providers/upstage.png',
   custom: '/icons/providers/custom.svg',
 };
 
 const PROVIDER_ICON_COLOR: Record<string, string> = {
-  gemini: '#8AB4F8',
-  mistral: '#FFAF00',
+  openai: '#10A37F',
+  anthropic: '#D97757',
+  grok: '#D4D4D8',
+  deepseek: '#5786FE',
+  mistral: '#FA520F',
   groq: '#F55036',
+  openrouter: '#94A3B8',
+  perplexity: '#1FB8CD',
+  replicate: '#A3A3A3',
+  elevenlabs: '#D4D4D8',
+  ollama: '#D4D4D8',
+  vllm: '#30A2FF',
+  llamacpp: '#A6CE39',
+  cloudflare: '#F38020',
+  qwen: '#6950EF',
+  kimi: '#F2488C',
+  minimax: '#E73562',
+  ollamacloud: '#D4D4D8',
+  opencode: '#22C55E',
+  custom: '#607D8B',
 };
+
+const PROVIDER_ICON_INTRINSIC_COLOR = new Set(['gemini', 'groq', 'cerebras', 'llamacpp', 'stepfun', 'zai', 'custom']);
 
 const PROVIDER_ICON_MASK_SIZE: Record<string, string> = {
   gemini: '76%',
@@ -754,6 +809,7 @@ const PROVIDER_ICON_MASK_SIZE: Record<string, string> = {
   openrouter: '84%',
   groq: '86%',
   anthropic: '82%',
+  llamacpp: '92% auto',
 };
 
 const OFFICIAL_PROVIDER_GUIDE: Record<string, {
@@ -1092,7 +1148,12 @@ const tokenMetricsForStoredLog = (log: any): StoredTokenMetrics => {
     log.completionTokens, log.completion_tokens,
     usage.completionTokens, usage.completion_tokens,
   );
-  const outputTokens = metric(
+  const visibleOutputTokens = metric(
+    log.visibleOutputTokens, log.visible_output_tokens,
+    usage.visibleOutputTokens, usage.visible_output_tokens,
+    usage.candidatesTokenCount, usage.candidates_token_count, usage.responseTokenCount,
+  );
+  const legacyOutputTokens = metric(
     log.outputTokens, log.output_tokens, log.totalOutputTokens, log.total_output_tokens,
     usage.outputTokens, usage.output_tokens, usage.outputTokenCount,
     usage.candidatesTokenCount, usage.candidates_token_count, usage.responseTokenCount,
@@ -1130,11 +1191,15 @@ const tokenMetricsForStoredLog = (log: any): StoredTokenMetrics => {
   );
   const uncachedPromptTokens = explicitUncachedPromptTokens
     ?? Math.max(0, promptTokens - cachedTokens);
-  const measuredOutputAndReasoning = Math.max(
-    completionTokens,
-    outputTokens + reasoning,
-  );
-  const fallbackTotal = promptTokens + measuredOutputAndReasoning + toolUsePrompt;
+  const generatedTokens = metric(
+    log.generatedTokens, log.generated_tokens,
+    usage.generatedTokens, usage.generated_tokens,
+  ) || completionTokens || (visibleOutputTokens > 0
+    ? visibleOutputTokens + reasoning
+    : legacyOutputTokens);
+  // tool-use prompt tokens are diagnostic subdivisions of provider input, not
+  // a separate bucket to add again. Provider total remains authoritative.
+  const fallbackTotal = promptTokens + generatedTokens;
 
   return {
     // Provider total is authoritative. Component arithmetic is only a fallback
@@ -1143,7 +1208,7 @@ const tokenMetricsForStoredLog = (log: any): StoredTokenMetrics => {
     promptTokens,
     cachedTokens,
     uncachedPromptTokens,
-    outputTokens: outputTokens || Math.max(0, completionTokens - reasoning),
+    outputTokens: generatedTokens,
     reasoningTokens: reasoning,
     toolUsePromptTokens: toolUsePrompt,
   };
@@ -1812,6 +1877,9 @@ const SettingsIconAsset: React.FC<{ name: string; className?: string }> = ({ nam
 const ProviderIconAsset: React.FC<{ provider: string; className?: string }> = ({ provider, className = 'h-4 w-4' }) => {
   const iconPath = PROVIDER_ICON_PATH[provider];
   if (!iconPath) return <Key className={className} />;
+  if (/\.(?:ico|png|jpe?g|webp)$/i.test(iconPath) || PROVIDER_ICON_INTRINSIC_COLOR.has(provider)) {
+    return <img aria-hidden="true" alt="" className={`shrink-0 object-contain ${className}`} src={iconPath} />;
+  }
   return (
     <span
       aria-hidden="true"
@@ -2965,6 +3033,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const nextDirectory = payload.providers || {};
       setModelDirectory(previous => ({ ...previous, ...nextDirectory }));
       const discoveredThinkingCapabilities: Record<string, ModelThinkingCapabilities> = {};
+      const discoveredWireCapabilities: Record<string, string[]> = {};
       Object.values(nextDirectory).forEach((providerValue: any) => {
         const provider = String(providerValue?.provider || '');
         (providerValue?.models || []).forEach((model: any) => {
@@ -2972,8 +3041,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           if (provider && model?.id && thinking) {
             discoveredThinkingCapabilities[modelEntryKey(provider, String(model.id))] = thinking;
           }
+          if (provider && model?.id && Array.isArray(model?.capabilities)) {
+            discoveredWireCapabilities[modelEntryKey(provider, String(model.id))] = Array.from(new Set(
+              model.capabilities.map((value: unknown) => String(value || '').trim()).filter(Boolean),
+            ));
+          }
         });
       });
+      let storedWireCapabilities: Record<string, string[]> = {};
+      try {
+        storedWireCapabilities = JSON.parse(appStorage.getItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY) || '{}');
+      } catch { }
+      appStorage.setItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY, JSON.stringify({
+        ...storedWireCapabilities,
+        ...discoveredWireCapabilities,
+      }));
       setModelThinkingCapabilities(previous => {
         const next = { ...previous, ...discoveredThinkingCapabilities };
         appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
@@ -3592,9 +3674,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const nextSelection = parseModelEntryKey(requested)
         && entries.some(entry => modelEntryKey(entry.provider, entry.modelId) === requested)
         ? requested
-        : entries[0]
-          ? modelEntryKey(entries[0].provider, entries[0].modelId)
-          : AUTO_MODEL_SELECTION;
+        : AUTO_MODEL_SELECTION;
       setChatModelSelection(current => current === nextSelection ? current : nextSelection);
     };
     const onLocalUpdate = (event: Event) => applySelection((event as CustomEvent).detail);
@@ -4371,9 +4451,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!isModelProvider(provider)) return;
     settingsRevisionRef.current += 1;
     const next = { ...modelOverridesRef.current };
-    const fallbackEntry = modelId ? null : entriesSnapshot[0] || null;
-    const effectiveProvider = modelId ? provider : fallbackEntry?.provider;
-    const effectiveModelId = modelId || fallbackEntry?.modelId || '';
+    const effectiveProvider = modelId ? provider : undefined;
+    const effectiveModelId = modelId || '';
     if (!modelId) delete next[provider];
     if (effectiveProvider && effectiveModelId) {
       next[effectiveProvider] = effectiveModelId;
@@ -4451,11 +4530,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     persistApiKeyPresence(apiKeysRef.current, nextModelKeys);
     void persistDesktopRuntimeSettings(apiKeysRef.current, nextModelKeys, modelOverridesRef.current);
     const currentChatModelSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-    const fallbackEntry = nextEntries[0] || null;
     const chatModelSelection = currentChatModelSelection === removedKey
-      ? fallbackEntry
-        ? modelEntryKey(fallbackEntry.provider, fallbackEntry.modelId)
-        : AUTO_MODEL_SELECTION
+      ? AUTO_MODEL_SELECTION
       : currentChatModelSelection;
     const removedActiveOverride = modelOverridesRef.current[cleanProvider] === cleanModelId;
     if (removedActiveOverride) {
@@ -4485,6 +4561,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   return createPortal(
     <>
+      <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: lightweightSettingsHoverCss }} />
       <AnimatePresence>
         {isOpen && (
           <motion.div
@@ -4525,7 +4602,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                     <button
                       key={tab.id}
                       onClick={() => { setManualOpen(false); setActiveTab(tab.id); }}
-                      className={`flex h-8 shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
+                      className={`eterx-settings-tab flex h-8 shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
                         ? 'bg-[#313131] text-[#F5F5F5]'
                         : 'text-[#F0F0F0] hover:bg-white/[0.045]'
                         }`}

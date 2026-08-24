@@ -64,6 +64,10 @@ export interface AgentMessage {
     payloadTruncated?: boolean;
     recipientAgentId?: string;
     recipientSubAgentChatId?: string;
+    /** Requested execution model for the recipient's next continuation loop. */
+    requestedModelSelection?: string;
+    requestedModelProvider?: string;
+    requestedModelName?: string;
     broadcastRecipientRuns?: Array<{ agentName: string; agentId?: string; subAgentChatId?: string }>;
     broadcast?: boolean;
   };

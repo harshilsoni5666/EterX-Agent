@@ -614,6 +614,15 @@ interface SubAgentInstance {
   durationMs?: number;
   promise?: Promise<any>;
   abortController: AbortController;
+  directUserMessages: Array<{
+    id: string;
+    text: string;
+    timestamp: number;
+    filePaths?: string[];
+    requestedModelSelection?: string;
+    requestedModelProvider?: string;
+    requestedModelName?: string;
+  }>;
 }
 
 // === RESULT QUEUE: Sub-agent results are silently queued here ===
@@ -848,6 +857,7 @@ export class SubAgentSpawner {
     } else {
       parentAbortSignal?.addEventListener('abort', abortFromParent, { once: true });
     }
+    const directUserMessages: SubAgentInstance['directUserMessages'] = [];
     const subAgentContext = {
       ...(context as any),
       agentName: name,
@@ -871,6 +881,9 @@ export class SubAgentSpawner {
       memoryScopeId: subAgentChatId,
       conversationScopeId: subAgentChatId,
       abortSignal: abortController.signal,
+      // Direct human guidance is intentionally separate from the inter-agent
+      // mailbox. It is drained by this exact worker at safe loop boundaries.
+      drainDirectUserMessages: () => directUserMessages.splice(0, directUserMessages.length),
     };
     if (modelOverride?.mode) {
       subAgentContext.selectedModelMode = modelOverride.mode;
@@ -898,7 +911,7 @@ export class SubAgentSpawner {
     let lastStatusWriteAt = 0;
     const instance: SubAgentInstance = {
       id: agentId, projectId: context.projectId, name, task, deepBrief,
-      status: 'running', traceLog, startedAt: Date.now(), abortController,
+      status: 'running', traceLog, startedAt: Date.now(), abortController, directUserMessages,
     };
     this.activeAgents.set(agentId, instance);
     void agentMessageBus.writeAgentStatus(name, {
@@ -1548,6 +1561,32 @@ export class SubAgentSpawner {
       agent.status !== 'failed' &&
       agent.status !== 'cancelled'
     )?.id;
+  }
+
+  /** Queue direct human guidance for one immutable worker run. */
+  public sendDirectUserMessage(
+    projectId: string,
+    agentName: string,
+    agentId: string,
+    message: Omit<SubAgentInstance['directUserMessages'][number], 'id' | 'timestamp'>,
+  ): { success: boolean; messageId?: string; error?: string } {
+    const resolvedProjectId = resolveProjectId(projectId);
+    const instance = Array.from(this.activeAgents.values()).find(agent =>
+      agent.id === agentId &&
+      isSameProjectScope(agent.projectId, resolvedProjectId) &&
+      agent.name.toLowerCase() === agentName.toLowerCase() &&
+      !['completed', 'failed', 'cancelled'].includes(agent.status)
+    );
+    if (!instance) {
+      return { success: false, error: 'This subagent run is no longer active.' };
+    }
+    const messageId = `direct_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`;
+    instance.directUserMessages.push({
+      ...message,
+      id: messageId,
+      timestamp: Date.now(),
+    });
+    return { success: true, messageId };
   }
 
   public getAgentStatus(): SubAgentInstance[] {

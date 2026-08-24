@@ -17,7 +17,7 @@ import { AgentRunner } from '../../../../lib/agent/agent-runner';
 import { readAgentFlowProfile } from '../../../../lib/agent/builder-agent';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
-import { resolveModelName, normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
+import { normalizeMainAgentMode } from '../../../../lib/agent/model-routing';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from '../../../../lib/agent/self-improvement/engine';
 import {
   attachAgentApiSessionCookie,
@@ -85,10 +85,13 @@ export async function POST(req: NextRequest) {
       );
     }
     const geminiRunnerMode = safeMode;
-    const fallbackGeminiModel = resolveModelName(geminiRunnerMode as any, runtimeSettings);
-    const safeModel = requestedModel && isGoogleGenAIModelName(requestedModel)
-      ? requestedModel
-      : fallbackGeminiModel;
+    if (!requestedModel) {
+      return attachAgentApiSessionCookie(
+        jsonError('Select an added Gemini model before running this custom agent.', 400),
+        session,
+      );
+    }
+    const safeModel = requestedModel;
     const requestedTemperature = temperature === undefined ? undefined : Number(temperature);
     if (requestedTemperature !== undefined && (!Number.isFinite(requestedTemperature) || requestedTemperature < 0 || requestedTemperature > 2)) {
       return attachAgentApiSessionCookie(jsonError('temperature must be a number between 0 and 2.', 400), session);

@@ -48,6 +48,7 @@ function splitUnits(text: string): string[] {
 
 function contextPriority(text: string): number {
   if (EXACT_RUNTIME_CONTRACT.test(text)) return 1000;
+  if (/\[PLAN EXECUTION STATE\]|\[SYSTEM - PLAN STILL ACTIVE\]/i.test(text)) return 98;
   if (/CONTEXT FABRIC - TEMPORAL EPISTEMIC WORKING SET/i.test(text)) return 95;
   if (/SMART RESUME|SESSION CONTINUITY EVIDENCE/i.test(text)) return 90;
   if (/WORKSPACE INTELLIGENCE/i.test(text)) return 85;
@@ -65,15 +66,39 @@ function boundCompleteChannel(
 ): { parts: string[]; sourcesDropped: number } {
   const totalCharBudget = Math.max(1200, Math.floor(totalTokenBudget * 4));
   const indexed = parts.map((text, index) => ({ text, index, priority: contextPriority(text) }));
-  const protectedParts = indexed.filter(item => item.priority >= 1000);
+  // Runtime contracts outrank all advisory context, but they still share a
+  // hard channel ceiling. A malformed/custom profile must not make the budget
+  // unbounded. Preserve the contract's beginning and distil oversized bodies.
+  const protectedParts = indexed
+    .filter(item => item.priority >= 1000)
+    .map(item => ({
+      ...item,
+      text: item.text.length > Math.floor(totalCharBudget * 0.7)
+        ? distillEvidence(item.text, currentQuery, Math.max(800, Math.floor(totalCharBudget * 0.7))).text
+        : item.text,
+    }));
   const candidates = indexed.filter(item => item.priority < 1000)
     .sort((a, b) => b.priority - a.priority || a.index - b.index);
-  const selected: Array<{ text: string; index: number }> = protectedParts.map(item => ({
-    text: item.text,
-    index: item.index,
-  }));
-  let usedChars = protectedParts.reduce((sum, item) => sum + item.text.length + 2, 0);
+  const selected: Array<{ text: string; index: number }> = [];
+  let usedChars = 0;
   let sourcesDropped = 0;
+
+  for (const item of protectedParts) {
+    const remaining = totalCharBudget - usedChars;
+    if (remaining < 160) {
+      sourcesDropped++;
+      continue;
+    }
+    const bounded = item.text.length > remaining
+      ? distillEvidence(item.text, currentQuery, remaining).text
+      : item.text;
+    if (!bounded) {
+      sourcesDropped++;
+      continue;
+    }
+    selected.push({ text: bounded, index: item.index });
+    usedChars += bounded.length + 2;
+  }
 
   for (let position = 0; position < candidates.length; position++) {
     const item = candidates[position];
@@ -104,8 +129,9 @@ function boundCompleteChannel(
 
 /**
  * Merge independent memory providers into one attention-bounded channel.
- * Non-memory prompt kernels, tools, skills, and current-request guards are
- * returned byte-for-byte unchanged.
+ * Runtime contracts stay highest-priority while the complete dynamic channel
+ * remains hard-bounded. Tools and the stable system prompt are outside this
+ * channel and are never routed or removed here.
  */
 export function federateDynamicContextParts(
   inputParts: string[],
@@ -115,8 +141,20 @@ export function federateDynamicContextParts(
 ): ContextFederationResult {
   const originalText = inputParts.filter(Boolean).join('\n\n');
   const originalEstimatedTokens = Math.ceil(originalText.length / 4);
+  let exactDuplicatesRemoved = 0;
+  const seenParts = new Set<string>();
+  const uniqueParts = inputParts.filter(part => {
+    const key = normalize(String(part || ''));
+    if (!key) return false;
+    if (seenParts.has(key)) {
+      exactDuplicatesRemoved++;
+      return false;
+    }
+    seenParts.add(key);
+    return true;
+  });
   const ordinary: string[] = [];
-  const memory = inputParts
+  const memory = uniqueParts
     .map((text, index) => ({ text: String(text || '').trim(), index }))
     .filter(item => item.text)
     .filter(item => {
@@ -132,7 +170,7 @@ export function federateDynamicContextParts(
       parts: bounded.parts,
       memorySources: 0,
       memoryUnitsKept: 0,
-      duplicatesRemoved: 0,
+      duplicatesRemoved: exactDuplicatesRemoved,
       estimatedTokens: Math.ceil(bounded.parts.join('\n\n').length / 4),
       originalEstimatedTokens,
       sourcesDropped: bounded.sourcesDropped,
@@ -142,7 +180,7 @@ export function federateDynamicContextParts(
   const charBudget = Math.max(1200, memoryTokenBudget * 4);
   const kept: Array<{ text: string; tokens: Set<string>; priority: number; source: string }> = [];
   let usedChars = 0;
-  let duplicatesRemoved = 0;
+  let duplicatesRemoved = exactDuplicatesRemoved;
 
   for (const source of memory) {
     const priority = sourcePriority(source.text);

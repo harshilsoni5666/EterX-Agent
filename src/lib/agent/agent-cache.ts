@@ -1,9 +1,11 @@
 /**
  * AgentContextCacheManager
  *
- * Caches the static portion of the EterX system prompt (base identity + rules +
- * all tool function declarations) on the Gemini server as reusable,
- * content-addressed variants.
+ * Optionally caches the static portion of the EterX system prompt (base
+ * identity + rules + all tool declarations) on the Gemini server as reusable,
+ * content-addressed variants. This paid/explicit provider feature is opt-in;
+ * normal requests retain a stable prefix so provider-managed implicit caching
+ * can work without cache-create calls.
  *
  * Savings depend on the active prompt/tool surface and provider cache tier.
  *
@@ -12,7 +14,8 @@
  *  - Keyed by (apiKey_suffix + modelName) — each rotated key gets its own cache.
  *  - TTL = 1 hour; heartbeat every 14 min extends it automatically.
  *  - Self-heals on NOT_FOUND: clears stale entry, recreates immediately.
- *  - Fully opt-out: set ETERX_DISABLE_CONTEXT_CACHE=1 or call returns null on any error.
+ *  - Opt in with ETERX_ENABLE_EXPLICIT_GEMINI_CACHE=1.
+ *  - Fully opt out with ETERX_DISABLE_CONTEXT_CACHE=1.
  */
 
 import * as crypto from 'crypto';
@@ -107,49 +110,28 @@ function stableSerialize(value: unknown): string {
     .join(',')}}`;
 }
 
-const GEMINI_CACHE_SCHEMA_TYPES = new Set([
-  'STRING',
-  'NUMBER',
-  'INTEGER',
-  'BOOLEAN',
-  'ARRAY',
-  'OBJECT',
-]);
-
-/**
- * `generateContent` normalizes JSON Schema declarations inside the SDK, but
- * the cached-content endpoint forwards function declarations as-is. Convert
- * only the cached copy to Gemini's Schema enum representation so the cache
- * contains the exact same tool contract without mutating runtime declarations.
- */
-function normalizeGeminiCacheSchema(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(normalizeGeminiCacheSchema);
-  if (!value || typeof value !== 'object') return value;
-
-  const normalized: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (key === 'type' && typeof item === 'string') {
-      const upper = item.toUpperCase();
-      normalized.type = GEMINI_CACHE_SCHEMA_TYPES.has(upper) ? upper : item;
-      continue;
-    }
-    normalized[key] = normalizeGeminiCacheSchema(item);
-  }
-  return normalized;
-}
-
 function normalizeGeminiCacheToolDeclarations(toolDeclarations: any[]): any[] {
   return toolDeclarations.map((declaration) => {
     if (!declaration || typeof declaration !== 'object') return declaration;
     const normalized = { ...declaration };
+    // Cached-content accepts standard JSON Schema through the dedicated JSON
+    // fields. Supplying lowercase JSON Schema as the proto `parameters` field
+    // is what produced the repeated "Unknown name type" failures.
     if (declaration.parameters) {
-      normalized.parameters = normalizeGeminiCacheSchema(declaration.parameters);
+      normalized.parametersJsonSchema = declaration.parameters;
+      delete normalized.parameters;
     }
     if (declaration.response) {
-      normalized.response = normalizeGeminiCacheSchema(declaration.response);
+      normalized.responseJsonSchema = declaration.response;
+      delete normalized.response;
     }
     return normalized;
   });
+}
+
+export function isExplicitGeminiCacheEnabled(): boolean {
+  return process.env.ETERX_ENABLE_EXPLICIT_GEMINI_CACHE === '1'
+    && process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1';
 }
 
 function buildContentHash(staticSystemInstruction: string, toolDeclarations: any[]): string {
@@ -223,6 +205,7 @@ function startHeartbeat(ai: any, entry: CacheEntry, entryStoreKey: string): void
  * (apiKey × modelName) pair, creating it on first call.
  *
  * Returns `null` if:
+ *  - ETERX_ENABLE_EXPLICIT_GEMINI_CACHE is not 1
  *  - ETERX_DISABLE_CONTEXT_CACHE=1
  *  - Model doesn't support caching
  *  - Any error during creation (silent fallback to uncached)
@@ -234,7 +217,7 @@ async function getOrCreateAgentCacheUnlocked(
   staticSystemInstruction: string,
   toolDeclarations: any[]
 ): Promise<string | null> {
-  if (process.env.ETERX_DISABLE_CONTEXT_CACHE === '1') return null;
+  if (!isExplicitGeminiCacheEnabled()) return null;
   if (!isCacheSupported(modelName)) return null;
 
   // Quota/permission failures are often temporary (tier upgrade, model change,
@@ -274,7 +257,6 @@ async function getOrCreateAgentCacheUnlocked(
   // ── Create new cache ──
   try {
     console.log(`[AgentCache] 🔨 Creating context cache for model ${modelName} ...`);
-
     const cache = await ai.caches.create({
       model: modelName,
       config: {
@@ -365,6 +347,7 @@ export async function getOrCreateAgentCache(
   staticSystemInstruction: string,
   toolDeclarations: any[]
 ): Promise<string | null> {
+  if (!isExplicitGeminiCacheEnabled()) return null;
   const cacheToolDeclarations = normalizeGeminiCacheToolDeclarations(toolDeclarations);
   const inflightKey = storeKey(
     apiKey,

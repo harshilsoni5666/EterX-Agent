@@ -74,31 +74,10 @@ export function applyOpenAIPromptCachePolicy(
 ): string {
   const identity = buildPromptCacheIdentity({ provider: 'openai', ...input });
   params.prompt_cache_key = identity;
-  if (supportsExplicitOpenAICacheBreakpoints(input.model)) {
-    params.prompt_cache_options = { mode: 'explicit', ttl: '30m' };
-    delete params.prompt_cache_retention;
-  } else {
-    params.prompt_cache_retention =
-      process.env.OPENAI_PROMPT_CACHE_RETENTION === '24h' ? '24h' : 'in_memory';
-    delete params.prompt_cache_options;
-    for (const message of Array.isArray(params.messages) ? params.messages : []) {
-      if (!Array.isArray(message?.content)) continue;
-      for (const block of message.content) {
-        if (block && typeof block === 'object') delete block.prompt_cache_breakpoint;
-      }
-    }
-  }
+  params.prompt_cache_retention =
+    process.env.OPENAI_PROMPT_CACHE_RETENTION === '24h' ? '24h' : 'in-memory';
   params.stream_options = { include_usage: true };
   return identity;
-}
-
-export function supportsExplicitOpenAICacheBreakpoints(model: string): boolean {
-  const normalized = String(model || '').toLowerCase();
-  const match = normalized.match(/^gpt-(\d+)(?:\.(\d+))?/);
-  if (!match) return false;
-  const major = Number(match[1]);
-  const minor = Number(match[2] || 0);
-  return major > 5 || (major === 5 && minor >= 6);
 }
 
 export function buildOpenAISystemPromptContent(
@@ -107,62 +86,9 @@ export function buildOpenAISystemPromptContent(
   dynamicPrompt: string,
   cacheEnabled: boolean,
 ): string | Array<Record<string, any>> {
-  if (!cacheEnabled || !supportsExplicitOpenAICacheBreakpoints(model)) {
-    return `${staticPrompt}\n\n${dynamicPrompt}`;
-  }
-  return [
-    {
-      type: 'text',
-      text: staticPrompt,
-      prompt_cache_breakpoint: { mode: 'explicit' },
-    },
-    { type: 'text', text: dynamicPrompt },
-  ];
-}
-
-/**
- * Fall back from explicit breakpoints to the broadly supported keyed-prefix
- * contract without discarding the stable cache identity.
- */
-export function downgradeOpenAIExplicitCachePolicy(params: Record<string, any>): boolean {
-  let changed = false;
-  if (params.prompt_cache_options) {
-    delete params.prompt_cache_options;
-    changed = true;
-  }
-  for (const message of Array.isArray(params.messages) ? params.messages : []) {
-    if (!Array.isArray(message?.content)) continue;
-    for (const block of message.content) {
-      if (block && typeof block === 'object' && block.prompt_cache_breakpoint) {
-        delete block.prompt_cache_breakpoint;
-        changed = true;
-      }
-    }
-  }
-  if (changed) {
-    params.prompt_cache_retention =
-      process.env.OPENAI_PROMPT_CACHE_RETENTION === '24h' ? '24h' : 'in_memory';
-  } else if (params.prompt_cache_retention) {
-    delete params.prompt_cache_retention;
-    changed = true;
-  }
-  return changed;
-}
-
-export function removeOpenAIPromptCachePolicy(params: Record<string, any>): void {
-  delete params.prompt_cache_key;
-  delete params.prompt_cache_retention;
-  delete params.prompt_cache_options;
-  for (const message of Array.isArray(params.messages) ? params.messages : []) {
-    if (!Array.isArray(message?.content)) continue;
-    for (const block of message.content) {
-      if (block && typeof block === 'object') delete block.prompt_cache_breakpoint;
-    }
-  }
-}
-
-export function isUnsupportedOpenAICacheOptionError(message: string): boolean {
-  return /(?:unknown|unsupported|unrecognized|invalid).{0,80}prompt_cache|prompt_cache.{0,80}(?:unknown|unsupported|unrecognized|invalid)/i.test(message);
+  void model;
+  void cacheEnabled;
+  return `${staticPrompt}\n\n${dynamicPrompt}`;
 }
 
 export function normalizeProviderCacheUsage(
@@ -191,8 +117,11 @@ export function normalizeProviderCacheUsage(
       promptTokens,
       inputTokens: promptTokens,
       completionTokens,
+      visibleOutputTokens: completionTokens,
+      generatedTokens: completionTokens,
       outputTokens: completionTokens,
       totalTokens: promptTokens + completionTokens,
+      providerReportedTotalTokens: 0,
       cacheReadTokens,
       cacheCreationTokens,
       cachedTokens: cacheReadTokens,
@@ -238,7 +167,10 @@ export function normalizeProviderCacheUsage(
     );
     const completionTokens = visibleOutputTokens + reasoningTokens;
     const reportedTotal = numberFrom(raw.totalTokenCount, raw.total_token_count, raw.totalTokens, raw.total_tokens);
-    const measuredComponentTotal = promptTokens + completionTokens + toolUsePromptTokens;
+    // Gemini reports tool-use prompt tokens as a diagnostic component of the
+    // prompt, not as an additional billable bucket. Adding it again inflates
+    // fallback totals when totalTokenCount is absent.
+    const measuredComponentTotal = promptTokens + completionTokens;
     const totalTokens = reportedTotal > 0 ? reportedTotal : measuredComponentTotal;
     const measuredCachedTokens = numberFrom(
       raw.cachedContentTokenCount,
@@ -254,8 +186,11 @@ export function normalizeProviderCacheUsage(
       promptTokens,
       inputTokens: promptTokens,
       completionTokens,
-      outputTokens: visibleOutputTokens,
+      visibleOutputTokens,
+      generatedTokens: completionTokens,
+      outputTokens: completionTokens,
       totalTokens,
+      providerReportedTotalTokens: reportedTotal,
       cachedTokens,
       uncachedPromptTokens: Math.max(0, promptTokens - cachedTokens),
       cacheHitRatio: promptTokens > 0 ? cachedTokens / promptTokens : 0,
@@ -276,14 +211,20 @@ export function normalizeProviderCacheUsage(
     promptTokens,
     inputTokens: promptTokens,
     completionTokens,
-    outputTokens: Math.max(0, completionTokens - reasoningTokens),
+    visibleOutputTokens: Math.max(0, completionTokens - reasoningTokens),
+    generatedTokens: completionTokens,
+    outputTokens: completionTokens,
+    providerReportedTotalTokens: reportedTotal,
   };
-  const cachedTokens = numberFrom(
+  const measuredCachedTokens = numberFrom(
       raw.prompt_tokens_details?.cached_tokens,
       raw.input_tokens_details?.cached_tokens,
       raw.cached_tokens,
       raw.cachedTokens,
     );
+  const cachedTokens = promptTokens > 0
+    ? Math.min(promptTokens, measuredCachedTokens)
+    : measuredCachedTokens;
   const cacheWriteTokens = numberFrom(
     raw.prompt_tokens_details?.cache_write_tokens,
     raw.input_tokens_details?.cache_write_tokens,

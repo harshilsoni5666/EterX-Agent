@@ -62,8 +62,11 @@ export const isTerminalWorkTrace = (log: any): boolean => {
   if (!log) return false;
 
   const type = String(log.type || '').trim().toLowerCase();
+  const agentName = String(log.agentName || '').trim().toLowerCase();
+  const explicitlyMainTerminal = log.mainTurnTerminal === true;
   const explicitChildTrace = /^sub_agent_|^inter_agent_/.test(type) ||
-    Boolean(log.subAgent || log.subAgentId || log.subAgentChatId || log.terminalTask);
+    Boolean(log.subAgent || log.subAgentId || log.subAgentChatId || log.terminalTask) ||
+    Boolean(agentName && agentName !== 'main' && !explicitlyMainTerminal);
   const isMainAgentTrace = !log.subAgent &&
     !log.subAgentId &&
     !log.subAgentChatId &&

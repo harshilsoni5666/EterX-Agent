@@ -14,7 +14,6 @@ import {
   getMainAgentModelConfig,
   normalizeModelThinkingCapabilities,
   normalizeThinkingLevelForModel,
-  resolveModelName,
   type MainAgentMode,
   type MainAgentProvider,
   type MainAgentThinkingLevel,
@@ -626,7 +625,10 @@ export class AgentOrchestrator {
         const builderAnswerParts: string[] = [];
         let builderError = '';
         const builderAgentName = String(context.agentName || context.agentId);
-        const builderModelName = resolveModelName('think', runtimeSettings);
+        const builderModelName = String(context.selectedModelName || '').trim();
+        if (context.selectedModelProvider !== 'gemini' || !builderModelName) {
+          throw new Error('MODEL_SELECTION_REQUIRED: Agent Builder currently requires an explicitly selected added Gemini model.');
+        }
         const builderTurnId = String(context.agentSessionId || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
         const builderMessages = [
           ...history

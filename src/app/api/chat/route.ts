@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../lib/agent/agent-registry';
-import { getMainAgentModelConfig, normalizeMainAgentMode, normalizeModelThinkingCapabilities, normalizeThinkingLevelForModel } from '../../../lib/agent/model-routing';
+import { normalizeMainAgentMode, normalizeModelThinkingCapabilities, normalizeThinkingLevelForModel } from '../../../lib/agent/model-routing';
 import {
   buildAgentBuilderPinnedContext,
   buildAgentFlowPinnedContext,
@@ -28,7 +28,7 @@ import {
   rejectCrossOrigin,
   requireChatOwner,
 } from '../agent/_shared';
-import { MODEL_PROVIDER_MODE, isModelProvider } from '../../../lib/agent/model-selector-store';
+import { isModelProvider } from '../../../lib/agent/model-selector-store';
 import { resolveChatMediaForRequest } from '../../../lib/chat-media-store';
 
 export const dynamic = 'force-dynamic';
@@ -69,6 +69,7 @@ export async function POST(req: NextRequest) {
       strictModelSelection = false,
       thinkingLevel = 'low',
       modelThinkingCapability = null,
+      modelWireCapabilities = [],
       pinnedContext = null, 
       userName = 'Developer',
       runLocation = 'local',
@@ -115,22 +116,21 @@ export async function POST(req: NextRequest) {
       ? String((selectedModel as any).modelId || (selectedModel as any).modelName || '').trim()
       : '';
     const hasValidSelectedModel = isModelProvider(requestedModelProvider) && requestedModelName.length > 0;
-    const hasSelectedModelRequest = selectedModel !== null && selectedModel !== undefined;
-    if (hasSelectedModelRequest && !hasValidSelectedModel) {
-      return attachAgentApiSessionCookie(jsonError('The selected model is invalid. Choose a provider and exact model ID.', 400), session);
+    if (!hasValidSelectedModel) {
+      return attachAgentApiSessionCookie(
+        jsonError('No concrete model is selected. Add a live provider model in Settings, then select it for this chat.', 400),
+        session,
+      );
     }
-    const selectedModelConfig = getMainAgentModelConfig(
-      hasValidSelectedModel ? MODEL_PROVIDER_MODE[requestedModelProvider] : safeMode,
-      runtimeSettings,
-    );
-    const exactModelName = hasValidSelectedModel
-      ? requestedModelName.slice(0, 200)
-      : '';
+    const exactModelName = requestedModelName.slice(0, 200);
+    const safeModelWireCapabilities = Array.isArray(modelWireCapabilities)
+      ? Array.from(new Set(modelWireCapabilities.map((value: unknown) => String(value || '').trim()).filter(Boolean))).slice(0, 100)
+      : [];
     const safeModelThinkingCapability = normalizeModelThinkingCapabilities(modelThinkingCapability);
     const safeThinkingLevel = normalizeThinkingLevelForModel(
       thinkingLevel,
-      selectedModelConfig.provider,
-      exactModelName || selectedModelConfig.modelName,
+      requestedModelProvider,
+      exactModelName,
       safeModelThinkingCapability,
     );
     const isBuilderChat = isAgentBuilderChatId(chatId);
@@ -148,6 +148,7 @@ export async function POST(req: NextRequest) {
         strictModelSelection: strictModelSelection === true || hasValidSelectedModel,
       } : {}),
       ...(safeModelThinkingCapability ? { modelThinkingCapability: safeModelThinkingCapability } : {}),
+      ...(safeModelWireCapabilities.length > 0 ? { modelWireCapabilities: safeModelWireCapabilities } : {}),
       agentSessionId: session.sessionId,
       runLocation: typeof runLocation === 'string' ? runLocation : 'local',
     };

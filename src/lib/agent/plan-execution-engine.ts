@@ -114,15 +114,17 @@ export class PlanExecutionEngine {
   /** Load a plan from the task decomposer output. */
   public loadPlan(goal: string, rawSteps: any[]): void {
     const steps: ExecutionStep[] = rawSteps.map((raw, i) => ({
-      id: raw.id || `step_${i + 1}`,
-      step: raw.step || i + 1,
+      id: String(raw.id || `step_${i + 1}`),
+      step: i + 1,
       name: String(raw.name || ''),
       description: String(raw.description || ''),
       step_type: String(raw.step_type || 'create'),
       tools: Array.isArray(raw.tools) ? raw.tools : [],
       done_when: String(raw.done_when || ''),
       expected_output: String(raw.expected_output || ''),
-      depends_on: Array.isArray(raw.depends_on) ? raw.depends_on : [],
+      depends_on: Array.isArray(raw.depends_on)
+        ? Array.from(new Set(raw.depends_on.map(Number).filter((value: number) => Number.isInteger(value) && value > 0 && value < i + 1)))
+        : (i > 0 ? [i] : []),
       artifacts: Array.isArray(raw.artifacts) ? raw.artifacts : [],
       risk: String(raw.risk || 'low'),
       priority: String(raw.priority || 'high'),
@@ -166,6 +168,7 @@ export class PlanExecutionEngine {
    */
   public recordToolCall(toolName: string, args: any, output: any, succeeded: boolean): void {
     if (!this.state) return;
+    if (toolName === 'task_decomposer' || toolName === 'task_checkpoint') return;
     this.state.totalToolCalls++;
     this.state.updatedAt = Date.now();
 
@@ -213,13 +216,24 @@ export class PlanExecutionEngine {
             planCompleted: false,
           };
         }
+        const explicitEvidence = this.normalizeEvidence(action.evidence);
+        const observedEvidence = active.trace
+          .filter(entry => entry.succeeded)
+          .slice(-5)
+          .map(entry => `${entry.toolName}: ${entry.outputDigest.slice(0, 180)}`);
+        const completionEvidence = explicitEvidence.length > 0 ? explicitEvidence : observedEvidence;
+        if (!['communicate', 'deliver'].includes(active.step_type) && completionEvidence.length === 0) {
+          return {
+            success: false,
+            message: `Step ${active.step} cannot advance without observed tool evidence or explicit evidence that its done_when contract is satisfied.`,
+            activeStep: active,
+            planCompleted: false,
+          };
+        }
         active.status = 'done';
         active.completedAt = Date.now();
         active.completionReason = action.reason.trim();
-        const explicitEvidence = this.normalizeEvidence(action.evidence);
-        active.completionEvidence = explicitEvidence.length > 0
-          ? explicitEvidence
-          : active.trace.filter(entry => entry.succeeded).slice(-5).map(entry => `${entry.toolName}: ${entry.outputDigest.slice(0, 180)}`);
+        active.completionEvidence = completionEvidence;
         this.state.updatedAt = Date.now();
         this.recordAction('advance', active.step, action.reason, active.completionEvidence);
         console.log(`[PlanEngine] Step ${active.step} "${active.name}" marked done by model.`);
@@ -241,6 +255,9 @@ export class PlanExecutionEngine {
         if (!active) {
           return { success: false, message: 'No active step to skip.', activeStep: null, planCompleted: false };
         }
+        if (!String(action.reason || '').trim()) {
+          return { success: false, message: 'A concrete reason is required to skip a plan step.', activeStep: active, planCompleted: false };
+        }
         active.status = 'skipped';
         active.completedAt = Date.now();
         active.failureReason = action.reason;
@@ -248,11 +265,13 @@ export class PlanExecutionEngine {
         console.log(`[PlanEngine] Step ${active.step} "${active.name}" skipped: ${action.reason}`);
         this.resolveReadiness();
         this.activateNext();
+        const completed = this.isComplete();
+        if (completed) this.state.status = 'completed';
         return {
           success: true,
           message: `Step ${active.step} skipped. Reason: ${action.reason}`,
           activeStep: this.getActiveStep(),
-          planCompleted: this.isComplete(),
+          planCompleted: completed,
         };
       }
 
@@ -272,7 +291,7 @@ export class PlanExecutionEngine {
           success: true,
           message: `Step ${active.step} marked failed: ${action.reason}`,
           activeStep: this.getActiveStep(),
-          planCompleted: this.isComplete(),
+          planCompleted: false,
         };
       }
 
@@ -334,7 +353,10 @@ export class PlanExecutionEngine {
       }
 
       case 'complete': {
-        const unfinished = this.state.steps.filter(step => !['done', 'skipped', 'failed'].includes(step.status));
+        if (!String(action.summary || '').trim()) {
+          return { success: false, message: 'A completion summary is required.', activeStep: this.getActiveStep(), planCompleted: false };
+        }
+        const unfinished = this.state.steps.filter(step => !['done', 'skipped'].includes(step.status));
         if (unfinished.length > 0 && !action.force) {
           return {
             success: false,
@@ -387,9 +409,10 @@ export class PlanExecutionEngine {
     const total = this.state.steps.length;
     const skipped = this.state.steps.filter(s => s.status === 'skipped').length;
     const failed = this.state.steps.filter(s => s.status === 'failed').length;
+    const resolved = done + skipped;
 
     // ── Header
-    sections.push(`PLAN: "${this.state.goal}" — ${done}/${total} done${skipped ? `, ${skipped} skipped` : ''}${failed ? `, ${failed} failed` : ''} (revision ${this.state.revision})`);
+    sections.push(`PLAN: "${this.state.goal}" — ${resolved}/${total} resolved (${done} done${skipped ? `, ${skipped} skipped` : ''}${failed ? `, ${failed} failed` : ''}) (revision ${this.state.revision})`);
 
     // ── Completed steps (compact summary so the model knows what's been done)
     const completedSteps = this.state.steps.filter(s => s.status === 'done' || s.status === 'skipped');
@@ -400,6 +423,14 @@ export class PlanExecutionEngine {
         sections.push(`  ${status} Step ${step.step}: ${step.name} (${step.trace.length} tool calls)`);
         if (step.completionReason) sections.push(`    Completion claim: ${step.completionReason}`);
         if (step.completionEvidence.length > 0) sections.push(`    Evidence: ${step.completionEvidence.join('; ')}`);
+      }
+    }
+
+    const failedSteps = this.state.steps.filter(s => s.status === 'failed');
+    if (failedSteps.length > 0) {
+      sections.push('FAILED — retry, activate, or revise these before finalizing:');
+      for (const step of failedSteps) {
+        sections.push(`  ✗ Step ${step.step}: ${step.name}${step.failureReason ? ` — ${step.failureReason}` : ''}`);
       }
     }
 
@@ -458,7 +489,7 @@ export class PlanExecutionEngine {
     sections.push('');
     sections.push('You own the plan semantics. Use task_checkpoint to: advance with a done_when justification and evidence, skip with reason, activate a READY step, revise future work when evidence changes the approach, or complete after all important steps are terminal.');
 
-    if (done === total && total > 0) {
+    if (resolved === total && total > 0) {
       sections.push('ALL STEPS COMPLETE — deliver your final answer now.');
       this.state.status = 'completed';
     }
@@ -502,7 +533,7 @@ export class PlanExecutionEngine {
 
   private isComplete(): boolean {
     if (!this.state) return false;
-    return this.state.steps.every(s => s.status === 'done' || s.status === 'skipped' || s.status === 'failed');
+    return this.state.steps.every(s => s.status === 'done' || s.status === 'skipped');
   }
 
   private normalizeEvidence(evidence?: string[]): string[] {
@@ -529,7 +560,7 @@ export class PlanExecutionEngine {
     const priorByNumber = new Map(this.state.steps.map(step => [step.step, step]));
 
     this.state.steps = rawSteps.map((raw, index): ExecutionStep => {
-      const stepNumber = Number(raw?.step || index + 1);
+      const stepNumber = index + 1;
       const id = String(raw?.id || `step_${stepNumber}`);
       const prior = priorById.get(id) || priorByNumber.get(stepNumber);
       const terminal = prior && ['done', 'skipped'].includes(prior.status);
@@ -542,7 +573,9 @@ export class PlanExecutionEngine {
         tools: Array.isArray(raw?.tools) ? raw.tools : (prior?.tools || []),
         done_when: String(raw?.done_when || prior?.done_when || ''),
         expected_output: String(raw?.expected_output || prior?.expected_output || ''),
-        depends_on: Array.isArray(raw?.depends_on) ? raw.depends_on.map(Number).filter(Number.isFinite) : (prior?.depends_on || []),
+        depends_on: Array.isArray(raw?.depends_on)
+          ? Array.from(new Set(raw.depends_on.map(Number).filter((value: number) => Number.isInteger(value) && value > 0 && value < stepNumber)))
+          : (stepNumber > 1 ? [stepNumber - 1] : []),
         artifacts: Array.isArray(raw?.artifacts) ? raw.artifacts : (prior?.artifacts || []),
         risk: String(raw?.risk || prior?.risk || 'low'),
         priority: String(raw?.priority || prior?.priority || 'high'),
@@ -570,7 +603,7 @@ export class PlanExecutionEngine {
       if (step.status !== 'blocked') continue;
       const depsOk = step.depends_on.every(depNum => {
         const dep = this.state!.steps.find(s => s.step === depNum);
-        return !dep || dep.status === 'done' || dep.status === 'skipped';
+        return !!dep && (dep.status === 'done' || dep.status === 'skipped');
       });
       if (depsOk) step.status = 'ready';
     }

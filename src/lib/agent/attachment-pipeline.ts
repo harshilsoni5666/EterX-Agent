@@ -87,3 +87,56 @@ export function providerAcceptsDirectVideo(provider: string, modelName: string):
   if (provider === 'openrouter') return /gemini|video|veo/.test(model);
   return false;
 }
+
+export type ProviderAttachmentKind = 'image' | 'pdf' | 'audio' | 'video' | 'document';
+
+export function classifyProviderAttachment(name: string, mimeType?: string): ProviderAttachmentKind {
+  const mime = normalizeAttachmentMime(name, mimeType);
+  if (mime.startsWith('image/')) return 'image';
+  if (mime === 'application/pdf') return 'pdf';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime.startsWith('video/')) return 'video';
+  return 'document';
+}
+
+export function providerAcceptsNativeAttachment(
+  provider: string,
+  modelName: string,
+  name: string,
+  mimeType?: string,
+  advertisedCapabilities: string[] = [],
+): boolean {
+  const kind = classifyProviderAttachment(name, mimeType);
+  const capabilities = advertisedCapabilities.map(value => String(value || '').toLowerCase());
+  const advertised = (pattern: RegExp) => capabilities.some(value => pattern.test(value));
+  if (kind === 'image' && advertised(/(?:^|[_.:-])(?:image|vision)(?:$|[_.:-])/)) return true;
+  if (provider === 'gemini') return true;
+  if (provider === 'anthropic') return kind === 'image' || kind === 'pdf' || kind === 'document';
+  if (provider === 'openai') return kind === 'image' || kind === 'pdf' || kind === 'document';
+  if (provider === 'openrouter') {
+    return kind === 'pdf'
+      || (kind === 'image' && providerAcceptsDirectImage(provider, modelName))
+      || (kind === 'video' && providerAcceptsDirectVideo(provider, modelName));
+  }
+  return kind === 'image' && providerAcceptsDirectImage(provider, modelName);
+}
+
+export function assertProviderAttachmentsSupported(
+  provider: string,
+  modelName: string,
+  files: Array<Pick<RuntimeAttachment, 'name' | 'path' | 'mimeType'>>,
+  advertisedCapabilities: string[] = [],
+): void {
+  const unsupported = files.filter(file => !providerAcceptsNativeAttachment(
+    provider,
+    modelName,
+    file.name || file.path,
+    file.mimeType,
+    advertisedCapabilities,
+  ));
+  if (unsupported.length === 0) return;
+  const names = unsupported.map(file => file.name || path.basename(file.path || 'attachment')).join(', ');
+  throw new Error(
+    `ATTACHMENT_UNSUPPORTED: ${provider}/${modelName} has no verified native input transport for: ${names}. Select a compatible model/provider.`,
+  );
+}

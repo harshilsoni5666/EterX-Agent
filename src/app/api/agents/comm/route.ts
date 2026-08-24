@@ -87,6 +87,9 @@ function buildMetadata(body: Record<string, any>, fallback?: {
     subAgentChatId: cleanString(body.subAgentChatId, 360) || undefined,
     recipientAgentId: cleanString(body.recipientAgentId, 240) || undefined,
     recipientSubAgentChatId: cleanString(body.recipientSubAgentChatId, 360) || undefined,
+    requestedModelSelection: cleanString(body.requestedModelSelection, 360) || undefined,
+    requestedModelProvider: cleanString(body.requestedModelProvider, 80) || undefined,
+    requestedModelName: cleanString(body.requestedModelName, 240) || undefined,
   };
 }
 
@@ -116,6 +119,9 @@ function formatMessage(message: any) {
     subAgentChatId: message.metadata?.subAgentChatId,
     recipientAgentId: message.metadata?.recipientAgentId,
     recipientSubAgentChatId: message.metadata?.recipientSubAgentChatId,
+    requestedModelSelection: message.metadata?.requestedModelSelection,
+    requestedModelProvider: message.metadata?.requestedModelProvider,
+    requestedModelName: message.metadata?.requestedModelName,
     broadcastRecipientRuns: message.metadata?.broadcastRecipientRuns,
     broadcast: message.metadata?.broadcast === true || message.to === '*',
   };

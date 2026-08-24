@@ -46,6 +46,7 @@ export async function POST(req: NextRequest) {
       mode = 'think',
       thinkingLevel = 'low',
       modelThinkingCapability = null,
+      modelWireCapabilities = [],
       selectedModel = null,
       runId = '',
     } = await readJsonObject(req);
@@ -69,15 +70,13 @@ export async function POST(req: NextRequest) {
       safeMediaAttachments,
     );
 
-    if (selectedModel !== null && selectedModel !== undefined) {
-      const provider = String(selectedModel?.provider || '').trim();
-      const modelId = String(selectedModel?.modelId || selectedModel?.modelName || '').trim();
-      if (!isModelProvider(provider) || !modelId) {
-        return attachAgentApiSessionCookie(
-          jsonError('The selected model is invalid. Choose a provider and exact model ID.', 400),
-          session,
-        );
-      }
+    const selectedProvider = String(selectedModel?.provider || '').trim();
+    const selectedModelId = String(selectedModel?.modelId || selectedModel?.modelName || '').trim();
+    if (!isModelProvider(selectedProvider) || !selectedModelId) {
+      return attachAgentApiSessionCookie(
+        jsonError('Add a concrete model from a live provider catalog and select it before sending.', 400),
+        session,
+      );
     }
 
     const encoder = new TextEncoder();
@@ -111,6 +110,9 @@ export async function POST(req: NextRequest) {
           mode,
           thinkingLevel: String(thinkingLevel || 'low'),
           modelThinkingCapability,
+          modelWireCapabilities: Array.isArray(modelWireCapabilities)
+            ? modelWireCapabilities.map(value => String(value || '').trim()).filter(Boolean).slice(0, 100)
+            : [],
           selectedModel,
           runId: normalizedRunId,
           runtimeSettings: buildScopedRuntimeSettings(),

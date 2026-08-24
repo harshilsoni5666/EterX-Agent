@@ -229,6 +229,11 @@ export function normalizeRunnerMessages(raw: unknown): { messages?: RunnerMessag
     messages.push({ role, content });
   }
 
+  let totalChars = messages.reduce((total, item) => total + item.content.length, 0);
+  while (messages.length > 1 && totalChars > MAX_HISTORY_TOTAL_CHARS) {
+    totalChars -= messages.shift()!.content.length;
+  }
+
   return { messages };
 }
 

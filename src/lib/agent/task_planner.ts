@@ -1,25 +1,18 @@
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { getMainAgentModelConfig, normalizeMainAgentMode, resolveModelName, type MainAgentMode } from './model-routing';
-import { getRuntimeApiKey } from './runtime-api-keys';
+import { getMainAgentModelConfig, normalizeMainAgentMode, type MainAgentMode, type MainAgentProvider } from './model-routing';
+import { getProviderBaseURL, isLocalModelProvider } from './provider-runtime';
+import { getRuntimeApiKey, type RuntimeApiKeyProvider } from './runtime-api-keys';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 
 /**
  * Task Planner - selected-model client for real execution-oriented task plans.
  *
- * Model output is treated as a draft. The normalizer below validates tool names,
- * repairs vague steps, adds missing inspect/edit/verify coverage, and falls back
- * to a task-aware plan when the model is unavailable or returns low-quality JSON.
+ * Model output is treated as a draft. The normalizer validates tool names,
+ * dependencies, and lifecycle coverage. If the configured model cannot produce
+ * a valid plan, planning fails transparently; no canned plan is substituted.
  */
-
-/** Resolve planner fallback models dynamically instead of hardcoding a model name. */
-function getPlannerFallbackModels(): string[] {
-  try {
-    return [resolveModelName('fast')];
-  } catch {
-    return ['gemini-2.0-flash'];
-  }
-}
 
 const MAX_ALLOWED_STEPS = 20;
 const DEFAULT_MAX_STEPS = 15;
@@ -61,6 +54,8 @@ export type PlannerPlan = {
 
 export type TaskPlanningOptions = {
   maxSubtasks?: number;
+  provider?: MainAgentProvider;
+  modelName?: string;
 };
 
 const BASE_PLANNER_TOOLS = new Set([
@@ -134,12 +129,7 @@ Rules:
 6. Do not include task_decomposer or tracker-management as a step.
 7. Use exact filenames, folders, UI areas, tools, constraints, and deliverables from the request/context when present.
 8. Dependencies must point only to earlier step numbers.
-9. Tools must be real tool names from this set when relevant:
-   workspace_run_command, workspace_edit_file,
-   browser_control, computer, screen_agent,
-   web_search,
-   get_skill_guidelines,
-   image_generator, video_generator, image_asset_search, ask_user.
+9. Tools must use exact names from the AVAILABLE TOOLS catalog supplied with the task. Select only tools that materially help the specific step.
 
 Return ONLY valid JSON:
 {
@@ -534,50 +524,6 @@ function makeDoneWhen(type: PlannerStepType, task: string, context = ''): string
   }
 }
 
-function buildOperationalStep(type: PlannerStepType, task: string, context: string, index: number, total: number): PlannerStep {
-  const stepNumber = index + 1;
-  return {
-    step: stepNumber,
-    name: makeStepName(type, task, context, index, total),
-    description: makeDescription(type, task, context),
-    tools: normalizeToolList([], type, task, context),
-    done_when: makeDoneWhen(type, task, context),
-    depends_on: stepNumber > 1 ? [stepNumber - 1] : [],
-    priority: type === 'deliver' ? 'medium' : 'high',
-    step_type: type,
-    expected_output: makeExpectedOutput(type, task, context),
-    risk: inferRisk(type, task, context),
-    artifacts: sanitizeArtifacts([], task, context),
-  };
-}
-
-function chooseFallbackTypes(task: string, context: string, maxSteps: number): PlannerStepType[] {
-  const profile = taskProfile(task, context);
-  let types: PlannerStepType[];
-
-  if (profile.isResearch && !profile.isCode) {
-    types = ['research', 'inspect', 'create', 'verify', 'deliver'];
-  } else if (profile.isDocument || profile.isData) {
-    types = ['inspect', profile.needsCreate ? 'create' : 'edit', 'verify', 'deliver'];
-  } else if (profile.isCode || profile.isUi || profile.files.length > 0) {
-    types = ['inspect'];
-    if (profile.needsCreate && !profile.needsEdit) types.push('create');
-    else types.push('edit');
-    if (profile.isUi) types.push('verify');
-    else types.push('verify');
-    types.push('deliver');
-  } else if (profile.isAutomation) {
-    types = ['inspect', 'configure', 'edit', 'verify', 'deliver'];
-  } else {
-    types = ['inspect', profile.needsCreate ? 'create' : 'edit', 'verify', 'deliver'];
-  }
-
-  if (maxSteps <= 3) {
-    return types.filter(type => type !== 'deliver').slice(0, maxSteps);
-  }
-  return types.slice(0, maxSteps);
-}
-
 function estimateComplexity(stepCount: number, task: string, context = ''): 'simple' | 'moderate' | 'complex' {
   const profile = taskProfile(task, context);
   if (stepCount >= 8 || profile.isAutomation || (profile.isCode && profile.isUi && profile.files.length >= 4)) return 'complex';
@@ -604,18 +550,6 @@ function sortAndReindexSteps(steps: PlannerStep[], task: string, context: string
   });
 }
 
-function trimPreservingVerification(steps: PlannerStep[], maxSteps: number, task: string, context: string): PlannerStep[] {
-  if (steps.length <= maxSteps) return steps;
-  const profile = taskProfile(task, context);
-  let trimmed = steps.slice(0, maxSteps);
-  const needsVerify = profile.isCode || profile.isUi || profile.isData || profile.isDocument || profile.needsEdit || profile.needsCreate;
-  const hasVerify = trimmed.some(step => step.step_type === 'verify');
-  if (needsVerify && !hasVerify && maxSteps > 1) {
-    trimmed[trimmed.length - 1] = buildOperationalStep('verify', task, context, trimmed.length - 1, maxSteps);
-  }
-  return trimmed;
-}
-
 function hasMeaningfulCoverage(steps: PlannerStep[], task: string, context: string): boolean {
   const profile = taskProfile(task, context);
   if (steps.length === 0) return false;
@@ -637,14 +571,12 @@ function cleanJsonText(rawText: string): string {
 
 export class TaskPlannerClient {
   private ai: GoogleGenAI | null = null;
-  private mistral: OpenAI | null = null;
   private geminiApiKey = '';
-  private mistralApiKey = '';
 
   private getGeminiClient(): GoogleGenAI | null {
     const apiKey = getRuntimeApiKey('gemini');
     if (!apiKey) {
-      console.warn('[TaskPlanner] No Gemini key is configured in Settings. Will use task-aware fallback decomposition.');
+      console.warn('[TaskPlanner] No Gemini key is configured in Settings.');
       return null;
     }
     if (!this.ai || this.geminiApiKey !== apiKey) {
@@ -664,6 +596,9 @@ export class TaskPlannerClient {
     const rawSteps = Array.isArray(parsed?.steps) ? parsed.steps : [];
     if (rawSteps.length === 0) {
       throw new Error('No steps generated');
+    }
+    if (rawSteps.length > maxSteps) {
+      throw new Error(`The configured planning model returned ${rawSteps.length} steps, exceeding the requested maximum of ${maxSteps}.`);
     }
 
     let steps: PlannerStep[] = rawSteps.slice(0, MAX_ALLOWED_STEPS).map((raw: any, index: number) => {
@@ -704,32 +639,10 @@ export class TaskPlannerClient {
       } satisfies PlannerStep;
     });
 
-    const profile = taskProfile(task, context);
-    if ((profile.isCode || profile.isUi || profile.files.length > 0) && !steps.some(step => step.step_type === 'inspect')) {
-      warnings.push('Added missing inspection step for code/product work.');
-      steps.unshift(buildOperationalStep('inspect', task, context, 0, steps.length + 1));
-    }
-    if ((profile.needsEdit || profile.isCode || profile.isUi) && !steps.some(step => step.step_type === 'edit' || step.step_type === 'create')) {
-      warnings.push('Added missing implementation step.');
-      const insertAt = Math.min(1, steps.length);
-      steps.splice(insertAt, 0, buildOperationalStep(profile.needsCreate && !profile.needsEdit ? 'create' : 'edit', task, context, insertAt, steps.length + 1));
-    }
-    if ((profile.needsEdit || profile.needsCreate || profile.isCode || profile.isUi || profile.isData || profile.isDocument) && !steps.some(step => step.step_type === 'verify')) {
-      warnings.push('Added missing verification step.');
-      steps.push(buildOperationalStep('verify', task, context, steps.length, steps.length + 1));
-    }
-    if (maxSteps >= 4 && !steps.some(step => step.step_type === 'deliver')) {
-      steps.push(buildOperationalStep('deliver', task, context, steps.length, steps.length + 1));
-    }
-
-    steps = trimPreservingVerification(sortAndReindexSteps(steps, task, context), maxSteps, task, context);
     steps = sortAndReindexSteps(steps, task, context);
 
     if (!hasMeaningfulCoverage(steps, task, context)) {
-      warnings.push('Model plan lacked required lifecycle coverage; using task-aware fallback.');
-      const fallback = this.fallbackDecompose(task, context, options);
-      fallback.quality_warnings = uniq([...fallback.quality_warnings, ...warnings]);
-      return fallback;
+      throw new Error('The configured planning model returned a plan without the required inspect, implementation, or verification coverage.');
     }
 
     const elapsed = Date.now() - startTime;
@@ -744,7 +657,7 @@ export class TaskPlannerClient {
       steps,
       estimated_complexity: complexity,
       estimated_time_minutes: minutes,
-      planner_version: 'task_planner_v4_normalized',
+      planner_version: 'task_planner_v5_model_driven',
       quality_warnings: uniq(warnings),
     };
   }
@@ -761,109 +674,74 @@ export class TaskPlannerClient {
     ]);
   }
 
-  private getMistralClient(): OpenAI | null {
-    const apiKey = getRuntimeApiKey('mistral');
-    if (!apiKey) {
-      console.warn('[TaskPlanner] No Mistral key is configured in Settings. Will use fallback decomposition.');
-      return null;
-    }
-    if (!this.mistral || this.mistralApiKey !== apiKey) {
-      this.mistral = new OpenAI({
-        apiKey,
-        baseURL: 'https://api.mistral.ai/v1',
-      });
-      this.mistralApiKey = apiKey;
-    }
-    return this.mistral;
-  }
-
   public async decompose(task: string, context = '', mode: MainAgentMode = 'think', options: TaskPlanningOptions = {}): Promise<PlannerPlan> {
     const safeMode = normalizeMainAgentMode(mode);
-    const modelConfig = getMainAgentModelConfig(safeMode);
+    const selectedConfig = getMainAgentModelConfig(safeMode);
+    const provider = options.provider || selectedConfig.provider;
+    const modelName = cleanText(options.modelName, selectedConfig.modelName);
     const maxSteps = this.maxSteps(options);
-    console.log(`[TaskPlanner] Generating execution plan via selected model: ${modelConfig.modelName} (max ${maxSteps})`);
+    console.log(`[TaskPlanner] Generating execution plan via selected model: ${provider}/${modelName} (max ${maxSteps})`);
     const startTime = Date.now();
 
     const prompt = [
       `Task: ${task}`,
       context ? `Additional context: ${context}` : '',
+      `AVAILABLE TOOLS:\n${globalToolRegistry.getAllTools()
+        .filter(tool => tool?.name && !DISALLOWED_PLANNER_TOOLS.has(tool.name))
+        .map(tool => `- ${tool.name}: ${compactSentence(tool.description || '', 'No description available.', 180)}`)
+        .join('\n')}`,
       `Planner constraints: max_steps=${maxSteps}. Produce concrete, task-specific operational steps. No generic "fix code" or "implement core" items.`,
     ].filter(Boolean).join('\n\n');
 
-    if (modelConfig.provider === 'mistral') {
-      const client = this.getMistralClient();
-      if (!client) return this.fallbackDecompose(task, context, options);
-      try {
-        const response = await this.withTimeout(
-          client.chat.completions.create({
-            model: modelConfig.modelName,
-            messages: [
-              { role: 'system', content: PLANNER_SYSTEM_PROMPT },
-              { role: 'user', content: prompt },
-            ],
-            temperature: 0.15,
-            response_format: { type: 'json_object' },
-          } as any),
-          15000,
-        );
-        return this.parsePlannerResponse(String(response.choices?.[0]?.message?.content || ''), task, context, options, startTime, modelConfig.modelName);
-      } catch (error: any) {
-        console.warn(`[TaskPlanner] Selected model ${modelConfig.modelName} failed: ${error.message}. Using fallback decomposition.`);
-        return this.fallbackDecompose(task, context, options);
-      }
-    }
-
-    const gemini = this.getGeminiClient();
-    if (!gemini) {
-      console.warn('[TaskPlanner] No API client available. Using fallback.');
-      return this.fallbackDecompose(task, context, options);
-    }
-
-    const plannerModels = Array.from(new Set([modelConfig.modelName, ...getPlannerFallbackModels()]));
-    for (const modelName of plannerModels) {
-      try {
-        console.log(`[TaskPlanner] Trying model: ${modelName}...`);
+    try {
+      let rawText = '';
+      if (provider === 'gemini') {
+        const gemini = this.getGeminiClient();
+        if (!gemini) throw new Error('Gemini planning requires a configured Gemini API key.');
         const response = await this.withTimeout(
           gemini.models.generateContent({
             model: modelName,
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
             config: {
               systemInstruction: PLANNER_SYSTEM_PROMPT,
-              thinkingConfig: {
-                thinkingLevel: ThinkingLevel.LOW,
-                includeThoughts: false,
-              },
+              responseMimeType: 'application/json',
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW, includeThoughts: false },
             },
           }),
-          15000,
+          45000,
         );
-
-        return this.parsePlannerResponse(response.text || '', task, context, options, startTime, modelName);
-      } catch (modelError: any) {
-        console.warn(`[TaskPlanner] Model ${modelName} failed: ${modelError.message}. Trying next...`);
+        rawText = response.text || '';
+      } else if (provider === 'anthropic') {
+        const apiKey = getRuntimeApiKey('anthropic');
+        if (!apiKey) throw new Error('Anthropic planning requires a configured Anthropic API key.');
+        const client = new Anthropic({ apiKey, baseURL: getProviderBaseURL('anthropic'), maxRetries: 0 });
+        const response: any = await this.withTimeout(client.messages.create({
+          model: modelName,
+          max_tokens: 5000,
+          system: PLANNER_SYSTEM_PROMPT,
+          messages: [{ role: 'user', content: prompt }],
+        }), 45000);
+        rawText = (response.content || []).filter((part: any) => part?.type === 'text').map((part: any) => part.text || '').join('');
+      } else {
+        const baseURL = getProviderBaseURL(provider);
+        if (!baseURL) throw new Error(`${provider} planning requires a configured provider endpoint.`);
+        const apiKey = getRuntimeApiKey(provider as RuntimeApiKeyProvider) || (isLocalModelProvider(provider) ? 'local-provider' : '');
+        if (!apiKey) throw new Error(`${provider} planning requires a configured API key.`);
+        const client = new OpenAI({ apiKey, baseURL, maxRetries: 0 });
+        const response: any = await this.withTimeout(client.chat.completions.create({
+          model: modelName,
+          messages: [
+            { role: 'system', content: PLANNER_SYSTEM_PROMPT },
+            { role: 'user', content: prompt },
+          ],
+        } as any), 45000);
+        rawText = String(response.choices?.[0]?.message?.content || '');
       }
+
+      return this.parsePlannerResponse(rawText, task, context, options, startTime, `${provider}/${modelName}`);
+    } catch (error: any) {
+      throw new Error(`Real planning failed with ${provider}/${modelName}: ${String(error?.message || error)}`);
     }
-
-    console.error('[TaskPlanner] All models failed. Using fallback decomposition.');
-    return this.fallbackDecompose(task, context, options);
-  }
-
-  private fallbackDecompose(task: string, context = '', options: TaskPlanningOptions = {}): PlannerPlan {
-    const maxSteps = this.maxSteps(options);
-    const types = chooseFallbackTypes(task, context, maxSteps);
-    const steps = sortAndReindexSteps(
-      types.map((type, index) => buildOperationalStep(type, task, context, index, types.length)),
-      task,
-      context,
-    );
-
-    return {
-      steps,
-      estimated_complexity: estimateComplexity(steps.length, task, context),
-      estimated_time_minutes: estimateMinutes(steps.length, task, context),
-      planner_version: 'task_planner_v4_fallback',
-      quality_warnings: ['Used task-aware fallback planner because model planning was unavailable or invalid.'],
-    };
   }
 }
 

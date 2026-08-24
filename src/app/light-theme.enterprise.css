@@ -1321,8 +1321,8 @@
 }
 
 :root[data-theme="light"] .eterx-agent-tab-active-bg {
-  border: 1px solid rgba(31, 31, 29, 0.10) !important;
-  background: rgba(31, 31, 29, 0.055) !important;
+  border: 0 !important;
+  background: rgba(31, 31, 29, 0.045) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
   box-shadow: none !important;
@@ -1345,6 +1345,21 @@
 :root[data-theme="light"] .eterx-agent-tab-closed:hover {
   color: #55514A !important;
   background: rgba(31, 31, 29, 0.035) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-overflow-menu {
+  background: #F1F0ED !important;
+  box-shadow: 0 18px 44px rgba(31, 31, 29, 0.13) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-overflow-item {
+  color: rgba(31, 31, 29, 0.68) !important;
+}
+
+:root[data-theme="light"] .eterx-agent-overflow-item:hover,
+:root[data-theme="light"] .eterx-agent-overflow-item:focus-visible {
+  color: #1F1F1D !important;
+  background: rgba(31, 31, 29, 0.055) !important;
 }
 
 :root[data-theme="light"] .eterx-main-agent-glyph {
@@ -4447,6 +4462,55 @@
   box-shadow: none !important;
 }
 
+/* Keep the primary composer send action visible at rest. This dedicated hook
+   is intentionally last so generic light-theme control rules cannot turn the
+   button into a low-contrast pale circle until it is hovered. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-action-send:not(:disabled) {
+  border: 0 !important;
+  background: #292929 !important;
+  background-color: #292929 !important;
+  color: #FFFFFF !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-action-send:not(:disabled):hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-action-send:not(:disabled):focus-visible {
+  background: #292929 !important;
+  background-color: #292929 !important;
+  color: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-action-send .eterx-composer-control-icon {
+  color: #FFFFFF !important;
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-action-send:not(:disabled),
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-action-send:not(:disabled):hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-action-send:not(:disabled):focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-action-send:not(:disabled) .eterx-composer-control-icon,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-action-send:not(:disabled):hover .eterx-composer-control-icon {
+  transition: none !important;
+  transform: none !important;
+}
+
+/* Final high-specificity guard for the primary Send button. The composer
+   control defaults are intentionally pale in light mode, so this action must
+   keep its dark resting fill even when utility/control rules are reordered. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button.eterx-composer-action-send,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button.eterx-composer-action-send:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button.eterx-composer-action-send:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-send-button.eterx-composer-action-send:active {
+  background: #292929 !important;
+  background-color: #292929 !important;
+  border-color: transparent !important;
+  color: #FFFFFF !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+}
+
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button[data-active="true"]:hover,
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-live-button[data-active="true"]:focus-visible {
   border-color: rgba(16, 185, 129, 0.46) !important;
@@ -4509,4 +4573,147 @@
   color: currentColor !important;
   opacity: 1 !important;
   filter: none !important;
+}
+
+/* Final thread-switcher interaction surface. This file is loaded after the
+   shared stylesheet, so keep the reference-style pill overrides here where
+   they cannot be replaced by the light-theme component palette. */
+.eterx-thread-tab {
+  border: 0 !important;
+  border-radius: 999px !important;
+}
+
+.eterx-thread-tab:hover,
+.eterx-thread-tab[data-open="true"] {
+  background: rgba(31, 31, 29, 0.075) !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="dark"] .eterx-thread-tab:hover,
+:root[data-theme="dark"] .eterx-thread-tab[data-open="true"],
+.dark .eterx-thread-tab:hover,
+.dark .eterx-thread-tab[data-open="true"] {
+  background: rgba(255, 255, 255, 0.115) !important;
+  color: #F8F4EE !important;
+}
+
+.eterx-thread-switcher-item:hover,
+.eterx-thread-switcher-item:focus-visible,
+.eterx-thread-switcher-item[data-active="true"] {
+  border: 0 !important;
+  border-radius: 999px !important;
+  box-shadow: none !important;
+  outline: none;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item:hover,
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible {
+  background: rgba(31, 31, 29, 0.06) !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item[data-active="true"] {
+  background: rgba(31, 31, 29, 0.085) !important;
+}
+
+:root[data-theme="dark"] .eterx-thread-switcher-item:hover,
+:root[data-theme="dark"] .eterx-thread-switcher-item:focus-visible,
+.dark .eterx-thread-switcher-item:hover,
+.dark .eterx-thread-switcher-item:focus-visible {
+  background: rgba(255, 255, 255, 0.105) !important;
+  color: #F8F4EE !important;
+}
+
+:root[data-theme="dark"] .eterx-thread-switcher-item[data-active="true"],
+.dark .eterx-thread-switcher-item[data-active="true"] {
+  background: rgba(255, 255, 255, 0.09) !important;
+  color: #FFFFFF !important;
+}
+
+/* Keep the white composer and its overflow fades visually continuous. The
+   shorter fade leaves more room for the draft while still making the scroll
+   edges obvious when a long message is being edited. */
+:root[data-theme="light"] .eterx-chat-input-dock-active::before {
+  height: 72px !important;
+  background: linear-gradient(180deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.68) 42%,
+      #FFFFFF 88%,
+      #FFFFFF 100%) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]) {
+  --eterx-composer-fog-solid-top: #FFFFFF;
+  --eterx-composer-fog-strong-top: rgba(255, 255, 255, 0.96);
+  --eterx-composer-fog-clear-top: rgba(255, 255, 255, 0);
+  --eterx-composer-fog-solid-bottom: #FFFFFF;
+  --eterx-composer-fog-strong-bottom: rgba(255, 255, 255, 0.96);
+  --eterx-composer-fog-clear-bottom: rgba(255, 255, 255, 0);
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-overflow-fade-top,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-overflow-fade-bottom {
+  height: 16px !important;
+  background: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-overflow-fade-top {
+  background: linear-gradient(180deg,
+      #FFFFFF 0%,
+      rgba(255, 255, 255, 0.96) 52%,
+      rgba(255, 255, 255, 0) 100%) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-overflow-fade-bottom {
+  background: linear-gradient(0deg,
+      #FFFFFF 0%,
+      rgba(255, 255, 255, 0.96) 52%,
+      rgba(255, 255, 255, 0) 100%) !important;
+}
+
+@media (max-width: 768px) {
+  :root[data-theme="light"] .eterx-chat-input-dock-active::before {
+    height: 56px !important;
+  }
+}
+
+/* A thread list should show one selected row, not a second hover highlight.
+   Keep row hover quiet so the active state remains unambiguous. */
+.eterx-thread-switcher-item:hover:not([data-active="true"]),
+.eterx-thread-switcher-item:focus-visible:not([data-active="true"]) {
+  background: transparent !important;
+  background-color: transparent !important;
+  border: 1px solid transparent !important;
+  border-radius: 0.375rem !important;
+  box-shadow: none !important;
+  outline: none;
+  opacity: 1 !important;
+  filter: none !important;
+  transform: none !important;
+  transition: none !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item:hover:not([data-active="true"]),
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) {
+  color: var(--foreground) !important;
+}
+
+:root[data-theme="dark"] .eterx-thread-switcher-item:hover:not([data-active="true"]),
+:root[data-theme="dark"] .eterx-thread-switcher-item:focus-visible:not([data-active="true"]),
+.dark .eterx-thread-switcher-item:hover:not([data-active="true"]),
+.dark .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) {
+  color: #A3A19E !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item:hover:not([data-active="true"]) svg,
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) svg {
+  color: var(--muted-foreground) !important;
+}
+
+:root[data-theme="dark"] .eterx-thread-switcher-item:hover:not([data-active="true"]) svg,
+:root[data-theme="dark"] .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) svg,
+.dark .eterx-thread-switcher-item:hover:not([data-active="true"]) svg,
+.dark .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) svg {
+  color: rgba(255, 255, 255, 0.4) !important;
 }

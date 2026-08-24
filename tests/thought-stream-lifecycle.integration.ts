@@ -259,4 +259,37 @@ const thought = (
   assert.equal(logs[0].text, 'Reasoning complete', 'the final reasoning payload should still be retained');
 }
 
+{
+  // Provider-neutral request shells keep the counter live even when a model
+  // does not expose public reasoning text. Closing that shell must freeze the
+  // lifecycle without leaving an empty historical thought card behind.
+  const logs: any[] = [];
+  mergeThoughtStreamTrace(logs, {
+    type: 'thought_stream',
+    thoughtId: 'provider-shell',
+    text: '',
+    uiOnly: true,
+    isStreaming: true,
+    isLiveTyping: true,
+    streamState: 'open',
+    startTime: 1_000,
+    timestamp: 1_000,
+  });
+  mergeThoughtStreamTrace(logs, {
+    type: 'thought_stream',
+    thoughtId: 'provider-shell',
+    text: '',
+    uiOnly: true,
+    isStreaming: false,
+    streamState: 'closed',
+    final: true,
+    startTime: 1_000,
+    endTime: 3_000,
+    timestamp: 3_000,
+  });
+
+  assert.equal(logs[0].isStreaming, false, 'the provider shell must close at the response boundary');
+  assert.equal(canonicalizeThoughtStreamLogs(logs).length, 0, 'closed empty provider shells must not remain in history');
+}
+
 console.log('Thought stream lifecycle integration checks passed.');

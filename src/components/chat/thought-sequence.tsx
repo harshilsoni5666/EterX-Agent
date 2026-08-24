@@ -3735,26 +3735,18 @@ const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpen
     log.agentStatus === 'working'
   );
   const identityStatus = isComplete ? 'completed' : isFailed ? 'error' : isWorking ? 'working' : 'idle';
-  const durationLabel = log.durationMs ? `${ Math.round(log.durationMs / 1000) }s` : null;
-  const stepLabel = log.stepCount ? `${ log.stepCount } steps` : null;
-  const metaText = isClosed
-    ? 'Closed by control'
-    : isPaused
-      ? 'Paused at a safe boundary'
-      : [durationLabel, stepLabel].filter(Boolean).join(' · ') || (isWorking ? 'Working' : 'Parallel worker');
   const statusLabel = isComplete ? 'completed' : isFailed ? 'failed' : isClosed ? 'closed' : isPaused ? 'paused' : isWorking ? 'working' : 'ready';
   return (
     <button
       type="button"
       onClick={() => onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || agentName)}
-      className="group/subagent my-1 flex max-w-full items-center gap-2 rounded-full px-1.5 py-1 text-left text-[12px] text-[#8F887E] transition-colors hover:bg-white/[0.035] hover:text-[#D7D1C8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
+      className="group/subagent my-[-2px] flex max-w-full items-center gap-2 rounded-full px-1.5 py-1 text-left text-[12px] text-[#8F887E] transition-colors hover:bg-white/[0.035] hover:text-[#D7D1C8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
       aria-label={`Open ${ agentName } conversation`}
     >
       <SubAgentIdentityIcon name={agentName} status={identityStatus} size={23} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="max-w-[220px] truncate font-medium text-[#C9C3BA]">{agentName}</span>
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${ isFailed ? 'bg-red-400/75' : isPaused ? 'bg-amber-300/70' : isWorking ? 'bg-emerald-300/75' : 'bg-white/30' }`} />
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${ isFailed ? 'bg-red-400/75' : isPaused ? 'bg-amber-300/70' : isWorking || isComplete ? 'bg-emerald-300/70' : 'bg-white/30' }`} />
       <span className="shrink-0">{statusLabel}</span>
-      {metaText && <span className="min-w-0 truncate text-[#716B63]">· {metaText}</span>}
     </button>
   );
 };
@@ -3778,7 +3770,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
 
   return (
     <div className="my-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#8D877F]">
-      {displayList.slice(0, 3).map((agent: { name: string; identity: string }, index: number) => {
+      {displayList.map((agent: { name: string; identity: string }, index: number) => {
         const { name, identity } = agent;
         return (
           <button
@@ -3793,8 +3785,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
           </button>
         );
       })}
-      {displayList.length > 3 && <span>and {displayList.length - 3} other subagents</span>}
-      <span>started working</span>
+      <span className="ml-0.5 shrink-0">started working</span>
     </div>
   );
 };
@@ -3805,21 +3796,15 @@ const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Su
   const agentName = log.agentName || log.subAgent || 'Sub-agent';
   const actionText = normalizeToolTraceText(log.text || log.currentAction || log.secondary || 'Working');
   const detailText = normalizeToolTraceText(log.secondary && log.secondary !== actionText ? log.secondary : log.task || '');
-  const stepLabel = log.agentStep ? `Step ${ log.agentStep }` : 'Delegated step';
 
   return (
     <div
-      className={`flex min-h-[40px] items-center gap-2.5 px-2.5 py-2 ${ ACTION_CARD_CLASS }`}
+      className="flex min-h-[38px] items-center gap-2.5 px-1.5 py-1.5"
     >
-      <SubAgentIdentityIcon name={agentName} status="working" size={26} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
+      <SubAgentIdentityIcon name={agentName} status="working" size={24} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="min-w-0 flex-1">
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="shrink-0 text-[11.5px] font-medium text-[#D8D1C8]">{agentName}</span>
-          <span className="shrink-0 rounded-full border border-white/[0.07] bg-white/[0.028] px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-[#8F877C]">
-            {stepLabel}
-          </span>
-        </span>
-          <span className="mt-0.5 block min-w-0 truncate text-[12px] font-medium leading-4 text-[#C8C1B8]">
+        <span className="block truncate text-[11.5px] font-medium text-[#D8D1C8]">{agentName}</span>
+        <span className="mt-0.5 block min-w-0 truncate text-[12px] leading-4 text-[#AFA89F]">
           {actionText}
         </span>
         {detailText && (
@@ -3834,11 +3819,8 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
   const [open, setOpen] = useState(false);
   const fromAgent = log.from || log.agentName || 'Agent';
   const toAgent = log.to || log.secondary || 'Main';
-  const msgType = log.messageType || log.commType || 'info_share';
   const subject = log.subject || log.text || '';
   const body = log.body || log.content || '';
-  const deliveryMode = log.deliveryMode || 'defer';
-  const priority = log.priority || 'normal';
   const preview = body && body !== subject ? body : '';
   const deliverAfter = Number(log.deliverAfter || 0) || undefined;
   const isScheduled = log.scheduled === true || (deliverAfter ? deliverAfter > Date.now() : false);
@@ -3847,61 +3829,38 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
     ? (toAgent && toAgent !== '*' ? toAgent : undefined)
     : fromAgent;
 
-  const typeIcon: Record<string, React.ReactNode> = {
-    info_share: <Hash className="h-3.5 w-3.5" />,
-    question: <MessageSquare className="h-3.5 w-3.5" />,
-    answer: <CheckCircle className="h-3.5 w-3.5" />,
-    alert: <AlertTriangle className="h-3.5 w-3.5" />,
-    coordination: <ArrowRight className="h-3.5 w-3.5" />,
-    discovery: <Search className="h-3.5 w-3.5" />,
-    progress: <Monitor className="h-3.5 w-3.5" />,
-    handoff: <CornerDownLeft className="h-3.5 w-3.5" />,
-  };
-  const priorityClass = priority === 'critical'
-    ? 'border-red-400/20 bg-red-500/[0.08] text-red-200'
-    : priority === 'high'
-      ? 'border-amber-300/18 bg-amber-400/[0.06] text-amber-100'
-      : 'border-white/[0.075] bg-white/[0.026] text-[#AFA79D]';
-
   return (
     <div className="overflow-hidden">
       <button
         type="button"
         onClick={() => preview ? setOpen(value => !value) : onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || focusAgent)}
         aria-expanded={preview ? open : undefined}
-         className={`eterx-agent-comm-card flex min-h-[46px] w-full items-start gap-2.5 rounded-[8px] px-2.5 py-2 bg-white/[0.01] border border-white/[0.065] text-left transition-colors hover:bg-white/[0.024] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/16 ${ ACTION_CARD_CLASS }`}
+        className="eterx-agent-comm-card flex min-h-[42px] w-full items-center gap-2.5 rounded-[9px] px-2 py-1.5 text-left transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
         aria-label={preview ? `${ open ? 'Collapse' : 'Expand' } message from ${ fromAgent }` : `View ${ focusAgent || 'agent activity' }`}
       >
-          <span className="eterx-agent-comm-identities mt-0.5 flex shrink-0 items-center gap-1">
-           <SubAgentIdentityIcon name={fromAgent} status="working" size={23} assetIndex={getSubAgentAssetIndex(assetIndexes, fromAgent) ?? 0} />
-           <ArrowRight className="h-3 w-3 text-[#6F685F]" />
-           <SubAgentIdentityIcon name={toAgent === '*' ? 'All agents' : toAgent} status="idle" size={23} assetIndex={getSubAgentAssetIndex(assetIndexes, toAgent === '*' ? 'All agents' : toAgent) ?? 1} />
+        <span className="eterx-agent-comm-identities flex shrink-0 items-center gap-1">
+          <SubAgentIdentityIcon name={fromAgent} status="working" size={22} assetIndex={getSubAgentAssetIndex(assetIndexes, fromAgent) ?? 0} />
+          <ArrowRight className="h-3 w-3 text-[#6F685F]" />
+          <SubAgentIdentityIcon name={toAgent === '*' ? 'All agents' : toAgent} status="idle" size={22} assetIndex={getSubAgentAssetIndex(assetIndexes, toAgent === '*' ? 'All agents' : toAgent) ?? 1} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="flex min-w-0 items-center gap-1.5">
             <span className="text-[11.5px] font-semibold text-[#D8D1C7]">{fromAgent}</span>
             <ArrowRight className="h-3 w-3 text-[#6F685F]" />
-            <span className="text-[11.5px] font-semibold text-[#D8D1C7]">{toAgent === '*' ? 'All agents' : toAgent}</span>
-            <span className="inline-flex items-center gap-1 rounded-[6px] border border-white/[0.075] bg-white/[0.026] px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-[#9C948B]">
-              {typeIcon[msgType] || <MessageSquare className="h-3.5 w-3.5" />}
-              {msgType.replace('_', ' ')}
-            </span>
-            <span className={`rounded-[6px] border px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] ${ priorityClass }`}>{priority}</span>
-            <span className="rounded-[6px] border border-white/[0.065] bg-black/10 px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-[#827A70]">{deliveryMode}</span>
+            <span className="min-w-0 truncate text-[11.5px] font-semibold text-[#D8D1C7]">{toAgent === '*' ? 'All agents' : toAgent}</span>
             {isScheduled && (
-              <span className="rounded-[6px] border border-sky-300/16 bg-sky-400/[0.055] px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-sky-100/85">
+              <span className="shrink-0 text-[10px] font-medium text-sky-100/65">
                 scheduled
               </span>
             )}
             {isSending && (
-              <span className="inline-flex items-center gap-1 rounded-[6px] border border-sky-300/16 bg-sky-400/[0.055] px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-[0.08em] text-sky-100/85">
+              <span className="inline-flex shrink-0 items-center gap-1 text-[10px] font-medium text-sky-100/70">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-200/80" />
                 sending
               </span>
             )}
           </span>
-          {subject && <span className="mt-0.5 block truncate text-[11.5px] font-medium text-[#BDB5AB]">{subject}</span>}
-          {preview && !open && <span className="mt-0.5 block truncate text-[11px] text-[#817970]">{preview}</span>}
+          {subject && <span className="mt-0.5 block truncate text-[11.5px] text-[#AFA89F]">{subject}</span>}
         </span>
         {preview && <ChevronRight className={`mt-1 h-3.5 w-3.5 shrink-0 text-[#6F685F] transition-transform ${ open ? 'rotate-90' : '' }`} />}
       </button>

@@ -1300,7 +1300,7 @@ export class SynapseGraph {
     // Phase 2: bounded plasticity. Durable rules, validated evidence, recent
     // work, and records owned by the active topic are protected. The lowest
     // utility old observations are retired; their durable outcomes already
-    // live in verifiedCompletions and the Lifetime Brain.
+    // live in verifiedCompletions and the durable context fabric.
     const activeRecordIds = new Set((this.getActiveNode()?.recordIds || []).slice(-30));
     const recentRecordIds = new Set(
       [...this.state.records.values()]

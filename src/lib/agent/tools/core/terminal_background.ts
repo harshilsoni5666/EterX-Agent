@@ -476,14 +476,18 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   });
 }
 
-export async function getTerminalBackgroundTaskStatus(taskId: string, ownerChatId?: string): Promise<any | null> {
+export async function getTerminalBackgroundTaskStatus(
+  taskId: string,
+  ownerChatId?: string,
+  sinceOffset?: number,
+): Promise<any | null> {
   taskId = safeTaskId(taskId);
   if (!taskId) return null;
   const requestedOwner = String(ownerChatId || '').trim();
   const inMemory = terminalTasks.get(taskId);
   if (inMemory) {
     if (requestedOwner && inMemory.ownerChatId !== requestedOwner) return null;
-    return buildStatusResult(inMemory);
+    return buildStatusResult(inMemory, sinceOffset);
   }
 
   const statusFile = resolveUnder(TASKS_DIR, `${taskId}_status.json`);
@@ -494,7 +498,8 @@ export async function getTerminalBackgroundTaskStatus(taskId: string, ownerChatI
   const outputFile = status.outputFile && isPathInside(TASKS_DIR, path.resolve(status.outputFile))
     ? status.outputFile
     : resolveUnder(TASKS_DIR, `${taskId}_output.txt`);
-  const output = await readOutputTail(outputFile);
+  const persistedOutputLimit = Math.max(4_000, Math.min(256_000, Number(status.maxOutputChars) || 24_000));
+  const output = await readOutputTail(outputFile, persistedOutputLimit);
   let persistedStatus = status.status || 'unknown';
   if (persistedStatus === 'running' && (!status.pid || !isProcessAlive(status.pid))) {
     // A status file can outlive the Node process that launched it. Persist the
@@ -506,6 +511,11 @@ export async function getTerminalBackgroundTaskStatus(taskId: string, ownerChatI
     status.completedAt = status.completedAt || Date.now();
     await writeJsonAtomic(statusFile, status).catch(() => undefined);
   }
+  const outputWindow = buildOutputWindow(
+    output,
+    Number(status.totalOutputChars) || output.length,
+    sinceOffset,
+  );
   return {
     success: persistedStatus === 'completed',
     terminalTask: true,
@@ -523,14 +533,17 @@ export async function getTerminalBackgroundTaskStatus(taskId: string, ownerChatI
     startedAt: status.startedAt,
     completedAt: status.completedAt,
     elapsedMs: (status.completedAt || Date.now()) - status.startedAt,
-    stdout: output,
-    stderr: status.stderr || '',
-    output,
+    stdout: outputWindow.text,
+    stderr: '',
+    output: outputWindow.text,
+    outputStart: outputWindow.start,
+    outputEnd: outputWindow.end,
+    hasNewOutput: outputWindow.hasNewOutput,
     totalOutputChars: status.totalOutputChars ?? output.length,
     droppedOutputChars: status.droppedOutputChars ?? 0,
     message: `Terminal task ${taskId}: ${persistedStatus} | "${status.description || status.command}"`,
     nextActionNote: persistedStatus === 'running'
-      ? `Use wait_timer, then workspace_run_command mode="check" with taskId="${taskId}". The process was restored from disk, so control may be limited after server restart.`
+      ? `Use wait_timer, then workspace_run_command mode="check" with taskId="${taskId}" and sinceOffset=${outputWindow.end}. The process was restored from disk, so control may be limited after server restart.`
       : 'Read the final output and continue from the result.'
   };
 }
@@ -814,7 +827,8 @@ function buildTerminalResult(task: TerminalBackgroundTask): any {
   };
 }
 
-function buildStatusResult(task: TerminalBackgroundTask): any {
+function buildStatusResult(task: TerminalBackgroundTask, sinceOffset?: number): any {
+  const outputWindow = buildOutputWindow(task.output, task.totalOutputChars, sinceOffset);
   return {
     success: task.status === 'completed',
     terminalTask: true,
@@ -832,14 +846,17 @@ function buildStatusResult(task: TerminalBackgroundTask): any {
     startedAt: task.startedAt,
     completedAt: task.completedAt,
     elapsedMs: (task.completedAt || Date.now()) - task.startedAt,
-    stdout: task.stdout,
-    stderr: task.stderr,
-    output: visibleOutput(task),
+    stdout: outputWindow.text,
+    stderr: '',
+    output: outputWindow.text,
+    outputStart: outputWindow.start,
+    outputEnd: outputWindow.end,
+    hasNewOutput: outputWindow.hasNewOutput,
     totalOutputChars: task.totalOutputChars,
     droppedOutputChars: task.droppedOutputChars,
     message: `Terminal task ${task.id}: ${task.status} | "${task.description}" | Duration: ${(((task.completedAt || Date.now()) - task.startedAt) / 1000).toFixed(1)}s`,
     nextActionNote: task.status === 'running'
-      ? `Use wait_timer for ${secondsFromTimeoutMs(task.checkInMs)} seconds, then workspace_run_command mode="check" with taskId="${task.id}".`
+      ? `Use wait_timer for ${secondsFromTimeoutMs(task.checkInMs)} seconds, then workspace_run_command mode="check" with taskId="${task.id}" and sinceOffset=${outputWindow.end}.`
       : 'Read the final output and continue from the result.'
   };
 }
@@ -863,6 +880,25 @@ function compactTask(task: TerminalBackgroundTask): any {
 function visibleOutput(task: TerminalBackgroundTask): string {
   if (task.droppedOutputChars <= 0) return task.output;
   return `...[${task.droppedOutputChars} earlier chars truncated from terminal buffer]...\n${task.output}`;
+}
+
+function buildOutputWindow(
+  retainedOutput: string,
+  totalOutputChars: number,
+  sinceOffset?: number,
+): { text: string; start: number; end: number; hasNewOutput: boolean } {
+  const total = Math.max(retainedOutput.length, Math.floor(Number(totalOutputChars) || 0));
+  const retainedStart = Math.max(0, total - retainedOutput.length);
+  const requested = Number.isFinite(Number(sinceOffset))
+    ? Math.max(0, Math.min(total, Math.floor(Number(sinceOffset))))
+    : retainedStart;
+  const start = Math.max(retainedStart, requested);
+  const delta = retainedOutput.slice(start - retainedStart);
+  const omitted = Math.max(0, retainedStart - requested);
+  const text = omitted > 0
+    ? `...[${omitted} requested terminal chars are no longer retained]...\n${delta}`
+    : delta;
+  return { text, start, end: total, hasNewOutput: delta.length > 0 };
 }
 
 function terminalTraceSnapshotOutput(task: TerminalBackgroundTask, maxChars = 1024 * 1024): string {
@@ -930,12 +966,10 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
   };
 }
 
-async function readOutputTail(filePath: string, maxChars = 12_000): Promise<string> {
+async function readOutputTail(filePath: string, maxChars = 24_000): Promise<string> {
   try {
     const content = await fs.readFile(filePath, 'utf8');
-    return content.length > maxChars
-      ? `...[${content.length - maxChars} earlier chars truncated from terminal output]...\n${content.slice(-maxChars)}`
-      : content;
+    return content.length > maxChars ? content.slice(-maxChars) : content;
   } catch {
     return '';
   }

@@ -535,7 +535,7 @@ This is what makes the agent THINK, not just respond. Include:
 - REVISION CONTINUITY: "When the user asks to change prior work in the same chat, locate and edit the existing artifact or decision in place. Preserve unaffected work and verify the updated result."
 
 ## HOST UI CONTRACT
-- Work notes are short natural sentences for meaningful phases, findings, recovery, or verification—not one narration per tool call.
+- Work notes are optional natural progress for meaningful phases, findings, recovery, or verification. On longer work, let one note lead a coherent action batch and add another at the next meaningful phase; use first person for the agent's own actions when relevant, without a fixed opener or one narration per tool call.
 - Every tool call supplies a precise 2-4 word uiActionText and a valid uiIcon so the shared EterX timeline renders correctly.
 - Never invent UI state. Use exact runtime paths, tool statuses, agent identities, and result metadata.
 - The selected custom agent owns its normal tool cards in the main feed. Use sub-agent identity only for a real delegated worker.
@@ -1122,7 +1122,7 @@ Introduce yourself as "${profile.name || profile.agentId}" if asked who you are.
 Your custom identity changes the specialist behavior, not the quality of the host runtime. You operate through the same conversation history, provider routing, workspace context, attachments, stopping, recovery, persistence, work timeline, and tool-result UI used by the main agent.
 
 - Treat earlier user turns, answers, tool evidence, and artifact paths in this chat as active continuity. When the user asks for a revision, update the existing artifact or decision in place instead of starting an unrelated replacement.
-- Keep UI communication useful: a work note is a brief natural sentence for a meaningful phase change; a tool card uses the required uiActionText and uiIcon arguments. Never expose private reasoning or convert a raw action label into awkward prose.
+- Keep UI communication useful: an optional work note adds natural context around meaningful progress, with first person for your own actions when relevant. During longer work, let one note lead its related action batch and add another when evidence or the phase changes; a tool card uses the separate uiActionText and uiIcon arguments. Never force an opening or per-call cadence, expose private reasoning, or convert an action label into prose.
 - Use the exact path, identifier, agent name, tool result, and status returned by the runtime. Do not invent UI state or claim that a card, file, setting, message, or action exists unless the runtime confirms it.
 - Your own tool calls remain owned by this custom agent in the main chat feed. Reserve sub-agent identity fields for real delegated workers so the UI does not create false agent tabs.
 - The host runtime's security, permission, cancellation, trace, and output contracts remain authoritative even if profile text conflicts with them.

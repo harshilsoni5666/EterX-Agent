@@ -7,7 +7,6 @@ import {
   buildProviderConversationCacheId,
   buildPromptCacheIdentity,
   normalizeProviderCacheUsage,
-  removeOpenAIPromptCachePolicy,
   resolveProviderPromptCacheMode,
 } from '../src/lib/agent/provider-prompt-cache';
 
@@ -46,6 +45,8 @@ async function testScopedToolCache(): Promise<void> {
 }
 
 async function testRemoteContextCache(): Promise<void> {
+  const previousExplicitCacheFlag = process.env.ETERX_ENABLE_EXPLICIT_GEMINI_CACHE;
+  process.env.ETERX_ENABLE_EXPLICIT_GEMINI_CACHE = '1';
   const calls = { create: 0, delete: 0 };
   const ai = {
     caches: {
@@ -84,6 +85,8 @@ async function testRemoteContextCache(): Promise<void> {
   );
 
   invalidateAgentCacheForKey(apiKey);
+  if (previousExplicitCacheFlag === undefined) delete process.env.ETERX_ENABLE_EXPLICIT_GEMINI_CACHE;
+  else process.env.ETERX_ENABLE_EXPLICIT_GEMINI_CACHE = previousExplicitCacheFlag;
 }
 
 function testProviderPromptCachePolicy(): void {
@@ -126,24 +129,11 @@ function testProviderPromptCachePolicy(): void {
     identity,
   );
   assert.equal(params.stream_options.include_usage, true);
-  assert.equal(params.prompt_cache_retention, 'in_memory');
-  removeOpenAIPromptCachePolicy(params);
-  assert.equal(params.prompt_cache_key, undefined);
-
-  const explicitParams: Record<string, any> = { messages: [] };
-  applyOpenAIPromptCachePolicy(explicitParams, {
-    model: 'gpt-5.6',
-    staticPrompt: common.staticPrompt,
-    tools: common.tools,
-  });
-  assert.deepEqual(explicitParams.prompt_cache_options, { mode: 'explicit', ttl: '30m' });
-  assert.equal(explicitParams.prompt_cache_retention, undefined);
-  assert.deepEqual(
-    buildOpenAISystemPromptContent('gpt-5.6', 'stable', 'dynamic', true),
-    [
-      { type: 'text', text: 'stable', prompt_cache_breakpoint: { mode: 'explicit' } },
-      { type: 'text', text: 'dynamic' },
-    ],
+  assert.equal(params.prompt_cache_retention, 'in-memory');
+  assert.equal(params.prompt_cache_options, undefined);
+  assert.equal(
+    buildOpenAISystemPromptContent('provider-model-id', 'stable', 'dynamic', true),
+    'stable\n\ndynamic',
   );
   assert.equal(
     buildProviderConversationCacheId('grok', 'chat-a'),
@@ -172,6 +162,9 @@ function testProviderPromptCachePolicy(): void {
       cachedTokens: 1024,
       uncachedPromptTokens: 176,
       cacheHitRatio: 1024 / 1200,
+      visibleOutputTokens: 40,
+      generatedTokens: 40,
+      providerReportedTotalTokens: 0,
     },
   );
 }

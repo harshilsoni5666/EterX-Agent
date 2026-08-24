@@ -6,6 +6,8 @@ import { getPlanEngine } from '../../plan-execution-engine';
 import { getEterxWorkspaceDir } from '../../storage-paths';
 import { getAgentConversationScope } from '../../context-scope';
 import { stableScopeSegment } from '../../context-scope';
+import { globalSessionManager } from '../../session';
+import { readTaskTracker, trackerToTrace, writeTaskTrackerState, type TaskTrackerData, type TaskTrackerStep } from '../../task-tracker-store';
 
 /**
  * Task Checkpoint Tool v2.0
@@ -124,7 +126,8 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
           result = planEngine.executeAction({ type: 'advance', reason: input.reason || '', evidence: input.evidence });
           break;
         case 'skip':
-          result = planEngine.executeAction({ type: 'skip', reason: input.reason || 'Skipped by model' });
+          if (!String(input.reason || '').trim()) return { success: false, message: 'reason is required for "skip" action.' };
+          result = planEngine.executeAction({ type: 'skip', reason: input.reason });
           break;
         case 'fail':
           if (!String(input.reason || '').trim()) return { success: false, message: 'reason is required for "fail" action.' };
@@ -140,90 +143,77 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
           result = planEngine.executeAction({ type: 'revise', reason: input.reason || '', steps: input.revisedSteps || [], goal: input.revisedGoal });
           break;
         case 'complete':
-          result = planEngine.executeAction({ type: 'complete', summary: input.summary || input.reason || 'Plan completed', force: Boolean(input.force), evidence: input.evidence });
+          result = planEngine.executeAction({ type: 'complete', summary: input.summary || input.reason || '', force: Boolean(input.force), evidence: input.evidence });
           break;
         default:
           return { success: false, message: 'Unknown plan action.' };
       }
 
       // Sync with session manager and task tracker
+      let trackerTrace: TaskTrackerData | null = null;
       try {
-        const { globalSessionManager } = require('../../session');
-        const { readTaskTracker, writeTaskTrackerJson } = require('../../task-tracker-store');
         if (chatId) {
           const planState = planEngine.serialize();
 
-          // Sync plan engine state → task tracker JSON
-          const tracker = readTaskTracker(chatId);
-          if (tracker && planState) {
-            const data = JSON.parse(JSON.stringify(tracker.data));
-            for (const engineStep of planState.steps) {
-              const trackerStep = data.steps?.find((s: any) => s.step === engineStep.step);
-              if (trackerStep) {
-                if (engineStep.status === 'done') trackerStep.status = 'done';
-                else if (engineStep.status === 'skipped') trackerStep.status = 'skipped';
-                else if (engineStep.status === 'active') trackerStep.status = 'in_progress';
-              }
-            }
-            data.updatedAt = Date.now();
-            if (result.planCompleted) data.status = 'completed';
-            writeTaskTrackerJson(chatId, data).catch(() => {});
-          }
-
-          // Sync plan engine state → session manager
           if (planState) {
+            const existing = readTaskTracker(chatId)?.data;
+            const data: TaskTrackerData = {
+              goal: planState.goal,
+              chatId,
+              createdAt: existing?.createdAt || planState.createdAt,
+              updatedAt: Date.now(),
+              complexity: existing?.complexity || 'moderate',
+              estimatedMinutes: existing?.estimatedMinutes || 0,
+              status: planState.status === 'completed' ? 'completed' : planState.status === 'failed' ? 'failed' : 'in_progress',
+              steps: planState.steps.map((step): TaskTrackerStep => ({
+                id: step.id,
+                step: step.step,
+                name: step.name,
+                description: step.description,
+                tools: step.tools,
+                done_when: step.done_when,
+                depends_on: step.depends_on,
+                priority: step.priority,
+                step_type: step.step_type,
+                expected_output: step.expected_output,
+                risk: step.risk,
+                artifacts: step.artifacts,
+                status: step.status === 'active' ? 'in_progress'
+                  : step.status === 'ready' ? 'pending'
+                    : step.status === 'blocked' ? 'blocked'
+                    : step.status,
+                startedAt: step.startedAt,
+                completedAt: step.completedAt,
+                completionReason: step.completionReason,
+                completionEvidence: step.completionEvidence,
+                failureReason: step.failureReason,
+              })),
+            };
+            await writeTaskTrackerState(chatId, data);
+            trackerTrace = data;
             globalSessionManager.setExecutionPlanForChat(chatId, planState);
             globalSessionManager.setTaskPlanForChat(
               chatId,
               planState.steps.map((s: any) => ({
                 name: s.name,
-                status: s.status === 'done' ? 'done' as const : 'pending' as const,
+                status: s.status === 'done' || s.status === 'skipped' ? 'done' as const : 'pending' as const,
                 description: s.description,
               }))
             );
+            await globalSessionManager.saveForChat(chatId);
           }
         }
-      } catch { /* sync is advisory */ }
+      } catch (syncError: any) {
+        console.warn(`[Tool: task_checkpoint] Plan state sync failed: ${String(syncError?.message || syncError)}`);
+      }
 
       // Emit UI-compatible trace so the task dock updates
       const emitTrace = typeof context?._onTrace === 'function' ? context._onTrace : null;
-      if (emitTrace) {
-        const planState = planEngine.serialize();
-        if (planState) {
-          const steps = planState.steps;
-          const completedSteps = steps.filter(s => s.status === 'done').length;
-          const activeStep = steps.find(s => s.status === 'active') || steps.find(s => s.status === 'ready') || null;
-          emitTrace({
-            type: 'task_plan',
-            text: result.planCompleted ? 'Task plan complete' : 'Task plan updated',
-            phase: result.planCompleted ? 'complete' : 'progress',
-            goal: planState.goal,
-            status: planState.status,
-            complexity: 'moderate',
-            estimatedMinutes: 0,
-            completedSteps,
-            totalSteps: steps.length,
-            activeStepId: activeStep?.id || null,
-            activeStepName: activeStep?.name || null,
-            updatedAt: Date.now(),
-            steps: steps.map(s => ({
-              id: s.id,
-              step: s.step,
-              name: s.name,
-              description: s.description,
-              tools: s.tools,
-              done_when: s.done_when,
-              depends_on: s.depends_on,
-              priority: s.priority,
-              step_type: s.step_type,
-              expected_output: s.expected_output,
-              risk: s.risk,
-              artifacts: s.artifacts,
-              status: s.status === 'active' ? 'in_progress' : s.status === 'ready' ? 'pending' : s.status,
-              completedAt: s.completedAt,
-            })),
-          });
-        }
+      if (emitTrace && trackerTrace) {
+        emitTrace(trackerToTrace(
+          trackerTrace,
+          trackerTrace.status === 'completed' ? 'complete' : trackerTrace.status === 'failed' ? 'failed' : 'progress',
+        ));
       }
 
       return {

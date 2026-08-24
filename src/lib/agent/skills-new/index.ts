@@ -21,10 +21,10 @@ export const SKILL_CATALOG = Object.freeze(
 
 function compactSkillRoutingDescription(description: string, fallback: string): string {
   const normalized = String(description || fallback).replace(/\s+/g, ' ').trim();
-  if (normalized.length <= 180) return normalized;
+  if (normalized.length <= 120) return normalized;
   const firstSentence = normalized.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim() || normalized;
-  if (firstSentence.length <= 180) return firstSentence;
-  return `${normalized.slice(0, 177).replace(/\s+\S*$/, '').trim()}...`;
+  if (firstSentence.length <= 120) return firstSentence;
+  return `${normalized.slice(0, 117).replace(/\s+\S*$/, '').trim()}...`;
 }
 
 export const SKILL_PATHWAYS_PROMPT = [

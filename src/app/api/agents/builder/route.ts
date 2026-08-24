@@ -2,7 +2,6 @@ import { NextRequest } from 'next/server';
 import { AgentRunner } from '../../../../lib/agent/agent-runner';
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
-import { resolveModelName } from '../../../../lib/agent/model-routing';
 import {
   cleanString,
   isSafeAgentId,
@@ -28,7 +27,7 @@ export async function POST(req: NextRequest) {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
 
-    const { messages, agentId = 'standalone-builder' } = await readJsonObject(req);
+    const { messages, agentId = 'standalone-builder', model } = await readJsonObject(req);
     const safeAgentId = cleanString(agentId, 96) || 'standalone-builder';
     if (!isSafeAgentId(safeAgentId)) {
       return jsonError('A valid agentId is required.', 400);
@@ -37,6 +36,10 @@ export async function POST(req: NextRequest) {
     const normalized = normalizeRunnerMessages(messages);
     if (normalized.error || !normalized.messages) {
       return jsonError(normalized.error || 'Messages array is required.', 400);
+    }
+    const selectedModel = cleanString(model, 160);
+    if (!/^(?:models\/)?gemini[-_]/i.test(selectedModel)) {
+      return jsonError('Select an added Gemini model before running the standalone builder.', 400);
     }
 
     const runtimeSettings = buildScopedRuntimeSettings();
@@ -57,7 +60,7 @@ export async function POST(req: NextRequest) {
             agentId: safeAgentId,
             runtime: 'agent_builder',
             mode: 'think',
-            model: resolveModelName('think', runtimeSettings),
+            model: selectedModel,
             preferredGeminiApiKey: runtimeSettings.preferredGeminiApiKey,
             runtimeSettings,
             chatId: `agent_builder_${safeAgentId}`,

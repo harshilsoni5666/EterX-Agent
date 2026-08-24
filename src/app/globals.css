@@ -10,7 +10,7 @@
     --muted: #F3F2EF;
     --muted-foreground: #77736C;
 
-    --border: rgba(31, 31, 29, 0.14);
+    --border: rgba(31, 31, 29, 0.09);
 
     --primary: #1F1F1D;
     --primary-foreground: #FFFFFF;
@@ -24,11 +24,11 @@
     --input-bg: #FFFFFF;
     --sidebar-bg: #FAFAF8;
     --sidebar-shell-bg: #FAFAF8;
-    --sidebar-shell-border: rgba(31, 31, 29, 0.10);
+    --sidebar-shell-border: rgba(31, 31, 29, 0.07);
     --sidebar-shell-shadow: none;
     --sidebar-shell-sheen: linear-gradient(90deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.22) 36%, transparent 100%);
     --sidebar-glow-start: clamp(320px, 36vh, 430px);
-    --eterx-main-panel-border: rgba(31, 31, 29, 0.12);
+    --eterx-main-panel-border: rgba(31, 31, 29, 0.075);
     --sidebar-shell-radius: 24px;
     --eterx-shell-sidebar-width: 256px;
     --eterx-shell-topbar-height: 38px;
@@ -90,7 +90,7 @@
     --muted: #1A1A1A;
     --muted-foreground: #8A8A8A;
 
-    --border: rgba(255, 255, 255, 0.08);
+    --border: rgba(255, 255, 255, 0.052);
 
     --primary: #ffffff;
     --primary-foreground: #000000;
@@ -104,11 +104,11 @@
     --input-bg: #1A1A1A;
     --sidebar-bg: #101010;
     --sidebar-shell-bg: #101010;
-    --sidebar-shell-border: rgba(255, 255, 255, 0.06);
+    --sidebar-shell-border: rgba(255, 255, 255, 0.045);
     --sidebar-shell-shadow: none;
     --sidebar-shell-sheen: linear-gradient(90deg, rgba(255, 255, 255, 0.036), rgba(255, 255, 255, 0.012) 34%, transparent 100%);
     --sidebar-glow-start: 0px;
-    --eterx-main-panel-border: rgba(255, 255, 255, 0.085);
+    --eterx-main-panel-border: rgba(255, 255, 255, 0.052);
     --sidebar-shell-radius: 24px;
     --eterx-shell-sidebar-width: 256px;
     --eterx-shell-topbar-height: 38px;
@@ -297,17 +297,25 @@
 
 
   .eterx-sidebar-closed-toggle-shell {
-    position: absolute;
-    top: 0;
-    left: var(--eterx-native-controls-left);
-    z-index: 140;
-    width: 56px;
+    position: relative;
+    z-index: 1;
+    width: var(--eterx-sidebar-control-width);
+    flex: 0 0 var(--eterx-sidebar-control-width);
     height: var(--eterx-shell-topbar-height);
     display: flex;
     align-items: center;
     justify-content: center;
+    margin-left: var(--eterx-native-controls-left);
     background: transparent;
     -webkit-app-region: drag;
+  }
+
+  .eterx-topbar-sidebar-spacer {
+    width: calc(var(--eterx-sidebar-control-width) + var(--eterx-native-controls-left));
+  }
+
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-topbar-sidebar-spacer {
+    width: var(--eterx-shell-sidebar-width);
   }
 
   .eterx-app-shell[data-platform="macos"] .eterx-sidebar-topbar {
@@ -407,19 +415,13 @@
     border: 1px solid var(--eterx-main-panel-border);
     border-top-left-radius: var(--eterx-main-panel-left-radius);
     border-bottom-left-radius: var(--eterx-main-panel-left-radius);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 0 0 1px rgba(0, 0, 0, 0.10);
+    box-shadow: none;
     transition: background 900ms ease, border-color 900ms ease, box-shadow 900ms ease;
   }
 
   .eterx-main-panel::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    z-index: 30;
-    pointer-events: none;
-    border: 1px solid var(--eterx-main-panel-border);
-    border-radius: inherit;
-    box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.035);
+    content: none;
+    display: none;
   }
 
   .eterx-main-panel-sidebar-closed {
@@ -2765,52 +2767,6 @@
   }
 }
 
-.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls {
-  flex-wrap: nowrap;
-}
-
-.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls-left {
-  flex: 1 1 auto;
-  width: auto;
-  min-width: 0;
-}
-
-.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls-right {
-  flex: 0 0 auto;
-  min-width: 0;
-  grid-template-columns: repeat(4, 38px);
-}
-
-.eterx-composer-shell[data-compressed="true"] .eterx-agent-selector,
-.eterx-composer-shell[data-compressed="true"] .eterx-model-selector {
-  width: 38px;
-}
-
-.eterx-composer-shell[data-compressed="true"] .eterx-agent-button,
-.eterx-composer-shell[data-compressed="true"] .eterx-model-button {
-  width: 38px;
-  padding-left: 0 !important;
-  padding-right: 0 !important;
-}
-
-.eterx-composer-shell[data-compressed="true"] .eterx-agent-button>div,
-.eterx-composer-shell[data-compressed="true"] .eterx-model-button>div {
-  width: 100%;
-  height: 100%;
-  align-items: center;
-  justify-content: center;
-}
-
-.eterx-composer-shell[data-compressed="true"] .eterx-selector-icon {
-  display: block;
-  margin: auto;
-}
-
-.eterx-composer-shell[data-compressed="true"] .eterx-selector-label,
-.eterx-composer-shell[data-compressed="true"] .eterx-selector-chevron {
-  display: none;
-}
-
 @container (max-width: 430px) {
   .eterx-composer-shell[data-compressed="true"] .eterx-chat-controls {
     align-items: center;
@@ -3308,9 +3264,9 @@
 .eterx-agent-tab-active-bg {
   position: absolute;
   inset: 0;
-  border: 1px solid rgba(255, 255, 255, 0.10);
+  border: 0;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.065);
+  background: rgba(255, 255, 255, 0.045);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   box-shadow: none;
@@ -3325,8 +3281,8 @@
 }
 
 .eterx-agent-tab-active:hover .eterx-agent-tab-active-bg {
-  border-color: rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.09);
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.065);
   box-shadow: none;
 }
 
@@ -3376,15 +3332,39 @@
   flex: 0 0 auto;
   max-width: none;
   padding: 0 9px;
-  color: rgba(255, 255, 255, 0.6);
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.52);
+  background: transparent;
+  border: 0;
 }
 
 .eterx-agent-tab-overflow:hover {
   color: #FFFFFF;
-  background: rgba(255, 255, 255, 0.15);
-  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: transparent;
+}
+
+.eterx-agent-overflow-menu {
+  padding: 10px;
+  border: 0;
+  border-radius: 20px;
+  background: #252525;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.34);
+}
+
+.eterx-agent-overflow-item {
+  min-height: 40px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 11px;
+  color: rgba(255, 255, 255, 0.70);
+  background: transparent;
+}
+
+.eterx-agent-overflow-item:hover,
+.eterx-agent-overflow-item:focus-visible {
+  color: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.055);
+  outline: none;
 }
 
 
@@ -5549,6 +5529,72 @@
 
 .eterx-context-usage-trigger {
   color: #929292;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.eterx-context-usage-trigger:hover,
+.eterx-context-usage-trigger[aria-expanded="true"] {
+  color: #E2E2E2;
+}
+
+.eterx-context-usage-panel {
+  --context-panel-title: #F2F2F2;
+  --context-panel-copy: #D7D7D7;
+  --context-panel-muted: #A6A6A6;
+  max-height: min(330px, calc(100vh - 170px));
+  border-color: rgba(255, 255, 255, 0.105) !important;
+  background: rgba(24, 24, 24, 0.985) !important;
+  color: var(--context-panel-copy);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.42) !important;
+  backdrop-filter: blur(24px);
+  overscroll-behavior: contain;
+}
+
+.eterx-context-panel-title,
+.eterx-context-panel-percent {
+  color: var(--context-panel-title);
+}
+
+.eterx-context-panel-total,
+.eterx-context-panel-row-value {
+  color: var(--context-panel-muted);
+}
+
+.eterx-context-panel-close {
+  color: #8E8E8E;
+  background: transparent;
+}
+
+.eterx-context-panel-close:hover {
+  color: #F2F2F2;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.eterx-context-panel-track {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.eterx-context-provider-metric {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.045);
+}
+
+.eterx-context-provider-metric-label {
+  color: #858585;
+}
+
+.eterx-context-provider-metric-value {
+  color: var(--context-panel-copy);
+}
+
+.eterx-context-panel-row:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.eterx-context-panel-row-label {
+  color: var(--context-panel-copy);
 }
 
 :root[data-theme="light"] body .eterx-tooltip-card {
@@ -5571,6 +5617,47 @@
 :root[data-theme="light"] body .eterx-context-usage-trigger {
   color: #77736D;
 }
+
+:root[data-theme="light"] body .eterx-context-usage-trigger:hover,
+:root[data-theme="light"] body .eterx-context-usage-trigger[aria-expanded="true"] {
+  color: #2D2B28 !important;
+}
+
+:root[data-theme="light"] body .eterx-context-usage-panel {
+  --context-panel-title: #242321;
+  --context-panel-copy: #34322F;
+  --context-panel-muted: #69655F;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  background: rgba(255, 255, 255, 0.99) !important;
+  box-shadow: 0 16px 44px rgba(31, 31, 29, 0.16) !important;
+}
+
+:root[data-theme="light"] body .eterx-context-panel-close {
+  color: #77736D;
+}
+
+:root[data-theme="light"] body .eterx-context-panel-close:hover {
+  color: #242321;
+  background: rgba(31, 31, 29, 0.065);
+}
+
+:root[data-theme="light"] body .eterx-context-panel-track {
+  background: rgba(31, 31, 29, 0.11);
+}
+
+:root[data-theme="light"] body .eterx-context-provider-metric {
+  background: rgba(31, 31, 29, 0.035);
+  border-color: rgba(31, 31, 29, 0.045);
+}
+
+:root[data-theme="light"] body .eterx-context-provider-metric-label {
+  color: #7A766F;
+}
+
+:root[data-theme="light"] body .eterx-context-panel-row:hover {
+  background: rgba(31, 31, 29, 0.035);
+}
+
 
 .eterx-connectors-logo-img,
 .eterx-selector-icon,
@@ -7547,47 +7634,6 @@
   border-radius: 18px !important;
 }
 
-/* Responsive adjustments for narrow/minimized window sizes */
-@container (max-width: 530px) {
-
-  .eterx-selector-label,
-  .eterx-selector-chevron,
-  .eterx-selector-chevron-wrapper {
-    display: none !important;
-  }
-
-  .eterx-selector-icon {
-    display: block !important;
-    margin: auto !important;
-  }
-
-  .eterx-agent-selector,
-  .eterx-model-selector,
-  .eterx-agent-button,
-  .eterx-model-button {
-    width: 38px !important;
-    max-width: 38px !important;
-    padding-left: 0 !important;
-    padding-right: 0 !important;
-    justify-content: center !important;
-  }
-
-  .eterx-chat-controls {
-    flex-wrap: nowrap !important;
-  }
-}
-
-@container (max-width: 380px) {
-
-  .eterx-agent-selector,
-  .eterx-model-selector,
-  .eterx-agent-button,
-  .eterx-model-button {
-    width: 34px !important;
-    max-width: 34px !important;
-  }
-}
-
 /* Draggable regions for Electron frame */
 .eterx-main-header {
   -webkit-app-region: drag !important;
@@ -7628,10 +7674,13 @@
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  padding-left: 12px !important;
-  padding-right: 12px !important;
+  flex: 0 0 auto;
+  padding-left: 10px !important;
+  padding-right: 10px !important;
   border-radius: 8px !important;
+  font-size: 13px !important;
   font-weight: 500 !important;
+  white-space: nowrap;
   color: var(--eterx-topbar-text) !important;
   transition: background-color 120ms ease-out, color 120ms ease-out !important;
 }
@@ -7639,6 +7688,72 @@
 .eterx-topbar-btn:hover {
   background: var(--eterx-topbar-hover-bg) !important;
   color: var(--eterx-topbar-hover-text) !important;
+}
+
+/* Thread switching uses the same soft, borderless pill in both themes. The
+   stronger fill keeps the hover state discoverable on the dark header while
+   the full radius matches the compact selector style used elsewhere. */
+.eterx-thread-tab {
+  border: 0 !important;
+}
+
+:root[data-theme="light"] .eterx-thread-tab:hover,
+:root[data-theme="light"] .eterx-thread-tab[data-open="true"] {
+  background: rgba(31, 31, 29, 0.075) !important;
+  border-radius: 999px !important;
+  color: #24221F !important;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .eterx-thread-tab:hover,
+:root[data-theme="dark"] .eterx-thread-tab[data-open="true"],
+.dark .eterx-thread-tab:hover,
+.dark .eterx-thread-tab[data-open="true"] {
+  background: rgba(255, 255, 255, 0.115) !important;
+  border-radius: 999px !important;
+  color: #F8F4EE !important;
+  box-shadow: none;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item:hover,
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible,
+:root[data-theme="light"] .eterx-thread-switcher-item[data-active="true"],
+:root[data-theme="dark"] .eterx-thread-switcher-item:hover,
+:root[data-theme="dark"] .eterx-thread-switcher-item:focus-visible,
+:root[data-theme="dark"] .eterx-thread-switcher-item[data-active="true"],
+.dark .eterx-thread-switcher-item:hover,
+.dark .eterx-thread-switcher-item:focus-visible,
+.dark .eterx-thread-switcher-item[data-active="true"] {
+  border: 0 !important;
+  border-radius: 999px !important;
+  outline: none;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item:hover,
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible {
+  background: rgba(31, 31, 29, 0.06) !important;
+  color: #24221F !important;
+  box-shadow: none;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item[data-active="true"] {
+  background: rgba(31, 31, 29, 0.085) !important;
+  color: #24221F !important;
+}
+
+:root[data-theme="dark"] .eterx-thread-switcher-item:hover,
+:root[data-theme="dark"] .eterx-thread-switcher-item:focus-visible,
+.dark .eterx-thread-switcher-item:hover,
+.dark .eterx-thread-switcher-item:focus-visible {
+  background: rgba(255, 255, 255, 0.105) !important;
+  color: #F8F4EE !important;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .eterx-thread-switcher-item[data-active="true"],
+.dark .eterx-thread-switcher-item[data-active="true"] {
+  background: rgba(255, 255, 255, 0.09) !important;
+  color: #FFFFFF !important;
 }
 
 /* Dropdown custom theme shades */
@@ -7653,28 +7768,6 @@
 }
 
 
-
-/* Smart Boundary Detector styling overrides */
-.eterx-composer-shell[data-force-collapse="true"] .eterx-selector-label,
-.eterx-composer-shell[data-force-collapse="true"] .eterx-selector-chevron,
-.eterx-composer-shell[data-force-collapse="true"] .eterx-selector-chevron-wrapper {
-  display: none !important;
-}
-
-.eterx-composer-shell[data-force-collapse="true"] .eterx-agent-selector,
-.eterx-composer-shell[data-force-collapse="true"] .eterx-model-selector,
-.eterx-composer-shell[data-force-collapse="true"] .eterx-agent-button,
-.eterx-composer-shell[data-force-collapse="true"] .eterx-model-button {
-  width: 38px !important;
-  max-width: 38px !important;
-  padding-left: 0 !important;
-  padding-right: 0 !important;
-  justify-content: center !important;
-}
-
-.eterx-composer-shell[data-force-collapse="true"] .eterx-chat-controls {
-  flex-wrap: nowrap !important;
-}
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
    Sidebar Overlay Mode — activates when window width < 960px
@@ -7764,28 +7857,6 @@
     max-width: calc(100vw - 16px) !important;
   }
 
-  /* Input bar controls: collapse labels earlier on narrow widths */
-  .eterx-selector-label,
-  .eterx-selector-chevron,
-  .eterx-selector-chevron-wrapper {
-    display: none !important;
-  }
-
-  .eterx-selector-icon {
-    display: block !important;
-    margin: auto !important;
-  }
-
-  .eterx-agent-selector,
-  .eterx-model-selector,
-  .eterx-agent-button,
-  .eterx-model-button {
-    width: 38px !important;
-    max-width: 38px !important;
-    padding-left: 0 !important;
-    padding-right: 0 !important;
-    justify-content: center !important;
-  }
 }
 
 /* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -7915,14 +7986,6 @@
     --eterx-proxy-chat-offset: -80px;
     --eterx-proxy-width: 200px;
     --eterx-chat-panel-min: 360px;
-  }
-
-  .eterx-topbar-sidebar-spacer {
-    width: calc(var(--eterx-sidebar-control-width) + var(--eterx-native-controls-left));
-  }
-
-  .eterx-app-shell[data-sidebar-open="true"] .eterx-topbar-sidebar-spacer {
-    width: var(--eterx-shell-sidebar-width);
   }
 
   .eterx-chat-feed-content {
@@ -8233,34 +8296,6 @@
    1. Reducing topbar button padding and hiding less-critical labels.
    2. Clamping the main-header right icon group gap so icons don't overflow.
    â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-@media (max-width: 900px) {
-  .eterx-topbar-btn {
-    padding-left: 6px !important;
-    padding-right: 6px !important;
-    font-size: 12px !important;
-  }
-
-  /* Prevent the main header left+right sections from overlapping */
-  .eterx-main-header {
-    gap: 4px !important;
-    padding-right: 8px !important;
-    padding-left: 8px !important;
-  }
-
-  /* Right-side icon group: tighten gap */
-  .eterx-header-icon-button {
-    width: 30px !important;
-    height: 30px !important;
-  }
-}
-
-@media (max-width: 680px) {
-  /* At very small widths, hide topbar text-nav buttons entirely to avoid overlap */
-  .eterx-topbar-btn {
-    display: none !important;
-  }
-}
-
 /* Compact composer control sizing. This is intentionally limited to the
    icon-only composer variant shown beside a chat feed: the regular composer
    keeps its existing 38px targets and layout. */
@@ -10902,6 +10937,7 @@ body.eterx-gateway-view section.mt-8 > main {
   background: transparent !important;
   border-color: transparent !important;
   box-shadow: none !important;
+  color: #58636F !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell[data-new-chat="true"] .eterx-new-chat-status-item:hover,
@@ -10981,6 +11017,51 @@ body.eterx-gateway-view section.mt-8 > main {
 .eterx-composer-shell[data-new-chat="true"] .eterx-chat-controls-right > *:has(.eterx-composer-stop-button),
 .eterx-composer-shell[data-new-chat="true"] .eterx-chat-controls-right > *:has(.eterx-composer-status-button) {
   order: 6 !important;
+}
+
+/* Keep the action slot stable while the empty-state Live control changes to
+   Send and while a running task changes between Send and Stop. Some of the
+   older, more specific composer rules sized Send at 30/36px even though the
+   shared Live control was 34px on desktop (and 32px in the compact variant),
+   which made the controls beside it move when the draft changed. */
+.eterx-composer-shell {
+  --eterx-composer-action-size: 34px;
+}
+
+.eterx-composer-shell .eterx-composer-live-button,
+.eterx-composer-shell .eterx-composer-send-button,
+.eterx-composer-shell .eterx-composer-stop-button,
+.eterx-composer-shell .eterx-composer-stop-secondary,
+.eterx-composer-shell .eterx-composer-status-button {
+  width: var(--eterx-composer-action-size) !important;
+  min-width: var(--eterx-composer-action-size) !important;
+  height: var(--eterx-composer-action-size) !important;
+  min-height: var(--eterx-composer-action-size) !important;
+  flex: 0 0 var(--eterx-composer-action-size) !important;
+  box-sizing: border-box;
+}
+
+.eterx-composer-shell .eterx-composer-action-slot {
+  width: var(--eterx-composer-action-size);
+  min-width: var(--eterx-composer-action-size);
+  height: var(--eterx-composer-action-size);
+  min-height: var(--eterx-composer-action-size);
+  flex: 0 0 var(--eterx-composer-action-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@media (min-width: 769px) {
+  /* Live previously used a -3px seam while Send used 0px. Keep the
+     state-swapped action parents on the same flex edge too. */
+  .eterx-composer-shell:not([data-compressed="true"]) .eterx-chat-controls-right > *:has(.eterx-composer-live-button),
+  .eterx-composer-shell:not([data-compressed="true"]) .eterx-chat-controls-right > *:has(.eterx-composer-send-button),
+  .eterx-composer-shell:not([data-compressed="true"]) .eterx-chat-controls-right > *:has(.eterx-composer-stop-button),
+  .eterx-composer-shell:not([data-compressed="true"]) .eterx-chat-controls-right > *:has(.eterx-composer-stop-secondary),
+  .eterx-composer-shell:not([data-compressed="true"]) .eterx-chat-controls-right > *:has(.eterx-composer-status-button) {
+    margin-left: 0 !important;
+  }
 }
 
 /* -------------------------------------------------------------------------
@@ -11125,6 +11206,565 @@ body.eterx-gateway-view section.mt-8 > main {
 
 .eterx-context-compaction-detail {
   color: var(--muted-foreground) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Responsive conversation interior
+
+   The sidebar is intentionally resizable.  Size the conversation from the
+   space that remains in the chat column instead of adding another sidebar or
+   viewport-width breakpoint.  This keeps the transcript, activity rows and
+   composer on one rail while the window or either adjacent panel is resized.
+------------------------------------------------------------------------- */
+.eterx-chat-column {
+  container-name: eterx-conversation;
+  container-type: inline-size;
+  min-width: min(100%, var(--eterx-chat-panel-min, 360px));
+  --eterx-conversation-gutter: clamp(16px, 3.2cqw, 48px);
+  --eterx-conversation-user-max: min(77%, calc(var(--eterx-reference-composer-max) * 0.77));
+  --eterx-conversation-reading-size: 14.5px;
+  --eterx-conversation-reading-leading: 1.54;
+}
+
+/* Feed and composer must be a single visual column.  The max-width token is
+   still density-aware, while the container gutter reacts to the actual main
+   panel width (including a freely resized sidebar). */
+.eterx-chat-column .eterx-chat-feed-scroll,
+.eterx-chat-column .eterx-chat-input-dock {
+  padding-inline: var(--eterx-conversation-gutter) !important;
+}
+
+.eterx-chat-column .eterx-chat-feed-content,
+.eterx-chat-column .eterx-composer-shell:not([data-compressed="true"]),
+.eterx-chat-column .eterx-queued-followup-rail {
+  width: 100% !important;
+  max-width: var(--eterx-reference-composer-max) !important;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+/* Long user requests should use the same proportional bubble width at every
+   density instead of a fixed 520px cap that becomes visually inconsistent. */
+.eterx-chat-column .eterx-chat-feed-user-bubble,
+.eterx-chat-column .eterx-steering-bubble {
+  max-width: var(--eterx-conversation-user-max) !important;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+/* A stable professional reading rhythm.  These values are slightly tighter
+   than the old stacked overrides, which prevents narrow windows from turning
+   ordinary replies into unnecessarily deep transcript blocks. */
+.eterx-chat-column .eterx-assistant-answer-body,
+.eterx-chat-column .eterx-work-note-block,
+.eterx-chat-column .eterx-work-note-block .eterx-professional-note {
+  min-width: 0;
+  max-width: 100%;
+  font-size: var(--eterx-conversation-reading-size) !important;
+  line-height: var(--eterx-conversation-reading-leading) !important;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.eterx-chat-column .eterx-answer-paragraph {
+  margin-bottom: 0.66rem !important;
+}
+
+.eterx-chat-column .eterx-answer-list {
+  margin-block: 0.6rem !important;
+}
+
+.eterx-chat-column .eterx-answer-list-item {
+  line-height: 1.5 !important;
+}
+
+/* Streaming command names, paths and provider messages can be arbitrarily
+   long.  Zero flex minimums keep them inside the rail without changing the
+   sidebar width or pushing controls off-screen. */
+.eterx-chat-column .eterx-thinking-process-stack,
+.eterx-chat-column .eterx-phase-block,
+.eterx-chat-column .eterx-action-group,
+.eterx-chat-column .eterx-action-group-header,
+.eterx-chat-column .eterx-action-card,
+.eterx-chat-column .eterx-action-chip,
+.eterx-chat-column .eterx-terminal-trace,
+.eterx-chat-column .eterx-terminal-trace-row,
+.eterx-chat-column .eterx-file-change-trace,
+.eterx-chat-column .eterx-file-change-row,
+.eterx-chat-column .eterx-agent-comm-card,
+.eterx-chat-column .eterx-worked-summary,
+.eterx-chat-column .eterx-worked-summary-line {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.eterx-chat-column .eterx-action-verb,
+.eterx-chat-column .eterx-file-change-title,
+.eterx-chat-column .eterx-terminal-console-command,
+.eterx-chat-column .eterx-file-change-detail,
+.eterx-chat-column .eterx-action-file-link {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Keep the composer compact as the window gets shorter.  Width contraction
+   may cause wrapping, but it must not also allow the editor to consume most
+   of the available vertical workspace. */
+.eterx-chat-column .eterx-composer-textarea {
+  max-height: min(var(--eterx-composer-textarea-max, 320px), 28dvh) !important;
+}
+
+.eterx-main-header > * {
+  min-width: 0;
+}
+
+.eterx-thread-tab {
+  max-width: min(58vw, 520px);
+}
+
+.eterx-thread-tab > span,
+.eterx-view-header-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Main-column breakpoints, not viewport breakpoints.  These continue to work
+   when a user resizes the sidebar or opens the file/agent panel. */
+@container eterx-conversation (max-width: 760px) {
+  .eterx-chat-column .eterx-chat-feed,
+  .eterx-chat-column .eterx-chat-input-dock {
+    --eterx-conversation-gutter: clamp(14px, 3cqw, 22px);
+    --eterx-conversation-user-max: min(88%, calc(var(--eterx-reference-composer-max) * 0.86));
+    --eterx-conversation-reading-size: 14px;
+    --eterx-conversation-reading-leading: 1.5;
+  }
+
+  .eterx-chat-column .eterx-chat-message-group {
+    margin-bottom: 1rem !important;
+  }
+
+  .eterx-chat-column .eterx-chat-message-group.group\/user {
+    margin-top: 1.5rem !important;
+  }
+
+  .eterx-chat-column .eterx-thinking-process-stack {
+    gap: 0.32rem !important;
+  }
+
+  .eterx-chat-column .eterx-worked-summary {
+    gap: 9px !important;
+  }
+
+  .eterx-chat-column .eterx-action-group-header,
+  .eterx-chat-column .eterx-action-chip,
+  .eterx-chat-column .eterx-terminal-trace-row,
+  .eterx-chat-column .eterx-file-change-row {
+    line-height: 1.32 !important;
+  }
+
+  .eterx-chat-column .eterx-composer-input-row {
+    min-height: 34px !important;
+  }
+
+  .eterx-chat-column .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls {
+    margin-top: 5px !important;
+  }
+}
+
+@container eterx-conversation (max-width: 520px) {
+  .eterx-chat-column .eterx-chat-feed,
+  .eterx-chat-column .eterx-chat-input-dock {
+    --eterx-conversation-gutter: 12px;
+    --eterx-conversation-user-max: 92%;
+    --eterx-conversation-reading-size: 13.75px;
+    --eterx-conversation-reading-leading: 1.48;
+  }
+
+  .eterx-chat-column .eterx-chat-feed-content {
+    padding-top: 30px !important;
+  }
+
+  .eterx-chat-column .eterx-chat-input-dock-active {
+    padding-top: 16px !important;
+    padding-bottom: max(10px, env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .eterx-chat-column .eterx-user-message-bubble {
+    padding: 9px 13px !important;
+    border-radius: 16px !important;
+  }
+
+  .eterx-chat-column .eterx-worked-summary-label {
+    font-size: 11.5px !important;
+  }
+}
+
+/* Keep the composer compact when empty, then let the draft grow until the
+   textarea's own max-height is reached. Longer drafts scroll inside the
+   editor instead of pushing the composer beyond its useful bound. */
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) {
+  box-sizing: border-box !important;
+  min-height: 90px !important;
+  height: auto !important;
+  max-height: none !important;
+  padding-top: 8px !important;
+  padding-bottom: 6px !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-input-row {
+  flex: 0 0 auto !important;
+  height: auto !important;
+  min-height: 34px !important;
+  max-height: none !important;
+  padding-bottom: 0 !important;
+  align-items: flex-start !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-textarea-wrap {
+  height: auto;
+  min-height: 26px !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-textarea-wrap {
+  display: block !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+  overflow: visible !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-textarea {
+  display: block !important;
+  width: 100% !important;
+  min-height: 26px !important;
+  max-height: var(--eterx-composer-textarea-max, 240px) !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls {
+  flex: 0 0 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  margin-top: 6px !important;
+  flex-wrap: nowrap !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-left,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-right {
+  height: 34px;
+  min-height: 0;
+  flex-wrap: nowrap !important;
+}
+
+/* Lock hit targets and glyphs as well as the outer surface. Earlier mobile
+   rules enlarged these controls to 38px, making the bar look scaled up. */
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-control-button,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-agent-button,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-model-button,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-context-usage-trigger {
+  height: 34px !important;
+  min-height: 34px !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-control-button {
+  width: 34px !important;
+  min-width: 34px !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-dictation-button {
+  width: 28px !important;
+  min-width: 28px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-control-icon,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-selector-icon,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-context-usage-trigger > svg {
+  width: 18px !important;
+  height: 18px !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-live-icon,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-send-button .eterx-composer-control-icon {
+  width: 20px !important;
+  height: 20px !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-stop-button .eterx-composer-stop-icon,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-stop-button .eterx-composer-stop-pending {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-left > *:first-child .eterx-control-button {
+  width: 30px !important;
+  min-width: 30px !important;
+  height: 30px !important;
+  min-height: 30px !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-left > *:first-child .eterx-composer-control-icon {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+/* Attachment and plan rows stay in normal flow so an uploaded image or a
+   multiline draft is always visible inside the composer rather than behind
+   the text or controls. */
+.eterx-composer-shell .eterx-composer-textarea-wrap > .eterx-plan-mode-banner,
+.eterx-composer-shell .eterx-composer-textarea-wrap > .eterx-pinned-items {
+  position: static;
+  width: 100%;
+  z-index: auto;
+}
+
+.eterx-composer-shell .eterx-composer-textarea-wrap > .eterx-plan-mode-banner {
+  margin-bottom: 8px !important;
+}
+
+/* A compressed rail still uses the real text selectors. Never replace them
+   with the brain/layer icons; preserve the Model label, thinking level, and
+   chevron as one readable control. */
+.eterx-composer-shell[data-compressed="true"] .eterx-chat-controls-right {
+  display: flex !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  grid-template-columns: none !important;
+  gap: 6px !important;
+}
+
+.eterx-composer-shell[data-compressed="true"] .eterx-agent-selector,
+.eterx-composer-shell[data-compressed="true"] .eterx-model-selector {
+  flex: 0 1 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+
+.eterx-composer-shell[data-compressed="true"] .eterx-agent-button,
+.eterx-composer-shell[data-compressed="true"] .eterx-model-button {
+  width: fit-content !important;
+  max-width: 100% !important;
+  padding-left: 10px !important;
+  padding-right: 8px !important;
+}
+
+.eterx-composer-shell[data-compressed="true"] .eterx-agent-selector .eterx-selector-icon,
+.eterx-composer-shell[data-compressed="true"] .eterx-model-selector .eterx-selector-icon {
+  display: none !important;
+}
+
+.eterx-composer-shell[data-compressed="true"] .eterx-agent-selector .eterx-selector-label,
+.eterx-composer-shell[data-compressed="true"] .eterx-model-selector .eterx-selector-label,
+.eterx-composer-shell[data-compressed="true"] .eterx-agent-selector .eterx-selector-chevron,
+.eterx-composer-shell[data-compressed="true"] .eterx-model-selector .eterx-selector-chevron,
+.eterx-composer-shell[data-compressed="true"] .eterx-agent-selector .eterx-selector-chevron-wrapper,
+.eterx-composer-shell[data-compressed="true"] .eterx-model-selector .eterx-selector-chevron-wrapper {
+  display: inline-flex !important;
+}
+
+/* Selector breakpoint: keep the complete Agent + Model row intact while it
+   fits (the wide reference state). Once the composer becomes too narrow,
+   remove only Agent; the full Model selector and thinking label remain. */
+@container (max-width: 560px) {
+  .eterx-composer-shell .eterx-agent-selector {
+    display: none !important;
+  }
+
+  /* Agent has been removed, so give the full Model name the released width.
+     The label may still ellipsize only if the remaining controls genuinely
+     leave too little room. */
+  .eterx-composer-shell .eterx-chat-controls-right {
+    display: flex !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    justify-content: flex-end !important;
+  }
+
+  .eterx-composer-shell .eterx-model-selector {
+    flex: 0 1 auto !important;
+    width: fit-content !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    margin-left: auto !important;
+  }
+
+  .eterx-composer-shell .eterx-model-selector > .eterx-model-button {
+    width: fit-content !important;
+    max-width: none !important;
+  }
+
+  .eterx-composer-shell .eterx-model-selector .eterx-selector-label {
+    max-width: none !important;
+  }
+}
+
+/* Stable composer rail order. Keep the real controls in the same sequence at
+   every width: attach, Agent, flexible space, context, Model, speech, send.
+   The visual groups remain in the DOM; display:contents only lets the rail
+   order their existing children without introducing a second layout system. */
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls {
+  display: flex !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-left,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-right {
+  display: contents !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-left > *:first-child {
+  order: 1 !important;
+  flex: 0 0 auto !important;
+  margin-left: 0 !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-agent-selector {
+  order: 2 !important;
+  flex: 0 1 auto !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-right > *:has(.eterx-context-usage-trigger) {
+  order: 3 !important;
+  flex: 0 0 auto !important;
+  margin-left: auto !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-model-selector {
+  order: 4 !important;
+  flex: 0 1 auto !important;
+  margin-left: 0 !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-right > *:has(.eterx-composer-dictation-button) {
+  order: 5 !important;
+  flex: 0 0 auto !important;
+}
+
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-right > .eterx-composer-action-slot,
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-right > *:has(.eterx-composer-send-button),
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-right > *:has(.eterx-composer-live-button),
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-right > *:has(.eterx-composer-stop-button) {
+  order: 6 !important;
+  flex: 0 0 auto !important;
+}
+
+/* If context usage is unavailable, the Model still anchors the right cluster. */
+.eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls:not(:has(.eterx-context-usage-trigger)) .eterx-model-selector {
+  margin-left: auto !important;
+}
+
+/* -------------------------------------------------------------------------
+   Compact application chrome
+
+   Codex keeps both title-bar rows at a stable logical height when a desktop
+   window is snapped or narrowed.  Do the same here instead of falling back
+   to the older 56px mobile header and hiding the menu labels.
+------------------------------------------------------------------------- */
+.eterx-app-shell {
+  --eterx-main-header-height: 44px;
+}
+
+.eterx-app-shell[data-platform="windows"],
+.eterx-app-shell[data-platform="linux"] {
+  --eterx-shell-topbar-height: 36px;
+}
+
+.eterx-app-shell[data-platform="macos"] {
+  --eterx-shell-topbar-height: 38px;
+}
+
+.eterx-global-topbar,
+.eterx-sidebar-topbar,
+.eterx-sidebar-closed-toggle-shell {
+  height: var(--eterx-shell-topbar-height) !important;
+}
+
+.eterx-workspace-shell {
+  --eterx-main-panel-left-radius: 18px;
+  padding-top: var(--eterx-shell-topbar-height);
+}
+
+.eterx-main-panel,
+.eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel,
+.eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel,
+.eterx-main-panel-sidebar-closed {
+  border-top: 1px solid var(--eterx-main-panel-border) !important;
+  border-radius: 0 !important;
+}
+
+.eterx-main-panel::after,
+.eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel::after,
+.eterx-app-shell[data-sidebar-open="false"] .eterx-main-panel::after,
+.eterx-main-panel-sidebar-closed::after {
+  content: none !important;
+  display: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+/* A pushed-open desktop sidebar meets the workspace with a quiet inward
+   curve. Closed and narrow overlay states stay square and full-width. */
+@media (min-width: 960px) {
+  .eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel {
+    border-top: 1px solid var(--eterx-main-panel-border) !important;
+    border-top-left-radius: var(--eterx-main-panel-left-radius) !important;
+    border-bottom-left-radius: var(--eterx-main-panel-left-radius) !important;
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+  }
+
+}
+
+.eterx-main-header {
+  height: var(--eterx-main-header-height) !important;
+  min-height: var(--eterx-main-header-height);
+  gap: 8px !important;
+  padding-left: 12px !important;
+  padding-right: 16px !important;
+}
+
+#agent-builder-back-portal:empty {
+  display: none;
+}
+
+.eterx-thread-tab {
+  min-height: 30px !important;
+  padding: 2px 6px !important;
+  border-radius: 8px;
+}
+
+/* Stable title-bar controls: narrowing the window never scales typography or
+   hit targets. At genuinely tiny widths, lower-priority actions disappear in
+   order instead of compressing every label into an unreadable cluster. */
+.eterx-topbar-actions,
+.eterx-topbar-actions > * {
+  min-width: 0;
+}
+
+.eterx-topbar-actions > * {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 500px) {
+  .eterx-topbar-actions > :nth-child(5) {
+    display: none !important;
+  }
+}
+
+@media (max-width: 440px) {
+  .eterx-topbar-actions > :nth-child(4) {
+    display: none !important;
+  }
 }
 
 :root[data-theme="light"] .eterx-context-compaction-label,

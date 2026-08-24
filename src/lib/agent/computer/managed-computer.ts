@@ -370,8 +370,19 @@ export function getManagedComputerStatus(chatId?: string | null) {
   };
 }
 
-if (typeof process !== 'undefined') {
-  process.on('exit', () => {
-    for (const key of Array.from(sessions.keys())) cleanupSession(key);
-  });
+const globalForManagedComputer = globalThis as typeof globalThis & {
+  __eterxManagedComputerCleanup?: () => void;
+  __eterxManagedComputerExitListener?: boolean;
+};
+
+// A hot reload replaces this module's local session map. Close sessions owned
+// by the previous instance before updating the singleton callback.
+globalForManagedComputer.__eterxManagedComputerCleanup?.();
+globalForManagedComputer.__eterxManagedComputerCleanup = () => {
+  for (const key of Array.from(sessions.keys())) cleanupSession(key);
+};
+
+if (typeof process !== 'undefined' && !globalForManagedComputer.__eterxManagedComputerExitListener) {
+  globalForManagedComputer.__eterxManagedComputerExitListener = true;
+  process.on('exit', () => globalForManagedComputer.__eterxManagedComputerCleanup?.());
 }

@@ -19,6 +19,12 @@ import {
   type ContextContinuityManifest,
 } from '../context-fabric';
 import { estimateTokens } from './auto-context';
+import {
+  buildContextUsageBreakdown,
+  normalizeContextUsageBreakdown,
+  type ContextUsageBreakdown,
+  type ContextUsageBreakdownSources,
+} from '../../context-usage-breakdown';
 
 export type ContextCompactionModel = {
   provider: MainAgentProvider;
@@ -32,12 +38,16 @@ export type ContextCompactionSettings = {
 };
 
 export type ContextCompactionUsage = {
+  breakdownVersion: 3;
   usedTokens: number;
   contextWindow: number;
   utilizationPct: number;
   systemTokens: number;
   conversationTokens: number;
   toolTokens: number;
+  localEstimatedTokens?: number;
+  providerInputTokens?: number;
+  breakdown?: ContextUsageBreakdown;
 };
 
 export type ContextCompactionEvent = {
@@ -217,6 +227,7 @@ export const measureRuntimeContext = (input: {
   tools?: unknown;
   contextWindow: number;
   providerReportedInputTokens?: number;
+  breakdownSources?: ContextUsageBreakdownSources;
 }): ContextCompactionUsage => {
   const systemTokens = estimateTokens(typeof input.systemInstruction === 'string'
     ? input.systemInstruction
@@ -225,29 +236,33 @@ export const measureRuntimeContext = (input: {
   const toolTokens = estimateTokens(JSON.stringify(input.tools || []));
   // Provider usage is authoritative when available and normally includes cached
   // input. The local full-payload estimate protects the pre-request boundary.
-  const usedTokens = Math.max(
-    systemTokens + conversationTokens + toolTokens,
-    Number(input.providerReportedInputTokens || 0),
-  );
+  const localEstimatedTokens = systemTokens + conversationTokens + toolTokens;
+  const providerInputTokens = Math.max(0, Math.round(Number(input.providerReportedInputTokens || 0)));
+  const usedTokens = Math.max(localEstimatedTokens, providerInputTokens);
+  const breakdown = normalizeContextUsageBreakdown(buildContextUsageBreakdown({
+    contents: input.contents,
+    systemInstruction: input.systemInstruction,
+    tools: input.tools,
+    breakdownSources: input.breakdownSources,
+  }), usedTokens);
   return {
+    breakdownVersion: 3,
     usedTokens,
     contextWindow: input.contextWindow,
     utilizationPct: input.contextWindow > 0 ? (usedTokens / input.contextWindow) * 100 : 0,
     systemTokens,
     conversationTokens,
     toolTokens,
+    localEstimatedTokens,
+    providerInputTokens,
+    breakdown,
   };
 };
 
 const shouldEmitUsage = (chatId: string, usedTokens: number, contextWindow: number) => {
-  const previous = lastUsageEvents.get(chatId);
-  const now = Date.now();
-  const meaningfulDelta = !previous || Math.abs(usedTokens - previous.usedTokens) >= Math.max(1000, contextWindow * 0.005);
-  if (!previous || meaningfulDelta || now - previous.at >= 2_500) {
-    lastUsageEvents.set(chatId, { at: now, usedTokens });
-    return true;
-  }
-  return false;
+  lastUsageEvents.set(chatId, { at: Date.now(), usedTokens });
+  void contextWindow;
+  return true;
 };
 
 export const deriveContextCompactionPolicy = (input: {
@@ -1029,6 +1044,7 @@ type CompactInput = {
   rawSettings?: unknown;
   runtimeSettings?: ScopedRuntimeSettings | null;
   providerReportedInputTokens?: number;
+  breakdownSources?: ContextUsageBreakdownSources;
   contextWindowOverride?: number;
   abortSignal?: AbortSignal;
   continuityManifest?: ContextContinuityManifest;
@@ -1088,6 +1104,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
     tools: input.tools,
     contextWindow,
     providerReportedInputTokens: input.providerReportedInputTokens,
+    breakdownSources: input.breakdownSources,
   });
   if (shouldEmitUsage(input.chatId, usage.usedTokens, contextWindow)) {
     emit({ type: 'context_usage', chatId: input.chatId, timestamp: Date.now(), ...usage });
@@ -1291,6 +1308,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
         contents: nextContents,
         systemInstruction: input.systemInstruction,
         tools: input.tools,
+        breakdownSources: input.breakdownSources,
         contextWindow,
       });
       // A malformed/verbose capsule must never make runtime context worse.
@@ -1309,6 +1327,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
         contents: nextContents,
         systemInstruction: input.systemInstruction,
         tools: input.tools,
+        breakdownSources: input.breakdownSources,
         contextWindow,
       });
       if (isHardBlocked && finalUsage.usedTokens >= hardBlockTokens) {
@@ -1320,6 +1339,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
           contents: nextContents,
           systemInstruction: input.systemInstruction,
           tools: input.tools,
+          breakdownSources: input.breakdownSources,
           contextWindow,
         });
       }
@@ -1347,6 +1367,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
           contents: nextContents,
           systemInstruction: input.systemInstruction,
           tools: input.tools,
+          breakdownSources: input.breakdownSources,
           contextWindow,
         });
       }
@@ -1466,6 +1487,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
         contents: fallback,
         systemInstruction: input.systemInstruction,
         tools: input.tools,
+        breakdownSources: input.breakdownSources,
         contextWindow,
       });
       if (isHardBlocked && recoveredUsage.usedTokens >= hardBlockTokens) {
@@ -1476,6 +1498,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
           contents: fallback,
           systemInstruction: input.systemInstruction,
           tools: input.tools,
+          breakdownSources: input.breakdownSources,
           contextWindow,
         });
       }
@@ -1492,6 +1515,7 @@ export const compactContextAtBoundary = async (input: CompactInput): Promise<{
           contents: fallback,
           systemInstruction: input.systemInstruction,
           tools: input.tools,
+          breakdownSources: input.breakdownSources,
           contextWindow,
         });
       }

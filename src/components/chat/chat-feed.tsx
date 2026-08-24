@@ -1364,7 +1364,7 @@ const ThoughtSequence = ({
           aria-expanded={isOpen}
           className="eterx-worked-summary-button inline-flex shrink-0 items-center gap-1.5 rounded-md py-1 text-left outline-none transition-colors"
         >
-          <span className="eterx-worked-summary-label py-[1px] text-[12px] font-medium leading-[1.35] tracking-normal text-[var(--muted-foreground)]">
+          <span className="eterx-worked-summary-label py-[1px] text-[13px] font-semibold leading-[1.4] tracking-normal text-[var(--muted-foreground)]">
             <span>{isLiveThinking ? 'Working for\u00a0' : 'Worked for\u00a0'}</span>
             <RollingTimeDisplay label={workElapsedLabel} />
           </span>
@@ -1416,7 +1416,8 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   '_autonomyCheckpoint', '_autonomyBoundaryFollowUp', '_connection', 'model', 'modelName',
   'phase', 'compactionId', 'beforeTokens', 'afterTokens', 'contextWindow', 'modelProvider',
   'provider', 'source', 'promptTokens', 'inputTokens', 'completionTokens', 'outputTokens',
-  'totalTokens', 'cachedTokens', 'uncachedPromptTokens', 'cacheHitRatio',
+  'totalTokens', 'providerReportedTotalTokens', 'cachedTokens', 'uncachedPromptTokens', 'cacheHitRatio',
+  'visibleOutputTokens', 'generatedTokens',
   'reasoningTokens', 'toolUsePromptTokens', 'interaction', 'usageId', 'runId', 'turnId', 'mainTurnTerminal', 'uiOnly',
   '_recoveredBoundary', '_recoveredExactText', '_hiddenRecoveredBoundary',
 ] as const;
@@ -1582,7 +1583,7 @@ const ChatFeedMessageGroup = React.memo(({
       if (seen.has(key)) return usage;
       seen.add(key);
       const input = Number(log.promptTokens ?? log.prompt_tokens ?? log.inputTokens ?? log.input_tokens ?? 0);
-      const output = Number(log.outputTokens ?? log.output_tokens ?? log.completionTokens ?? log.completion_tokens ?? 0);
+      const output = Number(log.generatedTokens ?? log.generated_tokens ?? log.outputTokens ?? log.output_tokens ?? log.completionTokens ?? log.completion_tokens ?? 0);
       return {
         input: usage.input + (Number.isFinite(input) && input > 0 ? input : 0),
         output: usage.output + (Number.isFinite(output) && output > 0 ? output : 0),

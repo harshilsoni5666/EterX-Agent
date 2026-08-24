@@ -818,6 +818,13 @@ export class SessionStateManager {
     this.debouncedSaveForChat(chatId);
   }
 
+  public setTaskDecomposerUsedForChat(chatId: string, used: boolean): void {
+    const state = this.getOrCreateStateForChat(chatId);
+    state.taskDecomposerUsed = used;
+    this.rememberActiveSession(chatId, state);
+    this.debouncedSaveForChat(chatId);
+  }
+
   public setExecutionPlanForChat(chatId: string, planState: PlanState | null): void {
     const state = this.getOrCreateStateForChat(chatId);
     state.executionPlanState = planState ? JSON.parse(JSON.stringify(planState)) : null;

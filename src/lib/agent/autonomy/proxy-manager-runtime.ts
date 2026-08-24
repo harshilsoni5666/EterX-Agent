@@ -2,7 +2,7 @@ import fs from 'fs-extra';
 import { randomUUID } from 'crypto';
 import { createIsolatedClient } from '../Agent';
 import { agentRegistry } from '../agent-registry';
-import { MODEL_PROVIDER_MODE, MODEL_PROVIDER_ORDER, isModelProvider } from '../model-selector-store';
+import { MODEL_PROVIDER_MODE, isModelProvider } from '../model-selector-store';
 import { buildScopedRuntimeSettings, getScopedRuntimeApiKey, type ScopedRuntimeSettings } from '../runtime-api-keys';
 import type { MainAgentMode, MainAgentProvider } from '../model-routing';
 import { getEterxWorkspaceDir } from '../storage-paths';
@@ -192,9 +192,11 @@ function resolveModel(selection?: { provider?: string; modelId?: string }): {
 } {
   const settings = buildScopedRuntimeSettings();
   const requestedProvider = isModelProvider(selection?.provider) ? selection!.provider : null;
-  const autoOrder: MainAgentProvider[] = MODEL_PROVIDER_ORDER;
-  const provider = requestedProvider || autoOrder.find(item => (settings.apiKeys[item] || []).length > 0) || 'gemini';
   const modelId = compact(selection?.modelId, 220);
+  if (!requestedProvider || !modelId) {
+    throw new Error('MODEL_SELECTION_REQUIRED: select one exact added model for Proxy Manager.');
+  }
+  const provider = requestedProvider;
   const scopedSettings: ScopedRuntimeSettings = {
     ...settings,
     modelOverrides: { ...settings.modelOverrides, ...(modelId ? { [provider]: modelId } : {}) },

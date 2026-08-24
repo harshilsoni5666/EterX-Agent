@@ -109,7 +109,8 @@ CODING AGENT WORKFLOW:
 
 6. ADVANCED AGENT SUPPORT
    - spawn_sub_agent only for independent exploration or blind review
-   - task_decomposer/task_checkpoint for broad or long-running work
+   - task_decomposer for broad work with several dependent actions, multiple files/systems, or a distinct verification phase—even when the user did not explicitly ask for a plan
+   - task_checkpoint after every proven plan item: advance with evidence, revise when discoveries change future work, and never finalize with unresolved items
    - get_skill_guidelines for domain-specific implementation constraints
    - memory_v2/context_manager for durable facts and stale-context hygiene
 

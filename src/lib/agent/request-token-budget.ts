@@ -1,9 +1,15 @@
 export type RequestTokenBudget = {
   estimatedInputTokens: number;
   systemTokens: number;
+  staticPromptTokens: number;
+  dynamicPromptTokens: number;
   toolDefinitionTokens: number;
+  fullToolSchemaTokens: number;
+  staticBundleTokens: number;
   messageTokens: number;
+  conversationTokens: number;
   toolResultTokens: number;
+  systemMessageTokens: number;
   messageCount: number;
   toolCount: number;
 };
@@ -45,21 +51,38 @@ function providerToolResultChars(messages: any[]): number {
 /** Low-cost, provider-neutral request accounting for runtime diagnostics. */
 export function estimateRequestTokenBudget(input: {
   system?: unknown;
+  staticPrompt?: unknown;
+  dynamicPrompt?: unknown;
+  /** Add the static prompt because the provider is serving it from a cache. */
+  includeStaticPromptInEstimate?: boolean;
   tools?: unknown[];
   messages?: any[];
 }): RequestTokenBudget {
   const messages = input.messages || [];
   const tools = input.tools || [];
   const systemChars = serializedLength(input.system);
+  const staticPromptChars = serializedLength(input.staticPrompt);
+  const dynamicPromptChars = serializedLength(input.dynamicPrompt);
   const toolChars = serializedLength(tools);
   const messageChars = serializedLength(messages);
+  const systemMessageChars = serializedLength(messages.filter(message => message?.role === 'system'));
+  const conversationChars = serializedLength(messages.filter(message => message?.role !== 'system'));
   const toolResultChars = providerToolResultChars(messages);
+  const staticPromptTokens = estimateTokens(staticPromptChars);
+  const toolDefinitionTokens = estimateTokens(toolChars);
+  const cachedStaticChars = input.includeStaticPromptInEstimate ? staticPromptChars : 0;
   return {
-    estimatedInputTokens: estimateTokens(systemChars + toolChars + messageChars),
+    estimatedInputTokens: estimateTokens(systemChars + cachedStaticChars + toolChars + messageChars),
     systemTokens: estimateTokens(systemChars),
-    toolDefinitionTokens: estimateTokens(toolChars),
+    staticPromptTokens,
+    dynamicPromptTokens: estimateTokens(dynamicPromptChars),
+    toolDefinitionTokens,
+    fullToolSchemaTokens: toolDefinitionTokens,
+    staticBundleTokens: staticPromptTokens + toolDefinitionTokens,
     messageTokens: estimateTokens(messageChars),
+    conversationTokens: estimateTokens(conversationChars),
     toolResultTokens: estimateTokens(toolResultChars),
+    systemMessageTokens: estimateTokens(systemMessageChars),
     messageCount: messages.length,
     toolCount: tools.length,
   };

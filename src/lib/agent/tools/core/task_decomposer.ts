@@ -3,7 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import { globalTaskPlanner } from '../../task_planner';
 import { normalizeMainAgentMode } from '../../model-routing';
 import { globalSessionManager } from '../../session';
-import { trackerToTrace, writeTaskTracker, type TaskTrackerData } from '../../task-tracker-store';
+import { trackerToTrace, writeTaskTrackerState, type TaskTrackerData } from '../../task-tracker-store';
 import { getPlanEngine } from '../../plan-execution-engine';
 import { getAgentConversationScope } from '../../context-scope';
 
@@ -20,12 +20,12 @@ import { getAgentConversationScope } from '../../context-scope';
  * - Each step has a verification condition so the agent KNOWS when it's done
  * - Writes both JSON tracker (machine-readable) and MD tracker (human-readable)
  * - Steps are granular (action-level, not phase-level) — prevents looping
- * - STRICTLY one-time per session — the ReAct loop enforces this
+ * - STRICTLY one-time per task — the ReAct loop resets it only at a real task boundary
  * - Saves plan to SessionStateManager for cross-message persistence
  */
 export const taskDecomposerTool: ToolDefinition = {
   name: 'task_decomposer',
-  description: `Decompose a complex task into smaller, actionable subtasks using the selected model for AI-powered deep planning. Use this FIRST when facing any complex, multi-step request. Returns a structured execution plan with granular steps, tool assignments, and verification conditions. NEVER call this more than once per task — the plan is persistent.
+  description: `Create a live execution plan for genuinely complex work using the user's configured model. The user does not need to ask for planning explicitly: use this when the request has several dependent actions, spans multiple files or systems, needs deep research, or has a meaningful verification phase. Do not use it for direct answers or tiny edits. Call it once per task; then keep the live plan current with task_checkpoint.
   
   Examples:
   - Use only when the task likely needs 4+ ordered steps, multiple files/systems, a long deliverable, deep research, or the user explicitly asks for tasks/a tracker
@@ -42,11 +42,13 @@ export const taskDecomposerTool: ToolDefinition = {
     maxSubtasks: z.number().int().min(3).max(20).optional().default(15).describe('Maximum number of subtasks (default: 15, max: 20)')
   }),
   outputSchema: z.object({
+    success: z.boolean(),
     plan: z.array(z.any()),
     totalSteps: z.number(),
     estimatedTools: z.array(z.string()),
     plannerVersion: z.string().optional(),
     qualityWarnings: z.array(z.string()).optional(),
+    error: z.string().optional(),
   }),
   execute: async (input: { complexTask: string, context?: string, maxSubtasks?: number }, runtimeContext?: any) => {
     console.log(`[Tool: task_decomposer] Decomposing via API: "${ input.complexTask.substring(0, 80) }..."`);
@@ -69,41 +71,12 @@ export const taskDecomposerTool: ToolDefinition = {
       const selectedMode = normalizeMainAgentMode(runtimeContext?.selectedModelMode || runtimeContext?.modelMode || 'think');
       const planResult = await globalTaskPlanner.decompose(input.complexTask, input.context || '', selectedMode, {
         maxSubtasks: input.maxSubtasks,
+        provider: runtimeContext?.selectedModelProvider,
+        modelName: runtimeContext?.selectedModelName,
       });
       const steps = planResult.steps;
 
-      // === Write DUAL tracker files for the ReAct loop to read back ===
-      // 1. Human-readable markdown tracker
-      let trackerMd = `# INVISIBLE TASK TRACKER\n\n`;
-      trackerMd += `**Goal:** ${ input.complexTask }\n`;
-      trackerMd += `**Created:** ${ new Date().toISOString() }\n`;
-      trackerMd += `**Complexity:** ${ planResult.estimated_complexity }\n`;
-      trackerMd += `**Est. Time:** ~${ planResult.estimated_time_minutes } minutes\n`;
-      trackerMd += `**Status:** IN_PROGRESS\n\n---\n\n`;
-
-      steps.forEach((step: any) => {
-        trackerMd += `- [ ] **Step ${ step.step }: ${ step.name }**\n`;
-        trackerMd += `  - Action: ${ step.description }\n`;
-        trackerMd += `  - Type: ${ step.step_type || 'work' }\n`;
-        trackerMd += `  - Expected output: ${ step.expected_output || step.done_when }\n`;
-        trackerMd += `  - Tools: ${ Array.isArray(step.tools) && step.tools.length ? step.tools.join(', ') : 'none' }\n`;
-        trackerMd += `  - Done when: ${ step.done_when }\n`;
-        if (step.risk) {
-          trackerMd += `  - Risk: ${ step.risk }\n`;
-        }
-        if (Array.isArray(step.artifacts) && step.artifacts.length > 0) {
-          trackerMd += `  - Artifacts: ${ step.artifacts.join(', ') }\n`;
-        }
-        if (step.depends_on?.length > 0) {
-          trackerMd += `  - Depends on: Step ${ step.depends_on.join(', Step ') }\n`;
-        }
-        trackerMd += `\n`;
-      });
-
-      trackerMd += `---\n\n`;
-      trackerMd += `> **PROTOCOL**: This tracker is runtime-owned and stored inside the chat task folder. The agent runtime updates progress automatically after successful tools.\n`;
-
-      // 2. Machine-readable JSON tracker (the ReAct loop reads this on every iteration)
+      // Write synchronized machine-readable and human-readable tracker files.
       const trackerJson: TaskTrackerData = {
         goal: input.complexTask,
         chatId,
@@ -112,7 +85,7 @@ export const taskDecomposerTool: ToolDefinition = {
         complexity: planResult.estimated_complexity,
         estimatedMinutes: planResult.estimated_time_minutes,
         status: 'in_progress',
-        steps: steps.map((s: any) => ({
+        steps: steps.map((s: any, index: number) => ({
           id: `step_${ s.step }`,
           step: s.step,
           name: s.name,
@@ -125,14 +98,15 @@ export const taskDecomposerTool: ToolDefinition = {
           expected_output: s.expected_output,
           risk: s.risk,
           artifacts: s.artifacts,
-          status: 'pending',  // pending | in_progress | done | skipped
+          status: index === 0 ? 'in_progress' : 'pending',
+          startedAt: index === 0 ? Date.now() : null,
           completedAt: null
         }))
       };
 
       let trackerFiles: string[] = [];
       try {
-        const paths = await writeTaskTracker(chatId, trackerJson, trackerMd);
+        const paths = await writeTaskTrackerState(chatId, trackerJson);
         trackerFiles = [paths.mdPath, paths.jsonPath];
         emitTrace?.(trackerToTrace(trackerJson, 'generated'));
         console.log(`[Tool: task_decomposer] ✅ Trackers written (${ steps.length } steps, complexity: ${ planResult.estimated_complexity })`);
@@ -165,16 +139,21 @@ export const taskDecomposerTool: ToolDefinition = {
       try {
         const planEngine = getPlanEngine(chatId);
         planEngine.loadPlan(input.complexTask, steps);
-        if (chatId) globalSessionManager.setExecutionPlanForChat(chatId, planEngine.serialize());
+        if (chatId) {
+          globalSessionManager.setTaskDecomposerUsedForChat(chatId, true);
+          globalSessionManager.setExecutionPlanForChat(chatId, planEngine.serialize());
+          await globalSessionManager.saveForChat(chatId);
+        }
         console.log(`[Tool: task_decomposer] ✅ PlanExecutionEngine loaded (${steps.length} steps in causal graph)`);
       } catch (engineErr: any) {
-        console.warn(`[Tool: task_decomposer] PlanExecutionEngine load failed: ${engineErr.message}`);
+        throw new Error(`The real execution plan could not be initialized: ${engineErr.message}`);
       }
 
       // Collect unique tools used across all steps
       const allTools = [...new Set(steps.flatMap((s: any) => Array.isArray(s.tools) ? s.tools : []))];
 
       return {
+        success: true,
         plan: steps,
         totalSteps: steps.length,
         estimatedTools: allTools,
@@ -182,25 +161,20 @@ export const taskDecomposerTool: ToolDefinition = {
         estimatedMinutes: planResult.estimated_time_minutes,
         plannerVersion: planResult.planner_version,
         qualityWarnings: planResult.quality_warnings || [],
-        strategy: steps.length > 6 ? 'parallel_where_possible' : 'sequential',
+        strategy: 'sequential_with_parallel_tool_calls',
         trackerFiles,
         message: `Task decomposed into ${ steps.length } concrete execution steps (${ planResult.estimated_complexity } complexity, ~${ planResult.estimated_time_minutes } min). Tracker is stored inside this chat's task folder. Execute the NEXT pending step only, using its expected_output and done_when as the completion contract. Do NOT repeat completed steps.`
       };
     } catch (error: any) {
       console.error(`[Tool: task_decomposer] ❌ Decomposition failed: ${ error.message }`);
-      return { plan: [], totalSteps: 0, estimatedTools: [], error: error.message };
+      emitTrace?.({
+        type: 'progress',
+        text: 'Task planning failed',
+        secondary: String(error?.message || error),
+        status: 'failed',
+        timestamp: Date.now(),
+      });
+      return { success: false, plan: [], totalSteps: 0, estimatedTools: [], error: error.message };
     }
   }
 };
-
-taskDecomposerTool.description = `Decompose only genuinely broad work into smaller, actionable subtasks using the selected model for AI-powered planning. Default to direct execution; call this only when a tracker will materially improve reliability. Returns a structured execution plan with granular steps, tool assignments, and verification conditions. Never call this more than once per task because the plan is persistent.
-
-Examples:
-- Use only when the task likely needs 4+ ordered steps across multiple files/systems, a long deliverable, deep research, or the user explicitly asks for tasks/a tracker.
-- Do not use for direct questions, tiny edits, one command, one-file reads, simple fixes, greetings, or short follow-ups.
-- Do not use merely because the request says "full", "professional", "best", or "fix" if you can execute directly.
-- "Build me a full website with authentication"
-- "Create a 10-page research report on climate change"
-- "Set up CI/CD pipeline for this project"
-
-Returns: Structured plan with steps, tools, verification conditions, and dependency graph.`;

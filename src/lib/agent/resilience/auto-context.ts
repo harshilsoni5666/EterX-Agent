@@ -14,7 +14,7 @@
  *                         task plans, or recent (last 6) turns
  *  3. PROGRESSIVE TIERS — The older a turn, the more aggressively compressed
  *  4. FACT EXTRACTION   — Before compressing, mine important facts into
- *                         the Lifetime Brain so nothing is truly lost
+ *                         durable context evidence so nothing is truly lost
  *  5. TOKEN BUDGET      — Track estimated token usage and compress
  *                         proactively before overflow, not after
  *  6. MILESTONE SAVES   — Every N tool calls, save a full compressed
@@ -28,7 +28,6 @@
 
 import path from 'path';
 import fs from 'fs-extra';
-import { lifetimeBrain } from '../memory/lifetime';
 import { distillEvidence } from '../memory/evidence-distiller';
 import { getEterxWorkspaceDir } from '../storage-paths';
 
@@ -431,7 +430,7 @@ export interface ContextSnapshot {
   summary: string;
   compressedContentsLength: number;
   // We store only stats, not the full content (too large).
-  // Resume uses session.ts + lifetimeBrain to reconstruct.
+  // Resume uses session state and durable context evidence to reconstruct.
 }
 
 const _snapshotCache: ContextSnapshot[] = [];
@@ -459,18 +458,6 @@ export async function saveMilestoneSnapshot(opts: {
     _snapshotCache.push(snapshot);
     // Keep last 20 snapshots in memory
     if (_snapshotCache.length > 20) _snapshotCache.shift();
-
-    // Also record to lifetime brain
-    lifetimeBrain.record({
-      chatId: opts.chatId,
-      projectId: opts.chatId,
-      type: 'agent_decision',
-      title: `Context milestone at iteration ${opts.iteration}: ${opts.taskSummary.substring(0, 60)}`,
-      detail: `Tokens: ${tokens}. Summary: ${opts.taskSummary.substring(0, 200)}`,
-      tags: ['milestone', 'context', 'checkpoint'],
-      importance: 7,
-      metadata: { iteration: opts.iteration, tokens },
-    });
 
     // Debounce disk save
     await writeJsonAtomic(SNAPSHOT_FILE, _snapshotCache.slice(-20));
