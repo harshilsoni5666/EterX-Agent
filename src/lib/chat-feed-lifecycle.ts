@@ -342,10 +342,18 @@ export const isTerminalWorkTrace = (log: any): boolean => {
   if (!log) return false;
 
   const type = String(log.type || '').trim().toLowerCase();
+  const agentName = String(log.agentName || '').trim().toLowerCase();
+  // Some delegated runtimes emit narrative rows with only agentName (without
+  // the richer subAgentId/subAgentChatId fields). A non-Main name on a
+  // thought/work-note row is still worker-owned and must not close Main's turn.
+  const namedDelegatedNarrative = Boolean(agentName) &&
+    !/^(?:main|main agent|assistant|eterx|eterx agent|root)$/.test(agentName) &&
+    ['thought', 'thought_stream', 'work_note', 'autonomy_proxy_status'].includes(type);
   const explicitChildTrace = /^sub_agent_|^inter_agent_/.test(type) ||
     Boolean(log.subAgent || log.subAgentId || log.subAgentChatId || log.terminalTask) ||
     log.isSubAgent === true ||
-    String(log.agentRole || '').trim().toLowerCase() === 'sub_agent';
+    String(log.agentRole || '').trim().toLowerCase() === 'sub_agent' ||
+    namedDelegatedNarrative;
   const isMainAgentTrace = !log.subAgent &&
     !log.subAgentId &&
     !log.subAgentChatId &&
