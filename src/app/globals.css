@@ -64,6 +64,12 @@
     --eterx-topbar-text: #77736C;
     --eterx-topbar-hover-bg: rgba(31, 31, 29, 0.05);
     --eterx-topbar-hover-text: #4B4945;
+    --eterx-theme-menu-bg: #FCFCFA;
+    --eterx-theme-menu-border: rgba(31, 31, 29, 0.09);
+    --eterx-theme-menu-text: #615E58;
+    --eterx-theme-menu-strong: #292724;
+    --eterx-theme-menu-hover: #F3F2EF;
+    --eterx-theme-menu-active: #ECEAE6;
 
     --success: #047857;
     --destructive: #dc2626;
@@ -144,6 +150,12 @@
     --eterx-topbar-text: #A39C92;
     --eterx-topbar-hover-bg: rgba(255, 255, 255, 0.08);
     --eterx-topbar-hover-text: rgba(255, 255, 255, 0.9);
+    --eterx-theme-menu-bg: #1B1B1A;
+    --eterx-theme-menu-border: rgba(255, 255, 255, 0.085);
+    --eterx-theme-menu-text: #AAA59D;
+    --eterx-theme-menu-strong: #F0ECE6;
+    --eterx-theme-menu-hover: #242422;
+    --eterx-theme-menu-active: #2A2927;
 
     --success: #34d399;
     --destructive: #ef4444;
@@ -1507,36 +1519,6 @@
   --shimmer-text-fill: currentColor;
 }
 
-/* Live thought labels use the same neutral working-text family as the rest of
-   the feed. The only motion is a soft left-to-right luminance sweep. */
-.eterx-thinking-shimmer {
-  /* One compact left-to-right sweep keeps short labels legible without
-     stacking a second color animation over the text. */
-  background-image:
-    linear-gradient(106deg,
-      var(--eterx-ui-working-text) 0%,
-      color-mix(in oklch, var(--eterx-ui-working-text) 88%, var(--eterx-ui-working-highlight) 12%) 24%,
-      var(--eterx-ui-working-highlight) 48%,
-      color-mix(in oklch, var(--eterx-ui-working-text) 86%, var(--eterx-ui-working-highlight) 14%) 58%,
-      var(--eterx-ui-working-text) 100%);
-  background-size: 180% 100%;
-  background-position: 100% 0;
-  background-repeat: no-repeat;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: tw-shimmer 3.2s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .eterx-thinking-shimmer {
-    animation: none;
-    background-image: linear-gradient(90deg, var(--eterx-ui-working-text), var(--eterx-ui-working-highlight));
-    background-size: 100% 100%;
-    background-position: 0 0;
-  }
-}
-
 .eterx-agent-run-notice {
   color: #D2D5DA;
 }
@@ -1700,27 +1682,6 @@
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.001ms !important;
-  }
-}
-
-/* The active run label is an accessibility status cue; keep its restrained
-   sweep visible even when the global motion reduction rule is enabled. */
-@media (prefers-reduced-motion: reduce) {
-  .shimmer.eterx-thinking-shimmer {
-    background-image: linear-gradient(106deg,
-      var(--eterx-ui-working-text) 0%,
-      color-mix(in oklch, var(--eterx-ui-working-text) 88%, var(--eterx-ui-working-highlight) 12%) 24%,
-      var(--eterx-ui-working-highlight) 48%,
-      color-mix(in oklch, var(--eterx-ui-working-text) 86%, var(--eterx-ui-working-highlight) 14%) 58%,
-      var(--eterx-ui-working-text) 100%) !important;
-    background-size: 180% 100% !important;
-    background-position: 100% 0 !important;
-    background-clip: text !important;
-    -webkit-background-clip: text !important;
-    -webkit-text-fill-color: transparent !important;
-    animation: tw-shimmer 3.2s linear infinite !important;
-    animation-duration: 3.2s !important;
-    animation-iteration-count: infinite !important;
   }
 }
 
@@ -3246,7 +3207,11 @@
 }
 
 .eterx-agent-tab-label {
+  display: block;
   min-width: 0;
+  line-height: 1.35;
+  padding-block: 2px;
+  margin-block: -2px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -5341,6 +5306,71 @@
   }
 }
 
+/* One crisp loading treatment for live thought-sequence tools and file reads. */
+.eterx-trace-spinner {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 999px;
+  background: conic-gradient(
+    from -36deg,
+    transparent 0deg,
+    rgba(255, 255, 255, 0.16) 76deg,
+    rgba(255, 255, 255, 0.62) 196deg,
+    #f4f1eb 292deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.75px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 1.75px), #000 0);
+  animation: eterx-splash-spin 760ms linear infinite;
+  box-shadow: none;
+}
+
+.eterx-trace-spinner-file {
+  width: 20px;
+  height: 20px;
+  background: conic-gradient(
+    from -36deg,
+    transparent 0deg,
+    rgba(255, 255, 255, 0.14) 72deg,
+    rgba(255, 255, 255, 0.58) 192deg,
+    #f4f1eb 292deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.1px), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2.1px), #000 0);
+}
+
+:root[data-theme="light"] .eterx-trace-spinner {
+  background: conic-gradient(
+    from -36deg,
+    transparent 0deg,
+    rgba(31, 31, 29, 0.12) 76deg,
+    rgba(31, 31, 29, 0.52) 196deg,
+    #1f1f1d 292deg,
+    transparent 360deg
+  );
+}
+
+:root[data-theme="light"] .eterx-trace-spinner-file {
+  background: conic-gradient(
+    from -36deg,
+    transparent 0deg,
+    rgba(31, 31, 29, 0.1) 72deg,
+    rgba(31, 31, 29, 0.48) 192deg,
+    #1f1f1d 292deg,
+    transparent 360deg
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eterx-trace-spinner {
+    animation-duration: 1.8s;
+  }
+}
+
 .eterx-sidebar-menu {
   background: var(--sidebar-menu-bg) !important;
   border-color: var(--sidebar-menu-border) !important;
@@ -5543,7 +5573,7 @@
   --context-panel-title: #F2F2F2;
   --context-panel-copy: #D7D7D7;
   --context-panel-muted: #A6A6A6;
-  max-height: min(330px, calc(100vh - 170px));
+  max-height: min(520px, calc(100vh - 170px));
   border-color: rgba(255, 255, 255, 0.105) !important;
   background: rgba(24, 24, 24, 0.985) !important;
   color: var(--context-panel-copy);
@@ -5562,6 +5592,10 @@
   color: var(--context-panel-muted);
 }
 
+.eterx-context-panel-meta {
+  color: var(--context-panel-muted);
+}
+
 .eterx-context-panel-close {
   color: #8E8E8E;
   background: transparent;
@@ -5576,17 +5610,36 @@
   background: rgba(255, 255, 255, 0.12);
 }
 
-.eterx-context-provider-metric {
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid rgba(255, 255, 255, 0.045);
+.eterx-context-panel-unclassified {
+  background: #808892;
 }
 
-.eterx-context-provider-metric-label {
-  color: #858585;
+.eterx-context-compaction-state {
+  color: #D7D7D7;
+  border: 1px solid rgba(118, 154, 202, 0.18);
+  background: rgba(72, 108, 158, 0.10);
 }
 
-.eterx-context-provider-metric-value {
-  color: var(--context-panel-copy);
+.eterx-context-compaction-state[data-phase="compacted"] {
+  border-color: rgba(93, 173, 117, 0.20);
+  background: rgba(61, 135, 84, 0.10);
+}
+
+.eterx-context-compaction-state[data-phase="failed"] {
+  border-color: rgba(224, 104, 104, 0.26);
+  background: rgba(168, 62, 62, 0.11);
+}
+
+.eterx-context-compaction-title {
+  color: var(--context-panel-title);
+}
+
+.eterx-context-compaction-state[data-phase="failed"] .eterx-context-compaction-title {
+  color: #F2B1B1;
+}
+
+.eterx-context-compaction-copy {
+  color: var(--context-panel-muted);
 }
 
 .eterx-context-panel-row:hover {
@@ -5645,18 +5698,34 @@
   background: rgba(31, 31, 29, 0.11);
 }
 
-:root[data-theme="light"] body .eterx-context-provider-metric {
-  background: rgba(31, 31, 29, 0.035);
-  border-color: rgba(31, 31, 29, 0.045);
+:root[data-theme="light"] body .eterx-context-panel-unclassified {
+  background: #747D86;
 }
 
-:root[data-theme="light"] body .eterx-context-provider-metric-label {
-  color: #7A766F;
+:root[data-theme="light"] body .eterx-context-compaction-state {
+  color: #34322F;
+  border-color: rgba(51, 91, 137, 0.16);
+  background: rgba(80, 119, 164, 0.065);
+}
+
+:root[data-theme="light"] body .eterx-context-compaction-state[data-phase="compacted"] {
+  border-color: rgba(52, 126, 76, 0.17);
+  background: rgba(69, 145, 93, 0.065);
+}
+
+:root[data-theme="light"] body .eterx-context-compaction-state[data-phase="failed"] {
+  border-color: rgba(177, 55, 55, 0.19);
+  background: rgba(189, 67, 67, 0.06);
+}
+
+:root[data-theme="light"] body .eterx-context-compaction-state[data-phase="failed"] .eterx-context-compaction-title {
+  color: #A13E3E;
 }
 
 :root[data-theme="light"] body .eterx-context-panel-row:hover {
   background: rgba(31, 31, 29, 0.035);
 }
+
 
 
 .eterx-connectors-logo-img,
@@ -7765,6 +7834,52 @@
 :root[data-theme="light"] {
   --eterx-dropdown-bg: #FFFFFF !important;
   --eterx-dropdown-border: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Theme selection stays deliberately quiet: no lift, scale, opacity fade, or
+   moving icon. Only the neutral surface and text colors change on hover. */
+.eterx-theme-menu {
+  background: var(--eterx-theme-menu-bg);
+  border: 1px solid var(--eterx-theme-menu-border);
+  box-shadow: none;
+  color: var(--eterx-theme-menu-text);
+}
+
+.eterx-theme-menu-item {
+  background: transparent;
+  color: var(--eterx-theme-menu-text);
+  opacity: 1;
+  transform: none;
+  transition: background-color 100ms ease-out, color 100ms ease-out;
+}
+
+.eterx-theme-menu-item:hover,
+.eterx-theme-menu-item:focus-visible,
+.eterx-theme-menu-item[data-highlighted] {
+  background: var(--eterx-theme-menu-hover);
+  color: var(--eterx-theme-menu-strong);
+  transform: none;
+}
+
+.eterx-theme-menu-item[data-active="true"] {
+  background: var(--eterx-theme-menu-active);
+  color: var(--eterx-theme-menu-strong);
+}
+
+.eterx-theme-menu-item[data-active="true"]:hover,
+.eterx-theme-menu-item[data-active="true"]:focus-visible,
+.eterx-theme-menu-item[data-active="true"][data-highlighted] {
+  background: var(--eterx-theme-menu-active);
+}
+
+.eterx-theme-menu-item:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--eterx-theme-menu-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eterx-theme-menu-item {
+    transition: none;
+  }
 }
 
 
@@ -10137,6 +10252,109 @@ body.eterx-gateway-view section.mt-8 > main {
   padding-bottom: 8px !important;
 }
 
+/* Keep the real composer fully rounded when the Progress rail is present.
+   Extend the rail underneath it to fill behind the curved top corners. */
+.eterx-composer-shell[data-task-tracker="true"] {
+  gap: 0 !important;
+}
+
+.eterx-composer-shell[data-task-tracker="true"] .eterx-task-tracker-dock {
+  margin-bottom: -24px !important;
+  padding-bottom: 24px;
+  transform: none !important;
+  border-radius: 24px 24px 0 0 !important;
+}
+
+.eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"]) {
+  z-index: 1;
+  border-radius: 24px !important;
+  isolation: isolate;
+}
+
+/* The extended rail replaces the old square side fillers. */
+.eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::before,
+.eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::after {
+  content: none;
+}
+
+/* Light Progress rail: use one continuous interior rather than stacking
+   bright cards on a tinted panel. */
+:root[data-theme="light"] .eterx-task-tracker-dock,
+[data-theme="light"] .eterx-task-tracker-dock {
+  background: #ffffff !important;
+  border-color: rgba(31, 31, 29, 0.12) !important;
+  color: #292825;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-header,
+[data-theme="light"] .eterx-task-tracker-header {
+  color: #292825 !important;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-header:hover,
+[data-theme="light"] .eterx-task-tracker-header:hover {
+  background: rgba(31, 31, 29, 0.035) !important;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-header span,
+:root[data-theme="light"] .eterx-task-tracker-header svg,
+:root[data-theme="light"] .eterx-task-tracker-step span,
+[data-theme="light"] .eterx-task-tracker-header span,
+[data-theme="light"] .eterx-task-tracker-header svg,
+[data-theme="light"] .eterx-task-tracker-step span {
+  color: #34322f !important;
+  -webkit-text-fill-color: currentColor;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-body,
+[data-theme="light"] .eterx-task-tracker-body {
+  background: #ffffff;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-fade-top,
+[data-theme="light"] .eterx-task-tracker-fade-top {
+  background: linear-gradient(to bottom, #ffffff, rgba(255, 255, 255, 0)) !important;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-fade-bottom,
+[data-theme="light"] .eterx-task-tracker-fade-bottom {
+  background: linear-gradient(to top, #ffffff, rgba(255, 255, 255, 0)) !important;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-list,
+[data-theme="light"] .eterx-task-tracker-list {
+  row-gap: 0 !important;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-step,
+[data-theme="light"] .eterx-task-tracker-step {
+  border-bottom: 1px solid rgba(31, 31, 29, 0.065);
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-step:last-child,
+[data-theme="light"] .eterx-task-tracker-step:last-child {
+  border-bottom: 0;
+}
+
+:root[data-theme="light"] .eterx-task-tracker-step:hover,
+[data-theme="light"] .eterx-task-tracker-step:hover {
+  background: rgba(31, 31, 29, 0.025) !important;
+}
+
+:root[data-theme="light"] .eterx-task-progress-loader > span:first-child,
+[data-theme="light"] .eterx-task-progress-loader > span:first-child {
+  border-color: rgba(31, 31, 29, 0.16) !important;
+}
+
+:root[data-theme="light"] .eterx-task-progress-loader > span:last-child,
+[data-theme="light"] .eterx-task-progress-loader > span:last-child {
+  border-color: transparent !important;
+  border-right-color: rgba(31, 31, 29, 0.48) !important;
+  border-top-color: rgba(31, 31, 29, 0.9) !important;
+}
+
 .eterx-chat-input-dock-active:not([data-compressed="true"]) .eterx-composer-input-row {
   min-height: 38px !important;
   padding-bottom: 0 !important;
@@ -10171,6 +10389,16 @@ body.eterx-gateway-view section.mt-8 > main {
     border-radius: 22px !important;
     padding-top: 9px !important;
     padding-bottom: 7px !important;
+  }
+
+  .eterx-composer-shell[data-task-tracker="true"] .eterx-task-tracker-dock {
+    margin-bottom: -22px !important;
+    padding-bottom: 22px;
+    border-radius: 22px 22px 0 0 !important;
+  }
+
+  .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"]) {
+    border-radius: 22px !important;
   }
 
   .eterx-chat-input-dock-active:not([data-compressed="true"]) .eterx-composer-input-row {
@@ -10397,6 +10625,18 @@ body.eterx-gateway-view section.mt-8 > main {
   line-height: 1.54 !important;
 }
 
+/* Final-answer actions live in normal flow below the Markdown. Keeping this
+   footer block-level prevents the last list/table/code block from swallowing
+   or horizontally displacing the controls in sub-agent conversations. */
+.eterx-answer-footer {
+  clear: both;
+  contain: layout style;
+}
+
+.eterx-answer-footer button {
+  flex: 0 0 auto;
+}
+
 .eterx-answer-heading {
   font-weight: 650 !important;
   letter-spacing: -0.024em !important;
@@ -10431,6 +10671,10 @@ body.eterx-gateway-view section.mt-8 > main {
 .eterx-action-group-header {
   font-weight: 500 !important;
   letter-spacing: -0.002em !important;
+}
+
+.eterx-worked-summary-label {
+  font-size: var(--eterx-worked-summary-size, 13px) !important;
 }
 
 .eterx-composer-textarea,
@@ -10997,17 +11241,6 @@ body.eterx-gateway-view section.mt-8 > main {
   margin-left: auto !important;
 }
 
-/* Agent Builder hides the agent selector but keeps the same model picker.
-   Its attachment action and model picker form the same right-side cluster. */
-.eterx-composer-shell[data-agent-builder="true"] .eterx-agent-builder-attach {
-  order: 3 !important;
-  margin-left: auto !important;
-}
-
-.eterx-composer-shell[data-agent-builder="true"] .eterx-chat-controls-right > .eterx-model-selector {
-  margin-left: 0 !important;
-}
-
 .eterx-composer-shell[data-new-chat="true"] .eterx-chat-controls-right > *:has(.eterx-composer-dictation-button) {
   order: 5 !important;
 }
@@ -11081,6 +11314,81 @@ body.eterx-gateway-view section.mt-8 > main {
 
 .eterx-phase-block {
   gap: 0.15rem !important;
+}
+
+/* Compact universal reasoning surface shared by every runtime mode. */
+.eterx-chat-column .eterx-thought-card {
+  border-radius: 8px !important;
+}
+
+.eterx-chat-column .eterx-thought-toggle {
+  min-height: 26px !important;
+  padding: 1px 8px !important;
+}
+
+.eterx-chat-column .eterx-thought-toggle .eterx-thinking-shimmer {
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  line-height: 1.25 !important;
+  letter-spacing: -0.002em !important;
+}
+
+:root[data-theme="light"] .eterx-chat-column .eterx-thinking-shimmer {
+  --shimmer-base: #667085;
+  --shimmer-color: #171717;
+  --shimmer-surface: #FAFAFA;
+  color: #667085 !important;
+}
+
+:root[data-theme="dark"] .eterx-chat-column .eterx-thinking-shimmer,
+.dark .eterx-chat-column .eterx-thinking-shimmer {
+  --shimmer-base: #9A9A9A;
+  --shimmer-color: #F2F2F2;
+  --shimmer-surface: #0F0F0F;
+  color: #9A9A9A !important;
+}
+
+.eterx-chat-column .eterx-thought-expanded {
+  padding: 4px 10px 8px !important;
+  font-size: 11.5px !important;
+  line-height: 1.48 !important;
+}
+
+/* Thought uses the same compact geometry in both themes, but its reading
+   surface and prose must be theme-owned. The component historically carried
+   dark-only inline colors, which made an expanded Thought washed out in the
+   light theme even though the collapsed row appeared correct. */
+:root[data-theme="light"] .eterx-chat-column .eterx-thought-card {
+  background: rgba(250, 250, 249, 0.96) !important;
+  border-color: rgba(23, 23, 23, 0.10) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-chat-column .eterx-thought-toggle:hover {
+  background: rgba(23, 23, 23, 0.025) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-column .eterx-thought-toggle > svg {
+  color: #77716A !important;
+}
+
+:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded,
+:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded p,
+:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded ol,
+:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded ul,
+:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded li {
+  color: #45413C !important;
+}
+
+:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded strong {
+  color: #1F1F1D !important;
+}
+
+:root[data-theme="dark"] .eterx-chat-column .eterx-thought-card,
+.dark .eterx-chat-column .eterx-thought-card {
+  background: rgba(21, 21, 20, 0.34) !important;
+  border-color: rgba(255, 255, 255, 0.075) !important;
+  box-shadow: none !important;
 }
 
 /* Keep the work note inside its action sequence rather than inserting a
@@ -11224,6 +11532,7 @@ body.eterx-gateway-view section.mt-8 > main {
   --eterx-conversation-user-max: min(77%, calc(var(--eterx-reference-composer-max) * 0.77));
   --eterx-conversation-reading-size: 14.5px;
   --eterx-conversation-reading-leading: 1.54;
+  --eterx-worked-summary-size: 13px;
 }
 
 /* Feed and composer must be a single visual column.  The max-width token is
@@ -11382,6 +11691,7 @@ body.eterx-gateway-view section.mt-8 > main {
     --eterx-conversation-user-max: 92%;
     --eterx-conversation-reading-size: 13.75px;
     --eterx-conversation-reading-leading: 1.48;
+    --eterx-worked-summary-size: 11.5px;
   }
 
   .eterx-chat-column .eterx-chat-feed-content {
@@ -11398,9 +11708,6 @@ body.eterx-gateway-view section.mt-8 > main {
     border-radius: 16px !important;
   }
 
-  .eterx-chat-column .eterx-worked-summary-label {
-    font-size: 11.5px !important;
-  }
 }
 
 /* Keep the composer compact when empty, then let the draft grow until the
@@ -11500,6 +11807,61 @@ body.eterx-gateway-view section.mt-8 > main {
 .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-stop-button .eterx-composer-stop-pending {
   width: 12px !important;
   height: 12px !important;
+}
+
+/* Live feed rows enter as stable ledger entries. Keep the motion deliberately
+   quiet: enough to communicate that a new Work note/action landed, without
+   shifting earlier rows or replaying an animation when a cumulative snapshot
+   merely updates the same mounted lifecycle. */
+@keyframes eterx-live-feed-arrival {
+  from {
+    opacity: 0.72;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.eterx-live-feed-arrival {
+  animation: eterx-live-feed-arrival 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: top center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eterx-live-feed-arrival {
+    animation: none !important;
+  }
+}
+
+/* Stop is a single stable primary action in the normal composer. Legacy
+   non-live control rules used a gray resting surface and a black hover state,
+   which made it look like two different controls. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-stop-button,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-stop-button:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-stop-button:focus-visible {
+  background: #292929 !important;
+  color: #ffffff !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-button .eterx-composer-stop-icon {
+  color: #ffffff !important;
+  background-color: #ffffff !important;
+  opacity: 1 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-stop-button .eterx-composer-stop-pending {
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  border-top-color: #ffffff !important;
+}
+
+:root[data-theme="dark"] .eterx-composer-shell .eterx-composer-stop-button .eterx-composer-stop-pending,
+.dark .eterx-composer-shell .eterx-composer-stop-button .eterx-composer-stop-pending {
+  border-color: rgba(0, 0, 0, 0.25) !important;
+  border-top-color: #000000 !important;
 }
 
 .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-left > *:first-child .eterx-control-button {
@@ -11691,7 +12053,11 @@ body.eterx-gateway-view section.mt-8 > main {
 
 .eterx-workspace-shell {
   --eterx-main-panel-left-radius: 18px;
-  padding-top: var(--eterx-shell-topbar-height);
+  /* Keep the panel border one CSS pixel below the native title-bar overlay.
+     On a restored Windows window the overlay owns its bottom device-pixel
+     row, which otherwise masks the border only beneath the caption buttons
+     and leaves the broken line visible in the renderer-owned area. */
+  padding-top: calc(var(--eterx-shell-topbar-height) + 1px);
 }
 
 .eterx-main-panel,
@@ -11808,4 +12174,38 @@ body.eterx-gateway-view section.mt-8 > main {
 :root[data-theme="dark"] .eterx-action-group {
   background: rgba(21, 21, 20, 0.42) !important;
   border-color: rgba(255, 255, 255, 0.075) !important;
+}
+
+/* Canonical action geometry. Every collapsed action uses the compact skill
+   row as its baseline, including rows inside terminal/browser/action groups.
+   Expanded previews remain outside the fixed header and can grow normally. */
+.eterx-chat-column .eterx-action-chip,
+.eterx-chat-column .eterx-terminal-trace-row,
+.eterx-chat-column .eterx-file-change-row,
+.eterx-chat-column .eterx-thought-toggle,
+.eterx-chat-column .eterx-browser-activity-header,
+.eterx-chat-column .eterx-action-group-header,
+.eterx-chat-column .eterx-action-group .eterx-action-chip,
+.eterx-chat-column .eterx-action-group .eterx-terminal-trace-row,
+.eterx-chat-column .eterx-action-group .eterx-file-change-row,
+.eterx-chat-column .eterx-browser-activity-group .eterx-action-chip,
+.eterx-chat-column .eterx-browser-activity-group .eterx-terminal-trace-row,
+.eterx-chat-column .eterx-browser-activity-group .eterx-file-change-row {
+  box-sizing: border-box !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  padding-top: 1px !important;
+  padding-bottom: 1px !important;
+  padding-left: 10px !important;
+  padding-right: 10px !important;
+  line-height: 1.3 !important;
+}
+
+.eterx-chat-column .eterx-action-card,
+.eterx-chat-column .eterx-thought-card,
+.eterx-chat-column .eterx-terminal-trace,
+.eterx-chat-column .eterx-file-change-trace,
+.eterx-chat-column .eterx-action-group,
+.eterx-chat-column .eterx-browser-activity-group {
+  border-radius: 10px !important;
 }

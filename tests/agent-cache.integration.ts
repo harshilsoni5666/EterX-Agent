@@ -165,8 +165,20 @@ function testProviderPromptCachePolicy(): void {
       visibleOutputTokens: 40,
       generatedTokens: 40,
       providerReportedTotalTokens: 0,
+      promptTokensMeasured: 1,
+      completionTokensMeasured: 1,
+      reasoningTokensMeasured: 0,
+      cacheTokensMeasured: 1,
+      cacheWriteTokensMeasured: 0,
     },
   );
+  const usageWithoutCacheTelemetry = normalizeProviderCacheUsage('openai', {
+    prompt_tokens: 800,
+    completion_tokens: 20,
+  });
+  assert.equal(usageWithoutCacheTelemetry.cacheTokensMeasured, 0);
+  assert.equal('cachedTokens' in usageWithoutCacheTelemetry, false);
+  assert.equal('cacheHitRatio' in usageWithoutCacheTelemetry, false);
 }
 
 async function main(): Promise<void> {

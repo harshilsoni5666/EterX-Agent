@@ -10,6 +10,7 @@ import {
 import {
   getModelThinkingOptions,
   inferModelThinkingCapabilities,
+  isAnthropicAdaptiveThinkingModel,
   normalizeModelThinkingCapabilities,
   type MainAgentProvider,
   type ModelThinkingCapabilities,
@@ -215,10 +216,11 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
     let pageToken = '';
     // models.list is paginated even when pageSize=1000. Keep discovery the
     // source of truth rather than silently dropping later model pages.
-    for (let page = 0; page < 20; page++) {
+    for (let page = 0; page < 100; page++) {
       const token = pageToken ? `&pageToken=${ encodeURIComponent(pageToken) }` : '';
-      const res = await withTimeout(fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${ encodeURIComponent(apiKey) }&pageSize=1000${ token }`, {
+      const res = await withTimeout(fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000${ token }`, {
         cache: 'no-store',
+        headers: { 'x-goog-api-key': apiKey },
       }));
       if (!res.ok) throw new Error(`Gemini models request failed (${ res.status })`);
       const data = await res.json();
@@ -378,14 +380,16 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
         name: String(model.id || ''),
         description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
         contextLength: model.context_window,
-        thinking: readThinkingCapabilities(model, 'reasoning_effort') || (/gpt-oss/i.test(String(model.id || ''))
-          ? {
-            levels: ['low', 'medium', 'high'],
-            defaultLevel: 'medium',
+        thinking: readThinkingCapabilities(model, 'reasoning_effort') || (() => {
+          const levels = getModelThinkingOptions('groq', String(model.id || '')).map(option => option.id);
+          if (levels.length === 0) return undefined;
+          return {
+            levels,
+            defaultLevel: /qwen/i.test(String(model.id || '')) ? 'high' : 'medium',
             parameter: 'reasoning_effort',
             source: 'inferred',
-          } as ModelThinkingCapabilities
-          : undefined),
+          } as ModelThinkingCapabilities;
+        })(),
       }))
       .sort((a: ProviderModel, b: ProviderModel) => a.id.localeCompare(b.id));
     return resultWithExcluded('groq', mappedModels);
@@ -475,10 +479,20 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
         inputTokenLimit: Number(model.max_input_tokens) || undefined,
         outputTokenLimit: Number(model.max_tokens) || undefined,
         capabilities,
-        thinking: readThinkingCapabilities(model, 'output_config.effort') || (() => {
+        thinking: readThinkingCapabilities(
+          model,
+          isAnthropicAdaptiveThinkingModel(String(model.id || '')) ? 'output_config.effort' : undefined,
+        ) || (() => {
           const levels = getModelThinkingOptions('anthropic', String(model.id || '')).map(option => option.id);
           return levels.length > 0
-            ? { levels, defaultLevel: levels.includes('medium') ? 'medium' : levels[0], parameter: 'output_config.effort', source: 'inferred' as const }
+            ? {
+              levels,
+              defaultLevel: levels.includes('medium') ? 'medium' : levels[0],
+              ...(isAnthropicAdaptiveThinkingModel(String(model.id || ''))
+                ? { parameter: 'output_config.effort' as const }
+                : {}),
+              source: 'inferred' as const,
+            }
             : undefined;
         })(),
       };

@@ -1877,11 +1877,7 @@ export const Sidebar = React.memo<SidebarProps>(
                         )}
 
                         <div className={`eterx-sidebar-chat-content ${ !isWorking && !isSelectMode && isMenuOpen ? 'eterx-sidebar-chat-content-menu-visible' : '' } ${ isWorking && !isSelectMode ? 'eterx-sidebar-chat-content-working' : '' } flex min-w-0 max-w-full flex-1 items-center overflow-hidden relative z-10 pl-0`}>
-                          {isWorking ? (
-                            <span className="eterx-sidebar-chat-title truncate relative z-10 font-medium leading-normal">
-                              {chat.title}
-                            </span>
-                          ) : editingChatId === chat.id ? (
+                          {editingChatId === chat.id && !isWorking ? (
                             <input
                               autoFocus
                               value={editTitle}
@@ -1902,7 +1898,14 @@ export const Sidebar = React.memo<SidebarProps>(
                               onClick={(e) => e.stopPropagation()}
                             />
                           ) : (
-                            <ChatTitleMarquee title={chat.title} isFavorite={chat.isFavorite} />
+                            // Key by the actual title so replacement fully
+                            // discards the temporary marquee measurement and
+                            // animation state instead of painting both states.
+                            <ChatTitleMarquee
+                              key={`${chat.id}:${chat.title}`}
+                              title={chat.title}
+                              isFavorite={chat.isFavorite}
+                            />
                           )}
                         </div>
 

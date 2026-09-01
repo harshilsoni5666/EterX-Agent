@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
+import { formatUnknownError } from '../../../../lib/agent/error-format';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -36,8 +37,16 @@ export async function POST(req: NextRequest) {
     session = getOrCreateAgentApiSession(req);
 
     const body = await readJsonObject(req);
-    const { chatId, message, id, runId } = body as { chatId?: string; message?: string; id?: string; runId?: string };
-    const cleanMessage = cleanString(message, 8000);
+    const { chatId, message, id, runId, createdAt } = body as {
+      chatId?: string;
+      message?: string;
+      id?: string;
+      runId?: string;
+      createdAt?: number;
+    };
+    const cleanMessage = typeof message === 'string'
+      ? message.replace(/\u0000/g, '').trim()
+      : '';
     const cleanId = id === undefined ? undefined : cleanString(id, 120);
     const cleanRunId = runId === undefined ? undefined : cleanString(runId, 160);
 
@@ -80,7 +89,16 @@ export async function POST(req: NextRequest) {
       ), session);
     }
 
-    const queued = agentRegistry.addSteeringMessage(chatId, cleanMessage, cleanId, undefined, admissionRunId);
+    const requestedCreatedAt = Number(createdAt);
+    const queued = agentRegistry.addSteeringMessage(
+      chatId,
+      cleanMessage,
+      cleanId,
+      Number.isFinite(requestedCreatedAt) && requestedCreatedAt > 0
+        ? { createdAt: requestedCreatedAt }
+        : undefined,
+      admissionRunId,
+    );
 
     if (!queued) {
       const stillRunning = agentRegistry.isRunning(chatId);
@@ -98,7 +116,7 @@ export async function POST(req: NextRequest) {
     console.log(`[API/steer] 🧭 Steering queued for chat ${chatId.substring(0, 8)}...`);
     return attachAgentApiSessionCookie(NextResponse.json({ success: true, message: 'Steering message queued' }), session);
   } catch (error: any) {
-    const response = NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    const response = NextResponse.json({ success: false, error: formatUnknownError(error, 'Failed to steer agent') }, { status: 500 });
     return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }

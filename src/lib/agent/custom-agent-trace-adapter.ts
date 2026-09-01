@@ -18,6 +18,8 @@ export type CustomToolActiveTrace = {
   id: string;
   toolCallId?: string;
   toolName: string;
+  /** Immutable wall-clock boundary captured when the tool call arrived. */
+  startedAt: number;
   command?: string;
   filename?: string;
   toolArgs?: any;
@@ -241,6 +243,10 @@ export const createCustomToolActionLog = (
   const iconCategory = isConnectorTool ? 'connector' : (mapCustomUiIcon(args?.uiIcon) || (command ? 'terminal' : ui.iconCategory));
   return {
     id: `custom_tool_${startedAt}_${toolName}_${randomSuffix()}`,
+    // Preserve the runner's invocation identity. Parallel calls of the same
+    // tool can share a name and millisecond start time; toolCallId is the only
+    // authoritative start/result correlation in that case.
+    toolCallId: event?.toolCallId ? String(event.toolCallId) : undefined,
     type,
     text: cleanActionText(normalizeToolTraceText(args?.uiActionText), ui.text),
     secondary,
@@ -259,15 +265,17 @@ export const createCustomToolActionLog = (
     add: undefined,
     remove: undefined,
     startTime: startedAt,
-    endTime: startedAt,
     timestamp: startedAt,
+    status: 'running',
+    isLive: true,
+    isStreaming: true,
+    streamState: 'open',
   };
 };
 
 export const shouldShowCustomAgentStatus = (text: string) => {
   const value = text.trim();
   if (!value) return false;
-  if (/\bis starting\b/i.test(value)) return false;
   if (/^.+\s+is thinking\.{0,3}$/i.test(value)) return false;
   if (/processed\s+\d+\s+tool call/i.test(value)) return false;
   if (/completed\.?$/i.test(value)) return false;
@@ -308,6 +316,10 @@ export const createCustomToolResultLogs = (
   const result = event?.toolResult;
   const resultText = summarizeCustomToolResult(result);
   const logs: any[] = [];
+  const explicitDuration = Number(result?.durationMs);
+  const durationMs = Number.isFinite(explicitDuration) && explicitDuration >= 0
+    ? explicitDuration
+    : Math.max(0, at - active.startedAt);
 
   // terminal_background already streams the command's output and emits its
   // final event. Do not manufacture a second console card from tool_result.
@@ -318,14 +330,14 @@ export const createCustomToolResultLogs = (
       command: active.command || active.toolName,
       output: resultText,
       exitCode: typeof result?.exitCode === 'number' ? result.exitCode : undefined,
-      durationMs: typeof result?.durationMs === 'number' ? result.durationMs : undefined,
+      durationMs,
       ownerTraceId: active.id,
       streamId: result?.streamId,
       taskId: result?.taskId || result?.backgroundTaskId,
       cwd: result?.cwd,
       shell: result?.shell,
       pid: result?.pid,
-      startTime: at,
+      startTime: active.startedAt,
       endTime: at,
       timestamp: at,
     });

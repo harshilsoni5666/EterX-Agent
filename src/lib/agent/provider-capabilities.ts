@@ -73,7 +73,12 @@ export function applyCompatibleThinkingParameters(
   const level = thinking.level;
   const parameter = thinking.capabilities?.parameter;
 
-  if (parameter === 'thinkingLevel') {
+  // Provider/model semantics win over a generic parameter label. Groq's Qwen
+  // models use only none/default, unlike GPT-OSS low/medium/high.
+  if (provider === 'groq' && /qwen(?:\/|[-_])?qwen?3|qwen3/i.test(modelName)) {
+    params.reasoning_effort = level === 'off' ? 'none' : 'default';
+    params.reasoning_format = 'parsed';
+  } else if (parameter === 'thinkingLevel') {
     params.thinkingLevel = level;
   } else if (parameter === 'thinkingBudget') {
     params.thinkingBudget = thinkingBudget(level);
@@ -142,17 +147,198 @@ export function assertSuccessfulCompatibleFinish(
   throw new Error(`MODEL_STREAM_INCOMPLETE: provider ended the stream with finish_reason=${reason}.`);
 }
 
+export type CompatibleTaggedReasoningSplitter = {
+  push: (content: string) => { text: string; reasoning: string };
+  flush: () => { text: string; reasoning: string };
+};
+
+const TAGGED_REASONING_PAIRS = [
+  ['<think>', '</think>'],
+  ['<thinking>', '</thinking>'],
+  ['<reasoning>', '</reasoning>'],
+  ['<analysis>', '</analysis>'],
+] as const;
+
+const longestTagPrefixSuffix = (value: string, tags: readonly string[]): number => {
+  const lower = value.toLowerCase();
+  let longest = 0;
+  for (const tag of tags) {
+    const normalizedTag = tag.toLowerCase();
+    const limit = Math.min(lower.length, normalizedTag.length - 1);
+    for (let length = limit; length > longest; length -= 1) {
+      if (lower.endsWith(normalizedTag.slice(0, length))) {
+        longest = length;
+        break;
+      }
+    }
+  }
+  return longest;
+};
+
+/**
+ * Some OpenAI-compatible providers expose native reasoning as tagged content
+ * instead of a reasoning field. Keep a tiny cross-chunk parser per provider
+ * request so split tags never leak into the answer or appear only after the
+ * response settles. Opening tags are recognized only before visible answer
+ * text, which keeps literal examples such as code snippets intact.
+ */
+export function createCompatibleTaggedReasoningSplitter(): CompatibleTaggedReasoningSplitter {
+  let pending = '';
+  let activeCloseTag = '';
+  let allowOpeningTag = true;
+
+  const push = (content: string) => {
+    let remaining = pending + String(content || '');
+    pending = '';
+    let text = '';
+    let reasoning = '';
+
+    while (remaining) {
+      const lower = remaining.toLowerCase();
+      if (activeCloseTag) {
+        const closeIndex = lower.indexOf(activeCloseTag);
+        if (closeIndex >= 0) {
+          reasoning += remaining.slice(0, closeIndex);
+          remaining = remaining.slice(closeIndex + activeCloseTag.length);
+          activeCloseTag = '';
+          allowOpeningTag = false;
+          continue;
+        }
+        const retained = longestTagPrefixSuffix(remaining, [activeCloseTag]);
+        reasoning += retained > 0 ? remaining.slice(0, -retained) : remaining;
+        pending = retained > 0 ? remaining.slice(-retained) : '';
+        break;
+      }
+
+      if (!allowOpeningTag) {
+        text += remaining;
+        break;
+      }
+
+      let openingIndex = -1;
+      let openingTag = '';
+      let closingTag = '';
+      for (const [candidateOpen, candidateClose] of TAGGED_REASONING_PAIRS) {
+        const candidateIndex = lower.indexOf(candidateOpen);
+        if (candidateIndex >= 0 && (openingIndex < 0 || candidateIndex < openingIndex)) {
+          openingIndex = candidateIndex;
+          openingTag = candidateOpen;
+          closingTag = candidateClose;
+        }
+      }
+
+      if (openingIndex >= 0) {
+        const before = remaining.slice(0, openingIndex);
+        // Reasoning envelopes are a response prefix. Once normal answer text
+        // begins, a tag-looking string is user-facing content, not control.
+        if (before.trim()) {
+          text += remaining;
+          allowOpeningTag = false;
+          break;
+        }
+        text += before;
+        remaining = remaining.slice(openingIndex + openingTag.length);
+        activeCloseTag = closingTag;
+        continue;
+      }
+
+      const retained = longestTagPrefixSuffix(
+        remaining,
+        TAGGED_REASONING_PAIRS.map(([open]) => open),
+      );
+      const visible = retained > 0 ? remaining.slice(0, -retained) : remaining;
+      text += visible;
+      if (visible.trim()) allowOpeningTag = false;
+      pending = retained > 0 ? remaining.slice(-retained) : '';
+      break;
+    }
+
+    return { text, reasoning };
+  };
+
+  return {
+    push,
+    flush: () => {
+      const result = activeCloseTag
+        ? { text: '', reasoning: pending }
+        : { text: pending, reasoning: '' };
+      pending = '';
+      activeCloseTag = '';
+      allowOpeningTag = false;
+      return result;
+    },
+  };
+}
+
 export function splitCompatibleDeltaContent(
   content: unknown,
+  taggedReasoning?: CompatibleTaggedReasoningSplitter,
 ): { text: string; reasoning: string } {
-  if (!Array.isArray(content)) return { text: extractProviderText(content), reasoning: '' };
+  if (!Array.isArray(content)) {
+    const text = extractProviderText(content);
+    return taggedReasoning ? taggedReasoning.push(text) : { text, reasoning: '' };
+  }
   let text = '';
   let reasoning = '';
   for (const part of content) {
     const type = String((part as any)?.type || '').toLowerCase();
-    const value = extractProviderText(part);
-    if (/think|reason|analysis/.test(type)) reasoning += value;
-    else text += value;
+    const isReasoning = /think|reason|analysis/.test(type);
+    const value = isReasoning
+      ? extractProviderText((part as any)?.thinking ?? (part as any)?.reasoning ?? part)
+      : extractProviderText(part);
+    if (isReasoning) {
+      reasoning += value;
+    } else if (taggedReasoning) {
+      const split = taggedReasoning.push(value);
+      text += split.text;
+      reasoning += split.reasoning;
+    } else {
+      text += value;
+    }
   }
   return { text, reasoning };
+}
+
+/**
+ * Accumulate Mistral's streamed content chunks without flattening ThinkChunk.
+ * The complete structured assistant content is replayed after tool calls, as
+ * required by Mistral's reasoning contract.
+ */
+export function appendMistralStructuredContent(
+  accumulated: any[],
+  deltaContent: unknown,
+): any[] {
+  if (!Array.isArray(deltaContent)) return accumulated;
+  const next = [...accumulated];
+  for (const rawPart of deltaContent) {
+    if (!rawPart || typeof rawPart !== 'object') continue;
+    const part = rawPart as Record<string, any>;
+    const type = String(part.type || '').toLowerCase();
+    if (/think|reason|analysis/.test(type)) {
+      const text = extractProviderText(part.thinking ?? part.reasoning ?? part);
+      if (!text) continue;
+      const previous = next[next.length - 1];
+      if (previous?.type === part.type && Array.isArray(previous.thinking)) {
+        const inner = previous.thinking[previous.thinking.length - 1];
+        if (inner?.type === 'text') inner.text = `${String(inner.text || '')}${text}`;
+        else previous.thinking.push({ type: 'text', text });
+      } else {
+        next.push({ ...part, thinking: [{ type: 'text', text }] });
+      }
+      continue;
+    }
+
+    const text = extractProviderText(part);
+    if (!text) {
+      next.push(part);
+      continue;
+    }
+    const previous = next[next.length - 1];
+    if (previous?.type === part.type && typeof previous.text === 'string') {
+      previous.text = `${previous.text}${text}`;
+    } else {
+      next.push({ ...part, text });
+    }
+  }
+  return next;
 }

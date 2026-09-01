@@ -41,6 +41,8 @@
     "node_modules",
     ".git",
     ".next",
+    ".next-dev-*",
+    ".temp",
     ".eterx-build-home",
     ".workspaces",
     "desktop-runtime",

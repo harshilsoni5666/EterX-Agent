@@ -169,6 +169,7 @@ assert.equal(
 
 const compacting = { type: 'context_compaction', phase: 'compacting', compactionId: 'ctx-a' };
 const compacted = { type: 'context_compaction', phase: 'compacted', compactionId: 'ctx-a' };
+const failedCompaction = { type: 'context_compaction', phase: 'failed', compactionId: 'ctx-b' };
 assert.equal(
   shouldRenderContextCompactionEvent(compacting, 0, [compacting], true),
   true,
@@ -193,6 +194,11 @@ assert.equal(
   shouldRenderContextCompactionEvent(compacted, 1, [compacting, compacted], false),
   true,
   'a completed compaction remains as the single settled lifecycle row',
+);
+assert.equal(
+  shouldRenderContextCompactionEvent(failedCompaction, 0, [failedCompaction], false),
+  true,
+  'a failed compaction remains as the single settled lifecycle row',
 );
 
 {

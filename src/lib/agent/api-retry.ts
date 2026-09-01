@@ -36,8 +36,107 @@ export const isProviderFailoverError = (error: unknown): boolean => {
   return !/(invalid argument|bad request|unsupported parameter|model .* not found|not found|token limit|context length)/i.test(message);
 };
 
-export const waitForApiRetry = async (retryNumber: number, signal?: AbortSignal): Promise<void> => {
-  const delayMs = Math.min(4_000, 350 * (2 ** Math.max(0, retryNumber - 1)));
+/**
+ * Detect a provider-authored input/context capacity rejection. This is kept
+ * separate from ordinary retryability because replaying the same oversized
+ * payload against another key cannot help; callers must first run the exact
+ * transcript through the transactional context compactor.
+ */
+export const isProviderContextLimitError = (error: unknown): boolean => {
+  const record = error as any;
+  const message = [
+    record?.message,
+    record?.error?.message,
+    record?.response?.data?.error?.message,
+    record?.response?.data?.message,
+    record?.cause?.message,
+    typeof error === 'string' ? error : '',
+  ].map(value => String(value || '').toLowerCase()).filter(Boolean).join(' ');
+  if (!message) return false;
+  return message.includes('context_length_exceeded')
+    || message.includes('maximum context length')
+    || message.includes('context window exceeded')
+    || message.includes('context window limit')
+    || message.includes('prompt is too long')
+    || message.includes('input is too long')
+    || message.includes('request too large for model')
+    || (
+      /(?:prompt|input|context)\s+(?:has\s+)?(?:too many\s+)?tokens?/.test(message)
+      && /(?:exceed|limit|maximum|max|too many|too long|reduce)/.test(message)
+    )
+    || (
+      message.includes('context window')
+      && /(?:exceed|limit|maximum|max|too (?:large|long)|reduce)/.test(message)
+    );
+};
+
+const retryHeaderValue = (error: any, name: string): unknown => {
+  const candidates = [error?.headers, error?.response?.headers];
+  for (const headers of candidates) {
+    if (!headers) continue;
+    if (typeof headers.get === 'function') {
+      const value = headers.get(name);
+      if (value !== null && value !== undefined && value !== '') return value;
+    }
+    const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
+    if (entry && entry[1] !== null && entry[1] !== undefined && entry[1] !== '') return entry[1];
+  }
+  return undefined;
+};
+
+const durationMs = (value: unknown, unit: 'seconds' | 'milliseconds'): number => {
+  const numeric = Number(Array.isArray(value) ? value[0] : value);
+  if (!Number.isFinite(numeric) || numeric < 0) return 0;
+  return unit === 'seconds' ? numeric * 1000 : numeric;
+};
+
+const providerRetryDelayMs = (error: unknown): number => {
+  const record = error as any;
+  const explicitMilliseconds = [
+    retryHeaderValue(record, 'retry-after-ms'),
+    record?.retryAfterMs,
+    record?.retry_after_ms,
+  ].map(value => durationMs(value, 'milliseconds')).find(value => value > 0);
+  if (explicitMilliseconds) return explicitMilliseconds;
+
+  const retryAfter = retryHeaderValue(record, 'retry-after') ?? record?.retryAfter ?? record?.retry_after;
+  if (retryAfter !== undefined && retryAfter !== null && retryAfter !== '') {
+    const seconds = durationMs(retryAfter, 'seconds');
+    if (seconds > 0) return seconds;
+    const date = Date.parse(String(retryAfter));
+    if (Number.isFinite(date) && date > Date.now()) return date - Date.now();
+  }
+
+  const message = String(record?.message || error || '');
+  const match = message.match(/(?:retry|try again)\s+(?:in|after)\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds?|s|seconds?)/i)
+    || message.match(/retryDelay[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(ms|s)/i);
+  if (!match) return 0;
+  return Number(match[1]) * (/^ms|millisecond/i.test(match[2]) ? 1 : 1000);
+};
+
+/**
+ * Exponential retry delay with positive jitter and bounded provider guidance.
+ * Positive-only jitter never retries before a Retry-After/RetryInfo deadline.
+ */
+export const resolveApiRetryDelayMs = (
+  retryNumber: number,
+  error?: unknown,
+  jitterSample = Math.random(),
+): number => {
+  const retryIndex = Math.max(0, Math.floor(Number(retryNumber) || 1) - 1);
+  const exponential = Math.min(8_000, 750 * (2 ** retryIndex));
+  const providerDelay = Math.min(30_000, Math.max(0, providerRetryDelayMs(error)));
+  const floor = Math.max(exponential, providerDelay);
+  const jitter = Math.floor(Math.max(0, Math.min(1, jitterSample)) * Math.min(1_000, floor * 0.25));
+  return Math.min(30_000, Math.ceil(floor + jitter));
+};
+
+export const waitForApiRetry = async (
+  retryNumber: number,
+  signal?: AbortSignal,
+  error?: unknown,
+): Promise<void> => {
+  const delayMs = resolveApiRetryDelayMs(retryNumber, error);
   const end = Date.now() + delayMs;
   while (Date.now() < end) {
     if (signal?.aborted) throw new DOMException('The API request was aborted.', 'AbortError');
@@ -59,7 +158,7 @@ export async function withApiRetries<T>(
     } catch (error) {
       lastError = error;
       if (attempt >= retries || !isRetryableApiError(error)) throw error;
-      await waitForApiRetry(attempt + 1, signal);
+      await waitForApiRetry(attempt + 1, signal, error);
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError || 'API request failed.'));
@@ -96,7 +195,7 @@ export async function withApiKeyRounds<T>(
       // Switching to the next configured key is immediate. Backoff is only
       // used between complete pool rounds, avoiding hidden per-key nuisance.
       if ((attempt + 1) % normalizedKeys.length === 0) {
-        await waitForApiRetry(Math.floor((attempt + 1) / normalizedKeys.length), signal);
+        await waitForApiRetry(Math.floor((attempt + 1) / normalizedKeys.length), signal, error);
       }
       onRetry?.(attempt + 1, totalAttempts, error);
     }

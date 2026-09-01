@@ -3475,6 +3475,39 @@
   box-shadow: 0 1px 2px rgba(31, 31, 31, 0.04), 0 12px 34px rgba(31, 31, 31, 0.09) !important;
 }
 
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-task-tracker-dock {
+  border-radius: 24px 24px 0 0 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"]),
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"]):hover,
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"]):focus-within {
+  border-top: 0 !important;
+  border-radius: 0 0 24px 24px !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::before,
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::after {
+  background: #FFFFFF;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::before {
+  border-left-color: rgba(31, 31, 29, 0.12);
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::after {
+  border-right-color: rgba(31, 31, 29, 0.12);
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"]):focus-within::before {
+  border-left-color: rgba(31, 31, 29, 0.22);
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"]):focus-within::after {
+  border-right-color: rgba(31, 31, 29, 0.22);
+}
+
 :root[data-theme="light"] .eterx-chat-input-dock-active:not([data-compressed="true"]) .eterx-composer-main:not([data-live="true"]) {
   padding-top: 12px !important;
   padding-bottom: 9px !important;
@@ -4033,7 +4066,7 @@
 }
 
 :root[data-theme="light"] .eterx-worked-summary-label {
-  font-size: 12px !important;
+  font-size: var(--eterx-worked-summary-size, 13px) !important;
   font-weight: 500 !important;
   line-height: 1.35 !important;
   letter-spacing: normal !important;
@@ -4105,8 +4138,9 @@
 }
 
 :root[data-theme="light"] .eterx-thought-toggle {
-  min-height: 30px !important;
-  padding: 2px 10px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  padding: 1px 10px !important;
 }
 
 :root[data-theme="light"] .eterx-browser-activity-header {
@@ -4115,15 +4149,16 @@
 }
 
 :root[data-theme="light"] .eterx-thought-toggle .eterx-thinking-shimmer {
-  font-size: 15.5px !important;
-  font-weight: 400 !important;
-  letter-spacing: 0.005em !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  line-height: 1.25 !important;
+  letter-spacing: -0.002em !important;
 }
 
 :root[data-theme="light"] .eterx-thought-expanded {
-  padding: 2px 12px 12px 42px !important;
-  font-size: 12.5px !important;
-  line-height: 1.5 !important;
+  padding: 4px 10px 8px !important;
+  font-size: 11.5px !important;
+  line-height: 1.48 !important;
 }
 
 :root[data-theme="light"] .eterx-action-chip,
@@ -4716,4 +4751,102 @@
 .dark .eterx-thread-switcher-item:hover:not([data-active="true"]) svg,
 .dark .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) svg {
   color: rgba(255, 255, 255, 0.4) !important;
+}
+
+/* Stop is a state replacement for Send, not a secondary disabled control.
+   Keep its resting, hover, focus, active, and stopping states visually
+   identical so it never flashes through the generic pale/gray button rules. */
+:root[data-theme="light"] body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop,
+:root[data-theme="light"] body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop:hover,
+:root[data-theme="light"] body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop:focus-visible,
+:root[data-theme="light"] body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop:active,
+:root[data-theme="light"] body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop:disabled,
+html.light body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop {
+  border-color: transparent !important;
+  background: #292929 !important;
+  background-color: #292929 !important;
+  color: #FFFFFF !important;
+  opacity: 1 !important;
+  box-shadow: none !important;
+  transition: none !important;
+  transform: none !important;
+}
+
+:root[data-theme="light"] body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop .eterx-composer-stop-icon,
+html.light body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop .eterx-composer-stop-icon {
+  color: #FFFFFF !important;
+  background-color: #FFFFFF !important;
+  opacity: 1 !important;
+}
+
+/* Agent selector: keep the distinct Autonomous mode compact and legible in
+   both themes, including its custom checkbox treatment. */
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option {
+  color: #F4F1EA !important;
+}
+
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option:hover,
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option:focus-visible,
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.09) !important;
+  color: #FFFFFF !important;
+}
+
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-checkbox {
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  color: transparent !important;
+}
+
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option:hover .eterx-autonomous-checkbox,
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option:focus-visible .eterx-autonomous-checkbox {
+  border-color: rgba(255, 255, 255, 0.48) !important;
+}
+
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option[aria-pressed="true"] .eterx-autonomous-checkbox {
+  border-color: rgba(255, 255, 255, 0.78) !important;
+  background: #FFFFFF !important;
+  color: #202020 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option {
+  color: #3F4A56 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option:hover,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option:focus-visible,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option[aria-pressed="true"] {
+  background: #F1F3F5 !important;
+  color: #20252B !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-checkbox {
+  border-color: rgba(31, 41, 55, 0.22) !important;
+  background: #F7F8F9 !important;
+  color: transparent !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option:hover .eterx-autonomous-checkbox,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option:focus-visible .eterx-autonomous-checkbox {
+  border-color: rgba(31, 41, 55, 0.42) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-agent-option[aria-pressed="true"] .eterx-autonomous-checkbox {
+  border-color: #3F4A56 !important;
+  background: #3F4A56 !important;
+  color: #FFFFFF !important;
+}
+
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-checkbox svg,
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-autonomous-checkbox svg {
+  color: inherit !important;
+  opacity: 1 !important;
+}
+
+:root[data-theme="dark"] .eterx-composer-shell .eterx-agent-popout .eterx-agent-menu-divider {
+  background: rgba(255, 255, 255, 0.09) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-agent-menu-divider {
+  background: rgba(31, 41, 55, 0.12) !important;
 }

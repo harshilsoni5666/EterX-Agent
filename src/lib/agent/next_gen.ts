@@ -80,6 +80,7 @@ const UNCACHEABLE_TOOLS = new Set([
   'ask_user',            // MUST always actually ask the user
   'task_checkpoint',     // MUST always read/write real checkpoint state
   'get_skill_guidelines', // Skills should load fresh content each time
+  'context_memory',      // The chat fabric changes after every material event
 ]);
 
 const INVALIDATES_SCOPED_CACHE_TOOLS = new Set([

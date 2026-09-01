@@ -346,6 +346,7 @@ export interface AppSettings {
   contextCompactionModelSelection: string;
   contextCompactionInstructions: string;
   contextWindowSizeSelection: string;
+  contextWindowSizeSelectionTouched: boolean;
 
   // Advanced
   debugMode: boolean;
@@ -415,7 +416,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   contextCompactionEnabled: true,
   contextCompactionModelSelection: AUTO_MODEL_SELECTION,
   contextCompactionInstructions: '',
-  contextWindowSizeSelection: '258000',
+  contextWindowSizeSelection: 'model_max',
+  contextWindowSizeSelectionTouched: false,
   debugMode: false,
   telemetry: false,
   experimentalFeatures: false,
@@ -446,10 +448,10 @@ const DEFAULT_SETTINGS: AppSettings = {
 const CONTEXT_WINDOW_SIZE_OPTIONS = [
   { value: '64000', label: '64k · Compact', description: 'Lowest cost and fastest turnover' },
   { value: '128000', label: '128k · Standard', description: 'Balanced for ordinary work' },
-  { value: '258000', label: '258k · Recommended', description: 'Best default for deep agent work' },
+  { value: '258000', label: '258k · Deep', description: 'Bound context cost for long agent work' },
   { value: '512000', label: '512k · Broad', description: 'Retain substantially more history' },
   { value: '1000000', label: '1M · Extended', description: 'For models with very large windows' },
-  { value: 'model_max', label: 'Model maximum', description: 'Use the full supported model window' },
+  { value: 'model_max', label: 'Model maximum · Default', description: 'Use the full supported model window' },
 ];
 
 const API_RETRY_OPTIONS = [
@@ -484,6 +486,22 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
     : DEFAULT_SETTINGS.maxRetries;
   next.selfImprovementEnabled = stored.selfImprovementEnabled !== false;
   next.showTokenCount = stored.showTokenCount !== false;
+  // Older builds persisted 258k as part of their untouched default. Treat
+  // that legacy value as untouched unless a selection was explicitly marked;
+  // any non-default legacy value was necessarily selected by the user.
+  const legacyContextSelection = String(stored.contextWindowSizeSelection || '').trim();
+  const validContextSelections = new Set(CONTEXT_WINDOW_SIZE_OPTIONS.map(option => option.value));
+  const validLegacyContextSelection = validContextSelections.has(legacyContextSelection)
+    ? legacyContextSelection
+    : '';
+  const inferredContextSelectionTouched = stored.contextWindowSizeSelectionTouched === true
+    || Boolean(validLegacyContextSelection && validLegacyContextSelection !== '258000');
+  // A touched marker without a valid selection is corrupt/incomplete state,
+  // not an instruction to leave the control and request budget undefined.
+  next.contextWindowSizeSelectionTouched = inferredContextSelectionTouched && Boolean(validLegacyContextSelection);
+  next.contextWindowSizeSelection = next.contextWindowSizeSelectionTouched
+    ? validLegacyContextSelection
+    : DEFAULT_SETTINGS.contextWindowSizeSelection;
   return next;
 };
 
@@ -3833,7 +3851,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const safeValue = key === 'followUpBehavior'
         ? (value === 'queue' ? 'queue' : 'steer')
         : value;
-      const next = normalizeAppSettings({ ...prev, [key]: safeValue });
+      const next = normalizeAppSettings({
+        ...prev,
+        [key]: safeValue,
+        ...(key === 'contextWindowSizeSelection' ? { contextWindowSizeSelectionTouched: true } : {}),
+      });
       appStorage.setItem('eterx_settings', JSON.stringify(next));
       if (key === 'theme') transitionEterxTheme(value as AppSettings['theme']);
       broadcastEterxSettingsUpdate(next);
@@ -4916,7 +4938,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <SettingsStackRow
                               title="Context window size"
                               description="Sets the working context budget used by the live counter and compaction thresholds. It never exceeds the selected model's actual limit."
-                              info="258k is recommended for strong continuity without excessive context cost. Choose a larger budget when the active task genuinely needs broader history."
+                              info="Untouched settings follow the active model's full supported window. Choose a smaller fixed budget only when you intentionally want a per-request context cap."
                             >
                               <ModernSelect
                                 value={settings.contextWindowSizeSelection}
@@ -4935,6 +4957,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 onChange={updateContextCompactionModelSelection}
                                 className="w-[360px]"
                                 options={[
+                                  {
+                                    value: AUTO_MODEL_SELECTION,
+                                    label: 'Auto (active chat model)',
+                                    description: 'Uses the model running the current chat unless you explicitly choose another.',
+                                  },
                                   ...modelEntries.map(entry => ({
                                     value: modelEntryKey(entry.provider, entry.modelId),
                                     label: entry.modelId,
@@ -4993,7 +5020,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     options={[
                                       {
                                         value: 'global',
-                                        label: `Use global default · ${CONTEXT_WINDOW_SIZE_OPTIONS.find(option => option.value === settings.contextWindowSizeSelection)?.label || '258k · Recommended'}`,
+                                        label: `Use global default · ${CONTEXT_WINDOW_SIZE_OPTIONS.find(option => option.value === settings.contextWindowSizeSelection)?.label || 'Model maximum · Default'}`,
                                         description: 'Automatically follows the global Context window size setting',
                                       },
                                       ...CONTEXT_WINDOW_SIZE_OPTIONS,
@@ -5029,7 +5056,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <SectionHeader title="Runtime behavior" />
                           <SettingsStack>
-                            <SettingsStackRow title="Two-stage protection" description="Normal compaction begins near 84%. Fast-growing tool runs may compact earlier only when the next cycle is forecast to approach the limit. Near 92%, recovery compaction completes before another model request." />
+                            <SettingsStackRow title="Adaptive protection" description="Compaction normally uses the high-80% to low-90% range of the selected chat window. Fast-growing model or tool cycles can start it sooner only to preserve the next-cycle reserve; near 96%, recovery compaction completes before another model request." />
                             <SettingsStackRow title="Adaptive retention" description="Information-dense work keeps a larger verbatim tail. Exact references, constraints, failures, tool continuity, and next actions are preserved in the capsule." />
                             <SettingsStackRow title="Per-chat isolation" description="Capsules, locks, counters, and retry state are keyed by the exact chat ID." />
                             <SettingsStackRow title="Safe boundary" description="Compaction starts between model iterations, never during a tool call, file edit, stream, or approval." />

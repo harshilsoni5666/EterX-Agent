@@ -499,7 +499,7 @@ export function notifyAgentFaceTraceLog(log: any, isThinking: boolean) {
     return;
   }
 
-  if (log.type === 'tool_error' || log.type === 'safety_warning' || /error|failed|denied|blocked|exception|invalid/.test(raw)) {
+  if (log.type === 'tool_error' || /error|failed|denied|blocked|exception|invalid/.test(raw)) {
     setAttentionInternal('alert', 0.78, 2600);
     agentFaceController.setState('error');
     agentFaceController.setStatus('Something needs attention');

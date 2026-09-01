@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import { cancelAllSubAgents, cancelAgent } from '../../../../lib/agent/roles/sub_agent';
+import { formatUnknownError } from '../../../../lib/agent/error-format';
 import {
   attachAgentApiSessionCookie,
   getOrCreateAgentApiSession,
@@ -33,6 +34,10 @@ export async function POST(req: NextRequest) {
     const body = await readJsonObject(req);
     const { chatId } = body;
     const expectedRunId = body.runId === undefined ? undefined : cleanString(body.runId, 160);
+    const requestedAtValue = Number(body.requestedAt);
+    const requestedAt = Number.isSafeInteger(requestedAtValue) && requestedAtValue > 0
+      ? requestedAtValue
+      : Number.POSITIVE_INFINITY;
 
     if (chatId !== undefined && chatId !== null && chatId !== '') {
       if (!isSafeChatId(chatId)) {
@@ -54,7 +59,13 @@ export async function POST(req: NextRequest) {
         ), session);
       }
       // Per-chat stop
-      const stopped = agentRegistry.stopAgent(chatId, 'Stopped by user.', undefined, expectedRunId);
+      const stopped = agentRegistry.stopAgent(
+        chatId,
+        'Stopped by user.',
+        undefined,
+        expectedRunId,
+        requestedAt,
+      );
       if (stopped) cancelAgent(chatId); // Also set per-chat cancel flag for sub-agents
       const afterStop = agentRegistry.getTraces(chatId, -1);
       const success = stopped || afterStop.status !== 'running';
@@ -78,7 +89,7 @@ export async function POST(req: NextRequest) {
     console.log('[API] 🛑 EMERGENCY STOP — all agents cancelled');
     return attachAgentApiSessionCookie(NextResponse.json({ success: true, message: 'All agents stopping' }), session);
   } catch (error: any) {
-    const response = NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    const response = NextResponse.json({ success: false, error: formatUnknownError(error, 'Failed to stop agent') }, { status: 500 });
     return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }

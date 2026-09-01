@@ -7,7 +7,7 @@ const availableSkillIds = SKILL_CATALOG.map(skill => skill.id);
 
 export const skillLoaderTool: ToolDefinition = {
   name: 'get_skill_guidelines',
-  description: `Load one exact skill from the startup-cached skill registry immediately before specialized work. The system prompt already contains the full catalog, so do not search the skill folder first and do not call this tool again for a skill already loaded in the current task. Available skills: ${ availableSkillIds.join(', ') }.`,
+  description: `Optionally load one exact specialized playbook only when the current user request clearly matches its catalog description. Do not call at task startup, for ordinary coding or questions, speculatively, or in a batch with other skills. Load immediately before the specialized action and at most once per skill per task. Available skills: ${ availableSkillIds.join(', ') }.`,
   category: 'core',
   inputSchema: z.object({
     skill_name: z.string().describe(`The ID of the skill to load. Available: ${ availableSkillIds.join(', ') }`)

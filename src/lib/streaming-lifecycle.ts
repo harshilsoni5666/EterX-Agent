@@ -5,6 +5,11 @@
  * text seen so far. These helpers make both forms safe to consume together.
  */
 
+const TERMINAL_STREAM_STATES = new Set([
+  'completed', 'complete', 'done', 'success', 'failed', 'error',
+  'stopped', 'cancelled', 'canceled', 'closed',
+]);
+
 export function normalizeStreamTimestamp(
   value: unknown,
   fallback: number = Date.now(),
@@ -50,18 +55,42 @@ export function mergeStreamingText(
   return previous + incoming;
 }
 
+/**
+ * Merge narration that has already been painted into the activity feed.
+ *
+ * Some providers finish a streamed work note with a shorter summary snapshot.
+ * Replacing the live value makes words visibly disappear just as the following
+ * action arrives. Once narration is visible, keep the more complete snapshot;
+ * real deltas still append through the provider-neutral stream merger above.
+ */
+export function mergeVisibleNarrativeText(
+  previousValue: unknown,
+  incomingValue: unknown,
+  isDelta: boolean = false,
+): string {
+  const previous = String(previousValue ?? '');
+  const incoming = String(incomingValue ?? '');
+
+  if (isDelta) return mergeStreamingText(previous, incoming, true);
+  if (!incoming) return previous;
+  if (!previous || previous === incoming) return previous || incoming;
+  if (incoming.startsWith(previous)) return incoming;
+  if (previous.startsWith(incoming)) return previous;
+  return incoming.length >= previous.length ? incoming : previous;
+}
+
 export function isStreamFinalEvent(event: Record<string, any> | null | undefined): boolean {
   if (!event) return false;
+  const state = String(event.state || '').trim().toLowerCase();
+  const status = String(event.status || '').trim().toLowerCase();
   return (
     event.final === true ||
     event.done === true ||
     event.isStreaming === false ||
     (event.isLiveTyping === false && event.isStreaming !== true) ||
     event.streamState === 'closed' ||
-    event.state === 'completed' ||
-    event.state === 'failed' ||
-    event.status === 'completed' ||
-    event.status === 'failed'
+    TERMINAL_STREAM_STATES.has(state) ||
+    TERMINAL_STREAM_STATES.has(status)
   );
 }
 

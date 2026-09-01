@@ -15,6 +15,14 @@ const THOUGHT_CLOSING_BOUNDARY_TYPES = new Set([
   'command',
   'tool_call',
   'action',
+  'exploration',
+  'file_edit',
+  'browser',
+  'communication',
+  'progress',
+  'ask_user',
+  'steering_received',
+  'context_compaction',
   'answer',
   'work_note',
   'thought',
@@ -36,9 +44,19 @@ export const getThoughtStreamOwner = (trace: any): string => {
   const explicitSubAgent = String(trace?.subAgent || '').trim();
   if (explicitSubAgent) return `sub:${ explicitSubAgent }`;
 
-  const agentName = String(trace?.agentName || '').trim();
-  if (agentName && agentName.toLowerCase() !== 'main') return `sub:${ agentName }`;
+  const type = String(trace?.type || '').trim().toLowerCase();
+  const explicitlyChild = trace?.isSubAgent === true ||
+    Boolean(trace?.terminalTask) ||
+    String(trace?.agentRole || '').trim().toLowerCase() === 'sub_agent' ||
+    /^sub_agent_|^inter_agent_/.test(type);
+  if (explicitlyChild) {
+    const agentName = String(trace?.agentName || '').trim();
+    if (agentName) return `sub:${ agentName }`;
+  }
 
+  // A named custom/builder runtime is still the main agent for its chat.
+  // Treating every non-"main" name as a child prevented its final answer
+  // from closing the preceding thought stream.
   return 'main';
 };
 
@@ -74,7 +92,10 @@ const closeThoughtAt = (log: any, endedAt: number) => {
   const safeEnd = startedAt === null ? endedAt : Math.max(startedAt, endedAt);
   return {
     ...log,
+    isLive: false,
     isStreaming: false,
+    isLiveTyping: false,
+    isDelta: false,
     streamState: 'closed',
     endTime: safeEnd,
     timestamp: safeEnd,
@@ -87,6 +108,7 @@ const isThoughtFinalEvent = (trace: any): boolean => {
   return trace?.final === true ||
     trace?.done === true ||
     trace?.isStreaming === false ||
+    (trace?.isLiveTyping === false && trace?.isStreaming !== true) ||
     trace?.streamState === 'closed' ||
     ['completed', 'complete', 'failed', 'stopped', 'cancelled', 'canceled', 'error', 'closed'].includes(state) ||
     Boolean(finishReason && finishReason !== 'null' && finishReason !== 'undefined');
@@ -101,23 +123,36 @@ export const isThoughtStreamOpen = (trace: any): boolean => {
 };
 
 /**
- * Direct Chat uses an empty UI-only thought row as a live lifecycle shell.
- * Once that shell closes it has no user-visible content and must not become a
- * historical thought card. Keep this rule shared by both feed renderers.
+ * Provider requests use an empty UI-only lifecycle shell internally, but an
+ * empty shell is not reasoning and must never create a false thought card.
+ * The row appears only after the provider emits a real reasoning chunk.
  */
 export const shouldRenderThoughtStream = (trace: any): boolean => {
   if (!trace || trace.type !== 'thought_stream') return false;
+  // Native provider reasoning owns this explicit uiOnly Thought channel. It is
+  // safe to render here while open because answer text uses a different event
+  // type/identity and can never borrow this row. Empty lifecycle shells remain
+  // hidden until the first real reasoning chunk arrives.
+  if (trace.uiOnly !== true) return false;
   const text = String(trace.text || '').replace(/<\/?(?:thought|work_note)>/gi, '').trim();
-  return Boolean(text) || (trace.uiOnly === true && isThoughtStreamOpen(trace));
+  return Boolean(text);
 };
 
-const getThoughtStreamChatId = (trace: any): string => String(
-  trace?.chatId || trace?.ownerChatId || ''
-).trim();
+const getThoughtStreamChatIds = (trace: any): string[] => Array.from(new Set(
+  [trace?.chatId, trace?.ownerChatId]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+));
 
-const getThoughtStreamRunId = (trace: any): string => String(
-  trace?.turnId || trace?.runId || trace?.originTurnId || trace?.originRunId || ''
-).trim();
+const getThoughtStreamChatId = (trace: any): string => getThoughtStreamChatIds(trace)[0] || '';
+
+const getThoughtStreamRunIds = (trace: any): string[] => Array.from(new Set(
+  [trace?.turnId, trace?.runId, trace?.originTurnId, trace?.originRunId]
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+));
+
+const getThoughtStreamRunId = (trace: any): string => getThoughtStreamRunIds(trace)[0] || '';
 
 const hasThoughtStreamScope = (trace: any): boolean => Boolean(
   getThoughtStreamChatId(trace) || getThoughtStreamRunId(trace)
@@ -126,16 +161,31 @@ const hasThoughtStreamScope = (trace: any): boolean => Boolean(
 const thoughtStreamScopesMatch = (left: any, right: any): boolean => {
   if (getThoughtStreamOwner(left) !== getThoughtStreamOwner(right)) return false;
 
-  const leftChatId = getThoughtStreamChatId(left);
-  const rightChatId = getThoughtStreamChatId(right);
-  if (leftChatId || rightChatId) {
-    if (!leftChatId || !rightChatId || leftChatId !== rightChatId) return false;
+  const leftChatIds = getThoughtStreamChatIds(left);
+  const rightChatIds = getThoughtStreamChatIds(right);
+  // Normalization can add ownership to a previously unscoped optimistic row.
+  // Missing scope is compatible inside one chat ledger; two explicit and
+  // different scopes are not.
+  if (
+    leftChatIds.length > 0 &&
+    rightChatIds.length > 0 &&
+    !leftChatIds.some(chatId => rightChatIds.includes(chatId))
+  ) return false;
+
+  const leftTurnIds = [left?.turnId, left?.originTurnId]
+    .map(value => String(value || '').trim()).filter(Boolean);
+  const rightTurnIds = [right?.turnId, right?.originTurnId]
+    .map(value => String(value || '').trim()).filter(Boolean);
+  if (leftTurnIds.length > 0 && rightTurnIds.length > 0) {
+    return leftTurnIds.some(turnId => rightTurnIds.includes(turnId));
   }
 
-  const leftRunId = getThoughtStreamRunId(left);
-  const rightRunId = getThoughtStreamRunId(right);
-  if (leftRunId || rightRunId) {
-    if (!leftRunId || !rightRunId || leftRunId !== rightRunId) return false;
+  const leftRunIds = [left?.runId, left?.originRunId]
+    .map(value => String(value || '').trim()).filter(Boolean);
+  const rightRunIds = [right?.runId, right?.originRunId]
+    .map(value => String(value || '').trim()).filter(Boolean);
+  if (leftRunIds.length > 0 && rightRunIds.length > 0) {
+    return leftRunIds.some(runId => rightRunIds.includes(runId));
   }
 
   return true;
@@ -150,7 +200,7 @@ const thoughtStreamScopesMatch = (left: any, right: any): boolean => {
 export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void => {
   if (!boundary || boundary.type === 'thought_stream') return;
 
-  const closeAll = boundary.type === 'user_action' || isGlobalTerminalBoundary(boundary);
+  const closeAll = boundary.type === 'user_action' || boundary.type === 'steering_received' || isGlobalTerminalBoundary(boundary);
   const closeOwner = isThoughtClosingBoundary(boundary);
   if (!closeAll && !closeOwner) return;
   const boundaryOwner = getThoughtStreamOwner(boundary);
@@ -161,12 +211,20 @@ export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const log = logs[index];
     if (!log) continue;
-    // Lifecycle scope never crosses a user-turn boundary. A global terminal
-    // event closes all owners in the current turn, not historical turns.
-    if (log.type === 'user_action') break;
+    // Lifecycle scope never crosses a visible user/guidance phase. A global
+    // terminal event closes owners in the current phase, not historical work.
+    if (log.type === 'user_action' || log.type === 'steering_received') break;
 
     const owner = getThoughtStreamOwner(log);
-    if (boundary.type !== 'user_action' && boundaryHasScope && !thoughtStreamScopesMatch(log, boundary)) continue;
+    // A new visible query closes the immediately preceding live reasoning even
+    // though that boundary intentionally has a new turnId. Other boundaries
+    // (tool/action/answer) still close only their matching execution scope.
+    if (
+      boundary.type !== 'user_action' &&
+      boundary.type !== 'steering_received' &&
+      boundaryHasScope &&
+      !thoughtStreamScopesMatch(log, boundary)
+    ) continue;
     if (!closeAll && owner !== boundaryOwner) continue;
     if (ownersClosed.has(owner)) continue;
 
@@ -187,7 +245,14 @@ const findMergeableThoughtIndex = (logs: any[], incoming: any): number => {
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const candidate = logs[index];
     if (!candidate) continue;
-    if (candidate.type === 'user_action') break;
+    // A provider can deliver another cumulative snapshot after guidance was
+    // acknowledged. With a stable thoughtId and explicit turn ownership it is
+    // still an update to the old row, so it may cross the newer boundary. Weak,
+    // id-less streams remain strictly local to the current visible phase.
+    if (candidate.type === 'user_action' || candidate.type === 'steering_received') {
+      if (incomingThoughtId && String(incoming?.turnId || '').trim()) continue;
+      break;
+    }
     if (!thoughtStreamScopesMatch(candidate, incoming) || getThoughtStreamOwner(candidate) !== owner) continue;
 
     // Provider stream IDs (or their stable start timestamp fallback) remain
@@ -220,7 +285,9 @@ const findMergeableThoughtIndex = (logs: any[], incoming: any): number => {
     // has already committed the final snapshot. Treat it as an update to the
     // existing stream instead of opening a second thought row. A closed row
     // with a newer phase anchor still remains a genuinely new stream.
-    return candidateIsOpen || repeatedFinalForSameId || lateReplayOfClosedStream ? index : -1;
+    return candidateIsOpen || repeatedFinalForSameId || lateReplayOfClosedStream || Boolean(incomingThoughtId)
+      ? index
+      : -1;
   }
 
   return -1;
@@ -230,6 +297,7 @@ const mergeThoughtText = (existing: any, incoming: any): string =>
   mergeStreamingText(existing?.text, incoming?.text, incoming?.isDelta === true);
 
 const getTraceIndex = (trace: any): number | null => {
+  if (trace?._traceIdx === undefined || trace?._traceIdx === null || trace?._traceIdx === '') return null;
   const value = Number(trace?._traceIdx);
   return Number.isFinite(value) ? value : null;
 };
@@ -254,7 +322,7 @@ const findThoughtIndexForExplicitFinal = (logs: any[], incoming: any): number =>
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const candidate = logs[index];
     if (!candidate) continue;
-    if (candidate.type === 'user_action') break;
+    if (candidate.type === 'user_action' || candidate.type === 'steering_received') break;
     if (
       candidate.type === 'thought_stream' &&
       thoughtStreamScopesMatch(candidate, incoming) &&
@@ -286,7 +354,12 @@ const getCanonicalThoughtIdentity = (log: any): string => {
   // Without a phase anchor we cannot safely distinguish two real thoughts
   // that happen to contain the same text, so leave that record untouched.
   if (!thoughtId && start === null) return '';
-  return `${ chatIdentity || 'legacy-chat' }::${ runIdentity || 'legacy-run' }::${ owner }::${ thoughtId || 'start' }::${ start ?? '' }`;
+  // A provider thought ID already identifies the stream. Including startTime
+  // made the empty/open snapshot and its later timestamped final snapshot use
+  // different canonical rows, so the thought disappeared and reappeared.
+  return thoughtId
+    ? `${ chatIdentity || 'legacy-chat' }::${ runIdentity || 'legacy-run' }::${ owner }::id:${ thoughtId }`
+    : `${ chatIdentity || 'legacy-chat' }::${ runIdentity || 'legacy-run' }::${ owner }::start:${ start ?? '' }`;
 };
 
 const mergeCanonicalThought = (existing: any, incoming: any): any => {
@@ -304,10 +377,16 @@ const mergeCanonicalThought = (existing: any, incoming: any): any => {
 
   return {
     ...preferred,
+    _feedPresentationId: existing?._feedPresentationId || incoming?._feedPresentationId || undefined,
+    _feedBoundaryId: existing?._feedBoundaryId || incoming?._feedBoundaryId || undefined,
+    _feedBoundaryOrder: existing?._feedBoundaryOrder ?? incoming?._feedBoundaryOrder,
+    _feedEventOrder: existing?._feedEventOrder ?? incoming?._feedEventOrder,
     // Thought payloads are cumulative snapshots. Keep the longest snapshot
     // when recovery delivers an older or shorter copy after the final one.
     text: incomingText.length >= previousText.length ? incomingText : previousText,
     startTime: asFiniteTimestamp(existing?.startTime) ?? asFiniteTimestamp(incoming?.startTime) ?? incomingEnd,
+    _traceIdx: existing?._traceIdx ?? incoming?._traceIdx,
+    _pollIdx: incoming?._pollIdx ?? incoming?._traceIdx ?? existing?._pollIdx ?? existing?._traceIdx,
     endTime: preserveExistingState && existingEnd !== null
       ? existingEnd
       : Math.max(existingEnd ?? incomingEnd, incomingEnd),
@@ -319,6 +398,13 @@ const mergeCanonicalThought = (existing: any, incoming: any): any => {
       : incomingIsOlder
         ? existing?.isStreaming === true
         : incomingIsOpen,
+    isLive: existingIsClosed || incomingIsOlder
+      ? existingIsClosed ? false : existing?.isLive === true
+      : incomingIsOpen && incoming?.isLive === true,
+    isLiveTyping: existingIsClosed || incomingIsOlder
+      ? existingIsClosed ? false : existing?.isLiveTyping === true
+      : incomingIsOpen && incoming?.isLiveTyping === true,
+    isDelta: existingIsClosed || !incomingIsOpen ? false : incoming?.isDelta === true,
     streamState: existingIsClosed
       ? 'closed'
       : incomingIsOlder
@@ -344,14 +430,31 @@ export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
       !String(log.text || '').trim() &&
       !isThoughtStreamOpen(log)
     ) continue;
-    if (log?.type === 'user_action') thoughtIndexes.clear();
+    if (log?.type === 'user_action' || log?.type === 'steering_received') thoughtIndexes.clear();
     const identity = getCanonicalThoughtIdentity(log);
     if (!identity) {
       canonical.push(log);
       continue;
     }
 
-    const existingIndex = thoughtIndexes.get(identity);
+    let existingIndex = thoughtIndexes.get(identity);
+    if (existingIndex === undefined) {
+      const thoughtId = String(log?.thoughtId || '').trim();
+      if (thoughtId) {
+        for (let index = canonical.length - 1; index >= 0; index -= 1) {
+          const candidate = canonical[index];
+          if (candidate?.type === 'user_action' || candidate?.type === 'steering_received') break;
+          if (
+            candidate?.type === 'thought_stream' &&
+            String(candidate.thoughtId || '').trim() === thoughtId &&
+            thoughtStreamScopesMatch(candidate, log)
+          ) {
+            existingIndex = index;
+            break;
+          }
+        }
+      }
+    }
     if (existingIndex === undefined) {
       thoughtIndexes.set(identity, canonical.length);
       canonical.push(log);
@@ -359,6 +462,7 @@ export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
     }
 
     canonical[existingIndex] = mergeCanonicalThought(canonical[existingIndex], log);
+    thoughtIndexes.set(identity, existingIndex);
   }
 
   return canonical;
@@ -395,11 +499,20 @@ export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
     logs[explicitFinalIndex] = {
       ...existing,
       ...incoming,
+      _feedPresentationId: existing?._feedPresentationId || incoming?._feedPresentationId || undefined,
+      _feedBoundaryId: existing?._feedBoundaryId || incoming?._feedBoundaryId || undefined,
+      _feedBoundaryOrder: existing?._feedBoundaryOrder ?? incoming?._feedBoundaryOrder,
+      _feedEventOrder: existing?._feedEventOrder ?? incoming?._feedEventOrder,
       text: mergeThoughtText(existing, incoming),
+      _traceIdx: existing?._traceIdx ?? incoming?._traceIdx,
+      _pollIdx: incoming?._pollIdx ?? incoming?._traceIdx ?? existing?._pollIdx ?? existing?._traceIdx,
       startTime: asFiniteTimestamp(existing?.startTime) ?? asFiniteTimestamp(incoming?.startTime) ?? finalEnd,
       endTime: finalEnd,
       timestamp: finalEnd,
+      isLive: false,
       isStreaming: false,
+      isLiveTyping: false,
+      isDelta: false,
       streamState: 'closed',
     };
     return explicitFinalIndex;
@@ -412,15 +525,32 @@ export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
   if (mergeIndex >= 0) {
     const existing = logs[mergeIndex];
     if (!incomingIsFinal && isOlderThoughtUpdate(existing, incoming)) return mergeIndex;
+    const existingWasClosed = existing?.isStreaming === false || existing?.streamState === 'closed';
+    const existingEnd = asFiniteTimestamp(existing?.endTime) ?? asFiniteTimestamp(existing?.timestamp);
     logs[mergeIndex] = {
       ...existing,
       ...incoming,
+      _feedPresentationId: existing?._feedPresentationId || incoming?._feedPresentationId || undefined,
+      _feedBoundaryId: existing?._feedBoundaryId || incoming?._feedBoundaryId || undefined,
+      _feedBoundaryOrder: existing?._feedBoundaryOrder ?? incoming?._feedBoundaryOrder,
+      _feedEventOrder: existing?._feedEventOrder ?? incoming?._feedEventOrder,
       text: mergeThoughtText(existing, incoming),
+      _traceIdx: existing?._traceIdx ?? incoming?._traceIdx,
+      _pollIdx: incoming?._pollIdx ?? incoming?._traceIdx ?? existing?._pollIdx ?? existing?._traceIdx,
       startTime: asFiniteTimestamp(existing?.startTime) ?? asFiniteTimestamp(incoming?.startTime) ?? incomingEnd,
-      endTime: Math.max(asFiniteTimestamp(existing?.endTime) ?? incomingEnd, incomingEnd),
-      timestamp: Math.max(asFiniteTimestamp(existing?.timestamp) ?? incomingEnd, incomingEnd),
-      isStreaming: incomingIsOpen,
-      streamState: incomingIsOpen ? 'open' : 'closed',
+      // Once a visible phase boundary closes reasoning, a late open snapshot
+      // may add text but must never reopen the card or restart its timer.
+      endTime: existingWasClosed && existingEnd !== null
+        ? existingEnd
+        : Math.max(existingEnd ?? incomingEnd, incomingEnd),
+      timestamp: existingWasClosed && existingEnd !== null
+        ? existingEnd
+        : Math.max(asFiniteTimestamp(existing?.timestamp) ?? incomingEnd, incomingEnd),
+      isLive: existingWasClosed ? false : incomingIsOpen && incoming?.isLive === true,
+      isStreaming: existingWasClosed ? false : incomingIsOpen,
+      isLiveTyping: existingWasClosed ? false : incomingIsOpen && incoming?.isLiveTyping === true,
+      isDelta: existingWasClosed || !incomingIsOpen ? false : incoming?.isDelta === true,
+      streamState: existingWasClosed ? 'closed' : incomingIsOpen ? 'open' : 'closed',
     };
     return mergeIndex;
   }
@@ -448,7 +578,10 @@ export const mergeThoughtStreamTrace = (logs: any[], incoming: any): number => {
     startTime: startedAt,
     endTime: Math.max(startedAt, incomingEnd),
     timestamp: Math.max(startedAt, incomingEnd),
+    isLive: incomingIsOpen && incoming?.isLive === true,
     isStreaming: incomingIsOpen,
+    isLiveTyping: incomingIsOpen && incoming?.isLiveTyping === true,
+    isDelta: incomingIsOpen && incoming?.isDelta === true,
     streamState: incomingIsOpen ? 'open' : 'closed',
   });
   return logs.length - 1;

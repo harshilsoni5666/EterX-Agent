@@ -5,7 +5,7 @@ import { taskStore } from '../src/lib/agent/task-store';
 import { SessionStateManager } from '../src/lib/agent/session';
 import { detectChatBoundary } from '../src/lib/agent/chat-boundary';
 import { getEterxWorkspaceDir } from '../src/lib/agent/storage-paths';
-import { MAX_HISTORY_TOTAL_CHARS, normalizeHistory } from '../src/app/api/agent/_shared';
+import { normalizeHistory } from '../src/app/api/agent/_shared';
 import { buildSubAgentStrategy } from '../src/lib/agent/roles/sub_agent_strategy';
 import { buildProxyTaskHistory } from '../src/lib/agent/agent-registry';
 import { getSubAgentAssetName } from '../src/components/chat/agent-icons';
@@ -132,17 +132,14 @@ async function testLongTracePollingStaysIncrementalAfterCompaction(): Promise<vo
   }
 }
 
-function testHistoryAndSubAgentIdentityBounds(): void {
+function testHistoryIntegrityAndSubAgentIdentityBounds(): void {
   const rawHistory = Array.from({ length: 12 }, (_, index) => ({
     role: index % 2 === 0 ? 'user' : 'model',
     parts: [{ text: `${index}:` + 'x'.repeat(59_998) }],
   }));
   const normalized = normalizeHistory(rawHistory);
-  const totalChars = normalized.reduce(
-    (total, message) => total + message.parts.reduce((sum, part) => sum + part.text.length, 0),
-    0,
-  );
-  assert.ok(totalChars <= MAX_HISTORY_TOTAL_CHARS);
+  assert.equal(normalized.length, rawHistory.length, 'normalization must not discard old dialogue turns');
+  assert.equal(normalized[0].parts[0].text, rawHistory[0].parts[0].text);
   assert.ok(normalized.at(-1)?.parts[0].text.startsWith('11:'));
 
   const roleNames = globalSubAgentSpawner.getAgentNames();
@@ -199,7 +196,7 @@ async function main(): Promise<void> {
   testBoundarySeparatesIndependentTurns();
   await testCancellationIsGlobalAndWakesPausedAgents();
   await testLongTracePollingStaysIncrementalAfterCompaction();
-  testHistoryAndSubAgentIdentityBounds();
+  testHistoryIntegrityAndSubAgentIdentityBounds();
   testProxyTaskHistoryIsolation();
   console.log('Agent lifecycle integration checks passed.');
 }

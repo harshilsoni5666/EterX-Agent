@@ -17,7 +17,10 @@ import { normalizeAttachmentMime } from './attachment-pipeline';
 import { normalizeStreamTimestamp } from '../streaming-lifecycle';
 import { getEterxWorkspaceDir } from './storage-paths';
 import { delegationTelemetryFromTrace } from './delegation-evidence';
-import { filterUserVisibleTraces } from './trace-visibility';
+import { filterLiveUserVisibleTraces, isLiveUserVisibleTrace } from './trace-visibility';
+import { areLikelySameFeedActionLifecycle, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceOpen, isFeedTurnBoundary } from '../chat-feed-lifecycle';
+import { getContextFabricForChat } from './context-fabric';
+import { formatUnknownError } from './error-format';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -61,12 +64,18 @@ interface AgentExecution {
   runId: string;
   /** Visible query boundary currently receiving events inside this long-lived run. */
   activeTurnId: string;
+  /** Each worker conversation has an independent visible query boundary. */
+  activeAuxiliaryTurnIds: Map<string, string>;
   prompt: string;
   status: 'running' | 'completed' | 'failed' | 'stopped';
   startedAt: number;
   completedAt?: number;
   traceBuffer: TraceEvent[];   // In-memory circular buffer
   traceCounter: number;        // Monotonic counter — NEVER resets, survives buffer trimming
+  /** Locks tool children/results to the turn where their owning action began. */
+  traceOwnerTurns: Map<string, string>;
+  /** Same lifecycle lock projected inside each worker conversation. */
+  traceOwnerAuxiliaryTurns: Map<string, string>;
   finalAnswer: string;
   error?: string;
   cancelled: boolean;          // Per-chat cancel flag
@@ -97,6 +106,83 @@ interface AgentExecution {
   };
 }
 
+const QUERY_OWNED_ACTION_TYPES = new Set([
+  'command', 'tool_call', 'exploration', 'file_edit', 'browser',
+  'communication', 'sub_agent_action', 'task_plan',
+]);
+
+/**
+ * Provider adapters do not agree on one lifecycle ID field. Normalize every
+ * supported correlation field so starts, progress snapshots, previews, and
+ * settlements all resolve to the immutable query that created the action.
+ */
+function actionCorrelationContent(trace: any): string {
+  const normalize = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const tool = normalize(trace?.tool || trace?.toolName || trace?.name);
+  const operation = [
+    trace?.command,
+    trace?.filepath || trace?.filename,
+    trace?.query || trace?.searchQuery,
+  ].map(normalize).filter(Boolean);
+  return (operation.length > 0
+    ? [tool, ...operation]
+    : [tool, normalize(trace?.secondary)])
+    .filter(Boolean)
+    .join('|')
+    .slice(0, 640);
+}
+
+/** IDs that identify exactly one action lifecycle. */
+function actionStrongOwnerKeys(trace: any, fallbackTurnId = ''): string[] {
+  const singletonIdentity = getFeedActionSingletonIdentity(trace);
+  const singletonTurnId = String(trace?.turnId || fallbackTurnId || '').trim();
+  const values: Array<[string, unknown]> = [
+    ['origin', trace?._originTraceIdx],
+    // A decomposer is a singleton only inside one visible query. Scoping this
+    // key prevents a still-open plan from the previous guidance phase from
+    // claiming the next query's real decomposer lifecycle.
+    ['singleton', singletonIdentity && singletonTurnId ? `${ singletonTurnId }:${ singletonIdentity }` : ''],
+    ['trace', trace?.ownerTraceId],
+    ['trace', trace?.traceId],
+    ['tool', trace?.toolCallId],
+    ['response', trace?.responseKey],
+    ['event', trace?.id],
+  ];
+  return [...new Set(values
+    .map(([kind, value]) => {
+      const identity = String(value ?? '').trim();
+      return identity ? `${ kind }:${ identity }` : '';
+    })
+    .filter(Boolean))];
+}
+
+/**
+ * streamId/taskId identify a transport or background process, not necessarily
+ * one UI action. Scope them by the real command/tool/file content so two calls
+ * sharing a process cannot replace one another or steal query ownership.
+ */
+function actionTransportOwnerKeys(trace: any): string[] {
+  const content = actionCorrelationContent(trace);
+  if (!content) return [];
+  const values: Array<[string, unknown]> = [
+    ['stream', trace?.streamId],
+    ['task', trace?.taskId || trace?.backgroundTaskId],
+  ];
+  return [...new Set(values
+    .map(([kind, value]) => {
+      const identity = String(value ?? '').trim();
+      return identity ? `${ kind }:${ identity }:${ content }` : '';
+    })
+    .filter(Boolean))];
+}
+
+function actionOwnerKeys(trace: any, fallbackTurnId = ''): string[] {
+  return [...new Set([
+    ...actionStrongOwnerKeys(trace, fallbackTurnId),
+    ...actionTransportOwnerKeys(trace),
+  ])];
+}
+
 interface QueuedUserFollowUp {
   id: string;
   runId: string;
@@ -104,6 +190,15 @@ interface QueuedUserFollowUp {
   prompt: string;
   mediaAttachments: any[];
   createdAt: number;
+  runtimeOverride?: {
+    mode: MainAgentMode;
+    selectedModelProvider: string;
+    selectedModelName: string;
+    thinkingLevel?: string;
+    modelThinkingCapability?: any;
+    modelWireCapabilities?: string[];
+    runtimeSettings?: ScopedRuntimeSettings;
+  };
 }
 
 export interface QueuedUserFollowUpSummary {
@@ -113,6 +208,8 @@ export interface QueuedUserFollowUpSummary {
   text: string;
   createdAt: number;
   attachmentCount: number;
+  modelSelection?: string;
+  thinkingLevel?: string;
 }
 
 const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
@@ -129,15 +226,17 @@ export const buildProxyTaskHistory = (
   hasDependency: boolean,
 ): any[] => {
   const history = Array.isArray(baseHistory) ? [...baseHistory] : [];
-  if (!hasDependency) return history.slice(-24);
+  if (!hasDependency) return history;
 
   history.push({ role: 'user', parts: [{ text: previousPrompt }] });
   if (previousAnswer) history.push({ role: 'model', parts: [{ text: previousAnswer }] });
-  return history.slice(-24);
+  return history;
 };
 
 const MAX_TRACE_BUFFER = 2000;          // Max traces kept in memory per chat
-const MAX_COMPLETED_TRACE_BUFFER = 350;
+// Completion must not make already-rendered activity disappear. Keep the same
+// event budget after settlement; payload-heavy traces are compacted separately.
+const MAX_COMPLETED_TRACE_BUFFER = MAX_TRACE_BUFFER;
 const MAX_STEERING_QUEUE = 25;
 const MAX_USER_FOLLOW_UP_QUEUE = 50;
 const MAX_COMPLETED_EXECUTIONS = 30;
@@ -145,10 +244,60 @@ const TRACE_COMPACTION_GRACE_MS = 60 * 1000;
 const CLEANUP_INTERVAL = 5 * 60 * 1000; // Cleanup completed agents frequently
 const TASK_STORE_CLEANUP_INTERVAL = 15 * 60 * 1000;
 const MAX_COMPLETED_AGE = 2 * 60 * 60 * 1000; // 2 hours max retention for completed agents
+const LIVE_STREAM_WAKE_WINDOW_MS = 16;
+const COALESCIBLE_LIVE_TRACE_TYPES = new Set([
+  'answer',
+  'work_note',
+  'thought_stream',
+  'console_output',
+  'file_preview',
+]);
+
+const trimTraceBufferWithBoundary = (traceBuffer: TraceEvent[], limit: number): TraceEvent[] => {
+  if (!Array.isArray(traceBuffer) || traceBuffer.length <= limit) return traceBuffer;
+  const firstUserBoundaryIndex = traceBuffer.findIndex(entry => entry?.data?.type === 'user_action');
+  const retainedIndexes = new Set<number>();
+  if (firstUserBoundaryIndex >= 0) retainedIndexes.add(firstUserBoundaryIndex);
+
+  let remaining = Math.max(0, limit - retainedIndexes.size);
+  let segmentEnd = traceBuffer.length - 1;
+  while (segmentEnd >= 0 && remaining > 0) {
+    let boundaryIndex = -1;
+    for (let index = segmentEnd; index >= 0; index -= 1) {
+      if (isFeedTurnBoundary(traceBuffer[index]?.data)) {
+        boundaryIndex = index;
+        break;
+      }
+    }
+
+    const contentStart = boundaryIndex >= 0 ? boundaryIndex + 1 : 0;
+    if (boundaryIndex >= 0 && !retainedIndexes.has(boundaryIndex)) {
+      retainedIndexes.add(boundaryIndex);
+      remaining -= 1;
+      if (remaining <= 0) break;
+    }
+
+    const availableContent = Math.max(0, segmentEnd - contentStart + 1);
+    const contentToKeep = Math.min(remaining, availableContent);
+    const retainedContentStart = segmentEnd - contentToKeep + 1;
+    for (let index = retainedContentStart; index <= segmentEnd; index += 1) {
+      retainedIndexes.add(index);
+    }
+    remaining -= contentToKeep;
+    segmentEnd = boundaryIndex >= 0 ? boundaryIndex - 1 : -1;
+  }
+
+  return [...retainedIndexes]
+    .sort((left, right) => left - right)
+    .map(index => traceBuffer[index]);
+};
 
 class AgentRegistry {
   private executions: Map<string, AgentExecution> = new Map();
+  private archivedExecutions: Map<string, AgentExecution[]> = new Map();
   private traceWaiters: Map<string, Set<() => void>> = new Map();
+  /** One frame-sized wake reservation per chat for cumulative live snapshots. */
+  private traceWakeTimers: Map<string, NodeJS.Timeout> = new Map();
   private userFollowUpQueues: Map<string, QueuedUserFollowUp[]> = new Map();
   private userFollowUpReceipts: Map<string, Map<string, QueuedUserFollowUpSummary>> = new Map();
   private pendingRunCancellations: Map<string, { runId?: string; expiresAt: number }> = new Map();
@@ -156,7 +305,7 @@ class AgentRegistry {
   private lastTaskStoreCleanupAt = 0;
 
   public getLifecycleVersion(): number {
-    return 3;
+    return 4;
   }
 
   private findExecution(runtimeId: string): AgentExecution | undefined {
@@ -167,6 +316,21 @@ class AgentRegistry {
     // An alias collision is ambiguous. Failing closed is safer than steering
     // whichever chat happened to be inserted first.
     return aliases.length === 1 ? aliases[0] : undefined;
+  }
+
+  private archiveExecution(execution: AgentExecution): void {
+    if (!execution?.runId || !execution.settled) return;
+    const archives = this.archivedExecutions.get(execution.chatId) || [];
+    const withoutDuplicate = archives.filter(candidate => candidate.runId !== execution.runId);
+    withoutDuplicate.push(execution);
+    // Queue handoffs only need a short predecessor window, but retain a few
+    // runs so multiple fast follow-ups can still reconcile in exact order.
+    this.archivedExecutions.set(execution.chatId, withoutDuplicate.slice(-4));
+  }
+
+  private getArchivedExecution(chatId: string, runId: string): AgentExecution | undefined {
+    if (!runId) return undefined;
+    return this.archivedExecutions.get(chatId)?.find(execution => execution.runId === runId);
   }
 
   constructor() {
@@ -247,8 +411,10 @@ class AgentRegistry {
 
     execution.prompt = execution.prompt.substring(0, 2000);
     execution.steeringQueue = [];
-    execution.traceBuffer = execution.traceBuffer
-      .slice(-MAX_COMPLETED_TRACE_BUFFER)
+    execution.traceBuffer = trimTraceBufferWithBoundary(
+      execution.traceBuffer,
+      MAX_COMPLETED_TRACE_BUFFER,
+    )
       .map(entry => ({
         ...entry,
         data: this.compactTracePayload(entry.data),
@@ -258,18 +424,284 @@ class AgentRegistry {
 
   public appendTrace(execution: AgentExecution, traceEvent: any, persistToTaskStore = true): TraceEvent {
     if (traceEvent && typeof traceEvent === 'object') {
+      const eventType = String(traceEvent.type || '');
+      const reportedTurnId = String(traceEvent.turnId || '').trim();
+      const reportedRootTurnId = String(traceEvent.rootTurnId || '').trim();
+      const isAuxiliaryMailboxBoundary = eventType === 'inter_agent_message' &&
+        String(traceEvent.agentName || traceEvent.to || '').trim().toLowerCase() !== 'main' &&
+        Boolean(traceEvent.subAgentId || traceEvent.subAgentChatId);
+      const auxiliaryIdentity = String(
+        traceEvent.subAgentId || traceEvent.subAgentChatId || '',
+      ).trim();
+      const auxiliaryOwner = (!/^sub_agent_|^inter_agent_/.test(eventType) || isAuxiliaryMailboxBoundary)
+        ? auxiliaryIdentity
+        : '';
+      let auxiliaryTurnId = auxiliaryIdentity
+        ? String(execution.activeAuxiliaryTurnIds.get(auxiliaryIdentity) || '').trim()
+        : '';
+      if (auxiliaryIdentity && !auxiliaryTurnId) {
+        auxiliaryTurnId = `subagent-task:${ auxiliaryIdentity }`;
+        execution.activeAuxiliaryTurnIds.set(auxiliaryIdentity, auxiliaryTurnId);
+      }
+      let currentRootTurnId = String(execution.activeTurnId || execution.runId).trim();
+      const rootActionScope = auxiliaryOwner
+        ? reportedRootTurnId || currentRootTurnId
+        : reportedTurnId || currentRootTurnId || execution.runId;
+      const auxiliaryActionScope = auxiliaryTurnId || reportedTurnId || `subagent-task:${ auxiliaryIdentity }`;
+      const incomingRootActionOwnerKeys = actionOwnerKeys(
+        { ...traceEvent, turnId: rootActionScope },
+        rootActionScope,
+      );
+      const incomingAuxiliaryActionOwnerKeys = auxiliaryIdentity
+        ? actionOwnerKeys(
+          { ...traceEvent, turnId: auxiliaryActionScope },
+          auxiliaryActionScope,
+        )
+        : [];
+      const streamIdentity = eventType === 'answer' || eventType === 'answer_cancel'
+        ? String(traceEvent.answerId || '').trim()
+        : eventType === 'work_note' || eventType === 'work_note_cancel'
+          ? String(traceEvent.noteId || '').trim()
+          : eventType === 'thought_stream'
+            ? String(traceEvent.thoughtId || '').trim()
+            : '';
+      const rootStreamTurnScope = String(rootActionScope || execution.runId).trim();
+      const auxiliaryStreamTurnScope = String(auxiliaryActionScope || '').trim();
+      const streamType = eventType.replace('_cancel', '');
+      const streamAgentScope = String(
+        traceEvent.subAgentChatId || traceEvent.subAgentId || traceEvent.subAgent || 'main',
+      ).trim();
+      const rootStreamOwnerKeys = streamIdentity
+        ? [
+          `${ rootStreamTurnScope }:${ streamType }:${ streamIdentity }`,
+          `stream:${ streamAgentScope }:${ streamType }:${ streamIdentity }`,
+        ]
+        : [];
+      const auxiliaryStreamOwnerKeys = streamIdentity && auxiliaryIdentity
+        ? [
+          `${ auxiliaryStreamTurnScope }:${ streamType }:${ streamIdentity }`,
+          `stream:${ streamAgentScope }:${ streamType }:${ streamIdentity }`,
+        ]
+        : [];
+      // Turn ownership is established when the action/stream first appears.
+      // A guidance event can advance activeTurnId while an older provider or
+      // tool callback is still in flight, so callback arrival time must never
+      // be used to move that existing row into the new query.
+      const mappedRootTurnId = String(
+        incomingRootActionOwnerKeys
+          .map(key => execution.traceOwnerTurns.get(key))
+          .find(Boolean)
+        || rootStreamOwnerKeys.map(key => execution.traceOwnerTurns.get(key)).find(Boolean)
+        || '',
+      ).trim();
+      const mappedAuxiliaryTurnId = String(
+        incomingAuxiliaryActionOwnerKeys
+          .map(key => execution.traceOwnerAuxiliaryTurns.get(key))
+          .find(Boolean)
+        || auxiliaryStreamOwnerKeys
+          .map(key => execution.traceOwnerAuxiliaryTurns.get(key))
+          .find(Boolean)
+        || '',
+      ).trim();
+      const mappedLifecycleEntry = mappedRootTurnId || mappedAuxiliaryTurnId
+        ? [...execution.traceBuffer].reverse().find(entry => {
+          const existing = entry?.data;
+          if (!existing || isFeedTurnBoundary(existing)) return false;
+          const existingRootActionKeys = new Set(actionOwnerKeys(
+            { ...existing, turnId: String(existing?.turnId || existing?.runId || '').trim() },
+            String(existing?.turnId || existing?.runId || '').trim(),
+          ));
+          const existingAuxiliaryActionKeys = new Set(actionOwnerKeys(
+            { ...existing, turnId: String(existing?.subAgentTurnId || '').trim() },
+            String(existing?.subAgentTurnId || '').trim(),
+          ));
+          const sharesActionIdentity = incomingRootActionOwnerKeys.some(identity => existingRootActionKeys.has(identity)) ||
+            incomingAuxiliaryActionOwnerKeys.some(identity => existingAuxiliaryActionKeys.has(identity));
+          // A generic adapter event id can be reused by a later or parallel
+          // invocation. It may locate a candidate, but explicit provider call
+          // identities decide whether that candidate is allowed to keep its
+          // old query owner.
+          const sameAction = sharesActionIdentity &&
+            !haveConflictingFeedActionInvocations(existing, traceEvent);
+          const existingType = String(existing.type || '').replace('_cancel', '');
+          const incomingType = eventType.replace('_cancel', '');
+          const existingStreamIdentity = existingType === 'answer'
+            ? String(existing.answerId || '').trim()
+            : existingType === 'work_note'
+              ? String(existing.noteId || '').trim()
+              : existingType === 'thought_stream'
+                ? String(existing.thoughtId || '').trim()
+                : '';
+          const sameStream = Boolean(
+            streamIdentity &&
+            existingType === incomingType &&
+            existingStreamIdentity === streamIdentity &&
+            String(existing.subAgentChatId || existing.subAgentId || existing.subAgent || 'main').trim() === streamAgentScope
+          );
+          return sameAction || sameStream;
+        })
+        : undefined;
+      const mappedLifecycleStillOpen = Boolean(
+        mappedLifecycleEntry && isFeedTraceOpen(mappedLifecycleEntry.data),
+      );
+      // Provider-local IDs can restart after a guidance boundary. Preserve an
+      // older owner only while that exact lifecycle is still open; otherwise
+      // the repeated ID starts a new row in the current visible query.
+      const ownerRootTurnId = mappedRootTurnId && (
+        mappedRootTurnId === currentRootTurnId || mappedLifecycleStillOpen
+      )
+        ? mappedRootTurnId
+        : '';
+      const ownerAuxiliaryTurnId = mappedAuxiliaryTurnId && (
+        mappedAuxiliaryTurnId === auxiliaryTurnId || mappedLifecycleStillOpen
+      )
+        ? mappedAuxiliaryTurnId
+        : '';
+      const isTurnBoundary = eventType === 'user_action' || eventType === 'steering_received' || isAuxiliaryMailboxBoundary;
+      // Acknowledging guidance creates its visible boundary immediately, but
+      // the execution owner changes only when Main actually consumes it. This
+      // closes the receive->apply gap where late progress from the preceding
+      // phase used to be stamped onto the new query.
+      const activatesAuxiliaryTurn = Boolean(
+        auxiliaryOwner && (eventType === 'user_action' || isAuxiliaryMailboxBoundary)
+      );
+      const activatesRootTurn = Boolean(
+        !auxiliaryOwner && (eventType === 'user_action' || eventType === 'steering_applied')
+      );
+      if (activatesAuxiliaryTurn || activatesRootTurn) {
+        const boundaryTurnId = reportedTurnId
+          || String(traceEvent.id || traceEvent.steeringId || traceEvent.messageId || '').trim()
+          || (activatesAuxiliaryTurn ? auxiliaryTurnId : currentRootTurnId)
+          || execution.runId;
+        if (activatesAuxiliaryTurn && auxiliaryOwner) {
+          execution.activeAuxiliaryTurnIds.set(auxiliaryOwner, boundaryTurnId);
+          auxiliaryTurnId = boundaryTurnId;
+        }
+        if (activatesRootTurn) {
+          execution.activeTurnId = boundaryTurnId;
+          currentRootTurnId = boundaryTurnId;
+        }
+      }
+      // The first action/stream event establishes immutable ownership. A late
+      // callback may be stamped with the currently active guidance turn by an
+      // adapter, but that transport-time value cannot move an existing row.
+      // Conversely, provider context can lag by one or more guidance messages.
+      // A brand-new row always belongs to activeTurnId; reported transport IDs
+      // are fallback metadata only when no active visible query exists.
+      const resolvedRootTurnId = auxiliaryOwner
+        ? ownerRootTurnId || reportedRootTurnId || currentRootTurnId || execution.runId
+        : isTurnBoundary || eventType === 'steering_applied'
+          ? reportedTurnId || currentRootTurnId || execution.runId
+          : ownerRootTurnId || currentRootTurnId || reportedTurnId || execution.runId;
+      const resolvedAuxiliaryTurnId = auxiliaryIdentity
+        ? activatesAuxiliaryTurn
+          ? auxiliaryTurnId
+          : ownerAuxiliaryTurnId || auxiliaryTurnId || `subagent-task:${ auxiliaryIdentity }`
+        : '';
       traceEvent = {
         ...traceEvent,
         ownerChatId: traceEvent.ownerChatId || execution.chatId,
         runId: traceEvent.runId || execution.runId,
-        turnId: traceEvent.turnId || execution.activeTurnId || execution.runId,
+        turnId: resolvedRootTurnId,
+        ...(auxiliaryIdentity ? {
+          // Main and a worker surface can legitimately project the same
+          // lifecycle event under different query boundaries. Keep the root
+          // owner in turnId and the worker-conversation owner alongside it.
+          subAgentTurnId: resolvedAuxiliaryTurnId,
+        } : {}),
       };
+      if (QUERY_OWNED_ACTION_TYPES.has(eventType)) {
+        incomingRootActionOwnerKeys.forEach(key => execution.traceOwnerTurns.set(key, resolvedRootTurnId));
+        if (resolvedAuxiliaryTurnId) {
+          incomingAuxiliaryActionOwnerKeys.forEach(key =>
+            execution.traceOwnerAuxiliaryTurns.set(key, resolvedAuxiliaryTurnId)
+          );
+        }
+      }
+      rootStreamOwnerKeys.forEach(key => execution.traceOwnerTurns.set(key, resolvedRootTurnId));
+      if (resolvedAuxiliaryTurnId) {
+        auxiliaryStreamOwnerKeys.forEach(key =>
+          execution.traceOwnerAuxiliaryTurns.set(key, resolvedAuxiliaryTurnId)
+        );
+      }
+      if (eventType === 'answer_cancel') {
+        const replacementNoteId = String(traceEvent.replacementNoteId || '').trim();
+        if (replacementNoteId) {
+          execution.traceOwnerTurns.set(`${ resolvedRootTurnId }:work_note:${ replacementNoteId }`, resolvedRootTurnId);
+          execution.traceOwnerTurns.set(
+            `stream:${ streamAgentScope }:work_note:${ replacementNoteId }`,
+            resolvedRootTurnId,
+          );
+          if (resolvedAuxiliaryTurnId) {
+            execution.traceOwnerAuxiliaryTurns.set(
+              `${ resolvedAuxiliaryTurnId }:work_note:${ replacementNoteId }`,
+              resolvedAuxiliaryTurnId,
+            );
+            execution.traceOwnerAuxiliaryTurns.set(
+              `stream:${ streamAgentScope }:work_note:${ replacementNoteId }`,
+              resolvedAuxiliaryTurnId,
+            );
+          }
+        }
+      }
+    }
+    if (traceEvent?.type === 'error') {
+      const errorScope = String(traceEvent.turnId || traceEvent.runId || execution.activeTurnId || execution.runId).trim();
+      const isChildError = Boolean(
+        traceEvent.subAgentId || traceEvent.subAgentChatId || traceEvent.subAgent ||
+        traceEvent.isSubAgent === true || String(traceEvent.agentRole || '').toLowerCase() === 'sub_agent',
+      );
+      if (!isChildError && !String(traceEvent.id || '').trim()) {
+        traceEvent = {
+          ...traceEvent,
+          id: `run-terminal:${ execution.runId }:${ errorScope || execution.runId }:error`,
+        };
+      }
+
+      const incomingId = String(traceEvent.id || '').trim();
+      if (incomingId) {
+        for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
+          const existingEntry = execution.traceBuffer[index];
+          const existing = existingEntry?.data;
+          if (!existing || existing.type !== 'error' || String(existing.id || '').trim() !== incomingId) continue;
+          const existingScope = String(existing.turnId || existing.runId || '').trim();
+          if (errorScope && existingScope && errorScope !== existingScope) continue;
+          execution.traceBuffer.splice(index, 1);
+          traceEvent = {
+            ...existing,
+            ...traceEvent,
+            id: incomingId,
+            text: formatUnknownError(
+              traceEvent.text ?? traceEvent.detail,
+              formatUnknownError(existing.text ?? existing.detail, ''),
+            ),
+            detail: formatUnknownError(
+              traceEvent.detail,
+              formatUnknownError(existing.detail, ''),
+            ) || undefined,
+            _originTraceIdx: Number.isFinite(Number(existing._originTraceIdx))
+              ? Number(existing._originTraceIdx)
+              : existingEntry.index,
+            startTime: existing.startTime || existing.timestamp || traceEvent.startTime || traceEvent.timestamp,
+          };
+          break;
+        }
+      }
     }
     if (traceEvent?.type === 'answer_cancel') {
       const answerId = String(traceEvent.answerId || '').trim();
+      const replacementNoteId = String(traceEvent.replacementNoteId || '').trim();
       for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
-        const existing = execution.traceBuffer[index]?.data;
-        if (existing?.type === 'user_action') break;
+        const existingEntry = execution.traceBuffer[index];
+        const existing = existingEntry?.data;
+        // An exact answer identity may be cancelled after a new guidance
+        // boundary was already acknowledged. Continue across that boundary so
+        // the original visible row is converted in place. Id-less cancellation
+        // remains local to the current phase.
+        if (isFeedTurnBoundary(existing)) {
+          if (answerId) continue;
+          break;
+        }
         if (existing?.type !== 'answer') continue;
         const existingScope = String(existing.turnId || existing.runId || '').trim();
         const cancelScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
@@ -278,24 +710,232 @@ class AgentRegistry {
           ? String(existing.answerId || '').trim() === answerId
           : existing.isStreaming === true || existing.isLiveTyping === true || existing.streamState === 'open';
         if (!sameAnswer) continue;
+        if (replacementNoteId && String(existing.text || '').trim()) {
+          // Carry the visible text on the transition event too. Incremental
+          // clients may have joined after the answer snapshot's cursor; the
+          // cancel event must still be sufficient to materialize the durable
+          // work note without waiting for a later duplicate publication.
+          traceEvent = {
+            ...traceEvent,
+            replacementText: String(existing.text),
+            replacementStartTime: existing.startTime || existing.timestamp,
+          };
+          // The text was already visible before the provider disclosed its
+          // tool call. Keep the original ledger index and presentation row;
+          // answer_cancel itself carries the newer cursor to live clients.
+          existingEntry.data = {
+            ...existing,
+            type: 'work_note',
+            noteId: replacementNoteId,
+            isLive: false,
+            isStreaming: false,
+            isLiveTyping: false,
+            isDelta: false,
+            streamState: 'closed',
+            status: 'completed',
+            _answerTransitionPending: true,
+            _streamingCancelled: true,
+            _cancelTraceIdx: execution.traceCounter,
+            _cancelledAt: traceEvent.timestamp || traceEvent.endTime || Date.now(),
+          };
+        } else {
+          // Retry/steering cancellations do not represent user-facing work and
+          // intentionally retract their provisional response.
+          execution.traceBuffer.splice(index, 1);
+        }
+        break;
+      }
+    }
+    if (['answer', 'work_note', 'thought_stream'].includes(String(traceEvent?.type || ''))) {
+      const type = String(traceEvent.type);
+      const identity = String(
+        type === 'answer'
+          ? traceEvent.answerId
+          : type === 'work_note'
+            ? traceEvent.noteId
+            : traceEvent.thoughtId,
+      ).trim();
+      if (identity) {
+        const incomingScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
+        const incomingOwner = String(
+          traceEvent.subAgentChatId || traceEvent.subAgentId || traceEvent.subAgent || 'main',
+        ).trim();
+        // Cumulative provider snapshots are updates to one visible row, not
+        // separate transcript events. Keep only the newest transport copy in
+        // the live buffer. The replacement is appended with a fresh monotonic
+        // cursor, so clients that already consumed the prior snapshot still
+        // receive the update while reconnects see one canonical row.
+        for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
+          const existingEntry = execution.traceBuffer[index];
+          const existing = existingEntry?.data;
+          // Strong stream identities are run-unique and retain an immutable
+          // turnId. A late cumulative snapshot may legitimately cross a newer
+          // guidance boundary to update its original row.
+          if (isFeedTurnBoundary(existing)) continue;
+          if (String(existing?.type || '') !== type) continue;
+          const existingIdentity = String(
+            type === 'answer'
+              ? existing.answerId
+              : type === 'work_note'
+                ? existing.noteId
+                : existing.thoughtId,
+          ).trim();
+          if (existingIdentity !== identity) continue;
+          const existingScope = String(existing.turnId || existing.runId || '').trim();
+          const existingOwner = String(
+            existing.subAgentChatId || existing.subAgentId || existing.subAgent || 'main',
+          ).trim();
+          if (incomingScope && existingScope && incomingScope !== existingScope) continue;
+          if (incomingOwner !== existingOwner) continue;
+          traceEvent = {
+            ...traceEvent,
+            _originTraceIdx: Number.isFinite(Number(existing?._originTraceIdx))
+              ? Number(existing._originTraceIdx)
+              : existingEntry.index,
+            id: existing?.id || traceEvent.id,
+            startTime: existing?.startTime || existing?.timestamp || traceEvent.startTime || traceEvent.timestamp,
+          };
+          execution.traceBuffer.splice(index, 1);
+          break;
+        }
+      }
+    }
+    if (QUERY_OWNED_ACTION_TYPES.has(String(traceEvent?.type || ''))) {
+      const incomingScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
+      const incomingType = String(traceEvent.type || '').trim().toLowerCase() === 'tool_call'
+        ? 'command'
+        : String(traceEvent.type || '').trim().toLowerCase();
+      const incomingStrongKeys = new Set(actionStrongOwnerKeys(traceEvent, incomingScope));
+      for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
+        const existingEntry = execution.traceBuffer[index];
+        const existing = existingEntry?.data;
+        if (!existing || isFeedTurnBoundary(existing)) continue;
+        if (!QUERY_OWNED_ACTION_TYPES.has(String(existing.type || ''))) continue;
+        const existingType = String(existing.type || '').trim().toLowerCase() === 'tool_call'
+          ? 'command'
+          : String(existing.type || '').trim().toLowerCase();
+        if (existingType !== incomingType) continue;
+        const existingScope = String(existing.turnId || existing.runId || '').trim();
+        if (incomingScope && existingScope && incomingScope !== existingScope) continue;
+        const existingStrongKeys = new Set(actionStrongOwnerKeys(existing, existingScope));
+        const sameStrongLifecycle = !haveConflictingFeedActionInvocations(existing, traceEvent) &&
+          [...incomingStrongKeys].some(key => existingStrongKeys.has(key));
+        if (!sameStrongLifecycle && !areLikelySameFeedActionLifecycle(existing, traceEvent)) continue;
+
+        // Replace the producer snapshot and append the enriched state with a
+        // fresh monotonic cursor. Incremental clients receive the settlement,
+        // while reconnect/full snapshots contain only one action row.
         execution.traceBuffer.splice(index, 1);
+        traceEvent = {
+          ...existing,
+          ...traceEvent,
+          id: existing.id || traceEvent.id,
+          traceId: existing.traceId || traceEvent.traceId,
+          toolCallId: existing.toolCallId || traceEvent.toolCallId,
+          ownerTraceId: existing.ownerTraceId || traceEvent.ownerTraceId,
+          _originTraceIdx: Number.isFinite(Number(existing._originTraceIdx))
+            ? Number(existing._originTraceIdx)
+            : existingEntry.index,
+          startTime: existing.startTime || existing.timestamp || traceEvent.startTime || traceEvent.timestamp,
+        };
+        break;
+      }
+    }
+    if (traceEvent?.type === 'progress' && String(traceEvent.id || '').trim()) {
+      const incomingId = String(traceEvent.id).trim();
+      const incomingScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
+      for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
+        const existingEntry = execution.traceBuffer[index];
+        const existing = existingEntry?.data;
+        if (!existing || existing.type !== 'progress') continue;
+        if (String(existing.id || '').trim() !== incomingId) continue;
+        const existingScope = String(existing.turnId || existing.runId || '').trim();
+        if (incomingScope && existingScope && incomingScope !== existingScope) continue;
+        execution.traceBuffer.splice(index, 1);
+        traceEvent = {
+          ...existing,
+          ...traceEvent,
+          id: existing.id || traceEvent.id,
+          _originTraceIdx: Number.isFinite(Number(existing._originTraceIdx))
+            ? Number(existing._originTraceIdx)
+            : existingEntry.index,
+          startTime: existing.startTime || existing.timestamp || traceEvent.startTime || traceEvent.timestamp,
+        };
+        break;
+      }
+    }
+    if (traceEvent?.type === 'task_plan') {
+      const incomingScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
+      const incomingPlanId = String(traceEvent.planId || traceEvent.ownerTraceId || '').trim();
+      // A visible query has one plan lifecycle. Decomposer, checkpoint, and
+      // automatic progress updates are producer snapshots of that same row,
+      // even when an older adapter omitted planId. Scope is authoritative and
+      // prevents a later query from inheriting the preceding query's plan.
+      for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
+        const existingEntry = execution.traceBuffer[index];
+        const existing = existingEntry?.data;
+        if (!existing || existing.type !== 'task_plan') continue;
+        const existingScope = String(existing.turnId || existing.runId || '').trim();
+        if (incomingScope && existingScope && incomingScope !== existingScope) continue;
+        const existingPlanId = String(existing.planId || existing.ownerTraceId || '').trim();
+        if (!incomingScope && incomingPlanId && existingPlanId && existingPlanId !== incomingPlanId) continue;
+        execution.traceBuffer.splice(index, 1);
+        traceEvent = {
+          ...existing,
+          ...traceEvent,
+          id: existing.id || traceEvent.id,
+          planId: existing.planId || traceEvent.planId,
+          ownerTraceId: existing.ownerTraceId || traceEvent.ownerTraceId,
+          _originTraceIdx: Number.isFinite(Number(existing._originTraceIdx))
+            ? Number(existing._originTraceIdx)
+            : existingEntry.index,
+          startTime: existing.startTime || existing.timestamp || traceEvent.startTime || traceEvent.timestamp,
+        };
+        break;
       }
     }
     if (traceEvent?.type === 'file_preview') {
       let existingIdx = -1;
+      const incomingId = String(traceEvent.id || traceEvent.traceId || '').trim();
+      const incomingOwner = String(traceEvent.ownerTraceId || '').trim();
+      const incomingPath = String(traceEvent.filepath || traceEvent.filename || '').replace(/\\/g, '/').toLowerCase();
+      const incomingScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
       for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
-        const existing = execution.traceBuffer[index]?.data;
-        if (existing?.type === 'user_action') break;
+        const existingEntry = execution.traceBuffer[index];
+        const existing = existingEntry?.data;
+        if (isFeedTurnBoundary(existing)) {
+          if (incomingId || incomingOwner) continue;
+          break;
+        }
         if (existing?.type !== 'file_preview') continue;
-        const sameOwner = traceEvent.ownerTraceId && existing.ownerTraceId === traceEvent.ownerTraceId;
+        const existingScope = String(existing.turnId || existing.runId || '').trim();
+        if (incomingScope && existingScope && incomingScope !== existingScope) continue;
+        const existingId = String(existing.id || existing.traceId || '').trim();
+        const existingOwner = String(existing.ownerTraceId || '').trim();
+        const existingPath = String(existing.filepath || existing.filename || '').replace(/\\/g, '/').toLowerCase();
+        const sameIdentity = Boolean(incomingId && existingId === incomingId);
+        // One tool call can mutate many files. Ownership alone is not enough:
+        // each owner+path pair is an independent progressive preview row.
+        const sameOwnerPath = Boolean(
+          incomingOwner &&
+          existingOwner === incomingOwner &&
+          ((!incomingPath && !existingPath) || (incomingPath && existingPath === incomingPath))
+        );
         const samePath =
-          !traceEvent.ownerTraceId &&
-          traceEvent.filepath &&
+          !incomingOwner &&
+          incomingPath &&
           traceEvent.dedupe !== false &&
-          existing.filepath === traceEvent.filepath &&
+          existingPath === incomingPath &&
           existing.dedupe !== false;
-        if (sameOwner || samePath) {
+        if (sameIdentity || sameOwnerPath || samePath) {
           existingIdx = index;
+          traceEvent = {
+            ...traceEvent,
+            _originTraceIdx: Number.isFinite(Number(existing?._originTraceIdx))
+              ? Number(existing._originTraceIdx)
+              : existingEntry.index,
+            startTime: existing?.startTime || existing?.timestamp || traceEvent.startTime || traceEvent.timestamp,
+          };
           break;
         }
       }
@@ -303,9 +943,13 @@ class AgentRegistry {
     }
 
     const now = Date.now();
+    const nextTraceIndex = execution.traceCounter;
     const normalizedTrace = traceEvent && typeof traceEvent === 'object'
       ? {
         ...traceEvent,
+        _originTraceIdx: Number.isFinite(Number(traceEvent._originTraceIdx))
+          ? Number(traceEvent._originTraceIdx)
+          : nextTraceIndex,
         timestamp: normalizeStreamTimestamp(traceEvent.timestamp, now),
         ...(traceEvent.startTime !== undefined
           ? { startTime: normalizeStreamTimestamp(traceEvent.startTime, normalizeStreamTimestamp(traceEvent.timestamp, now)) }
@@ -325,7 +969,23 @@ class AgentRegistry {
     };
 
     execution.traceBuffer.push(entry);
-    this.notifyTraceWaiters(execution.chatId);
+    // Mutable stream snapshots are visible live, including real provider
+    // thought text. Coalesce only their wake signal into one render frame per
+    // chat; the buffer still keeps the newest cumulative snapshot immediately.
+    // Boundaries, actions, errors, and terminal snapshots always wake now.
+    if (
+      !bufferedTrace ||
+      typeof bufferedTrace !== 'object' ||
+      isLiveUserVisibleTrace(bufferedTrace)
+    ) {
+      const traceType = String(bufferedTrace?.type || '');
+      const canCoalesceWake = COALESCIBLE_LIVE_TRACE_TYPES.has(traceType) &&
+        isFeedTraceOpen(bufferedTrace);
+      this.notifyTraceWaiters(
+        execution.chatId,
+        canCoalesceWake ? LIVE_STREAM_WAKE_WINDOW_MS : 0,
+      );
+    }
     if (now - execution.lastMemorySampleAt >= 1000) {
       execution.lastMemorySampleAt = now;
       execution.peakMemoryMB = Math.max(execution.peakMemoryMB || 0, this.getProcessMemoryMB());
@@ -340,7 +1000,7 @@ class AgentRegistry {
     }
 
     if (execution.traceBuffer.length > MAX_TRACE_BUFFER) {
-      execution.traceBuffer = execution.traceBuffer.slice(-MAX_TRACE_BUFFER);
+      execution.traceBuffer = trimTraceBufferWithBoundary(execution.traceBuffer, MAX_TRACE_BUFFER);
     }
 
     if (persistToTaskStore) {
@@ -357,7 +1017,33 @@ class AgentRegistry {
     return entry;
   }
 
-  private notifyTraceWaiters(chatId: string): void {
+  private notifyTraceWaiters(chatId: string, delayMs = 0): void {
+    const pendingWake = this.traceWakeTimers.get(chatId);
+    if (delayMs > 0) {
+      // A poll that subscribes after this append always performs a second
+      // cursor/status check, so an idle chat needs neither a timer nor a wake.
+      if (!this.traceWaiters.get(chatId)?.size) return;
+      // The first token in a frame reserves the wake. Later tokens merely
+      // replace the cumulative row, avoiding a request per provider chunk.
+      if (pendingWake) return;
+      const timer = setTimeout(() => {
+        this.traceWakeTimers.delete(chatId);
+        this.resolveTraceWaiters(chatId);
+      }, delayMs);
+      timer.unref?.();
+      this.traceWakeTimers.set(chatId, timer);
+      return;
+    }
+
+    // A semantic event must not wait behind a pending text-frame wake.
+    if (pendingWake) {
+      clearTimeout(pendingWake);
+      this.traceWakeTimers.delete(chatId);
+    }
+    this.resolveTraceWaiters(chatId);
+  }
+
+  private resolveTraceWaiters(chatId: string): void {
     const waiters = this.traceWaiters.get(chatId);
     if (!waiters?.size) return;
     this.traceWaiters.delete(chatId);
@@ -373,8 +1059,12 @@ class AgentRegistry {
     afterIndex: number,
     timeoutMs: number,
     signal?: AbortSignal,
+    requestedRunId?: string,
   ): Promise<void> {
-    const boundedTimeout = Math.max(0, Math.min(2000, Math.floor(timeoutMs)));
+    // The waiter is event-driven: appendTrace wakes it immediately. Matching
+    // the route's full long-poll window reduces idle request churn across many
+    // simultaneous chats without adding any latency to real activity.
+    const boundedTimeout = Math.max(0, Math.min(7000, Math.floor(timeoutMs)));
     if (boundedTimeout === 0 || signal?.aborted) return Promise.resolve();
     return new Promise(resolve => {
       let settled = false;
@@ -399,7 +1089,7 @@ class AgentRegistry {
       // the route's initial getTraces() call and waiter registration. Recheck
       // only after registration so either this snapshot or appendTrace's
       // notification always wakes the request immediately.
-      const latest = this.getTraces(chatId, afterIndex);
+      const latest = this.getTraces(chatId, afterIndex, requestedRunId);
       if (latest.status !== 'running' || latest.traces.length > 0) finish();
     });
   }
@@ -435,6 +1125,17 @@ class AgentRegistry {
         message: existing.status === 'running'
           ? 'Agent run already accepted'
           : 'Agent run already finished',
+      };
+    }
+    const archivedRequestedExecution = requestedRunId
+      ? this.getArchivedExecution(chatId, requestedRunId)
+      : undefined;
+    if (archivedRequestedExecution) {
+      return {
+        status: 'started',
+        chatId,
+        runId: archivedRequestedExecution.runId,
+        message: 'Agent run already finished',
       };
     }
     const pendingCancellation = this.pendingRunCancellations.get(chatId);
@@ -510,11 +1211,14 @@ class AgentRegistry {
       chatId,
       runId: requestedRunId || randomUUID(),
       activeTurnId: '',
+      activeAuxiliaryTurnIds: new Map(),
       prompt,
       status: 'running',
       startedAt: Date.now(),
       traceBuffer: [],
       traceCounter: 0,
+      traceOwnerTurns: new Map<string, string>(),
+      traceOwnerAuxiliaryTurns: new Map<string, string>(),
       finalAnswer: '',
       cancelled: false,
       abortController: new AbortController(),
@@ -548,6 +1252,7 @@ class AgentRegistry {
     // completed predecessor remains in the map until this replacement; if
     // registration happens later, onTrace correctly treats the successor's
     // opening user_action as stale and drops it from the live feed.
+    if (existing?.settled) this.archiveExecution(existing);
     this.executions.set(chatId, execution);
 
     // Build the trace callback that writes to the buffer
@@ -555,23 +1260,16 @@ class AgentRegistry {
       if (traceEvent && typeof traceEvent === 'object') {
         const reportedRunId = String(traceEvent.runId || '').trim();
         const reportedTurnId = String(traceEvent.turnId || '').trim();
-        if (traceEvent.type === 'user_action') {
-          execution.activeTurnId = reportedTurnId
-            || String(traceEvent.id || '').trim()
-            || execution.activeTurnId
-            || execution.runId;
-        }
         traceEvent = {
           ...traceEvent,
           ...(reportedRunId && reportedRunId !== execution.runId
             ? { originRunId: reportedRunId }
             : {}),
-          ...(reportedTurnId && reportedTurnId !== execution.activeTurnId
-            ? { originTurnId: reportedTurnId }
-            : {}),
           ownerChatId: chatId,
           runId: execution.runId,
-          turnId: execution.activeTurnId || execution.runId,
+          // appendTrace resolves absent turn ownership, including locking a
+          // late tool result to the turn where its owner action started.
+          ...(reportedTurnId ? { turnId: reportedTurnId } : { turnId: undefined }),
         };
       }
       const isConsoleTrace = traceEvent?.type === 'console_output';
@@ -628,6 +1326,38 @@ class AgentRegistry {
       }
     };
 
+    const preserveUndrainedHumanSteering = () => {
+      const pending = execution.steeringQueue.splice(0);
+      for (const item of pending) {
+        if (item.metadata?._autonomyProxy === true) {
+          // Proxy guidance accepted after Main's last safe model boundary is
+          // still real work. Preserve it as an explicitly Proxy-owned
+          // successor instead of silently reporting it as delivered and then
+          // discarding it during completion cleanup.
+          this.queueProxyTask(
+            chatId,
+            item.text,
+            String(item.metadata?.proxyReason || 'Proxy guidance arrived after the current run completed.'),
+          );
+          continue;
+        }
+        // A guidance request acknowledged just as the provider completed has
+        // not reached the model. Promote that exact immutable request into the
+        // successor queue instead of silently discarding it or attaching its
+        // terminal error to the wrong visible turn.
+        this.queueUserFollowUp(
+          chatId,
+          item.text,
+          [],
+          // Match the already-published steering boundary exactly. When the
+          // successor emits its canonical user_action the client upserts that
+          // row instead of rendering the same request a second time.
+          `steering-turn-${ item.id }`,
+          item.createdAt,
+        );
+      }
+    };
+
     const proxyOrigin = pinnedContext?.autonomy?.origin === 'proxy_manager';
     const triggerSource = String(pinnedContext?.triggerSource || '').trim();
     const triggerDelegatedBy = String(pinnedContext?.triggerDelegatedBy || '').trim();
@@ -647,6 +1377,12 @@ class AgentRegistry {
       delegatedBy: proxyOrigin ? 'Side Proxy-Agent' : triggerDelegatedBy || undefined,
       proxyTaskId: proxyOrigin ? pinnedContext?.autonomy?.proxyTaskId : undefined,
       scheduledTaskId: pinnedContext?.scheduledTaskId || undefined,
+      modelSelection: pinnedContext?.selectedModelProvider && pinnedContext?.selectedModelName
+        ? `${ String(pinnedContext.selectedModelProvider) }:${ String(pinnedContext.selectedModelName) }`
+        : undefined,
+      selectedModelProvider: pinnedContext?.selectedModelProvider || undefined,
+      selectedModelName: pinnedContext?.selectedModelName || undefined,
+      thinkingLevel: pinnedContext?.thinkingLevel || undefined,
       runId: execution.runId,
       turnId: execution.runId,
       startTime: execution.startedAt,
@@ -655,18 +1391,27 @@ class AgentRegistry {
     };
     onTrace(runUserEvent);
 
-    onTrace({
-      type: 'work_note',
-      text: `${ modelConfig.label } is starting`,
-      noteId: 'eterx-agent-connection',
-      isDelta: false,
-      isStreaming: false,
-      _connection: true,
-    });
-
     // Fire-and-forget execution
     execution.promise = (async () => {
       let terminalStatus: AgentExecution['status'] = 'failed';
+      const persistTerminalContext = async () => {
+        try {
+          const fabric = await getContextFabricForChat(chatId);
+          fabric.recordAssistantResponse(
+            execution.finalAnswer,
+            terminalStatus === 'completed'
+              ? 'completed'
+              : terminalStatus === 'stopped'
+                ? 'stopped'
+                : 'failed',
+            execution.runId,
+          );
+          await fabric.flush();
+        } catch {
+          // Chat persistence and the provider result remain authoritative if
+          // the continuity index is temporarily unavailable.
+        }
+      };
       try {
         // Create a dedicated orchestrator for this chat
         const orchestrator = new AgentOrchestrator();
@@ -961,7 +1706,31 @@ class AgentRegistry {
           history,
           onTrace,
           mode,
-          { ...(pinnedContext || {}), abortSignal: execution.abortController.signal },
+          {
+            ...(pinnedContext || {}),
+            ownerChatId: chatId,
+            runId: execution.runId,
+            turnId: execution.activeTurnId || execution.runId,
+            // Long-lived workers can outlast a steering boundary. Resolve the
+            // owner when an event is produced instead of freezing the first
+            // turn in the pipeline context.
+            getActiveTurnId: () => execution.activeTurnId || execution.runId,
+            getActiveAuxiliaryTurnId: (identity: string) => {
+              const normalizedIdentity = String(identity || '').trim();
+              if (!normalizedIdentity) return '';
+              const direct = execution.activeAuxiliaryTurnIds.get(normalizedIdentity);
+              if (direct) return direct;
+              for (const [knownIdentity, activeTurnId] of execution.activeAuxiliaryTurnIds.entries()) {
+                if (
+                  knownIdentity === normalizedIdentity ||
+                  knownIdentity.endsWith(`::${ normalizedIdentity }`) ||
+                  normalizedIdentity.endsWith(`::${ knownIdentity }`)
+                ) return activeTurnId;
+              }
+              return '';
+            },
+            abortSignal: execution.abortController.signal,
+          },
           providerMediaFiles,
           uploadedImageParts, // Files API parts instead of base64
           userName,
@@ -976,9 +1745,7 @@ class AgentRegistry {
         terminalStatus = wasCancelledByResponse ? 'stopped' : responseFailed ? 'failed' : 'completed';
         execution.finalAnswer = responseText;
         if (responseFailed) execution.error = responseText;
-        // Guidance that was not drained before the terminal response belongs
-        // to this run and must not survive into a later turn.
-        execution.steeringQueue = [];
+        preserveUndrainedHumanSteering();
         // Publish the terminal state before task/key/sub-agent cleanup. A new
         // user follow-up must never be steered into a run that has already
         // produced its final response and is only unwinding resources.
@@ -993,10 +1760,20 @@ class AgentRegistry {
           ? pinnedContext.selectedModelName.trim()
           : actualModelConfig.modelName;
 
-        // Emit done event to trace buffer
+        // Emit one canonical terminal lifecycle. A failed custom/builder
+        // runtime can report its provider error before the orchestrator
+        // returns; publishing a second `done(status=failed)` produced two
+        // failure notices for one query. Failed completion enriches the same
+        // stable error row, while successful/stopped completion remains done.
         if (!execution.cancelled) {
+          const terminalTraceType = terminalStatus === 'failed' ? 'error' : 'done';
+          const terminalDetail = terminalStatus === 'failed'
+            ? responseText.replace(/^Agent (?:Execution Failed|Builder failed)\s*:\s*/i, '').trim()
+            : '';
           onTrace({
-            type: 'done',
+            id: `run-terminal:${ execution.runId }:${ execution.activeTurnId || execution.runId }:${ terminalTraceType }`,
+            type: terminalTraceType,
+            ...(terminalDetail ? { text: terminalDetail, detail: terminalDetail } : {}),
             data: response,
             status: terminalStatus,
             mainTurnTerminal: true,
@@ -1004,6 +1781,11 @@ class AgentRegistry {
             endTime: execution.completedAt,
           });
         }
+
+        // Store the exact terminal assistant page before any task-local state
+        // is cleaned up. Agent paths that already recorded it are idempotent by
+        // run ID; early-return and custom-agent paths are covered here.
+        await persistTerminalContext();
 
         // Persist to TaskStore
         if (!pinnedContext?.disableTaskStore) {
@@ -1018,12 +1800,14 @@ class AgentRegistry {
         console.log(`[AgentRegistry] ${ terminalStatus === 'completed' ? '✅ Agent completed' : terminalStatus === 'stopped' ? '🛑 Agent stopped' : '❌ Agent failed' } for chat ${ chatId.substring(0, 8) }... in ${ ((Date.now() - execution.startedAt) / 1000).toFixed(1) }s`);
 
       } catch (error: any) {
-        const wasCancelled = error.message === 'CANCELLED_BY_USER' || execution.cancelled;
+        const errorMessage = formatUnknownError(error, 'Unknown agent error');
+        const wasCancelled = errorMessage === 'CANCELLED_BY_USER' || execution.cancelled;
 
         terminalStatus = wasCancelled ? 'stopped' : 'failed';
-        execution.error = error.message;
-        execution.finalAnswer = wasCancelled ? 'Stopped by user.' : `Agent Error: ${ error.message }`;
-        execution.steeringQueue = [];
+        execution.error = errorMessage;
+        execution.finalAnswer = wasCancelled ? 'Stopped by user.' : `Agent Error: ${ errorMessage }`;
+        if (wasCancelled) execution.steeringQueue = [];
+        else preserveUndrainedHumanSteering();
         // API failures (including exhausted/rate-limited keys) are terminal
         // immediately. Cleanup still runs below, but the registry must stop
         // advertising this execution as steerable while it is unwinding.
@@ -1032,17 +1816,20 @@ class AgentRegistry {
 
         if (!wasCancelled) {
           // Check if it's an API key error — auto-failover
-          const errorType = isExternalProvider ? 'unknown' : apiKeyPool.classifyError(error.message);
+          const errorType = isExternalProvider ? 'unknown' : apiKeyPool.classifyError(errorMessage);
           if (errorType !== 'unknown') {
             console.warn(`[AgentRegistry] 🔄 API key failure (${ errorType }) for chat ${ chatId.substring(0, 8) }...`);
-            apiKeyPool.reportFailure(chatId, errorType, error.message);
+            apiKeyPool.reportFailure(chatId, errorType, errorMessage);
           }
 
           // Emit error to trace buffer.
           try {
             this.appendTrace(execution, {
+              id: `run-terminal:${ execution.runId }:${ execution.activeTurnId || execution.runId }:error`,
               type: 'error',
-              data: error.message,
+              text: errorMessage,
+              detail: errorMessage,
+              data: errorMessage,
               ownerChatId: chatId,
               runId: execution.runId,
               turnId: execution.activeTurnId || execution.runId,
@@ -1053,7 +1840,7 @@ class AgentRegistry {
             }, !pinnedContext?.disableTaskStore);
           } catch { /* buffer push failed, ignore */ }
 
-          console.error(`[AgentRegistry] ❌ Agent failed for chat ${ chatId.substring(0, 8) }...: ${ error.message.substring(0, 100) }`);
+          console.error(`[AgentRegistry] ❌ Agent failed for chat ${ chatId.substring(0, 8) }...: ${ errorMessage.substring(0, 100) }`);
         } else {
           console.log(`[AgentRegistry] 🛑 Agent stopped for chat ${ chatId.substring(0, 8) }...`);
         }
@@ -1065,6 +1852,8 @@ class AgentRegistry {
             await taskStore.completeTask(chatId, execution.finalAnswer, false, terminalStatus, execution.runId).catch(() => { });
           }
         }
+
+        await persistTerminalContext();
 
       } finally {
         if (execution.orchestratorProjectId) {
@@ -1107,9 +1896,10 @@ class AgentRegistry {
         execution.settled = true;
         if (execution.status === 'running') execution.status = terminalStatus;
         execution.completedAt = execution.completedAt || Date.now();
-        if (terminalStatus !== 'stopped') {
-          queueMicrotask(() => void this.startNextQueuedWork(chatId));
-        }
+        // Stop clears everything that was queued before cancellation. A fresh
+        // message accepted while the stopped run is still unwinding is a real
+        // successor and must start as soon as cleanup releases this execution.
+        queueMicrotask(() => void this.startNextQueuedWork(chatId));
       }
     })();
 
@@ -1122,7 +1912,7 @@ class AgentRegistry {
   /**
    * Get traces for a chat, optionally after a specific index (incremental polling).
    */
-  public getTraces(chatId: string, afterIndex: number = -1): {
+  public getTraces(chatId: string, afterIndex: number = -1, requestedRunId?: string): {
     status: 'running' | 'completed' | 'failed' | 'stopped' | 'idle';
     traces: any[];
     totalTraces: number;
@@ -1132,11 +1922,29 @@ class AgentRegistry {
     startedAt?: number;
     completedAt?: number;
     error?: string;
+    successorRunId?: string;
+    successorStartedAt?: number;
+    terminalTurnId?: string;
     pendingProxyTaskCount: number;
     pendingFollowUpCount: number;
     queuedFollowUps: QueuedUserFollowUpSummary[];
   } {
-    const execution = this.executions.get(chatId);
+    const currentExecution = this.executions.get(chatId);
+    const requestedOwner = String(requestedRunId || '').trim();
+    const currentMatchesRequest = Boolean(
+      requestedOwner
+      && currentExecution?.runId === requestedOwner,
+    );
+    const archivedExecution = requestedOwner && !currentMatchesRequest
+      ? this.getArchivedExecution(chatId, requestedOwner)
+      : undefined;
+    // Once the renderer owns a run ID, polling is exact. Never fall through to
+    // a newer current execution when the requested predecessor is unavailable;
+    // trace indices restart per run and that fallback corrupts both ordering
+    // and ownership in the visible feed.
+    const execution = requestedOwner
+      ? (currentMatchesRequest ? currentExecution : archivedExecution)
+      : currentExecution;
 
     if (!execution) {
       return {
@@ -1167,11 +1975,56 @@ class AgentRegistry {
       }
       start = low;
     }
-    const newTraces = filterUserVisibleTraces(execution.traceBuffer.slice(start).map(trace => ({
+    const bufferedTraces = filterLiveUserVisibleTraces(execution.traceBuffer.slice(start).map(trace => ({
       ...trace.data,
       timestamp: normalizeStreamTimestamp(trace.data?.timestamp, trace.timestamp),
       _traceIdx: trace.index,
     })));
+    const proxyRecovery = execution.launchSpec.pinnedContext?.autonomy?.origin === 'proxy_manager';
+    const recoveredPrompt = getVisibleRunPrompt(
+      proxyRecovery
+        ? String(execution.launchSpec.pinnedContext?.autonomy?.proxyTaskPrompt || execution.prompt)
+        : execution.prompt,
+    ).trim();
+    const queryWasCompacted = afterIndex < 0 &&
+      recoveredPrompt.length > 0 &&
+      !execution.traceBuffer.some(entry => entry?.data?.type === 'user_action');
+    // This reconstructs the opening request, not the newest visible phase.
+    // After compaction the first retained event may belong to steering; using
+    // that event's turn ID cloned the original prompt into every later phase.
+    const recoveredTurnId = String(
+      execution.runId ||
+      execution.traceBuffer.find(entry => String(entry?.data?.turnId || '').trim())?.data?.turnId ||
+      execution.activeTurnId,
+    ).trim();
+    const newTraces = queryWasCompacted
+      ? [
+        {
+          id: proxyRecovery
+            ? `proxy-task-${ execution.launchSpec.pinnedContext?.autonomy?.proxyTaskId || execution.runId }`
+            : `user-turn-${ execution.runId }`,
+          type: 'user_action',
+          text: recoveredPrompt,
+          source: proxyRecovery ? 'proxy_manager' : 'human',
+          ...(proxyRecovery ? { delegatedBy: 'Side Proxy-Agent' } : {}),
+          ownerChatId: execution.chatId,
+          runId: execution.runId,
+          turnId: recoveredTurnId,
+          timestamp: execution.startedAt,
+          startTime: execution.startedAt,
+          endTime: execution.startedAt,
+          modelSelection: execution.launchSpec.pinnedContext?.selectedModelProvider && execution.launchSpec.pinnedContext?.selectedModelName
+            ? `${ String(execution.launchSpec.pinnedContext.selectedModelProvider) }:${ String(execution.launchSpec.pinnedContext.selectedModelName) }`
+            : undefined,
+          selectedModelProvider: execution.launchSpec.pinnedContext?.selectedModelProvider || undefined,
+          selectedModelName: execution.launchSpec.pinnedContext?.selectedModelName || undefined,
+          thinkingLevel: execution.launchSpec.pinnedContext?.thinkingLevel || undefined,
+          _traceIdx: -1,
+          _recoveredExactText: true,
+        },
+        ...bufferedTraces,
+      ]
+      : bufferedTraces;
 
     // maxIndex = the highest monotonic index we've ever issued for this chat
     const maxIndex = execution.traceBuffer.length > 0
@@ -1188,6 +2041,15 @@ class AgentRegistry {
       startedAt: execution.startedAt,
       completedAt: execution.completedAt,
       error: execution.error,
+      ...(execution.status !== 'running' && execution.activeTurnId
+        ? { terminalTurnId: execution.activeTurnId }
+        : {}),
+      ...(archivedExecution && currentExecution && currentExecution.runId !== archivedExecution.runId
+        ? {
+          successorRunId: currentExecution.runId,
+          successorStartedAt: currentExecution.startedAt,
+        }
+        : {}),
       pendingProxyTaskCount: getPendingProxyTaskCount(chatId),
       pendingFollowUpCount: this.getQueuedFollowUps(chatId).length,
       queuedFollowUps: this.getQueuedFollowUps(chatId),
@@ -1203,6 +2065,7 @@ class AgentRegistry {
     reason = 'Stopped by user.',
     metadata?: Record<string, any>,
     expectedRunId?: string,
+    queuedAdmissionCutoff = Number.POSITIVE_INFINITY,
   ): boolean {
     const execution = this.executions.get(chatId);
     if (expectedRunId && !execution) {
@@ -1217,10 +2080,10 @@ class AgentRegistry {
       return false;
     }
     const cancelledQueuedFollowUps = !metadata?._autonomyProxy
-      ? this.clearQueuedFollowUps(chatId)
+      ? this.clearQueuedFollowUps(chatId, queuedAdmissionCutoff)
       : 0;
     const cancelledQueuedTasks = !metadata?._autonomyProxy
-      ? cancelPendingProxyTasks(chatId)
+      ? cancelPendingProxyTasks(chatId, 'Cancelled after Main was stopped by the user.', queuedAdmissionCutoff)
       : 0;
     if (!execution) return Boolean(expectedRunId) || cancelledQueuedTasks > 0 || cancelledQueuedFollowUps > 0;
 
@@ -1294,7 +2157,7 @@ class AgentRegistry {
     ) return false;
     if (expectedRunId && execution.runId !== expectedRunId) return false;
 
-    const trimmedMessage = message.trim().substring(0, 8000);
+    const trimmedMessage = String(message || '').replace(/\u0000/g, '').trim();
     if (!trimmedMessage) return false;
     const resolvedId = steeringId || `steer_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`;
     // Treat retries with the same client ID as idempotent. In particular, do
@@ -1315,20 +2178,25 @@ class AgentRegistry {
       steeringSource,
       ownerChatId: execution.chatId,
       runId: execution.runId,
-      turnId: execution.activeTurnId || execution.runId,
+      turnId: `steering-turn-${ resolvedId }`,
     };
     if (execution.steeringQueue.length >= MAX_STEERING_QUEUE) {
       console.warn(`[AgentRegistry] Steering queue full for chat ${ chatId.substring(0, 8) }...; rejecting new guidance so the client can retain it.`);
       return false;
     }
+    const requestedCreatedAt = Number(metadata?.createdAt);
+    const steeringCreatedAt = Number.isFinite(requestedCreatedAt) && requestedCreatedAt > 0
+      ? requestedCreatedAt
+      : Date.now();
     const queuedMessage: SteeringMessage = {
       id: resolvedId,
       text: trimmedMessage,
-      createdAt: Date.now(),
+      createdAt: steeringCreatedAt,
       metadata: normalizedMetadata,
     };
     execution.acceptedSteeringIds.add(resolvedId);
     execution.steeringQueue.push(queuedMessage);
+    execution.steeringQueue.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
     // Completion-boundary Proxy guidance is revealed when it is applied on
     // the next loop boundary. Emitting it here would place the Proxy message
     // before the fully generated answer checkpoint and make that answer appear
@@ -1340,7 +2208,7 @@ class AgentRegistry {
         text: trimmedMessage,
         steeringId: queuedMessage.id,
         steeringIds: [queuedMessage.id],
-        timestamp: Date.now(),
+        timestamp: steeringCreatedAt,
         ...normalizedMetadata,
       });
     }
@@ -1365,9 +2233,13 @@ class AgentRegistry {
       execution.abortController.signal.aborted ||
       execution.steeringQueue.length === 0
     ) return [];
-    const messages = [...execution.steeringQueue];
-    execution.steeringQueue = [];
-    return messages;
+    // One accepted user query owns one model boundary. Draining the whole
+    // queue made several rapidly-sent messages visible as separate turns while
+    // all subsequent thoughts/actions were stamped onto only the last turn.
+    // Leave later guidance queued for the next safe boundary; if this run
+    // settles first, the existing successor hand-off preserves those entries.
+    const nextMessage = execution.steeringQueue.shift();
+    return nextMessage ? [nextMessage] : [];
   }
 
   /** Atomically drains all pending guidance at a safe model boundary. */
@@ -1470,6 +2342,10 @@ class AgentRegistry {
       text: item.prompt,
       createdAt: item.createdAt,
       attachmentCount: item.mediaAttachments.length,
+      ...(item.runtimeOverride ? {
+        modelSelection: `${ item.runtimeOverride.selectedModelProvider }:${ item.runtimeOverride.selectedModelName }`,
+        thinkingLevel: item.runtimeOverride.thinkingLevel,
+      } : {}),
     }));
   }
 
@@ -1478,18 +2354,37 @@ class AgentRegistry {
     prompt: string,
     mediaAttachments: any[] = [],
     requestedId?: string,
+    requestedCreatedAt?: number,
+    runtimeOverride?: QueuedUserFollowUp['runtimeOverride'],
   ): {
     accepted: boolean;
     status: 'queued' | 'starting' | 'not_found' | 'queue_full';
     item?: QueuedUserFollowUpSummary;
+    handoffPending?: boolean;
     message: string;
   } {
     const priorReceipt = this.userFollowUpReceipts.get(chatId)?.get(requestedId || '');
     if (priorReceipt) {
+      const currentExecution = this.executions.get(chatId);
+      const receiptStillQueued = Boolean(
+        this.userFollowUpQueues.get(chatId)?.some(item => item.id === priorReceipt.id)
+      );
+      const receiptRunIsCurrent = Boolean(
+        currentExecution &&
+        currentExecution.runId === priorReceipt.runId
+      );
       return {
         accepted: true,
-        status: 'queued',
+        status: receiptStillQueued ? 'queued' : 'starting',
         item: priorReceipt,
+        // An idempotent retry can arrive after the original queue response was
+        // lost and after the item was promoted out of the visible queue. Tell
+        // the renderer to attach even when that run has already completed; a
+        // cursor -1 poll then recovers its full durable transcript.
+        handoffPending: (!receiptStillQueued && receiptRunIsCurrent) || Boolean(
+          currentExecution &&
+          (currentExecution.status === 'stopped' || currentExecution.cancelled)
+        ),
         message: 'Follow-up was already accepted.',
       };
     }
@@ -1497,10 +2392,6 @@ class AgentRegistry {
     if (!execution) {
       return { accepted: false, status: 'not_found', message: 'No agent run exists for this chat.' };
     }
-    if (execution.status === 'stopped' || execution.cancelled) {
-      return { accepted: false, status: 'not_found', message: 'The run was stopped, so the follow-up was not queued.' };
-    }
-
     const queue = this.userFollowUpQueues.get(chatId) || [];
     const id = requestedId || randomUUID();
     const duplicate = queue.find(item => item.id === id);
@@ -1514,13 +2405,23 @@ class AgentRegistry {
 
     const item: QueuedUserFollowUp = {
       id,
-      runId: `queued_${randomUUID()}`,
+      // When the renderer already committed an optimistic user boundary, its
+      // requested ID is also the successor run identity. The eventual server
+      // user_action then upserts that same bubble instead of creating a second
+      // copy or making the query disappear while shutdown finishes.
+      runId: requestedId || `queued_${randomUUID()}`,
       chatId,
       prompt: String(prompt || '').trim().substring(0, 50_000),
       mediaAttachments: Array.isArray(mediaAttachments) ? [...mediaAttachments] : [],
-      createdAt: Date.now(),
+      createdAt: Number.isFinite(requestedCreatedAt) && Number(requestedCreatedAt) > 0
+        ? Number(requestedCreatedAt)
+        : Date.now(),
+      ...(runtimeOverride ? { runtimeOverride } : {}),
     };
     queue.push(item);
+    // Network completion order is not user intent. Preserve the client-side
+    // admission sequence across concurrent repeated sends.
+    queue.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
     this.userFollowUpQueues.set(chatId, queue);
 
     const summary = this.getQueuedFollowUps(chatId).find(entry => entry.id === id);
@@ -1535,6 +2436,7 @@ class AgentRegistry {
       accepted: true,
       status: execution.settled ? 'starting' : 'queued',
       item: summary,
+      handoffPending: execution.status === 'stopped' || execution.cancelled,
       message: execution.settled ? 'Follow-up is starting.' : 'Follow-up queued after the active run.',
     };
   }
@@ -1563,9 +2465,15 @@ class AgentRegistry {
     return true;
   }
 
-  public clearQueuedFollowUps(chatId: string): number {
-    const count = this.userFollowUpQueues.get(chatId)?.length || 0;
-    this.userFollowUpQueues.delete(chatId);
+  public clearQueuedFollowUps(
+    chatId: string,
+    admittedAtOrBefore = Number.POSITIVE_INFINITY,
+  ): number {
+    const queue = this.userFollowUpQueues.get(chatId) || [];
+    const retained = queue.filter(item => item.createdAt > admittedAtOrBefore);
+    const count = queue.length - retained.length;
+    if (retained.length > 0) this.userFollowUpQueues.set(chatId, retained);
+    else this.userFollowUpQueues.delete(chatId);
     return count;
   }
 
@@ -1576,20 +2484,40 @@ class AgentRegistry {
     const queue = this.userFollowUpQueues.get(chatId);
     const next = queue?.[0];
     if (next) {
-      const runtimeSettings = current?.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
+      const runtimeSettings = next.runtimeOverride?.runtimeSettings
+        || current?.launchSpec.runtimeSettings
+        || buildScopedRuntimeSettings();
       const history = current ? [...current.launchSpec.history] : [];
       if (current) {
         history.push({ role: 'user', parts: [{ text: getVisibleRunPrompt(current.prompt) }] });
-        if (current.finalAnswer) history.push({ role: 'model', parts: [{ text: current.finalAnswer }] });
+        if (current.finalAnswer && current.status !== 'stopped') {
+          history.push({ role: 'model', parts: [{ text: current.finalAnswer }] });
+        }
       }
 
+      const queuedPinnedContext = next.runtimeOverride
+        ? {
+            ...(current?.launchSpec.pinnedContext || {}),
+            selectedModelProvider: next.runtimeOverride.selectedModelProvider,
+            selectedModelName: next.runtimeOverride.selectedModelName,
+            strictModelSelection: true,
+            thinkingLevel: next.runtimeOverride.thinkingLevel
+              || current?.launchSpec.pinnedContext?.thinkingLevel,
+            ...(next.runtimeOverride.modelThinkingCapability
+              ? { modelThinkingCapability: next.runtimeOverride.modelThinkingCapability }
+              : {}),
+            ...(Array.isArray(next.runtimeOverride.modelWireCapabilities) && next.runtimeOverride.modelWireCapabilities.length > 0
+              ? { modelWireCapabilities: next.runtimeOverride.modelWireCapabilities }
+              : {}),
+          }
+        : current?.launchSpec.pinnedContext || {};
       const result = this.startAgent(
         chatId,
         next.prompt || 'Please review the attached file or media and help me with it.',
-        history.slice(-24),
-        current?.launchSpec.mode || 'think',
+        history,
+        next.runtimeOverride?.mode || current?.launchSpec.mode || 'think',
         current?.launchSpec.userId || 'default_user',
-        current?.launchSpec.pinnedContext || {},
+        queuedPinnedContext,
         next.mediaAttachments,
         current?.launchSpec.userName || 'Developer',
         runtimeSettings.preferredGeminiApiKey,
@@ -1715,7 +2643,11 @@ class AgentRegistry {
         const delegation = delegationTelemetryFromTrace(trace);
         return {
           type: String(trace.type || ''),
-          text: String(delegation?.summary || trace.text || trace.data || trace.output || trace.result || trace.error || '').replace(/\s+/g, ' ').trim().slice(0, 2400),
+          text: formatUnknownError(
+            delegation?.summary ?? trace.text ?? trace.data ?? trace.output ?? trace.result ?? trace.error,
+            '',
+            2400,
+          ),
           tool: String(trace.tool || trace.toolName || trace.name || '').slice(0, 120),
           success: trace.success,
           phase: trace.phase,
@@ -1851,6 +2783,18 @@ class AgentRegistry {
       if (cancellation.expiresAt <= now) this.pendingRunCancellations.delete(chatId);
     }
 
+    for (const [chatId, archives] of this.archivedExecutions.entries()) {
+      const retained = archives.filter(execution =>
+        now - Number(execution.completedAt || execution.startedAt || now) <= MAX_COMPLETED_AGE
+      ).slice(-4);
+      // Archives exist for transcript reconciliation, not to retain the full
+      // live runtime indefinitely. Compact them after the normal grace window
+      // even when no client happens to poll that predecessor again.
+      retained.forEach(execution => this.compactExecutionForRetention(execution));
+      if (retained.length > 0) this.archivedExecutions.set(chatId, retained);
+      else this.archivedExecutions.delete(chatId);
+    }
+
     for (const [chatId, execution] of this.executions.entries()) {
       if (execution.status !== 'running' && execution.completedAt) {
         if ((this.userFollowUpQueues.get(chatId)?.length || 0) > 0) {
@@ -1866,6 +2810,9 @@ class AgentRegistry {
         if (now - execution.completedAt > MAX_COMPLETED_AGE) {
           this.executions.delete(chatId);
           this.userFollowUpReceipts.delete(chatId);
+          const pendingWake = this.traceWakeTimers.get(chatId);
+          if (pendingWake) clearTimeout(pendingWake);
+          this.traceWakeTimers.delete(chatId);
           cleaned++;
           cleanedProjectIds.add(chatId);
           if (execution.orchestratorProjectId) cleanedProjectIds.add(execution.orchestratorProjectId);
@@ -1882,6 +2829,9 @@ class AgentRegistry {
       const execution = this.executions.get(chatId);
       this.executions.delete(chatId);
       this.userFollowUpReceipts.delete(chatId);
+      const pendingWake = this.traceWakeTimers.get(chatId);
+      if (pendingWake) clearTimeout(pendingWake);
+      this.traceWakeTimers.delete(chatId);
       cleaned++;
       cleanedProjectIds.add(chatId);
       if (execution?.orchestratorProjectId) cleanedProjectIds.add(execution.orchestratorProjectId);
@@ -1919,6 +2869,9 @@ class AgentRegistry {
         execution.status = 'stopped';
         execution.completedAt = Date.now();
         execution.steeringQueue = [];
+        // Status changed without appendTrace; release the long poll now so
+        // every open chat reflects emergency shutdown immediately.
+        this.notifyTraceWaiters(chatId);
         taskStore.stopTask(chatId, 'Stopped by user.', execution.runId).catch(() => { });
         if (execution.orchestratorProjectId) {
           try { stopUserProxyRuntime(execution.orchestratorProjectId); } catch { }
@@ -1944,6 +2897,6 @@ export const agentRegistry =
   existingAgentRegistry &&
   typeof existingAgentRegistry.getQueuedFollowUps === 'function' &&
   typeof existingAgentRegistry.getLifecycleVersion === 'function' &&
-  existingAgentRegistry.getLifecycleVersion() === 3
+  existingAgentRegistry.getLifecycleVersion() === 4
     ? existingAgentRegistry
     : (globalForAgentRegistry.__eterxAgentRegistry = new AgentRegistry());

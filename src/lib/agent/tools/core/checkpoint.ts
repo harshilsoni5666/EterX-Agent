@@ -8,6 +8,7 @@ import { getAgentConversationScope } from '../../context-scope';
 import { stableScopeSegment } from '../../context-scope';
 import { globalSessionManager } from '../../session';
 import { readTaskTracker, trackerToTrace, writeTaskTrackerState, type TaskTrackerData, type TaskTrackerStep } from '../../task-tracker-store';
+import { formatUnknownError } from '../../error-format';
 
 /**
  * Task Checkpoint Tool v2.0
@@ -158,6 +159,7 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
           if (planState) {
             const existing = readTaskTracker(chatId)?.data;
             const data: TaskTrackerData = {
+              planId: existing?.planId,
               goal: planState.goal,
               chatId,
               createdAt: existing?.createdAt || planState.createdAt,
@@ -308,7 +310,7 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
           return { success: false, message: 'Unknown action. Use save, load, clear, advance, skip, activate, or complete.' };
       }
     } catch (err: any) {
-      return { success: false, message: `Checkpoint error: ${err.message}` };
+      return { success: false, message: `Checkpoint error: ${formatUnknownError(err, 'Unknown checkpoint failure')}` };
     }
   }
 };

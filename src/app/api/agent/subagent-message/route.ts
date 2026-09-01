@@ -31,7 +31,11 @@ export async function POST(request: NextRequest) {
     const projectId = cleanString(body.projectId, 180);
     const agentName = cleanString(body.agentName, 120);
     const agentId = cleanString(body.agentId, 240);
-    const text = cleanString(body.text, 20_000);
+    const messageId = cleanString(body.messageId, 240);
+    const text = typeof body.text === 'string'
+      ? body.text.replace(/\u0000/g, '').trim()
+      : '';
+    const requestedCreatedAt = Number(body.createdAt);
 
     if (!isSafeChatId(projectId)) {
       return attachAgentApiSessionCookie(jsonError('Valid projectId is required', 400), session);
@@ -43,11 +47,17 @@ export async function POST(request: NextRequest) {
     }
 
     const result = globalSubAgentSpawner.sendDirectUserMessage(projectId, agentName, agentId, {
+      id: messageId || `direct_${ Date.now() }`,
       text,
+      timestamp: Number.isSafeInteger(requestedCreatedAt) && requestedCreatedAt > 0
+        ? requestedCreatedAt
+        : Date.now(),
       filePaths: readStringList(body.filePaths),
       requestedModelSelection: cleanString(body.requestedModelSelection, 360) || undefined,
       requestedModelProvider: cleanString(body.requestedModelProvider, 80) || undefined,
       requestedModelName: cleanString(body.requestedModelName, 240) || undefined,
+      requestedMode: cleanString(body.requestedMode, 40) as any || undefined,
+      requestedThinkingLevel: cleanString(body.requestedThinkingLevel, 20) as any || undefined,
     });
     if (!result.success) {
       return attachAgentApiSessionCookie(jsonError(result.error || 'Subagent is unavailable', 409), session);

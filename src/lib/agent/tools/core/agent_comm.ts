@@ -29,6 +29,10 @@ const formatAgentMessage = (m: any) => ({
   recipientSubAgentChatId: m.metadata?.recipientSubAgentChatId,
   broadcastRecipientRuns: m.metadata?.broadcastRecipientRuns,
   broadcast: m.metadata?.broadcast === true || m.to === '*',
+  ownerChatId: m.metadata?.ownerChatId,
+  runId: m.metadata?.runId,
+  turnId: m.metadata?.turnId,
+  subAgentTurnId: m.metadata?.subAgentTurnId,
   ageSeconds: Math.round((Date.now() - m.timestamp) / 1000),
 });
 
@@ -47,6 +51,14 @@ const buildMessageMetadata = (input: any, defaults?: {
     ? input.deliverAt
     : undefined;
 
+  const activeTurnId = typeof context?.getActiveTurnId === 'function'
+    ? String(context.getActiveTurnId() || '').trim()
+    : String(context?.turnId || context?.runId || '').trim();
+  const subAgentIdentity = String(context?.subAgentChatId || context?.subAgentId || '').trim();
+  const activeSubAgentTurnId = subAgentIdentity && typeof context?.getActiveAuxiliaryTurnId === 'function'
+    ? String(context.getActiveAuxiliaryTurnId(subAgentIdentity) || '').trim()
+    : String(context?.subAgentTurnId || '').trim();
+
   return {
     priority: input.priority || defaults?.priority || 'normal',
     filePaths: input.filePaths,
@@ -59,6 +71,10 @@ const buildMessageMetadata = (input: any, defaults?: {
     deliverAfter: deliverAt ?? deliverAfterMs,
     subAgentId: context?.subAgentId || defaults?.subAgentId,
     subAgentChatId: context?.subAgentChatId || defaults?.subAgentChatId,
+    ownerChatId: context?.ownerChatId || context?.projectId || context?.chatId,
+    runId: context?.runId,
+    turnId: activeTurnId || undefined,
+    subAgentTurnId: activeSubAgentTurnId || (subAgentIdentity ? `subagent-task:${ subAgentIdentity }` : undefined),
   };
 };
 

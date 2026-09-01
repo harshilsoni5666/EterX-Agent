@@ -2,7 +2,6 @@ import { CognitiveReasoningEngine, type CognitiveState } from '../reasoning/cogn
 import { DeepSelfCorrectionEngine } from '../reasoning/self-correction';
 import { ToolIntelligenceEngine } from '../reasoning/tool-intelligence';
 import { ConversationIntelligenceEngine } from '../reasoning/conversation-intelligence';
-import { ContextIntelligenceEngine } from '../reasoning/context-intelligence';
 import { PrecisionOutputEngine } from '../reasoning/output-engine';
 import { SemanticWorkingMemory } from '../memory/working-memory';
 import { antiHallucination } from '../anti-hallucination';
@@ -28,7 +27,6 @@ export class CognitiveCoreSession {
   private readonly deepSelfCorrection = new DeepSelfCorrectionEngine();
   private readonly toolIntelligence = new ToolIntelligenceEngine();
   private readonly conversationIntelligence = new ConversationIntelligenceEngine();
-  private readonly contextIntelligence = new ContextIntelligenceEngine();
   private readonly precisionOutput = new PrecisionOutputEngine();
   private readonly workingMemory = new SemanticWorkingMemory();
   private readonly errorRecovery = new ErrorRecoveryEngine();
@@ -46,7 +44,6 @@ export class CognitiveCoreSession {
       this.workingMemory.extractFromMessage(message);
       this.workingMemory.updateUserModel(message);
       this.executionMonitor.startTask(this.currentCogState.hypotheses[0]?.approach || 'executing');
-      this.contextIntelligence.setModel(modelName);
       this.failurePatternMemory.clear();
       this.velocityMonitor.reset();
       this.velocityMonitor.profileTask(message);

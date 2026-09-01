@@ -35,6 +35,13 @@ export type MemoryEntry = z.infer<typeof MemoryEntrySchema>;
 
 export const ProjectContextSchema = z.object({
   projectId: z.string(),
+  // Immutable chat-feed ownership. These identifiers travel with every
+  // background/recovery surface so a later poll can never guess which user
+  // query owns an event from timestamps or the currently active turn.
+  ownerChatId: z.string().optional(),
+  runId: z.string().optional(),
+  turnId: z.string().optional(),
+  subAgentTurnId: z.string().optional(),
   conversationScopeId: z.string().optional(),
   memoryScopeId: z.string().optional(),
   conversationSummary: z.string(),

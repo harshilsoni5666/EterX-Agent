@@ -11,6 +11,8 @@ import { assessDelegatedAgent, type DelegatedAgentEvidence } from '../delegation
 import { getSearchRouteBrief } from '../../search/search-runtime';
 import { getImageGenerationRouteBrief } from '../../image/image-generation-runtime';
 import { getVideoGenerationRouteBrief } from '../../video/video-generation-runtime';
+import { formatUnknownError } from '../error-format';
+import { resolveModelContextWindow } from '../model-context-window';
 
 function boundedHandoffPayload(value: string, maxChars = 20_000): { body: string; truncated: boolean } {
   if (value.length <= maxChars) return { body: value, truncated: false };
@@ -107,8 +109,29 @@ const getConfiguredSubAgentLimit = (context: ProjectContext): number => {
     : DEFAULT_MAX_SUB_AGENTS;
 };
 
-const limitConfiguredTasks = (tasks: SubAgentTaskSpec[], context: ProjectContext): SubAgentTaskSpec[] => {
-  return tasks.slice(0, getConfiguredSubAgentLimit(context));
+type FeedOwnership = {
+  ownerChatId?: string;
+  runId?: string;
+  turnId?: string;
+  subAgentTurnId?: string;
+};
+
+const resolveFeedOwnership = (context: ProjectContext, subAgentIdentity?: string): FeedOwnership => {
+  const runtime = context as any;
+  const runId = String(runtime.runId || '').trim();
+  const turnId = typeof runtime.getActiveTurnId === 'function'
+    ? String(runtime.getActiveTurnId() || '').trim()
+    : String(runtime.turnId || runId).trim();
+  const identity = String(subAgentIdentity || runtime.subAgentChatId || runtime.subAgentId || '').trim();
+  const subAgentTurnId = identity && typeof runtime.getActiveAuxiliaryTurnId === 'function'
+    ? String(runtime.getActiveAuxiliaryTurnId(identity) || '').trim()
+    : String(runtime.subAgentTurnId || '').trim();
+  return {
+    ownerChatId: String(runtime.ownerChatId || runtime.projectId || '').trim() || undefined,
+    runId: runId || undefined,
+    turnId: turnId || runId || undefined,
+    subAgentTurnId: subAgentTurnId || (identity ? `subagent-task:${ identity }` : undefined),
+  };
 };
 
 const AGENTS_DIR = getEterxWorkspaceDir('agents');
@@ -202,7 +225,7 @@ function resolveControlKey(projectId: string, agentName: string, agentId?: strin
   const active = globalSubAgentSpawner.getAgentStatus().find(agent =>
     agent.projectId === resolvedProjectId &&
     agent.name.toLowerCase() === agentName.toLowerCase() &&
-    !['completed', 'failed', 'cancelled'].includes(agent.status)
+    !['completed', 'failed', 'cancelled', 'closed'].includes(agent.status)
   );
   if (active) return agentKey(projectId, agentName, active.id);
   for (const [key, controlledName] of controlAgentNames.entries()) {
@@ -298,12 +321,27 @@ export function resumeAgent(projectId: string, agentName: string, onTrace?: (tra
 /**
  * Close (terminate) a specific sub-agent without cancelling the whole chat.
  */
-export function closeAgent(projectId: string, agentName: string, onTrace?: (trace: any) => void, expectedAgentId?: string): boolean {
+export function closeAgent(
+  projectId: string,
+  agentName: string,
+  onTrace?: (trace: any) => void,
+  expectedAgentId?: string,
+  queuedAdmissionCutoff = Number.POSITIVE_INFINITY,
+): boolean {
   const activeAgentId = expectedAgentId || globalSubAgentSpawner.findActiveAgentId(projectId, agentName);
   if (!activeAgentId || !globalSubAgentSpawner.matchesActiveAgent(projectId, agentName, activeAgentId)) return false;
   const key = agentKey(projectId, agentName, activeAgentId);
   controlAgentNames.set(key, agentName);
   agentCloseFlags.set(key, true);
+  // Stop owns only direct messages admitted no later than the click that
+  // initiated it. A later Send may reach the server before this request does;
+  // retaining it makes Stop -> Send deterministic regardless of network order.
+  globalSubAgentSpawner.clearDirectUserMessages(
+    projectId,
+    agentName,
+    activeAgentId,
+    queuedAdmissionCutoff,
+  );
   globalSubAgentSpawner.abortAgent(projectId, agentName, activeAgentId);
 
   // If it's paused, also resume it so it can see the close flag and exit
@@ -543,6 +581,10 @@ class AgentMessageBus {
     traceLog?: string[];
     startedAt: number;
     completedAt?: number;
+    ownerChatId?: string;
+    runId?: string;
+    turnId?: string;
+    subAgentTurnId?: string;
   }, projectId?: string) {
     await this.ensureDir();
     const filePath = this.statusFilePath(agentName, projectId);
@@ -606,7 +648,7 @@ interface SubAgentInstance {
   name: SubAgentName;
   task: string;
   deepBrief: string;
-  status: 'spawning' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'spawning' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'closed';
   result?: string;
   traceLog: string[];
   startedAt: number;
@@ -614,6 +656,11 @@ interface SubAgentInstance {
   durationMs?: number;
   promise?: Promise<any>;
   abortController: AbortController;
+  originContext: ProjectContext;
+  parentContext?: string;
+  onTrace?: (trace: any) => void;
+  /** Direct user message IDs remain idempotent after the live queue drains. */
+  directUserMessageIds: Set<string>;
   directUserMessages: Array<{
     id: string;
     text: string;
@@ -622,6 +669,8 @@ interface SubAgentInstance {
     requestedModelSelection?: string;
     requestedModelProvider?: string;
     requestedModelName?: string;
+    requestedMode?: MainAgentMode;
+    requestedThinkingLevel?: MainAgentThinkingLevel;
   }>;
 }
 
@@ -634,7 +683,7 @@ type PendingSubAgentResult = {
   task: string;
   result: string;
   success: boolean;
-  status: 'completed' | 'failed' | 'cancelled';
+  status: 'completed' | 'failed' | 'cancelled' | 'closed';
   delegationEvidence: DelegatedAgentEvidence;
   durationMs: number;
   completedAt: number;
@@ -692,8 +741,21 @@ export function clearPendingResults(projectId?: string): number {
 
 export class SubAgentSpawner {
   private activeAgents: Map<string, SubAgentInstance> = new Map();
+  // Recently completed workers remain addressable by their immutable tab ID
+  // so a user can continue the conversation after the first answer settles.
+  private completedAgents: Map<string, SubAgentInstance> = new Map();
   private backgroundPromises: Map<string, BackgroundSubAgentRun> = new Map();
+  // Direct worker conversations outlive an individual provider execution.
+  // Keeping the queue and accepted IDs outside SubAgentInstance prevents a
+  // completion race from dropping messages and keeps retries idempotent when
+  // the same worker tab is resumed.
+  private directConversationStates: Map<string, {
+    acceptedIds: Set<string>;
+    queue: SubAgentInstance['directUserMessages'];
+  }> = new Map();
+  private directContinuationPromises: Map<string, Promise<void>> = new Map();
   private slotReservations: Map<string, { projectId: string; name: SubAgentName }> = new Map();
+  private capacityWaiters: Map<string, Set<() => void>> = new Map();
 
   private reserveSlot(projectId: string, name: SubAgentName, agentId: string, context: ProjectContext): boolean {
     if (this.slotReservations.has(agentId)) return true;
@@ -703,7 +765,53 @@ export class SubAgentSpawner {
   }
 
   private releaseSlot(agentId: string): void {
+    const reservation = this.slotReservations.get(agentId);
     this.slotReservations.delete(agentId);
+    if (reservation) this.notifyCapacityWaiters(reservation.projectId);
+  }
+
+  private notifyCapacityWaiters(projectId?: string): void {
+    if (!projectId) {
+      for (const waiters of this.capacityWaiters.values()) {
+        for (const wake of waiters) wake();
+      }
+      return;
+    }
+    const resolvedProjectId = resolveProjectId(projectId);
+    for (const [waiterProjectId, waiters] of this.capacityWaiters.entries()) {
+      if (!isSameProjectScope(waiterProjectId, resolvedProjectId)) continue;
+      for (const wake of waiters) wake();
+    }
+  }
+
+  /** Wait for reusable capacity instead of dropping work above the concurrency cap. */
+  private async reserveSlotWhenAvailable(
+    projectId: string,
+    name: SubAgentName,
+    agentId: string,
+    context: ProjectContext,
+  ): Promise<boolean> {
+    const waiterProjectId = resolveProjectId(projectId);
+    const parentAbortSignal = (context as any).abortSignal as AbortSignal | undefined;
+    while (!isCancelled(projectId) && !parentAbortSignal?.aborted) {
+      if (this.reserveSlot(projectId, name, agentId, context)) return true;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const waiters = this.capacityWaiters.get(waiterProjectId) || new Set<() => void>();
+        const wake = () => {
+          if (settled) return;
+          settled = true;
+          waiters.delete(wake);
+          if (waiters.size === 0) this.capacityWaiters.delete(waiterProjectId);
+          parentAbortSignal?.removeEventListener('abort', wake);
+          resolve();
+        };
+        waiters.add(wake);
+        this.capacityWaiters.set(waiterProjectId, waiters);
+        parentAbortSignal?.addEventListener('abort', wake, { once: true });
+      });
+    }
+    return false;
   }
 
   private isNameBusy(projectId: string, name: SubAgentName, reservedNames?: Set<SubAgentName>): boolean {
@@ -713,7 +821,7 @@ export class SubAgentSpawner {
       agent.role !== 'main' && agent.agentName.toLowerCase() === normalizedName
     )) return true;
     const activeNameMatch = Array.from(this.activeAgents.values())
-      .some(agent => isSameProjectScope(agent.projectId, projectId) && agent.name.toLowerCase() === normalizedName && agent.status !== 'completed' && agent.status !== 'failed' && agent.status !== 'cancelled');
+      .some(agent => isSameProjectScope(agent.projectId, projectId) && agent.name.toLowerCase() === normalizedName && !['completed', 'failed', 'cancelled', 'closed'].includes(agent.status));
     if (activeNameMatch) return true;
     if (Array.from(this.slotReservations.values()).some(reservation =>
       isSameProjectScope(reservation.projectId, projectId) && reservation.name.toLowerCase() === normalizedName
@@ -752,6 +860,33 @@ export class SubAgentSpawner {
     return true;
   }
 
+  /** Remove only direct messages that belonged to a worker before Stop. */
+  public clearDirectUserMessages(
+    projectId: string,
+    agentName: string,
+    agentId: string,
+    admittedAtOrBefore = Number.POSITIVE_INFINITY,
+  ): number {
+    const resolvedProjectId = resolveProjectId(projectId);
+    const matchesConversation = (agent: SubAgentInstance) =>
+      agent.id === agentId &&
+      isSameProjectScope(agent.projectId, resolvedProjectId) &&
+      agent.name.toLowerCase() === agentName.toLowerCase();
+    const instance = Array.from(this.activeAgents.values()).find(matchesConversation)
+      || Array.from(this.completedAgents.values()).find(matchesConversation);
+    if (!instance) return 0;
+    const state = this.directConversationStates.get(agentId);
+    const queue = state?.queue || instance.directUserMessages;
+    if (!Array.isArray(queue) || queue.length === 0) return 0;
+    const cutoff = Number.isFinite(admittedAtOrBefore)
+      ? admittedAtOrBefore
+      : Number.POSITIVE_INFINITY;
+    const retained = queue.filter(message => Number(message.timestamp || 0) > cutoff);
+    const removed = queue.length - retained.length;
+    queue.splice(0, queue.length, ...retained);
+    return removed;
+  }
+
   public abortProject(projectId: string): void {
     const resolvedProjectId = resolveProjectId(projectId);
     for (const instance of this.activeAgents.values()) {
@@ -759,6 +894,7 @@ export class SubAgentSpawner {
         instance.abortController.abort(new Error('CANCELLED_BY_USER'));
       }
     }
+    this.notifyCapacityWaiters(resolvedProjectId);
   }
 
   public abortAll(): void {
@@ -767,6 +903,7 @@ export class SubAgentSpawner {
         instance.abortController.abort(new Error('CANCELLED_BY_USER'));
       }
     }
+    this.notifyCapacityWaiters();
   }
 
   /** Build a TEAM-AWARE task brief for a sub-agent. */
@@ -792,7 +929,7 @@ export class SubAgentSpawner {
     let teamSection = otherAgents
       ? `\nTEAM - Other agents planned or running:\n${otherAgents}\nCoordinate only for a concrete dependency, conflict, or shared finding; do not poll team status.\n`
       : '\nTEAM - You are the only delegated worker for this request. Work as one deep, focused lane and report back to Main.\n';
-    const controlSection = `\nUNIFIED CONTROL:\n- Incoming messages are delivered automatically at safe execution boundaries; do not poll check/status.\n- Use agent_communicate with to="Main" when you need clarification, approval, a merge decision, or user-facing escalation.\n- Broadcast only blockers or discoveries that affect other agents.\n- Handoff concise partial results to Main when your lane is complete.\n`;
+    const controlSection = `\nUNIFIED CONTROL:\n- Incoming messages are delivered automatically at safe execution boundaries; do not poll check/status.\n- Use agent_communicate with to="Main" when you need clarification, approval, a merge decision, or user-facing escalation.\n- Broadcast only blockers or discoveries that affect other agents.\n- Handoff concise partial results to Main when your lane is complete.\n- Use workspace_edit_file for every file creation, edit, deletion, or related multi-file mutation. Single file: filename plus edits/delete. Multiple files: files=[{filename, edits/delete}]. Never duplicate an edit just to refresh its live preview.\n`;
     const externalServiceSection = [
       '\nLIVE EXTERNAL SERVICE ROUTES (read before using a route):',
       getSearchRouteBrief(runtimeContext),
@@ -801,7 +938,7 @@ export class SubAgentSpawner {
       'Use web_search, image_generator, or video_generator for the real task and treat the actual result as route evidence. Claim real media success only after the generation tool returns validated bytes.',
     ].join('\n');
     teamSection = `${teamSection}${externalServiceSection}`;
-    return `━━━ ${agentName} — Sub-Agent Task ━━━\n🎯 You are ${agentName}, a parallel sub-agent.\n\n${task}\n${teamSection}\nRULES:\n1. Full tool access. Work deeply — no shortcuts.\n2. NEVER call task_decomposer or spawn_sub_agent.\n3. VERIFY your work before finishing.\n4. You are ONE of multiple parallel agents.\n\nINTER-AGENT COMMUNICATION (agent_communicate tool):\n- status: See every planned/running/paused/completed teammate and current progress\n- check: Read Main or teammate instructions\n- send: Send information, questions, answers, or coordination to any named teammate\n- broadcast: Share a blocker or discovery with the whole active team\n- ask_main: Ask Main for clarification or a decision at any time\n- handoff_main: Pass partial or final results to Main\n${controlSection}\n## ${agentName} — Report Format\n**Task:** [what you did]\n**Files:** [paths]\n**Key Results:** [findings]\n**Verified:** [yes/no]\n\n${parentContext ? `CONTEXT: ${parentContext}\n` : ''}EXECUTE NOW.`;
+    return `━━━ ${agentName} — Sub-Agent Task ━━━\n🎯 You are ${agentName}, a parallel sub-agent.\n\n${task}\n${teamSection}\nEXECUTION CONTRACT:\n1. Own this delegated lane end to end. Inspect the real current state before deciding, then implement or investigate the deepest useful solution inside your scope.\n2. Do not stop at a plan, surface scan, test-only patch, or list of possibilities when the task calls for real code changes. Trace relevant callers, state transitions, failure paths, cancellation, concurrency, and cleanup.\n3. Preserve unrelated user work. Re-read a file before editing it, keep changes scoped, and coordinate before touching a file another worker owns.\n4. Verify behavior in proportion to risk. Tests support the implementation; they do not replace runtime reasoning or inspection of the real code path.\n5. Separate confirmed evidence from inference. If blocked, report the exact blocker and the strongest partial result instead of guessing.\n6. Continue until the delegated task is genuinely complete. Do not finish merely because one check passed or the first plausible bug was found.\n7. NEVER call task_decomposer or spawn_sub_agent. You are a worker, not another orchestrator.\n\nINTER-AGENT COMMUNICATION (agent_communicate tool):\n- status: See every planned/running/paused/completed teammate and current progress\n- check: Read Main or teammate instructions\n- send: Send information, questions, answers, or coordination to any named teammate\n- broadcast: Share a blocker or discovery with the whole active team\n- ask_main: Ask Main for clarification, approval, or a merge decision when it is truly required\n- handoff_main: Pass concise partial or final evidence to Main\n${controlSection}\nFINAL RESPONSE:\n- Reply naturally with the outcome, material code/findings, remaining risks, and real verification.\n- Do not append a rigid internal handoff envelope.\n- Mention exact files or commands only when useful to Main's synthesis.\n\n${parentContext ? `CONTEXT: ${parentContext}\n` : ''}EXECUTE NOW.`;
   }
 
   /** Spawn a single sub-agent with its own API key. */
@@ -818,6 +955,7 @@ export class SubAgentSpawner {
     const name = customName || this.resolveAgentName(context.projectId, task);
     const agentId = customAgentId || this.createAgentId(context.projectId, name);
     const subAgentChatId = `${context.projectId}::sub-agent::${agentId}`;
+    const feedOwnership = resolveFeedOwnership(context, subAgentChatId);
     if (!this.reserveSlot(context.projectId, name, agentId, context)) {
       return {
         agentId,
@@ -840,10 +978,12 @@ export class SubAgentSpawner {
       task,
       status: 'running',
       progress: 'Starting execution...',
+      ...feedOwnership,
     });
     interAgentMailbox.registerAgent(context.projectId, 'Main', {
       role: 'main',
       status: 'coordinating',
+      ...feedOwnership,
     });
     const abortController = new AbortController();
     const parentAbortSignal = (context as any).abortSignal as AbortSignal | undefined;
@@ -857,7 +997,12 @@ export class SubAgentSpawner {
     } else {
       parentAbortSignal?.addEventListener('abort', abortFromParent, { once: true });
     }
-    const directUserMessages: SubAgentInstance['directUserMessages'] = [];
+    const directConversationState = this.directConversationStates.get(agentId) || {
+      acceptedIds: new Set<string>(),
+      queue: [] as SubAgentInstance['directUserMessages'],
+    };
+    this.directConversationStates.set(agentId, directConversationState);
+    const directUserMessages = directConversationState.queue;
     const subAgentContext = {
       ...(context as any),
       agentName: name,
@@ -883,7 +1028,10 @@ export class SubAgentSpawner {
       abortSignal: abortController.signal,
       // Direct human guidance is intentionally separate from the inter-agent
       // mailbox. It is drained by this exact worker at safe loop boundaries.
-      drainDirectUserMessages: () => directUserMessages.splice(0, directUserMessages.length),
+      // Admit exactly one human query per safe provider boundary. Draining the
+      // whole mailbox made a rapid sequence of queries share one model turn,
+      // so every later action was incorrectly owned by only the final query.
+      drainDirectUserMessages: () => directUserMessages.splice(0, 1),
     };
     if (modelOverride?.mode) {
       subAgentContext.selectedModelMode = modelOverride.mode;
@@ -891,6 +1039,16 @@ export class SubAgentSpawner {
     if (modelOverride?.provider && modelOverride?.model) {
       subAgentContext.selectedModelProvider = modelOverride.provider;
       subAgentContext.selectedModelName = modelOverride.model;
+      const childModelMaximum = resolveModelContextWindow(modelOverride.provider, modelOverride.model);
+      const inheritedCompaction = (subAgentContext as any).contextCompaction || {};
+      const inheritedBudget = Number(inheritedCompaction.activeContextWindow || 0);
+      (subAgentContext as any).contextCompaction = {
+        ...inheritedCompaction,
+        activeContextWindow: Number.isFinite(inheritedBudget) && inheritedBudget >= 16_000
+          ? Math.min(Math.floor(inheritedBudget), childModelMaximum)
+          : childModelMaximum,
+        activeModelContextWindow: childModelMaximum,
+      };
       if (modelOverride.provider !== 'gemini') {
         subAgentContext.selectedModelMode = modelOverride.provider;
       }
@@ -911,18 +1069,23 @@ export class SubAgentSpawner {
     let lastStatusWriteAt = 0;
     const instance: SubAgentInstance = {
       id: agentId, projectId: context.projectId, name, task, deepBrief,
-      status: 'running', traceLog, startedAt: Date.now(), abortController, directUserMessages,
+      status: 'running', traceLog, startedAt: Date.now(), abortController,
+      directUserMessageIds: directConversationState.acceptedIds, directUserMessages,
+      originContext: context, parentContext, onTrace,
     };
     this.activeAgents.set(agentId, instance);
+    this.completedAgents.delete(agentId);
     void agentMessageBus.writeAgentStatus(name, {
       status: 'running', task, agentId, subAgentChatId,
       progress: 'Starting execution...',
-      startedAt: instance.startedAt
+      startedAt: instance.startedAt,
+      ...feedOwnership,
     }, context.projectId).catch(() => { });
     interAgentMailbox.updateAgentPresence(context.projectId, name, {
       status: 'running',
       task,
       progress: 'Starting execution...',
+      ...feedOwnership,
     });
 
     // Emit spawn event to UI
@@ -936,7 +1099,9 @@ export class SubAgentSpawner {
         subAgentId: agentId,
         subAgentChatId,
         agentName: name,
-        agentStatus: 'running'
+        agentStatus: 'running',
+        timestamp: instance.startedAt,
+        startTime: instance.startedAt,
       });
     }
 
@@ -989,8 +1154,8 @@ export class SubAgentSpawner {
           if (pauseState?.paused && pauseState.promise) {
             // Signal that we're paused to the message loop by throwing a special marker
             // The message loop's outer try/catch will handle this
-            instance.status = 'paused' as any;
-          } else if (instance.status === ('paused' as any)) {
+            instance.status = 'paused';
+          } else if (instance.status === 'paused') {
             instance.status = 'running';
           }
 
@@ -1008,16 +1173,18 @@ export class SubAgentSpawner {
           if (statusWriteAt - lastStatusWriteAt >= SUB_AGENT_STATUS_WRITE_INTERVAL_MS) {
             lastStatusWriteAt = statusWriteAt;
             interAgentMailbox.updateAgentPresence(context.projectId, name, {
-              status: instance.status === ('paused' as any) ? 'paused' : 'running',
+              status: instance.status === 'paused' ? 'paused' : 'running',
               task,
               progress: trace.text || 'Working...',
+              ...resolveFeedOwnership(context, subAgentChatId),
             });
             agentMessageBus.writeAgentStatus(name, {
-              status: instance.status === ('paused' as any) ? 'paused' : 'running', agentId, subAgentChatId,
+              status: instance.status === 'paused' ? 'paused' : 'running', agentId, subAgentChatId,
               task,
               progress: trace.text || 'Working...',
               traceLog: traceLog.slice(-10),
-              startedAt: instance.startedAt
+              startedAt: instance.startedAt,
+              ...resolveFeedOwnership(context, subAgentChatId),
             }, context.projectId).catch(() => { });
           }
 
@@ -1032,7 +1199,7 @@ export class SubAgentSpawner {
               subAgentId: agentId,
               subAgentChatId,
               agentName: name,
-              agentStatus: instance.status === ('paused' as any) ? 'paused' : 'working',
+              agentStatus: instance.status === 'paused' ? 'paused' : 'working',
               agentStep: traceEventCount
             });
           }
@@ -1059,6 +1226,7 @@ export class SubAgentSpawner {
         status: 'completed',
         task,
         progress: 'Done',
+        ...resolveFeedOwnership(context, subAgentChatId),
       });
       await agentMessageBus.writeAgentStatus(name, {
         status: 'completed', agentId, subAgentChatId,
@@ -1067,7 +1235,8 @@ export class SubAgentSpawner {
         result: result.text,
         traceLog,
         startedAt: instance.startedAt,
-        completedAt: instance.completedAt
+        completedAt: instance.completedAt,
+        ...resolveFeedOwnership(context, subAgentChatId),
       }, context.projectId);
 
       console.log(`[${ name }] ✅ Done ${ (durationMs / 1000).toFixed(1) }s`);
@@ -1118,6 +1287,7 @@ export class SubAgentSpawner {
           evidenceReady: delegationEvidence.evidenceReady,
           verificationStatus: delegationEvidence.verificationStatus,
           payloadTruncated: handoffPayload.truncated,
+          ...resolveFeedOwnership(context, subAgentChatId),
         },
       });
       apiKeyPool.reportSuccess(`${context.projectId}_sub_${name}`);
@@ -1126,6 +1296,14 @@ export class SubAgentSpawner {
         onTrace({
           type: 'sub_agent_complete',
           text: `${ name } completed`,
+          // Preserve the lossless, user-facing answer on the completion event.
+          // resultSummary is compact orchestration metadata and intentionally
+          // removes Markdown structure, so it cannot serve as chat content.
+          result: result.text,
+          content: result.text,
+          timestamp: instance.completedAt,
+          startTime: instance.startedAt,
+          endTime: instance.completedAt,
           secondary: `${ (durationMs / 1000).toFixed(1) }s · ${ traceEventCount } steps`,
           subAgent: name,
           subAgentId: agentId,
@@ -1152,16 +1330,18 @@ export class SubAgentSpawner {
       return { agentId, name, result: result.text, success: true, durationMs, traceLog };
     } catch (error: any) {
       const durationMs = Date.now() - instance.startedAt;
-      const wasCancelled = error.message === 'CANCELLED_BY_USER'
+      const errorMessage = formatUnknownError(error, 'Unknown sub-agent failure');
+      const wasClosed = isAgentClosed(context.projectId, name, agentId);
+      const wasCancelled = wasClosed || errorMessage === 'CANCELLED_BY_USER'
         || isCancelled(context.projectId)
         || (context as any).abortSignal?.aborted
-        || isAgentClosed(context.projectId, name, agentId);
+        || abortController.signal.aborted;
       if (!wasCancelled && lease) {
-        apiKeyPool.reportFailure(`${context.projectId}_sub_${name}`, apiKeyPool.classifyError(error.message || ''), error.message || '');
+        apiKeyPool.reportFailure(`${context.projectId}_sub_${name}`, apiKeyPool.classifyError(errorMessage), errorMessage);
       }
 
-      instance.status = wasCancelled ? 'cancelled' : 'failed';
-      instance.result = wasCancelled ? 'Cancelled by user' : error.message;
+      instance.status = wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed';
+      instance.result = wasClosed ? 'Closed by user' : wasCancelled ? 'Cancelled by user' : errorMessage;
       instance.completedAt = Date.now();
       instance.durationMs = durationMs;
       const delegationEvidence = assessDelegatedAgent({
@@ -1176,18 +1356,20 @@ export class SubAgentSpawner {
       }, false);
 
       interAgentMailbox.updateAgentPresence(context.projectId, name, {
-        status: wasCancelled ? 'cancelled' : 'failed',
+        status: wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed',
         task,
-        progress: wasCancelled ? 'Cancelled' : `Failed: ${ error.message }`,
+        progress: wasClosed ? 'Closed by main control' : wasCancelled ? 'Cancelled' : `Failed: ${ errorMessage }`,
+        ...resolveFeedOwnership(context, subAgentChatId),
       });
       await agentMessageBus.writeAgentStatus(name, {
-        status: wasCancelled ? 'cancelled' : 'failed', agentId, subAgentChatId,
+        status: wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed', agentId, subAgentChatId,
         task,
-        progress: wasCancelled ? 'Cancelled' : `Failed: ${ error.message }`,
+        progress: wasClosed ? 'Closed by main control' : wasCancelled ? 'Cancelled' : `Failed: ${ errorMessage }`,
         result: instance.result,
         traceLog,
         startedAt: instance.startedAt,
-        completedAt: instance.completedAt
+        completedAt: instance.completedAt,
+        ...resolveFeedOwnership(context, subAgentChatId),
       }, context.projectId);
 
       queuePendingResult({
@@ -1198,13 +1380,13 @@ export class SubAgentSpawner {
         task,
         result: instance.result!,
         success: false,
-        status: wasCancelled ? 'cancelled' : 'failed',
+        status: wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed',
         delegationEvidence,
         durationMs,
         completedAt: instance.completedAt,
       });
       if (!wasCancelled) {
-        const handoffPayload = boundedHandoffPayload(String(error.message || 'Unknown sub-agent failure'));
+        const handoffPayload = boundedHandoffPayload(errorMessage);
         interAgentMailbox.send({
           from: name,
           to: 'Main',
@@ -1225,6 +1407,7 @@ export class SubAgentSpawner {
             evidenceReady: false,
             verificationStatus: delegationEvidence.verificationStatus,
             payloadTruncated: handoffPayload.truncated,
+            ...resolveFeedOwnership(context, subAgentChatId),
           },
         });
       }
@@ -1251,6 +1434,11 @@ export class SubAgentSpawner {
           resultChars: delegationEvidence.resultChars,
           collected: false,
           delegationEvidence,
+          timestamp: instance.completedAt,
+          startTime: instance.startedAt,
+          endTime: instance.completedAt,
+          durationMs,
+          stepCount: traceEventCount,
         });
       }
 
@@ -1263,8 +1451,31 @@ export class SubAgentSpawner {
       agentPauseStates.delete(completedControlKey);
       agentCloseFlags.delete(completedControlKey);
       controlAgentNames.delete(completedControlKey);
+      if (['completed', 'failed', 'cancelled', 'closed'].includes(instance.status)) {
+        this.completedAgents.delete(agentId);
+        this.completedAgents.set(agentId, instance);
+        while (this.completedAgents.size > 200) {
+          const oldestId = this.completedAgents.keys().next().value as string | undefined;
+          if (!oldestId) break;
+          const oldest = this.completedAgents.get(oldestId);
+          this.completedAgents.delete(oldestId);
+          const continuationKey = oldest ? `${ oldest.projectId }:${ oldestId }:direct` : '';
+          if (!this.activeAgents.has(oldestId) && (!continuationKey || !this.directContinuationPromises.has(continuationKey))) {
+            this.directConversationStates.delete(oldestId);
+          }
+        }
+      }
       this.activeAgents.delete(agentId);
       this.releaseSlot(agentId);
+      if (
+        instance.directUserMessages.length > 0 &&
+        ['completed', 'failed', 'closed'].includes(instance.status)
+      ) {
+        // A message may arrive during the provider's final response, after the
+        // last safe drain. Resume it only after the old answer and lifecycle
+        // have settled so it receives a fresh immutable turn.
+        queueMicrotask(() => void this.startNextDirectContinuation(instance));
+      }
     }
   }
 
@@ -1287,7 +1498,7 @@ export class SubAgentSpawner {
   } {
     const occupiedSlots = this.getOccupiedSlotCount(context.projectId);
     const availableSlots = Math.max(0, getConfiguredSubAgentLimit(context) - occupiedSlots);
-    const activeTasks = tasks.slice(0, availableSlots);
+    const activeTasks = tasks;
     const teamSize = activeTasks.length;
     const reservedNames = new Set<SubAgentName>();
     const agentNames = activeTasks.map((t) => {
@@ -1305,17 +1516,11 @@ export class SubAgentSpawner {
         task: taskItem.task,
       };
     });
-    for (const plan of agentPlans) {
-      this.slotReservations.set(plan.agentId, {
-        projectId: resolveProjectId(context.projectId),
-        name: plan.name,
-      });
-    }
-
     interAgentMailbox.registerAgent(context.projectId, 'Main', {
       role: 'main',
       status: 'coordinating',
       progress: `Managing ${teamSize} planned sub-agent(s)`,
+      ...resolveFeedOwnership(context),
     });
     activeTasks.forEach((taskItem, index) => {
       interAgentMailbox.registerAgent(context.projectId, agentNames[index], {
@@ -1324,11 +1529,13 @@ export class SubAgentSpawner {
         role: 'sub_agent',
         task: taskItem.task,
         status: 'planned',
-        progress: index === 0 ? 'Queued for immediate start' : 'Queued for parallel start',
+        progress: index < availableSlots ? 'Queued for immediate start' : 'Waiting for a concurrency slot',
+        ...resolveFeedOwnership(context, agentPlans[index].subAgentChatId),
       });
     });
 
     if (onTrace) {
+      const teamStartedAt = Date.now();
       onTrace({
           type: 'sub_agent_spawn',
           text: `Launching ${ teamSize } parallel agents`,
@@ -1340,8 +1547,11 @@ export class SubAgentSpawner {
             subAgentId: agentPlans[i].agentId,
             subAgentChatId: agentPlans[i].subAgentChatId,
             task: t.task.substring(0, 100),
-            status: 'running'
-          }))
+            status: i < availableSlots ? 'spawning' : 'planned',
+            startedAt: teamStartedAt,
+          })),
+          timestamp: teamStartedAt,
+          startTime: teamStartedAt,
         });
     }
 
@@ -1353,6 +1563,15 @@ export class SubAgentSpawner {
 
       // Fire-and-forget: start without awaiting
       const promise = (async () => {
+        const reserved = await this.reserveSlotWhenAvailable(context.projectId, name, plan.agentId, context);
+        if (!reserved) {
+          interAgentMailbox.updateAgentPresence(context.projectId, name, {
+            status: 'cancelled',
+            task: t.task,
+            progress: 'Cancelled while waiting for a concurrency slot',
+          });
+          return;
+        }
         if (isCancelled(context.projectId)) {
           interAgentMailbox.updateAgentPresence(context.projectId, name, {
             status: 'cancelled',
@@ -1382,11 +1601,9 @@ export class SubAgentSpawner {
     return {
       agentNames,
       agents: agentPlans,
-      // Preserve every unlaunched task, including tasks beyond the configured
-      // per-run limit. The old pre-slice silently discarded this tail.
-      notStartedTasks: tasks.slice(activeTasks.length),
+      notStartedTasks: [],
       message: teamSize > 0
-        ? `${ teamSize } task-named agents spawned and working in background. ${activeTasks.length < tasks.length ? `${tasks.length - activeTasks.length} task(s) were not started because the configured concurrent-agent limit is already in use; spawn them after a slot opens. ` : ''}Continue YOUR work now. Results are automatically handed to Main and remain available through mode="collect".`
+        ? `${ teamSize } task-named agents accepted: up to ${getConfiguredSubAgentLimit(context)} run concurrently and ${Math.max(0, teamSize - availableSlots)} wait in the bounded queue. Continue YOUR work now. Results are automatically handed to Main and remain available through mode="collect".`
         : `No agent slot is available. ${occupiedSlots} agent(s) are already running at the configured concurrent limit.`
     };
   }
@@ -1407,9 +1624,7 @@ export class SubAgentSpawner {
     failCount: number
   }> {
     const startTime = Date.now();
-    const configuredTasks = limitConfiguredTasks(tasks, context);
-    const availableSlots = Math.max(0, getConfiguredSubAgentLimit(context) - this.getOccupiedSlotCount(context.projectId));
-    const activeTasks = configuredTasks.slice(0, availableSlots);
+    const activeTasks = tasks;
     const reservedNames = new Set<SubAgentName>();
     const agentNames = activeTasks.map((t) => {
       const name = this.resolveAgentName(context.projectId, t.task, t.name, reservedNames);
@@ -1421,24 +1636,21 @@ export class SubAgentSpawner {
       name: agentNames[index],
       task: taskItem,
     }));
-    for (const plan of agentPlans) {
-      this.slotReservations.set(plan.agentId, {
-        projectId: resolveProjectId(context.projectId),
-        name: plan.name,
-      });
-    }
-
     interAgentMailbox.registerAgent(context.projectId, 'Main', {
       role: 'main',
       status: 'coordinating',
       progress: `Waiting for ${activeTasks.length} parallel sub-agent(s)`,
+      ...resolveFeedOwnership(context),
     });
     activeTasks.forEach((taskItem, index) => {
       interAgentMailbox.registerAgent(context.projectId, agentNames[index], {
+        agentId: agentPlans[index].agentId,
+        subAgentChatId: `${context.projectId}::sub-agent::${agentPlans[index].agentId}`,
         role: 'sub_agent',
         task: taskItem.task,
         status: 'planned',
         progress: index === 0 ? 'Queued for immediate start' : 'Queued for parallel start',
+        ...resolveFeedOwnership(context, `${context.projectId}::sub-agent::${agentPlans[index].agentId}`),
       });
     });
 
@@ -1455,6 +1667,10 @@ export class SubAgentSpawner {
       const name = agentNames[index];
       const plan = agentPlans[index];
       return Promise.resolve().then(async () => {
+        const reserved = await this.reserveSlotWhenAvailable(context.projectId, name, plan.agentId, context);
+        if (!reserved) {
+          return { agentId: plan.agentId, name, result: 'Cancelled while waiting for a concurrency slot', success: false, durationMs: 0, traceLog: [] };
+        }
         if (isCancelled(context.projectId)) {
           return { agentId: '', name, result: 'Cancelled', success: false, durationMs: 0, traceLog: [] };
         }
@@ -1501,15 +1717,13 @@ export class SubAgentSpawner {
    * Wait for all background (fire-and-forget) agents to finish.
    */
   public async waitForAll(projectId?: string): Promise<void> {
-    const entries = Array.from(this.backgroundPromises.entries())
-      .filter(([, run]) => !projectId || isSameProjectScope(run.projectId, projectId));
-
-    await Promise.allSettled(entries.map(([, run]) => run.promise));
-
-    for (const [runKey, run] of entries) {
-      if (!projectId || isSameProjectScope(run.projectId, projectId)) {
-        this.backgroundPromises.delete(runKey);
-      }
+    // Drain to quiescence, not just a one-time snapshot. A completion callback
+    // may enqueue follow-up work before the current promise unregisters itself.
+    while (true) {
+      const entries = Array.from(this.backgroundPromises.entries())
+        .filter(([, run]) => !projectId || isSameProjectScope(run.projectId, projectId));
+      if (entries.length === 0) return;
+      await Promise.allSettled(entries.map(([, run]) => run.promise));
     }
   }
 
@@ -1526,12 +1740,9 @@ export class SubAgentSpawner {
     const resolvedProjectId = resolveProjectId(projectId);
     const occupiedNames = new Set<string>();
     for (const agent of this.activeAgents.values()) {
-      if (isSameProjectScope(agent.projectId, resolvedProjectId) && !['completed', 'failed', 'cancelled'].includes(agent.status)) {
+      if (isSameProjectScope(agent.projectId, resolvedProjectId) && !['completed', 'failed', 'cancelled', 'closed'].includes(agent.status)) {
         occupiedNames.add(agent.name.toLowerCase());
       }
-    }
-    for (const run of this.backgroundPromises.values()) {
-      if (isSameProjectScope(run.projectId, resolvedProjectId)) occupiedNames.add(run.name.toLowerCase());
     }
     for (const reservation of this.slotReservations.values()) {
       if (isSameProjectScope(reservation.projectId, resolvedProjectId)) occupiedNames.add(reservation.name.toLowerCase());
@@ -1547,7 +1758,8 @@ export class SubAgentSpawner {
       agent.name.toLowerCase() === agentName.toLowerCase() &&
       agent.status !== 'completed' &&
       agent.status !== 'failed' &&
-      agent.status !== 'cancelled'
+      agent.status !== 'cancelled' &&
+      agent.status !== 'closed'
     );
   }
 
@@ -1559,8 +1771,109 @@ export class SubAgentSpawner {
       agent.name.toLowerCase() === normalizedName &&
       agent.status !== 'completed' &&
       agent.status !== 'failed' &&
-      agent.status !== 'cancelled'
+      agent.status !== 'cancelled' &&
+      agent.status !== 'closed'
     )?.id;
+  }
+
+  /** Start exactly one retained direct message after its predecessor settles. */
+  private startNextDirectContinuation(previous: SubAgentInstance): void {
+    const runKey = `${ previous.projectId }:${ previous.id }:direct`;
+    if (this.directContinuationPromises.has(runKey)) return;
+    const active = this.activeAgents.get(previous.id);
+    if (active && !['completed', 'failed', 'cancelled', 'closed'].includes(active.status)) return;
+    const state = this.directConversationStates.get(previous.id);
+    const nextMessage = state?.queue[0];
+    if (!state || !nextMessage) return;
+
+    const continuationContext = {
+      ...(previous.originContext as any),
+      // The predecessor's abort signal belongs only to that execution.
+      abortSignal: undefined,
+    } as ProjectContext;
+    const requestedProvider = String(nextMessage.requestedModelProvider || '').trim() as MainAgentProvider;
+    const requestedModel = String(nextMessage.requestedModelName || '').trim();
+    const modelOverride: Omit<SubAgentTaskSpec, 'task' | 'name'> = {
+      ...(requestedProvider && requestedModel ? { provider: requestedProvider, model: requestedModel } : {}),
+      ...(nextMessage.requestedMode ? { mode: nextMessage.requestedMode } : {}),
+      ...(nextMessage.requestedThinkingLevel ? { thinkingLevel: nextMessage.requestedThinkingLevel } : {}),
+    };
+
+    const continuationPromise = (async () => {
+      const reserved = await this.reserveSlotWhenAvailable(
+        previous.projectId,
+        previous.name,
+        previous.id,
+        continuationContext,
+      );
+      if (!reserved) {
+        previous.onTrace?.({
+          type: 'sub_agent_close',
+          text: `${ previous.name } continuation cancelled`,
+          subAgent: previous.name,
+          subAgentId: previous.id,
+          subAgentChatId: `${ previous.projectId }::sub-agent::${ previous.id }`,
+          agentName: previous.name,
+          agentStatus: 'cancelled',
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      // Remove only the message this continuation owns. Later messages stay
+      // ordered in the shared queue for safe iteration drains or a subsequent
+      // continuation; they can never be folded into this initial request.
+      if (state.queue[0]?.id !== nextMessage.id) return;
+      state.queue.shift();
+      previous.onTrace?.({
+        type: 'user_action',
+        id: nextMessage.id,
+        text: nextMessage.text,
+        source: 'human',
+        directToSubAgent: true,
+        filePaths: nextMessage.filePaths,
+        requestedModelSelection: nextMessage.requestedModelSelection,
+        requestedModelProvider: nextMessage.requestedModelProvider,
+        requestedModelName: nextMessage.requestedModelName,
+        turnId: `direct-turn-${ nextMessage.id }`,
+        timestamp: nextMessage.timestamp,
+        startTime: nextMessage.timestamp,
+        endTime: nextMessage.timestamp,
+        subAgent: previous.name,
+        subAgentId: previous.id,
+        subAgentChatId: `${ previous.projectId }::sub-agent::${ previous.id }`,
+        agentName: previous.name,
+      });
+      await this.spawnAgent(
+        nextMessage.text,
+        continuationContext,
+        0,
+        previous.parentContext,
+        previous.onTrace,
+        previous.name,
+        modelOverride,
+        previous.id,
+      );
+    })().catch((error) => {
+      console.error(`[SubAgent] Continuation failed for ${ previous.name }:`, error);
+    }).finally(() => {
+      this.releaseSlot(previous.id);
+      this.directContinuationPromises.delete(runKey);
+      this.backgroundPromises.delete(runKey);
+      const latest = this.completedAgents.get(previous.id) || previous;
+      if (this.getBackgroundCount(previous.projectId) === 0) {
+        clearCancelState(previous.projectId);
+      }
+      if (state.queue.length > 0) {
+        queueMicrotask(() => this.startNextDirectContinuation(latest));
+      }
+    });
+    this.directContinuationPromises.set(runKey, continuationPromise);
+    this.backgroundPromises.set(runKey, {
+      projectId: previous.projectId,
+      name: previous.name,
+      promise: continuationPromise,
+    });
   }
 
   /** Queue direct human guidance for one immutable worker run. */
@@ -1568,24 +1881,61 @@ export class SubAgentSpawner {
     projectId: string,
     agentName: string,
     agentId: string,
-    message: Omit<SubAgentInstance['directUserMessages'][number], 'id' | 'timestamp'>,
+    message: Omit<SubAgentInstance['directUserMessages'][number], 'timestamp'> & { timestamp?: number },
   ): { success: boolean; messageId?: string; error?: string } {
     const resolvedProjectId = resolveProjectId(projectId);
-    const instance = Array.from(this.activeAgents.values()).find(agent =>
+    const matchesConversation = (agent: SubAgentInstance) =>
       agent.id === agentId &&
       isSameProjectScope(agent.projectId, resolvedProjectId) &&
-      agent.name.toLowerCase() === agentName.toLowerCase() &&
-      !['completed', 'failed', 'cancelled'].includes(agent.status)
-    );
-    if (!instance) {
-      return { success: false, error: 'This subagent run is no longer active.' };
+      agent.name.toLowerCase() === agentName.toLowerCase();
+    const matchingInstance = Array.from(this.activeAgents.values()).find(matchesConversation)
+      || Array.from(this.completedAgents.values()).find(matchesConversation);
+    if (!matchingInstance) {
+      return { success: false, error: 'This subagent conversation is no longer available.' };
     }
-    const messageId = `direct_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`;
-    instance.directUserMessages.push({
+    const messageId = String(message.id || `direct_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`).trim();
+    const messageTimestamp = Number.isSafeInteger(Number(message.timestamp)) && Number(message.timestamp) > 0
+      ? Number(message.timestamp)
+      : Date.now();
+    const conversationState = this.directConversationStates.get(agentId) || {
+      acceptedIds: matchingInstance.directUserMessageIds ||= new Set<string>(),
+      queue: matchingInstance.directUserMessages || [],
+    };
+    this.directConversationStates.set(agentId, conversationState);
+    matchingInstance.directUserMessageIds = conversationState.acceptedIds;
+    matchingInstance.directUserMessages = conversationState.queue;
+    const acceptedMessageIds = conversationState.acceptedIds;
+    if (acceptedMessageIds.has(messageId)) {
+      return { success: true, messageId };
+    }
+    acceptedMessageIds.add(messageId);
+    // Persist the user's per-worker runtime choice on the retained conversation.
+    // Same-provider live loops apply it at their next safe boundary; completed
+    // workers and cross-provider choices use it when that conversation resumes.
+    const requestedProvider = String(message.requestedModelProvider || '').trim() as MainAgentProvider;
+    const requestedModel = String(message.requestedModelName || '').trim();
+    if (requestedProvider && requestedModel) {
+      (matchingInstance.originContext as any).selectedModelProvider = requestedProvider;
+      (matchingInstance.originContext as any).selectedModelName = requestedModel;
+      (matchingInstance.originContext as any).strictModelSelection = true;
+    }
+    if (message.requestedMode) {
+      (matchingInstance.originContext as any).selectedModelMode = message.requestedMode;
+    }
+    if (message.requestedThinkingLevel) {
+      (matchingInstance.originContext as any).selectedThinkingLevel = message.requestedThinkingLevel;
+    }
+    conversationState.queue.push({
       ...message,
       id: messageId,
-      timestamp: Date.now(),
+      timestamp: messageTimestamp,
     });
+    conversationState.queue.sort((left, right) =>
+      left.timestamp - right.timestamp || left.id.localeCompare(right.id)
+    );
+    if (['completed', 'failed', 'cancelled', 'closed'].includes(matchingInstance.status)) {
+      queueMicrotask(() => this.startNextDirectContinuation(matchingInstance));
+    }
     return { success: true, messageId };
   }
 
@@ -1598,10 +1948,17 @@ export class SubAgentSpawner {
   }
 
   public clearCompleted(): void {
+    const removedIds = new Set<string>();
     for (const [id, agent] of this.activeAgents) {
       if (agent.status === 'completed' || agent.status === 'failed' || agent.status === 'cancelled') {
         this.activeAgents.delete(id);
+        removedIds.add(id);
       }
+    }
+    for (const id of this.completedAgents.keys()) removedIds.add(id);
+    this.completedAgents.clear();
+    for (const id of removedIds) {
+      if (!this.activeAgents.has(id)) this.directConversationStates.delete(id);
     }
   }
 

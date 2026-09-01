@@ -6,6 +6,7 @@ import { globalSessionManager } from '../../session';
 import { trackerToTrace, writeTaskTrackerState, type TaskTrackerData } from '../../task-tracker-store';
 import { getPlanEngine } from '../../plan-execution-engine';
 import { getAgentConversationScope } from '../../context-scope';
+import { formatUnknownError } from '../../error-format';
 
 /** Singleton plan execution engine — shared with the agent loop and governor. */
 
@@ -54,8 +55,18 @@ export const taskDecomposerTool: ToolDefinition = {
     console.log(`[Tool: task_decomposer] Decomposing via API: "${ input.complexTask.substring(0, 80) }..."`);
     const chatId = getAgentConversationScope(runtimeContext);
     const emitTrace = typeof runtimeContext?._onTrace === 'function' ? runtimeContext._onTrace : null;
+    const planOwnerTraceId = String(runtimeContext?.ownerTraceId || '').trim();
+    const planId = `task-plan-${ planOwnerTraceId || chatId || Date.now() }`;
+    const emitPlanTrace = (data: TaskTrackerData, phase: 'generating' | 'generated' | 'progress' | 'complete' | 'failed') => {
+      emitTrace?.({
+        ...trackerToTrace(data, phase),
+        planId,
+        ...(planOwnerTraceId ? { ownerTraceId: planOwnerTraceId } : {}),
+      });
+    };
 
-    emitTrace?.(trackerToTrace({
+    emitPlanTrace({
+      planId,
       goal: input.complexTask,
       chatId,
       createdAt: Date.now(),
@@ -64,7 +75,7 @@ export const taskDecomposerTool: ToolDefinition = {
       estimatedMinutes: 0,
       status: 'generating',
       steps: [],
-    }, 'generating'));
+    }, 'generating');
 
     try {
       // === Call the selected-model Task Planner ===
@@ -78,6 +89,7 @@ export const taskDecomposerTool: ToolDefinition = {
 
       // Write synchronized machine-readable and human-readable tracker files.
       const trackerJson: TaskTrackerData = {
+        planId,
         goal: input.complexTask,
         chatId,
         createdAt: Date.now(),
@@ -108,11 +120,14 @@ export const taskDecomposerTool: ToolDefinition = {
       try {
         const paths = await writeTaskTrackerState(chatId, trackerJson);
         trackerFiles = [paths.mdPath, paths.jsonPath];
-        emitTrace?.(trackerToTrace(trackerJson, 'generated'));
         console.log(`[Tool: task_decomposer] ✅ Trackers written (${ steps.length } steps, complexity: ${ planResult.estimated_complexity })`);
       } catch (e) {
         console.warn("[Tool: task_decomposer] Could not write tracker files, proceeding anyway.");
       }
+      // The generated plan is the authoritative lifecycle result. Tracker
+      // files are a useful side effect, but a filesystem failure must not
+      // leave the feed's plan row permanently stuck in its generating phase.
+      emitPlanTrace(trackerJson, 'generated');
 
       // 3. Persist plan to session for cross-message continuity
       try {
@@ -166,15 +181,20 @@ export const taskDecomposerTool: ToolDefinition = {
         message: `Task decomposed into ${ steps.length } concrete execution steps (${ planResult.estimated_complexity } complexity, ~${ planResult.estimated_time_minutes } min). Tracker is stored inside this chat's task folder. Execute the NEXT pending step only, using its expected_output and done_when as the completion contract. Do NOT repeat completed steps.`
       };
     } catch (error: any) {
-      console.error(`[Tool: task_decomposer] ❌ Decomposition failed: ${ error.message }`);
-      emitTrace?.({
-        type: 'progress',
-        text: 'Task planning failed',
-        secondary: String(error?.message || error),
+      const errorMessage = formatUnknownError(error, 'Task decomposition failed');
+      console.error(`[Tool: task_decomposer] ❌ Decomposition failed: ${ errorMessage }`);
+      emitPlanTrace({
+        planId,
+        goal: input.complexTask,
+        chatId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        complexity: 'pending',
+        estimatedMinutes: 0,
         status: 'failed',
-        timestamp: Date.now(),
-      });
-      return { success: false, plan: [], totalSteps: 0, estimatedTools: [], error: error.message };
+        steps: [],
+      }, 'failed');
+      return { success: false, plan: [], totalSteps: 0, estimatedTools: [], error: errorMessage };
     }
   }
 };

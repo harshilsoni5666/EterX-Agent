@@ -389,6 +389,8 @@ interface ChatInputProps {
   selectedAgent?: string | null;
   selectedAgentName?: string;
   chatMode?: boolean;
+  proxyEnabled?: boolean;
+  onProxyToggle?: () => void | Promise<void>;
   composerPlaceholder?: string;
   onAgentChange?: (agentId: string | null, agentName: string, chatMode?: boolean) => void;
   workspacePath?: string | null;
@@ -410,6 +412,27 @@ interface ChatInputProps {
       outputTokens?: number;
       reasoningTokens?: number;
       cacheWriteTokens?: number;
+    };
+    aggregateSource?: 'provider' | 'provider_plus_live_estimate' | 'runtime_estimate';
+    breakdownSource?: 'serialized_payload' | 'unavailable';
+    providerInputTokens?: number;
+    localEstimatedTokens?: number;
+    draftTokens?: number;
+    liveEstimateTokens?: number;
+    providerName?: string;
+    modelName?: string;
+    updatedAt?: number;
+    compaction?: {
+      phase?: 'compacting' | 'retrying' | 'compacted' | 'failed';
+      beforeTokens?: number;
+      afterTokens?: number;
+      modelProvider?: string;
+      modelName?: string;
+      failureTier?: number;
+      nextAttemptTokens?: number;
+      nextContextWindow?: number;
+      summary?: string;
+      timestamp?: number;
     };
     isEstimated?: boolean;
   } | null;
@@ -828,7 +851,7 @@ const PinFileIcon = React.memo(({ className = "" }: { className?: string }) => (
 ));
 
 const ProgressLoader = React.memo(({ className = 'h-[18px] w-[18px]' }: { className?: string }) => (
-  <span className={`relative flex shrink-0 items-center justify-center ${ className }`} aria-hidden="true">
+  <span className={`eterx-task-progress-loader relative flex shrink-0 items-center justify-center ${ className }`} aria-hidden="true">
     <span className="absolute inset-0 rounded-full border-[2px] border-white/[0.16]" />
     <span className="absolute inset-0 rounded-full border-[2px] border-transparent border-r-white/45 border-t-white/90 animate-[spin_1.15s_linear_infinite] shadow-none" />
   </span>
@@ -920,12 +943,12 @@ const TaskTrackerDock = React.memo(({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 8, scale: 0.992 }}
       transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
-      className="relative z-0 mx-auto -mb-2 w-full translate-y-2 overflow-hidden rounded-t-[20px] border border-b-0 border-white/[0.09] bg-[#202020] shadow-none"
+      className="eterx-task-tracker-dock relative z-0 mx-auto w-full overflow-hidden rounded-t-[20px] border border-b-0 border-white/[0.09] bg-[#202020] shadow-none"
     >
       <button
         type="button"
         onClick={() => setOpen(value => !value)}
-        className="group flex min-h-[38px] w-full items-center gap-2 px-3.5 py-1.5 text-left transition-colors hover:bg-white/[0.025]"
+        className="eterx-task-tracker-header group flex min-h-[38px] w-full items-center gap-2 px-3.5 py-1.5 text-left transition-colors hover:bg-white/[0.025]"
         aria-expanded={open}
       >
         <span className="flex min-w-0 flex-1 -translate-y-[3px] items-center gap-2">
@@ -954,18 +977,18 @@ const TaskTrackerDock = React.memo(({
             transition={{ duration: 0.24, ease: [0.2, 0.8, 0.2, 1] }}
             className="overflow-hidden"
           >
-            <div className="px-2.5 pb-2.5 pt-0.5">
+            <div className="eterx-task-tracker-body px-2.5 pb-2.5 pt-0.5">
               <div className="relative">
-                  <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-5 bg-gradient-to-b from-[#202020] to-transparent" />
-                  <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-6 bg-gradient-to-t from-[#202020] to-transparent" />
-                  <div className="relative max-h-[176px] space-y-0.5 overflow-y-auto py-1 pr-1 eterx-scrollbar">
+                  <div className="eterx-task-tracker-fade-top pointer-events-none absolute inset-x-0 top-0 z-20 h-5 bg-gradient-to-b from-[#202020] to-transparent" />
+                  <div className="eterx-task-tracker-fade-bottom pointer-events-none absolute inset-x-0 bottom-0 z-20 h-6 bg-gradient-to-t from-[#202020] to-transparent" />
+                  <div className="eterx-task-tracker-list relative max-h-[176px] space-y-0.5 overflow-y-auto py-1 pr-1 eterx-scrollbar">
                     {steps.map((step) => {
                       const active = step.id === activeStep?.id || step.step === activeStep?.step;
                       const activeWorking = active && !isComplete && (isThinking || step.status === 'in_progress');
                       return (
                         <div
                           key={step.id || step.step}
-                          className="relative flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors hover:bg-white/[0.018]"
+                          className="eterx-task-tracker-step relative flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors hover:bg-white/[0.018]"
                         >
                           <span className="relative z-10 shrink-0">
                             <TaskStatusGlyph status={step.status} active={activeWorking} />
@@ -1018,6 +1041,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   selectedAgent = null,
   selectedAgentName = 'General',
   chatMode = false,
+  proxyEnabled = true,
+  onProxyToggle = () => { },
   composerPlaceholder,
   onAgentChange,
   workspacePath,
@@ -1467,8 +1492,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     if (selectedAgent === 'autonomous') {
       return {
-        label: 'Autonomous',
-        description: 'Fully autonomous agent execution',
+        // Legacy state is migrated by the parent. Keep the fallback neutral
+        // during that migration so Autonomous is never shown as the worker.
+        label: 'General',
+        description: 'Default EterX agent',
         activeClass: 'border-white/[0.16] bg-white/[0.055] text-white hover:bg-white/[0.08] hover:border-white/[0.24]',
       };
     }
@@ -2591,8 +2618,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (!target) return null;
     const options = getThinkingLevelOptions(option);
     if (options.length === 0) return null;
+    // The selected model's level belongs to this composer/chat. The persisted
+    // per-model value is only a default for models that are not active here;
+    // otherwise opening chat B can rewrite chat A's reasoning level merely
+    // because both use the same model.
+    const composerOwnedLevel = option.optionKey === selectedModel?.optionKey
+      ? thinkingLevel
+      : undefined;
     const storedLevel = modelThinkingLevels[option.optionKey];
-    const requestedLevel = storedLevel
+    const requestedLevel = composerOwnedLevel
+      || storedLevel
       || target.capabilities?.defaultLevel
       || options.find(item => item.id === 'medium')?.id
       || options.find(item => item.id === 'low')?.id
@@ -2604,7 +2639,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       target.modelName,
       target.capabilities,
     );
-  }, [getThinkingLevelOptions, getThinkingTarget, modelThinkingLevels]);
+  }, [getThinkingLevelOptions, getThinkingTarget, modelThinkingLevels, selectedModel?.optionKey, thinkingLevel]);
   const normalizedActiveThinkingLevel = useMemo(() => {
     return getEffectiveThinkingLevel(selectedModel);
   }, [getEffectiveThinkingLevel, selectedModel]);
@@ -2777,7 +2812,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const nextSelection = AUTO_MODEL_SELECTION;
     if (activeModelSelection === nextSelection) return;
     if (modelSelectionScope === 'surface') {
-      onModelSelectionChange?.(nextSelection);
+      // A chat owns its model selection even while the folder-backed model
+      // catalog/API-key snapshot is hydrating or temporarily unavailable.
+      // Clearing it here made navigation and New chat show an older/default
+      // model and could make Send fail before the catalog arrived. Leave the
+      // durable selection intact; it becomes selectable again as soon as its
+      // catalog entry is restored.
       return;
     }
     appStorage.setItem(CHAT_MODEL_SELECTION_STORAGE_KEY, nextSelection);
@@ -2795,64 +2835,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const thinkingMenuOption = allModelOptions.find(option => option.optionKey === thinkingMenuModelKey) || null;
   const thinkingMenuOptions = getThinkingLevelOptions(thinkingMenuOption);
   const thinkingMenuSelectedId = getEffectiveThinkingLevel(thinkingMenuOption);
-  const contextUsageBreakdown = contextUsage
+  const contextUsageBreakdown = contextUsage?.breakdownSource === 'serialized_payload' && contextUsage.breakdown
     ? normalizeContextUsageBreakdown(contextUsage.breakdown, contextUsage.usedTokens)
     : null;
   const contextUsageRows = contextUsageBreakdown
     ? CONTEXT_USAGE_CATEGORIES
-        .filter(category => category.key !== 'rules' && category.key !== 'providerOverhead')
+        .filter(category => category.key !== 'providerOverhead')
         .map(category => ({
           ...category,
           label: category.key === 'skills'
             ? 'Loaded skills'
-            : category.key === 'subagentDefinitions' ? 'Subagent activity' : category.label,
-          tokens: category.key === 'systemPrompt'
-            ? contextUsageBreakdown.systemPrompt + contextUsageBreakdown.rules
-            : contextUsageBreakdown[category.key],
+            : category.key === 'subagentDefinitions' ? 'Subagent definitions' : category.label,
+          tokens: contextUsageBreakdown[category.key],
         }))
     : [];
-  const providerMetrics = contextUsage?.providerMetrics;
-  const providerMetricRows = contextUsage
-    ? [
-        {
-          label: 'Cache hit',
-          value: providerMetrics?.cacheHitRatio !== undefined
-            ? `${Math.round(providerMetrics.cacheHitRatio * 100)}%`
-            : '—',
-        },
-        {
-          label: 'Cached',
-          value: providerMetrics?.cachedInputTokens !== undefined
-            ? formatContextTokenCount(providerMetrics.cachedInputTokens)
-            : '—',
-        },
-        {
-          label: 'Uncached',
-          value: providerMetrics?.uncachedInputTokens !== undefined
-            ? formatContextTokenCount(providerMetrics.uncachedInputTokens)
-            : '—',
-        },
-        {
-          label: 'Output',
-          value: providerMetrics?.outputTokens !== undefined
-            ? formatContextTokenCount(providerMetrics.outputTokens)
-            : '—',
-        },
-        {
-          label: 'Reasoning',
-          value: providerMetrics?.reasoningTokens !== undefined
-            ? formatContextTokenCount(providerMetrics.reasoningTokens)
-            : '—',
-        },
-        {
-          label: 'Cache write',
-          value: providerMetrics?.cacheWriteTokens !== undefined
-            ? formatContextTokenCount(providerMetrics.cacheWriteTokens)
-            : '—',
-        },
-      ]
-    : [];
-
     return (<div ref={composerDockRef} className={`eterx-chat-input-dock ${ !isEmptyHome ? 'eterx-chat-input-dock-active' : '' } absolute left-0 flex flex-col items-center z-30 right-0 w-full ${ isEmptyHome ? `top-[45%] -translate-y-1/2 ${ inputSidePadding }` : `top-auto bottom-0 ${ isCompressed ? 'pb-4 pt-8' : 'pb-5 pt-10' } ${ inputSidePadding } bg-[linear-gradient(180deg,rgba(15,15,15,0)_0%,#0F0F0F_32%,#0F0F0F_100%)]` }`}
       data-home={isEmptyHome ? 'true' : 'false'}
       data-compressed={isCompressed ? 'true' : 'false'}
@@ -2987,6 +2983,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           data-compressed={isCompressed ? 'true' : undefined}
           data-composer-controls={showComposerControls ? undefined : 'hidden'}
          data-new-chat={isNewChatHome ? 'true' : undefined}
+         data-task-tracker={taskTracker?.steps?.length ? 'true' : undefined}
          data-agent-builder={isAgentBuilder ? 'true' : undefined}
          data-typing={hasPromptText ? 'true' : undefined}
          onDragStart={handleComposerDragStart}
@@ -3009,10 +3006,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         />
 
         <AnimatePresence>
-          {showContextUsagePanel && contextUsage && contextUsageBreakdown && contextUsage.contextWindow > 0 && (() => {
+          {showContextUsagePanel && contextUsage && contextUsage.contextWindow > 0 && (() => {
             const safeUsedTokens = Math.max(0, Math.round(contextUsage.usedTokens));
             const safeContextWindow = Math.max(1, Math.round(contextUsage.contextWindow));
             const utilization = Math.max(0, Math.min(100, (safeUsedTokens / safeContextWindow) * 100));
+            const remainingTokens = Math.max(0, safeContextWindow - safeUsedTokens);
+            const compaction = contextUsage.compaction;
+            const compactionTitle = compaction?.phase === 'failed'
+              ? 'Failed to compact'
+              : compaction?.phase === 'compacted'
+                ? ''
+                : compaction?.phase === 'retrying'
+                  ? 'Retrying compaction'
+                  : compaction?.phase === 'compacting' ? 'Compacting context' : '';
             return (
               <motion.section
                 ref={contextUsagePanelRef}
@@ -3022,39 +3028,32 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: 6, scale: 0.99 }}
                 transition={{ duration: 0.16, ease: [0.2, 0.8, 0.2, 1] }}
-                className="eterx-context-usage-panel eterx-scrollbar absolute bottom-[calc(100%+10px)] left-0 z-[85] w-full overflow-y-auto rounded-[16px] border px-3.5 pb-3.5 pt-2 shadow-2xl"
+                className="eterx-context-usage-panel absolute bottom-[calc(100%+10px)] left-0 z-[85] w-full rounded-[16px] border px-3.5 pb-3 pt-2 shadow-2xl"
                 onClick={event => event.stopPropagation()}
               >
-                <div className="flex items-center justify-between gap-4">
+                <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h2 className="eterx-context-panel-title text-[14px] font-semibold tracking-[-0.01em]">Context usage</h2>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowContextUsagePanel(false)}
-                    aria-label="Close context usage"
-                    className="eterx-context-panel-close flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors"
-                  >
-                    <X className="h-4 w-4" strokeWidth={1.9} />
-                  </button>
+                  <div className="flex shrink-0 items-center">
+                    <button
+                      type="button"
+                      onClick={() => setShowContextUsagePanel(false)}
+                      aria-label="Close context usage"
+                      className="eterx-context-panel-close flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors"
+                    >
+                      <X className="h-4 w-4" strokeWidth={1.9} />
+                    </button>
+                  </div>
                 </div>
 
-                {providerMetricRows.length > 0 && (
-                  <div
-                    className="eterx-context-provider-metrics mt-2.5 grid gap-1.5"
-                    style={{ gridTemplateColumns: `repeat(${Math.min(6, providerMetricRows.length)}, minmax(0, 1fr))` }}
-                  >
-                    {providerMetricRows.map(metric => (
-                      <div key={metric.label} className="eterx-context-provider-metric min-w-0 rounded-[8px] px-2 py-1.5">
-                        <div className="eterx-context-provider-metric-label truncate text-[10px] font-medium">{metric.label}</div>
-                        <div className="eterx-context-provider-metric-value mt-0.5 truncate text-[11px] font-semibold tabular-nums">{metric.value}</div>
-                      </div>
-                    ))}
+                <div className="mt-3 flex items-end justify-between gap-4 tabular-nums">
+                  <div>
+                    <div className="eterx-context-panel-percent text-[13px] font-semibold">{Math.round(utilization)}% used</div>
+                    <div className="eterx-context-panel-meta mt-0.5 text-[10.5px] font-medium">
+                      {contextUsage.isEstimated ? '~' : ''}{formatContextUsageTokenCount(remainingTokens)} tokens available
+                    </div>
                   </div>
-                )}
-
-                <div className={`${providerMetricRows.length > 0 ? 'mt-3' : 'mt-4'} flex items-end justify-between gap-4 tabular-nums`}>
-                  <div className="eterx-context-panel-percent text-[13px] font-semibold">{Math.round(utilization)}% full</div>
                   <div className="eterx-context-panel-total text-right text-[12px] font-medium">
                     {contextUsage.isEstimated ? '~' : ''}{formatContextUsageTokenCount(safeUsedTokens)} / {formatContextUsageTokenCount(safeContextWindow)} tokens
                   </div>
@@ -3062,28 +3061,65 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                 <div className="eterx-context-panel-track mt-2 h-1.5 overflow-hidden rounded-full">
                   <div className="flex h-full min-w-[2px] overflow-hidden rounded-full" style={{ width: `${utilization}%` }}>
-                    {contextUsageRows.filter(row => row.tokens > 0).map(row => (
-                      <span
-                        key={row.key}
-                        className="h-full min-w-[2px] border-r border-black/20 last:border-r-0"
-                        style={{ backgroundColor: row.color, width: `${(row.tokens / Math.max(1, safeUsedTokens)) * 100}%` }}
-                        aria-hidden="true"
-                      />
-                    ))}
+                    {contextUsageRows.length > 0
+                      ? contextUsageRows.filter(row => row.tokens > 0).map(row => (
+                          <span
+                            key={row.key}
+                            className="h-full min-w-[2px] border-r border-black/20 last:border-r-0"
+                            style={{ backgroundColor: row.color, width: `${(row.tokens / Math.max(1, safeUsedTokens)) * 100}%` }}
+                            aria-hidden="true"
+                          />
+                        ))
+                      : <span className="eterx-context-panel-unclassified h-full w-full" aria-hidden="true" />}
                   </div>
                 </div>
 
-                <div className="eterx-context-panel-rows mt-3 grid grid-cols-1 gap-x-6 gap-y-0.5 sm:grid-cols-2">
-                  {contextUsageRows.map(row => (
-                    <div key={row.key} className="eterx-context-panel-row flex h-7 items-center gap-2.5 rounded-[8px] px-1.5">
-                      <span className="h-3 w-3 shrink-0 rounded-[3px]" style={{ backgroundColor: row.color }} aria-hidden="true" />
-                      <span className="eterx-context-panel-row-label min-w-0 flex-1 truncate text-[12px] font-medium">{row.label}</span>
-                      <span className="eterx-context-panel-row-value shrink-0 text-[12px] font-medium tabular-nums">
-                        {formatContextUsageTokenCount(row.tokens, { prefixTilde: row.tokens > 0 })}
-                      </span>
+                {contextUsageRows.length > 0 && (
+                  <>
+                    <h3 className="eterx-context-panel-title mt-3 text-[11px] font-semibold">Request composition</h3>
+                    <div className="eterx-context-panel-rows mt-1 grid grid-cols-1 gap-x-6 gap-y-0.5 sm:grid-cols-2">
+                      {contextUsageRows.map(row => (
+                        <div key={row.key} className="eterx-context-panel-row flex h-7 items-center gap-2.5 rounded-[8px] px-1.5">
+                          <span className="h-3 w-3 shrink-0 rounded-[3px]" style={{ backgroundColor: row.color }} aria-hidden="true" />
+                          <span className="eterx-context-panel-row-label min-w-0 flex-1 truncate text-[12px] font-medium">{row.label}</span>
+                          <span className="eterx-context-panel-row-value shrink-0 text-[12px] font-medium tabular-nums">
+                            {formatContextUsageTokenCount(row.tokens, { prefixTilde: row.tokens > 0 })}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </>
+                )}
+
+                {compaction && compactionTitle && (
+                  <div
+                    className="eterx-context-compaction-state mt-3 rounded-[10px] px-2.5 py-2"
+                    data-phase={compaction.phase}
+                    role={compaction.phase === 'failed' ? 'alert' : 'status'}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="eterx-context-compaction-title text-[11px] font-semibold">{compactionTitle}</span>
+                      {compaction.timestamp && (
+                        <span className="eterx-context-panel-meta shrink-0 text-[9.5px] font-medium">
+                          {new Date(compaction.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      )}
+                    </div>
+                    <div className="eterx-context-compaction-copy mt-0.5 text-[10px] leading-[14px]">
+                      {compaction.phase === 'failed' ? (
+                        <>
+                          Full context preserved.
+                          {compaction.nextAttemptTokens ? ` Next attempt at ${formatContextTokenCount(compaction.nextAttemptTokens)} tokens.` : ''}
+                          {compaction.nextContextWindow ? ` Chat budget raised to ${formatContextTokenCount(compaction.nextContextWindow)}.` : ''}
+                        </>
+                      ) : (
+                        <>
+                          Preserving continuity from {formatContextTokenCount(compaction.beforeTokens || 0)} tokens.
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
               </motion.section>
             );
           })()}
@@ -3725,14 +3761,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     {isOverflowing && !isAtTop && (
                       <div className="eterx-composer-overflow-fade-top pointer-events-none absolute inset-x-0 top-0 z-10 h-4 bg-gradient-to-b from-[#2F2F2F] via-[#2F2F2F]/90 to-transparent transition-opacity duration-200" />
                     )}
-                    {!inputValue && (
-                      <span
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-x-0 top-0 z-10 select-none text-[14.5px] font-normal leading-[1.45] text-[#8B8984]"
-                      >
-                        {resolvedComposerPlaceholder}
-                      </span>
-                    )}
                     <motion.textarea
                       ref={textareaRef}
                       key="textarea"
@@ -3757,10 +3785,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       onDragOver={handleDragOver}
                       onDrop={handleDrop}
                       onScroll={handleTextareaScroll}
-                      placeholder=""
+                      placeholder={resolvedComposerPlaceholder}
                       spellCheck={false}
                       aria-label={resolvedComposerPlaceholder}
-                      className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] focus:border-0 focus:outline-none focus:ring-0 min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 scrollbar-no-buttons ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
+                      className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 scrollbar-no-buttons ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
                       style={{
                         ['--eterx-composer-textarea-max' as any]: `${ textareaMaxHeight }px`,
                         caretColor: '#F0F0F0',
@@ -3782,7 +3810,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           {!isLiveActive && (
           <div className={`eterx-chat-controls ${ isCompressed ? 'px-2.5' : 'px-3.5' } mt-0 relative z-10 transition-all duration-300`}>
             <div className="eterx-chat-controls-left">
-              {!isAgentBuilder && <Tooltip text="Attach images, PDFs, Office files, code, audio, or video" side="top">
+              <Tooltip text="Attach images, PDFs, Office files, code, audio, or video" side="top">
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
@@ -3792,7 +3820,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   <div className={inputControlSheen} />
                   <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white" strokeWidth={1.85} />
                 </button>
-              </Tooltip>}
+              </Tooltip>
               <div className="relative eterx-pin-control hidden">
                 <Tooltip text="Pin folder or files" side="top" disabled={showPinMenu}>
                   <button
@@ -3845,21 +3873,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             </div>
 
             <div className="eterx-chat-controls-right flex items-center gap-1.5">
-              {isAgentBuilder && (
-                <div className="eterx-agent-builder-attach">
-                  <Tooltip text="Attach images, PDFs, Office files, code, audio, or video" side="top">
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      aria-label="Attach files"
-                      className={inputControlButton}
-                    >
-                      <div className={inputControlSheen} />
-                      <PremiumPlus className="eterx-composer-control-icon w-[20px] h-[20px] text-white" strokeWidth={1.85} />
-                    </button>
-                  </Tooltip>
-                </div>
-              )}
               {/* Context usage indicator: show the current chat's configured window and usage. */}
               {contextUsage && Number.isFinite(contextUsage.contextWindow) && contextUsage.contextWindow > 0 && (() => {
                 const safeContextWindow = Math.max(1, Math.round(contextUsage!.contextWindow));
@@ -3989,33 +4002,16 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           setShowAgentMenu(false);
                         }}
                         aria-pressed={!chatMode && !selectedAgent}
-                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ !chatMode && !selectedAgent
+                        className={`eterx-agent-option flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-[11px] text-left transition-all duration-150 ${ !chatMode && !selectedAgent
                           ? 'bg-white/[0.08] text-white font-medium shadow-none'
-                          : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.12]'
                           }`}
                       >
                         <span className="text-[12px] font-normal truncate flex-1">General</span>
                         {!chatMode && !selectedAgent && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
                       </button>
 
-                      {/* Autonomous */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onAgentChange?.('autonomous', 'Autonomous', false);
-                          setShowAgentMenu(false);
-                        }}
-                        aria-pressed={selectedAgent === 'autonomous'}
-                        className={`flex w-full items-center gap-2.5 px-2.5 py-1.5 rounded-md text-left transition-all duration-150 ${ selectedAgent === 'autonomous'
-                          ? 'bg-white/[0.08] text-white font-medium shadow-none'
-                          : 'text-[#E8E6E3] hover:bg-white/[0.05] active:bg-white/[0.12]'
-                          }`}
-                      >
-                        <span className="text-[12px] font-normal truncate flex-1">Autonomous</span>
-                        {selectedAgent === 'autonomous' && <Check className="h-3.5 w-3.5 shrink-0 text-white" strokeWidth={2.05} />}
-                      </button>
-
-                      {/* Coding */}
+                      {/* Coding remains a standard built-in entry. */}
                       <button
                         type="button"
                         disabled
@@ -4031,10 +4027,38 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         </div>
                       </button>
 
+                      {/* Autonomous is a sidecar proxy toggle, not a primary agent
+                          selection. Chat stays direct even when this is enabled. */}
+                      <div className="eterx-agent-menu-divider mx-2 mt-1 mb-1 h-px bg-white/[0.08]" aria-hidden="true" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void onProxyToggle();
+                        }}
+                        aria-pressed={proxyEnabled}
+                        title={proxyEnabled ? 'Disable the Autonomous proxy sidecar' : 'Enable the Autonomous proxy sidecar'}
+                        className={`eterx-agent-option eterx-autonomous-agent-option group flex w-full items-center gap-2.5 rounded-[11px] px-2.5 py-1.5 text-left transition-all duration-150 ${ proxyEnabled
+                          ? 'bg-white/[0.08] text-white font-medium shadow-none'
+                          : 'text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.12]'
+                          }`}
+                      >
+                        <span className="min-w-0 flex-1 truncate text-[12px] font-medium">Autonomous</span>
+                        <span
+                          className={`eterx-autonomous-checkbox grid h-4 w-4 shrink-0 place-items-center rounded-[6px] border transition-all duration-150 ${ proxyEnabled
+                            ? 'border-white/70 bg-white text-[#202020]'
+                            : 'border-white/25 bg-white/[0.04] text-transparent group-hover:border-white/45'
+                            }`}
+                          aria-hidden="true"
+                        >
+                          <Check className="h-2.5 w-2.5" strokeWidth={2.5} />
+                        </span>
+                        <span className="sr-only">{proxyEnabled ? 'Disable' : 'Enable'} Autonomous proxy</span>
+                      </button>
+
                       {/* Separator + custom agents from agent room */}
                       {availableAgents.length > 0 && (
                         <>
-                          <div className="mx-2 my-1 h-[1px] bg-white/[0.06]" />
+                          <div className="eterx-agent-menu-divider mx-2 my-1 h-[1px] bg-white/[0.06]" />
                           <div className="px-2.5 py-0.5">
                             <span className="text-[11px] font-semibold text-white/50">Custom agents</span>
                           </div>
@@ -4069,7 +4093,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       )}
 
                       {/* Link to Agent Room */}
-                      <div className="mx-2 my-1 h-[1px] bg-white/[0.06]" />
+                      <div className="eterx-agent-menu-divider mx-2 my-1 h-[1px] bg-white/[0.06]" />
                       <button
                         onClick={() => {
                           setShowAgentMenu(false);
@@ -4339,11 +4363,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           onClick={handleStopClick}
                           aria-label={isStopping ? 'Stopping agent' : 'Stop agent'}
                           aria-busy={isStopping}
-                          className={`eterx-control-button eterx-composer-stop-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#292929] text-white transition-all duration-200 shadow-none group overflow-hidden relative ${ isStopping ? 'cursor-wait' : 'cursor-pointer hover:bg-[#373737] active:scale-[0.96]' }`}
+                          className={`eterx-control-button eterx-composer-stop-button eterx-composer-action-stop w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#292929] text-white transition-none shadow-none group overflow-hidden relative ${ isStopping ? 'cursor-wait' : 'cursor-pointer active:scale-[0.96]' }`}
                         >
                           <div className="absolute inset-0 bg-gradient-to-t from-black/0 to-black/5" />
                           {isStopping ? (
-                            <span className="eterx-composer-stop-pending h-[12px] w-[12px] animate-spin rounded-full border-[1.75px] border-black/25 border-t-black" aria-hidden="true" />
+                            <span className="eterx-composer-stop-pending h-[12px] w-[12px] animate-spin rounded-full border-[1.75px] border-white/30 border-t-white" aria-hidden="true" />
                           ) : (
                             <span className="eterx-composer-stop-icon block h-[12px] w-[12px] rounded-[2.5px] bg-current transition-all duration-200" aria-hidden="true" />
                           )}

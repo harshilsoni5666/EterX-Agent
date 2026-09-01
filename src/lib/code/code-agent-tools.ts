@@ -6,7 +6,6 @@ export const CODE_AGENT_TOOLS = [
   'workspace_search_text',
   'workspace_read_file',
   'workspace_read_many_files',
-  'workspace_write_file',
   'workspace_edit_file',
   'workspace_run_command',
   'workspace_verify_code',
@@ -21,6 +20,7 @@ export const CODE_AGENT_TOOLS = [
   'get_skill_guidelines',
   'memory_v2',
   'context_manager',
+  'context_memory',
   'web_search',
   'web_scraper',
   'deep_research',
@@ -41,6 +41,7 @@ const STATELESS_TOOLS = new Set<string>([
   'realtime_verify',
   'get_skill_guidelines',
   'context_manager',
+  'context_memory',
   'web_search',
   'web_scraper',
   'deep_research',
@@ -96,8 +97,9 @@ CODING AGENT WORKFLOW:
    - workspace_read_file with startLine/endLine for one range
 
 3. EDIT SAFE (simplest first)
-   - workspace_write_file creates new files
-   - workspace_edit_file performs targeted edits with real UI diffs
+   - workspace_edit_file creates, edits, or deletes one file, or applies a related multi-file change
+   - single-file shape: filename + edits/delete; multi-file shape: files=[{filename, edits/delete}]
+   - a missing file is created by one edit whose replace value is its complete content
 
 4. VERIFY SMALL
    - realtime_verify for quick syntax/json/file checks

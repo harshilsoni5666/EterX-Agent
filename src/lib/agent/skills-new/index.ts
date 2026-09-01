@@ -29,7 +29,11 @@ function compactSkillRoutingDescription(description: string, fallback: string): 
 
 export const SKILL_PATHWAYS_PROMPT = [
   'SKILL PATHWAYS',
-  'The isolated local skill catalog is loaded. Load one applicable skill immediately before specialized work; otherwise use the normal workflow.',
+  'Skills are optional, specialized operating playbooks—not a startup checklist.',
+  'Do not load any skill at the beginning of a task merely because it might be useful. First understand the current request and use the normal workflow for answers, coding, inspection, debugging, and other ordinary work.',
+  'Load one primary skill only when the current request clearly matches its catalog description, and load it immediately before the first action that needs its specialized procedure. Never load adjacent or speculative skills.',
+  'A second skill is exceptional: use it only when the user explicitly requests a separate deliverable or workflow that independently matches that second skill. Never front-load multiple skills in one tool batch.',
+  'Do not reload a skill during the same task. A later user request is a new routing decision and may legitimately load it again.',
   '',
   'Available skill pathways:',
   ...SKILL_CATALOG.map(skill => `- ${skill.id}: ${compactSkillRoutingDescription(skill.description, skill.name)}`),

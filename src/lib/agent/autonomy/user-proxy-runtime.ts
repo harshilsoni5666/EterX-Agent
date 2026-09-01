@@ -5,6 +5,7 @@ import type { MainAgentMode } from '../model-routing';
 import type { ScopedRuntimeSettings } from '../runtime-api-keys';
 import { getEterxWorkspaceDir } from '../storage-paths';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from '../self-improvement/engine';
+import { resolveModelContextWindow } from '../model-context-window';
 import {
   delegationTelemetryFromTrace,
   type DelegatedAgentEvidence,
@@ -1538,6 +1539,10 @@ export class UserProxyRuntime {
     const selectedProxyModelName = selectedProxySeparator > 0
       ? selectedProxyModel.slice(selectedProxySeparator + 1).trim()
       : '';
+    const proxyModelContextWindow = selectedProxyProvider && selectedProxyModelName
+      ? resolveModelContextWindow(selectedProxyProvider as any, selectedProxyModelName)
+      : Number((this.options.context as any).contextCompaction?.activeModelContextWindow || 0) || undefined;
+    const requestedProxyContextWindow = Number((this.options.context as any).contextCompaction?.activeContextWindow || 0) || undefined;
     const proxyContext: any = {
       projectId: `${this.options.context.projectId}::user-proxy`,
       agentRuntime: 'user_proxy',
@@ -1561,6 +1566,10 @@ export class UserProxyRuntime {
         enabled: (this.options.context as any).contextCompaction?.enabled !== false,
         model: (this.options.context as any).contextCompaction?.model || null,
         customInstructions: String((this.options.context as any).contextCompaction?.customInstructions || ''),
+        activeContextWindow: requestedProxyContextWindow && proxyModelContextWindow
+          ? Math.min(requestedProxyContextWindow, proxyModelContextWindow)
+          : requestedProxyContextWindow,
+        activeModelContextWindow: proxyModelContextWindow,
       },
       selectedThinkingLevel: this.selectedIntervention === 'high'
         ? 'high'

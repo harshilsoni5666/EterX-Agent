@@ -20,8 +20,35 @@ export function isPrivateReasoningTrace(trace: any): boolean {
     || trace.nativeReasoning === true;
 }
 
+const hasPresentationThoughtText = (trace: any): boolean => Boolean(
+  String(trace?.text || '')
+    .replace(/<\/?(?:thought|work_note)>/gi, '')
+    .trim(),
+);
+
+/**
+ * uiOnly is the explicit provider-neutral presentation contract for the
+ * dedicated Thought row. Raw analysis/reasoning remains internal; only a real,
+ * non-empty presentation snapshot may cross the runtime/UI boundary.
+ */
+export function isUserVisibleTrace(trace: any): boolean {
+  if (!trace || typeof trace !== 'object') return false;
+  if (!isPrivateReasoningTrace(trace)) return true;
+  const type = String(trace.type || '').trim().toLowerCase();
+  return type === 'thought_stream' && trace.uiOnly === true && hasPresentationThoughtText(trace);
+}
+
+/** Live and durable feed paths intentionally use the same visibility rule. */
+export const isLiveUserVisibleTrace = isUserVisibleTrace;
+
 export function filterUserVisibleTraces<T = any>(traces: T[]): T[] {
   return Array.isArray(traces)
-    ? traces.filter(trace => !isPrivateReasoningTrace(trace))
+    ? traces.filter(trace => isUserVisibleTrace(trace))
+    : [];
+}
+
+export function filterLiveUserVisibleTraces<T = any>(traces: T[]): T[] {
+  return Array.isArray(traces)
+    ? traces.filter(trace => isLiveUserVisibleTrace(trace))
     : [];
 }

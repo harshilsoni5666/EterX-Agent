@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { checkEterXProtection } from '../../../../lib/agent/workspace/path_resolver';
 import { rejectCrossOrigin } from '../../agent/_shared';
+import { formatUnknownError } from '../../../../lib/agent/error-format';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -56,6 +57,6 @@ export async function POST(req: NextRequest) {
       lines: content.length === 0 ? 0 : content.split(/\r?\n/).length,
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: formatUnknownError(error, 'Could not write file') }, { status: 500 });
   }
 }

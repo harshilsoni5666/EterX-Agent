@@ -56,6 +56,8 @@ export type TaskTrackerStep = {
 };
 
 export type TaskTrackerData = {
+  /** Stable identity shared by generation, checkpoint, and auto-progress traces. */
+  planId?: string;
   goal: string;
   chatId?: string;
   createdAt: number;
@@ -171,6 +173,7 @@ export function trackerToTrace(data: TaskTrackerData, phase: 'generating' | 'gen
 
   return {
     type: 'task_plan',
+    ...(data.planId ? { planId: data.planId } : {}),
     text: phase === 'generating'
       ? 'Generating task plan'
       : phase === 'generated'

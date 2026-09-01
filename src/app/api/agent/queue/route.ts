@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
+import { formatUnknownError } from '../../../../lib/agent/error-format';
 import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
+import { normalizeMainAgentMode, normalizeModelThinkingCapabilities, normalizeThinkingLevelForModel } from '../../../../lib/agent/model-routing';
+import { isModelProvider } from '../../../../lib/agent/model-selector-store';
+import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
+import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import {
   attachAgentApiSessionCookie,
+  cleanContextText,
   cleanString,
   getOrCreateAgentApiSession,
   isSafeChatId,
   isSafeRunId,
   jsonError,
-  MAX_PROMPT_CHARS,
   normalizeMediaAttachments,
   readJsonObject,
   rejectCrossOrigin,
@@ -38,12 +43,13 @@ export async function GET(req: NextRequest) {
       items,
     }), session);
   } catch (error: any) {
-    const response = NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    const response = NextResponse.json({ success: false, error: formatUnknownError(error, 'Failed to inspect queued guidance') }, { status: 500 });
     return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }
 
 export async function POST(req: NextRequest) {
+  hydrateServerRuntimeSettings();
   let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
     const originError = rejectCrossOrigin(req);
@@ -81,7 +87,7 @@ export async function POST(req: NextRequest) {
       return attachAgentApiSessionCookie(jsonError('Unsupported queue action.', 400), session);
     }
 
-    const prompt = cleanString(body.prompt, MAX_PROMPT_CHARS);
+    const prompt = cleanContextText(body.prompt).trim();
     const mediaAttachments = normalizeMediaAttachments(body.mediaAttachments);
     if (!prompt && mediaAttachments.length === 0) {
       return attachAgentApiSessionCookie(jsonError('A prompt or attachment is required.', 400), session);
@@ -91,22 +97,58 @@ export async function POST(req: NextRequest) {
       return attachAgentApiSessionCookie(jsonError('Queue item ID is invalid.', 400), session);
     }
     const resolvedMedia = await resolveChatMediaForRequest(chatId, prompt, mediaAttachments);
+    const requestedCreatedAt = Number(body.createdAt);
+    const selectedModel = body.selectedModel && typeof body.selectedModel === 'object' && !Array.isArray(body.selectedModel)
+      ? body.selectedModel as Record<string, unknown>
+      : null;
+    const selectedModelProvider = String(selectedModel?.provider || '').trim();
+    const selectedModelName = String(selectedModel?.modelId || selectedModel?.modelName || '').trim().slice(0, 200);
+    const hasRuntimeOverride = isModelProvider(selectedModelProvider) && Boolean(selectedModelName);
+    const modelThinkingCapability = hasRuntimeOverride
+      ? normalizeModelThinkingCapabilities(body.modelThinkingCapability)
+      : null;
+    const runtimeOverride = hasRuntimeOverride
+      ? {
+          mode: normalizeMainAgentMode(body.mode),
+          selectedModelProvider,
+          selectedModelName,
+          thinkingLevel: normalizeThinkingLevelForModel(
+            body.thinkingLevel,
+            selectedModelProvider,
+            selectedModelName,
+            modelThinkingCapability,
+          ),
+          ...(modelThinkingCapability ? { modelThinkingCapability } : {}),
+          modelWireCapabilities: Array.isArray(body.modelWireCapabilities)
+            ? Array.from(new Set(body.modelWireCapabilities
+                .map((value: unknown) => String(value || '').trim())
+                .filter(Boolean)))
+                .slice(0, 100)
+            : [],
+          runtimeSettings: buildScopedRuntimeSettings(),
+        }
+      : undefined;
     const result = agentRegistry.queueUserFollowUp(
       chatId,
       prompt || 'Please review the attached file or media and help me with it.',
       resolvedMedia,
       requestedId,
+      Number.isFinite(requestedCreatedAt) && requestedCreatedAt > 0
+        ? requestedCreatedAt
+        : undefined,
+      runtimeOverride,
     );
     const status = result.accepted ? 202 : result.status === 'queue_full' ? 429 : 409;
     return attachAgentApiSessionCookie(NextResponse.json({
       success: result.accepted,
       status: result.status,
+      handoffPending: result.handoffPending === true,
       message: result.message,
       item: result.item,
       items: agentRegistry.getQueuedFollowUps(chatId),
     }, { status }), session);
   } catch (error: any) {
-    const response = NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    const response = NextResponse.json({ success: false, error: formatUnknownError(error, 'Failed to queue guidance') }, { status: 500 });
     return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }

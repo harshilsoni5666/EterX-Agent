@@ -32,6 +32,7 @@
 import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
+import type { LifetimeEvent } from '../memory/lifetime';
 
 const USERPROFILE = os.homedir();
 const DESKTOP_PATHS = [

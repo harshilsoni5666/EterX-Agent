@@ -1,11 +1,19 @@
 import assert from 'node:assert/strict';
-import { filterUserVisibleTraces, isPrivateReasoningTrace } from '../src/lib/agent/trace-visibility';
+import {
+  filterLiveUserVisibleTraces,
+  filterUserVisibleTraces,
+  isLiveUserVisibleTrace,
+  isPrivateReasoningTrace,
+} from '../src/lib/agent/trace-visibility';
 import { formatVisibleWorkNote } from '../src/lib/agent/work-note';
 
 assert.equal(isPrivateReasoningTrace({ type: 'thought_stream', text: 'Image 1 analysis: ...' }), true);
 assert.equal(isPrivateReasoningTrace({ type: 'analysis', text: 'private scratch work' }), true);
 assert.equal(isPrivateReasoningTrace({ type: 'answer', visibility: 'internal', text: 'private' }), true);
 assert.equal(isPrivateReasoningTrace({ type: 'work_note', text: 'I’m checking the screenshot now.' }), false);
+assert.equal(isLiveUserVisibleTrace({ type: 'thought_stream', uiOnly: true, isStreaming: true }), true);
+assert.equal(isLiveUserVisibleTrace({ type: 'thought_stream', text: 'private scratch work' }), false);
+assert.equal(isLiveUserVisibleTrace({ type: 'analysis', uiOnly: true, text: 'private scratch work' }), false);
 
 assert.deepEqual(
   filterUserVisibleTraces([
@@ -16,6 +24,19 @@ assert.deepEqual(
   [
     { type: 'work_note', text: 'Checking the layout now.' },
     { type: 'answer', text: 'Done.' },
+  ],
+);
+
+assert.deepEqual(
+  filterLiveUserVisibleTraces([
+    { type: 'thought_stream', uiOnly: true, text: '' },
+    { type: 'thought_stream', text: 'unmarked private reasoning' },
+    { type: 'analysis', uiOnly: true, text: 'private scratch work' },
+    { type: 'work_note', text: 'Checking the layout now.' },
+  ]),
+  [
+    { type: 'thought_stream', uiOnly: true, text: '' },
+    { type: 'work_note', text: 'Checking the layout now.' },
   ],
 );
 

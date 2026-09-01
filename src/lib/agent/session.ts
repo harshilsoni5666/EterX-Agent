@@ -657,7 +657,10 @@ export class SessionStateManager {
       // artifacts so later turns can still recover exact work from this chat.
       writtenFiles: [...previous.writtenFiles],
       fileRecords: [...previous.fileRecords],
-      loadedSkills: [...previous.loadedSkills],
+      // Skills are routed per user task. Carrying them across a completed task
+      // both suppresses valid later loads and makes the next prompt look as if
+      // an old playbook is still active.
+      loadedSkills: [],
       // These fields describe the old objective and must not leak into the
       // next task. Durable file records remain available for artifact lookup.
       actionSummary: [],

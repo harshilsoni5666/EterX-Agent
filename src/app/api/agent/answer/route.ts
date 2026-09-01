@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { formatUnknownError } from '../../../../lib/agent/error-format';
 import {
   attachAgentApiSessionCookie,
+  cleanContextText,
   cleanString,
   ensureChatOwner,
   getOrCreateAgentApiSession,
@@ -9,7 +11,6 @@ import {
   readJsonObject,
   rejectCrossOrigin,
   requireChatOwner,
-  MAX_ANSWER_CHARS,
 } from '../_shared';
 
 export const dynamic = 'force-dynamic';
@@ -36,16 +37,15 @@ export async function POST(req: NextRequest) {
           id: cleanString(item?.id, 80),
           question: cleanString(item?.question, 500),
           mode: cleanString(item?.mode, 40),
-          answer: cleanString(item?.answer, MAX_ANSWER_CHARS),
+          answer: cleanContextText(item?.answer).trim(),
           selectedOption: item?.selectedOption ?? null,
         }))
       : null;
-    const cleanAnswer = cleanString(
+    const cleanAnswer = cleanContextText(
       answer === undefined && cleanAnswers?.length
         ? cleanAnswers.map(item => item.answer || item.selectedOption?.value || item.selectedOption?.label || '').filter(Boolean).join('\n')
         : answer,
-      MAX_ANSWER_CHARS,
-    );
+    ).trim();
     if (!cleanAnswer) {
       return attachAgentApiSessionCookie(jsonError('Answer must be a non-empty string.', 400), session);
     }
@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('[API: ask_user] Error:', error);
     const response = NextResponse.json(
-      { error: 'Failed to process answer', details: error.message },
+      { error: 'Failed to process answer', details: formatUnknownError(error, 'Failed to process answer') },
       { status: 500 },
     );
     return session ? attachAgentApiSessionCookie(response, session) : response;
@@ -112,7 +112,10 @@ export async function GET(req: NextRequest) {
 
     return attachAgentApiSessionCookie(NextResponse.json({ pending: pendingQuestions }), session);
   } catch (error: any) {
-    const response = NextResponse.json({ pending: [], error: error.message });
+    const response = NextResponse.json({
+      pending: [],
+      error: formatUnknownError(error, 'Failed to load pending questions'),
+    });
     return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }

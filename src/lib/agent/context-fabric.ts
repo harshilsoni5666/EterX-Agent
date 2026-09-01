@@ -55,6 +55,8 @@ export interface ContextEpisode {
   sequence: number;
   source: ContextProvenance['source'];
   createdAt: number;
+  /** Stable source identity used to import a durable chat transcript exactly once. */
+  originId?: string;
   header: string;
   contentPreview: string;
   contentHash: string;
@@ -150,12 +152,25 @@ export interface ContextFabricSnapshot {
   revision: number;
   mutationEpoch: number;
   lastEventHash: string;
+  /** New ledgers hash their exact JSON representation, so every persisted event is restart-verifiable. */
+  eventHashVersion?: 2;
+  /** Exact end of a structurally chained v1 prefix retained during an in-place upgrade. */
+  legacyEventPrefix?: { sequence: number; hash: string };
   facts: ContextFact[];
   episodes?: ContextEpisode[];
   links?: ContextLink[];
   memoryPolicy?: MemoryPolicyState;
+  latestCompactionCheckpoint?: ContextCompactionCheckpoint;
   /** In-memory only when durable persistence is disabled; never written by a durable fabric. */
   ephemeralPageContents?: Record<string, string>;
+}
+
+export interface ContextCompactionCheckpoint {
+  compactionId: string;
+  manifestHash: string;
+  capsuleHash: string;
+  recordedAt: number;
+  sequence: number;
 }
 
 export interface MemoryPolicyState {
@@ -168,7 +183,7 @@ export interface MemoryPolicyState {
 type ContextEventOperation = 'upsert' | 'episode' | 'link' | 'policy' | 'checkpoint';
 
 interface ContextFabricEvent {
-  version: 1;
+  version: 1 | 2;
   scopeId: string;
   sequence: number;
   timestamp: number;
@@ -185,6 +200,48 @@ interface ContextFabricEvent {
   previousHash: string;
   hash: string;
 }
+
+const isRecord = (value: unknown): value is Record<string, any> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const isStoredFactShape = (value: unknown): value is ContextFact =>
+  isRecord(value)
+  && typeof value.id === 'string'
+  && typeof value.text === 'string'
+  && (value.provenance === undefined || Array.isArray(value.provenance))
+  && (value.exactValues === undefined || Array.isArray(value.exactValues))
+  && (value.targets === undefined || Array.isArray(value.targets))
+  && (value.entities === undefined || Array.isArray(value.entities));
+
+const isStoredEpisodeShape = (value: unknown): value is ContextEpisode =>
+  isRecord(value)
+  && typeof value.id === 'string'
+  && typeof value.pageRef === 'string'
+  && (value.targets === undefined || Array.isArray(value.targets));
+
+const isContextFabricEventPayloadValid = (event: ContextFabricEvent): boolean => {
+  if (!['upsert', 'episode', 'link', 'policy', 'checkpoint'].includes(event.operation)) return false;
+  if (!Number.isFinite(event.timestamp)) return false;
+  if (!/^[0-9a-f]{64}$/i.test(String(event.hash || ''))) return false;
+  if (event.previousHash && !/^[0-9a-f]{64}$/i.test(String(event.previousHash))) return false;
+  if (event.operation === 'upsert') return isStoredFactShape(event.fact);
+  if (event.operation === 'episode') return isStoredEpisodeShape(event.episode);
+  if (event.operation === 'link') {
+    return isRecord(event.link)
+      && typeof event.link.id === 'string'
+      && typeof event.link.fromFactId === 'string'
+      && typeof event.link.toFactId === 'string';
+  }
+  if (event.operation === 'policy') {
+    return isRecord(event.memoryPolicy)
+      && isRecord(event.memoryPolicy.weights)
+      && Array.isArray(event.memoryPolicy.learnedGuidelines);
+  }
+  return isRecord(event.checkpoint)
+    && /^[A-Za-z0-9_-]{1,220}$/.test(String(event.checkpoint.compactionId || ''))
+    && /^[0-9a-f]{64}$/i.test(String(event.checkpoint.manifestHash || ''))
+    && /^[0-9a-f]{64}$/i.test(String(event.checkpoint.capsuleHash || ''));
+};
 
 export interface ContextCapsuleAudit {
   coveredFactIds: string[];
@@ -208,6 +265,46 @@ const MAX_WORKING_SET_CHARS = 18_000;
 const MAX_PAGE_BYTES = 16 * 1024 * 1024;
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
+const MAX_COMPRESSED_PAGE_BYTES = MAX_PAGE_BYTES + (1024 * 1024);
+
+const gunzipContextPage = async (compressed: Buffer): Promise<Buffer> => {
+  if (compressed.length > MAX_COMPRESSED_PAGE_BYTES) {
+    throw new Error('Compressed context page exceeds its bounded page size.');
+  }
+  return await (gunzipAsync as any)(compressed, {
+    maxOutputLength: MAX_PAGE_BYTES + 1,
+  }) as Buffer;
+};
+
+const readOptionalDurableJson = async <T>(filePath: string): Promise<T | null> => {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await fs.readJson(filePath) as T;
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') return null;
+      if (attempt >= 2) {
+        throw new Error(`Context Fabric could not read ${path.basename(filePath)} safely: ${String(error?.message || error)}`);
+      }
+      await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
+  return null;
+};
+
+const readOptionalDurableText = async (filePath: string): Promise<string> => {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await fs.readFile(filePath, 'utf8');
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') return '';
+      if (attempt >= 2) {
+        throw new Error(`Context Fabric could not read ${path.basename(filePath)} safely: ${String(error?.message || error)}`);
+      }
+      await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+    }
+  }
+  return '';
+};
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -439,7 +536,7 @@ function normalizeStoredFact(fact: ContextFact): ContextFact {
 }
 
 function cloneEpisode(episode: ContextEpisode): ContextEpisode {
-  return { ...episode, targets: [...episode.targets] };
+  return { ...episode, targets: [...(episode.targets || [])] };
 }
 
 function clonePolicy(policy: MemoryPolicyState): MemoryPolicyState {
@@ -523,6 +620,7 @@ export class ContextFabric {
   private links = new Map<string, ContextLink>();
   private vectorizer = new TfIdfVectorizer(2_000);
   private recentRetrievedFactIds: string[] = [];
+  private latestCompactionCheckpoint: ContextCompactionCheckpoint | null = null;
   private ephemeralPages = new Map<string, string>();
   private memoryPolicy: MemoryPolicyState = {
     weights: { ...DEFAULT_MEMORY_WEIGHTS },
@@ -531,14 +629,18 @@ export class ContextFabric {
     learnedGuidelines: [
       'Preserve executable world state, action-outcome causality, preconditions, and future decision cues; discard narration before state.',
       'Keep constraints, exact identifiers, unresolved failures, and post-mutation verification provenance losslessly.',
-      'Do not compact across an unresolved derivation, failed strategy, or mutation awaiting verification unless the hard context boundary requires recovery.',
+      'At a provider-request boundary, retain unresolved derivations, failed strategies, and mutations awaiting verification as explicit executable state instead of postponing compaction past the selected chat budget.',
     ],
   };
   private revision = 0;
   private mutationEpoch = 0;
   private lastEventHash = '';
+  private legacyEventPrefixSequence = 0;
+  private legacyEventPrefixHash = '';
   private initialized = false;
+  private initializationPromise: Promise<void> | null = null;
   private persistQueue: Promise<void> = Promise.resolve();
+  private pendingPersistenceOperations: Array<() => Promise<void>> = [];
   private persistenceError: Error | null = null;
   private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly durable: boolean;
@@ -559,44 +661,171 @@ export class ContextFabric {
     if (options.snapshot) this.restore(options.snapshot);
   }
 
+  private resetMaterializedState(): void {
+    this.facts = new Map();
+    this.episodes = new Map();
+    this.links = new Map();
+    this.vectorizer = new TfIdfVectorizer(2_000);
+    this.recentRetrievedFactIds = [];
+    this.latestCompactionCheckpoint = null;
+    this.ephemeralPages = new Map();
+    this.memoryPolicy = {
+      weights: { ...DEFAULT_MEMORY_WEIGHTS },
+      successfulOutcomes: 0,
+      failedOutcomes: 0,
+      learnedGuidelines: [
+        'Preserve executable world state, action-outcome causality, preconditions, and future decision cues; discard narration before state.',
+        'Keep constraints, exact identifiers, unresolved failures, and post-mutation verification provenance losslessly.',
+        'At a provider-request boundary, retain unresolved derivations, failed strategies, and mutations awaiting verification as explicit executable state instead of postponing compaction past the selected chat budget.',
+      ],
+    };
+    this.revision = 0;
+    this.mutationEpoch = 0;
+    this.lastEventHash = '';
+    this.legacyEventPrefixSequence = 0;
+    this.legacyEventPrefixHash = '';
+  }
+
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    if (this.initializationPromise) return this.initializationPromise;
+    const initialization = this.initializeFromStorage();
+    this.initializationPromise = initialization;
+    try {
+      await initialization;
+    } finally {
+      if (this.initializationPromise === initialization) this.initializationPromise = null;
+    }
+  }
+
+  private async initializeFromStorage(): Promise<void> {
     if (!this.durable) {
       this.initialized = true;
       return;
     }
     await fs.ensureDir(this.scopeDir);
-    const snapshot: ContextFabricSnapshot | null = await fs.readJson(this.snapshotPath).catch(() => null);
-    if (snapshot?.version === 1 && snapshot.scopeId === this.scopeId) this.restore(snapshot);
-
-    const eventText = await fs.readFile(this.eventsPath, 'utf8').catch(() => '');
+    const eventText = await readOptionalDurableText(this.eventsPath);
+    let snapshot: ContextFabricSnapshot | null = null;
+    try {
+      snapshot = await readOptionalDurableJson<ContextFabricSnapshot>(this.snapshotPath);
+    } catch (error) {
+      // The verified append-only ledger is sufficient to reconstruct every
+      // materialized record. Ignore a bad auxiliary snapshot only when that
+      // ledger is present; an eventless scope must not silently lose its sole
+      // durable state.
+      if (!eventText.trim()) throw error;
+    }
+    const eventLines = eventText.split(/\r?\n/).filter(Boolean);
+    const verifiedEvents: ContextFabricEvent[] = [];
+    const declaredLegacyPrefix = snapshot?.legacyEventPrefix;
+    const legacyV1Ceiling = snapshot?.eventHashVersion === 2
+      ? Math.max(0, Math.floor(Number(declaredLegacyPrefix?.sequence || 0)))
+      : Number.POSITIVE_INFINITY;
     let expectedHash = '';
-    for (const line of eventText.split(/\r?\n/).filter(Boolean)) {
+    let previousSequence = 0;
+    let sawV2Event = false;
+    let observedLegacyPrefixSequence = 0;
+    let observedLegacyPrefixHash = '';
+    for (const line of eventLines) {
       try {
         const event = JSON.parse(line) as ContextFabricEvent;
-        if (event.version !== 1 || event.scopeId !== this.scopeId) continue;
+        if (
+          (event.version !== 1 && event.version !== 2)
+          || event.scopeId !== this.scopeId
+          || !isContextFabricEventPayloadValid(event)
+        ) break;
         const body = { ...event, hash: undefined } as any;
         delete body.hash;
-        if (event.previousHash !== expectedHash || sha256(stableSerialize(body)) !== event.hash) break;
+        const hashMatches = sha256(stableSerialize(body)) === event.hash;
+        const acceptsLegacyV1 = event.version === 1
+          && !sawV2Event
+          && event.sequence <= legacyV1Ceiling
+          && (
+            !declaredLegacyPrefix
+            || event.sequence !== declaredLegacyPrefix.sequence
+            || event.hash === declaredLegacyPrefix.hash
+          );
+        if (
+          event.previousHash !== expectedHash
+          || !Number.isFinite(event.sequence)
+          || event.sequence !== previousSequence + 1
+          || (event.version === 1 && (sawV2Event || event.sequence > legacyV1Ceiling))
+          // Version 1 hashed pre-JSON objects and could include properties whose
+          // undefined values vanished on disk. Retain that structurally chained
+          // prefix only for snapshots created before the durable v2 hash format.
+          || (!hashMatches && !acceptsLegacyV1)
+        ) break;
         expectedHash = event.hash;
-        if (event.sequence <= this.revision) continue;
-        this.applyEvent(event);
+        previousSequence = event.sequence;
+        if (event.version === 1) {
+          observedLegacyPrefixSequence = event.sequence;
+          observedLegacyPrefixHash = event.hash;
+        } else {
+          sawV2Event = true;
+        }
+        verifiedEvents.push(event);
       } catch {
         break;
       }
     }
-    // The event log is the integrity root. A newer snapshot may contain writes
-    // already compacted into it, while an empty log is valid for imported state.
-    if (expectedHash && this.revision <= this.lastPersistedEventSequence(eventText)) {
-      this.lastEventHash = expectedHash;
+
+    if (verifiedEvents.length < eventLines.length) {
+      // Do not append new valid events behind a rejected tail: subsequent
+      // restarts would stop at the same damaged record and never reach them.
+      // Preserve the rejected bytes for diagnosis, then atomically make the
+      // verified prefix the active ledger before this fabric accepts writes.
+      const rejectedTail = eventLines.slice(verifiedEvents.length).join('\n');
+      const recoveryTag = `${Date.now()}.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
+      const quarantinePath = path.join(this.scopeDir, `events.rejected.${recoveryTag}.jsonl`);
+      const repairedPath = path.join(this.scopeDir, `.events.repaired.${recoveryTag}.tmp`);
+      try {
+        await fs.writeFile(quarantinePath, `${rejectedTail}\n`, { encoding: 'utf8', flag: 'wx' });
+        const verifiedLedger = verifiedEvents.length > 0
+          ? `${verifiedEvents.map(event => JSON.stringify(event)).join('\n')}\n`
+          : '';
+        await fs.writeFile(repairedPath, verifiedLedger, { encoding: 'utf8', flag: 'wx' });
+        await fs.move(repairedPath, this.eventsPath, { overwrite: true });
+      } catch (error) {
+        await fs.remove(repairedPath).catch(() => undefined);
+        this.persistenceError = error instanceof Error ? error : new Error(String(error));
+        throw new Error(`Context Fabric could not repair its damaged event ledger: ${this.persistenceError.message}`);
+      }
+    }
+
+    // Durable state is always reconstructed from the verified ledger, even
+    // when a same-run survivor snapshot was supplied by a retry path. Trusting
+    // an ahead-of-disk seed could append a new event after a hash that never
+    // existed in the ledger and make the entire future tail unrecoverable.
+    // Eventless legacy snapshots remain readable for migration; v2 snapshots
+    // may be eventless only at revision zero because v2 commits events first.
+    this.resetMaterializedState();
+    const snapshotShapeValid = snapshot?.version === 1 && snapshot.scopeId === this.scopeId;
+    const snapshotTrusted = Boolean(
+      snapshotShapeValid
+      && eventLines.length === 0
+      && (snapshot!.eventHashVersion !== 2 || snapshot!.revision === 0),
+    );
+    if (snapshotTrusted) this.restore(snapshot!);
+
+    for (const event of verifiedEvents) {
+      if (event.sequence <= this.revision) continue;
+      this.applyEvent(event);
+    }
+    // The append-only ledger is the integrity root. Never advance its hash to
+    // an unverified tail, and never let a disk snapshot claim a revision that
+    // the verified chain cannot reach.
+    const lastVerified = verifiedEvents[verifiedEvents.length - 1];
+    if (lastVerified && this.revision <= lastVerified.sequence) {
+      this.lastEventHash = lastVerified.hash;
+    }
+    // Carry the exact v1/v2 transition through future v2 snapshots. Without
+    // this marker, an upgraded mixed ledger would look like an invalid v2-only
+    // ledger on its next restart; new chats have no legacy allowance at all.
+    if (observedLegacyPrefixSequence > 0) {
+      this.legacyEventPrefixSequence = observedLegacyPrefixSequence;
+      this.legacyEventPrefixHash = observedLegacyPrefixHash;
     }
     this.initialized = true;
-  }
-
-  private lastPersistedEventSequence(eventText: string): number {
-    const lines = eventText.split(/\r?\n/).filter(Boolean);
-    if (lines.length === 0) return 0;
-    try { return Number(JSON.parse(lines[lines.length - 1]).sequence || 0); } catch { return 0; }
   }
 
   private applyEvent(event: ContextFabricEvent): void {
@@ -610,10 +839,29 @@ export class ContextFabric {
       this.vectorizer.addDocument(this.searchableEpisodeText(event.episode));
     }
     if (event.operation === 'link' && event.link) this.links.set(event.link.id, event.link);
-    if (event.operation === 'policy' && event.memoryPolicy) this.memoryPolicy = clonePolicy(event.memoryPolicy);
+    if (event.operation === 'policy' && event.memoryPolicy) {
+      this.memoryPolicy = clonePolicy({
+        ...this.memoryPolicy,
+        ...event.memoryPolicy,
+        weights: { ...DEFAULT_MEMORY_WEIGHTS, ...(event.memoryPolicy.weights || {}) },
+        learnedGuidelines: Array.isArray(event.memoryPolicy.learnedGuidelines)
+          ? event.memoryPolicy.learnedGuidelines
+          : this.memoryPolicy.learnedGuidelines,
+      });
+    }
+    if (event.operation === 'checkpoint' && event.checkpoint) {
+      this.latestCompactionCheckpoint = {
+        ...event.checkpoint,
+        recordedAt: event.timestamp,
+        sequence: event.sequence,
+      };
+    }
     this.revision = Math.max(this.revision, event.sequence);
     this.lastEventHash = event.hash;
-    const epoch = event.fact?.provenance[event.fact.provenance.length - 1]?.mutationEpoch;
+    const provenance = event.fact?.provenance;
+    const epoch = Array.isArray(provenance)
+      ? provenance[provenance.length - 1]?.mutationEpoch
+      : undefined;
     if (typeof epoch === 'number') this.mutationEpoch = Math.max(this.mutationEpoch, epoch);
   }
 
@@ -621,8 +869,8 @@ export class ContextFabric {
     operation: ContextEventOperation,
     payload: Pick<ContextFabricEvent, 'fact' | 'episode' | 'link' | 'memoryPolicy' | 'checkpoint'>,
   ): void {
-    const body: Omit<ContextFabricEvent, 'hash'> = {
-      version: 1,
+    const unpersistedBody: Omit<ContextFabricEvent, 'hash'> = {
+      version: 2,
       scopeId: this.scopeId,
       sequence: ++this.revision,
       timestamp: Date.now(),
@@ -630,30 +878,163 @@ export class ContextFabric {
       ...payload,
       previousHash: this.lastEventHash,
     };
+    // Hash exactly what JSON persistence retains. In v1, optional undefined
+    // properties participated in the in-memory hash and then disappeared from
+    // JSON, making authentic events impossible to verify after a restart.
+    const body = JSON.parse(JSON.stringify(unpersistedBody)) as Omit<ContextFabricEvent, 'hash'>;
     const event: ContextFabricEvent = { ...body, hash: sha256(stableSerialize(body)) };
     this.lastEventHash = event.hash;
     if (event.fact) this.facts.set(event.fact.id, normalizeStoredFact(event.fact));
     if (event.episode) this.episodes.set(event.episode.id, cloneEpisode(event.episode));
     if (event.link) this.links.set(event.link.id, event.link);
     if (event.memoryPolicy) this.memoryPolicy = clonePolicy(event.memoryPolicy);
+    if (event.checkpoint) {
+      this.latestCompactionCheckpoint = {
+        ...event.checkpoint,
+        recordedAt: event.timestamp,
+        sequence: event.sequence,
+      };
+    }
     if (!this.durable) return;
     const line = `${JSON.stringify(event)}\n`;
-    this.persistQueue = this.persistQueue
-      .then(async () => {
-        await fs.ensureDir(this.scopeDir);
+    let firstAppendAttempt = true;
+    this.enqueuePersistence(async () => {
+      await fs.ensureDir(this.scopeDir);
+      if (firstAppendAttempt) {
+        firstAppendAttempt = false;
         await fs.appendFile(this.eventsPath, line, 'utf8');
-      })
-      .catch(error => {
-        this.persistenceError = error instanceof Error ? error : new Error(String(error));
-      });
+        return;
+      }
+      await this.reconcileAmbiguousEventAppend(event, line);
+    });
     this.scheduleSnapshot();
+  }
+
+  /**
+   * Recover an append whose outcome is ambiguous. A filesystem can commit all
+   * or part of appendFile and still surface an error (for example during a
+   * transient Windows filter-driver interruption). Blindly repeating the
+   * append would duplicate an event or leave an invalid JSONL tail.
+   */
+  private async reconcileAmbiguousEventAppend(event: ContextFabricEvent, line: string): Promise<void> {
+    let ledger = '';
+    try {
+      ledger = await fs.readFile(this.eventsPath, 'utf8');
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+
+    const lastNewline = ledger.lastIndexOf('\n');
+    const completePrefix = lastNewline >= 0 ? ledger.slice(0, lastNewline + 1) : '';
+    const trailingFragment = lastNewline >= 0 ? ledger.slice(lastNewline + 1) : ledger;
+    const completeLines = completePrefix.split(/\r?\n/).filter(Boolean);
+    const parseEvent = (value: string): ContextFabricEvent | null => {
+      try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' ? parsed as ContextFabricEvent : null;
+      } catch {
+        return null;
+      }
+    };
+    const lastComplete = completeLines.length > 0
+      ? parseEvent(completeLines[completeLines.length - 1])
+      : null;
+    const fragmentEvent = trailingFragment ? parseEvent(trailingFragment) : null;
+    const isSameEvent = (candidate: ContextFabricEvent | null) => Boolean(
+      candidate
+      && candidate.scopeId === this.scopeId
+      && candidate.sequence === event.sequence
+      && candidate.hash === event.hash
+    );
+
+    // The first append completed despite reporting an error. Normalize a
+    // missing final newline if necessary, but never append the event twice.
+    if (isSameEvent(lastComplete) && !trailingFragment) return;
+    if (isSameEvent(fragmentEvent)) {
+      await this.replaceEventLedgerAtomically(`${completePrefix}${trailingFragment}\n`);
+      return;
+    }
+
+    // Accept a valid pre-existing tail that merely lacked its final newline.
+    // It is not damage and remains part of the verified prefix.
+    const previousTail = fragmentEvent || lastComplete;
+    const verifiedPrefix = fragmentEvent
+      ? `${completePrefix}${trailingFragment}\n`
+      : completePrefix;
+    const expectedPreviousPresent = event.sequence === 1
+      ? !previousTail && event.previousHash === ''
+      : Boolean(
+          previousTail
+          && previousTail.scopeId === this.scopeId
+          && previousTail.sequence === event.sequence - 1
+          && previousTail.hash === event.previousHash
+        );
+    if (!expectedPreviousPresent) {
+      throw new Error(`Context Fabric event ${event.sequence} cannot be appended after the current ledger tail.`);
+    }
+
+    // Drop only the unparseable/incomplete fragment from this failed append,
+    // then atomically install the verified prefix plus the exact event.
+    await this.replaceEventLedgerAtomically(`${verifiedPrefix}${line}`);
+  }
+
+  private async replaceEventLedgerAtomically(contents: string): Promise<void> {
+    const temporary = path.join(
+      this.scopeDir,
+      `.events.append-repair.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`,
+    );
+    try {
+      await fs.writeFile(temporary, contents, { encoding: 'utf8', flag: 'wx' });
+      await fs.move(temporary, this.eventsPath, { overwrite: true });
+    } catch (error) {
+      await fs.remove(temporary).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private enqueuePersistence(operation: () => Promise<void>): void {
+    this.pendingPersistenceOperations.push(operation);
+    this.persistQueue = this.persistQueue.then(() => this.drainPersistenceOperations());
+  }
+
+  private async drainPersistenceOperations(): Promise<void> {
+    while (this.pendingPersistenceOperations.length > 0) {
+      const operation = this.pendingPersistenceOperations[0];
+      let committed = false;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          await operation();
+          committed = true;
+          this.persistenceError = null;
+          break;
+        } catch (error) {
+          this.persistenceError = error instanceof Error ? error : new Error(String(error));
+        }
+      }
+      if (!committed) return;
+      this.pendingPersistenceOperations.shift();
+    }
+  }
+
+  private async flushPersistenceOperations(): Promise<void> {
+    await this.persistQueue;
+    if (this.pendingPersistenceOperations.length > 0) {
+      this.persistQueue = this.persistQueue.then(() => this.drainPersistenceOperations());
+      await this.persistQueue;
+    }
+    if (this.pendingPersistenceOperations.length > 0 || this.persistenceError) {
+      throw new Error(`Context Fabric persistence failed: ${this.persistenceError?.message || 'pending operations could not be committed'}`);
+    }
   }
 
   private scheduleSnapshot(): void {
     if (!this.durable || this.snapshotTimer) return;
     this.snapshotTimer = setTimeout(() => {
       this.snapshotTimer = null;
-      void this.flush();
+      void this.flush().catch(() => {
+        // The pending operation remains queued and a caller-visible flush or
+        // the next event will retry it. Avoid an unhandled timer rejection.
+      });
     }, 750);
     (this.snapshotTimer as any).unref?.();
   }
@@ -686,8 +1067,17 @@ export class ContextFabric {
     content: unknown;
     toolName?: string;
     targets?: string[];
+    originId?: string;
+    createdAt?: number;
   }): ContextEpisode {
-    const createdAt = Date.now();
+    const normalizedOriginId = input.originId ? normalizeText(input.originId, 700) : '';
+    if (normalizedOriginId) {
+      const existing = Array.from(this.episodes.values()).find(episode => episode.originId === normalizedOriginId);
+      if (existing) return existing;
+    }
+    const createdAt = Number.isFinite(input.createdAt)
+      ? Math.max(0, Math.floor(Number(input.createdAt)))
+      : Date.now();
     const serialized = stableSerialize(input.content);
     const serializedBuffer = Buffer.from(serialized, 'utf8');
     const id = `ep_${sha256(`${this.scopeId}\u0000${createdAt}\u0000${this.revision}\u0000${input.header}`).slice(0, 20)}`;
@@ -698,6 +1088,7 @@ export class ContextFabric {
       sequence: this.revision + 1,
       source: input.source,
       createdAt,
+      ...(normalizedOriginId ? { originId: normalizedOriginId } : {}),
       header: normalizeText(input.header, 700),
       contentPreview: normalizeText(serialized, 1_600),
       contentHash: sha256(serialized),
@@ -709,7 +1100,7 @@ export class ContextFabric {
     if (!this.durable) {
       this.ephemeralPages.set(pageRef, serialized);
     } else {
-      this.persistQueue = this.persistQueue.then(async () => {
+      this.enqueuePersistence(async () => {
         const pagesDir = path.join(this.scopeDir, 'pages');
         await fs.ensureDir(pagesDir);
         if (!oversized) {
@@ -729,8 +1120,6 @@ export class ContextFabric {
           contentHash: episode.contentHash,
           chunks: chunkRefs,
         });
-      }).catch(error => {
-        this.persistenceError = error instanceof Error ? error : new Error(String(error));
       });
     }
     this.emit('episode', { episode });
@@ -738,8 +1127,7 @@ export class ContextFabric {
   }
 
   async openPage(pageRef: string): Promise<unknown> {
-    await this.persistQueue;
-    if (this.persistenceError) throw new Error(`Context page persistence failed: ${this.persistenceError.message}`);
+    await this.flushPersistenceOperations();
     const normalized = String(pageRef || '').replace(/\\/g, '/').replace(/^\/+/, '');
     if (!normalized.startsWith('pages/') || normalized.includes('..')) {
       throw new Error('Invalid context page reference.');
@@ -748,11 +1136,12 @@ export class ContextFabric {
     if (!absolute.startsWith(path.resolve(this.scopeDir) + path.sep)) {
       throw new Error('Context page reference escapes its scope.');
     }
+    const episode = Array.from(this.episodes.values()).find(item => item.pageRef === normalized);
+    if (!episode) throw new Error(`Unknown context page: ${normalized}`);
     if (!this.durable) {
       const serialized = this.ephemeralPages.get(normalized);
       if (serialized === undefined) throw new Error(`Unknown ephemeral context page: ${normalized}`);
-      const episode = Array.from(this.episodes.values()).find(item => item.pageRef === normalized);
-      if (episode && sha256(serialized) !== episode.contentHash) throw new Error('Context page integrity check failed.');
+      if (sha256(serialized) !== episode.contentHash) throw new Error('Context page integrity check failed.');
       try { return JSON.parse(serialized); } catch { return serialized; }
     }
     let serialized = '';
@@ -762,15 +1151,14 @@ export class ContextFabric {
       for (const chunkRef of Array.isArray(manifest?.chunks) ? manifest.chunks : []) {
         const chunkPath = path.resolve(this.scopeDir, String(chunkRef));
         if (!chunkPath.startsWith(path.resolve(this.scopeDir) + path.sep)) throw new Error('Invalid page chunk reference.');
-        chunks.push(await gunzipAsync(await fs.readFile(chunkPath)));
+        chunks.push(await gunzipContextPage(await fs.readFile(chunkPath)));
       }
       serialized = Buffer.concat(chunks).toString('utf8');
       if (sha256(serialized) !== manifest?.contentHash) throw new Error('Context page integrity check failed.');
     } else {
-      serialized = (await gunzipAsync(await fs.readFile(absolute))).toString('utf8');
+      serialized = (await gunzipContextPage(await fs.readFile(absolute))).toString('utf8');
     }
-    const episode = Array.from(this.episodes.values()).find(item => item.pageRef === normalized);
-    if (episode && sha256(serialized) !== episode.contentHash) throw new Error('Context page integrity check failed.');
+    if (sha256(serialized) !== episode.contentHash) throw new Error('Context page integrity check failed.');
     try { return JSON.parse(serialized); } catch { return serialized; }
   }
 
@@ -928,6 +1316,7 @@ export class ContextFabric {
   observeUserRequest(
     request: string,
     mode: 'new' | 'continuation' | 'retry' = 'new',
+    runId = '',
   ): void {
     const text = normalizeText(request);
     if (!text) return;
@@ -937,6 +1326,7 @@ export class ContextFabric {
       source: 'user',
       header: `User request (${mode})`,
       content: { mode, request },
+      originId: runId ? `user-run:${normalizeText(runId, 220)}` : undefined,
     });
     const provenance: ContextProvenance = {
       source: 'user',
@@ -960,6 +1350,81 @@ export class ContextFabric {
       this.upsertFact({
         key: `constraint:${subject}`, kind: 'constraint', text: clause,
         importance: 10, epistemic: 'user_asserted', provenance,
+      });
+    }
+  }
+
+  /**
+   * Import the UI's durable transcript into the provider-neutral page store.
+   * This is a migration/recovery path, not the normal write path: live turns
+   * are recorded by observeUserRequest()/recordAssistantResponse(). Stable
+   * origin IDs make repeated hydration idempotent without incorrectly merging
+   * two intentionally identical messages from different turns.
+   */
+  importDialogueTurns(turns: Array<{
+    originId: string;
+    role: 'user' | 'assistant';
+    text: string;
+    createdAt?: number;
+  }>): number {
+    const knownOrigins = new Set(
+      Array.from(this.episodes.values()).map(episode => episode.originId).filter(Boolean) as string[],
+    );
+    let imported = 0;
+    for (const turn of turns) {
+      const originId = normalizeText(turn?.originId, 700);
+      const exactText = String(turn?.text ?? '').replace(/\u0000/g, '');
+      if (!originId || !exactText.trim() || knownOrigins.has(originId)) continue;
+      this.archiveEpisode({
+        source: turn.role === 'user' ? 'user' : 'runtime',
+        header: turn.role === 'user' ? 'Imported user message' : 'Imported assistant response',
+        content: { role: turn.role, text: exactText },
+        originId,
+        createdAt: turn.createdAt,
+      });
+      knownOrigins.add(originId);
+      imported += 1;
+    }
+    return imported;
+  }
+
+  /**
+   * Close only task-scoped active state at a confidently detected objective
+   * boundary. Exact pages, historical facts, artifacts, evidence, references,
+   * and preferences remain in this chat's fabric and stay query-recallable.
+   */
+  beginTaskBoundary(reason = 'A new objective started in the same chat.'): void {
+    const now = Date.now();
+    const sourceId = `task_boundary_${sha256(`${now}\u0000${reason}\u0000${this.revision}`).slice(0, 16)}`;
+    const episode = this.archiveEpisode({
+      source: 'runtime',
+      header: 'In-chat task boundary',
+      content: { reason, at: now, priorMutationEpoch: this.mutationEpoch },
+      originId: sourceId,
+      createdAt: now,
+    });
+    for (const fact of Array.from(this.facts.values())) {
+      if (
+        fact.status !== 'active' ||
+        !['objective', 'constraint', 'decision', 'next_action', 'failure'].includes(fact.kind)
+      ) continue;
+      this.emit('upsert', {
+        fact: {
+          ...fact,
+          status: 'resolved',
+          resolvedBy: sourceId,
+          validTo: now,
+          invalidatedAt: now,
+          lastObservedAt: now,
+          revision: this.revision + 1,
+          provenance: [...fact.provenance, {
+            source: 'runtime' as const,
+            sourceId,
+            observedAt: now,
+            mutationEpoch: this.mutationEpoch,
+            pageRef: episode.pageRef,
+          }].slice(-MAX_PROVENANCE_PER_FACT),
+        },
       });
     }
   }
@@ -994,7 +1459,7 @@ export class ContextFabric {
     args: Record<string, any> = {},
     result: any = {},
     rawResult: any = result,
-  ): void {
+  ): string {
     const semantics = classifyToolSemantics(toolName, args);
     const success = toolResultSucceeded(rawResult);
     if (success && semantics.isMutation) this.mutationEpoch += 1;
@@ -1028,7 +1493,7 @@ export class ContextFabric {
         key: `failure:${signature}`, kind: 'failure', text: summary,
         exactValues, targets, importance: 9, epistemic: 'observed', provenance,
       });
-      return;
+      return episode.pageRef;
     }
 
     if (semantics.isMutation || semantics.effect === 'artifact') {
@@ -1068,6 +1533,7 @@ export class ContextFabric {
         epistemic: 'observed', provenance,
       });
     }
+    return episode.pageRef;
   }
 
   private resolveFailuresForTargets(targets: string[], resolvedBy: string): void {
@@ -1090,15 +1556,53 @@ export class ContextFabric {
     }
   }
 
-  markCompleted(answer: string): void {
+  recordAssistantResponse(
+    answer: string,
+    outcome: 'completed' | 'stopped' | 'failed' = 'completed',
+    runId = '',
+  ): void {
+    const exactAnswer = String(answer ?? '').replace(/\u0000/g, '');
+    if (!exactAnswer.trim()) return;
+    const answerSummary = normalizeText(exactAnswer, 1_500);
     const now = Date.now();
+    const stableRunId = normalizeText(runId, 220);
+    const sourceId = stableRunId
+      ? `assistant_${normalizeKey(stableRunId).slice(0, 120) || sha256(stableRunId).slice(0, 16)}`
+      : `assistant_${sha256(`${outcome}\u0000${exactAnswer}`).slice(0, 16)}`;
+    // Provider-specific completion paths and the central registry may both
+    // observe the same terminal boundary. Persist it once per run.
+    if (Array.from(this.facts.values()).some(fact =>
+      fact.provenance.some(item => item.sourceId === sourceId)
+    )) return;
+    const episode = this.archiveEpisode({
+      source: 'runtime',
+      header: `Assistant response (${outcome})`,
+      content: { outcome, runId: stableRunId || undefined, answer: exactAnswer },
+      originId: stableRunId ? `assistant-run:${stableRunId}` : undefined,
+      createdAt: now,
+    });
     const provenance: ContextProvenance = {
-      source: 'runtime', sourceId: `completion_${sha256(answer).slice(0, 14)}`,
-      observedAt: now, mutationEpoch: this.mutationEpoch,
+      source: 'runtime', sourceId,
+      observedAt: now, mutationEpoch: this.mutationEpoch, pageRef: episode.pageRef,
     };
+    if (outcome !== 'completed') {
+      const kind: ContextFactKind = outcome === 'failed' ? 'failure' : 'next_action';
+      this.upsertFact({
+        key: `${kind}:terminal:${sourceId}`,
+        kind,
+        text: outcome === 'failed'
+          ? `Run failed and may need recovery: ${answerSummary}`
+          : `Run stopped before the objective was fully settled. Resume from the exact assistant page if the user continues: ${normalizeText(exactAnswer, 1_200)}`,
+        importance: 9,
+        epistemic: 'observed',
+        provenance,
+      });
+      this.learnFromOutcome(false);
+      return;
+    }
     this.upsertFact({
       key: `milestone:completion:${this.mutationEpoch}`, kind: 'milestone',
-      text: `Run completed at mutation epoch ${this.mutationEpoch}: ${normalizeText(answer, 1_500)}`,
+      text: `Run completed at mutation epoch ${this.mutationEpoch}: ${answerSummary}`,
       importance: 9, epistemic: 'observed', provenance,
     });
     this.learnFromOutcome(true);
@@ -1116,6 +1620,10 @@ export class ContextFabric {
         },
       });
     }
+  }
+
+  markCompleted(answer: string, runId = ''): void {
+    this.recordAssistantResponse(answer, 'completed', runId);
   }
 
   private learnFromOutcome(success: boolean): void {
@@ -1503,9 +2011,18 @@ export class ContextFabric {
   }
 
   recordCompactionCheckpoint(compactionId: string, manifestHash: string, capsule: string): void {
+    if (!/^[A-Za-z0-9_-]{1,220}$/.test(compactionId) || !/^[0-9a-f]{64}$/i.test(manifestHash)) {
+      throw new Error('Invalid Context Fabric compaction checkpoint identity.');
+    }
     this.emit('checkpoint', {
       checkpoint: { compactionId, manifestHash, capsuleHash: sha256(capsule) },
     });
+  }
+
+  getLatestCompactionCheckpoint(): ContextCompactionCheckpoint | null {
+    return this.latestCompactionCheckpoint
+      ? { ...this.latestCompactionCheckpoint }
+      : null;
   }
 
   listFacts(): ContextFact[] {
@@ -1527,25 +2044,82 @@ export class ContextFabric {
       revision: this.revision,
       mutationEpoch: this.mutationEpoch,
       lastEventHash: this.lastEventHash,
+      eventHashVersion: 2,
+      ...(this.legacyEventPrefixSequence > 0 && this.legacyEventPrefixHash
+        ? {
+            legacyEventPrefix: {
+              sequence: this.legacyEventPrefixSequence,
+              hash: this.legacyEventPrefixHash,
+            },
+          }
+        : {}),
       facts: this.listFacts(),
       episodes: this.listEpisodes(),
       links: this.listLinks(),
       memoryPolicy: this.getMemoryPolicy(),
+      ...(this.latestCompactionCheckpoint
+        ? { latestCompactionCheckpoint: { ...this.latestCompactionCheckpoint } }
+        : {}),
       ...(!this.durable ? { ephemeralPageContents: Object.fromEntries(this.ephemeralPages) } : {}),
     };
   }
 
   restore(snapshot: ContextFabricSnapshot): void {
     if (snapshot.version !== 1 || snapshot.scopeId !== this.scopeId) return;
-    if (snapshot.revision < this.revision) return;
-    this.revision = snapshot.revision;
-    this.mutationEpoch = snapshot.mutationEpoch;
-    this.lastEventHash = snapshot.lastEventHash || '';
-    this.facts = new Map(snapshot.facts.map(fact => [fact.id, normalizeStoredFact(fact)]));
-    this.episodes = new Map((snapshot.episodes || []).map(episode => [episode.id, cloneEpisode(episode)]));
-    this.links = new Map((snapshot.links || []).map(link => [link.id, { ...link }]));
-    this.ephemeralPages = new Map(Object.entries(snapshot.ephemeralPageContents || {}));
-    if (snapshot.memoryPolicy) {
+    const snapshotRevision = Number(snapshot.revision);
+    if (!Number.isFinite(snapshotRevision) || snapshotRevision < 0 || snapshotRevision < this.revision) return;
+    this.revision = Math.floor(snapshotRevision);
+    this.mutationEpoch = Number.isFinite(Number(snapshot.mutationEpoch))
+      ? Math.max(0, Math.floor(Number(snapshot.mutationEpoch)))
+      : 0;
+    this.lastEventHash = /^[0-9a-f]{64}$/i.test(String(snapshot.lastEventHash || ''))
+      ? String(snapshot.lastEventHash)
+      : '';
+    this.legacyEventPrefixSequence = Math.max(
+      0,
+      Math.floor(Number(snapshot.legacyEventPrefix?.sequence || 0)),
+    );
+    this.legacyEventPrefixHash = this.legacyEventPrefixSequence > 0
+      ? String(snapshot.legacyEventPrefix?.hash || '')
+      : '';
+    const snapshotFacts = Array.isArray(snapshot.facts)
+      ? snapshot.facts.filter(isStoredFactShape)
+      : [];
+    const snapshotEpisodes = Array.isArray(snapshot.episodes)
+      ? snapshot.episodes.filter(isStoredEpisodeShape)
+      : [];
+    const snapshotLinks = Array.isArray(snapshot.links)
+      ? snapshot.links.filter(link => isRecord(link) && typeof link.id === 'string')
+      : [];
+    this.facts = new Map(snapshotFacts.map(fact => [fact.id, normalizeStoredFact(fact)]));
+    this.episodes = new Map(snapshotEpisodes.map(episode => [episode.id, cloneEpisode(episode)]));
+    this.links = new Map(snapshotLinks.map(link => [link.id, { ...link } as ContextLink]));
+    this.ephemeralPages = new Map(
+      isRecord(snapshot.ephemeralPageContents)
+        ? Object.entries(snapshot.ephemeralPageContents).filter(([, content]) => typeof content === 'string') as Array<[string, string]>
+        : [],
+    );
+    const checkpoint = snapshot.latestCompactionCheckpoint;
+    this.latestCompactionCheckpoint = checkpoint
+      && /^[A-Za-z0-9_-]{1,220}$/.test(String(checkpoint.compactionId || ''))
+      && /^[0-9a-f]{64}$/i.test(String(checkpoint.manifestHash || ''))
+      && /^[0-9a-f]{64}$/i.test(String(checkpoint.capsuleHash || ''))
+      && Number.isFinite(Number(checkpoint.recordedAt))
+      && Number.isFinite(Number(checkpoint.sequence))
+      && Number(checkpoint.sequence) <= snapshotRevision
+        ? {
+            compactionId: checkpoint.compactionId,
+            manifestHash: checkpoint.manifestHash,
+            capsuleHash: checkpoint.capsuleHash,
+            recordedAt: Math.max(0, Math.floor(Number(checkpoint.recordedAt))),
+            sequence: Math.max(0, Math.floor(Number(checkpoint.sequence))),
+          }
+        : null;
+    if (
+      isRecord(snapshot.memoryPolicy)
+      && isRecord(snapshot.memoryPolicy.weights)
+      && Array.isArray(snapshot.memoryPolicy.learnedGuidelines)
+    ) {
       this.memoryPolicy = clonePolicy({
         ...this.memoryPolicy,
         ...snapshot.memoryPolicy,
@@ -1562,13 +2136,24 @@ export class ContextFabric {
       clearTimeout(this.snapshotTimer);
       this.snapshotTimer = null;
     }
-    await this.persistQueue;
-    if (this.persistenceError) throw new Error(`Context Fabric persistence failed: ${this.persistenceError.message}`);
+    await this.flushPersistenceOperations();
     const snapshot = this.snapshot();
     await fs.ensureDir(this.scopeDir);
-    const temporary = path.join(this.scopeDir, `.snapshot.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
-    await fs.writeJson(temporary, snapshot, { spaces: 2 });
-    await fs.move(temporary, this.snapshotPath, { overwrite: true });
+    let lastSnapshotError: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const temporary = path.join(this.scopeDir, `.snapshot.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+      try {
+        await fs.writeJson(temporary, snapshot, { spaces: 2 });
+        await fs.move(temporary, this.snapshotPath, { overwrite: true });
+        return;
+      } catch (error) {
+        lastSnapshotError = error;
+        await fs.remove(temporary).catch(() => undefined);
+      }
+    }
+    throw (lastSnapshotError instanceof Error
+      ? lastSnapshotError
+      : new Error(`Context Fabric snapshot persistence failed: ${String(lastSnapshotError || 'unknown error')}`));
   }
 }
 
@@ -1584,25 +2169,27 @@ export async function getContextFabricForChat(
     return ephemeral;
   }
   let fabric = activeFabrics.get(scopeId);
+  let createdForThisRequest = false;
   if (!fabric) {
     fabric = new ContextFabric(scopeId, options);
     activeFabrics.set(scopeId, fabric);
-  } else if (options.snapshot) {
-    fabric.restore(options.snapshot);
+    createdForThisRequest = true;
   }
-  await fabric.initialize();
-  return fabric;
-}
-
-/** Archive the prior task's fabric instead of deleting it. */
-export async function rotateContextFabric(scopeId: string, storageRoot = DEFAULT_CONTEXT_ROOT): Promise<void> {
-  const active = activeFabrics.get(scopeId);
-  if (active) await active.flush().catch(() => undefined);
-  activeFabrics.delete(scopeId);
-  const scopeDir = path.join(storageRoot, stableScopeSegment(scopeId));
-  if (!(await fs.pathExists(scopeDir))) return;
-  const archiveDir = path.join(storageRoot, 'archive');
-  await fs.ensureDir(archiveDir);
-  const destination = path.join(archiveDir, `${stableScopeSegment(scopeId)}-${Date.now()}`);
-  await fs.move(scopeDir, destination, { overwrite: false });
+  // An existing live fabric already contains the newest admitted events.
+  // Reapplying a survivor snapshot here could replace same-revision state or
+  // move it onto an uncommitted hash. Snapshots are construction-time seeds;
+  // the live instance and its serialized persist queue remain authoritative.
+  try {
+    await fabric.initialize();
+    return fabric;
+  } catch (error) {
+    // A failed first hydration can leave partially reconstructed in-memory
+    // state. Never pin that instance to the chat indefinitely: every caller
+    // sharing the same initialization promise observes the same failure, and
+    // the next request gets a clean reconstruction from durable storage.
+    if (createdForThisRequest && activeFabrics.get(scopeId) === fabric) {
+      activeFabrics.delete(scopeId);
+    }
+    throw error;
+  }
 }

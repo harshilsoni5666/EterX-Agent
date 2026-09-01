@@ -1,42 +1,49 @@
 import assert from 'node:assert/strict';
-import { compactStaleProviderHistory, rollProviderHistory } from '../src/lib/agent/context-hot-path';
+import {
+  GEMINI_SIGNATURE_VALIDATION_BYPASS,
+  sanitizeGeminiHistory,
+} from '../src/lib/agent/context-hot-path';
 import { toolResultCompactor } from '../src/lib/agent/memory/tool-result-compactor';
 import { estimateRequestTokenBudget } from '../src/lib/agent/request-token-budget';
 
-function testLatestParallelBatchStaysExact(): void {
-  const oldA = 'old-a '.repeat(2_000);
-  const oldB = 'old-b '.repeat(2_000);
-  const latestA = 'latest-a '.repeat(2_000);
-  const latestB = 'latest-b '.repeat(2_000);
-  const messages: any[] = [
-    { role: 'system', content: 'stable' },
-    { role: 'user', content: 'do work' },
-    { role: 'assistant', tool_calls: [{ id: 'a' }, { id: 'b' }] },
-    { role: 'tool', tool_call_id: 'a', content: oldA },
-    { role: 'tool', tool_call_id: 'b', content: oldB },
-    { role: 'assistant', tool_calls: [{ id: 'c' }, { id: 'd' }] },
-    { role: 'tool', tool_call_id: 'c', content: latestA },
-    { role: 'tool', tool_call_id: 'd', content: latestB },
-  ];
-  const compacted = compactStaleProviderHistory(messages, 'do work');
-  assert.match(compacted[3].content, /__eterxContextDigest/);
-  assert.match(compacted[4].content, /__eterxContextDigest/);
-  assert.equal(compacted[6].content, latestA);
-  assert.equal(compacted[7].content, latestB);
+function testGeminiThoughtSignaturesRemainPositionBound(): void {
+  const signature = 'provider-issued-signature';
+  const contents = sanitizeGeminiHistory([
+    { role: 'user', parts: [{ text: 'read two files' }] },
+    {
+      role: 'model',
+      parts: [
+        { functionCall: { name: 'workspace_read_file', args: { filename: 'a.ts' }, id: 'a' }, thoughtSignature: signature },
+        { functionCall: { name: 'workspace_read_file', args: { filename: 'b.ts' }, id: 'b' } },
+      ],
+    },
+    {
+      role: 'user',
+      parts: [
+        { functionResponse: { name: 'workspace_read_file', id: 'a', response: { output: 'a' } } },
+        { functionResponse: { name: 'workspace_read_file', id: 'b', response: { output: 'b' } } },
+      ],
+    },
+  ]);
+
+  const calls = contents[1].parts;
+  assert.equal(calls[0].thoughtSignature, signature, 'an authentic signature must remain byte-for-byte exact');
+  assert.equal(calls[1].thoughtSignature, undefined, 'parallel calls after the first must remain unsigned');
+  assert.equal(contents[2].parts[0].functionResponse.id, 'a', 'provider call IDs must survive sanitization');
 }
 
-function testHistoryRollUsesDurableLedger(): void {
-  const messages: any[] = [{ role: 'system', content: 'stable' }];
-  for (let index = 0; index < 11; index++) {
-    messages.push({ role: 'assistant', content: `action-${index}` });
-    messages.push({ role: 'tool', tool_call_id: `t-${index}`, content: `result-${index}` });
-  }
-  const rolled = rollProviderHistory(messages, 'verified ledger state', 'openai');
-  assert.ok(rolled.length < messages.length);
-  assert.equal(rolled[0].role, 'system');
-  assert.ok(rolled.some(message => String(message.content).includes('verified ledger state')));
-  const firstTool = rolled.findIndex(message => message.role === 'tool');
-  assert.ok(firstTool <= 0 || rolled[firstTool - 1]?.role === 'assistant');
+function testGeminiUnsignedStepGetsDocumentedValidationBypass(): void {
+  const contents = sanitizeGeminiHistory([
+    { role: 'user', parts: [{ text: 'run command' }] },
+    { role: 'model', parts: [{ functionCall: { name: 'workspace_run_command', args: { command: 'npm test' } } }] },
+    { role: 'user', parts: [{ functionResponse: { name: 'workspace_run_command', response: { output: 'ok' } } }] },
+  ]);
+
+  assert.equal(
+    contents[1].parts[0].thoughtSignature,
+    GEMINI_SIGNATURE_VALIDATION_BYPASS,
+    'a streamed/provider call missing its signature must not poison the next request',
+  );
 }
 
 function testParallelBatchBudget(): void {
@@ -53,6 +60,8 @@ function testParallelBatchBudget(): void {
   assert.equal(compacted[2], outputs[2], 'small result should remain exact');
   assert.ok(JSON.stringify(compacted).length < JSON.stringify(outputs).length / 2);
   assert.equal(compacted[0].__eterxContextDigest, true);
+  const linked = toolResultCompactor.withExactPageRef(compacted[0], 'pages/example.json.gz');
+  assert.equal(linked.exactContextPageRef, 'pages/example.json.gz');
 }
 
 function testRequestBudgetBreakdown(): void {
@@ -66,8 +75,8 @@ function testRequestBudgetBreakdown(): void {
   assert.equal(budget.toolCount, 1);
 }
 
-testLatestParallelBatchStaysExact();
-testHistoryRollUsesDurableLedger();
+testGeminiThoughtSignaturesRemainPositionBound();
+testGeminiUnsignedStepGetsDocumentedValidationBypass();
 testParallelBatchBudget();
 testRequestBudgetBreakdown();
 console.log('request token budget integration checks passed');

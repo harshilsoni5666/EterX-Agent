@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../../lib/agent/agent-registry';
 import { apiKeyPool } from '../../../../../lib/agent/api-key-pool';
 import { taskStore } from '../../../../../lib/agent/task-store';
+import { formatUnknownError } from '../../../../../lib/agent/error-format';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,7 +35,7 @@ export async function GET() {
     });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message },
+      { error: formatUnknownError(error, 'Failed to load agent pool status') },
       { status: 500 }
     );
   }

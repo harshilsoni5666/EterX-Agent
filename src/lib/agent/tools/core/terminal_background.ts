@@ -79,6 +79,7 @@ export interface TerminalBackgroundTask {
     chatId?: string;
     ownerTraceId?: string;
     runId?: string;
+    turnId?: string;
   };
   flushTimer?: NodeJS.Timeout;
   persistTimer?: NodeJS.Timeout;
@@ -523,6 +524,7 @@ export async function getTerminalBackgroundTaskStatus(
     streamId: String(status.streamId || `terminal_${taskId}`),
     ownerTraceId: status.ownerTraceId,
     runId: status.runId,
+    turnId: status.turnId || status.runId,
     status: persistedStatus,
     running: persistedStatus === 'running',
     command: status.command,
@@ -715,6 +717,8 @@ function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?:
   const outputStart = task.traceOutputOffset;
   const outputEnd = task.totalOutputChars;
   if (!outputChunk && !final) return;
+  const emittedAt = Date.now();
+  const settledAt = final ? task.completedAt || emittedAt : undefined;
 
   task.pendingTraceOutput = '';
   task.traceOutputOffset = outputEnd;
@@ -731,14 +735,25 @@ function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?:
     taskId: task.id,
     ownerTraceId: task.traceContext?.ownerTraceId,
     runId: task.traceContext?.runId,
+    turnId: task.traceContext?.turnId,
     toolName: task.source,
+    startTime: task.startedAt,
+    ...(final ? { endTime: settledAt } : {}),
+    timestamp: emittedAt,
     isStreaming: !final,
     isDelta: !final,
+    streamState: final ? 'closed' : 'open',
+    status: final
+      ? (exitCode ?? task.exitCode ?? 0) === 0 ? 'completed' : 'failed'
+      : 'running',
     outputStart: final ? Math.max(0, task.totalOutputChars - task.output.length) : outputStart,
     outputEnd,
     totalOutputChars: task.totalOutputChars,
     droppedOutputChars: task.droppedOutputChars,
-    ...(final ? { exitCode: exitCode ?? task.exitCode ?? 0, durationMs: Date.now() - task.startedAt } : {})
+    ...(final ? {
+      exitCode: exitCode ?? task.exitCode ?? 0,
+      durationMs: Math.max(0, Number(settledAt) - task.startedAt),
+    } : {})
   });
 }
 
@@ -781,6 +796,7 @@ function buildRunningResult(task: TerminalBackgroundTask, note: string): any {
     streamId: task.streamId,
     ownerTraceId: task.traceContext?.ownerTraceId,
     runId: task.traceContext?.runId,
+    turnId: task.traceContext?.turnId,
     cwd: task.cwd,
     shell: task.shell,
     pid: task.pid,
@@ -812,12 +828,16 @@ function buildTerminalResult(task: TerminalBackgroundTask): any {
     streamId: task.streamId,
     ownerTraceId: task.traceContext?.ownerTraceId,
     runId: task.traceContext?.runId,
+    turnId: task.traceContext?.turnId,
     cwd: task.cwd,
     shell: task.shell,
     pid: task.pid,
     totalOutputChars: task.totalOutputChars,
     droppedOutputChars: task.droppedOutputChars,
     status: task.status,
+    message: task.status === 'completed' && !task.stdout && !task.stderr
+      ? 'Command completed successfully with no output.'
+      : undefined,
     timeoutMs: task.checkInMs,
     hardTimeoutMs: task.hardTimeoutMs,
     _consoleTraceEmitted: true,
@@ -836,6 +856,7 @@ function buildStatusResult(task: TerminalBackgroundTask, sinceOffset?: number): 
     streamId: task.streamId,
     ownerTraceId: task.traceContext?.ownerTraceId,
     runId: task.traceContext?.runId,
+    turnId: task.traceContext?.turnId,
     status: task.status,
     running: task.status === 'running',
     command: task.command,
@@ -854,6 +875,9 @@ function buildStatusResult(task: TerminalBackgroundTask, sinceOffset?: number): 
     hasNewOutput: outputWindow.hasNewOutput,
     totalOutputChars: task.totalOutputChars,
     droppedOutputChars: task.droppedOutputChars,
+    // The in-memory process is already publishing cumulative console traces.
+    // A manual mode="check" observes it; it must not create another UI row.
+    _consoleTraceEmitted: true,
     message: `Terminal task ${task.id}: ${task.status} | "${task.description}" | Duration: ${(((task.completedAt || Date.now()) - task.startedAt) / 1000).toFixed(1)}s`,
     nextActionNote: task.status === 'running'
       ? `Use wait_timer for ${secondsFromTimeoutMs(task.checkInMs)} seconds, then workspace_run_command mode="check" with taskId="${task.id}" and sinceOffset=${outputWindow.end}.`
@@ -945,6 +969,7 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
     streamId: task.streamId,
     ownerTraceId: task.traceContext?.ownerTraceId,
     runId: task.traceContext?.runId,
+    turnId: task.traceContext?.turnId,
     cwd: task.cwd,
     shell: task.shell,
     pid: task.pid,
@@ -980,12 +1005,14 @@ function createTraceContext(context: any): {
   chatId?: string;
   ownerTraceId?: string;
   runId?: string;
+  turnId?: string;
 } {
   return {
     _onTrace: typeof context?._onTrace === 'function' ? context._onTrace : undefined,
     chatId: context?.chatId || context?.projectId,
     ownerTraceId: context?.ownerTraceId,
-    runId: context?.runId || context?.turnId,
+    runId: context?.runId,
+    turnId: context?.turnId || context?.runId,
   };
 }
 
@@ -994,16 +1021,23 @@ function emitTrace(context: {
   chatId?: string;
   ownerTraceId?: string;
   runId?: string;
+  turnId?: string;
 } | undefined, event: any) {
+  const ownedEvent = {
+    ...(context?.ownerTraceId && !event?.ownerTraceId ? { ownerTraceId: context.ownerTraceId } : {}),
+    ...(context?.runId && !event?.runId ? { runId: context.runId } : {}),
+    ...(context?.turnId && !event?.turnId ? { turnId: context.turnId } : {}),
+    ...event,
+  };
   if (typeof context?._onTrace === 'function') {
-    context._onTrace(event);
+    context._onTrace(ownedEvent);
     return;
   }
 
   if (context?.chatId) {
     try {
       const { taskStore } = require('../../task-store');
-      taskStore.addTrace(context.chatId, event, context.runId);
+      taskStore.addTrace(context.chatId, ownedEvent, context.runId);
     } catch {
       // Trace persistence is best-effort.
     }

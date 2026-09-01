@@ -22,12 +22,14 @@ import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
 import { MAX_SUB_AGENTS } from './sub-agent-settings';
 import { hasExplicitSubAgentRequest } from './roles/sub_agent_strategy';
-import { AGENT_BUILDER_RUNTIME, AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile } from './builder-agent';
+import { AGENT_BUILDER_RUNTIME, AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile, summarizeAgentBuilderProfile } from './builder-agent';
 import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
+import { getToolDisplayLabel, normalizeToolTraceName, summarizeTraceValue } from './tool-trace';
 import { isModelProvider } from './model-selector-store';
 import { getEterxWorkspaceDir } from './storage-paths';
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
+import { formatUnknownError } from './error-format';
 
 /**
  * The Enhanced Orchestrator v2
@@ -78,9 +80,10 @@ type RuntimeProjectContext = ProjectContext & {
   strictModelSelection?: boolean;
   contextCompaction?: {
     enabled?: boolean;
-    model?: { provider?: string; modelId?: string } | null;
+    model?: { provider?: string; modelId?: string; contextWindow?: number } | null;
     customInstructions?: string;
     activeContextWindow?: number;
+    activeModelContextWindow?: number;
   };
   selectedThinkingLevel?: MainAgentThinkingLevel;
   terminalShell?: string;
@@ -114,7 +117,91 @@ type RuntimeProjectContext = ProjectContext & {
   allowRawCommand?: boolean;
   isFocusedWorkspace?: boolean;
   userInitiatedCommunication?: boolean;
+  getActiveTurnId?: () => string;
+  getActiveAuxiliaryTurnId?: (identity: string) => string;
 };
+
+const BUILDER_TRACE_ICONS: Record<string, string> = {
+  agent_builder_get_profile: 'agent',
+  agent_builder_list_capabilities: 'search',
+  agent_builder_save_profile: 'agent',
+  agent_builder_attach_main_tool: 'agent',
+  agent_builder_remove_tool: 'agent',
+  agent_builder_attach_all_main_tools: 'agent',
+  agent_builder_attach_connector_tools: 'connector',
+  agent_builder_define_tool: 'agent',
+  agent_builder_run_quality_check: 'verification',
+  agent_builder_finalize: 'verification',
+  agent_builder_save_flow: 'agent',
+  agent_builder_list_flows: 'search',
+  agent_builder_delete_flow: 'agent',
+  agent_builder_run_flow: 'agent',
+  agent_tool_load: 'agent',
+  agent_tool_unload: 'agent',
+  gateway_bridge: 'connector',
+  connector_mcp: 'connector',
+};
+
+function compactBuilderTraceArgs(toolName: string, args: any): Record<string, unknown> {
+  const source = args && typeof args === 'object' ? args : {};
+  const keep = [
+    'agentId', 'name', 'changeSummary', 'toolName', 'tool_name', 'scope', 'mode', 'query', 'category',
+    'connectorId', 'connector_id', 'server_id', 'platform', 'action', 'channelProfileId',
+    'readinessNotes', 'flowId', 'description',
+  ];
+  const compact = Object.fromEntries(keep
+    .filter(key => source[key] !== undefined)
+    .map(key => [key, source[key]]));
+  if (toolName === 'agent_builder_save_profile') {
+    const profileFields = [
+      'name', 'mission', 'professionalPrompt', 'responseStyle', 'behaviorRules', 'safetyRules',
+      'skills', 'toolUsePolicy', 'completionCriteria', 'uiDescription', 'uiCategory',
+      'uiAccentColor', 'starterPrompts', 'notes',
+    ].filter(key => source[key] !== undefined);
+    return {
+      ...compact,
+      changedFields: profileFields,
+      ...(typeof source.professionalPrompt === 'string' ? { promptCharacters: source.professionalPrompt.length } : {}),
+      ...(source.replaceCollections === true ? { replaceCollections: true } : {}),
+    };
+  }
+  if (Array.isArray(source.excludeToolNames)) compact.excludeToolNames = source.excludeToolNames.slice(0, 20);
+  return compact;
+}
+
+function builderTraceSecondary(toolName: string, args: Record<string, unknown>, agentName: string): string {
+  const candidates: Record<string, unknown[]> = {
+    agent_builder_get_profile: [agentName],
+    agent_builder_list_capabilities: [args.query, args.category, 'Capability catalog'],
+    agent_builder_save_profile: [args.changeSummary, args.name, agentName],
+    agent_builder_attach_main_tool: [args.toolName],
+    agent_builder_remove_tool: [args.toolName],
+    agent_builder_attach_all_main_tools: ['Full capability catalog'],
+    agent_builder_attach_connector_tools: [args.platform, args.connectorId, args.mode],
+    agent_builder_define_tool: [args.toolName],
+    agent_builder_run_quality_check: [agentName],
+    agent_builder_finalize: [agentName],
+    agent_builder_save_flow: [args.flowId],
+    agent_builder_list_flows: ['Saved workflows'],
+    agent_builder_delete_flow: [args.flowId],
+    agent_builder_run_flow: [args.flowId],
+    agent_tool_load: [args.toolName, args.tool_name],
+    agent_tool_unload: [args.toolName, args.tool_name],
+    gateway_bridge: [args.platform, args.action],
+    connector_mcp: [args.connectorId, args.connector_id, args.server_id, args.action],
+  };
+  return summarizeTraceValue((candidates[toolName] || [agentName]).find(Boolean), 140);
+}
+
+function compactBuilderTraceResult(result: any): any {
+  if (!result || typeof result !== 'object') return result;
+  const { profile, ...rest } = result;
+  if (!profile || typeof profile !== 'object') return rest;
+  return {
+    ...rest,
+    profileSummary: rest.profileSummary || summarizeAgentBuilderProfile(profile),
+  };
+}
 
 export class AgentOrchestrator {
   private taskQueue: QueuedTask[] = [];
@@ -365,6 +452,16 @@ export class AgentOrchestrator {
     context.userInitiatedCommunication = isUserInitiatedCommunicationRequest(userRequest);
     context.selfImprovementEnabled = selfImprovementEnabled;
     context.runtimeSettings = runtimeSettings || null;
+    context.ownerChatId = String(pinnedContext?.ownerChatId || projectId);
+    context.runId = String(pinnedContext?.runId || '').trim() || undefined;
+    context.turnId = String(pinnedContext?.turnId || context.runId || '').trim() || undefined;
+    context.subAgentTurnId = String(pinnedContext?.subAgentTurnId || '').trim() || undefined;
+    context.getActiveTurnId = typeof pinnedContext?.getActiveTurnId === 'function'
+      ? pinnedContext.getActiveTurnId
+      : undefined;
+    context.getActiveAuxiliaryTurnId = typeof pinnedContext?.getActiveAuxiliaryTurnId === 'function'
+      ? pinnedContext.getActiveAuxiliaryTurnId
+      : undefined;
     if (pinnedContext?.agentSessionId) {
       context.agentSessionId = String(pinnedContext.agentSessionId);
     }
@@ -623,6 +720,13 @@ export class AgentOrchestrator {
         // tool surface and cannot dynamically update agent_tool_load/unload.
         const builderRunner = new AgentRunner();
         const builderAnswerParts: string[] = [];
+        const builderToolStarts = new Map<string, {
+          toolName: string;
+          toolArgs: any;
+          agentName: string;
+          startedAt: number;
+        }>();
+        let builderEventSequence = 0;
         let builderError = '';
         const builderAgentName = String(context.agentName || context.agentId);
         const builderModelName = String(context.selectedModelName || '').trim();
@@ -700,39 +804,181 @@ export class AgentOrchestrator {
           } else if (event.type === 'status' || event.type === 'work_note') {
             const text = String(event.text || '').trim();
             if (!text) continue;
+            if (event.type === 'status' && (
+              /\bis (?:starting|thinking)\b/i.test(text)
+              || /processed\s+\d+\s+tool call/i.test(text)
+              || /^completed\.?$/i.test(text)
+            )) continue;
+            const eventSequence = ++builderEventSequence;
+            const sourceEventId = String(
+              event.noteId
+              || event.progressId
+              || event.id
+              || event.traceId
+              || `builder_${event.type}_${builderTurnId}_${event.timestamp || Date.now()}_${eventSequence}`
+            );
             onTrace?.({
-              type: 'work_note',
+              ...(hasRealChildIdentity ? event : builderEvent),
+              // Runner status is infrastructure telemetry (API routing,
+              // retries, and recovery), not prose authored by Agent Builder.
+              // Keep it on the same compact progress surface as Main while
+              // preserving genuine model-authored work notes as narrative.
+              type: event.type === 'status' ? 'progress' : 'work_note',
               text,
               agentName: traceIdentity,
               agentRuntime: AGENT_BUILDER_RUNTIME,
               agentId: String(context.agentId),
-              noteId: `builder_note_${projectId}_${Date.now()}`,
+              ...(event.type === 'work_note'
+                ? { id: sourceEventId, noteId: sourceEventId }
+                : { id: sourceEventId, progressId: sourceEventId }),
               isDelta: false,
               isStreaming: false,
-              timestamp: Date.now(),
+              timestamp: Number(event.timestamp || Date.now()),
             });
           } else if (event.type === 'tool_call') {
+            const toolName = normalizeToolTraceName(event.toolName);
+            const toolArgs = compactBuilderTraceArgs(toolName, event.toolArgs);
+            const toolCallId = String(event.toolCallId || `builder_tool_${projectId}_${Date.now()}`);
+            const at = Number(event.timestamp || Date.now());
+            const incomingStatus = String(event.status || '').toLowerCase();
+            const settled = Boolean(
+              ['completed', 'complete', 'success', 'succeeded', 'failed', 'error', 'cancelled', 'canceled', 'stopped'].includes(incomingStatus)
+              || event.final === true
+              || event.done === true
+              || event.isLive === false
+              || event.streamState === 'closed'
+              || Number(event.endTime || event.completedAt || 0) > 0
+            );
+            const failed = ['failed', 'error'].includes(incomingStatus) || Boolean(event.error);
+            const existingStart = builderToolStarts.get(toolCallId);
+            const actionStartedAt = Number(
+              existingStart?.startedAt
+              || event.startTime
+              || event.startedAt
+              || at
+            );
+            if (!existingStart) {
+              builderToolStarts.set(toolCallId, {
+                toolName,
+                toolArgs,
+                agentName: traceIdentity,
+                startedAt: actionStartedAt,
+              });
+            }
             onTrace?.({
+              ...(hasRealChildIdentity ? event : builderEvent),
               type: 'tool_call',
-              toolName: event.toolName,
-              toolArgs: event.toolArgs || {},
+              id: toolCallId,
+              toolCallId,
+              toolName,
+              tool: toolName,
+              name: toolName,
+              text: getToolDisplayLabel(toolName),
+              secondary: builderTraceSecondary(toolName, toolArgs, eventAgentName),
+              icon: BUILDER_TRACE_ICONS[toolName] || 'agent',
+              iconCategory: BUILDER_TRACE_ICONS[toolName] || 'agent',
+              toolArgs,
               agentName: traceIdentity,
               agentRuntime: AGENT_BUILDER_RUNTIME,
               agentId: String(context.agentId),
-              timestamp: Date.now(),
+              ...(settled ? {
+                status: failed ? 'failed' : (incomingStatus || 'completed'),
+                isLive: false,
+                isStreaming: false,
+                isLiveTyping: false,
+                streamState: 'closed',
+                final: true,
+                done: true,
+                endTime: Number(event.endTime || event.completedAt || at),
+                durationMs: Number.isFinite(Number(event.durationMs))
+                  ? Math.max(0, Number(event.durationMs))
+                  : Math.max(0, at - actionStartedAt),
+              } : {}),
+              startTime: actionStartedAt,
+              timestamp: at,
             });
           } else if (event.type === 'tool_result') {
+            const toolName = normalizeToolTraceName(event.toolName);
+            const toolCallId = String(event.toolCallId || `builder_tool_${projectId}_${toolName}`);
+            const at = Number(event.timestamp || Date.now());
+            const started = builderToolStarts.get(toolCallId);
+            const toolArgs = compactBuilderTraceArgs(toolName, event.toolArgs || started?.toolArgs);
+            const toolResult = compactBuilderTraceResult(event.toolResult);
+            const reportsFailure = Boolean(
+              event.toolResult?.error ||
+              event.toolResult?.success === false ||
+              event.toolResult?.passed === false ||
+              Number(event.toolResult?.exitCode) > 0
+            );
+            const resultError = reportsFailure
+              ? formatUnknownError(
+                event.toolResult?.error ?? event.toolResult?.message,
+                `${ getToolDisplayLabel(toolName) } failed`,
+              )
+              : '';
+            const failed = Boolean(
+              reportsFailure
+            );
+            const actionStartedAt = Number(started?.startedAt || at);
+            // Close the exact action row before publishing its expandable
+            // result. Builder used to emit only a preview here, leaving the
+            // original tool_call live until the whole run ended.
             onTrace?.({
-              type: 'tool_result',
-              toolName: event.toolName,
-              toolArgs: event.toolArgs || {},
-              toolResult: event.toolResult,
+              type: 'tool_call',
+              id: toolCallId,
+              toolCallId,
+              toolName,
+              tool: toolName,
+              name: toolName,
+              text: getToolDisplayLabel(toolName),
+              secondary: builderTraceSecondary(toolName, toolArgs, started?.agentName || eventAgentName),
+              icon: BUILDER_TRACE_ICONS[toolName] || 'agent',
+              iconCategory: BUILDER_TRACE_ICONS[toolName] || 'agent',
+              toolArgs,
+              agentName: started?.agentName || traceIdentity,
+              agentRuntime: AGENT_BUILDER_RUNTIME,
+              agentId: String(context.agentId),
+              status: failed ? 'failed' : 'completed',
+              isLive: false,
+              isStreaming: false,
+              isLiveTyping: false,
+              streamState: 'closed',
+              final: true,
+              done: true,
+              ...(resultError ? { error: resultError } : {}),
+              startTime: actionStartedAt,
+              endTime: at,
+              durationMs: Math.max(0, at - actionStartedAt),
+              timestamp: at,
+            });
+            builderToolStarts.delete(toolCallId);
+            onTrace?.({
+              id: `builder_result_${toolCallId}`,
+              type: 'tool_result_preview',
+              ownerTraceId: toolCallId,
+              toolCallId,
+              toolName,
+              toolArgs,
+              result: toolResult,
               agentName: traceIdentity,
               agentRuntime: AGENT_BUILDER_RUNTIME,
               agentId: String(context.agentId),
-              timestamp: Date.now(),
+              startTime: at,
+              endTime: at,
+              timestamp: at,
             });
-          } else if (event.type === 'model_usage' || event.type === 'ask_user') {
+          } else if (
+            event.type === 'model_usage'
+            || event.type === 'context_usage'
+            || event.type === 'context_compaction'
+            || event.type === 'ask_user'
+            || event.type === 'file_preview'
+            || event.type === 'evidence'
+            || event.type === 'sub_agent_spawn'
+            || event.type === 'sub_agent_complete'
+            || event.type === 'sub_agent_error'
+            || event.type === 'inter_agent_message'
+          ) {
             onTrace?.({
               ...event,
               agentName: traceIdentity,
@@ -741,7 +987,7 @@ export class AgentOrchestrator {
               timestamp: Date.now(),
             });
           } else if (event.type === 'error') {
-            builderError = String(event.text || 'Agent Builder failed.');
+            builderError = formatUnknownError(event.text ?? event.error, 'Agent Builder failed.');
             onTrace?.({
               type: 'error',
               text: builderError,
@@ -757,17 +1003,28 @@ export class AgentOrchestrator {
           || (builderError ? `Agent Builder failed: ${builderError}` : 'Agent Builder returned no response.');
         effectiveApiKey = leasedApiKey || '';
       } else if (context.agentRuntime === AGENT_FLOW_RUNTIME && pinnedContext?.flowId) {
+        let flowTraceSequence = 0;
         const flowTrace = (trace: any) => {
           const subAgent = trace?.agentName || pinnedContext?.flowName || 'Workflow';
           if (trace?.type === 'status' || trace?.type === 'progress') {
+            const at = Number(trace.timestamp || Date.now());
+            const sourceEventId = String(
+              trace.noteId
+              || trace.progressId
+              || trace.id
+              || trace.traceId
+              || `flow_${pinnedContext.flowId}_${at}_${++flowTraceSequence}`
+            );
             onTrace?.({
+              ...trace,
               type: 'work_note',
               text: trace.text || 'Workflow is running',
               subAgent,
-              noteId: `flow_${pinnedContext.flowId}_${Date.now()}`,
+              id: sourceEventId,
+              noteId: sourceEventId,
               isDelta: false,
               isStreaming: false,
-              timestamp: Date.now(),
+              timestamp: at,
             });
             return;
           }
@@ -820,23 +1077,23 @@ export class AgentOrchestrator {
       }
 
     } catch (error: any) {
-      const errMsg = error.message || '';
+      const errMsg = formatUnknownError(error, 'Unknown agent execution failure');
       if (errMsg === 'CANCELLED_BY_USER' || errMsg.toLowerCase().includes('cancelled_by_user')) {
         // Clean stop — not an error
         finalAnswer = 'Stopped by user.';
         console.log(`[Orchestrator] 🛑 Agent cancelled by user for ${ projectId.substring(0, 8) }...`);
       } else {
-        finalAnswer = `Agent Execution Failed: ${ error.message }`;
-        console.error(`[Orchestrator] 💥 Fatal error:`, error.message);
+        finalAnswer = `Agent Execution Failed: ${ errMsg }`;
+        console.error(`[Orchestrator] 💥 Fatal error:`, errMsg);
         if (shouldPersistLongTermMemory) {
-          globalMemoryManager.logError('orchestrator', error.message, `Task: ${ userRequest }`);
+          globalMemoryManager.logError('orchestrator', errMsg, `Task: ${ userRequest }`);
           memoryV2.remember({
             userId,
             projectId,
             chatId: projectId,
             scope: 'error',
             type: 'orchestrator_failure',
-            content: `Task failed: ${ userRequest }\nError: ${ error.message }`,
+            content: `Task failed: ${ userRequest }\nError: ${ errMsg }`,
             tags: ['orchestrator', 'failure'],
             confidence: 0.86,
             importance: 9,

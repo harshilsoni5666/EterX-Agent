@@ -158,6 +158,50 @@ async function testRestartRestoresPagesGraphAndPolicy(): Promise<void> {
   });
 }
 
+async function testCorruptLedgerTailCannotAuthorizeNewerSnapshotState(): Promise<void> {
+  await withTemporaryRoot(async root => {
+    const first = new ContextFabric('ledger-integrity', { storageRoot: root });
+    await first.initialize();
+    first.remember({
+      key: 'state:verified-prefix',
+      kind: 'state',
+      text: 'The verified prefix must survive.',
+      importance: 8,
+    });
+    await first.flush();
+
+    const scopeDir = path.join(root, (await fs.readdir(root))[0]);
+    const eventPath = path.join(scopeDir, 'events.jsonl');
+    const prefixLines = String(await fs.readFile(eventPath, 'utf8')).split(/\r?\n/).filter(Boolean);
+
+    first.remember({
+      key: 'state:unverified-tail',
+      kind: 'state',
+      text: 'A snapshot must not restore this after its ledger event is damaged.',
+      importance: 9,
+    });
+    await first.flush();
+    const allLines = String(await fs.readFile(eventPath, 'utf8')).split(/\r?\n/).filter(Boolean);
+    const damagedIndex = allLines.findIndex((line, index) => (
+      index >= prefixLines.length && Boolean(JSON.parse(line).fact)
+    ));
+    assert.ok(damagedIndex >= prefixLines.length);
+    const damaged = JSON.parse(allLines[damagedIndex]);
+    damaged.fact.text = 'Tampered event payload';
+    allLines[damagedIndex] = JSON.stringify(damaged);
+    await fs.writeFile(eventPath, `${allLines.join('\n')}\n`, 'utf8');
+
+    const restored = new ContextFabric('ledger-integrity', { storageRoot: root });
+    await restored.initialize();
+    assert.ok(restored.listFacts().some(fact => fact.key === 'state:verified-prefix'));
+    assert.equal(
+      restored.listFacts().some(fact => fact.key === 'state:unverified-tail'),
+      false,
+      'a snapshot revision beyond the verified ledger prefix must be discarded',
+    );
+  });
+}
+
 function testProviderNeutralWorkingSet(): void {
   const source = new ContextFabric('provider-neutral', { durable: false });
   source.observeUserRequest('All model providers must get equal memory quality.');
@@ -180,6 +224,40 @@ function testProviderNeutralWorkingSet(): void {
   assert.deepEqual(outputs[3], outputs[0]);
 }
 
+async function testTranscriptImportAndTaskBoundaryAreNonDestructive(): Promise<void> {
+  const fabric = new ContextFabric('dialogue-import', { durable: false });
+  const turns = [
+    { originId: 'turn-user-1', role: 'user' as const, text: 'Never use git. Build the context layer.' },
+    { originId: 'turn-assistant-1', role: 'assistant' as const, text: 'I inspected the context layer and preserved the existing files.' },
+  ];
+  assert.equal(fabric.importDialogueTurns(turns), 2);
+  assert.equal(fabric.importDialogueTurns(turns), 0, 'durable transcript hydration must be idempotent');
+  fabric.observeUserRequest(turns[0].text, 'new', 'run-user-1');
+  fabric.recordTool('workspace_edit_file', { filename: 'src/context.ts' }, { success: true, path: 'src/context.ts' });
+  const pagesBeforeBoundary = fabric.listEpisodes().map(episode => episode.pageRef);
+
+  fabric.beginTaskBoundary('A new objective started in the same chat.');
+  assert.ok(
+    pagesBeforeBoundary.every(pageRef => fabric.listEpisodes().some(episode => episode.pageRef === pageRef)),
+    'a heuristic task boundary must retain every exact page in the chat fabric',
+  );
+  assert.ok(
+    fabric.listFacts().some(fact => ['state', 'artifact'].includes(fact.kind) && fact.status === 'active'),
+    'workspace artifacts remain valid across in-chat objective boundaries',
+  );
+  assert.ok(
+    fabric.listFacts().filter(fact => ['objective', 'constraint'].includes(fact.kind)).every(fact => fact.status !== 'active'),
+    'only prior task-scoped directives are closed at the boundary',
+  );
+
+  fabric.recordAssistantResponse('Exact terminal answer sentinel_783.', 'completed', 'run-terminal-1');
+  fabric.recordAssistantResponse('Exact terminal answer sentinel_783.', 'completed', 'run-terminal-1');
+  const assistantPages = fabric.listEpisodes().filter(episode => episode.originId === 'assistant-run:run-terminal-1');
+  assert.equal(assistantPages.length, 1, 'provider and registry terminal capture must deduplicate by run ID');
+  const recovered = await fabric.openPage(assistantPages[0].pageRef) as any;
+  assert.equal(recovered.answer, 'Exact terminal answer sentinel_783.');
+}
+
 async function main(): Promise<void> {
   await testLosslessPageRoundTrip();
   await testRawToolResultSurvivesPromptCompaction();
@@ -189,7 +267,9 @@ async function main(): Promise<void> {
   testRepeatedCompactionCannotLoseBindingFacts();
   testPolicyLearnsFromContinuityFailure();
   await testRestartRestoresPagesGraphAndPolicy();
+  await testCorruptLedgerTailCannotAuthorizeNewerSnapshotState();
   testProviderNeutralWorkingSet();
+  await testTranscriptImportAndTaskBoundaryAreNonDestructive();
   console.log('Context Fabric integration checks passed.');
 }
 

@@ -42,8 +42,12 @@ export async function POST(req: NextRequest) {
     session = getOrCreateAgentApiSession(req);
     const body = await readJsonObject(req);
     const chatId = typeof body.chatId === 'string' ? body.chatId : '';
-    const message = cleanString(body.message, 12000);
-    const attachmentContext = cleanString(body.attachmentContext, 24000);
+    const message = typeof body.message === 'string'
+      ? body.message.replace(/\u0000/g, '').trim()
+      : '';
+    const attachmentContext = typeof body.attachmentContext === 'string'
+      ? body.attachmentContext.replace(/\u0000/g, '')
+      : '';
     if (!isSafeChatId(chatId)) return attachAgentApiSessionCookie(jsonError('Valid chatId is required', 400), session);
     const ownerError = requireChatOwner(chatId, session.sessionId);
     if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
@@ -51,6 +55,9 @@ export async function POST(req: NextRequest) {
 
     const provider = isModelProvider(body?.model?.provider) ? body.model.provider : undefined;
     const modelId = cleanString(body?.model?.modelId, 220);
+    const contextCompaction = body?.contextCompaction && typeof body.contextCompaction === 'object'
+      ? body.contextCompaction
+      : undefined;
     if (body.stream === true) {
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
@@ -70,6 +77,7 @@ export async function POST(req: NextRequest) {
             message,
             attachmentContext,
             model: { provider, modelId },
+            contextCompaction,
             onProgress: progress => send({ type: 'progress', progress }),
           }).then(result => {
             send({
@@ -95,7 +103,13 @@ export async function POST(req: NextRequest) {
         },
       }), session);
     }
-    const result = await talkToProxyManager({ chatId, message, attachmentContext, model: { provider, modelId } });
+    const result = await talkToProxyManager({
+      chatId,
+      message,
+      attachmentContext,
+      model: { provider, modelId },
+      contextCompaction,
+    });
     return attachAgentApiSessionCookie(NextResponse.json({
       success: true,
       ...result,

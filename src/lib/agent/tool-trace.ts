@@ -41,6 +41,27 @@ const TOOL_DISPLAY_LABELS: Record<string, string> = {
   workspace_edit_file: 'Editing file',
   workspace_run_command: 'Running project command',
   spawn_sub_agent: 'Managing agent work',
+  agent_builder_get_profile: 'Reviewed agent profile',
+  agent_builder_list_capabilities: 'Explored agent capabilities',
+  agent_builder_save_profile: 'Updated agent profile',
+  agent_builder_attach_main_tool: 'Added agent capability',
+  agent_builder_remove_tool: 'Removed agent capability',
+  agent_builder_attach_all_main_tools: 'Configured tool access',
+  agent_builder_attach_connector_tools: 'Connected agent services',
+  agent_builder_define_tool: 'Created custom capability',
+  agent_builder_run_quality_check: 'Checked agent quality',
+  agent_builder_finalize: 'Finalized agent profile',
+  agent_builder_save_flow: 'Updated agent workflow',
+  agent_builder_list_flows: 'Reviewed agent workflows',
+  agent_builder_delete_flow: 'Removed agent workflow',
+  agent_builder_run_flow: 'Ran agent workflow',
+  agent_flow_blackboard_set: 'Updated workflow state',
+  agent_flow_blackboard_get: 'Reviewed workflow state',
+  agent_flow_blackboard_list: 'Reviewed workflow state',
+  agent_tool_load: 'Loaded temporary capability',
+  agent_tool_unload: 'Unloaded temporary capability',
+  gateway_bridge: 'Inspected Gateway service',
+  connector_mcp: 'Inspected connected service',
 };
 
 /** Human label for traces, including provider aliases and unknown custom names. */
@@ -166,6 +187,24 @@ export function basenameForTrace(value: unknown): string {
 
 export function normalizeTracePath(value: unknown): string {
   return cleanTraceString(value).replace(/\\/g, '/').toLowerCase();
+}
+
+/**
+ * One file in one tool call owns one preview identity for its entire lifecycle.
+ * The content may arrive through many live snapshots and a final read-back, but
+ * renderers and persisted task state must keep updating the same expandable row.
+ */
+export function buildFilePreviewTraceId(ownerTraceId: unknown, filePath: unknown): string {
+  const owner = cleanTraceString(ownerTraceId) || 'file-operation';
+  const normalizedPath = normalizeTracePath(filePath) || 'file';
+  let hash = 2166136261;
+  const source = `${owner}\u0000${normalizedPath}`;
+  for (let index = 0; index < source.length; index++) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  const ownerSegment = owner.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 72) || 'file-operation';
+  return `file_preview_${ownerSegment}_${(hash >>> 0).toString(36)}`;
 }
 
 function cleanTraceString(value: unknown): string {

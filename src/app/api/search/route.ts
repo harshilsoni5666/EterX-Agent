@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { webSearchTool } from '../../../lib/agent/tools/core/search';
 import { rejectCrossOrigin } from '../agent/_shared';
+import { formatUnknownError } from '../../../lib/agent/error-format';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +40,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('[API/Search] Error performing web search:', error);
     return NextResponse.json(
-      { error: error.message || 'Failed to search web' },
+      { error: formatUnknownError(error, 'Failed to search web') },
       { status: 500 }
     );
   }

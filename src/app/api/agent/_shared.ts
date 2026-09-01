@@ -5,11 +5,6 @@ import { normalizeAttachmentMime } from '../../../lib/agent/attachment-pipeline'
 export const MAX_AGENT_ID_LENGTH = 96;
 export const MAX_CHAT_ID_LENGTH = 160;
 export const MAX_RUN_ID_LENGTH = 160;
-export const MAX_PROMPT_CHARS = 200_000;
-export const MAX_MESSAGE_CHARS = 60_000;
-export const MAX_ANSWER_CHARS = 20_000;
-export const MAX_HISTORY_MESSAGES = 80;
-export const MAX_HISTORY_TOTAL_CHARS = 400_000;
 
 const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const CHAT_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
@@ -166,6 +161,9 @@ export function cleanString(value: unknown, maxLength: number): string {
   return value.trim().slice(0, maxLength);
 }
 
+export const cleanContextText = (value: unknown): string =>
+  typeof value === 'string' ? value.replace(/\u0000/g, '') : '';
+
 function cleanPathLike(value: unknown, maxLength: number): string {
   return cleanString(value, maxLength).replace(/[\x00-\x1F]/g, '');
 }
@@ -210,10 +208,6 @@ export function normalizeRunnerMessages(raw: unknown): { messages?: RunnerMessag
   if (!Array.isArray(raw) || raw.length === 0) {
     return { error: 'messages array is required.' };
   }
-  if (raw.length > MAX_HISTORY_MESSAGES) {
-    return { error: `messages is limited to ${MAX_HISTORY_MESSAGES} entries.` };
-  }
-
   const messages: RunnerMessage[] = [];
   for (const item of raw) {
     const role = item?.role === 'user'
@@ -221,17 +215,12 @@ export function normalizeRunnerMessages(raw: unknown): { messages?: RunnerMessag
       : item?.role === 'model' || item?.role === 'assistant'
         ? 'model'
         : null;
-    const content = cleanString(item?.content, MAX_MESSAGE_CHARS);
+    const content = cleanContextText(item?.content);
 
     if (!role) return { error: 'Each message role must be user, model, or assistant.' };
-    if (!content) return { error: 'Each message must include non-empty content.' };
+    if (!content.trim()) return { error: 'Each message must include non-empty content.' };
 
     messages.push({ role, content });
-  }
-
-  let totalChars = messages.reduce((total, item) => total + item.content.length, 0);
-  while (messages.length > 1 && totalChars > MAX_HISTORY_TOTAL_CHARS) {
-    totalChars -= messages.shift()!.content.length;
   }
 
   return { messages };
@@ -241,7 +230,7 @@ export function normalizeHistory(raw: unknown): Array<{ role: 'user' | 'model'; 
   if (!Array.isArray(raw)) return [];
   const history: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
 
-  for (const item of raw.slice(-MAX_HISTORY_MESSAGES)) {
+  for (const item of raw) {
     const role = item?.role === 'model' || item?.role === 'assistant'
       ? 'model'
       : item?.role === 'user'
@@ -251,28 +240,16 @@ export function normalizeHistory(raw: unknown): Array<{ role: 'user' | 'model'; 
 
     const parts: Array<{ text: string }> = [];
     if (Array.isArray(item?.parts)) {
-      for (const part of item.parts.slice(0, 12)) {
-        const text = cleanString(part?.text, MAX_MESSAGE_CHARS);
-        if (text) parts.push({ text });
+      for (const part of item.parts) {
+        const text = cleanContextText(part?.text);
+        if (text.trim()) parts.push({ text });
       }
     } else {
-      const text = cleanString(item?.content || item?.text, MAX_MESSAGE_CHARS);
-      if (text) parts.push({ text });
+      const text = cleanContextText(item?.content || item?.text);
+      if (text.trim()) parts.push({ text });
     }
 
     if (parts.length > 0) history.push({ role, parts });
-  }
-
-  // Bound the aggregate payload as well as individual messages. Without this,
-  // an 80-message conversation can reach several megabytes and stall every
-  // concurrent chat while JSON parsing and model context construction run.
-  let totalChars = history.reduce(
-    (total, message) => total + message.parts.reduce((sum, part) => sum + part.text.length, 0),
-    0,
-  );
-  while (history.length > 1 && totalChars > MAX_HISTORY_TOTAL_CHARS) {
-    const removed = history.shift()!;
-    totalChars -= removed.parts.reduce((sum, part) => sum + part.text.length, 0);
   }
 
   return history;

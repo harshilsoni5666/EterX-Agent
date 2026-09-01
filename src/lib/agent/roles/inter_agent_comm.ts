@@ -70,6 +70,10 @@ export interface AgentMessage {
     requestedModelName?: string;
     broadcastRecipientRuns?: Array<{ agentName: string; agentId?: string; subAgentChatId?: string }>;
     broadcast?: boolean;
+    ownerChatId?: string;
+    runId?: string;
+    turnId?: string;
+    subAgentTurnId?: string;
   };
   read: boolean;
   readAt?: number;
@@ -99,6 +103,10 @@ export interface AgentPresence {
   status: string;
   task?: string;
   progress?: string;
+  ownerChatId?: string;
+  runId?: string;
+  turnId?: string;
+  subAgentTurnId?: string;
   registeredAt: number;
   updatedAt: number;
 }
@@ -114,6 +122,13 @@ class InterAgentMailbox {
   private projectLogs: Map<string, AgentMessage[]> = new Map();
   // Listeners for real-time delivery
   private listeners: Map<string, Array<(msg: AgentMessage) => void>> = new Map();
+  // HTTP consumers use monotonic revisions for change-driven long polling.
+  // Message revisions are intentionally separate from presence revisions so a
+  // worker's frequent progress heartbeat does not wake mailbox-history reads.
+  private projectActivityRevisions: Map<string, number> = new Map();
+  private projectMessageRevisions: Map<string, number> = new Map();
+  private projectActivityWaiters: Map<string, Set<(revision: number) => void>> = new Map();
+  private projectMessageWaiters: Map<string, Set<(revision: number) => void>> = new Map();
   // Message counter for unique IDs
   private messageCounter = 0;
 
@@ -161,6 +176,98 @@ class InterAgentMailbox {
       log.splice(0, log.length - 1000);
     }
     this.projectLogs.set(message.projectId, log);
+    this.bumpProjectRevision(message.projectId, true);
+  }
+
+  private bumpProjectRevision(projectId: string, messageChanged = false): void {
+    const activityRevision = (this.projectActivityRevisions.get(projectId) || 0) + 1;
+    this.projectActivityRevisions.set(projectId, activityRevision);
+    const activityWaiters = this.projectActivityWaiters.get(projectId);
+    if (activityWaiters?.size) {
+      this.projectActivityWaiters.delete(projectId);
+      for (const resolve of activityWaiters) resolve(activityRevision);
+    }
+
+    if (!messageChanged) return;
+    const messageRevision = (this.projectMessageRevisions.get(projectId) || 0) + 1;
+    this.projectMessageRevisions.set(projectId, messageRevision);
+    const messageWaiters = this.projectMessageWaiters.get(projectId);
+    if (messageWaiters?.size) {
+      this.projectMessageWaiters.delete(projectId);
+      for (const resolve of messageWaiters) resolve(messageRevision);
+    }
+  }
+
+  private waitForRevision(
+    projectId: string,
+    afterRevision: number,
+    waitMs: number,
+    revisions: Map<string, number>,
+    waiters: Map<string, Set<(revision: number) => void>>,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    const current = revisions.get(projectId) || 0;
+    // A lower revision means the server process restarted and rebuilt its
+    // in-memory counters. Return immediately so callers can run disk recovery
+    // instead of waiting a full timeout on an unreachable old revision.
+    if (current !== afterRevision || waitMs <= 0 || signal?.aborted) return Promise.resolve(current);
+
+    return new Promise(resolve => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let abortWait = () => {};
+      const finish = (revision: number) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener('abort', abortWait);
+        const projectWaiters = waiters.get(projectId);
+        projectWaiters?.delete(finish);
+        if (projectWaiters?.size === 0) waiters.delete(projectId);
+        resolve(revision);
+      };
+      abortWait = () => finish(revisions.get(projectId) || 0);
+      const projectWaiters = waiters.get(projectId) || new Set<(revision: number) => void>();
+      projectWaiters.add(finish);
+      waiters.set(projectId, projectWaiters);
+      signal?.addEventListener('abort', abortWait, { once: true });
+      timer = setTimeout(() => finish(revisions.get(projectId) || 0), waitMs);
+
+      // Recheck after subscribing so a change at the admission boundary cannot
+      // be lost between the initial comparison and listener installation.
+      const latest = revisions.get(projectId) || 0;
+      if (latest > afterRevision) finish(latest);
+    });
+  }
+
+  getProjectRevision(projectId: string): number {
+    return this.projectActivityRevisions.get(projectId) || 0;
+  }
+
+  getProjectMessageRevision(projectId: string): number {
+    return this.projectMessageRevisions.get(projectId) || 0;
+  }
+
+  waitForProjectRevision(projectId: string, afterRevision: number, waitMs: number, signal?: AbortSignal): Promise<number> {
+    return this.waitForRevision(
+      projectId,
+      afterRevision,
+      Math.max(0, Math.min(waitMs, 20_000)),
+      this.projectActivityRevisions,
+      this.projectActivityWaiters,
+      signal,
+    );
+  }
+
+  waitForProjectMessageRevision(projectId: string, afterRevision: number, waitMs: number, signal?: AbortSignal): Promise<number> {
+    return this.waitForRevision(
+      projectId,
+      afterRevision,
+      Math.max(0, Math.min(waitMs, 20_000)),
+      this.projectMessageRevisions,
+      this.projectMessageWaiters,
+      signal,
+    );
   }
 
   private isVisibleToAgent(message: AgentMessage, agentName: string): boolean {
@@ -381,6 +488,7 @@ class InterAgentMailbox {
         count++;
       }
     }
+    if (count > 0) this.bumpProjectRevision(projectId);
     return count;
   }
 
@@ -433,6 +541,10 @@ class InterAgentMailbox {
     task?: string;
     status?: string;
     progress?: string;
+    ownerChatId?: string;
+    runId?: string;
+    turnId?: string;
+    subAgentTurnId?: string;
   }): void {
     this.getMailbox(projectId, agentName);
     const now = Date.now();
@@ -445,7 +557,7 @@ class InterAgentMailbox {
       // from the old run must never leak into the new worker's mailbox.
       this.mailboxes.set(this.mailboxKey(projectId, agentName), []);
     }
-    team.set(key, {
+    const nextPresence: AgentPresence = {
       agentName,
       agentId: details?.agentId ?? existing?.agentId,
       subAgentChatId: details?.subAgentChatId ?? existing?.subAgentChatId,
@@ -453,9 +565,19 @@ class InterAgentMailbox {
       status: details?.status || existing?.status || 'registered',
       task: details?.task ?? existing?.task,
       progress: details?.progress ?? existing?.progress,
+      ownerChatId: details?.ownerChatId ?? existing?.ownerChatId,
+      runId: details?.runId ?? existing?.runId,
+      turnId: details?.turnId ?? existing?.turnId,
+      subAgentTurnId: details?.subAgentTurnId ?? existing?.subAgentTurnId,
       registeredAt: isNewRun ? now : existing?.registeredAt || now,
       updatedAt: now,
-    });
+    };
+    const changed = !existing || isNewRun || [
+      'agentId', 'subAgentChatId', 'role', 'status', 'task', 'progress',
+      'ownerChatId', 'runId', 'turnId', 'subAgentTurnId',
+    ].some(field => (existing as any)?.[field] !== (nextPresence as any)[field]);
+    team.set(key, changed ? nextPresence : { ...nextPresence, updatedAt: existing.updatedAt });
+    if (changed) this.bumpProjectRevision(projectId);
   }
 
   updateAgentPresence(projectId: string, agentName: string, update: Partial<Omit<AgentPresence, 'agentName' | 'registeredAt' | 'updatedAt'>>): void {
@@ -470,13 +592,16 @@ class InterAgentMailbox {
       updatedAt: now,
     };
 
-    team.set(key, {
+    const nextPresence: AgentPresence = {
       ...existing,
       ...update,
       agentName: existing.agentName || agentName,
       registeredAt: existing.registeredAt,
       updatedAt: now,
-    });
+    };
+    const changed = Object.entries(update).some(([field, value]) => (existing as any)[field] !== value);
+    team.set(key, changed ? nextPresence : existing);
+    if (changed) this.bumpProjectRevision(projectId);
   }
 
   getTeamSnapshot(projectId: string): AgentPresence[] {
@@ -538,6 +663,14 @@ class InterAgentMailbox {
     }
     this.presence.delete(projectId);
     this.projectLogs.delete(projectId);
+    this.projectActivityRevisions.delete(projectId);
+    this.projectMessageRevisions.delete(projectId);
+    const activityWaiters = this.projectActivityWaiters.get(projectId);
+    const messageWaiters = this.projectMessageWaiters.get(projectId);
+    this.projectActivityWaiters.delete(projectId);
+    this.projectMessageWaiters.delete(projectId);
+    for (const resolve of activityWaiters || []) resolve(0);
+    for (const resolve of messageWaiters || []) resolve(0);
 
     try {
       const safeProject = stableScopeSegment(projectId, 32);

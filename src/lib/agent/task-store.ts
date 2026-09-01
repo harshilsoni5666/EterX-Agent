@@ -3,8 +3,23 @@ import path from 'path';
 import { getEterxWorkspaceDir } from './storage-paths';
 import { stableScopeSegment } from './context-scope';
 import { closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../thought-stream-lifecycle';
-import { isStreamFinalEvent, mergeStreamingText, normalizeStreamTimestamp } from '../streaming-lifecycle';
-import { isPrivateReasoningTrace } from './trace-visibility';
+import {
+  isStreamFinalEvent,
+  mergeStreamingText,
+  mergeVisibleNarrativeText,
+  normalizeStreamTimestamp,
+} from '../streaming-lifecycle';
+import { isUserVisibleTrace } from './trace-visibility';
+import {
+  areLikelySameFeedActionLifecycle,
+  getFeedActionLifecycleCandidateKeys,
+  getFeedActionSingletonIdentity,
+  haveConflictingFeedActionInvocations,
+  isFeedTraceExplicitlySettled,
+  isFeedTraceOpen,
+  isFeedTurnBoundary,
+} from '../chat-feed-lifecycle';
+import { formatUnknownError } from './error-format';
 
 /**
  * TaskStore — Persistent Server-Side Task State
@@ -28,11 +43,12 @@ import { isPrivateReasoningTrace } from './trace-visibility';
 const TASKS_DIR = getEterxWorkspaceDir('.tasks');
 const TASK_STORE_PROCESS_STARTED_AT = Date.now();
 const MAX_TASK_CACHE_ENTRIES = 80;
-const MAX_RUNNING_TRACE_LOGS = 700;
-const MAX_COMPLETED_TRACE_LOGS = 350;
+// Match the live registry budget so settling or reloading a run never causes
+// the visible timeline to collapse from hundreds of events to a short tail.
+const MAX_RUNNING_TRACE_LOGS = 2000;
+const MAX_COMPLETED_TRACE_LOGS = MAX_RUNNING_TRACE_LOGS;
 const MAX_PERSISTED_CONSOLE_CHARS = 120_000;
 const MAX_PERSISTED_CONSOLE_CHUNK_CHARS = 6_000;
-const MAX_PROMPT_CHARS = 12000;
 const MAX_FINAL_ANSWER_CHARS = 100000;
 const WORK_NOTE_PHASE_BOUNDARY_TYPES = new Set([
   'command', 'tool_call', 'exploration', 'file_edit', 'browser',
@@ -40,6 +56,60 @@ const WORK_NOTE_PHASE_BOUNDARY_TYPES = new Set([
   'sub_agent_spawn', 'sub_agent_action', 'sub_agent_complete',
   'sub_agent_error', 'answer',
 ]);
+const PERSISTED_ACTION_TRACE_TYPES = new Set([
+  'command', 'tool_call', 'exploration', 'file_edit', 'browser',
+  'communication', 'sub_agent_action',
+]);
+
+const normalizedPersistedActionType = (value: unknown): string => {
+  const type = String(value || '').trim().toLowerCase();
+  return type === 'tool_call' ? 'command' : type;
+};
+
+const persistedActionIdentities = (log: any): Set<string> => {
+  const strongIdentities = [
+    // Registry snapshot replacement assigns a fresh delivery cursor but keeps
+    // the first cursor as the immutable action lifecycle origin. Persisted
+    // and live copies must therefore correlate on the origin, not only on the
+    // newest transport index or provider IDs (which can be regenerated).
+    // `_traceIdx` is a delivery cursor and can be reassigned by polling or
+    // restore. Only the explicitly preserved origin is a lifecycle identity.
+    ['origin', log?._originTraceIdx],
+    ['singleton', getFeedActionSingletonIdentity(log)],
+    ['tool', log?.toolCallId],
+    ['trace', log?.traceId],
+    ['response', log?.responseKey],
+    ['event', log?.id],
+  ]
+    .map(([kind, value]) => {
+      const normalized = String(value ?? '').trim();
+      return normalized ? `${kind}:${normalized}` : '';
+    })
+    .filter(Boolean);
+  if (strongIdentities.length > 0) return new Set(strongIdentities);
+
+  // A provider/background stream can contain several actions. It becomes a
+  // safe legacy lifecycle key only when scoped by this action's immutable
+  // command/tool/file content and its original start marker.
+  const streamId = String(log?.streamId || '').trim();
+  const normalize = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const tool = normalize(log?.tool || log?.toolName || log?.name);
+  const operation = [
+    log?.command,
+    log?.filepath || log?.filename,
+    log?.query || log?.searchQuery,
+  ].map(normalize).filter(Boolean);
+  const content = (operation.length > 0
+    ? [tool, ...operation]
+    : [tool, normalize(log?.secondary)])
+    .filter(Boolean)
+    .join('|')
+    .slice(0, 640);
+  const start = String(log?.streamStartedAt ?? log?.startTime ?? '').trim();
+  return streamId && content
+    ? new Set([`stream:${streamId}:${start}:${content}`])
+    : new Set();
+};
 
 const isOpenPersistedWorkNote = (log: any): boolean => {
   if (
@@ -53,7 +123,7 @@ const isOpenPersistedWorkNote = (log: any): boolean => {
     log.isLiveTyping === true ||
     log.isDelta === true ||
     log.streamState === 'open' ||
-    ['running', 'working', 'pending', 'streaming'].includes(String(log.status || '').toLowerCase());
+    ['running', 'working', 'pending', 'streaming', 'spawning', 'started'].includes(String(log.status || '').toLowerCase());
 };
 
 export interface PersistedTask {
@@ -188,6 +258,52 @@ function compactTraceEvent(traceEvent: any): any {
   return traceEvent;
 }
 
+function trimTraceLedgerWithBoundary(traceLogs: any[], limit: number): any[] {
+  const source = Array.isArray(traceLogs) ? traceLogs : [];
+  if (source.length <= limit) return source;
+
+  const firstUserBoundaryIndex = source.findIndex(trace => trace?.type === 'user_action');
+  const retainedIndexes = new Set<number>();
+  if (firstUserBoundaryIndex >= 0) retainedIndexes.add(firstUserBoundaryIndex);
+
+  let remaining = Math.max(0, limit - retainedIndexes.size);
+  let segmentEnd = source.length - 1;
+
+  // Compact by query segment instead of taking an unstructured tail. Every
+  // retained action/note/answer must retain the user or steering boundary that
+  // owns it; otherwise rows from intermediate queries visually fall under the
+  // next surviving query after a reconnect.
+  while (segmentEnd >= 0 && remaining > 0) {
+    let boundaryIndex = -1;
+    for (let index = segmentEnd; index >= 0; index -= 1) {
+      if (isFeedTurnBoundary(source[index])) {
+        boundaryIndex = index;
+        break;
+      }
+    }
+
+    const contentStart = boundaryIndex >= 0 ? boundaryIndex + 1 : 0;
+    if (boundaryIndex >= 0 && !retainedIndexes.has(boundaryIndex)) {
+      retainedIndexes.add(boundaryIndex);
+      remaining -= 1;
+      if (remaining <= 0) break;
+    }
+
+    const availableContent = Math.max(0, segmentEnd - contentStart + 1);
+    const contentToKeep = Math.min(remaining, availableContent);
+    const retainedContentStart = segmentEnd - contentToKeep + 1;
+    for (let index = retainedContentStart; index <= segmentEnd; index += 1) {
+      retainedIndexes.add(index);
+    }
+    remaining -= contentToKeep;
+    segmentEnd = boundaryIndex >= 0 ? boundaryIndex - 1 : -1;
+  }
+
+  return [...retainedIndexes]
+    .sort((left, right) => left - right)
+    .map(index => source[index]);
+}
+
 function getConsoleTraceOutput(trace: any): string {
   const candidates = [trace?.output, trace?.content, trace?.outputPreview];
   const value = candidates.find(candidate => candidate !== undefined && candidate !== null && String(candidate).length > 0)
@@ -255,6 +371,14 @@ function mergePersistedConsoleTrace(previous: any, incoming: any): any {
   return {
     ...previous,
     ...incoming,
+    id: previous.id || incoming.id,
+    _feedPresentationId: previous._feedPresentationId || incoming._feedPresentationId,
+    _feedBoundaryId: previous._feedBoundaryId || incoming._feedBoundaryId,
+    _feedBoundaryOrder: previous._feedBoundaryOrder ?? incoming._feedBoundaryOrder,
+    _feedEventOrder: previous._feedEventOrder ?? incoming._feedEventOrder,
+    _originTraceIdx: previous._originTraceIdx ?? previous._traceIdx ?? incoming._originTraceIdx ?? incoming._traceIdx,
+    _traceIdx: previous._traceIdx ?? incoming._traceIdx,
+    _pollIdx: incoming._traceIdx ?? incoming._pollIdx ?? previous._pollIdx ?? previous._traceIdx,
     output: mergedOutput,
     content: undefined,
     outputPreview: undefined,
@@ -264,31 +388,205 @@ function mergePersistedConsoleTrace(previous: any, incoming: any): any {
   };
 }
 
+const persistedActionReplaySignature = (log: any): string => {
+  const scope = String(log?.turnId || log?.runId || '').trim();
+  const startedAt = Number(log?.startTime || log?.timestamp || 0);
+  const endedAt = Number(log?.endTime || 0);
+  const duration = Number(log?.durationMs || 0);
+  if (!scope || !(startedAt > 0 || endedAt > 0 || duration > 0)) return '';
+  const content = [
+    log?.command,
+    log?.tool,
+    log?.name,
+    log?.filepath || log?.filename,
+    log?.query || log?.searchQuery,
+    log?.secondary,
+    log?.text,
+  ].map(value => String(value ?? '').replace(/\s+/g, ' ').trim()).join('|');
+  return [
+    scope,
+    normalizedPersistedActionType(log?.type),
+    String(log?._originTraceIdx ?? log?.toolCallId ?? log?.traceId ?? log?.responseKey ?? ''),
+    content,
+    startedAt,
+    endedAt,
+    duration,
+    String(log?.status || ''),
+    String(log?.exitCode ?? ''),
+  ].join('::');
+};
+
+function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
+  const canonical: any[] = [];
+  const actionIndexes = new Map<string, number>();
+  const likelyActionIndexes = new Map<string, Set<number>>();
+  const taskPlanIndexes = new Map<string, number>();
+  const registerLikelyAction = (log: any, index: number) => {
+    getFeedActionLifecycleCandidateKeys(log).forEach(key => {
+      const indexes = likelyActionIndexes.get(key) || new Set<number>();
+      indexes.add(index);
+      likelyActionIndexes.set(key, indexes);
+    });
+  };
+  const findLikelyActionIndex = (log: any): number | undefined => {
+    const candidates = new Set<number>();
+    getFeedActionLifecycleCandidateKeys(log).forEach(key => {
+      likelyActionIndexes.get(key)?.forEach(index => candidates.add(index));
+    });
+    for (const index of candidates) {
+      if (areLikelySameFeedActionLifecycle(canonical[index], log)) return index;
+    }
+    return undefined;
+  };
+
+  for (const log of Array.isArray(traceLogs) ? traceLogs : []) {
+    if (String(log?.type || '') === 'task_plan') {
+      const scope = String(log?.turnId || log?.runId || '').trim();
+      const planKey = scope ? `task-plan:${ scope }` : '';
+      const existingPlanIndex = planKey ? taskPlanIndexes.get(planKey) : undefined;
+      if (existingPlanIndex !== undefined) {
+        const previous = canonical[existingPlanIndex];
+        canonical[existingPlanIndex] = {
+          ...previous,
+          ...log,
+          id: previous?.id || log?.id,
+          planId: previous?.planId || log?.planId,
+          ownerTraceId: previous?.ownerTraceId || log?.ownerTraceId,
+          _feedPresentationId: previous?._feedPresentationId || log?._feedPresentationId,
+          _feedBoundaryId: previous?._feedBoundaryId || log?._feedBoundaryId,
+          _feedBoundaryOrder: previous?._feedBoundaryOrder ?? log?._feedBoundaryOrder,
+          _feedEventOrder: previous?._feedEventOrder ?? log?._feedEventOrder,
+          _traceIdx: previous?._traceIdx ?? log?._traceIdx,
+          startTime: previous?.startTime || previous?.timestamp || log?.startTime || log?.timestamp,
+          timestamp: Math.max(Number(previous?.timestamp || 0), Number(log?.timestamp || 0)),
+        };
+        continue;
+      }
+      if (planKey) taskPlanIndexes.set(planKey, canonical.length);
+      canonical.push(log);
+      continue;
+    }
+    if (!PERSISTED_ACTION_TRACE_TYPES.has(String(log?.type || ''))) {
+      canonical.push(log);
+      continue;
+    }
+    const scope = String(log?.turnId || log?.runId || 'unscoped').trim();
+    const type = normalizedPersistedActionType(log?.type);
+    const strongKeys = [...persistedActionIdentities(log)].map(identity => `${ scope }:${ type }:${ identity }`);
+    const replaySignature = persistedActionReplaySignature(log);
+    const likelyReplayIndex = findLikelyActionIndex(log);
+    const correlatedIndex = strongKeys
+      .map(key => actionIndexes.get(key))
+      .find(index => index !== undefined) ?? (
+        replaySignature ? actionIndexes.get(`replay:${ replaySignature }`) : undefined
+      ) ?? likelyReplayIndex;
+    const existingIndex = correlatedIndex !== undefined &&
+      haveConflictingFeedActionInvocations(canonical[correlatedIndex], log)
+      ? undefined
+      : correlatedIndex;
+    if (existingIndex === undefined) {
+      const index = canonical.length;
+      strongKeys.forEach(key => actionIndexes.set(key, index));
+      if (replaySignature) actionIndexes.set(`replay:${ replaySignature }`, index);
+      canonical.push(log);
+      registerLikelyAction(log, index);
+      continue;
+    }
+
+    const previous = canonical[existingIndex];
+    const previousSettled = isFeedTraceExplicitlySettled(previous);
+    const incomingOpen = isFeedTraceOpen(log);
+    const sameTemporalLifecycle = Boolean(
+      (Number(previous?.startTime || previous?.timestamp || 0) &&
+        Number(previous?.startTime || previous?.timestamp || 0) === Number(log?.startTime || log?.timestamp || 0)) ||
+      (Number(previous?.endTime || 0) && Number(previous?.endTime || 0) === Number(log?.endTime || 0)) ||
+      (previous?._traceIdx !== undefined && previous?._traceIdx === log?._traceIdx)
+    );
+    const sameLogicalLifecycle = areLikelySameFeedActionLifecycle(previous, log);
+    if (!isFeedTraceOpen(previous) && !isFeedTraceOpen(log) && !sameTemporalLifecycle && !sameLogicalLifecycle) {
+      const index = canonical.length;
+      strongKeys.forEach(key => actionIndexes.set(key, index));
+      if (replaySignature) actionIndexes.set(`replay:${ replaySignature }`, index);
+      canonical.push(log);
+      registerLikelyAction(log, index);
+      continue;
+    }
+
+    canonical[existingIndex] = {
+      ...previous,
+      ...log,
+      id: previous?.id || log?.id,
+      _feedPresentationId: previous?._feedPresentationId || log?._feedPresentationId,
+      _feedBoundaryId: previous?._feedBoundaryId || log?._feedBoundaryId,
+      _feedBoundaryOrder: previous?._feedBoundaryOrder ?? log?._feedBoundaryOrder,
+      _feedEventOrder: previous?._feedEventOrder ?? log?._feedEventOrder,
+      _originTraceIdx: previous?._originTraceIdx ?? previous?._traceIdx ?? log?._originTraceIdx ?? log?._traceIdx,
+      _traceIdx: previous?._traceIdx ?? log?._traceIdx,
+      _pollIdx: log?._pollIdx ?? log?._traceIdx ?? previous?._pollIdx ?? previous?._traceIdx,
+      startTime: previous?.startTime || previous?.timestamp || log?.startTime || log?.timestamp,
+      endTime: Math.max(Number(previous?.endTime || 0), Number(log?.endTime || 0)) || log?.endTime,
+      timestamp: Math.max(Number(previous?.timestamp || 0), Number(log?.timestamp || 0)),
+      ...(previousSettled && incomingOpen ? {
+        isStreaming: false,
+        isLiveTyping: false,
+        isLive: false,
+        isDelta: false,
+        streamState: 'closed',
+        status: previous?.status,
+        state: previous?.state,
+        phase: previous?.phase,
+        exitCode: previous?.exitCode,
+        durationMs: previous?.durationMs,
+        endTime: previous?.endTime,
+      } : {}),
+    };
+    strongKeys.forEach(key => actionIndexes.set(key, existingIndex));
+    if (replaySignature) actionIndexes.set(`replay:${ replaySignature }`, existingIndex);
+    registerLikelyAction(canonical[existingIndex], existingIndex);
+  }
+
+  return canonical;
+}
+
 function trimTask(task: PersistedTask, compactAll = false): void {
-  task.prompt = String(task.prompt || '').substring(0, MAX_PROMPT_CHARS);
+  task.prompt = String(task.prompt || '').replace(/\u0000/g, '');
   task.finalAnswer = String(task.finalAnswer || '').substring(0, MAX_FINAL_ANSWER_CHARS);
   const limit = task.status === 'running' ? MAX_RUNNING_TRACE_LOGS : MAX_COMPLETED_TRACE_LOGS;
   if (!Array.isArray(task.traceLogs)) task.traceLogs = [];
-  if (task.traceLogs.length > limit) task.traceLogs = task.traceLogs.slice(-limit);
+  task.traceLogs = canonicalizePersistedActionLogs(task.traceLogs);
+  if (task.traceLogs.length > limit) task.traceLogs = trimTraceLedgerWithBoundary(task.traceLogs, limit);
   if (compactAll) task.traceLogs = task.traceLogs.map(compactTraceEvent);
 }
 
 function settleOrphanedLiveTraces(traceLogs: any[], completedAt: number, interrupted = true): any[] {
   return (Array.isArray(traceLogs) ? traceLogs : []).map((trace: any) => {
-    const isLive =
+    const isLive = !isStreamFinalEvent(trace) && (
+      trace?.isLive === true ||
       trace?.isStreaming === true ||
       trace?.isLiveTyping === true ||
       trace?.isDelta === true ||
-      trace?.streamState === 'open';
-    const canRemainLive = ['console_output', 'work_note', 'thought_stream', 'answer'].includes(String(trace?.type || ''));
+      trace?.streamState === 'open' ||
+      ['running', 'working', 'pending', 'streaming', 'spawning', 'started'].includes(
+        String(trace?.status || '').trim().toLowerCase()
+      )
+    );
+    const canRemainLive = [
+      'console_output', 'work_note', 'thought_stream', 'answer', 'command',
+      'tool_call', 'exploration', 'file_edit', 'file_preview', 'progress', 'browser',
+      'communication', 'sub_agent_action',
+    ].includes(String(trace?.type || ''));
     if (!isLive || !canRemainLive) return trace;
     const startedAt = Number(trace.startTime || trace.timestamp || completedAt);
     const settled = {
       ...trace,
+      isLive: false,
       isStreaming: false,
       isLiveTyping: false,
       isDelta: false,
       streamState: 'closed',
+      status: ['running', 'working', 'pending', 'streaming', 'spawning', 'started'].includes(
+        String(trace?.status || '').trim().toLowerCase()
+      ) ? interrupted ? 'stopped' : 'completed' : trace?.status,
       endTime: completedAt,
       durationMs: Math.max(0, completedAt - startedAt),
       interrupted,
@@ -444,7 +742,7 @@ export const taskStore = {
 
     const now = Date.now();
     const compactEvent = compactTraceEvent(traceEvent);
-    const timedEvent = compactEvent && typeof compactEvent === 'object'
+    let timedEvent = compactEvent && typeof compactEvent === 'object'
       ? {
         ...compactEvent,
         timestamp: normalizeStreamTimestamp(compactEvent.timestamp, now),
@@ -457,64 +755,429 @@ export const taskStore = {
       }
       : compactEvent;
 
-    // Reasoning may be useful inside the active runtime, but it is not durable
-    // conversation content and must never be written into a user's chat task.
-    if (isPrivateReasoningTrace(timedEvent)) return;
+    if (timedEvent && typeof timedEvent === 'object') {
+      const eventRunId = String(timedEvent.runId || expectedRunId || task.runId || '').trim();
+      let eventTurnId = String(timedEvent.turnId || '').trim();
+      if (!eventTurnId) {
+        const ownerIdentity = String(
+          timedEvent.ownerTraceId || timedEvent.parentTraceId || '',
+        ).trim();
+        if (ownerIdentity) {
+          const ownerAction = [...task.traceLogs].reverse().find((log: any) =>
+            PERSISTED_ACTION_TRACE_TYPES.has(String(log?.type || '')) &&
+            [log?.traceId, log?.toolCallId, log?.id]
+              .map(value => String(value || '').trim())
+              .includes(ownerIdentity)
+          );
+          eventTurnId = String(ownerAction?.turnId || '').trim();
+        }
+        if (!eventTurnId) {
+          const latestRunBoundary = [...task.traceLogs].reverse().find((log: any) =>
+            isFeedTurnBoundary(log) && (
+              !eventRunId ||
+              String(log?.runId || '').trim() === eventRunId ||
+              (!String(log?.runId || '').trim() && String(log?.turnId || '').trim() === eventRunId)
+            )
+          );
+          eventTurnId = String(
+            latestRunBoundary?.turnId || latestRunBoundary?.id || eventRunId,
+          ).trim();
+        }
+      }
+      timedEvent = {
+        ...timedEvent,
+        ownerChatId: timedEvent.ownerChatId || chatId,
+        ...(eventRunId ? { runId: eventRunId } : {}),
+        ...(eventTurnId ? { turnId: eventTurnId } : {}),
+      };
+    }
+
+    // Raw provider reasoning remains internal. Explicit non-empty uiOnly
+    // Thought snapshots are presentation events, however, and must share the
+    // same durable lifecycle as the live feed or snapshot reconciliation can
+    // make a landed row disappear between provider chunks.
+    if (!isUserVisibleTrace(timedEvent)) return;
 
     if (timedEvent?.type !== 'thought_stream') {
       closeThoughtStreamsForBoundary(task.traceLogs, timedEvent);
     }
 
     if (timedEvent?.type === 'user_action') {
-      const eventId = String(timedEvent.id || '').trim();
       const eventRunId = String(timedEvent.runId || timedEvent.turnId || task.runId || '').trim();
       const traceIndex = timedEvent._traceIdx;
       const existingUserIndex = task.traceLogs.findIndex((log: any) => {
         if (log?.type !== 'user_action') return false;
         const logRunId = String(log.runId || log.turnId || '').trim();
         if (eventRunId && logRunId && eventRunId !== logRunId) return false;
-        const sameId = eventId && String(log.id || '').trim() === eventId;
+        const incomingTurnId = String(timedEvent.turnId || '').trim();
+        const existingTurnId = String(log.turnId || '').trim();
+        if (incomingTurnId && existingTurnId && incomingTurnId !== existingTurnId) return false;
         const sameTraceIndex = traceIndex !== undefined && traceIndex !== null && log._traceIdx === traceIndex;
-        return Boolean(sameId || sameTraceIndex);
+        // TaskStore receives canonical server traces, never the client's
+        // optimistic bubble. Therefore an event id is not a valid upsert key:
+        // adapters can recycle it on a later Send. Only a cursor inside the
+        // same explicit run/turn namespace proves this is the same boundary.
+        return Boolean(
+          sameTraceIndex &&
+          ((eventRunId && logRunId && eventRunId === logRunId) ||
+            (incomingTurnId && existingTurnId && incomingTurnId === existingTurnId))
+        );
       });
       if (existingUserIndex >= 0) {
+        const previous = task.traceLogs[existingUserIndex];
         task.traceLogs[existingUserIndex] = {
-          ...task.traceLogs[existingUserIndex],
+          ...previous,
           ...timedEvent,
-          startTime: task.traceLogs[existingUserIndex].startTime || timedEvent.startTime || timedEvent.timestamp,
+          id: previous.id || timedEvent.id,
+          _feedPresentationId: previous._feedPresentationId || timedEvent._feedPresentationId,
+          _feedBoundaryId: previous._feedBoundaryId || timedEvent._feedBoundaryId,
+          _feedBoundaryOrder: previous._feedBoundaryOrder ?? timedEvent._feedBoundaryOrder,
+          _feedEventOrder: previous._feedEventOrder ?? timedEvent._feedEventOrder,
+          _originTraceIdx: previous._originTraceIdx ?? previous._traceIdx ?? timedEvent._originTraceIdx ?? timedEvent._traceIdx,
+          _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
+          _pollIdx: timedEvent._traceIdx ?? timedEvent._pollIdx ?? previous._pollIdx ?? previous._traceIdx,
+          startTime: previous.startTime || timedEvent.startTime || timedEvent.timestamp,
+        };
+      } else {
+        task.traceLogs.push(timedEvent);
+      }
+    } else if (timedEvent?.type === 'steering_received') {
+      const incomingRunId = String(timedEvent.runId || '').trim();
+      const incomingTurnId = String(timedEvent.turnId || '').trim();
+      const incomingTraceIndex = timedEvent._traceIdx;
+      const existingSteeringIndex = incomingTraceIndex !== undefined && incomingTraceIndex !== null
+        ? task.traceLogs.findIndex(log => {
+          if (log?.type !== 'steering_received' || log._traceIdx !== incomingTraceIndex) return false;
+          const existingRunId = String(log.runId || '').trim();
+          const existingTurnId = String(log.turnId || '').trim();
+          return Boolean(
+            (incomingRunId && existingRunId && incomingRunId === existingRunId) ||
+            (incomingTurnId && existingTurnId && incomingTurnId === existingTurnId)
+          );
+        })
+        : -1;
+      if (existingSteeringIndex >= 0) {
+        const previous = task.traceLogs[existingSteeringIndex];
+        task.traceLogs[existingSteeringIndex] = {
+          ...previous,
+          ...timedEvent,
+          id: previous.id || timedEvent.id,
+          _feedPresentationId: previous._feedPresentationId || timedEvent._feedPresentationId,
+          _feedBoundaryId: previous._feedBoundaryId || timedEvent._feedBoundaryId,
+          _feedBoundaryOrder: previous._feedBoundaryOrder ?? timedEvent._feedBoundaryOrder,
+          _feedEventOrder: previous._feedEventOrder ?? timedEvent._feedEventOrder,
+          _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
+          _pollIdx: timedEvent._traceIdx ?? timedEvent._pollIdx ?? previous._pollIdx ?? previous._traceIdx,
+          startTime: previous.startTime || timedEvent.startTime || timedEvent.timestamp,
+          timestamp: Math.max(Number(previous.timestamp || 0), Number(timedEvent.timestamp || 0)),
+        };
+      } else {
+        task.traceLogs.push(timedEvent);
+      }
+    } else if (timedEvent?.type === 'done' || timedEvent?.type === 'error') {
+      const incomingId = String(timedEvent.id || '').trim();
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
+      const incomingOrigin = timedEvent._originTraceIdx ?? timedEvent._traceIdx;
+      const incomingAt = Number(timedEvent.timestamp || timedEvent.endTime || 0);
+      const incomingText = formatUnknownError(timedEvent.text ?? timedEvent.detail ?? timedEvent.data, '');
+      const existingTerminalIndex = task.traceLogs.findIndex((log: any) => {
+        if (log?.type !== timedEvent.type) return false;
+        const existingScope = String(log.turnId || log.runId || '').trim();
+        if (incomingScope && existingScope && incomingScope !== existingScope) return false;
+        const sameId = Boolean(incomingId && String(log.id || '').trim() === incomingId);
+        const existingOrigin = log._originTraceIdx ?? log._traceIdx;
+        const sameOrigin = incomingOrigin !== undefined && incomingOrigin !== null &&
+          existingOrigin !== undefined && existingOrigin !== null && existingOrigin === incomingOrigin;
+        // Legacy terminal traces occasionally had neither an id nor a trace
+        // cursor. Exact time + exact payload is the only safe replay key for
+        // those records; it cannot merge two differently reported failures.
+        const sameLegacyEvent = !incomingId && incomingOrigin === undefined &&
+          Number(log.timestamp || log.endTime || 0) === incomingAt &&
+          formatUnknownError(log.text ?? log.detail ?? log.data, '') === incomingText;
+        return sameId || sameOrigin || sameLegacyEvent;
+      });
+      if (existingTerminalIndex >= 0) {
+        const previous = task.traceLogs[existingTerminalIndex];
+        task.traceLogs[existingTerminalIndex] = {
+          ...previous,
+          ...timedEvent,
+          id: previous.id || timedEvent.id,
+          text: formatUnknownError(
+            timedEvent.text ?? timedEvent.detail,
+            formatUnknownError(previous.text ?? previous.detail, ''),
+          ),
+          detail: formatUnknownError(
+            timedEvent.detail,
+            formatUnknownError(previous.detail, ''),
+          ) || undefined,
+          _originTraceIdx: previous._originTraceIdx ?? previous._traceIdx ?? timedEvent._originTraceIdx ?? timedEvent._traceIdx,
+          _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
+          _pollIdx: timedEvent._traceIdx ?? timedEvent._pollIdx ?? previous._pollIdx ?? previous._traceIdx,
+          startTime: previous.startTime || previous.timestamp || timedEvent.startTime || timedEvent.timestamp,
+          endTime: Math.max(
+            Number(previous.endTime || previous.timestamp || 0),
+            Number(timedEvent.endTime || timedEvent.timestamp || 0),
+          ) || undefined,
+          timestamp: Math.max(Number(previous.timestamp || 0), Number(timedEvent.timestamp || 0)),
         };
       } else {
         task.traceLogs.push(timedEvent);
       }
     } else if (timedEvent?.type === 'thought_stream') {
       mergeThoughtStreamTrace(task.traceLogs, timedEvent);
+    } else if (timedEvent?.type === 'progress' && String(timedEvent.id || '').trim()) {
+      const incomingId = String(timedEvent.id).trim();
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
+      const existingProgressIndex = task.traceLogs.findIndex((log: any) => {
+        if (log?.type !== 'progress' || String(log.id || '').trim() !== incomingId) return false;
+        const existingScope = String(log.turnId || log.runId || '').trim();
+        return !incomingScope || !existingScope || incomingScope === existingScope;
+      });
+      if (existingProgressIndex >= 0) {
+        const previous = task.traceLogs[existingProgressIndex];
+        task.traceLogs[existingProgressIndex] = {
+          ...previous,
+          ...timedEvent,
+          id: previous.id || timedEvent.id,
+          _feedPresentationId: previous._feedPresentationId || timedEvent._feedPresentationId,
+          _feedBoundaryId: previous._feedBoundaryId || timedEvent._feedBoundaryId,
+          _feedBoundaryOrder: previous._feedBoundaryOrder ?? timedEvent._feedBoundaryOrder,
+          _feedEventOrder: previous._feedEventOrder ?? timedEvent._feedEventOrder,
+          _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
+          _pollIdx: timedEvent._traceIdx ?? timedEvent._pollIdx ?? previous._pollIdx ?? previous._traceIdx,
+          startTime: previous.startTime || previous.timestamp || timedEvent.startTime || timedEvent.timestamp,
+          timestamp: Math.max(Number(previous.timestamp || 0), Number(timedEvent.timestamp || 0)),
+        };
+      } else {
+        task.traceLogs.push(timedEvent);
+      }
+    } else if (timedEvent?.type === 'task_plan') {
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
+      const existingPlanIndex = incomingScope
+        ? task.traceLogs.findIndex((log: any) =>
+          log?.type === 'task_plan' &&
+          String(log.turnId || log.runId || '').trim() === incomingScope
+        )
+        : -1;
+      if (existingPlanIndex >= 0) {
+        const previous = task.traceLogs[existingPlanIndex];
+        task.traceLogs[existingPlanIndex] = {
+          ...previous,
+          ...timedEvent,
+          id: previous.id || timedEvent.id,
+          planId: previous.planId || timedEvent.planId,
+          ownerTraceId: previous.ownerTraceId || timedEvent.ownerTraceId,
+          _feedPresentationId: previous._feedPresentationId || timedEvent._feedPresentationId,
+          _feedBoundaryId: previous._feedBoundaryId || timedEvent._feedBoundaryId,
+          _feedBoundaryOrder: previous._feedBoundaryOrder ?? timedEvent._feedBoundaryOrder,
+          _feedEventOrder: previous._feedEventOrder ?? timedEvent._feedEventOrder,
+          _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
+          _pollIdx: timedEvent._traceIdx ?? timedEvent._pollIdx ?? previous._pollIdx ?? previous._traceIdx,
+          startTime: previous.startTime || previous.timestamp || timedEvent.startTime || timedEvent.timestamp,
+          timestamp: Math.max(Number(previous.timestamp || 0), Number(timedEvent.timestamp || 0)),
+        };
+      } else {
+        task.traceLogs.push(timedEvent);
+      }
+    } else if (PERSISTED_ACTION_TRACE_TYPES.has(String(timedEvent?.type || ''))) {
+      const incomingIdentities = persistedActionIdentities(timedEvent);
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
+      const incomingType = normalizedPersistedActionType(timedEvent.type);
+      let mergeIdx = -1;
+      if (incomingIdentities.size > 0) {
+        for (let index = task.traceLogs.length - 1; index >= 0; index -= 1) {
+          const existing = task.traceLogs[index];
+          // A strong action ID retains the turn assigned when the action first
+          // landed, even if a later steering boundary is already present.
+          if (isFeedTurnBoundary(existing)) continue;
+          if (!PERSISTED_ACTION_TRACE_TYPES.has(String(existing?.type || ''))) continue;
+          if (normalizedPersistedActionType(existing.type) !== incomingType) continue;
+          const existingScope = String(existing.turnId || existing.runId || '').trim();
+          if (incomingScope && existingScope && incomingScope !== existingScope) continue;
+          if (
+            !haveConflictingFeedActionInvocations(existing, timedEvent) &&
+            [...persistedActionIdentities(existing)].some(identity => incomingIdentities.has(identity))
+          ) {
+            mergeIdx = index;
+            break;
+          }
+        }
+      }
+      if (mergeIdx < 0) {
+        for (let index = task.traceLogs.length - 1; index >= 0; index -= 1) {
+          if (areLikelySameFeedActionLifecycle(task.traceLogs[index], timedEvent)) {
+            mergeIdx = index;
+            break;
+          }
+        }
+      }
+      if (mergeIdx >= 0) {
+        const previous = task.traceLogs[mergeIdx];
+        const incomingStatus = String(timedEvent.status || '').trim().toLowerCase();
+        const incomingOpen = !isStreamFinalEvent(timedEvent) && (
+          timedEvent.isLive === true ||
+          timedEvent.isStreaming === true ||
+          timedEvent.isLiveTyping === true ||
+          timedEvent.streamState === 'open' ||
+          ['running', 'working', 'pending', 'streaming', 'spawning', 'started'].includes(incomingStatus)
+        );
+        task.traceLogs[mergeIdx] = {
+          ...previous,
+          ...timedEvent,
+          id: previous.id || timedEvent.id,
+          _feedPresentationId: previous._feedPresentationId || timedEvent._feedPresentationId,
+          _feedBoundaryId: previous._feedBoundaryId || timedEvent._feedBoundaryId,
+          _feedBoundaryOrder: previous._feedBoundaryOrder ?? timedEvent._feedBoundaryOrder,
+          _feedEventOrder: previous._feedEventOrder ?? timedEvent._feedEventOrder,
+          _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
+          _pollIdx: timedEvent._traceIdx ?? timedEvent._pollIdx ?? previous._pollIdx ?? previous._traceIdx,
+          startTime: previous.startTime || previous.timestamp || timedEvent.startTime || timedEvent.timestamp,
+          endTime: Math.max(
+            Number(previous.endTime || previous.timestamp || 0),
+            Number(timedEvent.endTime || timedEvent.timestamp || 0),
+          ) || undefined,
+          timestamp: Math.max(Number(previous.timestamp || 0), Number(timedEvent.timestamp || 0)),
+          ...(!incomingOpen ? {
+            isLive: false,
+            isStreaming: false,
+            isLiveTyping: false,
+            isDelta: false,
+            streamState: 'closed',
+            status: ['running', 'working', 'pending', 'streaming', 'spawning', 'started'].includes(incomingStatus)
+              ? 'completed'
+              : timedEvent.status || previous.status,
+          } : {}),
+        };
+      } else {
+        task.traceLogs.push(timedEvent);
+      }
+    } else if (timedEvent?.type === 'file_preview') {
+      const incomingId = String(timedEvent.id || timedEvent.traceId || '').trim();
+      const incomingOwner = String(timedEvent.ownerTraceId || '').trim();
+      const incomingPath = String(timedEvent.filepath || timedEvent.filename || '').replace(/\\/g, '/').toLowerCase();
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
+      let mergeIdx = -1;
+      for (let index = task.traceLogs.length - 1; index >= 0; index--) {
+        const existing = task.traceLogs[index];
+        if (isFeedTurnBoundary(existing)) {
+          if (incomingId || incomingOwner) continue;
+          break;
+        }
+        if (existing?.type !== 'file_preview') continue;
+        const existingScope = String(existing.turnId || existing.runId || '').trim();
+        if (incomingScope && existingScope && incomingScope !== existingScope) continue;
+        const existingId = String(existing.id || existing.traceId || '').trim();
+        const existingOwner = String(existing.ownerTraceId || '').trim();
+        const existingPath = String(existing.filepath || existing.filename || '').replace(/\\/g, '/').toLowerCase();
+        const sameIdentity = Boolean(incomingId && existingId === incomingId);
+        const sameOwnerPath = Boolean(
+          incomingOwner &&
+          existingOwner === incomingOwner &&
+          ((!incomingPath && !existingPath) || (incomingPath && existingPath === incomingPath))
+        );
+        const samePath = Boolean(
+          !incomingOwner &&
+          !existingOwner &&
+          incomingPath &&
+          timedEvent.dedupe !== false &&
+          existingPath === incomingPath &&
+          existing.dedupe !== false
+        );
+        if (sameIdentity || sameOwnerPath || samePath) {
+          mergeIdx = index;
+          break;
+        }
+      }
+      if (mergeIdx >= 0) {
+        const previous = task.traceLogs[mergeIdx];
+        task.traceLogs[mergeIdx] = {
+          ...previous,
+          ...timedEvent,
+          id: previous.id || timedEvent.id,
+          _feedPresentationId: previous._feedPresentationId || timedEvent._feedPresentationId,
+          _feedBoundaryId: previous._feedBoundaryId || timedEvent._feedBoundaryId,
+          _feedBoundaryOrder: previous._feedBoundaryOrder ?? timedEvent._feedBoundaryOrder,
+          _feedEventOrder: previous._feedEventOrder ?? timedEvent._feedEventOrder,
+          _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
+          _pollIdx: timedEvent._traceIdx ?? timedEvent._pollIdx ?? previous._pollIdx ?? previous._traceIdx,
+          startTime: previous.startTime || timedEvent.startTime || timedEvent.timestamp,
+          endTime: Math.max(
+            Number(previous.endTime || previous.timestamp || 0),
+            Number(timedEvent.endTime || timedEvent.timestamp || 0),
+          ),
+          timestamp: Math.max(Number(previous.timestamp || 0), Number(timedEvent.timestamp || 0)),
+        };
+      } else {
+        task.traceLogs.push(timedEvent);
+      }
     } else if (timedEvent?.type === 'answer_cancel') {
       const answerId = String(timedEvent.answerId || '').trim();
+      const replacementNoteId = String(timedEvent.replacementNoteId || '').trim();
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
-        if (log?.type === 'user_action') break;
+        if (isFeedTurnBoundary(log)) {
+          if (answerId) continue;
+          break;
+        }
         if (
           log?.type === 'answer' &&
+          (!incomingScope || !String(log.turnId || log.runId || '').trim() || String(log.turnId || log.runId || '').trim() === incomingScope) &&
           (
             (answerId && String(log.answerId || '') === answerId) ||
             (!answerId && (log.isStreaming || log.isLiveTyping || log.streamState === 'open'))
           )
         ) {
-          task.traceLogs.splice(i, 1);
+          if (replacementNoteId && String(log.text || '').trim()) {
+            // Persist the same row transition that live clients observe. The
+            // cancel delivery index becomes `_pollIdx`, so a reconnect that
+            // already consumed the answer still receives this in-place update.
+            task.traceLogs[i] = {
+              ...log,
+              type: 'work_note',
+              noteId: replacementNoteId,
+              isLive: false,
+              isStreaming: false,
+              isLiveTyping: false,
+              isDelta: false,
+              streamState: 'closed',
+              status: 'completed',
+              _answerTransitionPending: true,
+              _streamingCancelled: true,
+              _cancelTraceIdx: timedEvent._traceIdx,
+              _cancelledAt: timedEvent.timestamp || timedEvent.endTime,
+              _pollIdx: timedEvent._traceIdx ?? log._pollIdx ?? log._traceIdx,
+            };
+          } else {
+            task.traceLogs.splice(i, 1);
+          }
+          break;
         }
       }
+      // Keep a durable transition event. Incremental clients that already
+      // rendered the provisional answer use it to update that same row, while
+      // a full reconnect sees the converted work note stored above.
+      task.traceLogs.push(timedEvent);
     } else if (timedEvent?.type === 'answer') {
       const answerId = String(timedEvent.answerId || '').trim();
       const incomingIsStreaming =
-        timedEvent.isStreaming === true ||
-        timedEvent.isLiveTyping === true ||
-        timedEvent.isDelta === true ||
-        timedEvent.streamState === 'open';
+        !isStreamFinalEvent(timedEvent) && (
+          timedEvent.isStreaming === true ||
+          timedEvent.isLiveTyping === true ||
+          timedEvent.isDelta === true ||
+          timedEvent.streamState === 'open'
+        );
       let mergeIdx = -1;
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
-        if (log?.type === 'user_action') break;
+        if (isFeedTurnBoundary(log)) {
+          if (answerId) continue;
+          break;
+        }
         if (log?.type !== 'answer') continue;
+        const existingScope = String(log.turnId || log.runId || '').trim();
+        if (incomingScope && existingScope && incomingScope !== existingScope) continue;
         const sameText = String(log.text || '').trim() === String(timedEvent.text || '').trim();
         if (
           (answerId && String(log.answerId || '') === answerId) ||
@@ -530,6 +1193,15 @@ export const taskStore = {
           ...previous,
           ...timedEvent,
           text: mergeStreamingText(previous.text, timedEvent.text, timedEvent.isDelta === true),
+          _feedPresentationId: previous._feedPresentationId || timedEvent._feedPresentationId,
+          _feedBoundaryId: previous._feedBoundaryId || timedEvent._feedBoundaryId,
+          _feedBoundaryOrder: previous._feedBoundaryOrder ?? timedEvent._feedBoundaryOrder,
+          _feedEventOrder: previous._feedEventOrder ?? timedEvent._feedEventOrder,
+          // The answer is one presentation row for its whole cumulative
+          // stream. Preserve its first timeline position and separately carry
+          // the newest delivery cursor used by incremental polling.
+          _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
+          _pollIdx: timedEvent._traceIdx ?? timedEvent._pollIdx ?? previous._pollIdx ?? previous._traceIdx,
           startTime: previous.startTime || timedEvent.startTime || timedEvent.timestamp,
           endTime: Math.max(
             Number(previous.endTime || previous.timestamp || 0),
@@ -541,6 +1213,9 @@ export const taskStore = {
           ),
           isStreaming: incomingIsStreaming,
           isLiveTyping: incomingIsStreaming,
+          isLive: incomingIsStreaming ? timedEvent.isLive : false,
+          isDelta: incomingIsStreaming ? timedEvent.isDelta : false,
+          streamState: incomingIsStreaming ? 'open' : 'closed',
           wasStreaming: Boolean(
             previous.wasStreaming ||
             previous.isStreaming ||
@@ -554,17 +1229,29 @@ export const taskStore = {
           ...timedEvent,
           isStreaming: incomingIsStreaming,
           isLiveTyping: incomingIsStreaming,
+          isLive: incomingIsStreaming ? timedEvent.isLive : false,
+          isDelta: incomingIsStreaming ? timedEvent.isDelta : false,
+          streamState: incomingIsStreaming ? 'open' : 'closed',
         });
       }
     } else if (timedEvent?.type === 'work_note_cancel') {
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;
       const subAgentIdentity = timedEvent.subAgentChatId || timedEvent.subAgentId || subAgent;
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
-        if (log?.type === 'user_action') break;
+        if (isFeedTurnBoundary(log)) {
+          const boundaryScope = String(log.turnId || log.runId || '').trim();
+          // Provider-local note IDs may restart on a later query. Cross a
+          // visible boundary only when this cancellation explicitly owns an
+          // older, different turn; an unscoped ID is never enough authority.
+          if (noteId && incomingScope && boundaryScope && incomingScope !== boundaryScope) continue;
+          break;
+        }
         if (
           log?.type === 'work_note' &&
+          (!incomingScope || !String(log.turnId || log.runId || '').trim() || String(log.turnId || log.runId || '').trim() === incomingScope) &&
           (log.subAgentChatId || log.subAgentId || log.subAgent || null) === subAgentIdentity &&
           (!noteId || log.noteId === noteId)
         ) {
@@ -586,6 +1273,7 @@ export const taskStore = {
             _streamingCancelled: true,
             _cancelTraceIdx: timedEvent._traceIdx,
             _cancelledAt: timedEvent.timestamp,
+            _pollIdx: timedEvent._traceIdx ?? log._pollIdx ?? log._traceIdx,
           };
           break;
         }
@@ -596,6 +1284,7 @@ export const taskStore = {
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;
       const subAgentIdentity = timedEvent.subAgentChatId || timedEvent.subAgentId || subAgent;
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
       // Provider adapters commonly emit a complete one-shot work note without
       // any stream flags. Treat only an explicitly open note as provisional.
       const incomingIsFinal = !isOpenPersistedWorkNote(timedEvent);
@@ -604,13 +1293,21 @@ export const taskStore = {
       let crossedPhaseBoundary = false;
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
-        if (log?.type === 'user_action') break;
+        if (isFeedTurnBoundary(log)) {
+          const boundaryScope = String(log.turnId || log.runId || '').trim();
+          if (noteId && incomingScope && boundaryScope && incomingScope !== boundaryScope) {
+            crossedPhaseBoundary = true;
+            continue;
+          }
+          break;
+        }
         if (WORK_NOTE_PHASE_BOUNDARY_TYPES.has(String(log?.type || ''))) {
           crossedPhaseBoundary = true;
           continue;
         }
         if (
           log?.type !== 'work_note' ||
+          (incomingScope && String(log.turnId || log.runId || '').trim() && String(log.turnId || log.runId || '').trim() !== incomingScope) ||
           (log.subAgentChatId || log.subAgentId || log.subAgent || null) !== subAgentIdentity
         ) continue;
         const sameNote = noteId && log.noteId && log.noteId === noteId;
@@ -662,12 +1359,22 @@ export const taskStore = {
         task.traceLogs[mergeIdx] = {
           ...previous,
           ...timedEvent,
-          text: incomingIsFinal && timedEvent.isDelta !== true
-            ? noteText
-            : mergeStreamingText(previous.text, noteText, timedEvent.isDelta === true),
+          text: mergeVisibleNarrativeText(
+            previous.text,
+            noteText,
+            timedEvent.isDelta === true,
+          ),
+          _feedPresentationId: previous._feedPresentationId || timedEvent._feedPresentationId,
+          _feedBoundaryId: previous._feedBoundaryId || timedEvent._feedBoundaryId,
+          _feedBoundaryOrder: previous._feedBoundaryOrder ?? timedEvent._feedBoundaryOrder,
+          _feedEventOrder: previous._feedEventOrder ?? timedEvent._feedEventOrder,
           noteId: noteId || previous.noteId || null,
           subAgent: subAgent ?? previous.subAgent ?? null,
+          // Keep the row's original timeline identity/position, but retain
+          // the newest delivery cursor so incremental polling still emits an
+          // in-place update that reused this persisted row.
           _traceIdx: previous._traceIdx ?? timedEvent._traceIdx,
+          _pollIdx: timedEvent._traceIdx ?? previous._pollIdx ?? previous._traceIdx,
           startTime: previous.startTime || timedEvent.startTime || timedEvent.timestamp,
           endTime: Math.max(
             Number(previous.endTime || previous.timestamp || 0),
@@ -677,28 +1384,74 @@ export const taskStore = {
             Number(previous.timestamp || 0),
             Number(timedEvent.timestamp || 0),
           ),
+          ...(incomingIsFinal ? {
+            isLive: false,
+            isStreaming: false,
+            isLiveTyping: false,
+            isDelta: false,
+            streamState: 'closed',
+            status: ['running', 'working', 'pending', 'streaming', 'spawning', 'started'].includes(
+              String(timedEvent.status || previous.status || '').trim().toLowerCase()
+            ) ? 'completed' : timedEvent.status || previous.status,
+          } : {}),
           _streamingCancelled: undefined,
           _cancelTraceIdx: undefined,
           _cancelledAt: undefined,
+          _answerTransitionPending: undefined,
         };
       } else {
-        task.traceLogs.push({ ...timedEvent, text: noteText, noteId, subAgent });
+        task.traceLogs.push({
+          ...timedEvent,
+          text: noteText,
+          noteId,
+          subAgent,
+          ...(incomingIsFinal ? {
+            isLive: false,
+            isStreaming: false,
+            isLiveTyping: false,
+            isDelta: false,
+            streamState: 'closed',
+            status: ['running', 'working', 'pending', 'streaming', 'spawning', 'started'].includes(
+              String(timedEvent.status || '').trim().toLowerCase()
+            ) ? 'completed' : timedEvent.status,
+          } : {}),
+        });
       }
     } else if (timedEvent?.type === 'console_output') {
       const streamId = String(timedEvent.streamId || '').trim();
       const ownerTraceId = String(timedEvent.ownerTraceId || '').trim();
       const terminalTaskId = String(timedEvent.taskId || timedEvent.backgroundTaskId || '').trim();
+      const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
       let mergeIdx = -1;
 
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
-        if (log?.type === 'user_action') break;
+        if (isFeedTurnBoundary(log)) {
+          if (streamId || ownerTraceId || terminalTaskId) continue;
+          break;
+        }
         if (log?.type !== 'console_output') continue;
-        const sameStream = streamId && String(log.streamId || '') === streamId;
+        const existingScope = String(log.turnId || log.runId || '').trim();
+        if (incomingScope && existingScope && incomingScope !== existingScope) continue;
+        const sameCommand = String(log.command || '').trim() === String(timedEvent.command || '').trim();
+        const existingStreamId = String(log.streamId || '').trim();
+        const existingTaskId = String(log.taskId || log.backgroundTaskId || '').trim();
+        const sameStream = streamId && existingStreamId === streamId && sameCommand;
+        const hasConflictingStream = Boolean(streamId && existingStreamId && streamId !== existingStreamId);
+        const hasConflictingTask = Boolean(
+          terminalTaskId && existingTaskId && terminalTaskId !== existingTaskId,
+        );
         const sameOwner = ownerTraceId
           && String(log.ownerTraceId || '') === ownerTraceId
-          && String(log.command || '') === String(timedEvent.command || '');
-        const sameTask = terminalTaskId && String(log.taskId || log.backgroundTaskId || '') === terminalTaskId;
+          && sameCommand
+          // One batched workspace action can own several parallel processes,
+          // including intentionally repeated commands. Exact stream/task IDs
+          // outrank the shared action owner and must remain separate rows.
+          && !hasConflictingStream
+          && !hasConflictingTask;
+        const sameTask = terminalTaskId
+          && existingTaskId === terminalTaskId
+          && sameCommand;
         if (sameStream || sameOwner || sameTask) {
           mergeIdx = i;
           break;
@@ -824,6 +1577,7 @@ export const taskStore = {
     startedAt?: number;
     completedAt?: number;
     error?: string;
+    terminalTurnId?: string;
   }> {
     await this.recoverOrphanedRunningTasks();
     const task = await this.getTask(chatId);
@@ -831,19 +1585,55 @@ export const taskStore = {
       return { status: 'idle', traces: [], totalTraces: 0, maxIndex: -1, finalAnswer: '' };
     }
 
-    const sourceTraces = task.traceLogs || [];
+    const persistedTraces = task.traceLogs || [];
+    const terminalTurnId = String(
+      [...persistedTraces].reverse().find(trace =>
+        trace?.mainTurnTerminal === true && String(trace?.turnId || '').trim()
+      )?.turnId || '',
+    ).trim();
+    const hasUserBoundary = persistedTraces.some(trace => trace?.type === 'user_action');
+    const recoveredPrompt = String(task.prompt || '').trim();
+    // `task.prompt` is always the run's opening request. A compacted ledger
+    // may begin with a later steering turn, which must not become the owner of
+    // this recovered query or the UI will duplicate the first prompt there.
+    const recoveredTurnId = String(
+      task.runId || persistedTraces.find(trace => String(trace?.turnId || '').trim())?.turnId || '',
+    ).trim();
+    const sourceTraces = !hasUserBoundary && recoveredPrompt
+      ? [
+        {
+          id: `user-turn-${ task.runId || task.taskId }`,
+          type: 'user_action',
+          text: recoveredPrompt,
+          source: 'human',
+          ownerChatId: chatId,
+          ...(task.runId ? { runId: task.runId } : {}),
+          ...(recoveredTurnId ? { turnId: recoveredTurnId } : {}),
+          timestamp: task.startedAt,
+          startTime: task.startedAt,
+          endTime: task.startedAt,
+          _traceIdx: -1,
+          _recoveredExactText: true,
+        },
+        ...persistedTraces,
+      ]
+      : persistedTraces;
     const traces: any[] = [];
     let maxIndex = -1;
 
     for (let index = 0; index < sourceTraces.length; index++) {
       const trace = sourceTraces[index];
       const traceObj = trace && typeof trace === 'object' ? trace : { value: trace };
-      const traceIndex = Number.isFinite(traceObj._traceIdx) ? traceObj._traceIdx : index;
+      const traceIndex = Number.isFinite(traceObj._pollIdx)
+        ? traceObj._pollIdx
+        : Number.isFinite(traceObj._traceIdx) ? traceObj._traceIdx : index;
       if (traceIndex > maxIndex) maxIndex = traceIndex;
-      if (isPrivateReasoningTrace(traceObj)) continue;
+      if (!isUserVisibleTrace(traceObj)) continue;
       if (afterIndex < 0 || traceIndex > afterIndex) {
         const fallbackTimestamp = task.completedAt || task.lastUpdatedAt || task.startedAt;
-        const indexedTrace = traceObj._traceIdx === traceIndex ? traceObj : { ...traceObj, _traceIdx: traceIndex };
+        const indexedTrace = traceObj._traceIdx !== undefined && traceObj._traceIdx !== null
+          ? traceObj
+          : { ...traceObj, _traceIdx: traceIndex };
         traces.push(indexedTrace.timestamp ? indexedTrace : { ...indexedTrace, timestamp: fallbackTimestamp });
       }
     }
@@ -858,6 +1648,7 @@ export const taskStore = {
       startedAt: task.startedAt,
       completedAt: task.completedAt,
       error: task.status === 'failed' ? task.finalAnswer : undefined,
+      ...(terminalTurnId ? { terminalTurnId } : {}),
     };
   },
 
@@ -907,9 +1698,10 @@ export const taskStore = {
             data.finalAnswer = 'Task failed due to a system crash or timeout.';
             data.completedAt = Date.now();
             data.lastUpdatedAt = data.completedAt;
-            data.traceLogs = settleOrphanedLiveTraces(data.traceLogs, data.completedAt)
-              .slice(-MAX_COMPLETED_TRACE_LOGS)
-              .map(compactTraceEvent);
+            data.traceLogs = trimTraceLedgerWithBoundary(
+              settleOrphanedLiveTraces(data.traceLogs, data.completedAt),
+              MAX_COMPLETED_TRACE_LOGS,
+            ).map(compactTraceEvent);
             await writeJsonAtomic(taskPath, data);
             lastUpdated = data.completedAt || data.lastUpdatedAt || data.startedAt || 0;
           }

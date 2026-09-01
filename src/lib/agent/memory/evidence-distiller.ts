@@ -16,9 +16,10 @@ const EXACT = /(?:https?:\/\/[^\s)\]}>,]+|\b[A-Fa-f0-9]{8,64}\b|\b\d+(?:\.\d+){1
 function serialize(value: unknown): string {
   if (typeof value === 'string') return value;
   try {
-    return JSON.stringify(value, null, 2);
+    const serialized = JSON.stringify(value, null, 2);
+    return typeof serialized === 'string' ? serialized : String(value ?? '');
   } catch {
-    return String(value);
+    return String(value ?? '');
   }
 }
 

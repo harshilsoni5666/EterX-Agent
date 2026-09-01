@@ -24,6 +24,7 @@ export const DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES = [
 ];
 
 const CAPABILITY_BY_TOOL: Record<string, string> = {
+  context_memory: 'memory.manage',
   web_search: 'network.public',
   image_asset_search: 'network.public',
   image_generator: 'network.public',

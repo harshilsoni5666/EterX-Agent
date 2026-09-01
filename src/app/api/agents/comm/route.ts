@@ -36,6 +36,48 @@ const MESSAGE_TYPES: readonly MessageType[] = [
 const MESSAGE_PRIORITIES: readonly MessagePriority[] = ['low', 'normal', 'high', 'critical'];
 const DELIVERY_MODES: readonly DeliveryMode[] = ['interrupt', 'defer', 'silent'];
 
+// Team presence and mailbox summaries are in-memory and update on every live
+// event. Disk status is only a restart/recovery source; rereading every worker
+// file on each 2s roster request scales poorly when many chats are active.
+const STATUS_RECOVERY_CACHE_MS = 15_000;
+const statusRecoveryCache = new Map<string, {
+  value: Record<string, any>;
+  expiresAt: number;
+  inFlight?: Promise<Record<string, any>>;
+}>();
+
+async function readCachedRecoveryStatuses(projectId: string): Promise<Record<string, any>> {
+  const now = Date.now();
+  const cached = statusRecoveryCache.get(projectId);
+  if (cached?.inFlight) return cached.inFlight;
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const inFlight = agentMessageBus.readAllStatuses(projectId)
+    .then(value => {
+      statusRecoveryCache.set(projectId, {
+        value,
+        expiresAt: Date.now() + STATUS_RECOVERY_CACHE_MS,
+      });
+      return value;
+    })
+    .catch(() => cached?.value || {})
+    .finally(() => {
+      const current = statusRecoveryCache.get(projectId);
+      if (current?.inFlight === inFlight) {
+        statusRecoveryCache.set(projectId, {
+          value: current.value || cached?.value || {},
+          expiresAt: Date.now() + STATUS_RECOVERY_CACHE_MS,
+        });
+      }
+    });
+  statusRecoveryCache.set(projectId, {
+    value: cached?.value || {},
+    expiresAt: cached?.expiresAt || 0,
+    inFlight,
+  });
+  return inFlight;
+}
+
 function normalizeMessageType(value: string, fallback: MessageType): MessageType {
   return MESSAGE_TYPES.includes(value as MessageType) ? value as MessageType : fallback;
 }
@@ -124,6 +166,10 @@ function formatMessage(message: any) {
     requestedModelName: message.metadata?.requestedModelName,
     broadcastRecipientRuns: message.metadata?.broadcastRecipientRuns,
     broadcast: message.metadata?.broadcast === true || message.to === '*',
+    ownerChatId: message.metadata?.ownerChatId,
+    runId: message.metadata?.runId,
+    turnId: message.metadata?.turnId,
+    subAgentTurnId: message.metadata?.subAgentTurnId,
   };
 }
 
@@ -177,9 +223,15 @@ export async function GET(request: NextRequest) {
     if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
 
     if (action === 'status') {
+      const afterRevisionParam = searchParams.get('afterRevision');
+      const afterRevision = afterRevisionParam === null ? -1 : parseInteger(afterRevisionParam, -1);
+      const waitMs = Math.max(0, Math.min(20_000, parseInteger(searchParams.get('waitMs'), 0)));
+      if (afterRevision >= 0 && waitMs > 0) {
+        await interAgentMailbox.waitForProjectRevision(projectId, afterRevision, waitMs, request.signal);
+      }
       const summaries = interAgentMailbox.getMailboxSummaries(projectId);
       const team = interAgentMailbox.getTeamSnapshot(projectId);
-      const diskStatuses = await agentMessageBus.readAllStatuses(projectId);
+      const diskStatuses = await readCachedRecoveryStatuses(projectId);
       const diskStatusByName = new Map<string, any>();
       for (const [name, status] of Object.entries(diskStatuses) as Array<[string, any]>) {
         diskStatusByName.set(String(status?.agentName || name).toLowerCase(), status);
@@ -202,6 +254,10 @@ export async function GET(request: NextRequest) {
           status: presence?.status || diskStatus?.status || 'registered',
           task: presence?.task || diskStatus?.task,
           progress: presence?.progress || diskStatus?.progress,
+          ownerChatId: presence?.ownerChatId || diskStatus?.ownerChatId,
+          runId: presence?.runId || diskStatus?.runId,
+          turnId: presence?.turnId || diskStatus?.turnId,
+          subAgentTurnId: presence?.subAgentTurnId || diskStatus?.subAgentTurnId,
           registeredAt: presence?.registeredAt || diskStatus?.startedAt,
           updatedAt: presence?.updatedAt || diskStatus?.updatedAt || diskStatus?.completedAt,
           unreadCount: mailbox?.unreadCount || 0,
@@ -211,6 +267,7 @@ export async function GET(request: NextRequest) {
       });
       return respond({
         success: true,
+        revision: interAgentMailbox.getProjectRevision(projectId),
         agents,
         mailboxes: summaries,
         team,
@@ -240,6 +297,12 @@ export async function GET(request: NextRequest) {
     }
 
     if (action === 'history') {
+      const afterRevisionParam = searchParams.get('afterRevision');
+      const afterRevision = afterRevisionParam === null ? -1 : parseInteger(afterRevisionParam, -1);
+      const waitMs = Math.max(0, Math.min(20_000, parseInteger(searchParams.get('waitMs'), 0)));
+      if (afterRevision >= 0 && waitMs > 0) {
+        await interAgentMailbox.waitForProjectMessageRevision(projectId, afterRevision, waitMs, request.signal);
+      }
       const limit = Math.max(1, Math.min(200, parseInteger(searchParams.get('limit'), 50)));
       const typeParam = cleanString(searchParams.get('type') || '', 60);
       const type = MESSAGE_TYPES.includes(typeParam as MessageType) ? typeParam as MessageType : undefined;
@@ -255,6 +318,7 @@ export async function GET(request: NextRequest) {
       }).filter(message => messageMatchesAgentRun(message, agentName, subAgentChatId)).slice(-limit);
       return respond({
         success: true,
+        revision: interAgentMailbox.getProjectMessageRevision(projectId),
         agentName: agentName || undefined,
         messages: messages.map(formatMessage),
         count: messages.length,

@@ -4,6 +4,7 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import { getPathResolverInfo, resolveReadableWorkspacePath } from '@/lib/agent/workspace/path_resolver';
 import { rejectCrossOrigin } from '../../agent/_shared';
+import { formatUnknownError } from '@/lib/agent/error-format';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -165,7 +166,7 @@ export async function GET(req: NextRequest) {
       signature: `${state.entries}:${state.truncated ? 1 : 0}:${signature}`,
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: formatUnknownError(error, 'Could not read workspace files') }, { status: 500 });
   }
 }
 
@@ -228,7 +229,7 @@ export async function POST(req: NextRequest) {
       size: stats.size,
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: formatUnknownError(error, 'Could not read file') }, { status: 500 });
   }
 }
 

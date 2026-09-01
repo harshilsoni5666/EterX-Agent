@@ -69,9 +69,9 @@ function testAdviceDoesNotTurnDomainKeywordsIntoRandomSpawns(): void {
     'Architecture-Review',
     uniqueId('deep_work'),
   ) as string;
-  assert.match(brief, /work deeply/i);
+  assert.match(brief, /work (?:deeply|as one deep)|deepest useful solution/i);
   assert.match(brief, /never call task_decomposer or spawn_sub_agent/i);
-  assert.match(brief, /verify your work/i);
+  assert.match(brief, /verify (?:your work|behavior in proportion to risk)/i);
   assert.ok(
     brief.includes(explicit.recommendedAgents[0].task),
     'the worker must receive the complete delegated task rather than a shallow role label',
@@ -115,19 +115,19 @@ async function testConfiguredLimitIsAConcurrencyCapNotTaskLoss(): Promise<void> 
       ['one', 'two', 'three', 'four'].map(task => ({ task })),
       { projectId, maxSubAgents: 2 } as any,
     );
-    assert.equal(first.agents.length, 2);
+    assert.equal(first.agents.length, 4, 'all delegated tasks must be admitted to the bounded queue');
     assert.deepEqual(
       first.notStartedTasks.map(task => task.task),
-      ['three', 'four'],
-      'tasks above the current concurrency cap must be reported, never silently discarded',
+      [],
+      'tasks above the concurrency cap must be queued rather than discarded',
     );
 
     const whileFull = spawner.spawnParallelFireAndForget(
       [{ task: 'five' }],
       { projectId, maxSubAgents: 2 } as any,
     );
-    assert.equal(whileFull.agents.length, 0);
-    assert.deepEqual(whileFull.notStartedTasks.map(task => task.task), ['five']);
+    assert.equal(whileFull.agents.length, 1, 'new work must join the queue while all slots are occupied');
+    assert.deepEqual(whileFull.notStartedTasks.map(task => task.task), []);
     assert.equal(spawner.getOccupiedSlotCount(projectId), 2);
 
     release();

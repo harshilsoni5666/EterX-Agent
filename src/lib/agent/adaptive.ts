@@ -687,80 +687,7 @@ export class SessionPersistence {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 5. CONVERSATION COMPRESSOR
-// ═══════════════════════════════════════════════════════════════
-
-/**
- * Intelligently compresses long conversation histories.
- * Keeps recent messages intact, summarizes older ones.
- * 
- * STRATEGY:
- * - Last 6 messages: keep intact (recent context)
- * - Older messages: compress tool outputs to summary
- * - Very old: compress to single line summaries
- * - System messages: always keep
- */
-export class ConversationCompressor {
-  /** Compress a conversation to fit within token limits */
-  static compress(contents: any[], maxEntries: number = 30): any[] {
-    if (contents.length <= maxEntries) return contents;
-
-    const recent = contents.slice(-8);  // Keep last 8
-    const old = contents.slice(0, -8);
-
-    // Compress old messages
-    const compressed = old.map(entry => {
-      if (!entry.parts) return entry;
-
-      const newParts = entry.parts.map((part: any) => {
-        // Gemini thought signatures are positional opaque state. Never
-        // truncate or reconstruct a part that carries one.
-        if (part.thoughtSignature || part.thought_signature) return part;
-
-        // Compress long tool responses
-        if (part.functionResponse) {
-          const output = part.functionResponse.response?.output;
-          if (output && JSON.stringify(output).length > 500) {
-            return {
-              functionResponse: {
-                name: part.functionResponse.name,
-                response: {
-                  output: {
-                    _compressed: true,
-                    summary: typeof output === 'string'
-                      ? output.substring(0, 200) + '...[compressed]'
-                      : `Result: ${output.success !== undefined ? (output.success ? 'SUCCESS' : 'FAILED') : 'OK'}${output.error ? ` Error: ${output.error.substring(0, 100)}` : ''}`
-                  }
-                },
-                ...(part.functionResponse.id ? { id: part.functionResponse.id } : {})
-              }
-            };
-          }
-        }
-
-        // Compress long text parts
-        if (part.text && part.text.length > 800) {
-          return { text: part.text.substring(0, 400) + '\n...[compressed]...\n' + part.text.slice(-200) };
-        }
-
-        return part;
-      });
-
-      return { ...entry, parts: newParts };
-    });
-
-    return [...compressed, ...recent];
-  }
-
-  /** Estimate token count for a conversation */
-  static estimateTokens(contents: any[]): number {
-    const json = JSON.stringify(contents);
-    return Math.ceil(json.length / 4);  // ~4 chars per token
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// 6. OUTPUT OPTIMIZER
+// 5. OUTPUT OPTIMIZER
 // ═══════════════════════════════════════════════════════════════
 
 /**
@@ -803,7 +730,7 @@ function getSuggestedStructure(taskType: string): string {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 7. NEURAL PLASTICITY ENGINE (AGI Self-Evolution)
+// 6. NEURAL PLASTICITY ENGINE (AGI Self-Evolution)
 // ═══════════════════════════════════════════════════════════════
 
 /**
@@ -894,7 +821,6 @@ export const adaptiveLearning = new AdaptiveLearningEngine();
 export const intentClassifier = new IntentClassifier();
 export const codeIntelligence = new CodeIntelligence();
 export const sessionPersistence = new SessionPersistence();
-export const conversationCompressor = ConversationCompressor;
 export const outputOptimizer = OutputOptimizer;
 export const neuralPlasticity = new NeuralPlasticityEngine();
 

@@ -78,7 +78,6 @@ type ManagerStore = {
   updatedAt: number;
 };
 
-const MAX_MESSAGES = 80;
 const proxyManagerTurnChains = new Map<string, Promise<void>>();
 const EMPTY_COORDINATION_MODEL: ManagerStore['coordinationModel'] = {
   activeIntent: '',
@@ -107,7 +106,7 @@ function readStore(chatId: string): ManagerStore {
         return {
         version: 3,
         chatId,
-        messages: saved.messages.slice(-MAX_MESSAGES),
+        messages: saved.messages,
         pendingConcepts: Array.isArray(saved.pendingConcepts) ? saved.pendingConcepts.slice(-16) : [],
         model: saved.model,
         coordinationModel: {
@@ -133,7 +132,7 @@ function writeStore(store: ManagerStore): void {
   const target = storePath(store.chatId);
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    fs.writeJsonSync(temporary, { ...store, messages: store.messages.slice(-MAX_MESSAGES), updatedAt: Date.now() }, { spaces: 2 });
+    fs.writeJsonSync(temporary, { ...store, messages: store.messages, updatedAt: Date.now() }, { spaces: 2 });
     if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
     fs.moveSync(temporary, target, { overwrite: true });
   } finally {
@@ -248,11 +247,17 @@ async function runProxyManagerTurn(input: {
   message: string;
   attachmentContext?: string;
   model?: { provider?: string; modelId?: string };
+  contextCompaction?: unknown;
   onProgress?: (event: ProxyManagerProgress) => void;
 }): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
   const stopGenerationAtStart = readProxyControl(input.chatId).stopGeneration;
   const store = readStore(input.chatId);
-  const userMessage: ProxyManagerChatMessage = { id: randomUUID(), role: 'user', text: compact(input.message, 12000), createdAt: Date.now() };
+  const userMessage: ProxyManagerChatMessage = {
+    id: randomUUID(),
+    role: 'user',
+    text: String(input.message || '').replace(/\u0000/g, '').trim(),
+    createdAt: Date.now(),
+  };
   store.messages.push(userMessage);
   store.model = input.model;
   // Persist the accepted user turn before model/tool work begins. A provider
@@ -290,7 +295,10 @@ async function runProxyManagerTurn(input: {
       });
     }
   }
-  const recentConversation = store.messages.slice(-24).map(item => `${item.role === 'user' ? 'USER' : 'PROXY MANAGER'}: ${item.text}`).join('\n');
+  const priorConversation = store.messages.slice(0, -1).map(item => ({
+    role: item.role === 'user' ? 'user' : 'model',
+    parts: [{ text: item.text }],
+  }));
   const resolved = resolveModel(input.model);
   const learnedOperatingModel = resolveSelfImprovementEnabled()
     ? await adaptiveExperience.getExecutionContext({
@@ -337,9 +345,9 @@ async function runProxyManagerTurn(input: {
     'Do not end every response with a question. Ask one only when a specific unresolved decision blocks safe routing. Never respond to "hi" with workspace history or a long menu of possibilities.',
     `LIVE MAIN + RUNTIME PROXY CONTEXT:\n${JSON.stringify(live, null, 2)}`,
     `DURABLE PER-CHAT COORDINATION MODEL:\n${JSON.stringify(store.coordinationModel, null, 2)}`,
-    `THIS CHAT'S SAVED PROXY-MANAGER CONVERSATION:\n${recentConversation || '(new conversation)'}`,
+    `CURRENT USER REQUEST:\n${input.message}`,
     input.attachmentContext
-      ? `USER-PROVIDED ATTACHMENT CONTEXT FOR THIS TURN:\n${compact(input.attachmentContext, 24000)}`
+      ? `USER-PROVIDED ATTACHMENT CONTEXT FOR THIS TURN:\n${input.attachmentContext}`
       : '',
     'Return exactly one JSON object with no markdown:',
     '{"reply":"natural professional answer","operation":"none|brief_proxy|guide_adaptively|watch_condition|before_completion|queue_after_current|start_main|schedule_workflow|replace_queued_task|interrupt_main|stop_main","target":"proxy|main|both","instruction":"standalone directive for single-task operations, blank for none or schedule_workflow","intent":"goal|constraint|correction|preference|follow_up","rationale":"short private routing reason","evidenceQuality":"none|contextual|direct|explicit_user","counterfactualImpact":"none|minor|material|critical","coordinationCost":"low|medium|high","urgency":"low|normal|high|critical","activationCondition":"semantic activation condition or blank","scope":"current_step|current_task|next_task|persistent_mandate","supersedesDirectiveId":"prior directive id or blank","supersedesTaskId":"pending task id for replacement or blank","tasks":[{"prompt":"complete Main-ready task","dependency":"what this consumes from the prior task, blank if independent","rationale":"why this is a separate stage"}],"stateUpdate":{"activeIntent":"current durable user intent","constraints":[],"dependencies":[],"openDecisions":[],"durableOutcomes":[]}}',
@@ -363,6 +371,8 @@ async function runProxyManagerTurn(input: {
     strictModelSelection: Boolean(resolved.modelId),
     selectedThinkingLevel: 'high',
     runtimeSettings: resolved.settings,
+    contextCompaction: input.contextCompaction,
+    durableContextPersistence: true,
     workspacePath: live?.workspace?.path || undefined,
     paths: live?.workspace?.pinnedPaths || [],
     isFocusedWorkspace: Boolean(live?.workspace?.path),
@@ -373,7 +383,7 @@ async function runProxyManagerTurn(input: {
     phase: 'reviewing',
     timestamp: Date.now(),
   });
-  const response = await client.executeMessageLoop(context, prompt, [], (trace: any) => {
+  const response = await client.executeMessageLoop(context, prompt, priorConversation, (trace: any) => {
     const type = String(trace?.type || '');
     const text = compact(trace?.text || trace?.message || '', 240);
     const tool = compact(trace?.tool || trace?.toolName || trace?.name || '', 100);
@@ -547,7 +557,7 @@ async function runProxyManagerTurn(input: {
       workspacePath: live?.workspace?.path || input.chatId,
       agentRuntime: 'proxy_manager',
       task: input.message,
-      history: store.messages.slice(-24).map(message => ({
+      history: store.messages.map(message => ({
         role: message.role === 'user' ? 'user' : 'assistant',
         content: message.text,
       })),
@@ -562,7 +572,7 @@ async function runProxyManagerTurn(input: {
   }
   return {
     message: proxyMessage,
-    history: store.messages.slice(-MAX_MESSAGES),
+    history: store.messages,
     model: { provider: resolved.provider, modelId: resolved.modelId },
     wakeRequested,
   };
@@ -573,6 +583,7 @@ export async function talkToProxyManager(input: {
   message: string;
   attachmentContext?: string;
   model?: { provider?: string; modelId?: string };
+  contextCompaction?: unknown;
   onProgress?: (event: ProxyManagerProgress) => void;
 }): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
   const previous = proxyManagerTurnChains.get(input.chatId) || Promise.resolve();

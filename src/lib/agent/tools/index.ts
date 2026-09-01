@@ -21,6 +21,7 @@ import { screenAgentTool } from './core/screen_agent';
 import { waitTimerTool } from './core/wait_timer';
 import { agentCommTool } from './core/agent_comm';
 import { scheduledTasksTool } from './core/scheduled_tasks';
+import { contextMemoryTool } from './core/context_memory';
 
 // A Codex-style workspace core: one cross-platform terminal for inspection,
 // search, execution, and verification, plus the established edit tool that is
@@ -85,6 +86,7 @@ const BUILTIN_TOOLS = [
   waitTimerTool,
   agentCommTool,
   scheduledTasksTool,
+  contextMemoryTool,
 
   workspaceEditFileTool,
   workspaceRunCommandTool,

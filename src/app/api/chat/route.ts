@@ -15,13 +15,13 @@ import { buildScopedRuntimeSettings } from '../../../lib/agent/runtime-api-keys'
 import { hydrateServerRuntimeSettings } from '../../../lib/agent/server-runtime-hydration';
 import {
   attachAgentApiSessionCookie,
+  cleanContextText,
   cleanString,
   getOrCreateAgentApiSession,
   isSafeAgentId,
   isSafeChatId,
   isSafeRunId,
   jsonError,
-  MAX_PROMPT_CHARS,
   normalizeHistory,
   normalizeMediaAttachments,
   readJsonObject,
@@ -30,6 +30,7 @@ import {
 } from '../agent/_shared';
 import { isModelProvider } from '../../../lib/agent/model-selector-store';
 import { resolveChatMediaForRequest } from '../../../lib/chat-media-store';
+import { formatUnknownError } from '../../../lib/agent/error-format';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -77,7 +78,7 @@ export async function POST(req: NextRequest) {
       customAgentName = null,
       runId,
     } = await readJsonObject(req);
-    const prompt = cleanString(rawPrompt, MAX_PROMPT_CHARS);
+    const prompt = cleanContextText(rawPrompt).trim();
     const safeMediaAttachments = normalizeMediaAttachments(mediaAttachments);
     const chatId = projectId;
 
@@ -324,7 +325,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('API Error:', error);
     const response = NextResponse.json(
-      { error: 'Internal Agent Error', details: error.message },
+      { error: 'Internal Agent Error', details: formatUnknownError(error, 'Agent request failed') },
       { status: 500 }
     );
     return session ? attachAgentApiSessionCookie(response, session) : response;

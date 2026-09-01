@@ -47,51 +47,16 @@ export function secondsFromTimeoutMs(timeoutMs: number): number {
 export function terminalTimeoutNote(command: string, timeoutMs: number): string {
   const seconds = secondsFromTimeoutMs(timeoutMs);
   const shortCommand = command.trim().replace(/\s+/g, ' ').substring(0, 120);
-  const lower = command.toLowerCase();
-
-  // Specific recovery instructions based on command type
-  let recoveryInstruction: string;
-
-  if (/\b(npm\s+(install|ci|i)\b|yarn\s*(install)?\b|pnpm\s+(install|i)\b|pip\s+install|cargo\s+(build|install)|npm\s+create|npx\s)/i.test(lower)) {
-    recoveryInstruction = [
-      'This is a package install/scaffold command that needs more time.',
-      'DO NOT retry the same command.',
-      'Run it once with workspace_run_command background=true and the same cwd,',
-      'then wait_timer seconds=60 and use workspace_run_command mode="check" with the returned taskId.',
-      'NEVER retry the exact same timed-out command — it will time out again.'
-    ].join(' ');
-  } else if (/\b(npm\s+run\s+(dev|start|serve)|yarn\s+(dev|start)|pnpm\s+(dev|start)|next\s+dev|vite\s*$|python\s+-m\s+(http|flask|uvicorn)|node\s+.*server)/i.test(lower)) {
-    recoveryInstruction = [
-      'This looks like a dev server or watcher — it runs forever and WILL always time out.',
-      'Use workspace_run_command background=true with this command.',
-      'Then use workspace_run_command mode="check" to inspect its output.',
-      'Do not launch the same server twice.'
-    ].join(' ');
-  } else if (/\b(npm\s+run\s+build|yarn\s+build|next\s+build|vite\s+build|tsc\b|cargo\s+build|mvn|gradle)/i.test(lower)) {
-    recoveryInstruction = [
-      'This is a build command that needs more time.',
-      'Use workspace_run_command background=true with the same command,',
-      'then wait_timer seconds=60 and use workspace_run_command mode="check" with the returned taskId.'
-    ].join(' ');
-  } else {
-    recoveryInstruction = [
-      'Read the partial output and continue from it.',
-      'If this work is intentionally long-running, use workspace_run_command background=true,',
-      'then use wait_timer for short check-ins instead of rerunning blindly.',
-      'NEVER retry the exact same command without changing the approach.'
-    ].join(' ');
-  }
-
-  return `The command was stopped after ${seconds} seconds: ${shortCommand}. ${recoveryInstruction}`;
+  return `The command reached its ${seconds}-second hard execution deadline and was stopped: ${shortCommand}`;
 }
 
 export function terminalBackgroundHandoffNote(command: string, taskId: string, checkInMs: number): string {
   const seconds = secondsFromTimeoutMs(checkInMs);
   const shortCommand = command.trim().replace(/\s+/g, ' ').substring(0, 120);
   return [
-    `The command is still running in the background after ${seconds} seconds: ${shortCommand}`,
+    `The command is still running after its ${seconds}-second foreground check-in: ${shortCommand}`,
     `Task ID: ${taskId}.`,
-    `Do not rerun the command. Use wait_timer for about ${seconds} seconds, then workspace_run_command mode="check" with this taskId.`
+    'workspace_run_command mode="check" returns its current status and new output.'
   ].join(' ');
 }
 
@@ -112,6 +77,7 @@ export function emitRuntimeTrace(context: any, traceEvent: any): void {
     timestamp: Date.now(),
     ...(context?.ownerTraceId && !traceEvent?.ownerTraceId ? { ownerTraceId: context.ownerTraceId } : {}),
     ...(context?.runId && !traceEvent?.runId ? { runId: context.runId } : {}),
+    ...(context?.turnId && !traceEvent?.turnId ? { turnId: context.turnId } : {}),
     ...traceEvent,
   };
   if (typeof context?._onTrace === 'function') {

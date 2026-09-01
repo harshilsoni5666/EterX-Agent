@@ -8,6 +8,7 @@ import {
   AgentBuilderCustomTool,
   AgentBuilderDirectTool,
   AgentBuilderImplementationType,
+  AgentBuilderProfile,
   getAgentBuilderProfilePath,
   getAgentBuilderToolPath,
   isAgentBuilderRuntimeContext,
@@ -29,9 +30,11 @@ import {
   sanitizeFlowId,
   applyAgentBuilderDefaults,
   evaluateAgentBuilderProfile,
+  summarizeAgentBuilderProfile,
 } from '../../builder-agent';
 import * as vm from 'vm';
 import { agentToolLoadTool, agentToolUnloadTool } from '../../tool-injector';
+import { formatUnknownError } from '../../error-format';
 
 const requireBuilderContext = (context: any, argsAgentId?: string) => {
   if (!isAgentBuilderRuntimeContext(context)) {
@@ -58,6 +61,34 @@ const uniqueStrings = (values: unknown[] = []) => {
   }
   return result;
 };
+
+const mergeStrings = (current: string[], incoming: unknown, replace = false) => {
+  if (!Array.isArray(incoming)) return current;
+  return replace ? uniqueStrings(incoming) : uniqueStrings([...current, ...incoming]);
+};
+
+const profileConfiguration = (profile: AgentBuilderProfile) => ({
+  name: profile.name,
+  mission: profile.mission,
+  professionalPrompt: profile.professionalPrompt,
+  responseStyle: profile.responseStyle,
+  behaviorRules: profile.behaviorRules,
+  safetyRules: profile.safetyRules,
+  skills: profile.skills,
+  toolUsePolicy: profile.toolUsePolicy,
+  completionCriteria: profile.completionCriteria,
+  directMainTools: profile.directMainTools,
+  customTools: profile.customTools,
+  notes: profile.notes,
+  presentation: profile.presentation,
+});
+
+const markDraftWhenChanged = (current: AgentBuilderProfile, next: AgentBuilderProfile): AgentBuilderProfile => ({
+  ...next,
+  status: JSON.stringify(profileConfiguration(current)) === JSON.stringify(profileConfiguration(next))
+    ? current.status
+    : 'draft',
+});
 
 const parseObject = (value: unknown): Record<string, unknown> | undefined => {
   if (!value) return undefined;
@@ -89,15 +120,86 @@ export const agentBuilderGetProfileTool: ToolDefinition = {
   },
 };
 
+export const agentBuilderListCapabilitiesTool: ToolDefinition = {
+  name: 'agent_builder_list_capabilities',
+  description: 'Search the current main-tool catalog by goal, tool name, description, or category before attaching capabilities to the target agent. Builder-only and read-only.',
+  category: 'automation',
+  inputSchema: z.object({
+    query: z.string().optional().describe('Capability need, such as current web research, spreadsheets, browser interaction, or document creation.'),
+    category: z.string().optional().describe('Optional exact tool category filter.'),
+    limit: z.number().int().min(1).max(40).optional().describe('Maximum matches. Defaults to 15.'),
+    agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
+  }),
+  outputSchema: z.object({
+    success: z.boolean(),
+    message: z.string(),
+    categories: z.array(z.object({ category: z.string(), count: z.number() })),
+    tools: z.array(z.object({
+      name: z.string(),
+      category: z.string(),
+      description: z.string(),
+      attached: z.boolean(),
+    })),
+  }),
+  execute: async (args: any, context: any) => {
+    const runtime = requireBuilderContext(context, args.agentId);
+    if (!runtime.ok) return { success: false, message: runtime.error, categories: [], tools: [] };
+
+    const profile = await readAgentBuilderProfile(runtime.agentId);
+    const attached = new Set(profile.directMainTools.map(tool => tool.toolName));
+    const query = String(args.query || '').trim().toLowerCase();
+    const queryTerms = query.split(/\s+/).filter(Boolean);
+    const category = String(args.category || '').trim().toLowerCase();
+    const all = globalToolRegistry.getAllTools()
+      .filter(tool => !isBuilderOnlyToolName(tool.name));
+    const categories = Array.from(all.reduce((counts, tool) => {
+      const key = String(tool.category || 'other').toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+      return counts;
+    }, new Map<string, number>()))
+      .map(([name, count]) => ({ category: name, count }))
+      .sort((a, b) => a.category.localeCompare(b.category));
+    const matches = all
+      .filter(tool => !category || String(tool.category || 'other').toLowerCase() === category)
+      .map(tool => {
+        const name = tool.name.toLowerCase();
+        const description = String(tool.description || '').toLowerCase();
+        const haystack = `${name} ${description} ${String(tool.category || '')}`;
+        const score = queryTerms.length === 0
+          ? 0
+          : queryTerms.reduce((sum, term) => sum + (name === term ? 8 : name.includes(term) ? 4 : haystack.includes(term) ? 1 : 0), 0);
+        return { tool, score };
+      })
+      .filter(item => queryTerms.length === 0 || item.score > 0)
+      .sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name))
+      .slice(0, Number(args.limit || 15))
+      .map(({ tool }) => ({
+        name: tool.name,
+        category: String(tool.category || 'other'),
+        description: String(tool.description || '').replace(/\s+/g, ' ').trim().slice(0, 220),
+        attached: attached.has(tool.name),
+      }));
+
+    return {
+      success: true,
+      message: matches.length > 0
+        ? `Found ${matches.length} relevant capabilities.`
+        : 'No capabilities matched the current filter.',
+      categories,
+      tools: matches,
+    };
+  },
+};
+
 export const agentBuilderSaveProfileTool: ToolDefinition = {
   name: 'agent_builder_save_profile',
-  description: 'Save or update the target custom agent profile. Builder-only. Stores the professional system prompt, mission, behavior rules, safety rules, skills, and completion criteria under the target agent only.',
+  description: 'Patch the persisted target profile. Omitted fields remain unchanged, so later Agent Builder turns can revise one aspect without rebuilding the agent.',
   category: 'automation',
   inputSchema: z.object({
     agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
     name: z.string().optional().describe('Human-readable agent name.'),
-    mission: z.string().describe('Clear mission for the target agent.'),
-    professionalPrompt: z.string().describe('Complete professional system prompt for the target agent.'),
+    mission: z.string().min(1).optional().describe('Clear mission for the target agent. Omit to preserve it during a revision.'),
+    professionalPrompt: z.string().min(1).optional().describe('Complete professional system prompt. Omit when the requested revision does not change it.'),
     responseStyle: z.string().optional().describe('Target agent response style.'),
     behaviorRules: z.array(z.string()).optional().describe('Specific operating rules for the target agent.'),
     safetyRules: z.array(z.string()).optional().describe('Specific safety and scope rules for the target agent.'),
@@ -109,40 +211,64 @@ export const agentBuilderSaveProfileTool: ToolDefinition = {
     uiAccentColor: z.string().optional().describe('Optional CSS color for the agent accent.'),
     starterPrompts: z.array(z.string()).optional().describe('Two to four short example prompts shown when the agent is selected.'),
     notes: z.array(z.string()).optional().describe('Builder notes for future revisions.'),
-    replaceCollections: z.boolean().optional().describe('During an explicit revision, replace behaviorRules, safetyRules, skills, and notes instead of extending their persisted values.'),
+    replaceCollections: z.boolean().optional().describe('Replace only the collection fields supplied in this call; omitted collections remain unchanged.'),
+    changeSummary: z.string().optional().describe('Short durable description of this revision for future Builder turns.'),
+  }).refine((args: any) => [
+    'name', 'mission', 'professionalPrompt', 'responseStyle', 'behaviorRules', 'safetyRules', 'skills',
+    'toolUsePolicy', 'completionCriteria', 'uiDescription', 'uiCategory', 'uiAccentColor', 'starterPrompts', 'notes',
+  ].some(key => args[key] !== undefined), {
+    message: 'Provide at least one profile field to update.',
   }),
-  outputSchema: z.object({ success: z.boolean(), profilePath: z.string().optional(), message: z.string(), profile: z.any().optional() }),
+  outputSchema: z.object({
+    success: z.boolean(),
+    profilePath: z.string().optional(),
+    message: z.string(),
+    revision: z.number().optional(),
+    changedFields: z.array(z.string()).optional(),
+    profileSummary: z.any().optional(),
+    quality: z.any().optional(),
+  }),
   execute: async (args: any, context: any) => {
     const runtime = requireBuilderContext(context, args.agentId);
     if (!runtime.ok) return { success: false, message: runtime.error };
 
-    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => applyAgentBuilderDefaults({
-      ...profile,
-      name: args.name || profile.name || String(context?.agentName || '').trim() || undefined,
-      mission: args.mission || profile.mission,
-      professionalPrompt: args.professionalPrompt || profile.professionalPrompt,
-      responseStyle: args.responseStyle || profile.responseStyle,
-      behaviorRules: args.replaceCollections ? uniqueStrings(args.behaviorRules || []) : uniqueStrings([...(profile.behaviorRules || []), ...(args.behaviorRules || [])]),
-      safetyRules: args.replaceCollections ? uniqueStrings(args.safetyRules || []) : uniqueStrings([...(profile.safetyRules || []), ...(args.safetyRules || [])]),
-      skills: args.replaceCollections ? uniqueStrings(args.skills || []) : uniqueStrings([...(profile.skills || []), ...(args.skills || [])]),
-      toolUsePolicy: args.toolUsePolicy || profile.toolUsePolicy,
-      completionCriteria: args.completionCriteria || profile.completionCriteria,
-      presentation: {
-        ...profile.presentation,
-        description: args.uiDescription || profile.presentation?.description || args.mission || profile.mission,
-        category: args.uiCategory || profile.presentation?.category,
-        accentColor: args.uiAccentColor || profile.presentation?.accentColor,
-        starterPrompts: args.starterPrompts || profile.presentation?.starterPrompts || [],
-      },
-      notes: args.replaceCollections ? uniqueStrings(args.notes || []) : uniqueStrings([...(profile.notes || []), ...(args.notes || [])]),
-      status: 'draft',
-    }));
+    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => {
+      const next = applyAgentBuilderDefaults({
+        ...profile,
+        name: args.name !== undefined ? String(args.name).trim() || undefined : profile.name || String(context?.agentName || '').trim() || undefined,
+        mission: args.mission !== undefined ? String(args.mission).trim() : profile.mission,
+        professionalPrompt: args.professionalPrompt !== undefined ? String(args.professionalPrompt).trim() : profile.professionalPrompt,
+        responseStyle: args.responseStyle !== undefined ? String(args.responseStyle).trim() || undefined : profile.responseStyle,
+        behaviorRules: mergeStrings(profile.behaviorRules || [], args.behaviorRules, args.replaceCollections === true),
+        safetyRules: mergeStrings(profile.safetyRules || [], args.safetyRules, args.replaceCollections === true),
+        skills: mergeStrings(profile.skills || [], args.skills, args.replaceCollections === true),
+        toolUsePolicy: args.toolUsePolicy !== undefined ? String(args.toolUsePolicy).trim() || undefined : profile.toolUsePolicy,
+        completionCriteria: args.completionCriteria !== undefined ? String(args.completionCriteria).trim() || undefined : profile.completionCriteria,
+        presentation: {
+          ...profile.presentation,
+          description: args.uiDescription !== undefined ? String(args.uiDescription).trim() || undefined : profile.presentation?.description || args.mission || profile.mission,
+          category: args.uiCategory !== undefined ? String(args.uiCategory).trim() || undefined : profile.presentation?.category,
+          accentColor: args.uiAccentColor !== undefined ? String(args.uiAccentColor).trim() || undefined : profile.presentation?.accentColor,
+          starterPrompts: args.starterPrompts !== undefined ? uniqueStrings(args.starterPrompts) : profile.presentation?.starterPrompts || [],
+        },
+        notes: mergeStrings(profile.notes || [], args.notes, args.replaceCollections === true),
+        status: profile.status,
+      });
+      return markDraftWhenChanged(profile, next);
+    }, String(args.changeSummary || 'Updated the agent profile.'));
+
+    const quality = evaluateAgentBuilderProfile(saved.profile);
 
     return {
       success: true,
-      message: `Saved builder profile for ${runtime.agentId}.`,
+      message: saved.changedFields.length > 0
+        ? `Saved revision ${saved.profile.revision} for ${saved.profile.name || runtime.agentId}.`
+        : `The profile for ${saved.profile.name || runtime.agentId} was already up to date.`,
       profilePath: saved.path,
-      profile: saved.profile,
+      revision: saved.profile.revision,
+      changedFields: saved.changedFields,
+      profileSummary: summarizeAgentBuilderProfile(saved.profile),
+      quality,
     };
   },
 };
@@ -160,7 +286,7 @@ export const agentBuilderAttachMainTool: ToolDefinition = {
     outputPolicy: z.string().optional().describe('How the target agent should validate and use outputs from the tool.'),
     promptInjection: z.string().optional().describe('Tool-specific prompt guidance injected into the target agent profile.'),
   }),
-  outputSchema: z.object({ success: z.boolean(), message: z.string(), profilePath: z.string().optional(), attachedTool: z.any().optional() }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string(), profilePath: z.string().optional(), attachedTool: z.any().optional(), revision: z.number().optional(), changedFields: z.array(z.string()).optional(), profileSummary: z.any().optional() }),
   execute: async (args: any, context: any) => {
     const runtime = requireBuilderContext(context, args.agentId);
     if (!runtime.ok) return { success: false, message: runtime.error };
@@ -174,7 +300,7 @@ export const agentBuilderAttachMainTool: ToolDefinition = {
       return { success: false, message: `Main tool "${toolName}" was not found in the registry.` };
     }
 
-    const attachedTool: AgentBuilderDirectTool = {
+    let attachedTool: AgentBuilderDirectTool = {
       toolName,
       purpose: String(args.purpose || '').trim(),
       whenToUse: String(args.whenToUse || '').trim(),
@@ -184,20 +310,31 @@ export const agentBuilderAttachMainTool: ToolDefinition = {
       attachedAt: new Date().toISOString(),
     };
 
-    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => ({
-      ...profile,
-      directMainTools: [
-        ...profile.directMainTools.filter(tool => tool.toolName !== toolName),
-        attachedTool,
-      ],
-      status: 'draft',
-    }));
+    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => {
+      const existing = profile.directMainTools.find(tool => tool.toolName === toolName);
+      attachedTool = {
+        ...attachedTool,
+        inputPolicy: args.inputPolicy !== undefined ? String(args.inputPolicy) : existing?.inputPolicy,
+        outputPolicy: args.outputPolicy !== undefined ? String(args.outputPolicy) : existing?.outputPolicy,
+        promptInjection: args.promptInjection !== undefined ? String(args.promptInjection) : existing?.promptInjection,
+        attachedAt: existing?.attachedAt || attachedTool.attachedAt,
+      };
+      return markDraftWhenChanged(profile, {
+        ...profile,
+        directMainTools: existing
+          ? profile.directMainTools.map(tool => tool.toolName === toolName ? attachedTool : tool)
+          : [...profile.directMainTools, attachedTool],
+      });
+    }, `Attached ${toolName}.`);
 
     return {
       success: true,
       message: `Attached main tool "${toolName}" to ${runtime.agentId} by reference.`,
       profilePath: saved.path,
       attachedTool,
+      revision: saved.profile.revision,
+      changedFields: saved.changedFields,
+      profileSummary: summarizeAgentBuilderProfile(saved.profile),
     };
   },
 };
@@ -211,7 +348,7 @@ export const agentBuilderRemoveToolTool: ToolDefinition = {
     toolName: z.string().describe('Exact persisted tool name to detach.'),
     scope: z.enum(['any', 'direct', 'custom']).optional().describe('Where to remove it. Defaults to any.'),
   }),
-  outputSchema: z.object({ success: z.boolean(), message: z.string(), removed: z.boolean(), profile: z.any().optional() }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string(), removed: z.boolean(), revision: z.number().optional(), changedFields: z.array(z.string()).optional(), profileSummary: z.any().optional() }),
   execute: async (args: any, context: any) => {
     const runtime = requireBuilderContext(context, args.agentId);
     if (!runtime.ok) return { success: false, message: runtime.error, removed: false };
@@ -230,20 +367,22 @@ export const agentBuilderRemoveToolTool: ToolDefinition = {
         if (!keep) removed = true;
         return keep;
       });
-      return { ...profile, directMainTools, customTools, status: removed ? 'draft' : profile.status };
-    });
+      return markDraftWhenChanged(profile, { ...profile, directMainTools, customTools });
+    }, `Removed ${toolName}.`);
     return {
       success: removed,
       removed,
       message: removed ? `Detached ${toolName} from ${runtime.agentId}.` : `Tool ${toolName} is not attached to ${runtime.agentId}.`,
-      profile: saved.profile,
+      revision: saved.profile.revision,
+      changedFields: saved.changedFields,
+      profileSummary: summarizeAgentBuilderProfile(saved.profile),
     };
   },
 };
 
 export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
   name: 'agent_builder_attach_all_main_tools',
-  description: 'Attach the complete current main-agent tool catalog to the target custom agent in one operation. Builder-only. Builder orchestration tools remain excluded.',
+  description: 'Attach the complete current main-agent tool catalog. Use only for an explicitly requested universal/general-purpose agent; deliberate capability selection is preferred.',
   category: 'automation',
   inputSchema: z.object({
     agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
@@ -253,7 +392,10 @@ export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
     success: z.boolean(),
     message: z.string(),
     attachedCount: z.number().optional(),
+    addedCount: z.number().optional(),
     skippedToolNames: z.array(z.string()).optional(),
+    revision: z.number().optional(),
+    profileSummary: z.any().optional(),
   }),
   execute: async (args: any, context: any) => {
     const runtime = requireBuilderContext(context, args.agentId);
@@ -266,10 +408,12 @@ export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
     const availableNames = new Set(availableTools.map(tool => tool.name));
     const skippedToolNames = Array.from(excluded).map(String).filter(name => name.length > 0 && !availableNames.has(name));
 
+    let addedCount = 0;
     const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => {
       const existing = new Map(profile.directMainTools.map(tool => [tool.toolName, tool]));
       for (const tool of availableTools) {
         if (existing.has(tool.name)) continue;
+        addedCount++;
         existing.set(tool.name, {
           toolName: tool.name,
           purpose: `Use ${tool.name} when it is relevant to the agent's mission.`,
@@ -279,14 +423,19 @@ export const agentBuilderAttachAllMainToolsTool: ToolDefinition = {
           attachedAt: new Date().toISOString(),
         });
       }
-      return { ...profile, directMainTools: Array.from(existing.values()), status: 'draft' };
-    });
+      return markDraftWhenChanged(profile, { ...profile, directMainTools: Array.from(existing.values()) });
+    }, 'Attached the full main-tool catalog.');
 
     return {
       success: true,
-      message: `Attached ${saved.profile.directMainTools.length} main tools to ${runtime.agentId}.`,
+      message: addedCount > 0
+        ? `Added ${addedCount} capabilities; ${saved.profile.directMainTools.length} are now attached.`
+        : `All ${saved.profile.directMainTools.length} available capabilities were already attached.`,
       attachedCount: saved.profile.directMainTools.length,
+      addedCount,
       skippedToolNames,
+      revision: saved.profile.revision,
+      profileSummary: summarizeAgentBuilderProfile(saved.profile),
     };
   },
 };
@@ -307,6 +456,8 @@ export const agentBuilderAttachConnectorToolsTool: ToolDefinition = {
     message: z.string(),
     attachedToolNames: z.array(z.string()).optional(),
     profilePath: z.string().optional(),
+    revision: z.number().optional(),
+    profileSummary: z.any().optional(),
   }),
   execute: async (args: any, context: any) => {
     const runtime = requireBuilderContext(context, args.agentId);
@@ -331,6 +482,7 @@ export const agentBuilderAttachConnectorToolsTool: ToolDefinition = {
       for (const toolName of toolNames) {
         const isGateway = toolName === 'gateway_bridge';
         const isChannelAgent = toolName === 'channel_agent';
+        const previous = existing.get(toolName);
         existing.set(toolName, {
           toolName,
           purpose: isChannelAgent
@@ -352,17 +504,19 @@ export const agentBuilderAttachConnectorToolsTool: ToolDefinition = {
             ? 'Follow the returned operating guide and send policy. Gateway message sends execute without a confirmation prompt; draft-only profiles never send. Never claim delivery unless send_reply succeeds.'
             : 'Treat the connector result as authoritative evidence. If the runtime returns an error, report the actual failure and recover with a bounded alternative; never claim success without the result.',
           promptInjection: isChannelAgent ? undefined : 'This is a real external integration. Execute directly when the user requested the action. Do not ask for routine permission or connector discovery; only stop for a genuinely missing secret, required outbound approval, or an irreducible user decision.',
-          attachedAt: new Date().toISOString(),
+          attachedAt: previous?.attachedAt || new Date().toISOString(),
         });
       }
-      return { ...profile, directMainTools: Array.from(existing.values()), status: 'draft' };
-    });
+      return markDraftWhenChanged(profile, { ...profile, directMainTools: Array.from(existing.values()) });
+    }, `Configured ${mode} connector capabilities.`);
 
     return {
       success: true,
       message: `Attached live connector bridge${toolNames.length === 1 ? '' : 's'} to ${runtime.agentId}: ${toolNames.join(', ')}.`,
       attachedToolNames: toolNames,
       profilePath: saved.path,
+      revision: saved.profile.revision,
+      profileSummary: summarizeAgentBuilderProfile(saved.profile),
     };
   },
 };
@@ -381,7 +535,7 @@ export const agentBuilderDefineTool: ToolDefinition = {
     toolChainJson: z.string().optional().describe('JSON array of {tool,purpose,argsTemplate} for tool_chain tools.'),
     code: z.string().optional().describe('Code draft for agent_scoped_code tools. Stored only under this agent after safety review.'),
   }),
-  outputSchema: z.object({ success: z.boolean(), message: z.string(), toolPath: z.string().optional(), tool: z.any().optional(), safetyNotes: z.array(z.string()).optional() }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string(), toolPath: z.string().optional(), tool: z.any().optional(), safetyNotes: z.array(z.string()).optional(), revision: z.number().optional(), profileSummary: z.any().optional() }),
   execute: async (args: any, context: any) => {
     const runtime = requireBuilderContext(context, args.agentId);
     if (!runtime.ok) return { success: false, message: runtime.error };
@@ -447,25 +601,33 @@ export const agentBuilderDefineTool: ToolDefinition = {
       };
     }
 
+    let persistedCustomTool = customTool;
+    const saved = await upsertAgentBuilderProfile(runtime.agentId, profile => {
+      const previous = profile.customTools.find(tool => tool.toolName === toolName);
+      const candidate = { ...customTool, createdAt: previous?.createdAt || customTool.createdAt };
+      const unchanged = previous && JSON.stringify({ ...previous, updatedAt: '' }) === JSON.stringify({ ...candidate, updatedAt: '' });
+      persistedCustomTool = unchanged ? previous : candidate;
+      const next = {
+        ...profile,
+        customTools: previous
+          ? profile.customTools.map(tool => tool.toolName === toolName ? persistedCustomTool : tool)
+          : [...profile.customTools, persistedCustomTool],
+      };
+      return markDraftWhenChanged(profile, next);
+    }, `Defined custom capability ${toolName}.`);
+
     const toolPath = getAgentBuilderToolPath(runtime.agentId, toolName);
     await fs.ensureDir(path.dirname(toolPath));
-    await fs.writeJson(toolPath, customTool, { spaces: 2 });
-
-    await upsertAgentBuilderProfile(runtime.agentId, profile => ({
-      ...profile,
-      customTools: [
-        ...profile.customTools.filter(tool => tool.toolName !== toolName),
-        customTool,
-      ],
-      status: 'draft',
-    }));
+    await fs.writeJson(toolPath, persistedCustomTool, { spaces: 2 });
 
     return {
       success: true,
       message: `Saved agent-scoped tool "${toolName}" for ${runtime.agentId}.`,
       toolPath,
-      tool: customTool,
+      tool: persistedCustomTool,
       safetyNotes: safety.notes,
+      revision: saved.profile.revision,
+      profileSummary: summarizeAgentBuilderProfile(saved.profile),
     };
   },
 };
@@ -478,7 +640,7 @@ export const agentBuilderFinalizeTool: ToolDefinition = {
     agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
     readinessNotes: z.string().optional().describe('Short notes on what was finalized.'),
   }),
-  outputSchema: z.object({ success: z.boolean(), message: z.string(), missing: z.array(z.string()).optional(), profilePath: z.string().optional(), promptPath: z.string().optional(), profile: z.any().optional() }),
+  outputSchema: z.object({ success: z.boolean(), message: z.string(), missing: z.array(z.string()).optional(), profilePath: z.string().optional(), promptPath: z.string().optional(), revision: z.number().optional(), profileSummary: z.any().optional(), quality: z.any().optional() }),
   execute: async (args: any, context: any) => {
     const runtime = requireBuilderContext(context, args.agentId);
     if (!runtime.ok) return { success: false, message: runtime.error };
@@ -506,19 +668,22 @@ export const agentBuilderFinalizeTool: ToolDefinition = {
         message: `Agent ${runtime.agentId} is not ready yet.`,
         missing,
         profilePath: getAgentBuilderProfilePath(runtime.agentId),
-        profile,
+        revision: profile.revision,
+        profileSummary: summarizeAgentBuilderProfile(profile),
+        quality,
       };
     }
 
-    const finalProfile = {
-      ...profile,
+    const saved = await upsertAgentBuilderProfile(runtime.agentId, current => ({
+      ...applyAgentBuilderDefaults(current),
       status: 'ready' as const,
       notes: uniqueStrings([
-        ...profile.notes,
-        args.readinessNotes ? String(args.readinessNotes) : `Finalized at ${new Date().toISOString()}`,
+        ...current.notes,
+        args.readinessNotes ? String(args.readinessNotes) : 'Finalized by Agent Builder.',
       ]),
-    };
-    const profilePath = await writeAgentBuilderProfile(finalProfile);
+    }), String(args.readinessNotes || 'Finalized the agent profile.'));
+    const finalProfile = saved.profile;
+    const profilePath = saved.path;
     const promptPath = path.join(path.dirname(profilePath), 'SYSTEM_PROMPT.md');
     await fs.writeFile(promptPath, finalProfile.professionalPrompt || '', 'utf8');
 
@@ -527,14 +692,16 @@ export const agentBuilderFinalizeTool: ToolDefinition = {
       message: `Agent ${runtime.agentId} is ready.`,
       profilePath,
       promptPath,
-      profile: finalProfile,
+      revision: finalProfile.revision,
+      profileSummary: summarizeAgentBuilderProfile(finalProfile),
+      quality: evaluateAgentBuilderProfile(finalProfile),
     };
   },
 };
 
 export const agentBuilderRunQualityCheckTool: ToolDefinition = {
   name: 'agent_builder_run_quality_check',
-  description: 'Run a deterministic enterprise readiness check on the target custom agent before finalization. Reports prompt depth, safety, baseline tool coverage, adaptive training, and real-data discipline without changing the profile.',
+  description: 'Run a deterministic readiness check before finalization. Reports prompt specificity, safety, capability coverage, adaptive training, presentation gaps, and over-broad tool policies without changing the profile.',
   category: 'automation',
   inputSchema: z.object({
     agentId: z.string().optional().describe('Target custom agent ID. Defaults to the current Agent Builder target.'),
@@ -547,7 +714,7 @@ export const agentBuilderRunQualityCheckTool: ToolDefinition = {
     checks: z.array(z.any()),
     missing: z.array(z.string()),
     warnings: z.array(z.string()),
-    profile: z.any().optional(),
+    profileSummary: z.any().optional(),
   }),
   execute: async (args: any, context: any) => {
     const runtime = requireBuilderContext(context, args.agentId);
@@ -564,7 +731,7 @@ export const agentBuilderRunQualityCheckTool: ToolDefinition = {
     }
     const profile = applyAgentBuilderDefaults(await readAgentBuilderProfile(runtime.agentId));
     const quality = evaluateAgentBuilderProfile(profile);
-    return { success: true, ...quality, profile };
+    return { success: true, ...quality, profileSummary: summarizeAgentBuilderProfile(profile) };
   },
 };
 
@@ -1124,11 +1291,12 @@ Follow with a detailed explanation of why, and suggest specific corrections if r
 
     } catch (err: any) {
       console.error(`[AgentFlow: ${args.flowId}] Execution error:`, err);
+      const errorMessage = formatUnknownError(err, 'Unknown flow execution failure');
       return {
         success: false,
         finalOutput: '',
-        message: `Flow execution failed: ${err.message}`,
-        error: err.message
+        message: `Flow execution failed: ${errorMessage}`,
+        error: errorMessage
       };
     } finally {
       clearFlowBlackboard(flowRunId);
@@ -1138,6 +1306,7 @@ Follow with a detailed explanation of why, and suggest specific corrections if r
 
 export const agentBuilderTools = [
   agentBuilderGetProfileTool,
+  agentBuilderListCapabilitiesTool,
   agentBuilderSaveProfileTool,
   agentBuilderAttachMainTool,
   agentBuilderRemoveToolTool,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { rejectCrossOrigin } from '../../agent/_shared';
 import { readStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
 import { normalizeLiveProvider } from '../../../../lib/live/live-provider';
+import { formatUnknownError } from '../../../../lib/agent/error-format';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('[LiveKey] Error leasing key:', error);
     return NextResponse.json(
-      { error: error.message || 'Failed to lease API key' },
+      { error: formatUnknownError(error, 'Failed to lease API key') },
       { status: 500 }
     );
   }

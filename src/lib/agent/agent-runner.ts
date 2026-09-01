@@ -21,6 +21,7 @@ import {
   isBuilderLiveConnectorToolName,
   isBuilderOnlyToolName,
   readAgentBuilderProfile,
+  summarizeAgentBuilderProfile,
   type AgentBuilderProfile,
   readAgentFlowProfile,
 } from './builder-agent';
@@ -29,12 +30,12 @@ import { resolveAgentTools, type ResolvedTool } from './tool-injector';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from './tools/security/tool_policy';
-import { getPathResolverInfo } from './workspace/path_resolver';
+import { getPathResolverInfo, resolveWorkspacePathForContext } from './workspace/path_resolver';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import { normalizeProviderCacheUsage } from './provider-prompt-cache';
 import { getOrCreateAgentCache, handleAgentCacheNotFound } from './agent-cache';
-import { compactStaleGeminiHistory, rollGeminiHistory } from './context-hot-path';
+import { sanitizeGeminiHistory } from './context-hot-path';
 import { toolResultCompactor } from './memory/tool-result-compactor';
 import { estimateRequestTokenBudget } from './request-token-budget';
 import { writeRuntimeTrace } from './runtime-trace';
@@ -49,12 +50,15 @@ import { mergeStreamingText } from '../streaming-lifecycle';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
 import { splitLeadingParallelToolCalls } from './parallel-tool-calls';
-import { buildLineDiffPreview } from './tool-trace';
+import { buildFilePreviewTraceId, buildLineDiffPreview, languageFromFilename } from './tool-trace';
 import { compactContextAtBoundary } from './resilience/context-compaction';
 import { getSearchRouteBrief } from '../search/search-runtime';
+import { formatUnknownError } from './error-format';
 import { getImageGenerationRouteBrief } from '../image/image-generation-runtime';
 import { getVideoGenerationRouteBrief } from '../video/video-generation-runtime';
 import { getApiRetries, isProviderFailoverError, waitForApiRetry } from './api-retry';
+import { getContextFabricForChat } from './context-fabric';
+import { hydratePersistedConversationContext } from './conversation-context';
 
 // The standalone builder endpoint can import this runner without importing
 // AgentRegistry first, so ensure the complete builder tool surface is present.
@@ -65,7 +69,7 @@ import './tools/index';
 // ═══════════════════════════════════════════════════════════════
 
 export interface AgentRunnerEvent {
-  type: 'text' | 'thought_stream' | 'work_note' | 'tool_call' | 'tool_result' | 'console_output' | 'status' | 'error' | 'done' | 'ask_user' | 'model_usage' | 'context_compaction' | 'context_usage';
+  type: 'text' | 'thought_stream' | 'work_note' | 'tool_call' | 'tool_result' | 'console_output' | 'status' | 'error' | 'done' | 'ask_user' | 'model_usage' | 'context_compaction' | 'context_usage' | 'file_preview' | 'evidence' | 'sub_agent_spawn' | 'sub_agent_complete' | 'sub_agent_error' | 'inter_agent_message';
   text?: string;
   toolName?: string;
   toolCallId?: string;
@@ -108,27 +112,29 @@ function resolveGeminiRunnerModel(config: AgentRunnerConfig): string {
   throw new Error('MODEL_SELECTION_REQUIRED: select an added Gemini model before running this agent.');
 }
 
-function serializeToolResult(result: unknown, maxLength: number): string {
-  if (typeof result === 'string') return result.substring(0, maxLength);
+const withContextMemoryTool = (tools: ResolvedTool[]): ResolvedTool[] => {
+  if (tools.some(tool => tool.name === 'context_memory')) return tools;
+  const tool = globalToolRegistry.getTool('context_memory');
+  if (!tool) return tools;
+  return [...tools, {
+    name: tool.name,
+    description: tool.description,
+    declaration: { name: tool.name, description: tool.description.substring(0, 420) },
+    promptGuidance: 'Read-only exact recall for older context in this same chat.',
+  }];
+};
+
+function serializeToolResult(result: unknown): string {
+  if (typeof result === 'string') return result;
   try {
-    return JSON.stringify(result ?? {}).substring(0, maxLength);
+    return JSON.stringify(result ?? {});
   } catch {
-    return String(result ?? '').substring(0, maxLength);
+    return String(result ?? '');
   }
 }
 
 function normalizeConversationTurns(contents: any[]): any[] {
-  const normalized: any[] = [];
-  for (const turn of contents) {
-    if (!turn || !Array.isArray(turn.parts) || turn.parts.length === 0) continue;
-    const previous = normalized[normalized.length - 1];
-    if (previous?.role === turn.role) {
-      previous.parts.push(...turn.parts);
-    } else {
-      normalized.push({ ...turn, parts: [...turn.parts] });
-    }
-  }
-  return normalized;
+  return sanitizeGeminiHistory(contents);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -159,7 +165,7 @@ export class AgentRunner {
     this.loadedAgentId = agentId;
     this.runtimeKind = 'custom_agent';
     const { tools, toolPrompt } = resolveAgentTools(profile);
-    this.resolvedTools = tools;
+    this.resolvedTools = withContextMemoryTool(tools);
     this.toolPrompt = toolPrompt;
 
     return profile;
@@ -180,7 +186,7 @@ export class AgentRunner {
     };
     this.loadedAgentId = agentId;
     this.runtimeKind = 'agent_builder';
-    this.resolvedTools = globalToolRegistry
+    this.resolvedTools = withContextMemoryTool(globalToolRegistry
       .getAllTools()
       .filter(tool => isBuilderOnlyToolName(tool.name) || isBuilderLiveConnectorToolName(tool.name))
       .map(tool => ({
@@ -191,7 +197,7 @@ export class AgentRunner {
           description: tool.description.substring(0, 420),
         },
         promptGuidance: `Builder control tool: ${tool.name}`,
-      }));
+      })));
     this.toolPrompt = this.resolvedTools.map(tool => `- ${tool.name}: ${tool.description}`).join('\n');
     return this.profile;
   }
@@ -206,10 +212,9 @@ export class AgentRunner {
     if (!this.profile) throw new Error('Agent not loaded');
 
     if (this.runtimeKind === 'agent_builder') {
+      const profileSummary = summarizeAgentBuilderProfile(this.profile);
       const persistedSnapshot = JSON.stringify({
-        status: this.profile.status,
-        name: this.profile.name,
-        mission: this.profile.mission,
+        ...profileSummary,
         professionalPrompt: this.profile.professionalPrompt,
         responseStyle: this.profile.responseStyle,
         behaviorRules: this.profile.behaviorRules,
@@ -217,8 +222,12 @@ export class AgentRunner {
         skills: this.profile.skills,
         toolUsePolicy: this.profile.toolUsePolicy,
         completionCriteria: this.profile.completionCriteria,
-        directMainTools: this.profile.directMainTools,
-        customTools: this.profile.customTools,
+        customTools: this.profile.customTools.map(tool => ({
+          toolName: tool.toolName,
+          description: tool.description,
+          implementationType: tool.implementationType,
+          safetyStatus: tool.safetyStatus,
+        })),
         notes: this.profile.notes,
       }, null, 2);
       return `${buildAgentBuilderRuntimePrompt(
@@ -227,18 +236,18 @@ export class AgentRunner {
       )}
 
 ## Current persisted target profile
-This snapshot is the authoritative configuration at the start of this turn. Chat history explains user intent; this persisted state identifies what currently exists. A ready profile remains fully editable.
+This snapshot is the latest authoritative configuration. Chat history explains user intent; this persisted state identifies what currently exists. A ready profile remains fully editable.
 ${persistedSnapshot}
 
 ## Builder execution protocol
-- Use the builder function tools to persist every profile change; do not merely describe changes in text.
-- This is a persistent multi-turn editing room. Treat each follow-up as a revision to the same target, use agent_builder_get_profile whenever the latest state needs confirmation, preserve all unspecified fields, and never imply that finalization closed the conversation.
-- For an explicit replacement of rules, skills, or notes, use agent_builder_save_profile with replaceCollections=true. For a tool removal, use agent_builder_remove_tool. Do not simulate removal by changing prose only.
-- Start with agent_builder_save_profile when the target profile needs identity, mission, or instructions.
-- Use agent_builder_attach_main_tool or agent_builder_attach_all_main_tools for target capabilities.
+- Persist requested profile changes through Builder tools; do not merely describe them.
+- Treat each follow-up as a patch to this same target. Preserve unspecified fields and never imply finalization closed the room.
+- Use agent_builder_save_profile for identity, instructions, presentation, or policy changes. Use replaceCollections only for supplied collections the user explicitly wants replaced.
+- Discover relevant capabilities with agent_builder_list_capabilities, then attach only those the mission needs. Reserve agent_builder_attach_all_main_tools for an explicitly requested universal surface.
+- Use agent_builder_remove_tool for actual removal; do not simulate capability changes in prose.
 - Use agent_builder_attach_connector_tools for any target that must operate connected services; it attaches the on-demand channel_agent layer and the required Gateway/REST/MCP bridges with explicit live-discovery guidance.
 - When connector setup or verification is part of the request, use gateway_bridge or connector_mcp directly to inspect the live runtime. Do not report a connector as ready from the UI catalog alone.
-- Use agent_builder_define_tool for target-scoped custom tools. After a material revision, run the quality check and finalize again only when the updated profile is complete.
+- Use agent_builder_define_tool only for a real missing capability. After a material revision, run the quality check and finalize again when the profile is complete.
 - Use agent_tool_load and agent_tool_unload only when the builder itself needs a temporary registered capability.
 - Report the result of each builder operation clearly, and continue until the requested setup is complete.`;
     }
@@ -289,7 +298,7 @@ ${persistedSnapshot}
 
 Your tool calls are rendered in the same professional work timeline as the main EterX agent.
 
-Work notes beside tool calls are optional. Use one when it adds real context such as intent, a finding, rationale, recovery, a meaningful phase change, or verification; otherwise call the tool silently. On longer work, let one note lead a coherent action batch, then add another when evidence changes the approach, a failure or recovery occurs, or work enters a new phase; do not stop after one opening note or narrate every call. Describe your own actions naturally in first person when relevant, but let the situation choose the opening and length. Never copy or paraphrase a tool name or uiActionText, expose private reasoning, or claim unverified results.
+Before each non-trivial tool batch, write one brief task-specific work note in the same response. One note covers all related calls; do not write one per call. State the purpose or a relevant finding and next move; later notes should reflect results, a changed approach, recovery, a milestone, or verification. An action note must be a complete natural first-person sentence, not a bare gerund or action-label fragment; vary the opening instead of defaulting to one phrase. A finding may lead with evidence, but connect any next action in first person. Never expose private reasoning or claim unverified results.
 
 Every tool call must include:
 - uiActionText: a precise 2-4 word action label for the timeline. No step numbers, no brackets, no punctuation-heavy text, no code dumps. Examples: "Reading fetch script", "Finding dataset URL", "Running CSV inspection", "Verifying generated file".
@@ -386,7 +395,12 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           }
         }
 
-        decl.parameters = addUiTraceFieldsToSchema(decl.parameters);
+        // Builder actions have deterministic, runtime-owned presentation.
+        // Keeping UI-only arguments out of this schema saves tokens and avoids
+        // raw or inconsistent labels from weaker models.
+        if (this.runtimeKind !== 'agent_builder') {
+          decl.parameters = addUiTraceFieldsToSchema(decl.parameters);
+        }
         declarations.push(decl);
       } catch {
         // Skip tools that fail entirely
@@ -449,44 +463,59 @@ Current date/time and per-run evidence are supplied with the latest request.`);
 
       const eventQueue: AgentRunnerEvent[] = [];
       const onTrace = (trace: any) => {
+        const traceTimestamp = Number(trace?.timestamp || Date.now());
+        const traceAgentName = trace?.agentName || agentName;
         if (trace?.type === 'status') {
           eventQueue.push({
+            ...trace,
             type: 'status',
             text: trace.text,
-            agentId: config.agentId,
-            agentName: trace.agentName || agentName,
-            timestamp: Date.now()
+            agentId: trace.agentId || config.agentId,
+            agentName: traceAgentName,
+            timestamp: traceTimestamp,
           });
         } else if (trace?.type === 'tool_call') {
           eventQueue.push({
+            ...trace,
             type: 'tool_call',
             toolName: trace.toolName,
+            toolCallId: trace.toolCallId || trace.ownerTraceId || trace.traceId || trace.id,
             toolArgs: trace.toolArgs,
-            agentName: trace.agentName || agentName,
-            timestamp: Date.now()
+            agentId: trace.agentId || config.agentId,
+            agentName: traceAgentName,
+            timestamp: traceTimestamp,
           });
         } else if (trace?.type === 'tool_result' || trace?.type === 'tool_result_preview') {
           eventQueue.push({
+            ...trace,
             type: 'tool_result',
             toolName: trace.toolName || trace.tool,
+            toolCallId: trace.toolCallId || trace.ownerTraceId || trace.traceId || trace.id,
             toolResult: trace.toolResult ?? trace.result,
-            agentName: trace.agentName || agentName,
-            timestamp: Date.now(),
+            agentId: trace.agentId || config.agentId,
+            agentName: traceAgentName,
+            timestamp: traceTimestamp,
           });
         } else if (trace?.type === 'console_output') {
           eventQueue.push({
             ...trace,
             type: 'console_output',
-            agentName: trace.agentName || agentName,
-            timestamp: Number(trace.timestamp || Date.now()),
+            agentId: trace.agentId || config.agentId,
+            agentName: traceAgentName,
+            timestamp: traceTimestamp,
           });
         } else if (['command', 'exploration', 'file_edit', 'communication', 'browser'].includes(trace?.type)) {
           // The main agent emits rich action traces rather than a literal
           // `tool_call` event. Normalize them so flows get the same cards in
           // the custom-agent chat timeline.
           eventQueue.push({
+            ...trace,
             type: 'tool_call',
             toolName: trace.tool || trace.name || 'workflow_action',
+            // Tool-side rich traces are children of the runner's generic
+            // call. ownerTraceId is that immutable invocation identity; using
+            // the child's presentation id created a second action card.
+            toolCallId: trace.toolCallId || trace.ownerTraceId || trace.traceId || trace.id,
             toolArgs: {
               ...(trace.toolArgs || {}),
               uiActionText: trace.text,
@@ -495,16 +524,40 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               command: trace.command,
               secondary: trace.secondary,
             },
-            agentName: trace.agentName || agentName,
-            timestamp: Date.now(),
+            agentId: trace.agentId || config.agentId,
+            agentName: traceAgentName,
+            timestamp: traceTimestamp,
           });
         } else if (trace?.type === 'work_note' || trace?.type === 'progress') {
           eventQueue.push({
+            ...trace,
             type: 'work_note',
             text: trace.text || 'Working on the flow',
-            agentName: trace.agentName || agentName,
-            timestamp: Date.now(),
+            agentId: trace.agentId || config.agentId,
+            agentName: traceAgentName,
+            timestamp: traceTimestamp,
           });
+        } else if ([
+          'file_preview',
+          'evidence',
+          'ask_user',
+          'model_usage',
+          'context_usage',
+          'context_compaction',
+          'sub_agent_spawn',
+          'sub_agent_complete',
+          'sub_agent_error',
+          'inter_agent_message',
+        ].includes(String(trace?.type || ''))) {
+          // Preserve already-normalized visible events verbatim. The former
+          // bridge silently discarded edit previews, delegation lifecycle,
+          // and usage events produced inside a flow.
+          eventQueue.push({
+            ...trace,
+            agentId: trace.agentId || config.agentId,
+            agentName: traceAgentName,
+            timestamp: traceTimestamp,
+          } as AgentRunnerEvent);
         }
       };
 
@@ -577,8 +630,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     const requestedMaxIterations = Number(config.maxIterations);
     const maxIter = Number.isFinite(requestedMaxIterations) && requestedMaxIterations > 0
       ? Math.floor(requestedMaxIterations)
-      : 128;
-    const agentName = this.profile?.name || config.pinnedContext?.agentName || config.agentId;
+      : isBuilderRuntime ? 24 : 128;
+    let agentName = this.profile?.name || config.pinnedContext?.agentName || config.agentId;
 
     // Lease an API key
     apiKeyPool.initialize();
@@ -637,12 +690,32 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       const explicitConversationScope = String(
         config.pinnedContext?.memoryScopeId || config.pinnedContext?.conversationScopeId || '',
       ).trim();
-      const compactionScopeId = explicitConversationScope || [
+      // Compaction is a property of the visible conversation, not of whichever
+      // custom-agent implementation happens to answer the current turn. Using
+      // an internal agent key here split the journal from the UI meter and made
+      // switching agents inside one chat silently restart context pressure.
+      const compactionScopeId = String(config.chatId || explicitConversationScope || [
         'agent-runner',
-        config.chatId || 'standalone',
         isBuilderRuntime ? 'builder' : 'custom',
         config.agentId,
-      ].join(':');
+      ].join(':')).trim();
+      const continuityScopeId = compactionScopeId;
+      const contextFabric = await getContextFabricForChat(continuityScopeId, {
+        durable: config.pinnedContext?.disableSessionPersistence !== true
+          || config.pinnedContext?.durableContextPersistence === true,
+      });
+      await hydratePersistedConversationContext(
+        contextFabric,
+        String(config.chatId || continuityScopeId),
+        currentRequest,
+      );
+      const fabricContext = contextFabric.compileWorkingSet(currentRequest, 8_000);
+      if (fabricContext) dynamicRunContextParts.push(fabricContext);
+      contextFabric.observeUserRequest(
+        currentRequest,
+        'continuation',
+        String(config.pinnedContext?.runId || config.agentSessionId || ''),
+      );
       const selfImprovementEnabled = this.runtimeKind !== 'agent_builder'
         && resolveSelfImprovementEnabled(config.pinnedContext?.selfImprovementEnabled);
       if (selfImprovementEnabled) {
@@ -687,35 +760,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         };
       }
 
-      // ═══════════════════════════════════════════════════════════════
-      // CONTEXT COMPACTION — keep the agent fast on long conversations
-      // Trim old tool result payloads while keeping first + last turns
-      // ═══════════════════════════════════════════════════════════════
-      const MAX_CONTEXT_TURNS = 40;
-      // Legacy lossy trimming is disabled. Durable compaction below owns all
-      // history reduction and always emits a restorable continuation capsule.
-      if (false && contents.length > MAX_CONTEXT_TURNS) {
-        const keepFirst = 4; // Keep first 4 turns (original request context)
-        const keepLast = 20; // Keep last 20 turns (recent context)
-        const trimStart = keepFirst;
-        const trimEnd = contents.length - keepLast;
-        if (trimEnd > trimStart) {
-          // Compact middle turns — keep role/structure but trim large payloads
-          const omittedTurns = trimEnd - trimStart;
-          contents = normalizeConversationTurns([
-            ...contents.slice(0, keepFirst),
-            {
-              role: 'user',
-              parts: [{
-                text: `[SYSTEM - EARLIER CONVERSATION COMPACTED]\n${omittedTurns} older turns were omitted to keep this run responsive. Use the retained original and recent turns as the authoritative context.`,
-              }],
-            },
-            ...contents.slice(trimEnd),
-          ]);
-          console.log(`[AgentRunner] Compacted ${trimEnd - trimStart} middle turns (${contents.length} total)`);
-        }
-      }
-
       yield {
         type: 'status',
         text: `${agentName} is thinking...`,
@@ -754,13 +798,19 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         const closeThoughtEvent = () => {
           if (thoughtClosed || !thoughtId || !thoughtStartTime) return null;
           thoughtClosed = true;
+          // Providers are allowed to return only visible text. Do not mint a
+          // closed empty Thought row in that case; it advances cursors and can
+          // briefly mount a blank container during snapshot reconciliation.
+          if (!accumulatedThought.trim()) return null;
           const endedAt = Date.now();
           return {
             type: 'thought_stream',
             text: accumulatedThought,
+            isLive: false,
             isDelta: false,
-            uiOnly: !accumulatedThought,
+            uiOnly: true,
             isStreaming: false,
+            isLiveTyping: false,
             streamState: 'closed',
             final: true,
             thoughtId,
@@ -777,6 +827,12 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           // when that changes the real surface, move to the matching
           // content-addressed cache variant before the next model turn.
           if (this.runtimeKind === 'agent_builder') {
+            const refreshedProfile = await readAgentBuilderProfile(config.agentId);
+            this.profile = {
+              ...refreshedProfile,
+              name: refreshedProfile.name || this.profile?.name || config.pinnedContext?.agentName || config.agentId,
+            };
+            agentName = this.profile.name || agentName;
             const nextSystemInstruction = this.buildSystemInstruction(currentRequest);
             const nextFuncDecls = this.buildFunctionDeclarations(currentRequest);
             const nextSurfaceSignature = `${nextSystemInstruction}\0${nextFuncDecls.map(tool => tool.name).join('\0')}`;
@@ -807,11 +863,22 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               ).catch(() => null);
             }
           }
-          contents = compactStaleGeminiHistory(contents, currentRequest);
-          contents = rollGeminiHistory(contents, '');
-
           const contextEvents: any[] = [];
-          try {
+          let wakeContextEvent: (() => void) | null = null;
+          let contextBoundarySettled = false;
+          let contextBoundaryError: unknown = null;
+          const publishContextEvent = (event: any) => {
+            contextEvents.push(event);
+            const wake = wakeContextEvent;
+            wakeContextEvent = null;
+            wake?.();
+          };
+          const contextBoundary = (async () => {
+            // The exact transcript archive is the compaction commit boundary.
+            // A transient Context Fabric disk flush must not skip context
+            // measurement and let the provider payload grow without control.
+            await contextFabric.flush().catch(() => undefined);
+            const continuityManifest = contextFabric.buildContinuityManifest();
             const compacted = await compactContextAtBoundary({
               chatId: compactionScopeId,
               kind: 'gemini',
@@ -821,23 +888,75 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               activeModel: { provider: 'gemini', modelId: resolvedModel },
               rawSettings: config.pinnedContext?.contextCompaction,
               contextWindowOverride: config.pinnedContext?.contextCompaction?.activeContextWindow,
+              modelContextWindowOverride: config.pinnedContext?.contextCompaction?.activeModelContextWindow,
               runtimeSettings: config.runtimeSettings,
               providerReportedInputTokens: lastObservedContextInputTokens,
               abortSignal: runAbortController.signal,
+              continuityManifest,
               semanticBoundary: 'safe',
-              onEvent: event => contextEvents.push(event),
+              onEvent: publishContextEvent,
             });
-            if (compacted.compacted) {
-              contents = normalizeConversationTurns(compacted.contents);
-              lastObservedContextInputTokens = compacted.usage.usedTokens;
+            return { compacted, continuityManifest };
+          })().catch((error: unknown) => {
+            contextBoundaryError = error;
+            return null;
+          }).finally(() => {
+            contextBoundarySettled = true;
+            const wake = wakeContextEvent;
+            wakeContextEvent = null;
+            wake?.();
+          });
+
+          // Yield lifecycle events while the summary request is running. The
+          // transcript itself is still replaced only after the compactor's
+          // archive, capsule validation, and journal commit all succeed.
+          while (!contextBoundarySettled || contextEvents.length > 0) {
+            while (contextEvents.length > 0) {
+              const event = contextEvents.shift();
+              yield { ...event, agentId: config.agentId, agentName } as AgentRunnerEvent;
             }
-          } catch {
-            // The request can continue with the original history. The durable
-            // compactor already retains recovery archives for failed attempts.
+            if (!contextBoundarySettled) {
+              await new Promise<void>(resolve => {
+                wakeContextEvent = resolve;
+                if (contextBoundarySettled || contextEvents.length > 0) {
+                  wakeContextEvent = null;
+                  resolve();
+                }
+              });
+            }
           }
-          for (const event of contextEvents) {
-            yield { ...event, agentId: config.agentId, agentName } as AgentRunnerEvent;
+
+          const contextBoundaryResult = await contextBoundary;
+          if (
+            runAbortController.signal.aborted
+            || isToolCancellationError(contextBoundaryError)
+            || String((contextBoundaryError as any)?.message || contextBoundaryError || '') === 'CANCELLED_BY_USER'
+          ) {
+            throw new Error('CANCELLED_BY_USER');
           }
+          if (contextBoundaryResult?.compacted.compacted) {
+            const { compacted, continuityManifest } = contextBoundaryResult;
+            contents = normalizeConversationTurns(compacted.contents);
+            lastObservedContextInputTokens = compacted.usage.usedTokens;
+            if (compacted.capsule) {
+              const restoredFactIds = compacted.capsule.restoredContinuityFactIds || [];
+              if (restoredFactIds.length > 0) contextFabric.recordCompactionFeedback({
+                coveredFactIds: continuityManifest.facts.map(fact => fact.id).filter(id => !restoredFactIds.includes(id)),
+                missingFactIds: restoredFactIds,
+                coverageRatio: (continuityManifest.facts.length - restoredFactIds.length) / Math.max(1, continuityManifest.facts.length),
+              }, continuityManifest);
+              contextFabric.recordCompactionCheckpoint(
+                compacted.capsule.compactionId,
+                continuityManifest.manifestHash,
+                compacted.capsule.summary,
+              );
+            }
+          }
+
+          // Final provider boundary: retain Gemini's original signed model
+          // parts and remove only responses whose authentic call was compacted
+          // away. This must run even when no compaction was needed.
+          contents = sanitizeGeminiHistory(contents);
 
           generateConfig = {
             model: resolvedModel,
@@ -886,22 +1005,12 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           });
 
           modelRequestStarted = true;
-          thoughtStartTime = Date.now();
-          thoughtId = `thought_${ config.agentId }_${ iteration + 1 }_${ thoughtStartTime }_${ Math.random().toString(36).slice(2, 8) }`;
-          yield {
-            type: 'thought_stream',
-            text: '',
-            isDelta: false,
-            uiOnly: true,
-            isStreaming: true,
-            isLiveTyping: true,
-            streamState: 'open',
-            thoughtId,
-            startTime: thoughtStartTime,
-            endTime: thoughtStartTime,
-            agentName,
-            timestamp: thoughtStartTime,
-          };
+          const thoughtRequestIdentityAt = Date.now();
+          thoughtStartTime = 0;
+          thoughtId = `thought_${ config.agentId }_${ iteration + 1 }_${ thoughtRequestIdentityAt }_${ Math.random().toString(36).slice(2, 8) }`;
+          // The first native reasoning chunk opens the visible Thought row.
+          // An empty preflight shell caused a blank poll/update and could be
+          // stranded when a provider returned only normal text.
           const responseStream = await ai.models.generateContentStream(generateConfig);
           const streamedParts: any[] = [];
           let latestCandidate: any = null;
@@ -914,11 +1023,13 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             for (const part of parts) {
               streamedParts.push(part);
               if (part.thought && part.text && !thoughtClosed) {
+                if (!thoughtStartTime) thoughtStartTime = Date.now();
                 accumulatedThought = mergeStreamingText(accumulatedThought, String(part.text), true);
                 yield {
                   type: 'thought_stream',
                   text: accumulatedThought,
                   isDelta: false,
+                  uiOnly: true,
                   isStreaming: true,
                   isLiveTyping: true,
                   streamState: 'open',
@@ -1071,7 +1182,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             };
             const callResults = new Map<FunctionCallRecord, unknown>();
 
-            const startToolCall = (call: FunctionCallRecord): RunningToolCall => {
+            const startToolCall = (
+              call: FunctionCallRecord,
+              notifyActivity: () => void,
+            ): RunningToolCall => {
               const sideEvents: AgentRunnerEvent[] = [];
               let settled = false;
               let result: unknown;
@@ -1086,6 +1200,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                     agentName,
                     timestamp: Number(trace.timestamp || Date.now()),
                   } as AgentRunnerEvent);
+                  // Wake the batch generator on the exact output event. A
+                  // fixed sampling timer adds visible latency and burns work
+                  // for every concurrently running command while idle.
+                  notifyActivity();
                 };
                 const toolAbortController = new AbortController();
                 const abortTool = () => toolAbortController.abort();
@@ -1099,6 +1217,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                     config,
                     pushSideEvent,
                     toolAbortController.signal,
+                    call.uiToolCallId,
                   );
                   if (toolTimeoutMs === null) {
                     result = await execPromise;
@@ -1112,11 +1231,12 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                     result = await Promise.race([execPromise, timeoutPromise]);
                   }
                 } catch (err: any) {
-                  result = { error: err?.message || 'Tool execution failed' };
+                  result = { error: formatUnknownError(err, 'Tool execution failed') };
                 } finally {
                   if (timeoutHandle) clearTimeout(timeoutHandle);
                   runAbortController.signal.removeEventListener('abort', abortTool);
                   settled = true;
+                  notifyActivity();
                 }
               })();
 
@@ -1130,21 +1250,30 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             };
 
             const runBatch = async function* (calls: FunctionCallRecord[]): AsyncGenerator<AgentRunnerEvent> {
-              const running = calls.map(startToolCall);
+              let activityVersion = 0;
+              const activityWaiters = new Set<() => void>();
+              const notifyActivity = () => {
+                activityVersion += 1;
+                const waiters = Array.from(activityWaiters);
+                activityWaiters.clear();
+                waiters.forEach(resolve => resolve());
+              };
+              const waitForActivityAfter = (observedVersion: number) => {
+                if (activityVersion !== observedVersion) return Promise.resolve();
+                return new Promise<void>(resolve => activityWaiters.add(resolve));
+              };
+              const running = calls.map(call => startToolCall(call, notifyActivity));
               const pending = new Set(running);
 
               while (pending.size > 0) {
+                const observedVersion = activityVersion;
                 for (const run of running) {
                   for (const event of run.sideEvents.splice(0, run.sideEvents.length)) yield event;
                 }
-
-                await Promise.race([
-                  Promise.race(Array.from(pending, run => run.promise)),
-                  new Promise(resolve => setTimeout(resolve, 50)),
-                ]);
                 for (const run of Array.from(pending)) {
                   if (run.isSettled()) pending.delete(run);
                 }
+                if (pending.size > 0) await waitForActivityAfter(observedVersion);
               }
 
               for (const run of running) {
@@ -1192,7 +1321,14 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               );
               for (let callIndex = 0; callIndex < functionCalls.length; callIndex++) {
                 const call = functionCalls[callIndex];
-                const result = callResults.get(call);
+              const result = callResults.get(call);
+              if (normalizeRegistryToolName(call.name) !== 'context_memory') {
+                const exactPageRef = contextFabric.recordTool(call.name, call.args, providerToolResults[callIndex], result);
+                providerToolResults[callIndex] = toolResultCompactor.withExactPageRef(
+                  providerToolResults[callIndex],
+                  exactPageRef,
+                );
+              }
               yield {
                 type: 'tool_result',
                 toolName: call.name,
@@ -1204,7 +1340,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               toolResultParts.push({
                 functionResponse: {
                   name: call.name,
-                  response: { result: serializeToolResult(providerToolResults[callIndex], 14000) },
+                  response: { result: serializeToolResult(providerToolResults[callIndex]) },
                   ...(call.providerCallId ? { id: call.providerCallId } : {}),
                 },
               });
@@ -1232,7 +1368,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         } catch (err: any) {
           const interruptedThought = closeThoughtEvent();
           if (interruptedThought) yield interruptedThought;
-          const errMsg = String(err.message || err);
+          const errMsg = formatUnknownError(err, 'Agent Builder execution failed');
           const lowerErrMsg = errMsg.toLowerCase();
 
           const cachedContentRejected = Boolean(customAgentCachedContent)
@@ -1311,7 +1447,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             timestamp: Date.now(),
           };
           if (completedRound) {
-            await waitForApiRetry(Math.floor(providerAttempts / keyCount), runAbortController.signal);
+            await waitForApiRetry(Math.floor(providerAttempts / keyCount), runAbortController.signal, err);
           }
           continue;
         }
@@ -1361,6 +1497,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     config: AgentRunnerConfig,
     onTrace?: (trace: any) => void,
     abortSignal?: AbortSignal,
+    ownerTraceId?: string,
   ): Promise<unknown> {
     const agentId = config.agentId;
     const chatId = config.chatId || `custom-agent-${agentId}`;
@@ -1471,6 +1608,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       maxSubAgents: config.pinnedContext?.maxSubAgents,
       maxRetries: config.pinnedContext?.maxRetries,
       _onTrace: onTrace,
+      ownerTraceId,
       abortSignal: abortSignal || this.cancelController?.signal,
       signal: abortSignal || this.cancelController?.signal,
       isCancelled: () => this.cancelled || abortSignal?.aborted === true || this.cancelController?.signal.aborted === true,
@@ -1481,7 +1619,18 @@ Current date/time and per-run evidence are supplied with the latest request.`);
 
     if (registryTool) {
       const validation = validateRegistryToolArgs(registryTool, effectiveArgs);
-      if (!validation.success) return { error: validation.error };
+      if (!validation.success) {
+        if (Array.isArray(validation.missing) && validation.missing.length > 0) {
+          return {
+            success: true,
+            needsArguments: true,
+            toolName: canonicalToolName,
+            requiredArguments: validation.missing,
+            message: `Supply ${validation.missing.join(', ')} and call ${canonicalToolName} again.`,
+          };
+        }
+        return { error: validation.error };
+      }
       effectiveArgs = validation.args;
 
       const capabilityDecision = enforceToolCapability(canonicalToolName, effectiveArgs, context);
@@ -1495,9 +1644,15 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         .map((target: any) => {
           const requestedPath = String(target?.filename || '').trim();
           if (!requestedPath) return null;
+          let filePath: string;
+          try {
+            filePath = resolveWorkspacePathForContext(requestedPath, context);
+          } catch {
+            filePath = path.isAbsolute(requestedPath) ? path.normalize(requestedPath) : path.resolve(workspaceRoot, requestedPath);
+          }
           return {
             requestedPath,
-            filePath: path.isAbsolute(requestedPath) ? path.normalize(requestedPath) : path.resolve(workspaceRoot, requestedPath),
+            filePath,
           };
         })
         .filter(Boolean) as Array<{ requestedPath: string; filePath: string }>
@@ -1555,9 +1710,11 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         const linesRemoved = diffLines.filter(line => line.type === 'removed').length;
 
         onTrace?.({
+          id: buildFilePreviewTraceId(ownerTraceId, target.filePath),
           type: 'file_preview',
           filename: path.basename(target.requestedPath),
           filepath: target.filePath,
+          language: languageFromFilename(target.requestedPath || target.filePath),
           content: afterContent.length <= 500_000 ? afterContent : '',
           lineCount: afterContent ? afterContent.split(/\r?\n/).length : 0,
           totalLines: afterContent ? afterContent.split(/\r?\n/).length : 0,
@@ -1569,6 +1726,13 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           operation: wasDeleted ? 'deleted' : wasCreated ? 'created' : 'edited',
           fileOperationResult,
           dedupe: false,
+          ownerTraceId,
+          staged: false,
+          isLive: false,
+          isStreaming: false,
+          isLiveTyping: false,
+          streamState: 'closed',
+          status: result?.success === false || result?.error ? 'error' : 'completed',
           timestamp: Date.now(),
         });
       }

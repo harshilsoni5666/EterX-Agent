@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pauseAgent, resumeAgent, closeAgent, isAgentPaused, isAgentClosed, getAgentControlStates } from '@/lib/agent/roles/sub_agent';
+import { formatUnknownError } from '@/lib/agent/error-format';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -29,6 +30,10 @@ export async function POST(req: NextRequest) {
     const projectId = cleanString(body.projectId, 180);
     const agentName = cleanString(body.agentName, 80);
     const agentId = cleanString(body.agentId, 240);
+    const requestedAtValue = Number(body.requestedAt);
+    const requestedAt = Number.isSafeInteger(requestedAtValue) && requestedAtValue > 0
+      ? requestedAtValue
+      : Number.POSITIVE_INFINITY;
 
     if (!isSafeChatId(projectId)) {
       return attachAgentApiSessionCookie(jsonError('Valid projectId is required', 400), session);
@@ -57,7 +62,7 @@ export async function POST(req: NextRequest) {
         if (!agentName) {
           return attachAgentApiSessionCookie(jsonError('agentName is required for close', 400), session);
         }
-        const result = closeAgent(projectId, agentName, undefined, agentId || undefined);
+        const result = closeAgent(projectId, agentName, undefined, agentId || undefined, requestedAt);
         return attachAgentApiSessionCookie(NextResponse.json({ success: result, action: 'close', agentName, agentId: agentId || undefined, closed: result }), session);
       }
 
@@ -80,7 +85,7 @@ export async function POST(req: NextRequest) {
     }
   } catch (error: any) {
     console.error('[Agent Control] Error:', error);
-    const response = NextResponse.json({ success: false, error: error.message || 'Internal error' }, { status: 500 });
+    const response = NextResponse.json({ success: false, error: formatUnknownError(error, 'Internal error') }, { status: 500 });
     return session ? attachAgentApiSessionCookie(response, session) : response;
   }
 }

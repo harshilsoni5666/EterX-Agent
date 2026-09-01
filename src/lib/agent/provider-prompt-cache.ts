@@ -107,13 +107,24 @@ export function normalizeProviderCacheUsage(
     }
     return 0;
   };
+  const wasProvided = (...values: unknown[]) => values.some(value => {
+    if (value === undefined || value === null || value === '') return false;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0;
+  });
   if (provider === 'anthropic') {
     const directInputTokens = numberFrom(raw.input_tokens, raw.inputTokens);
     const cacheReadTokens = numberFrom(raw.cache_read_input_tokens, raw.cacheReadInputTokens);
     const cacheCreationTokens = numberFrom(raw.cache_creation_input_tokens, raw.cacheCreationInputTokens);
     const promptTokens = directInputTokens + cacheReadTokens + cacheCreationTokens;
     const completionTokens = numberFrom(raw.output_tokens, raw.outputTokens);
-    return {
+    const cacheTokensMeasured = wasProvided(
+      raw.cache_read_input_tokens,
+      raw.cacheReadInputTokens,
+      raw.cache_creation_input_tokens,
+      raw.cacheCreationInputTokens,
+    );
+    const normalized: Record<string, number> = {
       promptTokens,
       inputTokens: promptTokens,
       completionTokens,
@@ -122,12 +133,20 @@ export function normalizeProviderCacheUsage(
       outputTokens: completionTokens,
       totalTokens: promptTokens + completionTokens,
       providerReportedTotalTokens: 0,
+      promptTokensMeasured: wasProvided(raw.input_tokens, raw.inputTokens) || cacheTokensMeasured ? 1 : 0,
+      completionTokensMeasured: wasProvided(raw.output_tokens, raw.outputTokens) ? 1 : 0,
+      reasoningTokensMeasured: 0,
+      cacheTokensMeasured: cacheTokensMeasured ? 1 : 0,
+      cacheWriteTokensMeasured: wasProvided(raw.cache_creation_input_tokens, raw.cacheCreationInputTokens) ? 1 : 0,
       cacheReadTokens,
       cacheCreationTokens,
-      cachedTokens: cacheReadTokens,
-      uncachedPromptTokens: Math.max(0, promptTokens - cacheReadTokens),
-      cacheHitRatio: promptTokens > 0 ? cacheReadTokens / promptTokens : 0,
     };
+    if (cacheTokensMeasured) {
+      normalized.cachedTokens = cacheReadTokens;
+      normalized.uncachedPromptTokens = Math.max(0, promptTokens - cacheReadTokens);
+      normalized.cacheHitRatio = promptTokens > 0 ? cacheReadTokens / promptTokens : 0;
+    }
+    return normalized;
   }
   if (provider === 'gemini') {
     const promptTokens = numberFrom(
@@ -179,10 +198,17 @@ export function normalizeProviderCacheUsage(
       raw.total_cached_tokens,
       raw.cachedTokens,
     );
+    const cacheTokensMeasured = wasProvided(
+      raw.cachedContentTokenCount,
+      raw.totalCachedTokens,
+      raw.cached_content_token_count,
+      raw.total_cached_tokens,
+      raw.cachedTokens,
+    );
     const cachedTokens = promptTokens > 0
       ? Math.min(promptTokens, measuredCachedTokens)
       : measuredCachedTokens;
-    return {
+    const normalized: Record<string, number> = {
       promptTokens,
       inputTokens: promptTokens,
       completionTokens,
@@ -191,12 +217,45 @@ export function normalizeProviderCacheUsage(
       outputTokens: completionTokens,
       totalTokens,
       providerReportedTotalTokens: reportedTotal,
-      cachedTokens,
-      uncachedPromptTokens: Math.max(0, promptTokens - cachedTokens),
-      cacheHitRatio: promptTokens > 0 ? cachedTokens / promptTokens : 0,
+      promptTokensMeasured: wasProvided(
+        raw.promptTokenCount,
+        raw.totalInputTokens,
+        raw.prompt_token_count,
+        raw.total_input_tokens,
+        raw.inputTokenCount,
+        raw.promptTokens,
+        raw.inputTokens,
+      ) ? 1 : 0,
+      completionTokensMeasured: wasProvided(
+        raw.candidatesTokenCount,
+        raw.totalOutputTokens,
+        raw.responseTokenCount,
+        raw.candidates_token_count,
+        raw.total_output_tokens,
+        raw.response_token_count,
+        raw.outputTokenCount,
+        raw.completionTokens,
+        raw.outputTokens,
+      ) ? 1 : 0,
+      reasoningTokensMeasured: wasProvided(
+        raw.thoughtsTokenCount,
+        raw.totalThoughtTokens,
+        raw.thoughts_token_count,
+        raw.total_thought_tokens,
+        raw.thoughtTokenCount,
+        raw.reasoningTokens,
+      ) ? 1 : 0,
+      cacheTokensMeasured: cacheTokensMeasured ? 1 : 0,
+      cacheWriteTokensMeasured: 0,
       reasoningTokens,
       toolUsePromptTokens,
     };
+    if (cacheTokensMeasured) {
+      normalized.cachedTokens = cachedTokens;
+      normalized.uncachedPromptTokens = Math.max(0, promptTokens - cachedTokens);
+      normalized.cacheHitRatio = promptTokens > 0 ? cachedTokens / promptTokens : 0;
+    }
+    return normalized;
   }
   const promptTokens = numberFrom(raw.prompt_tokens, raw.input_tokens, raw.promptTokens, raw.inputTokens);
   const completionTokens = numberFrom(raw.completion_tokens, raw.output_tokens, raw.completionTokens, raw.outputTokens);
@@ -215,7 +274,21 @@ export function normalizeProviderCacheUsage(
     generatedTokens: completionTokens,
     outputTokens: completionTokens,
     providerReportedTotalTokens: reportedTotal,
+    promptTokensMeasured: wasProvided(raw.prompt_tokens, raw.input_tokens, raw.promptTokens, raw.inputTokens) ? 1 : 0,
+    completionTokensMeasured: wasProvided(raw.completion_tokens, raw.output_tokens, raw.completionTokens, raw.outputTokens) ? 1 : 0,
+    reasoningTokensMeasured: wasProvided(
+      raw.completion_tokens_details?.reasoning_tokens,
+      raw.output_tokens_details?.reasoning_tokens,
+      raw.reasoning_tokens,
+      raw.reasoningTokens,
+    ) ? 1 : 0,
   };
+  const cacheTokensMeasured = wasProvided(
+    raw.prompt_tokens_details?.cached_tokens,
+    raw.input_tokens_details?.cached_tokens,
+    raw.cached_tokens,
+    raw.cachedTokens,
+  );
   const measuredCachedTokens = numberFrom(
       raw.prompt_tokens_details?.cached_tokens,
       raw.input_tokens_details?.cached_tokens,
@@ -231,9 +304,17 @@ export function normalizeProviderCacheUsage(
     raw.cache_write_tokens,
     raw.cacheWriteTokens,
   );
-  if (cachedTokens > 0) normalized.cachedTokens = cachedTokens;
-  if (cacheWriteTokens > 0) normalized.cacheWriteTokens = cacheWriteTokens;
-  if (promptTokens > 0) {
+  const cacheWriteTokensMeasured = wasProvided(
+    raw.prompt_tokens_details?.cache_write_tokens,
+    raw.input_tokens_details?.cache_write_tokens,
+    raw.cache_write_tokens,
+    raw.cacheWriteTokens,
+  );
+  normalized.cacheTokensMeasured = cacheTokensMeasured ? 1 : 0;
+  normalized.cacheWriteTokensMeasured = cacheWriteTokensMeasured ? 1 : 0;
+  if (cacheTokensMeasured) normalized.cachedTokens = cachedTokens;
+  if (cacheWriteTokensMeasured) normalized.cacheWriteTokens = cacheWriteTokens;
+  if (promptTokens > 0 && cacheTokensMeasured) {
     normalized.uncachedPromptTokens = Math.max(0, promptTokens - cachedTokens);
     normalized.cacheHitRatio = cachedTokens / promptTokens;
   }

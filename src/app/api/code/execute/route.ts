@@ -4,6 +4,7 @@ import { getPathResolverInfo } from '@/lib/agent/workspace/path_resolver';
 import { runTerminalCommandWithCheckIn } from '@/lib/agent/tools/core/terminal_background';
 import { normalizeTerminalShell, resolveTerminalShell } from '@/lib/agent/tools/core/shell_resolver';
 import { rejectCrossOrigin } from '../../agent/_shared';
+import { formatUnknownError } from '@/lib/agent/error-format';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -94,6 +95,6 @@ export async function POST(req: NextRequest) {
       nextActionNote: result.nextActionNote,
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: formatUnknownError(error, 'Command execution failed') }, { status: 500 });
   }
 }

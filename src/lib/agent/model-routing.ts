@@ -275,7 +275,7 @@ export const isOpenAIReasoningModel = (model: string) =>
   /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|gpt-oss/i.test(model);
 
 const isClaudeEffortModel = (model: string) =>
-  /claude-(?:sonnet|opus)-(?:4|5)(?:[.-]|$)/i.test(model);
+  /claude-(?:sonnet|opus)-(?:4|5)(?:[.-]|$)|claude-(?:fable|mythos)-(?:5|preview)(?:[.-]|$)/i.test(model);
 
 const isClaudeXHighModel = (model: string) =>
   /claude-(?:sonnet|opus)-5(?:[.-]|$)/i.test(model);
@@ -348,7 +348,13 @@ export function getModelThinkingOptions(
     if (!isOpenAIReasoningModel(model)) return [];
     if (/gpt-5(?:\.[0-9]+)?[-.]pro(?:$|[-.])/i.test(model)) return thinkingOptions('high');
     if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
-    return thinkingOptions('off', 'low', 'medium', 'high');
+    // OpenAI models before GPT-5.1 do not accept `none`; o-series models also
+    // have no true off setting. GPT-5.1+ is the documented family where
+    // reasoning can be disabled.
+    if (/gpt-5\.(?:[1-9]|\d{2,})(?:$|[-.])/i.test(model)) {
+      return thinkingOptions('off', 'low', 'medium', 'high');
+    }
+    return thinkingOptions('low', 'medium', 'high');
   }
 
   if (provider === 'openrouter') {
@@ -373,15 +379,18 @@ export function getModelThinkingOptions(
     }
   }
 
-  if (provider === 'groq' && model.includes('gpt-oss')) {
-    return thinkingOptions('low', 'medium', 'high');
+  if (provider === 'groq') {
+    if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
+    if (/qwen(?:\/|[-_])?qwen?3|qwen3/i.test(model)) return thinkingOptions('off', 'high');
   }
   if ((provider === 'together' || provider === 'nvidia') && model.includes('gpt-oss')) {
     return thinkingOptions('low', 'medium', 'high');
   }
 
   if (provider === 'grok' && /grok-(?:4|3)/.test(model)) {
-    return thinkingOptions('off', 'low', 'medium', 'high');
+    return /grok-4\.6/.test(model)
+      ? thinkingOptions('low', 'medium', 'high', 'xhigh')
+      : thinkingOptions('low', 'medium', 'high');
   }
   if (provider === 'qwen' && /(?:qwen3|qwq|thinking)/.test(model)) {
     return thinkingOptions('off', 'low', 'medium', 'high');
@@ -421,12 +430,16 @@ export function inferModelThinkingCapabilities(
   } else if (provider === 'deepseek') {
     parameter = /deepseek-v4-(?:flash|pro)/i.test(model) ? 'thinking.type' : 'reasoning_effort';
   } else if (provider === 'anthropic') {
-    parameter = 'output_config.effort';
+    // output_config.effort belongs to adaptive thinking. Claude 4.5 and
+    // earlier use legacy budget_tokens and must not be routed as adaptive.
+    parameter = isAnthropicAdaptiveThinkingModel(model) ? 'output_config.effort' : undefined;
   } else if (provider === 'openrouter') {
     parameter = 'reasoning';
   } else if (provider === 'qwen') {
     parameter = 'enable_thinking';
   } else if (provider === 'mistral' || provider === 'openai' || provider === 'grok') {
+    parameter = 'reasoning_effort';
+  } else if (provider === 'groq' && /qwen(?:\/|[-_])?qwen?3|qwen3/i.test(model)) {
     parameter = 'reasoning_effort';
   } else if ((provider === 'groq' || provider === 'together' || provider === 'nvidia') && /gpt-oss/i.test(model)) {
     parameter = 'reasoning_effort';
@@ -573,7 +586,11 @@ export function getAnthropicThinkingBudget(level: MainAgentThinkingLevel): numbe
 }
 
 export function isAnthropicAdaptiveThinkingModel(modelName: string): boolean {
-  return /claude-(?:sonnet|opus)-(?:4|5)(?:[.-]|$)/i.test(modelName);
+  const model = String(modelName || '').toLowerCase();
+  if (/claude-(?:fable|mythos)-(?:5|preview)(?:[.-]|$)/i.test(model)) return true;
+  if (/claude-(?:sonnet|opus)-5(?:[.-]|$)/i.test(model)) return true;
+  const version = model.match(/claude-(?:sonnet|opus)-4[.-](\d+)(?:[.-]|$)/i);
+  return Boolean(version && Number(version[1]) >= 6);
 }
 
 export function isOpenAIMiniReasoningModel(modelName: string): boolean {

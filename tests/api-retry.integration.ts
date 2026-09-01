@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { withApiKeyRounds } from '../src/lib/agent/api-retry';
+import { resolveApiRetryDelayMs, withApiKeyRounds } from '../src/lib/agent/api-retry';
 
 const alwaysFail = async (key: string, seen: string[]) => {
   seen.push(key);
@@ -7,6 +7,20 @@ const alwaysFail = async (key: string, seen: string[]) => {
 };
 
 const main = async () => {
+  assert.equal(
+    resolveApiRetryDelayMs(1, { headers: { 'retry-after': '2' } }, 0),
+    2_000,
+    'provider Retry-After must be honored before retrying',
+  );
+  assert.equal(
+    resolveApiRetryDelayMs(1, { message: 'RESOURCE_EXHAUSTED. Please retry in 4.5s.' }, 0),
+    4_500,
+    'provider RetryInfo embedded in an SDK error message must be honored',
+  );
+  assert.ok(
+    resolveApiRetryDelayMs(3, undefined, 1) > resolveApiRetryDelayMs(2, undefined, 1),
+    'retry delay should grow exponentially and include positive jitter',
+  );
   const noneSeen: string[] = [];
   await assert.rejects(
     withApiKeyRounds(

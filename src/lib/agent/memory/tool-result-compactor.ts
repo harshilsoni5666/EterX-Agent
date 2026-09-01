@@ -67,12 +67,22 @@ export class ToolResultCompactor {
         ? this.compactToBudget(toolName, args, compacted, MAX_COMPACT_SIZE)
         : compacted;
     } catch {
-      // Fallback to generic compaction
-      const fallback = this.compactGeneric(result);
-      return this.estimateSize(fallback) > MAX_COMPACT_SIZE
-        ? this.compactToBudget(toolName, args, fallback, MAX_COMPACT_SIZE)
-        : fallback;
+      // Compaction failure is non-destructive. The real context boundary sees
+      // the original result on the next turn and decides whether to compact.
+      return result;
     }
+  }
+
+  /** Link a reduced provider payload to the immutable exact Context Fabric page. */
+  withExactPageRef(result: any, pageRef?: string): any {
+    const normalizedPageRef = String(pageRef || '').trim();
+    if (!normalizedPageRef || !result || typeof result !== 'object') return result;
+    if (result.__eterxContextDigest !== true && result._compacted !== true) return result;
+    return {
+      ...result,
+      exactContextPageRef: normalizedPageRef,
+      recovery: `Use context_memory action="open" with pageRef="${normalizedPageRef}" for the exact result.`,
+    };
   }
 
   /**
@@ -104,6 +114,43 @@ export class ToolResultCompactor {
     result: any,
     maxChars: number,
   ): any {
+    const exactContextPageRef = typeof result?.exactContextPageRef === 'string'
+      ? result.exactContextPageRef
+      : undefined;
+    if (toolName === 'workspace_edit_file' && result && typeof result === 'object') {
+      // File lifecycle/UI ownership depends on this small authoritative
+      // manifest. A very large edit result used to fall through to the generic
+      // evidence digest, dropping operation and changed-path metadata before
+      // downstream preview/rendering code could settle the action card.
+      const compacted = this.compactEditResult(result);
+      const changes = Array.isArray(compacted?.changes)
+        ? compacted.changes.map((change: any) => ({
+            path: change?.path,
+            filename: change?.filename,
+            action: change?.action,
+            additions: change?.additions,
+            deletions: change?.deletions,
+            error: change?.error,
+          }))
+        : [];
+      return {
+        success: compacted?.success !== false,
+        message: compacted?.message,
+        error: compacted?.error,
+        operation: compacted?.operation,
+        filesModified: Array.isArray(compacted?.filesModified) ? compacted.filesModified : [],
+        filesCreated: Array.isArray(compacted?.filesCreated) ? compacted.filesCreated : [],
+        filesDeleted: Array.isArray(compacted?.filesDeleted) ? compacted.filesDeleted : [],
+        changes,
+        errors: Array.isArray(compacted?.errors) ? compacted.errors.slice(0, 20) : [],
+        rolledBack: Boolean(compacted?.rolledBack),
+        editsApplied: compacted?.editsApplied,
+        __eterxContextDigest: true,
+        originalChars: this.estimateSize(result),
+        recovery: 'Use a narrow workspace read if the exact edited content is needed.',
+        ...(exactContextPageRef ? { exactContextPageRef } : {}),
+      };
+    }
     const query = `${toolName} ${JSON.stringify(args || {}).slice(0, 1_200)}`;
     const digest = distillEvidence(result, query, Math.max(800, maxChars - 280));
     return {
@@ -113,6 +160,7 @@ export class ToolResultCompactor {
       status: digest.status,
       evidence: digest.text,
       recovery: 'Use a narrower follow-up read/search call if omitted detail becomes decision-relevant.',
+      ...(exactContextPageRef ? { exactContextPageRef } : {}),
     };
   }
 

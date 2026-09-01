@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import { taskStore } from '../../../../lib/agent/task-store';
 import { getPendingProxyTaskCount } from '../../../../lib/agent/autonomy/proxy-control-plane';
+import { formatUnknownError } from '../../../../lib/agent/error-format';
 import {
   attachAgentApiSessionCookie,
   getOrCreateAgentApiSession,
   isSafeChatId,
+  isSafeRunId,
   jsonError,
   parseInteger,
   rejectCrossOrigin,
@@ -38,10 +40,14 @@ export async function GET(req: NextRequest) {
     const searchParams = req.nextUrl.searchParams;
     const chatId = searchParams.get('chatId');
     const afterStr = searchParams.get('after');
-    const waitMs = Math.min(1500, Math.max(0, parseInteger(searchParams.get('wait'), 0)));
+    const requestedRunId = searchParams.get('runId');
+    const waitMs = Math.min(7000, Math.max(0, parseInteger(searchParams.get('wait'), 0)));
 
     if (!isSafeChatId(chatId)) {
       return attachAgentApiSessionCookie(jsonError('chatId is required', 400), session);
+    }
+    if (requestedRunId && !isSafeRunId(requestedRunId)) {
+      return attachAgentApiSessionCookie(jsonError('runId is invalid', 400), session);
     }
 
     const ownerError = requireChatOwner(chatId, session.sessionId);
@@ -50,11 +56,17 @@ export async function GET(req: NextRequest) {
     }
 
     const afterIndex = Math.max(-1, parseInteger(afterStr, -1));
-    let result: any = agentRegistry.getTraces(chatId, afterIndex);
+    let result: any = agentRegistry.getTraces(chatId, afterIndex, requestedRunId || undefined);
 
     if (result.status === 'idle') {
       const persisted = await taskStore.getPollState(chatId, afterIndex);
-      if (persisted.status !== 'idle') {
+      // A run-scoped poll must never be hydrated with another run's saved
+      // snapshot. Doing so makes the first actions from a successor appear
+      // beneath its predecessor (or vice versa) after a reconnect.
+      if (
+        persisted.status !== 'idle'
+        && (!requestedRunId || persisted.runId === requestedRunId)
+      ) {
         result = persisted;
       }
     }
@@ -65,13 +77,22 @@ export async function GET(req: NextRequest) {
     // second. Agent execution remains fully independent and every chat keeps
     // its own live connection.
     if (waitMs > 0 && result.status === 'running' && (!Array.isArray(result.traces) || result.traces.length === 0)) {
-      await agentRegistry.waitForTraceChange(chatId, afterIndex, waitMs, req.signal);
-      let next: any = agentRegistry.getTraces(chatId, afterIndex);
+      await agentRegistry.waitForTraceChange(
+        chatId,
+        afterIndex,
+        waitMs,
+        req.signal,
+        requestedRunId || undefined,
+      );
+      let next: any = agentRegistry.getTraces(chatId, afterIndex, requestedRunId || undefined);
       // A restored run can be task-store backed until its live registry is
       // reattached. Preserve long-poll semantics for that path as well.
       if (next.status === 'idle') {
         const persisted = await taskStore.getPollState(chatId, afterIndex);
-        if (persisted.status !== 'idle') next = persisted;
+        if (
+          persisted.status !== 'idle'
+          && (!requestedRunId || persisted.runId === requestedRunId)
+        ) next = persisted;
       }
       result = next;
     }
@@ -91,9 +112,10 @@ export async function GET(req: NextRequest) {
       },
     }), session);
   } catch (error: any) {
-    console.error('[API: agent/poll] Error:', error);
+    const message = formatUnknownError(error, 'Agent polling failed');
+    console.error('[API: agent/poll] Error:', message);
     const response = NextResponse.json(
-      { status: 'idle', traces: [], totalTraces: 0, maxIndex: -1, finalAnswer: '', error: error.message },
+      { status: 'idle', traces: [], totalTraces: 0, maxIndex: -1, finalAnswer: '', error: message },
       { status: 500 }
     );
     return session ? attachAgentApiSessionCookie(response, session) : response;

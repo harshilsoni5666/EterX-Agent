@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
+import { formatUnknownError } from '../../../../lib/agent/error-format';
 import { normalizeMainAgentMode, normalizeModelThinkingCapabilities, normalizeThinkingLevelForModel } from '../../../../lib/agent/model-routing';
 import {
   buildAgentBuilderPinnedContext,
@@ -13,12 +14,12 @@ import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { readProxyControl, updateProxyControl } from '../../../../lib/agent/autonomy/proxy-control-plane';
 import {
   attachAgentApiSessionCookie,
+  cleanContextText,
   cleanString,
   getOrCreateAgentApiSession,
   isSafeChatId,
   isSafeRunId,
   jsonError,
-  MAX_PROMPT_CHARS,
   normalizeHistory,
   normalizeMediaAttachments,
   readJsonObject,
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
       userName = 'Developer',
       runId,
     } = await readJsonObject(req);
-    const prompt = cleanString(rawPrompt, MAX_PROMPT_CHARS);
+    const prompt = cleanContextText(rawPrompt).trim();
     const safeMediaAttachments = normalizeMediaAttachments(mediaAttachments);
 
     if (!isSafeChatId(chatId) || (!prompt && safeMediaAttachments.length === 0)) {
@@ -119,9 +120,13 @@ export async function POST(req: NextRequest) {
     );
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
-    if (safePinnedContext?.agentRuntime === 'autonomy_v1' || safePinnedContext?.autonomy?.enabled === true) {
+    const hasExplicitAutonomySelection = typeof safePinnedContext?.autonomy?.enabled === 'boolean';
+    const hasAutonomyContext = safePinnedContext?.agentRuntime === 'autonomy_v1' || hasExplicitAutonomySelection;
+    if (hasAutonomyContext) {
       updateProxyControl(chatId, {
-        enabled: safePinnedContext?.autonomy?.enabled !== false,
+        // Preserve the user's explicit off state. Autonomy must never be
+        // inferred merely because a stale control record exists for the chat.
+        enabled: safePinnedContext?.autonomy?.enabled === true,
         intervention: safePinnedContext?.autonomy?.intervention,
         modelSelection: safePinnedContext?.autonomy?.proxyModelSelection,
       });
@@ -129,7 +134,7 @@ export async function POST(req: NextRequest) {
     const proxyControl = readProxyControl(chatId);
     const effectivePinnedContext = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
-      ...((safePinnedContext?.agentRuntime === 'autonomy_v1' || safePinnedContext?.autonomy?.enabled === true) ? {
+      ...(hasAutonomyContext ? {
         autonomy: {
           ...(safePinnedContext.autonomy || {}),
           enabled: proxyControl.enabled,
@@ -186,7 +191,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('[API: agent/start] Error:', error);
     const response = NextResponse.json(
-      { error: 'Failed to start agent', details: error.message },
+      { error: 'Failed to start agent', details: formatUnknownError(error, 'Failed to start agent') },
       { status: 500 }
     );
     return session ? attachAgentApiSessionCookie(response, session) : response;

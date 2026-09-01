@@ -86,18 +86,18 @@ function countStringChars(value: unknown, seen = new WeakSet<object>()): number 
   if (typeof value === 'string') return value.length;
   if (!value || typeof value !== 'object' || seen.has(value as object)) return 0;
   seen.add(value as object);
-  if (Array.isArray(value)) return value.reduce((sum, item) => sum + countStringChars(item, seen), 0);
+  if (Array.isArray(value)) return value.reduce<number>((sum, item) => sum + countStringChars(item, seen), 0);
   return Object.values(value as Record<string, unknown>)
-    .reduce((sum, item) => sum + countStringChars(item, seen), 0);
+    .reduce<number>((sum, item) => sum + countStringChars(item, seen), 0);
 }
 
 function countAttachmentParts(value: unknown, seen = new WeakSet<object>()): number {
   if (!value || typeof value !== 'object' || seen.has(value as object)) return 0;
   seen.add(value as object);
-  if (Array.isArray(value)) return value.reduce((sum, item) => sum + countAttachmentParts(item, seen), 0);
+  if (Array.isArray(value)) return value.reduce<number>((sum, item) => sum + countAttachmentParts(item, seen), 0);
   const record = value as Record<string, unknown>;
   const current = record.inlineData || record.fileData || record.image_url || record.input_audio ? 1 : 0;
-  return current + Object.values(record).reduce((sum, item) => sum + countAttachmentParts(item, seen), 0);
+  return current + Object.values(record).reduce<number>((sum, item) => sum + countAttachmentParts(item, seen), 0);
 }
 
 function estimateJsonChars(value: unknown): number {

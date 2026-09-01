@@ -47,7 +47,9 @@ export function readProxyControl(chatId: string): ProxyControlState {
         return {
         version: 1,
         chatId,
-        enabled: saved.enabled !== false,
+        // Autonomy is strictly opt-in. Older or partially-written control
+        // records without an explicit boolean must never reactivate Proxy.
+        enabled: saved.enabled === true,
         intervention: ['minimal', 'normal', 'high'].includes(saved.intervention) ? saved.intervention : 'normal',
         modelSelection: compact(saved.modelSelection, 320) || 'auto',
         dormantDirectives: Array.isArray(saved.dormantDirectives) ? saved.dormantDirectives.slice(-MAX_DIRECTIVES) : [],
@@ -63,7 +65,7 @@ export function readProxyControl(chatId: string): ProxyControlState {
   return {
     version: 1,
     chatId,
-    enabled: true,
+    enabled: false,
     intervention: 'normal',
     modelSelection: 'auto',
     dormantDirectives: [],
@@ -197,11 +199,16 @@ export function getPendingProxyTaskCount(chatId: string): number {
   return readProxyControl(chatId).taskQueue.filter(item => item.status === 'pending' || item.status === 'starting').length;
 }
 
-export function cancelPendingProxyTasks(chatId: string, reason = 'Cancelled after Main was stopped by the user.'): number {
+export function cancelPendingProxyTasks(
+  chatId: string,
+  reason = 'Cancelled after Main was stopped by the user.',
+  admittedAtOrBefore = Number.POSITIVE_INFINITY,
+): number {
   const state = readProxyControl(chatId);
   let cancelled = 0;
   for (const task of state.taskQueue) {
     if (task.status !== 'pending' && task.status !== 'starting') continue;
+    if (Number(task.createdAt || 0) > admittedAtOrBefore) continue;
     task.status = 'cancelled';
     task.error = compact(reason, 1200);
     cancelled += 1;

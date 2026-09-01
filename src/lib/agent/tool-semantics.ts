@@ -43,6 +43,7 @@ const VERIFICATION_TOOLS = new Set([
 ]);
 
 const OBSERVATION_TOOLS = new Set([
+  'context_memory',
   'web_search',
   'image_asset_search',
   'agent_builder_get_profile',

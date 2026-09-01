@@ -4,6 +4,7 @@ import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-ke
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import {
   attachAgentApiSessionCookie,
+  cleanContextText,
   cleanString,
   getOrCreateAgentApiSession,
   isSafeChatId,
@@ -13,10 +14,10 @@ import {
   readJsonObject,
   rejectCrossOrigin,
   requireChatOwner,
-  MAX_PROMPT_CHARS,
 } from '../../agent/_shared';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
+import { formatUnknownError } from '../../../../lib/agent/error-format';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -26,8 +27,9 @@ export const maxDuration = 300;
  * POST /api/chat/direct
  *
  * Isolated conversational path for the Chat selector. It deliberately does
- * not touch AgentRegistry or Agent.ts: no agent profile, tools, orchestration,
- * memory injection, or EterX system prompt is added here.
+ * not touch AgentRegistry or Agent.ts: no agent profile, agent tools,
+ * orchestration, or EterX agent prompt is added here. It still uses the same
+ * durable per-chat continuity and compaction transaction as Agent mode.
  */
 export async function POST(req: NextRequest) {
   hydrateServerRuntimeSettings();
@@ -48,9 +50,10 @@ export async function POST(req: NextRequest) {
       modelThinkingCapability = null,
       modelWireCapabilities = [],
       selectedModel = null,
+      contextCompaction = null,
       runId = '',
     } = await readJsonObject(req);
-    const prompt = cleanString(rawPrompt, MAX_PROMPT_CHARS);
+    const prompt = cleanContextText(rawPrompt).trim();
     const chatId = String(projectId || '');
     const safeMediaAttachments = normalizeMediaAttachments(mediaAttachments);
 
@@ -104,6 +107,7 @@ export async function POST(req: NextRequest) {
         };
 
         void streamDirectChat({
+          chatId,
           prompt,
           history: normalizeHistory(history),
           mediaAttachments: chatMediaAttachments,
@@ -114,6 +118,7 @@ export async function POST(req: NextRequest) {
             ? modelWireCapabilities.map(value => String(value || '').trim()).filter(Boolean).slice(0, 100)
             : [],
           selectedModel,
+          contextCompaction,
           runId: normalizedRunId,
           runtimeSettings: buildScopedRuntimeSettings(),
         }, trace => send({ type: 'trace', data: trace }), streamAbortController.signal)
@@ -143,7 +148,7 @@ export async function POST(req: NextRequest) {
                   },
                 });
               }
-              send({ type: 'error', error: String(error?.message || error || 'Direct chat failed.') });
+              send({ type: 'error', error: formatUnknownError(error, 'Direct chat failed.') });
             }
             close();
           })
@@ -168,7 +173,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error('[DirectChat] API error:', error);
     const response = NextResponse.json(
-      { success: false, error: String(error?.message || error || 'Direct chat failed.') },
+      { success: false, error: formatUnknownError(error, 'Direct chat failed.') },
       { status: 500 },
     );
     return session ? attachAgentApiSessionCookie(response, session) : response;
