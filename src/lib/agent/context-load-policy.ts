@@ -17,7 +17,7 @@ export type ContextLoadPolicy = {
  * every request. Legacy injectors remain available for compatibility when a
  * caller explicitly opts out or ETERX_MODERN_CONTEXT_ONLY=0 is configured.
  */
-export function useModernContextStack(context?: unknown): boolean {
+export function isModernContextStackEnabled(context?: unknown): boolean {
   if ((context as any)?.modernContextOnly === false) return false;
   return process.env.ETERX_MODERN_CONTEXT_ONLY !== '0';
 }

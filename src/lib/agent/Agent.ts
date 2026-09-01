@@ -60,7 +60,7 @@ import {
 } from './model-routing';
 import { getSynapseGraphForChat } from './memory/synapse-graph';
 import { federateDynamicContextParts } from './memory/context-federation';
-import { getContextLoadPolicy, useModernContextStack } from './context-load-policy';
+import { getContextLoadPolicy, isModernContextStackEnabled } from './context-load-policy';
 import { sanitizeGeminiHistory } from './context-hot-path';
 import { isParallelSafeToolCall as isProviderParallelSafeToolCall } from './parallel-tool-calls';
 import {
@@ -1891,7 +1891,7 @@ ${ message.text }
     const sharedCacheDisabled = !!(context as any).disableSharedCache;
     const longTermMemoryDisabled = !!(context as any).disableLongTermMemory;
     const sessionPersistenceDisabled = !!(context as any).disableSessionPersistence;
-    const modernContextStack = useModernContextStack(context);
+    const modernContextStack = isModernContextStackEnabled(context);
     const conversationScopeId = this.getConversationScope(context);
     const persistenceProjectId = (context as any).memoryScopeId
       ? conversationScopeId
@@ -2246,7 +2246,7 @@ ${ message.text }
   }
 
   private getSynapseReasoningPulse(context: ProjectContext, query: string): string {
-    if (useModernContextStack(context) || (context as any).disableLongTermMemory || (context as any).synapseGraphEnabled !== true) return '';
+    if (isModernContextStackEnabled(context) || (context as any).disableLongTermMemory || (context as any).synapseGraphEnabled !== true) return '';
     try {
       const conversationScopeId = this.getConversationScope(context);
       return getSynapseGraphForChat(conversationScopeId).refreshReasoningContext(query).renderedContext;
@@ -4955,7 +4955,7 @@ ${ message.text }
         formatUnknownError(error, 'Unknown prior error', 400)
       ),
     };
-    const errorContext = !useModernContextStack(context) && context.errorHistory && context.errorHistory.length > 0
+    const errorContext = !isModernContextStackEnabled(context) && context.errorHistory && context.errorHistory.length > 0
       ? `\nRecent Errors (avoid repeating):\n${ context.errorHistory.map(e => `⚠️ ${ e }`).join('\n') }`
       : '';
 
@@ -6111,7 +6111,7 @@ Files: ${ (context.uploadedFiles || []).join(', ') || 'None' }${ directMainAgent
       /\b(more|keep|next|add more|improve|enhance|fix it|better|update it|same|that|it)\b/i.test(normalizedVisibleMessage);
     const wantsSessionContext = explicitContinuity || referentialFollowUp;
     const contextLoadPolicy = getContextLoadPolicy(userVisibleMessage, wantsSessionContext);
-    const modernContextStack = useModernContextStack(context);
+    const modernContextStack = isModernContextStackEnabled(context);
     writeRuntimeTrace('context_load_policy', {
       provider: 'gemini',
       mode: contextLoadPolicy.mode,
