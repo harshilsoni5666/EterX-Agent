@@ -139,7 +139,11 @@ jobs:
         run: |
           unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
           export CSC_IDENTITY_AUTO_DISCOVERY=false
-          npx electron-builder --mac --x64 --arm64 --publish never
+          # Hosted macOS runners can intermittently fail electron-builder's
+          # APFS DMG resize step with `hdiutil ... Device not configured (6)`.
+          # The public updater consumes ZIP artifacts, so build only the stable
+          # ZIP target here and avoid the fragile DMG image path entirely.
+          npx electron-builder --mac zip --x64 --arm64 --publish never
 
       - name: Package Linux
         if: matrix.target == 'linux'
