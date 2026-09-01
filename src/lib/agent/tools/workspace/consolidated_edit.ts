@@ -216,19 +216,9 @@ async function applyExistingFileEdits(
     }
 
     if (edit.search === undefined) {
-      // A selector-free one-edit payload is the provider-neutral whole-file
-      // form (`content`, `newContent`, or `replace`). This is unambiguous only
-      // when it is the sole edit; accepting it prevents a model that chose the
-      // create-style shape for an existing path from failing and retrying with
-      // a fabricated line range.
-      if (target.edits.length === 1) {
-        const replacementText = edit.replace.replace(/\r?\n/g, lineEnding);
-        deletions += changedLineCount(content);
-        additions += changedLineCount(replacementText);
-        content = replacementText;
-        lines = content.split(/\r?\n/);
-        continue;
-      }
+      // Existing files must always use an explicit selector. A selector-free
+      // replace is reserved for creating a missing file, preventing an
+      // accidental whole-file overwrite when a provider omits edit context.
       throw new Error('Edit chunk must have either a "search" string or "startLine" and "endLine" numbers.');
     }
     content = lines.join(lineEnding);
@@ -320,7 +310,7 @@ async function rollbackTargets(committed: PreparedTarget[]): Promise<string[]> {
  */
 export const workspaceEditFileTool: ToolDefinition = {
   name: 'workspace_edit_file',
-  description: 'Create, edit, replace, or delete files. Single: filename plus edits/delete. Multiple: files=[{filename, edits/delete}]. One selector-free replace edit is the complete file content for create or whole-file replacement; targeted edits use exact search or startLine/endLine.',
+  description: 'Create, edit, replace, or delete files. Single: filename plus edits/delete. Multiple: files=[{filename, edits/delete}]. A missing file uses one selector-free replace edit as its complete content; existing files use exact search or startLine/endLine selectors.',
   category: 'workspace',
   inputSchema: z.object({
     filename: z.string().optional().describe('Single-file mode: absolute path or path relative to the active workspace.'),
