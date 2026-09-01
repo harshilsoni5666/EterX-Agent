@@ -172,8 +172,8 @@ const compacted = { type: 'context_compaction', phase: 'compacted', compactionId
 const failedCompaction = { type: 'context_compaction', phase: 'failed', compactionId: 'ctx-b' };
 assert.equal(
   shouldRenderContextCompactionEvent(compacting, 0, [compacting], true),
-  true,
-  'the active compaction start should be visible',
+  false,
+  'the active compaction start stays in the context meter, not the transcript',
 );
 assert.equal(
   shouldRenderContextCompactionEvent(compacting, 0, [compacting, action], true),
@@ -197,8 +197,8 @@ assert.equal(
 );
 assert.equal(
   shouldRenderContextCompactionEvent(failedCompaction, 0, [failedCompaction], false),
-  true,
-  'a failed compaction remains as the single settled lifecycle row',
+  false,
+  'a failed compaction stays in the context meter, not the transcript',
 );
 
 {
