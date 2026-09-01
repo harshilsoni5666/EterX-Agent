@@ -1947,6 +1947,27 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     if (matches.length === 0) return -1;
     if (matches.length === 1) return matches[0].boundaryIndex;
 
+    // Explicit turn IDs are normally unique, but long-lived Proxy transports
+    // can reuse one ID for several user requests. In that case the append-only
+    // trace position is the only stable ownership signal for a late event.
+    // Resolve it before transport order: a delayed event is often delivered
+    // after the newer boundary, so choosing the last source row would move it
+    // into the wrong query.
+    const logIndex = timelineTraceIndex(log);
+    if (logIndex !== null) {
+      let indexedSelection: TimelineEntry | null = null;
+      let selectedIndex = -Infinity;
+      for (const boundary of matches) {
+        const boundaryTraceIndex = timelineTraceIndex(boundary.log);
+        if (boundaryTraceIndex === null || boundaryTraceIndex > logIndex) continue;
+        if (boundaryTraceIndex >= selectedIndex) {
+          indexedSelection = boundary;
+          selectedIndex = boundaryTraceIndex;
+        }
+      }
+      if (indexedSelection) return indexedSelection.boundaryIndex;
+    }
+
     // A long-lived Proxy run can host several user queries and can refresh an
     // old event's timestamp on every poll. Prefer the event's append-only
     // transport neighborhood. Use time only when it conclusively proves that
@@ -1975,21 +1996,6 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
         }
       }
       if (timedSelection) return timedSelection.boundaryIndex;
-    }
-
-    const logIndex = timelineTraceIndex(log);
-    if (logIndex !== null) {
-      let indexedSelection: TimelineEntry | null = null;
-      let selectedIndex = -Infinity;
-      for (const boundary of matches) {
-        const boundaryTraceIndex = timelineTraceIndex(boundary.log);
-        if (boundaryTraceIndex === null || boundaryTraceIndex > logIndex) continue;
-        if (boundaryTraceIndex >= selectedIndex) {
-          indexedSelection = boundary;
-          selectedIndex = boundaryTraceIndex;
-        }
-      }
-      if (indexedSelection) return indexedSelection.boundaryIndex;
     }
 
     // Legacy/helper events can lack both a timestamp and trace index. Their

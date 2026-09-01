@@ -904,15 +904,19 @@ export class AgentOrchestrator {
             const started = builderToolStarts.get(toolCallId);
             const toolArgs = compactBuilderTraceArgs(toolName, event.toolArgs || started?.toolArgs);
             const toolResult = compactBuilderTraceResult(event.toolResult);
+            // AgentRunnerEvent intentionally keeps toolResult provider-neutral
+            // (it may be a string, object, or structured payload). Narrow it at
+            // this boundary before inspecting optional diagnostic fields.
+            const rawToolResult: any = event.toolResult;
             const reportsFailure = Boolean(
-              event.toolResult?.error ||
-              event.toolResult?.success === false ||
-              event.toolResult?.passed === false ||
-              Number(event.toolResult?.exitCode) > 0
+              rawToolResult?.error ||
+              rawToolResult?.success === false ||
+              rawToolResult?.passed === false ||
+              Number(rawToolResult?.exitCode) > 0
             );
             const resultError = reportsFailure
               ? formatUnknownError(
-                event.toolResult?.error ?? event.toolResult?.message,
+                rawToolResult?.error ?? rawToolResult?.message,
                 `${ getToolDisplayLabel(toolName) } failed`,
               )
               : '';

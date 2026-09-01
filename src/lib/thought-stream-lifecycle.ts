@@ -129,13 +129,12 @@ export const isThoughtStreamOpen = (trace: any): boolean => {
  */
 export const shouldRenderThoughtStream = (trace: any): boolean => {
   if (!trace || trace.type !== 'thought_stream') return false;
-  // Native provider reasoning owns this explicit uiOnly Thought channel. It is
-  // safe to render here while open because answer text uses a different event
-  // type/identity and can never borrow this row. Empty lifecycle shells remain
-  // hidden until the first real reasoning chunk arrives.
-  if (trace.uiOnly !== true) return false;
   const text = String(trace.text || '').replace(/<\/?(?:thought|work_note)>/gi, '').trim();
-  return Boolean(text);
+  // Keep an explicitly open UI shell visible while a direct turn is live so
+  // the feed can show the provider's active thought lifecycle. Once closed,
+  // an empty shell is noise; real thought text remains visible regardless of
+  // whether the provider marked it as UI-only.
+  return Boolean(text) || (trace.uiOnly === true && isThoughtStreamOpen(trace));
 };
 
 const getThoughtStreamChatIds = (trace: any): string[] => Array.from(new Set(
@@ -285,7 +284,11 @@ const findMergeableThoughtIndex = (logs: any[], incoming: any): number => {
     // has already committed the final snapshot. Treat it as an update to the
     // existing stream instead of opening a second thought row. A closed row
     // with a newer phase anchor still remains a genuinely new stream.
-    return candidateIsOpen || repeatedFinalForSameId || lateReplayOfClosedStream || Boolean(incomingThoughtId)
+    // A closed stream with a reused provider ID is a new thought when the
+    // incoming snapshot is newer. Only an explicit final payload or an older
+    // replay may reconcile with that closed row; blindly matching every
+    // thought ID would reopen the pre-tool stream after a real boundary.
+    return candidateIsOpen || repeatedFinalForSameId || lateReplayOfClosedStream
       ? index
       : -1;
   }
