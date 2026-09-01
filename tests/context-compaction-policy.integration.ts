@@ -76,8 +76,8 @@ const standard64k = deriveContextCompactionPolicy({
   usage: usage(64_000, 8_000, 4_000, 30_000),
   averageGrowthTokens: 500,
 });
-assert.equal(standard64k.softTokens, 32_000, '64k normal chats should compact at the halfway boundary');
-assert.equal(standard64k.hardTokens, 46_080, '64k hard recovery should preserve room for another provider cycle');
+assert.equal(standard64k.softTokens, 59_520, '64k normal chats should use the upper selected-window boundary');
+assert.equal(standard64k.hardTokens, 61_440, '64k hard recovery should remain below the provider limit');
 assert.ok(standard64k.softTokens < standard64k.hardTokens, 'soft boundary must precede hard boundary');
 
 const fixedHeavy = deriveContextCompactionPolicy({
@@ -85,14 +85,14 @@ const fixedHeavy = deriveContextCompactionPolicy({
   averageGrowthTokens: 400,
 });
 assert.equal(fixedHeavy.profile, 'fixed_heavy');
-assert.equal(fixedHeavy.softRatio, 0.50, 'fixed-heavy contexts must not silently move beyond the halfway boundary');
+assert.equal(fixedHeavy.softRatio, 0.94, 'fixed-heavy contexts should wait longer when little history is reducible');
 
 const historyHeavy = deriveContextCompactionPolicy({
   usage: usage(258_000, 15_000, 8_000, 178_000),
   averageGrowthTokens: 1_000,
 });
-assert.equal(historyHeavy.profile, 'standard');
-assert.equal(historyHeavy.softRatio, 0.50, 'large histories should not silently move beyond the halfway boundary');
+assert.equal(historyHeavy.profile, 'history_heavy');
+assert.equal(historyHeavy.softRatio, 0.91, 'history-heavy contexts should retain more of their selected window');
 
 const fastGrowth = deriveContextCompactionPolicy({
   usage: usage(258_000, 20_000, 8_000, 170_000),
@@ -111,7 +111,7 @@ const weakReduction = deriveContextCompactionPolicy({
   previousReductionRatio: 0.05,
 });
 assert.equal(weakReduction.profile, 'weak_reduction');
-assert.equal(weakReduction.softRatio, 0.50, 'weak prior reductions keep hysteresis in next-attempt state, not the base boundary');
+assert.equal(weakReduction.softRatio, 0.94, 'weak prior reductions receive bounded hysteresis before another attempt');
 
 for (const contextWindow of [64_000, 128_000, 258_000, 512_000, 1_000_000]) {
   const policy = deriveContextCompactionPolicy({
