@@ -1,6 +1,8 @@
 'use client';
+import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
+import { requestJson } from '../../lib/request-json';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MAIN_AGENT_MODEL_OPTIONS, getModelThinkingOptions, normalizeModelThinkingCapabilities, type MainAgentMode, type MainAgentProvider, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
 import {
@@ -36,6 +38,12 @@ import {
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
 import { appStorage, appStorageReady, registerDurableFlush, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
+import { resolveModelContextWindow } from '../../lib/agent/model-context-window';
+import { readContextUsageMeter } from '../../lib/context-usage-meter';
+import {
+  CONTEXT_BUDGET_REVISIONS_KEY, CONTEXT_WINDOW_SIZE_OPTIONS, contextWindowLimitNote, formatExactContextTokens,
+  normalizeContextWindow, resolveContextWindowBudget, resolveSavedContextBudget,
+} from '../../lib/context-window-policy';
 import {
   LIVE_PROVIDER_OPTIONS,
   getLiveModelOptions,
@@ -445,15 +453,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   liveConvoSystemInstruction: '',
 };
 
-const CONTEXT_WINDOW_SIZE_OPTIONS = [
-  { value: '64000', label: '64k · Compact', description: 'Lowest cost and fastest turnover' },
-  { value: '128000', label: '128k · Standard', description: 'Balanced for ordinary work' },
-  { value: '258000', label: '258k · Deep', description: 'Bound context cost for long agent work' },
-  { value: '512000', label: '512k · Broad', description: 'Retain substantially more history' },
-  { value: '1000000', label: '1M · Extended', description: 'For models with very large windows' },
-  { value: 'model_max', label: 'Model maximum · Default', description: 'Use the full supported model window' },
-];
-
 const API_RETRY_OPTIONS = [
   { value: '0', label: 'None', description: 'Send each provider request once.' },
   { value: '1', label: '1 retry', description: 'Retry one time after a failed request.' },
@@ -486,22 +485,8 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
     : DEFAULT_SETTINGS.maxRetries;
   next.selfImprovementEnabled = stored.selfImprovementEnabled !== false;
   next.showTokenCount = stored.showTokenCount !== false;
-  // Older builds persisted 258k as part of their untouched default. Treat
-  // that legacy value as untouched unless a selection was explicitly marked;
-  // any non-default legacy value was necessarily selected by the user.
-  const legacyContextSelection = String(stored.contextWindowSizeSelection || '').trim();
-  const validContextSelections = new Set(CONTEXT_WINDOW_SIZE_OPTIONS.map(option => option.value));
-  const validLegacyContextSelection = validContextSelections.has(legacyContextSelection)
-    ? legacyContextSelection
-    : '';
-  const inferredContextSelectionTouched = stored.contextWindowSizeSelectionTouched === true
-    || Boolean(validLegacyContextSelection && validLegacyContextSelection !== '258000');
-  // A touched marker without a valid selection is corrupt/incomplete state,
-  // not an instruction to leave the control and request budget undefined.
-  next.contextWindowSizeSelectionTouched = inferredContextSelectionTouched && Boolean(validLegacyContextSelection);
-  next.contextWindowSizeSelection = next.contextWindowSizeSelectionTouched
-    ? validLegacyContextSelection
-    : DEFAULT_SETTINGS.contextWindowSizeSelection;
+  next.contextWindowSizeSelection = resolveSavedContextBudget(stored);
+  next.contextWindowSizeSelectionTouched = next.contextWindowSizeSelection !== 'model_max';
   return next;
 };
 
@@ -651,6 +636,15 @@ const splitApiKeyPool = (value: string | undefined) =>
 
 const serializeApiKeyPool = (keys: string[]) =>
   keys.map(key => key.trim()).filter(Boolean).join('\n');
+
+const markContextBudgetEdit = (chatId?: string) => {
+  let revisions: any = {};
+  try { revisions = JSON.parse(appStorage.getItem(CONTEXT_BUDGET_REVISIONS_KEY) || '{}'); } catch { }
+  const now = Math.max(Date.now(), Number(revisions.global || 0) + 1, Number(revisions.chats?.[chatId || ''] || 0) + 1);
+  appStorage.setItem(CONTEXT_BUDGET_REVISIONS_KEY, JSON.stringify(chatId
+    ? { ...revisions, chats: { ...revisions.chats, [chatId]: now } }
+    : { ...revisions, global: now }));
+};
 
 const composeRuntimeApiKeys = (
   apiKeys: Record<string, string>,
@@ -830,222 +824,12 @@ const PROVIDER_ICON_MASK_SIZE: Record<string, string> = {
   llamacpp: '92% auto',
 };
 
-const OFFICIAL_PROVIDER_GUIDE: Record<string, {
-  source: string;
-  keySource: string;
-  endpoint: string;
-  docsUrl: string;
-  families: Array<{ name: string; id?: string; note: string }>;
-}> = {
-  gemini: {
-    source: 'Google AI Studio / Gemini API',
-    keySource: 'Google AI Studio API key',
-    endpoint: 'GET /v1beta/models',
-    docsUrl: 'ai.google.dev/docs',
-    families: [
-      { name: 'Gemini 2.0 Flash', id: 'gemini-2.0-flash', note: 'Fast multimodal model with next-gen speed & native tool use' },
-      { name: 'Gemini 2.0 Flash Thinking', id: 'gemini-2.0-flash-thinking-exp-01-21', note: 'Experimental thinking model with explicit reasoning traces' },
-      { name: 'Gemini 2.0 Flash Lite Preview', id: 'gemini-2.0-flash-lite-preview-02-05', note: 'Ultra-fast low-cost 2.0 series model' },
-      { name: 'Gemini 2.0 Pro Experimental', id: 'gemini-2.0-pro-exp-02-05', note: 'Frontier reasoning and coding model' },
-      { name: 'Gemini 1.5 Pro', id: 'gemini-1.5-pro', note: 'High context window (2M tokens) complex reasoning model' },
-      { name: 'Gemini 1.5 Flash', id: 'gemini-1.5-flash', note: 'Production fast multimodal model' },
-      { name: 'Gemini 1.5 Flash 8B', id: 'gemini-1.5-flash-8b', note: 'Lightweight high-speed model' },
-    ],
-  },
-  openai: {
-    source: 'OpenAI Platform',
-    keySource: 'OpenAI Project API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'platform.openai.com/docs/models',
-    families: [
-      { name: 'GPT-4o', id: 'gpt-4o', note: 'Flagship high-intelligence multimodal model' },
-      { name: 'GPT-4o Mini', id: 'gpt-4o-mini', note: 'Fast, affordable model for focused agent tasks' },
-      { name: 'OpenAI o1', id: 'o1', note: 'Full reasoning model for complex STEM and coding problems' },
-      { name: 'OpenAI o1-mini', id: 'o1-mini', note: 'Fast reasoning model optimized for code and math' },
-      { name: 'OpenAI o3-mini', id: 'o3-mini', note: 'High-speed 3-series reasoning model with adjustable effort' },
-      { name: 'GPT-4 Turbo', id: 'gpt-4-turbo', note: 'High-capability vision and function-calling model' },
-    ],
-  },
-  anthropic: {
-    source: 'Anthropic Console / Claude API',
-    keySource: 'Anthropic API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'docs.anthropic.com',
-    families: [
-      { name: 'Claude 3.5 Sonnet', id: 'claude-3-5-sonnet-20241022', note: 'Frontier model for coding, complex analysis, and agent work' },
-      { name: 'Claude 3.5 Haiku', id: 'claude-3-5-haiku-20241022', note: 'Ultra-fast, high-intelligence lightweight model' },
-      { name: 'Claude 3 Opus', id: 'claude-3-opus-20240229', note: 'Deep analysis and long-form reasoning flagship' },
-    ],
-  },
-  grok: {
-    source: 'xAI Console',
-    keySource: 'xAI API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'docs.x.ai',
-    families: [
-      { name: 'Grok 2 Latest', id: 'grok-2-latest', note: 'Frontier reasoning and general knowledge model' },
-      { name: 'Grok 2 Vision Latest', id: 'grok-2-vision-latest', note: 'Multimodal vision and document understanding' },
-      { name: 'Grok Beta', id: 'grok-beta', note: 'Fast instruct model endpoint' },
-    ],
-  },
-  deepseek: {
-    source: 'DeepSeek Platform',
-    keySource: 'DeepSeek API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'platform.deepseek.com/docs',
-    families: [
-      { name: 'DeepSeek-V3', id: 'deepseek-chat', note: 'Frontier 671B parameter mixture-of-experts model' },
-      { name: 'DeepSeek-R1', id: 'deepseek-reasoner', note: 'Open-weights reasoning model with explicit chain-of-thought' },
-    ],
-  },
-  mistral: {
-    source: 'Mistral AI Platform',
-    keySource: 'Mistral API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'docs.mistral.ai',
-    families: [
-      { name: 'Mistral Large Latest', id: 'mistral-large-latest', note: 'Flagship reasoning and multi-language model' },
-      { name: 'Codestral Latest', id: 'codestral-latest', note: 'Specialized 80+ programming language coding model' },
-      { name: 'Pixtral Large Latest', id: 'pixtral-large-latest', note: '123B multimodal vision model' },
-      { name: 'Mistral Small Latest', id: 'mistral-small-latest', note: 'Efficient low-cost general model' },
-      { name: 'Ministral 8B', id: 'ministral-8b-latest', note: 'Ultra-fast edge/device instruction model' },
-    ],
-  },
-  groq: {
-    source: 'GroqCloud',
-    keySource: 'Groq API Key',
-    endpoint: 'GET /openai/v1/models',
-    docsUrl: 'console.groq.com/docs/models',
-    families: [
-      { name: 'Llama 3.3 70B Versatile', id: 'llama-3.3-70b-versatile', note: '500+ tokens/sec production Llama model' },
-      { name: 'Llama 3.1 8B Instant', id: 'llama-3.1-8b-instant', note: 'Ultra-fast sub-second response model' },
-      { name: 'DeepSeek R1 Distill Llama 70B', id: 'deepseek-r1-distill-llama-70b', note: 'Fast reasoning distilled on LPU hardware' },
-      { name: 'Mixtral 8x7B 32k', id: 'mixtral-8x7b-32768', note: 'High throughput MoE model' },
-    ],
-  },
-  cerebras: {
-    source: 'Cerebras Cloud Platform',
-    keySource: 'Cerebras API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'inference-docs.cerebras.ai',
-    families: [
-      { name: 'Llama 3.3 70B', id: 'llama3.3-70b', note: '2000+ tokens/sec wafer-scale engine inference' },
-      { name: 'Llama 3.1 8B', id: 'llama3.1-8b', note: 'Instant responses for agent sub-tasks' },
-    ],
-  },
-  together: {
-    source: 'Together AI Platform',
-    keySource: 'Together API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'docs.together.ai',
-    families: [
-      { name: 'Llama 3.3 70B Instruct Turbo', id: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', note: 'Fast production open-weights endpoint' },
-      { name: 'DeepSeek R1', id: 'deepseek-ai/DeepSeek-R1', note: 'Full 671B DeepSeek R1 reasoning' },
-      { name: 'DeepSeek V3', id: 'deepseek-ai/DeepSeek-V3', note: 'Full 671B DeepSeek V3 chat' },
-      { name: 'Qwen 2.5 Coder 32B Instruct', id: 'Qwen/Qwen2.5-Coder-32B-Instruct', note: 'High performance open coding model' },
-    ],
-  },
-  fireworks: {
-    source: 'Fireworks AI Console',
-    keySource: 'Fireworks API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'readme.fireworks.ai',
-    families: [
-      { name: 'DeepSeek R1', id: 'accounts/fireworks/models/deepseek-r1', note: 'Fast DeepSeek R1 inference' },
-      { name: 'DeepSeek V3', id: 'accounts/fireworks/models/deepseek-v3', note: 'Fast DeepSeek V3 inference' },
-      { name: 'Llama 3.3 70B Instruct', id: 'accounts/fireworks/models/llama-v3p3-70b-instruct', note: 'Compound AI inference engine' },
-    ],
-  },
-  sambanova: {
-    source: 'SambaNova Cloud',
-    keySource: 'SambaNova API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'community.sambanova.ai',
-    families: [
-      { name: 'DeepSeek R1', id: 'DeepSeek-R1', note: 'Reconfigurable dataflow hardware acceleration' },
-      { name: 'Llama 3.3 70B Instruct', id: 'Meta-Llama-3.3-70B-Instruct', note: 'High speed open weights flagship' },
-    ],
-  },
-  perplexity: {
-    source: 'Perplexity AI API',
-    keySource: 'Perplexity API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'docs.perplexity.ai',
-    families: [
-      { name: 'Sonar Reasoning Pro', id: 'sonar-reasoning-pro', note: 'Search-augmented reasoning model' },
-      { name: 'Sonar Reasoning', id: 'sonar-reasoning', note: 'Search-augmented lightweight reasoning' },
-      { name: 'Sonar Pro', id: 'sonar-pro', note: 'Advanced web grounded search model' },
-      { name: 'Sonar', id: 'sonar', note: 'Lightweight web search model' },
-    ],
-  },
-  cohere: {
-    source: 'Cohere Dashboard',
-    keySource: 'Cohere API Key',
-    endpoint: 'GET /v1/models',
-    docsUrl: 'docs.cohere.com',
-    families: [
-      { name: 'Command R+', id: 'command-r-plus', note: 'Enterprise RAG and complex tool use' },
-      { name: 'Command R', id: 'command-r', note: 'Fast RAG and agent workflow model' },
-    ],
-  },
-  openrouter: {
-    source: 'OpenRouter',
-    keySource: 'OpenRouter API Key',
-    endpoint: 'GET /api/v1/models',
-    docsUrl: 'openrouter.ai/docs',
-    families: [
-      { name: 'DeepSeek R1 (OpenRouter)', id: 'deepseek/deepseek-r1', note: 'DeepSeek R1 via OpenRouter' },
-      { name: 'Claude 3.5 Sonnet (OpenRouter)', id: 'anthropic/claude-3.5-sonnet', note: 'Claude 3.5 Sonnet via OpenRouter' },
-      { name: 'GPT-4o (OpenRouter)', id: 'openai/gpt-4o', note: 'GPT-4o via OpenRouter' },
-      { name: 'Gemini 2.0 Flash (OpenRouter)', id: 'google/gemini-2.0-flash-001', note: 'Gemini 2.0 Flash via OpenRouter' },
-    ],
-  },
-  ollama: {
-    source: 'Ollama Local Instance',
-    keySource: 'Local endpoint (No Key Required)',
-    endpoint: 'GET /v1/models · POST /v1/chat/completions (catalog fallback: /api/tags)',
-    docsUrl: 'docs.ollama.com/api/openai-compatibility',
-    families: [
-      { name: 'DeepSeek R1 70B Local', id: 'deepseek-r1:70b', note: 'Full local 70B quantized reasoning' },
-      { name: 'DeepSeek R1 14B Local', id: 'deepseek-r1:14b', note: 'Balanced local reasoning' },
-      { name: 'DeepSeek R1 8B Local', id: 'deepseek-r1:8b', note: 'Fast local reasoning' },
-      { name: 'Llama 3.3 70B Local', id: 'llama3.3:70b', note: 'Offline full capability Llama' },
-      { name: 'Qwen 2.5 Coder 14B', id: 'qwen2.5-coder:14b', note: 'Local coding specialist' },
-    ],
-  },
-  lmstudio: {
-    source: 'LM Studio Local Server',
-    keySource: 'Local endpoint (API key optional)',
-    endpoint: 'GET /v1/models · POST /v1/chat/completions',
-    docsUrl: 'lmstudio.ai/docs/developer/openai-compat',
-    families: [
-      { name: 'Any loaded LM Studio model', note: 'The live catalog returns the exact model identifier required by the server.' },
-    ],
-  },
-  vllm: {
-    source: 'vLLM OpenAI-Compatible Server',
-    keySource: 'Local endpoint (API key optional; use the server token if configured)',
-    endpoint: 'GET /v1/models · POST /v1/chat/completions',
-    docsUrl: 'docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server.html',
-    families: [
-      { name: 'Any served Hugging Face model', note: 'The live catalog uses the model ID returned by `vllm serve`.' },
-    ],
-  },
-  llamacpp: {
-    source: 'llama.cpp llama-server',
-    keySource: 'Local endpoint (API key optional; use the server token if configured)',
-    endpoint: 'GET /v1/models · POST /v1/chat/completions',
-    docsUrl: 'github.com/ggml-org/llama.cpp/tree/master/tools/server',
-    families: [
-      { name: 'The loaded GGUF model', note: 'llama-server exposes the loaded model and its alias through the OpenAI-compatible catalog.' },
-    ],
-  },
-};
 
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   initialTab?: Tab | LegacyTab;
+  onTabChange?: (tab: Tab) => void;
   standalone?: boolean;
 }
 
@@ -1055,6 +839,9 @@ type ContextChatSummary = {
   updatedAt: number;
   usedTokens: number;
   reportedWindow: number;
+  modelMaximum: number;
+  provider: string;
+  modelId: string;
 };
 
 const formatTokenMetric = (tokens: number) => {
@@ -1348,14 +1135,14 @@ const SettingRow: React.FC<{
   children: React.ReactNode;
   danger?: boolean;
 }> = ({ icon, title, description, children, danger }) => (
-  <div className={`mb-2 flex items-center justify-between rounded-lg border px-5 py-4 group ${ danger ? 'border-red-500/20 bg-red-500/10' : 'border-white/[0.08] bg-[#202020]' }`}>
+  <div data-danger={danger || undefined} className={`eterx-setting-row mb-2 flex items-center justify-between rounded-lg border px-5 py-4 group ${ danger ? 'border-red-500/20 bg-red-500/10' : 'border-white/[0.08] bg-[#202020]' }`}>
     <div className="flex items-start gap-3 flex-1 min-w-0 mr-4">
       <div className={`hidden sm:flex mt-0.5 p-1.5 rounded-md shrink-0 ${ danger ? 'bg-red-500/10 text-red-400' : 'text-[#A8A8A8] group-hover:text-[#F1F1F1]' } transition-colors`}>
         {icon}
       </div>
       <div className="min-w-0">
-        <div className={`text-[13.5px] font-medium ${ danger ? 'text-red-300' : 'text-[#F1F1F1]' }`}>{title}</div>
-        <div className="text-[13px] text-[#A5A5A5] mt-1 leading-relaxed">{description}</div>
+        <div className={`eterx-setting-label text-[13.5px] font-medium ${ danger ? 'text-red-300' : 'text-[#F1F1F1]' }`}>{title}</div>
+        <div className="eterx-setting-description text-[13px] text-[#A5A5A5] mt-1 leading-relaxed">{description}</div>
       </div>
     </div>
     <div className="shrink-0">{children}</div>
@@ -1386,7 +1173,7 @@ const SectionHeader: React.FC<{ title: string; badge?: string; info?: string }> 
 
 // ─── API Key Row ───────────────────────────────────────
 const SettingsStack: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="overflow-visible rounded-xl border border-white/[0.09] bg-[#202020]">
+  <div className="eterx-settings-stack overflow-visible rounded-xl border border-white/[0.09] bg-[#202020]">
     {children}
   </div>
 );
@@ -1398,13 +1185,13 @@ const SettingsStackRow: React.FC<{
   tall?: boolean;
   info?: string;
 }> = ({ title, description, children, tall, info }) => (
-  <div className={`flex ${tall ? 'flex-col items-start gap-3' : 'items-center justify-between gap-6'} border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-4' : 'py-3.5'}`}>
+  <div className={`eterx-settings-stack-row flex ${tall ? 'flex-col items-start gap-3' : 'items-center justify-between gap-6'} border-b border-white/[0.07] px-5 last:border-b-0 ${tall ? 'py-4' : 'py-3.5'}`}>
     <div className={`min-w-0 ${tall ? 'w-full' : 'flex-1'}`}>
-      <div className="flex items-center gap-2 text-[13px] font-medium leading-tight text-[#F1F1F1]">
+      <div className="eterx-setting-label flex items-center gap-2 text-[13px] font-medium leading-tight text-[#F1F1F1]">
         <span>{title}</span>
         {info && <InfoHint text={info} />}
       </div>
-      {description && <div className="mt-1 max-w-full text-[12px] leading-relaxed text-[#A7A7A7]">{description}</div>}
+      {description && <div className="eterx-setting-description mt-1 max-w-full text-[12px] leading-relaxed text-[#A7A7A7]">{description}</div>}
     </div>
     {children && <div className={`flex ${tall ? 'w-full' : 'shrink-0'} items-center justify-end gap-2`}>{children}</div>}
   </div>
@@ -1436,7 +1223,8 @@ const SegmentedControl = <T extends string,>({
         key={option.value}
         type="button"
         onClick={() => onChange(option.value)}
-        className={`rounded-full px-2.5 py-1 text-[12.5px] font-medium transition-colors ${
+        aria-pressed={value === option.value}
+        className={`eterx-settings-segment rounded-full px-2.5 py-1 text-[12.5px] font-medium transition-colors ${
           value === option.value ? 'bg-[#303030] text-[#F2F2F2]' : 'text-[#A7A7A7] hover:bg-white/[0.045] hover:text-[#F2F2F2]'
         }`}
       >
@@ -1567,24 +1355,43 @@ const ApiKeyPoolEditor: React.FC<{
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [testingStatus, setTestingStatus] = useState<Record<number, 'idle' | 'testing' | 'success' | 'failed'>>({});
+  const keyRowsRevision = useRef(0);
+  const acknowledgedKeyPool = useRef(serializeApiKeyPool(splitApiKeyPool(value)));
 
   useEffect(() => {
-    setRows(buildRows(value));
+    const normalizedValue = serializeApiKeyPool(splitApiKeyPool(value));
+    if (normalizedValue !== acknowledgedKeyPool.current) {
+      // A preference reload or another window can replace the keys too.
+      // Results for the previous keys must not label the new pool as tested.
+      keyRowsRevision.current += 1;
+      setTestingStatus({});
+      setVisibleRows({});
+      setCopiedIndex(null);
+    }
+    acknowledgedKeyPool.current = normalizedValue;
+    // Keep the focused draft/explicit empty row when the parent acknowledges
+    // our own edit. Rebuilding on each keystroke shifted and collapsed rows.
+    setRows(previous => serializeApiKeyPool(previous) === serializeApiKeyPool(splitApiKeyPool(value))
+      ? previous : buildRows(value));
   }, [buildRows, provider, value]);
 
   useEffect(() => {
+    keyRowsRevision.current += 1;
     setVisibleRows({});
     setCopiedIndex(null);
     setDraggedIndex(null);
     setTestingStatus({});
-  }, [provider]);
+  }, [provider, testEndpoint, testBaseURL, testProvider]);
 
   const commitRows = useCallback((nextRows: string[]) => {
-    onChange(serializeApiKeyPool(nextRows));
+    const serialized = serializeApiKeyPool(nextRows);
+    acknowledgedKeyPool.current = serialized;
+    onChange(serialized);
   }, [onChange]);
 
   const testKeyConnection = async (index: number, key: string) => {
     if (!key.trim()) return;
+    const revision = keyRowsRevision.current;
     setTestingStatus(prev => ({ ...prev, [index]: 'testing' }));
     try {
       const res = await fetch(testEndpoint || '/api/settings/models', {
@@ -1597,6 +1404,7 @@ const ApiKeyPoolEditor: React.FC<{
         }),
       });
       const data = await res.json();
+      if (revision !== keyRowsRevision.current) return;
       if (res.ok && data?.ok && (testEndpoint
         ? data?.provider === provider || data?.provider === testProvider
         : data?.providers?.[provider]?.connected)) {
@@ -1605,23 +1413,23 @@ const ApiKeyPoolEditor: React.FC<{
         setTestingStatus(prev => ({ ...prev, [index]: 'failed' }));
       }
     } catch {
-      setTestingStatus(prev => ({ ...prev, [index]: 'failed' }));
+      if (revision === keyRowsRevision.current) setTestingStatus(prev => ({ ...prev, [index]: 'failed' }));
     }
   };
 
   const updateRow = (index: number, rawValue: string) => {
-    setTestingStatus(prev => ({ ...prev, [index]: 'idle' }));
+    keyRowsRevision.current += 1;
+    // Every in-flight test belongs to the old row layout. Pasting can insert
+    // several rows, so invalidate all statuses as well as their responses.
+    setTestingStatus({});
+    setCopiedIndex(null);
     const pastedKeys = splitApiKeyPool(rawValue);
-    setRows(prev => {
-      const next = [...prev];
-      if (pastedKeys.length > 1) {
-        next.splice(index, 1, ...pastedKeys.slice(0, maxRows || Number.POSITIVE_INFINITY));
-      } else {
-        next[index] = rawValue;
-      }
-      commitRows(next);
-      return next.length ? next : buildRows('');
-    });
+    const next = [...rows];
+    if (pastedKeys.length > 1) next.splice(index, 1, ...pastedKeys);
+    else next[index] = rawValue;
+    const bounded = next.slice(0, maxRows || Number.POSITIVE_INFINITY);
+    setRows(bounded.length ? bounded : buildRows(''));
+    commitRows(bounded);
   };
 
   const addRow = () => {
@@ -1631,37 +1439,44 @@ const ApiKeyPoolEditor: React.FC<{
 
   const moveRow = (fromIndex: number, toIndex: number) => {
     if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return;
-    setRows(prev => {
-      if (fromIndex >= prev.length || toIndex >= prev.length) return prev;
-      const next = [...prev];
-      const [moved] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, moved);
-      commitRows(next);
-      return next;
-    });
+    if (fromIndex >= rows.length || toIndex >= rows.length) return;
+    keyRowsRevision.current += 1;
+    const next = [...rows];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    setRows(next);
+    setVisibleRows({});
+    setTestingStatus({});
+    setCopiedIndex(null);
+    commitRows(next);
   };
 
   const removeRow = (index: number) => {
-    setRows(prev => {
-      const next = prev.filter((_, rowIndex) => rowIndex !== index);
-      const safeNext = next.length >= minRows
-        ? next
-        : [...next, ...Array.from({ length: minRows - next.length }, () => '')];
-      commitRows(safeNext);
-      return safeNext;
-    });
+    keyRowsRevision.current += 1;
+    const next = rows.filter((_, rowIndex) => rowIndex !== index);
+    const safeNext = next.length >= minRows ? next : [...next, ...Array.from({ length: minRows - next.length }, () => '')];
+    setRows(safeNext);
+    setVisibleRows({});
+    setTestingStatus({});
+    setCopiedIndex(null);
+    commitRows(safeNext);
   };
 
   const clearPool = () => {
+    keyRowsRevision.current += 1;
     setRows(buildRows(''));
+    setVisibleRows({});
+    setTestingStatus({});
+    setCopiedIndex(null);
     commitRows([]);
   };
 
   const copyRow = async (index: number, key: string) => {
     if (!key.trim()) return;
+    const revision = keyRowsRevision.current;
     try {
       const didCopy = await safeCopyTextToClipboard(key.trim());
-      if (!didCopy) return;
+      if (!didCopy || revision !== keyRowsRevision.current) return;
       setCopiedIndex(index);
       window.setTimeout(() => setCopiedIndex(null), 900);
     } catch {
@@ -1670,6 +1485,7 @@ const ApiKeyPoolEditor: React.FC<{
   };
 
   const handleKeyPaste = async (event: React.ClipboardEvent<HTMLInputElement>, index: number) => {
+    const revision = keyRowsRevision.current;
     // Apply paste through the controlled value. This avoids a macOS Electron
     // renderer dropping the native paste event while keeping selection
     // replacement behavior for a single key and pool expansion for multiline
@@ -1684,7 +1500,7 @@ const ApiKeyPoolEditor: React.FC<{
     // apply the browser's default paste after this controlled update.
     event.preventDefault();
     const pastedValue = eventValue || await safeReadTextFromClipboard();
-    if (!pastedValue) return;
+    if (!pastedValue || revision !== keyRowsRevision.current) return;
 
     const pastedKeys = splitApiKeyPool(pastedValue);
     if (pastedKeys.length > 1) {
@@ -2112,13 +1928,14 @@ const ModernSelect: React.FC<{
         onBlur={() => window.setTimeout(() => {
           if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
         }, 0)}
-        className="flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+        aria-expanded={open}
+        className="eterx-settings-select-trigger flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
       >
         <span className="truncate">{selected?.label || placeholder}</span>
         <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[240px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1 shadow-none text-neutral-900 dark:text-neutral-100">
+        <div className="eterx-settings-select-menu absolute right-0 z-50 mt-2 flex max-h-72 w-full min-w-[240px] flex-col rounded-xl border border-black/10 dark:border-white/[0.10] bg-white dark:bg-[#242424] p-1 shadow-none text-neutral-900 dark:text-neutral-100">
           {searchable && (
             <div className="relative mb-1 shrink-0">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" />
@@ -2139,12 +1956,12 @@ const ModernSelect: React.FC<{
             <button
               key={option.value}
               type="button"
-              onMouseDown={(event) => {
-                event.preventDefault();
+              onClick={() => {
                 onChange(option.value);
                 setOpen(false);
               }}
-              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
+              data-active={value === option.value}
+              className={`eterx-settings-select-option flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-[12.5px] transition-colors ${
                 value === option.value ? 'bg-black/5 dark:bg-white/[0.08] text-neutral-900 dark:text-[#F4F4F4] font-medium' : 'text-neutral-700 dark:text-[#CFCFCF] hover:bg-black/5 dark:hover:bg-white/[0.055] hover:text-neutral-900 dark:hover:text-[#F4F4F4]'
               }`}
             >
@@ -2363,7 +2180,7 @@ const ApiKeyRow: React.FC<{
 // ═══════════════════════════════════════════════════════
 // MAIN SETTINGS PANEL
 // ═══════════════════════════════════════════════════════
-export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen, onClose, initialTab = 'general', standalone = false }) => {
+export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen, onClose, initialTab = 'general', onTabChange, standalone = false }) => {
   const [activeTab, setActiveTab] = useState<Tab>(normalizeSettingsTab(initialTab));
   const [manualOpen, setManualOpen] = useState(false);
   const [manualTopic, setManualTopic] = useState('model-selection');
@@ -2457,7 +2274,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const runtimeSyncPendingRef = useRef<RuntimeSettingsSnapshot | null>(null);
   const runtimeSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const modelDirectoryRequestChainRef = useRef<Promise<unknown>>(Promise.resolve());
-  const modelDiscoveryVisitRef = useRef<string | null>(null);
   const providerBaseURLSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const providerBaseURLSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const providerBaseURLDirtyRef = useRef(false);
@@ -2551,9 +2367,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   useEffect(() => {
     if (!isOpen || (activeTab !== 'browser' && activeTab !== 'computer')) return;
-    void refreshBrowserRuntimeStatus();
-    const timer = window.setInterval(() => { void refreshBrowserRuntimeStatus(); }, 8000);
-    return () => window.clearInterval(timer);
+    let inFlight = false;
+    const refreshVisibleStatus = async () => {
+      if (document.hidden || inFlight) return;
+      inFlight = true;
+      try { await refreshBrowserRuntimeStatus(); } finally { inFlight = false; }
+    };
+    void refreshVisibleStatus();
+    const timer = window.setInterval(refreshVisibleStatus, 8000);
+    document.addEventListener('visibilitychange', refreshVisibleStatus);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshVisibleStatus);
+    };
   }, [activeTab, isOpen, refreshBrowserRuntimeStatus]);
 
   useEffect(() => {
@@ -2670,13 +2496,20 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     window.dispatchEvent(new CustomEvent('eterx-background-settings-updated', { detail: next }));
     try {
       const result = await desktopApi.saveGatewayConfig(next);
-      if (result?.config) setGatewayConfig(result.config);
+      if (result?.ok === false) throw new Error(result.error || 'Could not save background settings.');
+      if (result?.config) {
+        setGatewayConfig(result.config);
+        appStorage.setItem('eterx_background_active_chats', String(Boolean(result.config.enabled && result.config.keepActiveChatsOnClose !== false)));
+        appStorage.setItem('eterx_background_scheduled_tasks', String(Boolean(result.config.enabled && result.config.runScheduledTasksInBackground !== false)));
+        window.dispatchEvent(new CustomEvent('eterx-background-settings-updated', { detail: result.config }));
+      }
       if (result?.status) setGatewayRunning(Boolean(result.status.running));
     } catch (error) {
       console.warn('Could not update background companion settings:', error);
       setGatewayConfig(gatewayConfig);
       appStorage.setItem('eterx_background_active_chats', String(Boolean(gatewayConfig.enabled && gatewayConfig.keepActiveChatsOnClose !== false)));
       appStorage.setItem('eterx_background_scheduled_tasks', String(Boolean(gatewayConfig.enabled && gatewayConfig.runScheduledTasksInBackground !== false)));
+      window.dispatchEvent(new CustomEvent('eterx-background-settings-updated', { detail: gatewayConfig }));
     }
   }, [gatewayConfig]);
 
@@ -2769,12 +2602,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
     try {
       const rawOverrides = JSON.parse(appStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}');
+      const validBudgetSelections = new Set(CONTEXT_WINDOW_SIZE_OPTIONS.map(option => option.value));
       setContextChatOverrides(
         rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides)
           ? Object.fromEntries(
               Object.entries(rawOverrides)
                 .map(([chatId, value]) => [String(chatId), String(value || '')])
-                .filter(([chatId, value]) => Boolean(chatId && value)),
+                .filter(([chatId, value]) => Boolean(chatId && validBudgetSelections.has(value))),
             )
           : {},
       );
@@ -2785,18 +2619,25 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const normalizeChats = (rawChats: any[]): ContextChatSummary[] => rawChats
       .filter(chat => chat && typeof chat.id === 'string')
       .map(chat => {
-        const logs = Array.isArray(chat.traceLogs) ? chat.traceLogs : [];
-        const usage = [...logs].reverse().find((log: any) => log?.type === 'context_usage');
-        const estimatedTokens = logs.reduce((total: number, log: any) => {
-          const text = String(log?.text || log?.output || '');
-          return total + (text ? Math.ceil(text.length / 4) : 0);
-        }, 0);
+        const logs = (Array.isArray(chat.traceLogs) ? chat.traceLogs : []).filter((log: any) =>
+          !log?.subAgentId && !log?.subAgentChatId && (!log?.subAgent || log.subAgent === 'Main') && log?.auxiliaryRuntime !== true
+        );
+        const meter = readContextUsageMeter(logs);
+        const usage = meter.latestContextUsage;
+        const selection = parseModelEntryKey(chat.modelSelection);
+        const measured = meter.latestProviderUsage || usage;
+        const provider = selection?.provider || String(measured?.provider || '');
+        const modelId = selection?.modelId || String(measured?.model || measured?.modelId || '');
+        const measuredModelMatches = usage?.provider === provider && String(usage?.model || usage?.modelId || '') === modelId;
         return {
           id: String(chat.id),
           title: String(chat.title || 'Untitled chat').trim() || 'Untitled chat',
           updatedAt: Number(chat.updatedAt || 0),
-          usedTokens: Math.max(0, Number(usage?.usedTokens || estimatedTokens || 0)),
-          reportedWindow: Math.max(0, Number(usage?.contextWindow || 0)),
+          usedTokens: meter.usedTokens,
+          reportedWindow: normalizeContextWindow(meter.contextWindow),
+          modelMaximum: measuredModelMatches ? normalizeContextWindow(usage?.modelContextWindow) : 0,
+          provider,
+          modelId,
         };
       })
       .sort((left, right) => right.updatedAt - left.updatedAt);
@@ -2832,18 +2673,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!isOpen || (activeTab !== 'profile' && activeTab !== 'tokens')) return;
     let cancelled = false;
     let refreshInFlight: Promise<void> | null = null;
+    let lastSnapshotText: string | null = null;
+    let lastStatisticsDay = '';
 
     if (!appStorage.getItem('eterx_app_launch_at')) {
       appStorage.setItem('eterx_app_launch_at', String(Date.now()));
     }
 
     const refreshTokenStats = () => {
+      if (cancelled || document.hidden) return;
       if (refreshInFlight) return refreshInFlight;
       refreshInFlight = (async () => {
-       setTokenStatsLoading(true);
+       if (lastSnapshotText === null) setTokenStatsLoading(true);
        try {
-      const snapshot = await fetch('/api/chats', { cache: 'no-store' })
-        .then(response => response.ok ? response.json() : Promise.reject(new Error('Unable to load chats')));
+      const snapshotText = await fetch('/api/chats', { cache: 'no-store' })
+        .then(response => response.ok ? response.text() : Promise.reject(new Error('Unable to load chats')));
+      const statisticsDay = new Date().toDateString();
+      if (cancelled || (snapshotText === lastSnapshotText && statisticsDay === lastStatisticsDay)) return;
+      const snapshot = JSON.parse(snapshotText);
       const chats = Array.isArray(snapshot?.chats) ? snapshot.chats : [];
       const uniqueProviderUsageLogs = (logs: any[]) => {
         const seen = new Set<string>();
@@ -2972,6 +2819,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         currentStreak += 1;
       }
       setTokenStats({ lifetimeTokens, peakTokens, longestChatMinutes, currentStreak, longestStreak, daily });
+      lastSnapshotText = snapshotText;
+      lastStatisticsDay = statisticsDay;
        } catch {
          // Keep the last successful snapshot visible during transient API or
          // desktop startup failures instead of replacing real cells with an
@@ -2987,11 +2836,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const interval = window.setInterval(refreshTokenStats, 5000);
     window.addEventListener('eterx_chats_updated', refreshTokenStats);
     window.addEventListener('eterx-settings-updated', refreshTokenStats);
+    document.addEventListener('visibilitychange', refreshTokenStats);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
       window.removeEventListener('eterx_chats_updated', refreshTokenStats);
       window.removeEventListener('eterx-settings-updated', refreshTokenStats);
+      document.removeEventListener('visibilitychange', refreshTokenStats);
     };
   }, [activeTab, isOpen]);
 
@@ -3023,6 +2874,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     overrides: ModelOverrides = modelOverrides,
     requestedProviders?: MainAgentProvider[],
   ) => {
+    const discoveryRevision = settingsRevisionRef.current;
     const providers = Array.from(new Set(
       (requestedProviders?.length
         ? requestedProviders
@@ -3033,9 +2885,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         .filter(isModelProvider),
     ));
     const runDiscovery = async () => {
+      if (discoveryRevision !== settingsRevisionRef.current) return;
       setModelDirectoryStatus('loading');
       try {
-      const res = await fetch('/api/settings/models', {
+      const res = await requestJson('/api/settings/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3045,9 +2898,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           replaceRuntimeKeys: true,
           providers,
         }),
-      });
+      }, 180_000);
       const payload = await res.json();
       if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
+      if (discoveryRevision !== settingsRevisionRef.current) return;
       const nextDirectory = payload.providers || {};
       setModelDirectory(previous => ({ ...previous, ...nextDirectory }));
       const discoveredThinkingCapabilities: Record<string, ModelThinkingCapabilities> = {};
@@ -3083,38 +2937,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         });
         return next;
       });
-      const currentSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
-      const selectedEntry = parseModelEntryKey(currentSelection);
-      const reconciledOverrides = { ...overrides };
-      let removedInvalidOverride = false;
-      Object.entries(reconciledOverrides).forEach(([provider, modelId]) => {
-        const providerDirectory = nextDirectory[provider] as ModelDirectoryProvider | undefined;
-        if (!providerDirectory?.connected) return;
-        if (selectedEntry?.provider === provider && selectedEntry.modelId === modelId) return;
-        if (!providerDirectory.models.some(model => model.id === modelId)) {
-          delete reconciledOverrides[provider];
-          removedInvalidOverride = true;
-        }
-      });
-      if (removedInvalidOverride) {
-        modelOverridesRef.current = reconciledOverrides;
-        setModelOverrides(reconciledOverrides);
-        appStorage.setItem(MODEL_OVERRIDE_STORAGE_KEY, JSON.stringify(reconciledOverrides));
-        void persistDesktopRuntimeSettings(apiKeys, modelApiKeys, reconciledOverrides, providerBaseURLsRef.current);
-        broadcastEterxSettingsUpdate({
-          type: 'model-overrides-updated',
-          modelOverrides: reconciledOverrides,
-        });
-        await fetch('/api/settings/keys', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              apiKeys: keys,
-              modelOverrides: reconciledOverrides,
-              baseURLs: providerBaseURLsRef.current,
-            }),
-        });
-      }
       // Discovery is read-only with respect to the user's chat selector.
       // A live catalog must never insert a provider default, remove an exact
       // manually-added model, or change the active chat model by itself.
@@ -3123,7 +2945,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         const provider = String(providerValue?.provider || '');
         (providerValue?.models || []).forEach((model: any) => {
           const limit = Number(model?.inputTokenLimit || model?.contextLength || 0);
-          if (provider && model?.id && Number.isFinite(limit) && limit >= 16_000) {
+          if (provider && model?.id && Number.isFinite(limit) && limit >= 16_000 && limit <= 4_000_000) {
             discoveredContextWindows[modelEntryKey(provider, String(model.id))] = Math.floor(limit);
           }
         });
@@ -3132,7 +2954,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       try {
         storedContextWindows = JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}');
       } catch { }
-      const nextContextWindows = { ...storedContextWindows, ...discoveredContextWindows };
+      const validStoredContextWindows = Object.fromEntries(
+        Object.entries(storedContextWindows).flatMap(([key, value]) => {
+          const limit = Number(value);
+          return key && Number.isFinite(limit) && limit >= 16_000 && limit <= 4_000_000
+            ? [[key, Math.floor(limit)]]
+            : [];
+        }),
+      );
+      const nextContextWindows = { ...validStoredContextWindows, ...discoveredContextWindows };
       appStorage.setItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY, JSON.stringify(nextContextWindows));
       broadcastEterxSettingsUpdate({
         type: 'model-context-windows-updated',
@@ -3141,7 +2971,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       setModelDirectoryUpdatedAt(payload.updatedAt || Date.now());
       setModelDirectoryStatus('ready');
       } catch (error) {
-        setModelDirectoryStatus('error');
+        if (discoveryRevision === settingsRevisionRef.current) setModelDirectoryStatus('error');
       }
     };
     const queued = modelDirectoryRequestChainRef.current.then(runDiscovery, runDiscovery);
@@ -3847,7 +3677,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     settingsRevisionRef.current += 1;
-    setSettings(prev => {
+    const commitSetting = () => setSettings(prev => {
       const safeValue = key === 'followUpBehavior'
         ? (value === 'queue' ? 'queue' : 'steer')
         : value;
@@ -3857,7 +3687,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         ...(key === 'contextWindowSizeSelection' ? { contextWindowSizeSelectionTouched: true } : {}),
       });
       appStorage.setItem('eterx_settings', JSON.stringify(next));
-      if (key === 'theme') transitionEterxTheme(value as AppSettings['theme']);
+      if (key === 'contextWindowSizeSelection') markContextBudgetEdit();
       broadcastEterxSettingsUpdate(next);
       if (key === 'selfImprovementEnabled') {
         void fetch('/api/settings/self-improvement', {
@@ -3875,6 +3705,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       }
       return next;
     });
+    if (key === 'theme') {
+      transitionEterxTheme(
+        value as AppSettings['theme'],
+        () => flushSync(commitSetting),
+      );
+    } else {
+      commitSetting();
+    }
     setHasChanges(true);
   }, []);
 
@@ -3892,11 +3730,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   const updateContextChatOverride = useCallback((value: string) => {
     if (!selectedContextChatId) return;
+    const validSelections = new Set(['global', ...CONTEXT_WINDOW_SIZE_OPTIONS.map(option => option.value)]);
+    if (!validSelections.has(value)) return;
     setContextChatOverrides(previous => {
       const next = { ...previous };
       if (value === 'global') delete next[selectedContextChatId];
       else next[selectedContextChatId] = value;
       appStorage.setItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY, JSON.stringify(next));
+      markContextBudgetEdit(selectedContextChatId);
       broadcastEterxSettingsUpdate({
         type: 'context-window-overrides-updated',
         chatId: selectedContextChatId,
@@ -4262,10 +4103,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const activeModelOverride = modelOverrides[activeProvider];
 
   useEffect(() => {
-    if (isOpen && activeProvider !== selectedConnectionProvider) {
-      setSelectedConnectionProvider(activeProvider);
-    }
-  }, [activeProvider, isOpen, selectedConnectionProvider]);
+    if (isOpen) setSelectedConnectionProvider(activeProvider);
+  }, [activeProvider, isOpen]);
 
   const getProviderModelOptions = useCallback((provider: string) => {
     const seen = new Set<string>();
@@ -4276,7 +4115,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       seen.add(modelId);
       options.push({
         id: modelId,
-        label: String(label || modelId),
+        label: formatModelName(modelId),
         source,
       });
     };
@@ -4290,23 +4129,37 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     return options;
   }, [modelCatalog, modelDirectory, modelOverrides]);
 
-  const selectedProviderGuide = OFFICIAL_PROVIDER_GUIDE[selectedConnectionProvider];
   const selectedProviderDirectory = modelDirectory[selectedConnectionProvider];
   const selectedProviderModel = modelOverrides[selectedConnectionProvider] || '';
   const selectedProviderModelOptions = getProviderModelOptions(selectedConnectionProvider);
   const selectedProviderKeyCount = providerKeyCount(selectedConnectionProvider);
   const selectedProviderCanDiscover = isLocalModelProvider(selectedConnectionProvider) || selectedProviderKeyCount > 0;
-  const globalSelectorCount = modelEntries.length;
   const selectedContextChat = contextChats.find(chat => chat.id === selectedContextChatId) || null;
   const selectedContextChatBudget = selectedContextChatId
     ? contextChatOverrides[selectedContextChatId] || 'global'
     : 'global';
-  const effectiveSelectedChatBudget = selectedContextChatBudget === 'global'
-    ? settings.contextWindowSizeSelection
-    : selectedContextChatBudget;
-  const effectiveSelectedChatWindow = effectiveSelectedChatBudget === 'model_max'
-    ? selectedContextChat?.reportedWindow || 0
-    : Number(effectiveSelectedChatBudget || 0);
+  const contextChatMaximum = (chat: ContextChatSummary | null): number => {
+    if (!chat) return 0;
+    if (!chat.provider || !chat.modelId) return chat.modelMaximum;
+    const liveModel = modelDirectory[chat.provider]?.models.find(model => model.id === chat.modelId);
+    let discovered = normalizeContextWindow(liveModel?.inputTokenLimit || liveModel?.contextLength);
+    if (!discovered) {
+      try {
+        discovered = normalizeContextWindow(JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}')?.[
+          modelEntryKey(chat.provider, chat.modelId)
+        ]);
+      } catch { }
+    }
+    return discovered || chat.modelMaximum || resolveModelContextWindow(chat.provider, chat.modelId);
+  };
+  const selectedChatBudget = resolveContextWindowBudget(
+    resolveSavedContextBudget(settings, selectedContextChatBudget), contextChatMaximum(selectedContextChat),
+  );
+  const effectiveSelectedChatWindow = selectedChatBudget.configuredContextWindow;
+  const selectedChatLimitNote = contextWindowLimitNote(selectedChatBudget.requestedContextWindow, selectedChatBudget.modelContextWindow);
+  const activeContextChat = contextChats.find(chat => chat.id === activeContextChatId) || null;
+  const globalContextBudget = resolveContextWindowBudget(resolveSavedContextBudget(settings), contextChatMaximum(activeContextChat));
+  const globalContextLimitNote = contextWindowLimitNote(globalContextBudget.requestedContextWindow, globalContextBudget.modelContextWindow);
   const selectedProviderStatusText = !selectedProviderCanDiscover
     ? `Add a ${ PROVIDER_LABEL[selectedConnectionProvider] || selectedConnectionProvider } API key to load models`
     : selectedProviderDirectory
@@ -4314,15 +4167,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       ? `${ selectedProviderDirectory.models.length } agent-compatible models${ selectedProviderDirectory.excludedCount ? ` · ${ selectedProviderDirectory.excludedCount } incompatible hidden` : '' }`
       : selectedProviderDirectory.error || 'Not connected')
     : 'Open Models to load live models';
-  const selectedProviderCapabilities = [
-    isLocalModelProvider(selectedConnectionProvider)
-      ? 'Local endpoint · no key required'
-      : selectedProviderKeyCount > 0
-        ? `${ selectedProviderKeyCount } key${ selectedProviderKeyCount === 1 ? '' : 's' } in pool`
-        : 'Key not connected',
-    selectedProviderDirectory?.connected ? 'Live catalog' : 'Catalog pending',
-    globalSelectorCount > 0 ? `${ globalSelectorCount } chat model${ globalSelectorCount === 1 ? '' : 's' }` : 'Chat list empty',
-  ];
   const selectedApiProvider = selectedApiProviderValue || activeProvider;
   const selectedApiProviderLabel = PROVIDER_LABEL[selectedApiProvider] || selectedApiProvider;
   const selectedApiProviderSync = providerSync(selectedApiProvider);
@@ -4345,7 +4189,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     },
     ...selectedApiProviderModelEntries.map(entry => ({
       value: modelEntryKey(entry.provider, entry.modelId),
-      label: entry.modelId,
+      label: formatModelName(entry.modelId),
       description: 'Custom model pool',
       provider: entry.provider,
       providerLabel: selectedApiProviderLabel,
@@ -4359,7 +4203,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const selectedApiPoolValue = selectedApiPoolEntry?.isProviderPool
     ? apiKeys[selectedApiProvider] || ''
     : modelApiKeys[selectedApiPoolEntry?.value || ''] || '';
-  const selectedApiProviderKeyCount = splitApiKeyPool(selectedApiPoolValue).length;
 
   useEffect(() => {
     if (!apiPoolEntries.some(entry => entry.value === selectedApiModelValue)) {
@@ -4371,48 +4214,59 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     setExactModelDraft(selectedProviderModel);
   }, [selectedConnectionProvider, selectedProviderModel]);
 
-  useEffect(() => {
-    if (!isOpen || activeTab !== 'models') {
-      modelDiscoveryVisitRef.current = null;
-      return;
-    }
-    const visitKey = selectedConnectionProvider;
-    if (modelDiscoveryVisitRef.current === visitKey) return;
-    modelDiscoveryVisitRef.current = visitKey;
+  const refreshModelDirectoryRef = useRef(refreshModelDirectory);
+  refreshModelDirectoryRef.current = refreshModelDirectory;
 
+  useEffect(() => {
+    if (!isOpen || (activeTab !== 'models' && activeTab !== 'api')) return;
+    const discoveryProvider = activeTab === 'api' ? selectedApiProvider : selectedConnectionProvider;
+    if (activeTab === 'api' && !isLocalModelProvider(discoveryProvider) && providerKeyCount(discoveryProvider) === 0) return;
     let cancelled = false;
-    let discoveryStarted = false;
-    const refreshAfterHydration = async () => {
-      await appStorageReady;
-      const deadline = Date.now() + 10_000;
-      while (!cancelled && !runtimeSettingsHydratedRef.current && Date.now() < deadline) {
-        await new Promise(resolve => window.setTimeout(resolve, 50));
-      }
-      if (cancelled || !runtimeSettingsHydratedRef.current) {
-        if (!cancelled && modelDiscoveryVisitRef.current === visitKey) {
-          modelDiscoveryVisitRef.current = null;
-          setModelDirectoryStatus('error');
+    let inFlight = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refresh = async () => {
+      if (cancelled || inFlight) return;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      inFlight = true;
+      try {
+        await appStorageReady;
+        const deadline = Date.now() + 10_000;
+        while (!cancelled && !runtimeSettingsHydratedRef.current && Date.now() < deadline) {
+          await new Promise(resolve => window.setTimeout(resolve, 50));
         }
-        return;
+        if (cancelled) return;
+        if (!runtimeSettingsHydratedRef.current) {
+          setModelDirectoryStatus('error');
+          return;
+        }
+        const currentEntries = modelEntriesRef.current;
+        const currentKeys = composeApiKeysForSelections(
+          apiKeysRef.current,
+          modelApiKeysRef.current,
+          currentEntries,
+          [AUTO_MODEL_SELECTION, ...currentEntries.map(entry => modelEntryKey(entry.provider, entry.modelId))],
+        );
+        await refreshModelDirectoryRef.current(currentKeys, modelOverridesRef.current, [discoveryProvider]);
+      } catch {
+        if (!cancelled) setModelDirectoryStatus('error');
+      } finally {
+        inFlight = false;
+        // Schedule after completion so slow providers cannot build a backlog.
+        if (!cancelled) timer = setTimeout(() => { void refresh(); }, 30_000);
       }
-      const currentEntries = modelEntriesRef.current;
-      const currentKeys = composeApiKeysForSelections(
-        apiKeysRef.current,
-        modelApiKeysRef.current,
-        currentEntries,
-        [AUTO_MODEL_SELECTION, ...currentEntries.map(entry => modelEntryKey(entry.provider, entry.modelId))],
-      );
-      discoveryStarted = true;
-      await refreshModelDirectory(currentKeys, modelOverridesRef.current, [selectedConnectionProvider]);
     };
-    void refreshAfterHydration();
+    const onFocus = () => { void refresh(); };
+    window.addEventListener('focus', onFocus);
+    // Let a pasted/typed key settle before discovery. Do not switch tabs or
+    // choose a model simply because credentials were entered.
+    timer = setTimeout(() => { void refresh(); }, activeTab === 'api' ? 800 : 0);
     return () => {
       cancelled = true;
-      if (!discoveryStarted && modelDiscoveryVisitRef.current === visitKey) {
-        modelDiscoveryVisitRef.current = null;
-      }
+      if (timer) clearTimeout(timer);
+      window.removeEventListener('focus', onFocus);
     };
-  }, [activeTab, isOpen, refreshModelDirectory, selectedConnectionProvider]);
+  }, [activeTab, isOpen, selectedConnectionProvider, selectedApiProvider, apiKeys, modelApiKeys]);
 
   const saveModelEntries = useCallback((nextEntries: ModelSelectorEntry[]) => {
     const normalizedEntries = normalizeModelSelectorEntries(nextEntries, {});
@@ -4623,7 +4477,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                   {tabs.map(tab => (
                     <button
                       key={tab.id}
-                      onClick={() => { setManualOpen(false); setActiveTab(tab.id); }}
+                      data-active={activeTab === tab.id}
+                      onClick={() => { setManualOpen(false); setActiveTab(tab.id); onTabChange?.(tab.id); }}
                       className={`eterx-settings-tab flex h-8 shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium leading-none transition-colors sm:w-full ${ activeTab === tab.id
                         ? 'bg-[#313131] text-[#F5F5F5]'
                         : 'text-[#F0F0F0] hover:bg-white/[0.045]'
@@ -4937,7 +4792,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             </SettingsStackRow>
                             <SettingsStackRow
                               title="Context window size"
-                              description="Sets the working context budget used by the live counter and compaction thresholds. It never exceeds the selected model's actual limit."
+                              description={globalContextLimitNote
+                                ? `Current chat: ${globalContextLimitNote}.`
+                                : "Sets the working context budget used by the live counter and compaction thresholds. It never exceeds the selected model's actual limit."}
                               info="Untouched settings follow the active model's full supported window. Choose a smaller fixed budget only when you intentionally want a per-request context cap."
                             >
                               <ModernSelect
@@ -4964,7 +4821,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   },
                                   ...modelEntries.map(entry => ({
                                     value: modelEntryKey(entry.provider, entry.modelId),
-                                    label: entry.modelId,
+                                    label: formatModelName(entry.modelId),
                                     description: PROVIDER_LABEL[entry.provider] || entry.provider,
                                   })),
                                 ]}
@@ -5036,15 +4893,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     <div className="rounded-xl border border-white/[0.07] bg-[#171717] px-3 py-2.5">
                                       <div className="text-[10.5px] font-medium tracking-[0.08em] text-[#707070]">Effective budget</div>
                                       <div className="mt-1 text-[14px] font-medium text-[#EAEAEA]">
-                                        {effectiveSelectedChatBudget === 'model_max'
-                                          ? (effectiveSelectedChatWindow > 0 ? compactTokenLabel(effectiveSelectedChatWindow) : 'Model maximum')
-                                          : compactTokenLabel(effectiveSelectedChatWindow)}
+                                        {effectiveSelectedChatWindow > 0
+                                          ? `${formatExactContextTokens(effectiveSelectedChatWindow)} tokens`
+                                          : 'Model limit not available yet'}
                                       </div>
                                     </div>
                                   </div>
                                 )}
                                 <p className="text-[11.5px] leading-5 text-[#777]">
-                                  The override is applied to the live counter and the compaction boundaries for this chat only.
+                                  {selectedChatLimitNote ? `${selectedChatLimitNote}. ` : ''}
+                                  Applies at the next safe request boundary for this chat, including an active run.
                                 </p>
                               </div>
                             ) : (
@@ -5056,7 +4914,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <SectionHeader title="Runtime behavior" />
                           <SettingsStack>
-                            <SettingsStackRow title="Adaptive protection" description="Compaction normally uses the high-80% to low-90% range of the selected chat window. Fast-growing model or tool cycles can start it sooner only to preserve the next-cycle reserve; near 96%, recovery compaction completes before another model request." />
+                            <SettingsStackRow title="Adaptive protection" description="Compaction normally uses the low-to-mid 90% range of the selected chat window. It starts earlier only when measured model or tool growth predicts the very next cycle would cross the 96% safety boundary." />
                             <SettingsStackRow title="Adaptive retention" description="Information-dense work keeps a larger verbatim tail. Exact references, constraints, failures, tool continuity, and next actions are preserved in the capsule." />
                             <SettingsStackRow title="Per-chat isolation" description="Capsules, locks, counters, and retry state are keyed by the exact chat ID." />
                             <SettingsStackRow title="Safe boundary" description="Compaction starts between model iterations, never during a tool call, file edit, stream, or approval." />
@@ -5259,24 +5117,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   ...selectedProviderModelOptions.map(option => ({
                                     value: option.id,
                                     label: option.label,
-                                    description: (() => {
-                                      // The model name already communicates the
-                                      // choice; avoid repeating selection state
-                                      // as a second line in every option.
-                                      if (option.source !== 'live') return '';
-                                      const liveModel = selectedProviderDirectory?.models.find(model => model.id === option.id);
-                                      const levels = getModelThinkingOptions(
-                                        selectedConnectionProvider,
-                                        option.id,
-                                        liveModel?.thinking,
-                                      );
-                                      const context = Number(liveModel?.inputTokenLimit || liveModel?.contextLength || 0);
-                                      return [
-                                        'Live · agent compatible',
-                                        levels.length ? `${ levels.map(level => level.label).join('/') } reasoning` : 'standard',
-                                        context ? `${ Math.round(context / 1000) }K context` : '',
-                                      ].filter(Boolean).join(' · ');
-                                    })(),
+                                    description: getModelThinkingOptions(
+                                      selectedConnectionProvider,
+                                      option.id,
+                                      selectedProviderDirectory?.models.find(model => model.id === option.id)?.thinking,
+                                    ).map(level => level.label).join(' / ') || 'Standard',
+
                                   })),
                                 ]}
                               />
@@ -5345,7 +5191,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             </SettingsStackRow>
                             <SettingsStackRow
                               title="Chat model list"
-                              description="This ordered list appears in the chat selector and contains only exact provider model IDs."
+                              description="Models in your chat selector, grouped by provider."
                               info="The selected chat model is sent with that exact model ID."
                               tall
                             >
@@ -5356,68 +5202,49 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   </div>
                                 ) : (
                                   <div className="max-h-[280px] overflow-y-auto pr-1 eterx-scrollbar">
-                                    {modelEntries.map(entry => {
-                                      const entryKey = modelEntryKey(entry.provider, entry.modelId);
-                                      const selected = chatModelSelection === entryKey;
-                                      const entryProviderLabel = PROVIDER_LABEL[entry.provider] || entry.provider;
-                                      const entryThinkingOptions = getModelThinkingOptions(
-                                        entry.provider,
-                                        entry.modelId,
-                                        modelThinkingCapabilities[entryKey],
-                                      );
-                                      return (
-                                        <div key={entryKey} className={`flex items-center gap-2 rounded-lg px-2 py-2 transition-colors ${ selected ? 'bg-white/[0.055]' : 'hover:bg-white/[0.04]' }`}>
-                                          <div className="min-w-0 flex-1">
-                                            <div className="truncate font-mono text-[11.5px] font-semibold text-[#F1F1F1]">{entry.modelId}</div>
-                                            <div className="mt-0.5 truncate text-[11px] text-[#777]">
-                                              {selected ? 'Active chat model' : entryProviderLabel}
-                                              {' · '}
-                                              {entryThinkingOptions.length
-                                                ? `${ entryThinkingOptions.map(option => option.label).join(' / ') } reasoning`
-                                                : 'Standard generation'}
+                                    {groupModelsByProvider(modelEntries).map(group => (
+                                      <section key={group.provider} aria-label={(PROVIDER_LABEL[group.provider] || group.provider)}>
+                                        <div className="px-2 pb-1 pt-3 text-[11px] font-semibold text-[#8F8F8F]">{(PROVIDER_LABEL[group.provider] || group.provider)}</div>
+                                        {group.models.map(entry => {
+                                          const entryKey = modelEntryKey(entry.provider, entry.modelId);
+                                          const selected = chatModelSelection === entryKey;
+                                          const entryThinkingOptions = getModelThinkingOptions(
+                                            entry.provider,
+                                            entry.modelId,
+                                            modelThinkingCapabilities[entryKey],
+                                          );
+                                          return (
+                                            <div key={entryKey} className={`flex items-center gap-2 rounded-lg px-2 py-2 transition-colors ${ selected ? 'bg-white/[0.055]' : 'hover:bg-white/[0.04]' }`}>
+                                              <div className="min-w-0 flex-1">
+                                                <div title={entry.modelId} className="truncate text-[12px] font-semibold text-[#F1F1F1]">{formatModelName(entry.modelId)}</div>
+                                                <div className="mt-0.5 truncate text-[11px] text-[#777]">
+                                                  {entryThinkingOptions.length ? entryThinkingOptions.map(option => option.label).join(' / ') : 'Standard'}
+                                                </div>
+                                              </div>
+                                              <SoftButton onClick={() => selectCatalogModel(entry.provider, entry.modelId)}>
+                                                {selected ? 'Current' : 'Apply'}
+                                              </SoftButton>
+                                              <button
+                                                type="button"
+                                                onClick={() => removeModelFromSelector(entry.provider, entry.modelId)}
+                                                className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-[#A7A7A7] transition-colors hover:border-red-400/30 hover:bg-red-500/10 hover:text-red-300"
+                                                aria-label={`Remove ${entry.modelId}`}
+                                              >
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                              </button>
                                             </div>
-                                          </div>
-                                          <SoftButton onClick={() => selectCatalogModel(entry.provider, entry.modelId)}>
-                                            {selected ? 'Current' : 'Apply'}
-                                          </SoftButton>
-                                          <button
-                                            type="button"
-                                            onClick={() => removeModelFromSelector(entry.provider, entry.modelId)}
-                                            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-[#A7A7A7] transition-colors hover:border-red-400/30 hover:bg-red-500/10 hover:text-red-300"
-                                            aria-label={`Remove ${entry.modelId}`}
-                                          >
-                                            <Trash2 className="h-3.5 w-3.5" />
-                                          </button>
-                                        </div>
-                                      );
-                                    })}
+                                          );
+                                        })}
+                                      </section>
+                                    ))}
                                   </div>
                                 )}
                               </div>
                             </SettingsStackRow>
                             <SettingsStackRow
                               title="Live model discovery"
-                              description={`${ selectedProviderStatusText } Discovery runs automatically when Models opens.`}
+                              description={selectedProviderStatusText}
                             />
-                          </SettingsStack>
-
-                          <div className="mt-4 grid gap-3 md:grid-cols-3">
-                            {selectedProviderCapabilities.map(capability => (
-                              <div key={capability} className="rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3">
-                                <div className="text-[12px] font-medium text-[#F1F1F1]">{capability}</div>
-                              </div>
-                            ))}
-                          </div>
-
-                          <SectionHeader title="Provider details" />
-                          <SettingsStack>
-                            <SettingsStackRow title={selectedProviderGuide?.source || PROVIDER_LABEL[selectedConnectionProvider] || selectedConnectionProvider} description={selectedProviderGuide?.keySource || 'Provider account key'} />
-                            <SettingsStackRow title="Discovery endpoint" description={selectedProviderGuide?.endpoint || 'Live model endpoint'}>
-                              <span className="rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-1.5 font-mono text-[11px] text-[#CFCFCF]">
-                                {selectedProviderGuide?.docsUrl || 'Provider docs'}
-                              </span>
-                            </SettingsStackRow>
-
                           </SettingsStack>
 
                         </div>
@@ -5427,8 +5254,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       {activeTab === 'api' && (
                         <div>
                           <SectionHeader
-                            title="API gateway"
-                            badge={apiSyncStatus === 'synced' ? 'Live' : undefined}
+                            title="API connections"
+                            badge={apiSyncStatus === 'synced' ? 'Saved' : undefined}
                             info="Provider pools are used by every model from that provider. Custom model pools override the provider pool only for one exact saved model."
                           />
                           <SettingsStack>
@@ -5449,8 +5276,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               />
                             </SettingsStackRow>
                             <SettingsStackRow
-                              title="API key pool"
-                              description="Use Provider pool for all models from this provider, or choose an exact saved model for a custom model pool."
+                              title="API keys"
+                              description="Add one or more keys. Use a custom model pool only when a model needs different credentials."
                               info="When a selected model has its own custom pool, that pool is used first. If not, EterX falls back to the provider pool."
                               tall
                             >
@@ -5460,7 +5287,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 providerLabel={selectedApiPoolEntry.isProviderPool ? `${selectedApiProviderLabel} provider pool` : selectedApiPoolEntry.label}
                                 value={selectedApiPoolValue}
                                 sync={selectedApiPoolEntry.isProviderPool ? selectedApiProviderSync : undefined}
-                                minRows={3}
+                                minRows={1}
                                 onChange={(nextValue) => {
                                   if (selectedApiPoolEntry.isProviderPool) {
                                     updateApiKey(selectedApiProvider, nextValue);
@@ -5486,21 +5313,36 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 }
                               />
                             </SettingsStackRow>
+                            {(providerKeyCount(selectedApiProvider) > 0 || isLocalModelProvider(selectedApiProvider)) && (
+                              <SettingsStackRow
+                                title="Model"
+                                description={modelDirectory[selectedApiProvider]?.error
+                                  || (modelDirectory[selectedApiProvider]?.connected
+                                    ? 'Choose a model to add it to the chat selector.'
+                                    : 'Loading models for this connection…')}
+                              >
+                                <div className="flex w-full max-w-[480px] flex-wrap items-center gap-2">
+                                  <ModernSelect
+                                    value={modelOverrides[selectedApiProvider] || ''}
+                                    onChange={modelId => {
+                                      if (modelId) addModelToSelector(selectedApiProvider, modelId, true);
+                                    }}
+                                    placeholder="Select a model"
+                                    className="min-w-[220px] flex-1"
+                                    options={getProviderModelOptions(selectedApiProvider).map(option => ({
+                                      value: option.id, label: option.label,
+                                    }))}
+                                  />
+                                  <SoftButton onClick={() => {
+                                    setSelectedConnectionProvider(selectedApiProvider);
+                                    setActiveTab('models');
+                                  }}>Manage models</SoftButton>
+                                </div>
+                              </SettingsStackRow>
+                            )}
                           </SettingsStack>
 
-                          <div className="mt-4 grid gap-3 md:grid-cols-3">
-                            <div className="rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3">
-                              <div className="text-[12px] font-medium text-[#F1F1F1]">
-                                {selectedApiProviderKeyCount} configured key{selectedApiProviderKeyCount === 1 ? '' : 's'}
-                              </div>
-                            </div>
-                            <div className="rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3">
-                              <div className="text-[12px] font-medium text-[#F1F1F1]">{apiSyncMessage}</div>
-                            </div>
-                            <div className="rounded-xl border border-white/[0.08] bg-[#202020] px-4 py-3">
-                              <div className="text-[12px] font-medium text-[#F1F1F1]">Settings is the runtime key source</div>
-                            </div>
-                          </div>
+                          {apiSyncStatus === 'error' && <p className="mt-2 text-[12px] text-red-300" role="status">{apiSyncMessage}</p>}
 
                           <SectionHeader title="Service APIs" />
                           <SettingsStack>
@@ -5522,7 +5364,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 providerLabel="GitHub"
                                 value={apiKeys.github || ''}
                                 sync={providerSync('github')}
-                                minRows={3}
+                                minRows={1}
                                 onChange={(nextValue) => updateApiKey('github', nextValue)}
                               />
                             </SettingsStackRow>
@@ -6218,7 +6060,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     appStorage.removeItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY);
                                     appStorage.removeItem(PROVIDER_BASE_URLS_STORAGE_KEY);
                                     appStorage.removeItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY);
-                                    setSettings(DEFAULT_SETTINGS);
+                                    transitionEterxTheme(DEFAULT_SETTINGS.theme, () => {
+                                      flushSync(() => setSettings(DEFAULT_SETTINGS));
+                                    });
                                     setApiKeys({});
                                     searchSettingsRef.current = DEFAULT_SEARCH_SETTINGS;
                                     setSearchSettings(DEFAULT_SEARCH_SETTINGS);
@@ -6244,7 +6088,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     setModelDirectory({});
                                     setModelDirectoryStatus('idle');
                                     setModelDirectoryUpdatedAt(null);
-                                    transitionEterxTheme(DEFAULT_SETTINGS.theme);
                                     broadcastEterxSettingsUpdate(DEFAULT_SETTINGS);
                                     setHasChanges(false);
                                     void (async () => {
@@ -6495,9 +6338,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           type="button"
                           onClick={() => {
                             settingsRevisionRef.current += 1;
-                            setSettings(DEFAULT_SETTINGS);
+                            transitionEterxTheme(DEFAULT_SETTINGS.theme, () => {
+                              flushSync(() => setSettings(DEFAULT_SETTINGS));
+                            });
                             appStorage.setItem('eterx_settings', JSON.stringify(DEFAULT_SETTINGS));
-                            transitionEterxTheme(DEFAULT_SETTINGS.theme);
                             broadcastEterxSettingsUpdate(DEFAULT_SETTINGS);
                             void fetch('/api/settings/self-improvement', {
                               method: 'PUT',

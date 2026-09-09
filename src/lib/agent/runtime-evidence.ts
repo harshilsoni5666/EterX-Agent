@@ -1,8 +1,12 @@
 import {
   classifyToolSemantics,
   extractToolTargets,
+  getToolResultOutcome,
+  toolResultChangedState,
+  toolResultMadeProgress,
   toolResultSucceeded,
   type ToolEffect,
+  type ToolResultOutcome,
 } from './tool-semantics';
 
 export type RuntimeEvidenceKind =
@@ -31,6 +35,10 @@ export interface RuntimeEvidenceNode {
   summary: string;
   targets: string[];
   metrics: Record<string, number>;
+  outcome?: ToolResultOutcome;
+  workId?: string;
+  /** Pending children of a compound call, settled individually by task ID. */
+  pendingWorkIds?: string[];
 }
 
 export interface RuntimeEvidenceSnapshot {
@@ -96,10 +104,14 @@ function summarizeToolResult(
   effect: ToolEffect,
   targets: string[],
 ): string {
+  const outcome = getToolResultOutcome(result);
+  if (outcome === 'pending') return `${toolName}: accepted, still pending completion`;
+  if (outcome === 'noop') return `${toolName}: ${truncate(result?.message || 'no action performed')}`;
   if (result?.error) return `${toolName} failed: ${truncate(result.error)}`;
   if (Array.isArray(result?.errors) && result.errors.length > 0) {
     return `${toolName} failed: ${truncate(result.errors.join('; '))}`;
   }
+  if (outcome === 'failed') return `${toolName} failed: ${truncate(result?.message || result?.status || 'unsuccessful result')}`;
   if (result?.summary) return truncate(result.summary);
   if (effect === 'verification') {
     const command = args?.command ? ` ${truncate(args.command, 90)}` : '';
@@ -137,26 +149,44 @@ export class RuntimeEvidenceLedger {
 
   recordTool(toolName: string, args: Record<string, any> = {}, result: any = {}): RuntimeEvidenceNode {
     const semantics = classifyToolSemantics(toolName, args);
+    const outcome = getToolResultOutcome(result);
     const success = toolResultSucceeded(result);
-    if (success && semantics.isMutation) this.mutationEpoch++;
+    const changedState = toolResultChangedState(result, semantics);
+    if (changedState) this.mutationEpoch++;
 
     const targets = extractToolTargets(args, result);
-    const effect = semantics.effect;
+    const workId = String(result?.taskId || result?.backgroundTaskId || args?.taskId || '').trim() || undefined;
+    const pendingWorkIds = Array.isArray(result?.results)
+      ? [...new Set<string>(result.results
+        .filter((entry: any) => getToolResultOutcome(entry) === 'pending')
+        .map((entry: any) => String(entry?.taskId || entry?.backgroundTaskId || '').trim())
+        .filter(Boolean))]
+      : [];
+    const pendingOrigin = workId ? [...this.nodes].reverse().find(node =>
+      node.toolName === toolName && (
+        node.workId === workId && node.outcome === 'pending' || node.pendingWorkIds?.includes(workId)
+      ),
+    ) : undefined;
+    const effect = pendingOrigin?.effect === 'verification' ? 'verification' : semantics.effect;
+    const observedEpoch = pendingOrigin?.effect === 'verification' ? pendingOrigin.mutationEpoch : this.mutationEpoch;
     const node: RuntimeEvidenceNode = {
       id: `${this.scopeId}-${Date.now()}-${++this.sequence}`,
       sequence: this.sequence,
       timestamp: Date.now(),
       toolName,
       effect,
-      kind: success ? classifyKind(toolName, effect) : 'failure',
+      kind: !success ? 'failure' : outcome === 'pending' ? 'command' : classifyKind(toolName, effect),
       success,
-      materialProgress: success && semantics.materialOnSuccess,
-      stateChanging: success && semantics.isMutation,
-      mutationEpoch: this.mutationEpoch,
+      materialProgress: toolResultMadeProgress(result, semantics),
+      stateChanging: changedState,
+      mutationEpoch: observedEpoch,
       signature: `${toolName}:${stableSerialize(args)}`,
       summary: summarizeToolResult(toolName, args, result, effect, targets),
       targets,
       metrics: extractNumericMetrics(result),
+      outcome,
+      workId,
+      ...(pendingWorkIds.length ? { pendingWorkIds } : {}),
     };
     this.nodes.push(node);
     return node;
@@ -171,7 +201,7 @@ export class RuntimeEvidenceLedger {
   }
 
   hasVerificationEvidence(): boolean {
-    return this.nodes.some(node => node.success && node.effect === 'verification');
+    return this.nodes.some(node => node.success && (!node.outcome || node.outcome === 'completed') && node.effect === 'verification');
   }
 
   hasFreshVerificationEvidence(): boolean {
@@ -179,6 +209,7 @@ export class RuntimeEvidenceLedger {
     if (!lastMutation) return this.hasVerificationEvidence();
     return this.nodes.some(node =>
       node.success
+      && (!node.outcome || node.outcome === 'completed')
       && node.effect === 'verification'
       && node.mutationEpoch === this.mutationEpoch
       && node.sequence > lastMutation.sequence,
@@ -190,17 +221,17 @@ export class RuntimeEvidenceLedger {
   }
 
   hasEffect(effect: ToolEffect): boolean {
-    return this.nodes.some(node => node.success && node.effect === effect);
+    return this.nodes.some(node => node.success && (!node.outcome || node.outcome === 'completed') && node.effect === effect);
   }
 
   lastSuccessfulMutation(): RuntimeEvidenceNode | null {
     return [...this.nodes].reverse().find(node =>
-      node.success && node.stateChanging === true,
+      node.stateChanging === true,
     ) || null;
   }
 
   latestVerification(): RuntimeEvidenceNode | null {
-    return [...this.nodes].reverse().find(node => node.effect === 'verification') || null;
+    return [...this.nodes].reverse().find(node => node.effect === 'verification' && node.outcome !== 'pending' && node.outcome !== 'noop') || null;
   }
 
   unresolvedFailures(): RuntimeEvidenceNode[] {
@@ -208,7 +239,7 @@ export class RuntimeEvidenceLedger {
     const unresolved: RuntimeEvidenceNode[] = [];
     for (const node of [...this.nodes].reverse()) {
       if (node.success) {
-        resolvedSignatures.add(node.signature);
+        if (!node.outcome || node.outcome === 'completed') resolvedSignatures.add(node.signature);
         continue;
       }
       if (!resolvedSignatures.has(node.signature)) unresolved.push(node);
@@ -216,8 +247,28 @@ export class RuntimeEvidenceLedger {
     return unresolved.reverse();
   }
 
+  pendingWork(): RuntimeEvidenceNode[] {
+    const settled = new Set<string>();
+    const pending: RuntimeEvidenceNode[] = [];
+    for (const node of [...this.nodes].reverse()) {
+      if (node.pendingWorkIds?.length) {
+        const outstanding = node.pendingWorkIds.filter(id => !settled.has(`${node.toolName}:${id}`));
+        outstanding.forEach(id => settled.add(`${node.toolName}:${id}`));
+        if (outstanding.length) pending.push({ ...node, pendingWorkIds: outstanding });
+        // Do not retain an unresolvable parent signature once its children
+        // have all delivered terminal results under their individual IDs.
+        if (!node.workId) continue;
+      }
+      const identity = node.workId ? `${node.toolName}:${node.workId}` : node.signature;
+      if (settled.has(identity)) continue;
+      settled.add(identity);
+      if (node.outcome === 'pending') pending.push(node);
+    }
+    return pending.reverse();
+  }
+
   successfulResearchCount(): number {
-    return this.nodes.filter(node => node.success && node.kind === 'research').length;
+    return this.nodes.filter(node => node.success && (!node.outcome || node.outcome === 'completed') && node.kind === 'research').length;
   }
 
   materialProgressCount(): number {
@@ -236,7 +287,7 @@ export class RuntimeEvidenceLedger {
       scopeId: this.scopeId,
       sequence: this.sequence,
       mutationEpoch: this.mutationEpoch,
-      nodes: this.nodes.map(node => ({ ...node, targets: [...node.targets], metrics: { ...node.metrics } })),
+      nodes: this.nodes.map(node => ({ ...node, targets: [...node.targets], metrics: { ...node.metrics }, ...(node.pendingWorkIds ? { pendingWorkIds: [...node.pendingWorkIds] } : {}) })),
     };
   }
 
@@ -244,7 +295,7 @@ export class RuntimeEvidenceLedger {
     this.sequence = Math.max(0, Number(snapshot.sequence) || 0);
     this.mutationEpoch = Math.max(0, Number(snapshot.mutationEpoch) || 0);
     this.nodes = Array.isArray(snapshot.nodes)
-      ? snapshot.nodes.map(node => ({ ...node, targets: [...(node.targets || [])], metrics: { ...(node.metrics || {}) } }))
+      ? snapshot.nodes.map(node => ({ ...node, targets: [...(node.targets || [])], metrics: { ...(node.metrics || {}) }, ...(node.pendingWorkIds ? { pendingWorkIds: [...node.pendingWorkIds] } : {}) }))
       : [];
   }
 }

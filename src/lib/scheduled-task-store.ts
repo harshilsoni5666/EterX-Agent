@@ -21,6 +21,7 @@ export interface ScheduledTaskSnapshot {
 }
 
 let cache: ScheduledTaskSnapshot | null = null;
+let cacheFingerprint = '';
 let writeQueue: Promise<unknown> = Promise.resolve();
 
 const emptySnapshot = (): ScheduledTaskSnapshot => ({ version: 1, savedAt: 0, tasks: [] });
@@ -41,15 +42,24 @@ async function readDisk(): Promise<ScheduledTaskSnapshot> {
   // another runtime has already committed a newer tasks.json.
   try {
     const source = await fs.pathExists(STORE_PATH) ? STORE_PATH : STORE_BACKUP_PATH;
+    const stats = await fs.stat(source);
+    const fingerprint = `${source}:${stats.size}:${stats.mtimeMs}`;
+    if (cache && cacheFingerprint === fingerprint) return cache;
     const raw = await fs.readJson(source);
     if (!raw || !Array.isArray(raw.tasks)) throw new Error('Invalid scheduled task snapshot');
     cache = normalizeSnapshot(raw);
+    cacheFingerprint = fingerprint;
   } catch (error: any) {
     if (error?.code !== 'ENOENT' && await fs.pathExists(STORE_PATH)) await preserveCorruptTasks(STORE_PATH);
     try {
+      const stats = await fs.stat(STORE_BACKUP_PATH);
+      const fingerprint = `${STORE_BACKUP_PATH}:${stats.size}:${stats.mtimeMs}`;
+      if (cache && cacheFingerprint === fingerprint) return cache;
       cache = normalizeSnapshot(await fs.readJson(STORE_BACKUP_PATH));
+      cacheFingerprint = fingerprint;
     } catch {
       cache = emptySnapshot();
+      cacheFingerprint = '';
     }
   }
   return cache;

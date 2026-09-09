@@ -1,4 +1,5 @@
-import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
+import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { getMainAgentModelConfig, normalizeMainAgentMode, type MainAgentMode, type MainAgentProvider } from './model-routing';
@@ -15,7 +16,7 @@ import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry'
  */
 
 const MAX_ALLOWED_STEPS = 20;
-const DEFAULT_MAX_STEPS = 15;
+const DEFAULT_MAX_STEPS = 8;
 
 export type PlannerStepType =
   | 'inspect'
@@ -124,32 +125,35 @@ Rules:
 1. Use only concrete task steps. Never output vague names like "Fix code", "Implement Core", "Review", "Setup Environment", or "Verify & Polish".
 2. Every step must produce a real outcome: files inspected, code patched, data collected, artifact generated, check run, or result delivered.
 3. Prefer the fewest meaningful steps. Do not pad simple work. Keep plans under the requested max_steps.
-4. For code/product work, include inspect before edit, focused edit/create steps, and verification. For UI work, include the exact UI surface and state being checked.
-5. Do not plan sub-agents, background workers, dynamic tools, connector triggers, or hidden scheduler work unless the user explicitly asks for those systems.
-6. Do not include task_decomposer or tracker-management as a step.
-7. Use exact filenames, folders, UI areas, tools, constraints, and deliverables from the request/context when present.
-8. Dependencies must point only to earlier step numbers.
-9. Tools must use exact names from the AVAILABLE TOOLS catalog supplied with the task. Select only tools that materially help the specific step.
+4. Include inspection only when the task modifies an existing implementation and the supplied context does not identify the relevant ownership or behavior. Never add generic workspace listings, parent-directory discovery, runtime/version checks, server startup, or environment setup as preliminary steps unless the requested outcome truly depends on them.
+5. For a new artifact at a known or runtime-provided default location, begin with the artifact outcome itself. Do not invent a discovery/setup phase.
+6. Put ordinary correctness evidence in each implementation step's done_when. Create a separate verification/release step only when it is a distinct cross-cutting gate or later work depends on its result.
+7. For UI work, name the exact UI surface and state only when visible UI validation is actually required.
+8. Do not plan sub-agents, background workers, dynamic tools, connector triggers, or hidden scheduler work unless the user explicitly asks for those systems.
+9. Do not include task_decomposer, task_checkpoint, tracker-management, narration, or reporting-the-plan as steps.
+10. Use exact filenames, folders, UI areas, tools, constraints, and deliverables from the request/context when present.
+11. Dependencies must point only to earlier step numbers. Use [] for independent outcomes; do not invent a sequential chain. Explicit user restrictions (including no tests/checks) apply to every step and done_when.
+12. Tools must use exact names from the AVAILABLE TOOLS catalog supplied with the task. Select only tools that materially help the specific step.
 
 Return ONLY valid JSON:
 {
   "steps": [
     {
       "step": 1,
-      "name": "Inspect task planner files",
-      "description": "Read the task planner, decomposer, tracker store, and dock UI code to locate the current planning and progress flow.",
-      "tools": ["workspace_run_command"],
-      "done_when": "The relevant files, entry points, and current behavior are identified.",
+      "name": "Prepare the destination account model",
+      "description": "Add the destination schema and compatibility boundary needed by both the API and worker before either producer migrates.",
+      "tools": ["workspace_edit_file"],
+      "done_when": "Both systems can use the destination representation without breaking current consumers.",
       "depends_on": [],
       "priority": "high",
-      "step_type": "inspect",
-      "expected_output": "A concrete map of files and behaviors to change.",
-      "risk": "low",
-      "artifacts": ["src/lib/agent/task_planner.ts"]
+      "step_type": "edit",
+      "expected_output": "A shared destination model with a temporary compatibility boundary.",
+      "risk": "medium",
+      "artifacts": ["src/account/schema.ts", "src/account/compatibility.ts"]
     }
   ],
-  "estimated_complexity": "simple|moderate|complex",
-  "estimated_time_minutes": 15
+  "estimated_complexity": "complex",
+  "estimated_time_minutes": 90
 }`;
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -299,7 +303,7 @@ function isGenericDescription(value: unknown): boolean {
 }
 
 function inferStepType(raw: any, index: number, total: number, task: string, context = ''): PlannerStepType {
-  const text = `${raw?.name || ''} ${raw?.description || ''} ${(raw?.tools || []).join(' ')} ${raw?.step_type || ''}`.toLowerCase();
+  const text = `${raw?.name || ''} ${raw?.description || ''} ${(Array.isArray(raw?.tools) ? raw.tools : []).join(' ')} ${raw?.step_type || ''}`.toLowerCase();
   const profile = taskProfile(task, context);
 
   if (/\b(research|search|scrape|source|citation|read article|collect evidence)\b/.test(text)) return 'research';
@@ -312,8 +316,7 @@ function inferStepType(raw: any, index: number, total: number, task: string, con
   if (/\b(ask|confirm|approve|message|send|notify|email|slack|telegram|whatsapp)\b/.test(text)) return 'communicate';
   if (/\b(deliver|summari[sz]e|final|handoff|report result)\b/.test(text)) return 'deliver';
 
-  if (index === 0 && (profile.isCode || profile.isUi || profile.files.length > 0)) return 'inspect';
-  if (index === total - 1) return profile.isCode || profile.isUi || profile.isData || profile.isDocument ? 'verify' : 'deliver';
+  // Position alone never creates a mandatory discovery or verification phase.
   if (profile.needsCreate && !profile.needsEdit) return 'create';
   if (profile.needsEdit || profile.isCode || profile.isUi) return 'edit';
   if (profile.isResearch) return 'research';
@@ -475,7 +478,7 @@ function sanitizeStepType(value: unknown, fallback: PlannerStepType): PlannerSte
 }
 
 function sanitizeDependsOn(value: unknown, currentStep: number): number[] {
-  if (!Array.isArray(value)) return currentStep > 1 ? [currentStep - 1] : [];
+  if (!Array.isArray(value)) return [];
   return Array.from(new Set(
     value
       .map(item => Number(item))
@@ -485,7 +488,7 @@ function sanitizeDependsOn(value: unknown, currentStep: number): number[] {
 
 function sanitizeArtifacts(value: unknown, task: string, context = ''): string[] {
   const raw = Array.isArray(value) ? value.map(item => cleanText(item)) : [];
-  return uniq([...raw, ...extractFileHints(task, context)]).slice(0, 10);
+  return uniq(raw).slice(0, 10);
 }
 
 function normalizeToolList(value: unknown, type: PlannerStepType, task: string, context = ''): string[] {
@@ -503,7 +506,7 @@ function normalizeToolList(value: unknown, type: PlannerStepType, task: string, 
     });
 
   const inferred = inferTools(type, task, context).filter(tool => registered.has(tool));
-  return uniq([...normalized, ...inferred]).slice(0, 4);
+  return uniq(Array.isArray(value) ? normalized : inferred).slice(0, 4);
 }
 
 function makeDoneWhen(type: PlannerStepType, task: string, context = ''): string {
@@ -543,7 +546,7 @@ function sortAndReindexSteps(steps: PlannerStep[], task: string, context: string
     return {
       ...step,
       step: stepNumber,
-      depends_on: sanitizeDependsOn(index === 0 ? [] : step.depends_on?.length ? step.depends_on : [index], stepNumber),
+      depends_on: sanitizeDependsOn(step.depends_on, stepNumber),
       tools: normalizeToolList(step.tools, step.step_type, task, context),
       artifacts: sanitizeArtifacts(step.artifacts, task, context),
     };
@@ -551,12 +554,10 @@ function sortAndReindexSteps(steps: PlannerStep[], task: string, context: string
 }
 
 function hasMeaningfulCoverage(steps: PlannerStep[], task: string, context: string): boolean {
-  const profile = taskProfile(task, context);
-  if (steps.length === 0) return false;
-  if ((profile.isCode || profile.isUi || profile.files.length > 0) && !steps.some(step => step.step_type === 'inspect')) return false;
-  if ((profile.needsEdit || profile.isCode || profile.isUi) && !steps.some(step => step.step_type === 'edit' || step.step_type === 'create')) return false;
-  if ((profile.needsEdit || profile.needsCreate || profile.isCode || profile.isUi || profile.isData || profile.isDocument) && !steps.some(step => step.step_type === 'verify')) return false;
-  return true;
+  // Outcomes, not a fixed inspect/edit/verify template, define useful coverage.
+  // Read-only investigations and verification-free requests are valid plans.
+  return steps.length > 0 && steps.every(step => Boolean(step.name && step.done_when && step.expected_output)) &&
+    steps.some(step => step.step_type !== 'deliver');
 }
 
 function cleanJsonText(rawText: string): string {
@@ -580,14 +581,14 @@ export class TaskPlannerClient {
       return null;
     }
     if (!this.ai || this.geminiApiKey !== apiKey) {
-      this.ai = new GoogleGenAI({ apiKey });
+      this.ai = new GoogleGenAI({ httpOptions: { timeout: MODEL_REQUEST_TIMEOUT_MS }, apiKey });
       this.geminiApiKey = apiKey;
     }
     return this.ai;
   }
 
   private maxSteps(options?: TaskPlanningOptions): number {
-    return clampInt(options?.maxSubtasks, DEFAULT_MAX_STEPS, 3, MAX_ALLOWED_STEPS);
+    return clampInt(options?.maxSubtasks, DEFAULT_MAX_STEPS, 1, MAX_ALLOWED_STEPS);
   }
 
   private normalizePlannerOutput(parsed: any, task: string, context: string, options: TaskPlanningOptions, modelName: string, startTime: number): PlannerPlan {
@@ -601,7 +602,14 @@ export class TaskPlannerClient {
       throw new Error(`The configured planning model returned ${rawSteps.length} steps, exceeding the requested maximum of ${maxSteps}.`);
     }
 
+    const sourceStepPositions = new Map<string, number>();
+    rawSteps.forEach((raw: any, index: number) => {
+      const key = String(raw?.step ?? raw?.id ?? index + 1);
+      if (sourceStepPositions.has(key)) throw new Error(`Duplicate planning step identifier: ${key}.`);
+      sourceStepPositions.set(key, index + 1);
+    });
     let steps: PlannerStep[] = rawSteps.slice(0, MAX_ALLOWED_STEPS).map((raw: any, index: number) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`Step ${index + 1} must be an object.`);
       const inferredType = inferStepType(raw, index, rawSteps.length, task, context);
       const stepType = sanitizeStepType(raw?.step_type || raw?.type || raw?.kind, inferredType);
       const repairedName = isGenericName(raw?.name);
@@ -610,6 +618,13 @@ export class TaskPlannerClient {
       if (repairedDescription) warnings.push(`Repaired vague step description at position ${index + 1}.`);
 
       const stepNumber = index + 1;
+      const dependencies = Array.isArray(raw.depends_on) ? raw.depends_on.map((dependency: unknown) => {
+        const position = sourceStepPositions.get(String(dependency));
+        if (position === undefined || position >= stepNumber) {
+          throw new Error(`Step ${stepNumber} has an unknown, self, or forward dependency: ${String(dependency)}.`);
+        }
+        return position;
+      }) : [];
       const expectedOutput = compactSentence(
         raw?.expected_output || raw?.output || raw?.deliverable || '',
         makeExpectedOutput(stepType, task, context),
@@ -630,7 +645,7 @@ export class TaskPlannerClient {
           isGenericDescription(raw?.done_when || raw?.verification) ? '' : raw?.done_when || raw?.verification,
           makeDoneWhen(stepType, task, context),
         ),
-        depends_on: sanitizeDependsOn(raw?.depends_on, stepNumber),
+        depends_on: sanitizeDependsOn(dependencies, stepNumber),
         priority: sanitizePriority(raw?.priority, stepType === 'deliver' ? 'medium' : 'high'),
         step_type: stepType,
         expected_output: expectedOutput,
@@ -642,7 +657,7 @@ export class TaskPlannerClient {
     steps = sortAndReindexSteps(steps, task, context);
 
     if (!hasMeaningfulCoverage(steps, task, context)) {
-      throw new Error('The configured planning model returned a plan without the required inspect, implementation, or verification coverage.');
+      throw new Error('The configured planning model returned no substantive outcome with a completion condition.');
     }
 
     const elapsed = Date.now() - startTime;
@@ -667,11 +682,15 @@ export class TaskPlannerClient {
     return this.normalizePlannerOutput(parsed, task, context, options, modelName, startTime);
   }
 
-  private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)),
-    ]);
+  private async withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([promise, new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms);
+      })]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   public async decompose(task: string, context = '', mode: MainAgentMode = 'think', options: TaskPlanningOptions = {}): Promise<PlannerPlan> {
@@ -705,36 +724,35 @@ export class TaskPlannerClient {
             config: {
               systemInstruction: PLANNER_SYSTEM_PROMPT,
               responseMimeType: 'application/json',
-              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW, includeThoughts: false },
             },
           }),
-          45000,
+          MODEL_REQUEST_TIMEOUT_MS,
         );
         rawText = response.text || '';
       } else if (provider === 'anthropic') {
         const apiKey = getRuntimeApiKey('anthropic');
         if (!apiKey) throw new Error('Anthropic planning requires a configured Anthropic API key.');
-        const client = new Anthropic({ apiKey, baseURL: getProviderBaseURL('anthropic'), maxRetries: 0 });
+        const client = new Anthropic({ timeout: MODEL_REQUEST_TIMEOUT_MS, apiKey, baseURL: getProviderBaseURL('anthropic'), maxRetries: 0 });
         const response: any = await this.withTimeout(client.messages.create({
           model: modelName,
           max_tokens: 5000,
           system: PLANNER_SYSTEM_PROMPT,
           messages: [{ role: 'user', content: prompt }],
-        }), 45000);
+        }), MODEL_REQUEST_TIMEOUT_MS);
         rawText = (response.content || []).filter((part: any) => part?.type === 'text').map((part: any) => part.text || '').join('');
       } else {
         const baseURL = getProviderBaseURL(provider);
         if (!baseURL) throw new Error(`${provider} planning requires a configured provider endpoint.`);
         const apiKey = getRuntimeApiKey(provider as RuntimeApiKeyProvider) || (isLocalModelProvider(provider) ? 'local-provider' : '');
         if (!apiKey) throw new Error(`${provider} planning requires a configured API key.`);
-        const client = new OpenAI({ apiKey, baseURL, maxRetries: 0 });
+        const client = new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS, apiKey, baseURL, maxRetries: 0 });
         const response: any = await this.withTimeout(client.chat.completions.create({
           model: modelName,
           messages: [
             { role: 'system', content: PLANNER_SYSTEM_PROMPT },
             { role: 'user', content: prompt },
           ],
-        } as any), 45000);
+        } as any), MODEL_REQUEST_TIMEOUT_MS);
         rawText = String(response.choices?.[0]?.message?.content || '');
       }
 

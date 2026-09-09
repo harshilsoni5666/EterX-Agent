@@ -101,7 +101,6 @@ class AgentMonitorEmitter extends EventEmitter {
   private constructor() {
     super();
     this.setMaxListeners(500);
-    this.startHeartbeat();
   }
 
   static getInstance(): AgentMonitorEmitter {
@@ -112,6 +111,7 @@ class AgentMonitorEmitter extends EventEmitter {
   }
 
   private startHeartbeat() {
+    if (this.heartbeatTimer !== null) return;
     this.heartbeatTimer = setInterval(() => {
       this.emit_event({
         type: 'heartbeat',
@@ -127,14 +127,24 @@ class AgentMonitorEmitter extends EventEmitter {
     this.heartbeatTimer.unref?.();
   }
 
+  private stopHeartbeatIfIdle() {
+    if (this.subscribers.size > 0 || this.heartbeatTimer === null) return;
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
   subscribe(cb: (event: MonitorEvent) => void): () => void {
     this.subscribers.add(cb);
+    this.startHeartbeat();
     // Replay last 80 events for new subscribers
     const recent = this.recentEvents.slice(-80);
     for (const ev of recent) {
       try { cb(ev); } catch { }
     }
-    return () => this.subscribers.delete(cb);
+    return () => {
+      this.subscribers.delete(cb);
+      this.stopHeartbeatIfIdle();
+    };
   }
 
   subscribeForChat(
@@ -147,6 +157,7 @@ class AgentMonitorEmitter extends EventEmitter {
     };
 
     this.subscribers.add(wrapped);
+    this.startHeartbeat();
     if (options.replay !== false) {
       const recent = this.getRecentForChat(chatId, options.replayLimit ?? 80, options);
       for (const ev of recent) {
@@ -154,7 +165,10 @@ class AgentMonitorEmitter extends EventEmitter {
       }
     }
 
-    return () => this.subscribers.delete(wrapped);
+    return () => {
+      this.subscribers.delete(wrapped);
+      this.stopHeartbeatIfIdle();
+    };
   }
 
   getRecent(limit = 200): MonitorEvent[] {

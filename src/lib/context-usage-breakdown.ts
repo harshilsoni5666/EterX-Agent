@@ -111,11 +111,16 @@ const embeddedMediaTokenEstimate = (mimeType: string, encodedCharacters: number)
  * retain the exact serializer above. Provider-reported input usage remains
  * authoritative after the request.
  */
-export const serializeContextValueForMeasurement = (value: unknown): string => {
+const serializeContextValueForMeasurementDetailed = (value: unknown): {
+  serialized: string;
+  embeddedMediaTokens: number;
+} => {
   const ancestors = new WeakSet<object>();
+  let embeddedMediaTokens = 0;
   const mediaPlaceholder = (mimeType: string, encodedCharacters: number) => {
     const tokens = embeddedMediaTokenEstimate(mimeType, encodedCharacters);
-    return `[Embedded ${mimeType || 'binary'} media: estimated ${tokens} context tokens]\n${'x'.repeat(tokens * 4)}`;
+    embeddedMediaTokens += tokens;
+    return `[Embedded ${mimeType || 'binary'} media measured separately: ${tokens} tokens]`;
   };
   const normalize = (candidate: unknown, key = '', parentMimeType = ''): unknown => {
     if (typeof candidate === 'string') {
@@ -171,14 +176,23 @@ export const serializeContextValueForMeasurement = (value: unknown): string => {
   };
   try {
     const serialized = JSON.stringify(normalize(value ?? ''));
-    return typeof serialized === 'string' ? serialized : String(serialized ?? '');
+    return {
+      serialized: typeof serialized === 'string' ? serialized : String(serialized ?? ''),
+      embeddedMediaTokens,
+    };
   } catch {
-    return serializeContextValue(value);
+    return { serialized: serializeContextValue(value), embeddedMediaTokens: 0 };
   }
 };
 
-export const estimateContextValueTokens = (value: unknown): number =>
-  Math.ceil(Math.max(0, serializeContextValueForMeasurement(value).length) / 4);
+export const serializeContextValueForMeasurement = (value: unknown): string =>
+  serializeContextValueForMeasurementDetailed(value).serialized;
+
+export const estimateContextValueTokens = (value: unknown): number => {
+  const measurement = serializeContextValueForMeasurementDetailed(value);
+  return measurement.embeddedMediaTokens
+    + Math.ceil(Math.max(0, measurement.serialized.length) / 4);
+};
 
 const estimateTokensFromText = estimateContextValueTokens;
 
@@ -370,15 +384,69 @@ const measureSystemSections = (systemInstruction: unknown): {
   };
 };
 
+export type ContextUsageMeasuredSections = {
+  conversation: ReturnType<typeof measureConversationSections>;
+  system: ReturnType<typeof measureSystemSections>;
+  tools: ReturnType<typeof measureToolSections>;
+};
+
+const toolSectionCache = new WeakMap<object, ReturnType<typeof measureToolSections>>();
+const systemObjectSectionCache = new WeakMap<object, ReturnType<typeof measureSystemSections>>();
+const systemStringSectionCache = new Map<string, ReturnType<typeof measureSystemSections>>();
+const MAX_SYSTEM_SECTION_CACHE_ENTRIES = 24;
+
+const cachedToolSections = (tools: unknown): ReturnType<typeof measureToolSections> => {
+  if (!tools || typeof tools !== 'object') return measureToolSections(tools);
+  const cached = toolSectionCache.get(tools as object);
+  if (cached) return cached;
+  const measured = measureToolSections(tools);
+  toolSectionCache.set(tools as object, measured);
+  return measured;
+};
+
+const cachedSystemSections = (systemInstruction: unknown): ReturnType<typeof measureSystemSections> => {
+  if (typeof systemInstruction === 'string') {
+    const cached = systemStringSectionCache.get(systemInstruction);
+    if (cached) return cached;
+    const measured = measureSystemSections(systemInstruction);
+    systemStringSectionCache.set(systemInstruction, measured);
+    if (systemStringSectionCache.size > MAX_SYSTEM_SECTION_CACHE_ENTRIES) {
+      const oldest = systemStringSectionCache.keys().next().value;
+      if (oldest !== undefined) systemStringSectionCache.delete(oldest);
+    }
+    return measured;
+  }
+  if (systemInstruction && typeof systemInstruction === 'object') {
+    const cached = systemObjectSectionCache.get(systemInstruction as object);
+    if (cached) return cached;
+    const measured = measureSystemSections(systemInstruction);
+    systemObjectSectionCache.set(systemInstruction as object, measured);
+    return measured;
+  }
+  return measureSystemSections(systemInstruction);
+};
+
+export const measureContextUsageSections = (input: {
+  contents?: unknown[];
+  tools?: unknown;
+  systemInstruction?: unknown;
+}): ContextUsageMeasuredSections => ({
+  conversation: measureConversationSections(input.contents || []),
+  system: cachedSystemSections(input.systemInstruction),
+  tools: cachedToolSections(input.tools),
+});
+
 export const buildContextUsageBreakdown = (input: {
   contents?: unknown[];
   tools?: unknown;
   systemInstruction?: unknown;
   breakdownSources?: ContextUsageBreakdownSources;
+  measuredSections?: ContextUsageMeasuredSections;
 }): ContextUsageBreakdown => {
-  const measuredConversation = measureConversationSections(input.contents || []);
-  const measuredSystem = measureSystemSections(input.systemInstruction);
-  const measuredTools = measureToolSections(input.tools);
+  const measured = input.measuredSections || measureContextUsageSections(input);
+  const measuredConversation = measured.conversation;
+  const measuredSystem = measured.system;
+  const measuredTools = measured.tools;
   const rules = input.breakdownSources?.rules
     ? estimateTokensFromText(input.breakdownSources.rules)
     : measuredSystem.rules;

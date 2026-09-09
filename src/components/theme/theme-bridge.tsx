@@ -6,6 +6,16 @@ import { DEFAULT_THEME, isThemePreference, type ResolvedTheme, type ThemePrefere
 
 const SETTINGS_STORAGE_KEY = 'eterx_settings';
 const SETTINGS_CHANNEL = 'eterx-settings';
+const SETTINGS_SOURCE_ID = `eterx-window-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+type EterxViewTransition = {
+  finished: Promise<unknown>;
+  ready?: Promise<unknown>;
+  skipTransition?: () => void;
+};
+
+let activeThemeTransition: EterxViewTransition | null = null;
+let themeTransitionRevision = 0;
 
 const readThemePreference = (): ThemePreference => {
   try {
@@ -27,56 +37,121 @@ const resolveTheme = (theme: ThemePreference): ResolvedTheme => {
   return theme === 'dark' ? 'dark' : 'light';
 };
 
-const syncThemeIcons = (theme: ResolvedTheme) => {
-  if (typeof document === 'undefined') return;
-  const icon = theme === 'dark' ? '/logo-white.png' : '/logo-whitetheme.png';
-  // Metadata emits media-qualified links for the initial system theme. Keep
-  // the active favicon synchronized too when the user switches the app theme
-  // manually while the OS theme stays unchanged.
-  document
-    .querySelectorAll<HTMLLinkElement>('link[rel="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]')
-    .forEach((link) => {
-      link.href = icon;
-      link.media = '';
-    });
-};
-
-export const applyEterxTheme = (theme: ThemePreference = readThemePreference()): ResolvedTheme => {
-  if (typeof window === 'undefined') return 'dark';
-  const resolved = resolveTheme(theme);
+const applyThemeToDocument = (resolved: ResolvedTheme) => {
   const root = document.documentElement;
   root.setAttribute('data-theme', resolved);
   root.classList.toggle('dark', resolved === 'dark');
   root.classList.toggle('light', resolved === 'light');
   root.style.colorScheme = resolved;
-  syncThemeIcons(resolved);
-  (window as any).electronAPI?.setNativeTheme?.(resolved);
+};
+
+const syncNativeTheme = (resolved: ResolvedTheme) => {
+  queueMicrotask(() => {
+    if (document.documentElement.getAttribute('data-theme') !== resolved) return;
+    // Native window integration does not belong in the critical snapshot path.
+    // In Electron this call crosses IPC and can otherwise delay the first frame.
+    (window as any).electronAPI?.setNativeTheme?.(resolved);
+  });
+};
+
+export const applyEterxTheme = (theme: ThemePreference = readThemePreference()): ResolvedTheme => {
+  if (typeof window === 'undefined') return 'dark';
+  const resolved = resolveTheme(theme);
+  applyThemeToDocument(resolved);
+  syncNativeTheme(resolved);
   return resolved;
 };
 
-export const transitionEterxTheme = (theme: ThemePreference): ResolvedTheme => {
+export const transitionEterxTheme = (
+  theme: ThemePreference,
+  updateThemeState?: () => void,
+): ResolvedTheme => {
   if (typeof window === 'undefined') return 'dark';
 
-  const documentWithViewTransition = document as Document & {
-    startViewTransition?: (callback: () => void) => { finished: Promise<unknown> };
+  const resolved = resolveTheme(theme);
+  const root = document.documentElement;
+  const revision = ++themeTransitionRevision;
+  // A rapid second selection must cancel the old reveal even when the new
+  // selection takes the non-animated path (same theme or a hidden window).
+  activeThemeTransition?.skipTransition?.();
+  activeThemeTransition = null;
+  root.removeAttribute('data-eterx-theme-transition');
+  root.style.removeProperty('--eterx-theme-wave-x');
+  root.style.removeProperty('--eterx-theme-wave-y');
+  root.style.removeProperty('--eterx-theme-wave-radius');
+  const commitTheme = () => {
+    applyThemeToDocument(resolved);
+    updateThemeState?.();
+  };
+  const commitWithoutTransition = () => {
+    commitTheme();
+    syncNativeTheme(resolved);
+    return resolved;
   };
 
-  try {
-    if (documentWithViewTransition.startViewTransition) {
-      const transition = documentWithViewTransition.startViewTransition(() => {
-        applyEterxTheme(theme);
-      });
-      transition.finished.catch(() => undefined);
-    } else {
-      return applyEterxTheme(theme);
-    }
-  } catch {
-    // A second switch can arrive while a View Transition is still active.
-    // The theme must still be applied synchronously in that case.
-    return applyEterxTheme(theme);
+  const documentWithViewTransition = document as Document & {
+    startViewTransition?: (callback: () => void) => EterxViewTransition;
+  };
+
+  const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const themeAlreadyVisible = root.getAttribute('data-theme') === resolved;
+
+  if (
+    !documentWithViewTransition.startViewTransition
+    || prefersReducedMotion
+    || document.visibilityState !== 'visible'
+    || themeAlreadyVisible
+  ) {
+    return commitWithoutTransition();
   }
 
-  return resolveTheme(theme);
+  // Use an exact pixel radius instead of a percentage so the circle always
+  // reaches the farthest (bottom-left) corner at every window aspect ratio.
+  const waveX = Math.max(0, window.innerWidth - 150);
+  const waveY = 18;
+  const farthestX = Math.max(waveX, window.innerWidth - waveX);
+  const farthestY = Math.max(waveY, window.innerHeight - waveY);
+  const waveRadius = Math.ceil(Math.hypot(farthestX, farthestY)) + 2;
+  root.style.setProperty('--eterx-theme-wave-x', `${waveX}px`);
+  root.style.setProperty('--eterx-theme-wave-y', `${waveY}px`);
+  root.style.setProperty('--eterx-theme-wave-radius', `${waveRadius}px`);
+
+  try {
+    // Local component transitions must not be halfway between palettes when
+    // Chromium captures the new page image. This marker is removed as soon as
+    // both snapshots are ready, before the circular reveal runs visibly.
+    root.setAttribute('data-eterx-theme-transition', 'true');
+    const transition = documentWithViewTransition.startViewTransition(() => {
+      if (revision === themeTransitionRevision) commitTheme();
+    });
+    activeThemeTransition = transition;
+
+    void (transition.ready || Promise.resolve())
+      .catch(() => undefined)
+      .then(() => {
+        if (revision !== themeTransitionRevision) return;
+        root.removeAttribute('data-eterx-theme-transition');
+        syncNativeTheme(resolved);
+      });
+
+    void transition.finished
+      .catch(() => undefined)
+      .finally(() => {
+        if (activeThemeTransition === transition) activeThemeTransition = null;
+        if (revision === themeTransitionRevision) {
+          root.removeAttribute('data-eterx-theme-transition');
+          root.style.removeProperty('--eterx-theme-wave-x');
+          root.style.removeProperty('--eterx-theme-wave-y');
+          root.style.removeProperty('--eterx-theme-wave-radius');
+        }
+      });
+  } catch {
+    activeThemeTransition = null;
+    root.removeAttribute('data-eterx-theme-transition');
+    return commitWithoutTransition();
+  }
+
+  return resolved;
 };
 
 export const broadcastEterxSettingsUpdate = (settings: unknown) => {
@@ -84,7 +159,7 @@ export const broadcastEterxSettingsUpdate = (settings: unknown) => {
   window.dispatchEvent(new CustomEvent('eterx-settings-updated', { detail: settings }));
   try {
     const channel = new BroadcastChannel(SETTINGS_CHANNEL);
-    channel.postMessage({ type: 'settings-updated', settings });
+    channel.postMessage({ type: 'settings-updated', settings, sourceId: SETTINGS_SOURCE_ID });
     channel.close();
   } catch {
     // BroadcastChannel is an enhancement for multi-window sync.
@@ -130,7 +205,10 @@ export const ThemeBridge = React.memo(() => {
     let channel: BroadcastChannel | null = null;
     try {
       channel = new BroadcastChannel(SETTINGS_CHANNEL);
-      channel.onmessage = () => {
+      channel.onmessage = (event) => {
+        // The local CustomEvent already handled this window. Ignore its
+        // BroadcastChannel echo so it cannot bypass an active circular reveal.
+        if (event.data?.sourceId === SETTINGS_SOURCE_ID) return;
         if (storageLoaded) applyStoredTheme();
       };
     } catch {

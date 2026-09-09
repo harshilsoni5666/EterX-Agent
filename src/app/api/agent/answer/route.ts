@@ -67,13 +67,22 @@ export async function POST(req: NextRequest) {
       if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
     }
 
+    if (pendingRecord.status === 'answered') {
+      const sameAnswer = pendingRecord.answer === cleanAnswer &&
+        JSON.stringify(pendingRecord.answers || null) === JSON.stringify(cleanAnswers) &&
+        JSON.stringify(pendingRecord.selectedOption || null) === JSON.stringify(selectedOption ?? null);
+      return attachAgentApiSessionCookie(sameAnswer
+        ? NextResponse.json({ success: true, alreadyAccepted: true })
+        : jsonError('This question already has an accepted answer. Send a follow-up to change your instruction.', 409), session);
+    }
+
     pendingRecord.status = 'answered';
     pendingRecord.answer = cleanAnswer;
     pendingRecord.answers = cleanAnswers;
     pendingRecord.selectedOption = selectedOption ?? null;
     pendingRecord.answeredAt = Date.now();
 
-    console.log(`[API: ask_user] User answered question "${pendingRecord.question?.substring(0, 50)}": "${cleanAnswer.substring(0, 120)}"`);
+    // User responses can contain secrets. Do not put their content in logs.
 
     return attachAgentApiSessionCookie(NextResponse.json({ success: true }), session);
   } catch (error: any) {

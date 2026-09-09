@@ -75,7 +75,7 @@ export interface CognitiveState {
 
 const PROBLEM_PATTERNS: Array<{ pattern: RegExp; class: ProblemClass; weight: number }> = [
   // Trivial
-  { pattern: /^(hi|hello|hey|thanks?|ok|okay|yes|no|cool|sure|fine|great)\b/i, class: 'trivial', weight: 10 },
+  { pattern: /^(hi|hello|hey|thanks?|ok|okay|yes|no|cool|sure|fine|great)[!.?\s]*$/i, class: 'trivial', weight: 10 },
   { pattern: /^(what is|who is|define|meaning of|explain)\b.{0,40}$/i, class: 'trivial', weight: 8 },
 
   // Debugging
@@ -86,8 +86,8 @@ const PROBLEM_PATTERNS: Array<{ pattern: RegExp; class: ProblemClass; weight: nu
   { pattern: /\b(research|investigate|analyze|compare|benchmark|study|survey|review)\b/i, class: 'research', weight: 7 },
   { pattern: /\b(market|industry|competitor|trends?|statistics|report)\b/i, class: 'research', weight: 8 },
 
-  // Creative
-  { pattern: /\b(design|create|generate|imagine|brainstorm|concept|idea|innovate)\b/i, class: 'creative', weight: 6 },
+  // Creative exploration (ordinary creation is execution, not brainstorming)
+  { pattern: /\b(imagine|brainstorm|concept|ideate|creative directions?|explore designs?|innovate)\b/i, class: 'creative', weight: 6 },
   { pattern: /\b(logo|illustration|mockup|prototype|wireframe)\b/i, class: 'creative', weight: 8 },
 
   // Architectural
@@ -99,7 +99,6 @@ const PROBLEM_PATTERNS: Array<{ pattern: RegExp; class: ProblemClass; weight: nu
 
   // Sequential multi-step
   { pattern: /\b(then|after that|next|step by step|first.*then|workflow)\b/i, class: 'sequential', weight: 5 },
-  { pattern: /\b(build|implement|develop|create)\b.*\b(and|with|including)\b/i, class: 'sequential', weight: 4 },
 ];
 
 // ─── Core Engine ──────────────────────────────────────────────────────────────
@@ -111,12 +110,9 @@ export class CognitiveReasoningEngine {
    */
   classifyProblem(message: string): { class: ProblemClass; confidence: number; reasoning: string } {
     const text = message.trim();
-    const words = text.split(/\s+/).length;
 
-    // Ultra-short messages are trivial
-    if (words <= 3 && !/\b(fix|build|create|debug|research)\b/i.test(text)) {
-      return { class: 'trivial', confidence: 0.95, reasoning: 'Ultra-short message, likely greeting or acknowledgment' };
-    }
+    // A short directive can still request consequential work. Length alone
+    // must not turn "delete files" or a contextual follow-up into small talk.
 
     // Score each class
     const scores: Map<ProblemClass, { total: number; reasons: string[] }> = new Map();
@@ -129,18 +125,8 @@ export class CognitiveReasoningEngine {
       }
     }
 
-    // Word count boosts
-    if (words > 50) {
-      const arch = scores.get('architectural') || { total: 0, reasons: [] };
-      arch.total += 3;
-      arch.reasons.push('long_message');
-      scores.set('architectural', arch);
-    }
-
     if (scores.size === 0) {
-      // Default based on word count
-      if (words <= 15) return { class: 'single_step', confidence: 0.5, reasoning: 'No strong pattern match, short message → single step' };
-      return { class: 'sequential', confidence: 0.4, reasoning: 'No strong pattern match, moderate message → sequential' };
+      return { class: 'single_step', confidence: 0.6, reasoning: 'No dependency or specialist signal → direct execution' };
     }
 
     // Find highest scoring class
@@ -226,7 +212,7 @@ export class CognitiveReasoningEngine {
       case 'architectural': {
         hypotheses.push({
           id: 'h_systematic',
-          approach: 'Decompose into ordered steps, execute each with verification',
+          approach: 'Execute the requested outcomes directly in dependency order; keep coordination internal unless the strict live-plan gate is met',
           toolsNeeded: this.inferToolsFromMessage(message, availableTools),
           estimatedSteps: this.estimateStepCount(message),
           risks: ['Scope creep', 'Integration issues between steps'],
@@ -236,7 +222,7 @@ export class CognitiveReasoningEngine {
         if (problemClass === 'architectural') {
           hypotheses.push({
             id: 'h_scaffold_then_fill',
-            approach: 'Scaffold project structure first, then fill in implementation details',
+            approach: 'Create the coherent implementation structure directly, then fill only the required details',
             toolsNeeded: ['workspace_edit_file', 'workspace_run_command'],
             estimatedSteps: Math.max(6, this.estimateStepCount(message)),
             risks: ['Scaffold may not match exact requirements', 'May need heavy customization'],
@@ -318,15 +304,16 @@ export class CognitiveReasoningEngine {
       }
 
       default: {
-        // Generic sequential DAG from estimated steps
+        // Internal execution guidance only. These nodes must not become a
+        // visible task plan or generic preparation ritual.
         const stepCount = hypothesis.estimatedSteps;
         for (let i = 0; i < stepCount; i++) {
           const isLast = i === stepCount - 1;
           nodes.push({
             id: `step_${i}`,
-            description: i === 0 ? 'Analyze requirements and prepare'
-              : isLast ? 'Verify and finalize'
-                : `Execute step ${i + 1}`,
+            description: i === 0 ? 'Produce the first concrete requested outcome'
+              : isLast ? 'Finish the requested outcome with proportionate evidence'
+                : `Continue the next dependent outcome`,
             dependencies: i > 0 ? [`step_${i - 1}`] : [],
             status: 'pending',
             verificationRequired: isLast,
@@ -343,9 +330,10 @@ export class CognitiveReasoningEngine {
    * This tells the model HOW to think about the current task.
    */
   generateCognitiveDirective(state: CognitiveState, message: string): string {
-    if (state.problemClass === 'trivial') return '';
+    if (state.problemClass === 'trivial' || state.problemClass === 'single_step') return '';
 
     const parts: string[] = ['━━━ COGNITIVE REASONING ENGINE ━━━'];
+    parts.push('This is an internal execution hint, not authorization to call task_decomposer, announce a plan, inspect directories, or run setup checks. Follow the main prompt\'s strict plan and direct-creation rules.');
 
     // Problem classification
     parts.push(`Problem Type: ${state.problemClass} (confidence: ${(state.confidence * 100).toFixed(0)}%)`);
@@ -368,9 +356,9 @@ export class CognitiveReasoningEngine {
     // Task DAG progress
     const done = state.taskDag.filter(n => n.status === 'done').length;
     const total = state.taskDag.length;
-    if (total > 0) {
+    if (total > 0 && (state.problemClass === 'debugging' || state.problemClass === 'research')) {
       const nextPending = state.taskDag.find(n => n.status === 'pending');
-      parts.push(`Progress: ${done}/${total} steps complete${nextPending ? `. Next: ${nextPending.description}` : ''}`);
+      parts.push(`Internal evidence progress: ${done}/${total}${nextPending ? `. Next necessary action: ${nextPending.description}` : ''}`);
       if (nextPending?.toolHint) {
         parts.push(`Suggested tool: ${nextPending.toolHint}`);
       }
@@ -390,7 +378,7 @@ export class CognitiveReasoningEngine {
         parts.push('THINK: Search is discovery, not proof. Read actual sources before synthesizing.');
         break;
       case 'architectural':
-        parts.push('THINK: Design the structure BEFORE writing code. Verify each component integrates.');
+        parts.push('THINK: For a new artifact, choose a coherent structure internally and create it directly. Inspect first only when existing implementation evidence is actually required.');
         break;
       case 'creative':
         parts.push('THINK: Explore multiple approaches. The first idea is rarely the best.');
@@ -507,8 +495,11 @@ export class CognitiveReasoningEngine {
     const tools: string[] = [];
     const lower = message.toLowerCase();
 
-    if (/\b(file|read|open|check|see|look)\b/i.test(lower)) tools.push('workspace_run_command');
+    if (/\b(read|inspect|examine)\b.*\b(file|path|folder|directory|code|source|implementation)\b/i.test(lower)) tools.push('workspace_run_command');
     if (/\b(write|create|make|generate|add|new)\b/i.test(lower)) tools.push('workspace_edit_file');
+    if (/\b(build|scaffold)\b.*\b(game|app|website|page|file|component|module|project|tool|artifact)\b/i.test(lower)) {
+      tools.push('workspace_edit_file');
+    }
     if (/\b(edit|modify|change|update|fix|patch)\b/i.test(lower)) {
       tools.push('workspace_edit_file');
     }
@@ -517,7 +508,7 @@ export class CognitiveReasoningEngine {
     }
     if (/\b(run|execute|command|shell|terminal|npm|pip|install)\b/i.test(lower)) tools.push('workspace_run_command');
     if (/\b(web|search|google|online|internet|latest)\b/i.test(lower)) tools.push('web_search');
-    if (/\b(test|verify|check|lint|build)\b/i.test(lower)) tools.push('workspace_run_command');
+    if (/\b(test|verify|lint|compile|run\s+(?:the\s+)?build)\b/i.test(lower)) tools.push('workspace_run_command');
     if (/\b(image|picture|photo|logo|illustration)\b/i.test(lower)) tools.push('image_generator');
 
     return tools.filter(t => available.includes(t));

@@ -19,6 +19,7 @@ import { ToolDefinition } from '../../schemas';
  */
 export const askUserTool: ToolDefinition = {
   name: 'ask_user',
+  modelDescription: 'Ask only for missing user input or authorization that blocks the next meaningful action; use available context/tools for discoverable facts. Send one focused question or group related questions once. Single: question + mode=text/short_answer/confirm; choice/multi_select adds options:[{label,value}]. Group: mode=questions + questions:[{id,question,mode,options?}]. Defaults are suggestions, never submitted answers or permission. Wait for the actual reply; do not re-ask an answered question or treat a timeout as consent.',
   description: `Ask the user a clarifying question when you need more information to proceed. 
   
 USE THIS WHEN:
@@ -41,13 +42,13 @@ MODES:
 The response will contain the user's answer. Continue your work based on it.`,
   category: 'core',
   inputSchema: z.object({
-    question: z.string().describe('The question to ask the user. Be clear and concise.'),
-    mode: z.enum(['choice', 'text', 'confirm', 'multi_select', 'short_answer', 'questions']).describe('Type of question: choice, text, confirm, multi_select, short_answer, or questions'),
+    question: z.string().optional().describe('Required for a single question. Optional group heading when mode=questions.'),
+    mode: z.enum(['choice', 'text', 'confirm', 'multi_select', 'short_answer', 'questions']).optional().default('text').describe('text/short_answer need question; choice/multi_select also need options; confirm is explicit yes/no; questions needs questions[].'),
     options: z.array(z.object({
       label: z.string().describe('Short label for this option (e.g., "Desktop")'),
       description: z.string().optional().describe('Optional longer description of what this option means'),
       value: z.string().describe('The value returned if this option is selected')
-    })).optional().describe('Options for "choice" mode. Provide 2-5 clear alternatives.'),
+    })).min(2).max(8).optional().describe('Required for choice/multi_select: 2–8 distinct options with label and value. Prefer 2–3 useful alternatives.'),
     questions: z.array(z.object({
       id: z.string().optional(),
       question: z.string(),
@@ -61,15 +62,26 @@ The response will contain the user's answer. Continue your work based on it.`,
       defaultValue: z.string().optional(),
       required: z.boolean().optional(),
       placeholder: z.string().optional(),
-    })).optional().describe('Use with mode "questions" to ask multiple structured questions at once.'),
+    })).min(1).max(20).optional().describe('Required for mode=questions. Group related blockers once; normally ask 1–3 concise questions. Each needs question and a unique id.'),
     context: z.string().optional().describe('Brief context about WHY you need this information (shown to user)'),
-    defaultValue: z.string().optional().describe('Default value or option if user just wants to proceed quickly'),
+    defaultValue: z.string().optional().describe('Suggested value the user must explicitly submit. Never automatically authorizes an action.'),
     urgent: z.boolean().optional().default(false).describe('If true, marks as high priority — agent is blocked without this info')
+  }).superRefine((value, issueContext) => {
+    if (value.mode === 'questions') {
+      if (!value.questions?.length) issueContext.addIssue({ code: z.ZodIssueCode.custom, path: ['questions'], message: 'questions[] is required for mode=questions.' });
+    } else if (!value.question?.trim()) issueContext.addIssue({ code: z.ZodIssueCode.custom, path: ['question'], message: 'A non-empty question is required.' });
+    if (['choice', 'multi_select'].includes(value.mode || '') && !value.options?.length) {
+      issueContext.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: 'Provide at least two labeled options for choice/multi_select.' });
+    }
   }),
-  outputSchema: z.object({ 
+  outputSchema: z.object({
+    success: z.boolean().optional(),
     answer: z.string(),
     selectedOption: z.any().optional(),
-    answers: z.array(z.any()).optional()
+    answers: z.array(z.any()).optional(),
+    timedOut: z.boolean().optional(),
+    respondedInMs: z.number().optional(),
+    error: z.string().optional(),
   }),
   execute: async (input: any, ctx?: any) => {
     const { question, mode, options, context, defaultValue, urgent } = input;
@@ -87,7 +99,7 @@ The response will contain the user's answer. Continue your work based on it.`,
       : [];
     const timestamp = Date.now();
     const responseKey = `ask_user_${timestamp}_${Math.random().toString(36).slice(2, 10)}`;
-    const chatId = String(ctx?.projectId || ctx?.chatId || '').slice(0, 160);
+    const chatId = String(ctx?.chatId || ctx?.projectId || '').slice(0, 160);
     const sessionId = String(ctx?.agentSessionId || '').slice(0, 160);
     
     // Build the ask_user event payload for the frontend
@@ -107,6 +119,12 @@ The response will contain the user's answer. Continue your work based on it.`,
     // Store the pending question globally so the API can match responses
     if (typeof globalThis !== 'undefined') {
       (globalThis as any).__pendingAskUser = (globalThis as any).__pendingAskUser || {};
+      const store = (globalThis as any).__pendingAskUser;
+      const receipts = Object.entries(store).filter(([, item]: [string, any]) => item.status === 'answered')
+        .sort((a: any, b: any) => Number(a[1].answeredAt || 0) - Number(b[1].answeredAt || 0));
+      receipts.forEach(([key, item]: [string, any], index) => {
+        if (timestamp - Number(item.answeredAt || 0) > 15 * 60 * 1000 || index < receipts.length - 200) delete store[key];
+      });
       (globalThis as any).__pendingAskUser[responseKey] = {
         question,
         mode,
@@ -177,12 +195,12 @@ The response will contain the user's answer. Continue your work based on it.`,
       const pending = (globalThis as any).__pendingAskUser?.[responseKey];
       
       if (pending?.status === 'answered' && pending?.answer !== null) {
-        // Clean up
-        delete (globalThis as any).__pendingAskUser[responseKey];
-        
-        console.log(`[Tool: ask_user] ✅ User answered: "${pending.answer}"`);
+        // Keep a short-lived receipt so a lost HTTP response can be retried
+        // after the agent has already consumed this answer.
+        pending.consumedAt = Date.now();
         
         return {
+          success: true,
           answer: pending.answer,
           selectedOption: pending.selectedOption || null,
           answers: pending.answers || undefined,
@@ -194,23 +212,15 @@ The response will contain the user's answer. Continue your work based on it.`,
       await waitForPollOrCancellation();
     }
     
-    // Timeout — use default or inform agent
+    // A timeout is not a user decision, including when a default was suggested.
     // Clean up
     delete (globalThis as any).__pendingAskUser?.[responseKey];
     
-    if (defaultValue) {
-      console.log(`[Tool: ask_user] ⏰ Timeout, using default: "${defaultValue}"`);
-      return {
-        answer: defaultValue,
-        timedOut: true,
-        usedDefault: true
-      };
-    }
-    
     return {
+      success: false,
       answer: '',
       timedOut: true,
-      error: 'User did not respond within 5 minutes. Proceed with best judgment or try a different approach.'
+      error: 'No user reply was received. Do not infer an answer or permission, repeat the same question, or take the blocked action. Preserve the unresolved question; do only independent authorized work.'
     };
   }
 };

@@ -56,6 +56,8 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   const nativeVolumeLastSentRef = useRef(0);
   const liveStateRef = useRef(liveState);
   const nativeStatusRef = useRef<Record<string, unknown> | null>(null);
+  const latestNativeVolumesRef = useRef({ liveMicVolume, liveModelVolume });
+  latestNativeVolumesRef.current = { liveMicVolume, liveModelVolume };
   liveStateRef.current = liveState;
 
   const isElectron = typeof window !== 'undefined' && Boolean((window as any).electronAPI?.openPetWindow);
@@ -111,14 +113,20 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
   }, [liveState, liveActiveTool, liveActivityLabel, controlMessage, isElectron, isMicMuted, isSpeakerMuted, isCameraEnabled, isScreenSharing]);
 
   useEffect(() => {
-    if (!isElectron || !isLiveActive || !(window as any).electronAPI?.updatePetWindow) return;
+    if (!isElectron || !isLiveActive || !(window as any).electronAPI?.updatePetWindow) {
+      if (nativeVolumeTimerRef.current !== null) clearTimeout(nativeVolumeTimerRef.current);
+      nativeVolumeTimerRef.current = null;
+      return;
+    }
     if (nativeVolumeTimerRef.current !== null) return;
     const waitMs = Math.max(0, 50 - (performance.now() - nativeVolumeLastSentRef.current));
     nativeVolumeTimerRef.current = setTimeout(() => {
       nativeVolumeTimerRef.current = null;
-      nativeVolumeLastSentRef.current = performance.now();
       const baseStatus = nativeStatusRef.current;
-      if (!baseStatus || !isLiveActive) return;
+      if (!baseStatus || liveStateRef.current === 'idle' || liveStateRef.current === 'error') return;
+      // Use the newest sample, including samples received while the timer was
+      // pending, so the native orb never receives an old captured volume.
+      const { liveMicVolume, liveModelVolume } = latestNativeVolumesRef.current;
       const nextStatus = {
         ...baseStatus,
         micVolume: Number.isFinite(liveMicVolume)
@@ -128,6 +136,12 @@ export const FloatingLiveWidget: React.FC<FloatingLiveWidgetProps> = ({
           ? liveModelVolume.slice(0, 8).map(value => Math.min(100, Math.max(0, Number(value) || 0)))
           : Math.min(100, Math.max(0, Number(liveModelVolume) || 0)),
       };
+      const previousModelVolume = baseStatus.modelVolume;
+      const sameModelVolume = Array.isArray(nextStatus.modelVolume) && Array.isArray(previousModelVolume)
+        ? nextStatus.modelVolume.length === previousModelVolume.length && nextStatus.modelVolume.every((value, index) => value === previousModelVolume[index])
+        : nextStatus.modelVolume === previousModelVolume;
+      if (nextStatus.micVolume === baseStatus.micVolume && sameModelVolume) return;
+      nativeVolumeLastSentRef.current = performance.now();
       nativeStatusRef.current = nextStatus;
       (window as any).electronAPI.updatePetWindow(nextStatus);
     }, waitMs);

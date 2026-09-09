@@ -286,11 +286,8 @@ export class AgentReflectionEngine {
 
     // === CORE QUALITY CHECKS ===
     
-    // 1. Output too short for complex task
-    if (taskWords > 15 && outputWords < 50) {
-      suggestions.push('Output too short for task complexity');
-      improvementActions.push({ tool: 'continue_generation', reason: 'Need more content for this task' });
-    }
+    // A short final reply can correctly deliver substantial work. Request
+    // length alone does not justify expanding the answer.
     
     // 2. Contains placeholder/TODO markers
     if (agentOutput.includes('TODO') || agentOutput.includes('placeholder') || agentOutput.includes('FIXME')) {
@@ -303,10 +300,8 @@ export class AgentReflectionEngine {
       suggestions.push('Claims inability — should attempt with tools');
     }
     
-    // 4. Bad markdown formatting
-    if (agentOutput.includes('##') && !agentOutput.includes('\\n##')) {
-      suggestions.push('Markdown headings not on own lines');
-    }
+    // Presentation choices are governed by the request and prompt. A hash
+    // in prose or code is not evidence that the answer needs reformatting.
     
     // 5. Unclosed code blocks
     const codeBlocks = (agentOutput.match(/```/g) || []).length;
@@ -372,11 +367,8 @@ export class AgentReflectionEngine {
       suggestions.push('Multiple shell commands with potential errors — verify outcomes');
     }
 
-    // 14. Document task but no structured output
-    const isDocTask = /\\b(document|report|paper|essay|article|write.*about)\\b/i.test(goalLower);
-    if (isDocTask && outputWords > 200 && !agentOutput.includes('##') && !agentOutput.includes('**')) {
-      suggestions.push('Document task with unstructured output — needs headings and formatting');
-    }
+    // Prose does not need headings or bold to be complete. The requested
+    // document structure, not word count, determines its formatting.
 
     // 15. Multi-step task but only partially completed
     const hasNumbers = /\\b(steps?|parts?|phases?|sections?)\\s*(\\d+|one|two|three|four|five)/i.test(goalLower);

@@ -9,7 +9,9 @@
  */
 
 import path from 'path';
+import { visibleUserRequest } from '../chat-user-payload';
 import { createHash } from 'crypto';
+import { open as openFile } from 'fs/promises';
 import { promisify } from 'util';
 import { gzip, gunzip } from 'zlib';
 import fs from 'fs-extra';
@@ -19,6 +21,8 @@ import { TfIdfVectorizer, cosineSimilarity } from './memory/divergence';
 import {
   classifyToolSemantics,
   extractToolTargets,
+  getToolResultOutcome,
+  toolResultChangedState,
   toolResultSucceeded,
   type ToolEffect,
 } from './tool-semantics';
@@ -39,6 +43,8 @@ export type ContextFactKind =
 export type ContextFactStatus = 'active' | 'resolved' | 'superseded';
 export type ContextEpistemicStatus = 'observed' | 'user_asserted' | 'inferred';
 export type ContextMemoryNetwork = 'world' | 'experience' | 'observation' | 'belief';
+
+const activeFactIdentity = (kind: ContextFactKind, key: string): string => `${kind}\u0000${key}`;
 
 export interface MemoryValueFactors {
   affectiveIntensity: number;
@@ -79,6 +85,7 @@ export interface ContextRetrievalResult {
   episodes: ContextEpisode[];
   strategyCounts: Record<'lexical' | 'semantic' | 'graph' | 'temporal' | 'value', number>;
   estimatedTokens: number;
+  omittedActiveCritical: number;
 }
 
 export interface ContextProvenance {
@@ -89,6 +96,17 @@ export interface ContextProvenance {
   resultHash?: string;
   mutationEpoch?: number;
   pageRef?: string;
+  /** Workspace observations stay reusable until a mutation overlaps their targets. */
+  observationScope?: 'workspace' | 'external';
+  /** Cheap external-change guard for absolute local targets observed by a read. */
+  targetSnapshots?: ContextTargetSnapshot[];
+}
+
+export interface ContextTargetSnapshot {
+  target: string;
+  size: number;
+  modifiedAtMs: number;
+  kind: 'file' | 'directory';
 }
 
 export interface ContextFact {
@@ -141,6 +159,9 @@ export interface ContextContinuityManifest {
   mutationEpoch: number;
   createdAt: number;
   facts: ContextManifestFact[];
+  /** Active records outside the bounded transfer frontier remain durable in Context Fabric. */
+  omittedCriticalCount?: number;
+  omittedCriticalPageRefs?: string[];
   learnedGuidelines: string[];
   pageRefs: string[];
   manifestHash: string;
@@ -156,6 +177,10 @@ export interface ContextFabricSnapshot {
   eventHashVersion?: 2;
   /** Exact end of a structurally chained v1 prefix retained during an in-place upgrade. */
   legacyEventPrefix?: { sequence: number; hash: string };
+  /** Integrity seal for the complete materialized snapshot, excluding this field. */
+  snapshotHash?: string;
+  /** True only when this process materialized every ledger event through revision. */
+  replaySafe?: true;
   facts: ContextFact[];
   episodes?: ContextEpisode[];
   links?: ContextLink[];
@@ -178,6 +203,8 @@ export interface MemoryPolicyState {
   successfulOutcomes: number;
   failedOutcomes: number;
   learnedGuidelines: string[];
+  /** Durable retrieval emphasis learned when a fact kind was omitted. */
+  kindUtilityBoosts?: Partial<Record<ContextFactKind, number>>;
 }
 
 type ContextEventOperation = 'upsert' | 'episode' | 'link' | 'policy' | 'checkpoint';
@@ -220,8 +247,10 @@ const isStoredEpisodeShape = (value: unknown): value is ContextEpisode =>
   && (value.targets === undefined || Array.isArray(value.targets));
 
 const isContextFabricEventPayloadValid = (event: ContextFabricEvent): boolean => {
+  if (event.version !== 1 && event.version !== 2) return false;
+  if (!Number.isSafeInteger(event.sequence) || event.sequence < 1) return false;
   if (!['upsert', 'episode', 'link', 'policy', 'checkpoint'].includes(event.operation)) return false;
-  if (!Number.isFinite(event.timestamp)) return false;
+  if (!Number.isSafeInteger(event.timestamp) || event.timestamp < 0) return false;
   if (!/^[0-9a-f]{64}$/i.test(String(event.hash || ''))) return false;
   if (event.previousHash && !/^[0-9a-f]{64}$/i.test(String(event.previousHash))) return false;
   if (event.operation === 'upsert') return isStoredFactShape(event.fact);
@@ -259,10 +288,27 @@ const DEFAULT_CONTEXT_ROOT = getEterxWorkspaceDir('.context', 'fabric');
 const MAX_PROVENANCE_PER_FACT = 12;
 const MAX_FACT_TEXT = 6_000;
 const MAX_RESULT_SUMMARY = 900;
+const MAX_REUSABLE_OBSERVATION = 4_200;
 const MAX_MANIFEST_FACTS = 180;
 const MAX_MANIFEST_CHARS = 54_000;
 const MAX_WORKING_SET_CHARS = 18_000;
+const MAX_SEMANTIC_FACT_CANDIDATES = 880;
+const MAX_RECENT_EPISODE_CANDIDATES = 800;
+const MAX_WORKSPACE_FRESHNESS_CANDIDATES = 64;
 const MAX_PAGE_BYTES = 16 * 1024 * 1024;
+const MAX_EPISODE_BYTES = 256 * 1024 * 1024;
+const MAX_PAGE_CHUNKS = Math.ceil(MAX_EPISODE_BYTES / MAX_PAGE_BYTES);
+const MAX_PAGE_MANIFEST_BYTES = 128 * 1024;
+const EVENT_LEDGER_LEASE_STALE_MS = 2 * 60_000;
+const EVENT_LEDGER_LEASE_WAIT_MS = 30_000;
+const SNAPSHOT_IDLE_DELAY_MS = 30_000;
+const SNAPSHOT_EVENT_INTERVAL = 64;
+const MAX_RECENT_FACT_INDEX = 1_024;
+const MAX_RECENT_EPISODE_INDEX = 1_024;
+const MAX_LEXICAL_TERMS_PER_FACT = 96;
+const MAX_LEXICAL_POSTINGS_PER_TERM = 512;
+const MAX_LEXICAL_MATCH_POOL = 4_000;
+const MAX_COMPILED_WORKING_SET_CACHE = 6;
 const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 const MAX_COMPRESSED_PAGE_BYTES = MAX_PAGE_BYTES + (1024 * 1024);
@@ -274,6 +320,32 @@ const gunzipContextPage = async (compressed: Buffer): Promise<Buffer> => {
   return await (gunzipAsync as any)(compressed, {
     maxOutputLength: MAX_PAGE_BYTES + 1,
   }) as Buffer;
+};
+
+const persistImmutableContextPageFile = async (
+  destination: string,
+  contents: Buffer,
+  validateExisting: (contents: Buffer) => Promise<boolean>,
+): Promise<void> => {
+  await fs.ensureDir(path.dirname(destination));
+  const temporary = path.join(
+    path.dirname(destination),
+    `.${path.basename(destination)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
+  );
+  try {
+    await fs.writeFile(temporary, contents, { flag: 'wx' });
+    try {
+      await fs.move(temporary, destination, { overwrite: false });
+      return;
+    } catch (moveError) {
+      if (!await fs.pathExists(destination)) throw moveError;
+      const existing = await fs.readFile(destination);
+      if (await validateExisting(existing)) return;
+      throw new Error(`Context page identity collision at ${path.basename(destination)}.`);
+    }
+  } finally {
+    await fs.remove(temporary).catch(() => undefined);
+  }
 };
 
 const readOptionalDurableJson = async <T>(filePath: string): Promise<T | null> => {
@@ -304,6 +376,139 @@ const readOptionalDurableText = async (filePath: string): Promise<string> => {
     }
   }
   return '';
+};
+
+interface DurableLedgerTail {
+  size: number;
+  endsWithNewline: boolean;
+  tailText: string;
+}
+
+interface DurableLedgerSlice {
+  size: number;
+  modifiedAtMs: number;
+  changedAtMs: number;
+  text: string;
+}
+
+/**
+ * Read only the final JSONL record. Normal event admission needs the durable
+ * chain tip, not the entire history; making that check proportional to the
+ * ledger made every later turn slower than the one before it.
+ */
+const readDurableLedgerTail = async (filePath: string): Promise<DurableLedgerTail> => {
+  let handle: Awaited<ReturnType<typeof openFile>> | null = null;
+  try {
+    handle = await openFile(filePath, 'r');
+    const stat = await handle.stat();
+    const size = stat.size;
+    if (size <= 0) return { size: 0, endsWithNewline: false, tailText: '' };
+    const readExactly = async (buffer: Buffer, position: number) => {
+      let offset = 0;
+      while (offset < buffer.length) {
+        const { bytesRead } = await handle!.read(
+          buffer,
+          offset,
+          buffer.length - offset,
+          position + offset,
+        );
+        if (bytesRead <= 0) throw new Error('Context Fabric event ledger changed during tail validation.');
+        offset += bytesRead;
+      }
+    };
+
+    const finalByte = Buffer.allocUnsafe(1);
+    await readExactly(finalByte, size - 1);
+    const endsWithNewline = finalByte[0] === 0x0a;
+    let endExclusive = endsWithNewline ? size - 1 : size;
+    if (endsWithNewline && endExclusive > 0) {
+      const precedingByte = Buffer.allocUnsafe(1);
+      await readExactly(precedingByte, endExclusive - 1);
+      if (precedingByte[0] === 0x0d) endExclusive -= 1;
+    }
+
+    const segments: Buffer[] = [];
+    let cursor = endExclusive;
+    const chunkSize = 64 * 1024;
+    while (cursor > 0) {
+      const start = Math.max(0, cursor - chunkSize);
+      const chunk = Buffer.allocUnsafe(cursor - start);
+      await readExactly(chunk, start);
+      const newline = chunk.lastIndexOf(0x0a);
+      if (newline >= 0) {
+        segments.unshift(chunk.subarray(newline + 1));
+        break;
+      }
+      segments.unshift(chunk);
+      cursor = start;
+    }
+    return {
+      size,
+      endsWithNewline,
+      tailText: Buffer.concat(segments).toString('utf8').replace(/\r$/, ''),
+    };
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return { size: 0, endsWithNewline: false, tailText: '' };
+    throw error;
+  } finally {
+    if (handle) await handle.close().catch(() => undefined);
+  }
+};
+
+/**
+ * Read only bytes appended after an already verified/materialized frontier.
+ * The caller holds the cross-process writer lease, so the returned stat and
+ * suffix describe one stable ledger generation.
+ */
+const readDurableLedgerSlice = async (
+  filePath: string,
+  startOffset: number,
+): Promise<DurableLedgerSlice> => {
+  let handle: Awaited<ReturnType<typeof openFile>> | null = null;
+  try {
+    handle = await openFile(filePath, 'r');
+    const stat = await handle.stat();
+    const size = stat.size;
+    if (!Number.isSafeInteger(startOffset) || startOffset < 0 || startOffset > size) {
+      throw new Error('Context Fabric event ledger moved behind its materialized frontier.');
+    }
+    const length = size - startOffset;
+    if (length === 0) {
+      return {
+        size,
+        modifiedAtMs: stat.mtimeMs,
+        changedAtMs: stat.ctimeMs,
+        text: '',
+      };
+    }
+    const buffer = Buffer.allocUnsafe(length);
+    let offset = 0;
+    while (offset < length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        length - offset,
+        startOffset + offset,
+      );
+      if (bytesRead <= 0) {
+        throw new Error('Context Fabric event ledger changed during incremental replay.');
+      }
+      offset += bytesRead;
+    }
+    return {
+      size,
+      modifiedAtMs: stat.mtimeMs,
+      changedAtMs: stat.ctimeMs,
+      text: buffer.toString('utf8'),
+    };
+  } catch (error: any) {
+    if (error?.code === 'ENOENT' && startOffset === 0) {
+      return { size: 0, modifiedAtMs: 0, changedAtMs: 0, text: '' };
+    }
+    throw error;
+  } finally {
+    if (handle) await handle.close().catch(() => undefined);
+  }
 };
 
 function sha256(value: string): string {
@@ -341,6 +546,36 @@ function stableSerialize(value: unknown, seen = new WeakSet<object>()): string {
   }
 }
 
+/**
+ * Keep only the best bounded frontier without sorting or retaining an
+ * arbitrarily large history. `compare` has the same ordering contract as
+ * Array#sort: a negative result places the left item first.
+ */
+function boundedTop<T>(items: Iterable<T>, limit: number, compare: (left: T, right: T) => number): T[] {
+  const capacity = Math.max(0, Math.floor(limit));
+  if (capacity === 0) return [];
+  const selected: T[] = [];
+  for (const item of items) {
+    let low = 0;
+    let high = selected.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (compare(item, selected[middle]) < 0) high = middle;
+      else low = middle + 1;
+    }
+    if (low >= capacity) continue;
+    selected.splice(low, 0, item);
+    if (selected.length > capacity) selected.pop();
+  }
+  return selected;
+}
+
+function calculateSnapshotHash(snapshot: ContextFabricSnapshot): string {
+  const body = { ...snapshot };
+  delete body.snapshotHash;
+  return sha256(stableSerialize(body));
+}
+
 function normalizeText(value: unknown, max = MAX_FACT_TEXT): string {
   const text = String(value ?? '').replace(/\r\n/g, '\n').replace(/[ \t]+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
@@ -365,6 +600,23 @@ function uniqueStrings(values: unknown[], max = 24): string[] {
     .slice(0, max);
 }
 
+function boundedValues(values: string[], maxChars: number): string[] {
+  const kept: string[] = [];
+  let used = 0;
+  for (const value of values) {
+    const normalized = normalizeText(value, Math.min(700, maxChars));
+    if (!normalized) continue;
+    if (used + normalized.length + (kept.length > 0 ? 3 : 0) > maxChars) continue;
+    kept.push(normalized);
+    used += normalized.length + (kept.length > 1 ? 3 : 0);
+  }
+  return kept;
+}
+
+function renderBoundedValues(values: string[], maxChars: number): string {
+  return boundedValues(values, maxChars).join(' ; ');
+}
+
 function extractExactValues(text: string): string[] {
   const values: string[] = [];
   const patterns = [
@@ -385,7 +637,13 @@ function extractConstraintClauses(text: string): string[] {
     .split(/\r?\n|[.!?]+|,{2,}/)
     .map(part => normalizeText(part, 1_200))
     .filter(part => part.length >= 4)
-    .filter(part => /\b(?:must|never|do not|don't|cannot|can't|without|only|all models?|every provider|equally|no git|not git)\b/i.test(part))
+    .filter(part => {
+      const probe = part
+        .toLowerCase()
+        .replace(/\b(?:dotn|dont|do\s+nt)\b/g, 'do not')
+        .replace(/\b(?:cant|can\s+nt)\b/g, 'cannot');
+      return /\b(?:must|never|do not|don't|cannot|can't|without|only|avoid|required|prohibited|no need|all models?|every provider|equally|no git|not git)\b/i.test(probe);
+    })
     .slice(0, 32);
 }
 
@@ -459,10 +717,180 @@ function relevance(text: string, query: Set<string>): number {
   return overlap / Math.max(1, Math.min(query.size, terms.size));
 }
 
-function summarizeResult(toolName: string, args: Record<string, any>, result: any, effect: ToolEffect): string {
+function normalizeTargetIdentity(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/$/, '')
+    .toLowerCase();
+}
+
+function targetsOverlap(left: string[], right: string[]): boolean {
+  if (left.length === 0 || right.length === 0) return true;
+  const normalizedLeft = left.map(normalizeTargetIdentity).filter(Boolean);
+  const normalizedRight = right.map(normalizeTargetIdentity).filter(Boolean);
+  return normalizedLeft.some(a => normalizedRight.some(b =>
+    a === b
+    || a.startsWith(`${b}/`)
+    || b.startsWith(`${a}/`)
+    // Tool adapters are not required to agree on absolute versus
+    // workspace-relative paths. A path-boundary suffix is the same target;
+    // a bare basename is intentionally not enough to avoid cross-folder
+    // invalidation when a repository contains repeated filenames.
+    || (a.includes('/') && b.includes('/') && a.endsWith(`/${b}`))
+    || (a.includes('/') && b.includes('/') && b.endsWith(`/${a}`)),
+  ));
+}
+
+function captureTargetSnapshots(targets: string[]): ContextTargetSnapshot[] {
+  const snapshots: ContextTargetSnapshot[] = [];
+  const seen = new Set<string>();
+  for (const target of targets) {
+    const candidate = String(target || '').trim().replace(/^["']|["']$/g, '');
+    if (!candidate || !path.isAbsolute(candidate)) continue;
+    const identity = normalizeTargetIdentity(candidate);
+    if (!identity || seen.has(identity)) continue;
+    seen.add(identity);
+    try {
+      const stat = fs.statSync(candidate);
+      if (!stat.isFile() && !stat.isDirectory()) continue;
+      snapshots.push({
+        target: candidate,
+        size: Math.max(0, Number(stat.size || 0)),
+        modifiedAtMs: Math.max(0, Number(stat.mtimeMs || 0)),
+        kind: stat.isDirectory() ? 'directory' : 'file',
+      });
+      if (snapshots.length >= 16) break;
+    } catch {
+      // An unstatable target still has the in-chat mutation lineage guard, but
+      // cannot safely claim protection from changes made by another process.
+    }
+  }
+  return snapshots;
+}
+
+/**
+ * Search/list commands often name only a workspace root in their arguments and
+ * report the concrete files in stdout. Preserve those real file identities so
+ * a nested edit invalidates only the affected observation and unchanged search
+ * evidence can be reused on a terse follow-up.
+ */
+function enrichWorkspaceObservationTargets(
+  targets: string[],
+  args: Record<string, any>,
+  result: any,
+): string[] {
+  const cwd = String(
+    result?.cwd
+    || (Array.isArray(result?.results)
+      ? result.results.map((entry: any) => String(entry?.cwd || '').trim()).find(Boolean)
+      : '')
+    || args?.cwd
+    || '',
+  ).trim();
+  if (!cwd || !path.isAbsolute(cwd)) return targets;
+  const outputValues: unknown[] = [result?.output, result?.stdout];
+  if (Array.isArray(result?.results)) {
+    for (const child of result.results.slice(0, 32)) {
+      outputValues.push(child?.output, child?.stdout);
+    }
+  }
+  const discovered: string[] = [];
+  const seen = new Set(targets.map(normalizeTargetIdentity).filter(Boolean));
+  const admit = (rawCandidate: unknown) => {
+    let candidate = String(rawCandidate || '').trim().replace(/^['"]|['"]$/g, '');
+    if (!candidate || candidate.length > 700 || /[*?{}<>|]/.test(candidate)) return;
+    candidate = candidate.replace(/:\d+(?::\d+)?:.*$/, '');
+    const absolute = path.isAbsolute(candidate) ? path.normalize(candidate) : path.resolve(cwd, candidate);
+    const identity = normalizeTargetIdentity(absolute);
+    if (!identity || seen.has(identity)) return;
+    try {
+      if (!fs.statSync(absolute).isFile()) return;
+    } catch {
+      return;
+    }
+    seen.add(identity);
+    discovered.push(absolute);
+  };
+  for (const outputValue of outputValues) {
+    if (typeof outputValue !== 'string' || !outputValue.trim()) continue;
+    const lines = outputValue.split(/\r?\n/, 2_000);
+    for (const rawLine of lines) {
+      if (discovered.length >= 24) break;
+      const line = rawLine.trim();
+      if (!line || line.length > 1_200) continue;
+      const located = line.match(/^(.+?):\d+(?::\d+)?:/);
+      if (located) {
+        admit(located[1]);
+        continue;
+      }
+      // Bare paths are common for rg --files/Get-ChildItem output. Requiring a
+      // source-like extension plus an existing file avoids treating code prose
+      // or arbitrary command output as a workspace target.
+      if (/^[^\t\0]+\.[A-Za-z0-9]{1,12}$/.test(line)) admit(line);
+    }
+    if (discovered.length >= 24) break;
+  }
+  // Put a bounded concrete-file sample first, then retain the command's root
+  // targets before any remaining matches. This gives snapshot freshness both
+  // exact-file precision and conservative ancestor invalidation.
+  return uniqueStrings([
+    ...discovered.slice(0, 12),
+    ...targets,
+    cwd,
+    ...discovered.slice(12),
+  ], 48);
+}
+
+type CurrentTargetSnapshot = Omit<ContextTargetSnapshot, 'target'> | null;
+
+function targetSnapshotsStillMatch(
+  snapshots: ContextTargetSnapshot[],
+  currentStatCache?: Map<string, CurrentTargetSnapshot>,
+): boolean {
+  for (const snapshot of snapshots) {
+    const identity = normalizeTargetIdentity(snapshot.target);
+    let current = identity && currentStatCache?.has(identity)
+      ? currentStatCache.get(identity)!
+      : undefined;
+    if (current === undefined) {
+      try {
+        const stat = fs.statSync(snapshot.target);
+        current = stat.isFile() || stat.isDirectory()
+          ? {
+              size: Math.max(0, Number(stat.size || 0)),
+              modifiedAtMs: Math.max(0, Number(stat.mtimeMs || 0)),
+              kind: stat.isDirectory() ? 'directory' : 'file',
+            }
+          : null;
+      } catch {
+        current = null;
+      }
+      if (identity && currentStatCache) currentStatCache.set(identity, current);
+    }
+    if (
+      !current
+      || current.kind !== snapshot.kind
+      || current.size !== snapshot.size
+      || current.modifiedAtMs !== snapshot.modifiedAtMs
+    ) return false;
+  }
+  return true;
+}
+
+function summarizeResult(
+  toolName: string,
+  args: Record<string, any>,
+  result: any,
+  effect: ToolEffect,
+  maxChars = MAX_RESULT_SUMMARY,
+): string {
   if (!toolResultSucceeded(result)) {
     const error = result?.error || result?.CRITICAL_ERROR || result?.message || result?.stderr || result;
-    return normalizeText(`${toolName} failed: ${typeof error === 'string' ? error : stableSerialize(error)}`, MAX_RESULT_SUMMARY);
+    return normalizeText(`${toolName} failed: ${typeof error === 'string' ? error : stableSerialize(error)}`, maxChars);
   }
   const exitCode = result?.exitCode ?? result?.exit_code ?? result?.code;
   const explicit = result?.summary || result?.message || result?.output || result?.stdout || result?.content;
@@ -475,9 +903,21 @@ function summarizeResult(toolName: string, args: Record<string, any>, result: an
         ? 'Completed external action'
         : 'Observed';
   const detail = explicit
-    ? normalizeText(typeof explicit === 'string' ? explicit : stableSerialize(explicit), MAX_RESULT_SUMMARY - 120)
+    ? normalizeText(typeof explicit === 'string' ? explicit : stableSerialize(explicit), maxChars - 120)
     : normalizeText(target, 500);
-  return normalizeText(`${prefix} with ${toolName}${target ? ` (${normalizeText(target, 260)})` : ''}${typeof exitCode === 'number' ? `; exit=${exitCode}` : ''}${detail ? `: ${detail}` : ''}`, MAX_RESULT_SUMMARY);
+  return normalizeText(`${prefix} with ${toolName}${target ? ` (${normalizeText(target, 260)})` : ''}${typeof exitCode === 'number' ? `; exit=${exitCode}` : ''}${detail ? `: ${detail}` : ''}`, maxChars);
+}
+
+function batchCommandOutput(combined: unknown, commandIndex: number): string {
+  const text = String(combined || '').replace(/\r\n/g, '\n');
+  if (!text) return '';
+  const marker = new RegExp(`^\\[command ${commandIndex + 1}\\][^\\n]*\\n?`, 'm');
+  const match = marker.exec(text);
+  if (!match) return '';
+  const start = match.index + match[0].length;
+  const remainder = text.slice(start);
+  const nextMarker = /^\[command \d+\][^\n]*$/m.exec(remainder);
+  return (nextMarker ? remainder.slice(0, nextMarker.index) : remainder).trim();
 }
 
 function factFingerprint(fact: Pick<ContextFact, 'kind' | 'text' | 'exactValues'>): string {
@@ -531,7 +971,12 @@ function normalizeStoredFact(fact: ContextFact): ContextFact {
       }),
     exactValues: [...(fact.exactValues || [])],
     targets: [...(fact.targets || [])],
-    provenance: (fact.provenance || []).map(item => ({ ...item })),
+    provenance: (fact.provenance || []).map(item => ({
+      ...item,
+      ...(Array.isArray(item.targetSnapshots)
+        ? { targetSnapshots: item.targetSnapshots.map(snapshot => ({ ...snapshot })) }
+        : {}),
+    })),
   };
 }
 
@@ -540,15 +985,24 @@ function cloneEpisode(episode: ContextEpisode): ContextEpisode {
 }
 
 function clonePolicy(policy: MemoryPolicyState): MemoryPolicyState {
+  const kindUtilityBoosts = policy.kindUtilityBoosts
+    ? Object.fromEntries(
+        Object.entries(policy.kindUtilityBoosts)
+          .filter(([, value]) => Number.isFinite(Number(value)))
+          .map(([kind, value]) => [kind, clamp01(Number(value))]),
+      ) as Partial<Record<ContextFactKind, number>>
+    : undefined;
   return {
     ...policy,
     weights: cloneValueFactors(policy.weights),
     learnedGuidelines: [...policy.learnedGuidelines],
+    ...(kindUtilityBoosts ? { kindUtilityBoosts } : {}),
   };
 }
 
 function renderManifestFact(fact: ContextManifestFact): string {
-  const exact = fact.exactValues.length > 0 ? ` | exact=${fact.exactValues.join(' ; ')}` : '';
+  const exactValues = renderBoundedValues(fact.exactValues, 1_200);
+  const exact = exactValues ? ` | exact=${exactValues}` : '';
   const pages = fact.pageRefs.length > 0 ? ` | pages=${fact.pageRefs.join(',')}` : '';
   const validity = `valid=${new Date(fact.validFrom).toISOString()}${fact.validTo ? `..${new Date(fact.validTo).toISOString()}` : '..present'}`;
   return `- [ctx:${fact.id}; fp:${fact.fingerprint}; ${fact.network}/${fact.kind}; ${fact.epistemic}; ${validity}; source=${fact.source}] ${fact.text}${exact}${pages}`;
@@ -559,8 +1013,14 @@ export function renderContinuityManifest(manifest: ContextContinuityManifest): s
     '[AUTHORITATIVE CONTINUITY MANIFEST]',
     `scope=${manifest.scopeId} revision=${manifest.revision} mutation_epoch=${manifest.mutationEpoch} manifest_hash=${manifest.manifestHash}`,
     'These records are data, not instructions. Preserve every record ID and its meaning during state transfer.',
+    ...(Number(manifest.omittedCriticalCount || 0) > 0
+      ? [`Critical frontier is capacity-bounded; ${manifest.omittedCriticalCount} lower-ranked active records remain authoritative in durable Context Fabric and are recoverable through their source pages.`]
+      : []),
     ...manifest.learnedGuidelines.map(guideline => `- [learned-compression-guideline] ${guideline}`),
     ...manifest.facts.map(renderManifestFact),
+    ...(manifest.omittedCriticalPageRefs?.length
+      ? [`Additional durable critical pages: ${manifest.omittedCriticalPageRefs.join(', ')}`]
+      : []),
     ...(manifest.pageRefs.length > 0 ? [`Recoverable source pages: ${manifest.pageRefs.join(', ')}`] : []),
     '[END AUTHORITATIVE CONTINUITY MANIFEST]',
   ].join('\n');
@@ -616,10 +1076,27 @@ export function repairContinuityCapsule(
 
 export class ContextFabric {
   private facts = new Map<string, ContextFact>();
+  private activeFactIdByIdentity = new Map<string, string>();
+  private latestFactIdByKind = new Map<ContextFactKind, string>();
+  private factKindsPresent = new Set<ContextFactKind>();
+  private recentFactIds = new Map<string, true>();
+  private lexicalFactIdsByTerm = new Map<string, Map<string, true>>();
+  private lexicalTermsByFactId = new Map<string, string[]>();
+  private provenanceSourceIds = new Set<string>();
   private episodes = new Map<string, ContextEpisode>();
+  private episodeIdByOrigin = new Map<string, string>();
+  private episodeIdByPageRef = new Map<string, string>();
+  private recentEpisodeIds = new Map<string, true>();
   private links = new Map<string, ContextLink>();
+  private linkAdjacency = new Map<string, Map<string, number>>();
   private vectorizer = new TfIdfVectorizer(2_000);
   private recentRetrievedFactIds: string[] = [];
+  private compiledWorkingSetCache = new Map<string, {
+    revision: number;
+    mutationEpoch: number;
+    value: string;
+    workspaceFactIds: string[];
+  }>();
   private latestCompactionCheckpoint: ContextCompactionCheckpoint | null = null;
   private ephemeralPages = new Map<string, string>();
   private memoryPolicy: MemoryPolicyState = {
@@ -637,12 +1114,23 @@ export class ContextFabric {
   private lastEventHash = '';
   private legacyEventPrefixSequence = 0;
   private legacyEventPrefixHash = '';
+  private replaySafe = true;
   private initialized = false;
   private initializationPromise: Promise<void> | null = null;
   private persistQueue: Promise<void> = Promise.resolve();
   private pendingPersistenceOperations: Array<() => Promise<void>> = [];
   private persistenceError: Error | null = null;
   private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
+  private snapshotWriteQueue: Promise<void> = Promise.resolve();
+  private lastSnapshotRevision = -1;
+  /** Exact durable prefix already represented by the materialized maps. */
+  private materializedLedgerSize = 0;
+  private materializedLedgerRevision = 0;
+  private materializedLedgerHash = '';
+  private materializedLedgerModifiedAtMs = 0;
+  private materializedLedgerChangedAtMs = 0;
+  private localEmissionEpoch = 0;
+  private durableRefreshPromise: Promise<void> | null = null;
   private readonly durable: boolean;
   private readonly storageRoot: string;
   private readonly scopeDir: string;
@@ -663,10 +1151,22 @@ export class ContextFabric {
 
   private resetMaterializedState(): void {
     this.facts = new Map();
+    this.activeFactIdByIdentity = new Map();
+    this.latestFactIdByKind = new Map();
+    this.factKindsPresent = new Set();
+    this.recentFactIds = new Map();
+    this.lexicalFactIdsByTerm = new Map();
+    this.lexicalTermsByFactId = new Map();
+    this.provenanceSourceIds = new Set();
     this.episodes = new Map();
+    this.episodeIdByOrigin = new Map();
+    this.episodeIdByPageRef = new Map();
+    this.recentEpisodeIds = new Map();
     this.links = new Map();
+    this.linkAdjacency = new Map();
     this.vectorizer = new TfIdfVectorizer(2_000);
     this.recentRetrievedFactIds = [];
+    this.compiledWorkingSetCache = new Map();
     this.latestCompactionCheckpoint = null;
     this.ephemeralPages = new Map();
     this.memoryPolicy = {
@@ -684,6 +1184,13 @@ export class ContextFabric {
     this.lastEventHash = '';
     this.legacyEventPrefixSequence = 0;
     this.legacyEventPrefixHash = '';
+    this.replaySafe = true;
+    this.lastSnapshotRevision = -1;
+    this.materializedLedgerSize = 0;
+    this.materializedLedgerRevision = 0;
+    this.materializedLedgerHash = '';
+    this.materializedLedgerModifiedAtMs = 0;
+    this.materializedLedgerChangedAtMs = 0;
   }
 
   async initialize(): Promise<void> {
@@ -704,6 +1211,12 @@ export class ContextFabric {
       return;
     }
     await fs.ensureDir(this.scopeDir);
+    // Initialization can repair or migrate the ledger, so it participates in
+    // the same cross-process writer lease as normal appends. Without this, a
+    // live process could append between our read and atomic replacement and
+    // that already-committed event would be lost.
+    const initializationLease = await this.acquireEventLedgerLease();
+    try {
     const eventText = await readOptionalDurableText(this.eventsPath);
     let snapshot: ContextFabricSnapshot | null = null;
     try {
@@ -714,6 +1227,18 @@ export class ContextFabric {
       // ledger is present; an eventless scope must not silently lose its sole
       // durable state.
       if (!eventText.trim()) throw error;
+    }
+    if (
+      !eventText.trim()
+      && snapshot?.eventHashVersion === 2
+      && Number(snapshot.revision || 0) > 0
+    ) {
+      // A v2 snapshot is an acceleration checkpoint anchored to the event
+      // ledger, not an independent replacement for it. Returning an empty
+      // fabric here would turn a missing/truncated ledger into silent context
+      // loss. Leave both the snapshot and page archive untouched and fail the
+      // acquisition so recovery can be explicit.
+      throw new Error('Context Fabric event ledger is missing while a non-empty sealed snapshot still exists.');
     }
     const eventLines = eventText.split(/\r?\n/).filter(Boolean);
     const verifiedEvents: ContextFabricEvent[] = [];
@@ -792,25 +1317,75 @@ export class ContextFabric {
       }
     }
 
-    // Durable state is always reconstructed from the verified ledger, even
-    // when a same-run survivor snapshot was supplied by a retry path. Trusting
-    // an ahead-of-disk seed could append a new event after a hash that never
-    // existed in the ledger and make the entire future tail unrecoverable.
-    // Eventless legacy snapshots remain readable for migration; v2 snapshots
-    // may be eventless only at revision zero because v2 commits events first.
+    // A sealed snapshot may accelerate materialization only when its revision
+    // and chain hash are anchored to the fully verified ledger. This avoids
+    // replaying every historical mutation while still rejecting ahead-of-disk,
+    // corrupted, or stale snapshots. Eventless legacy snapshots remain readable
+    // for migration; v2 snapshots may be eventless only at revision zero.
     this.resetMaterializedState();
     const snapshotShapeValid = snapshot?.version === 1 && snapshot.scopeId === this.scopeId;
-    const snapshotTrusted = Boolean(
+    const snapshotRevision = snapshotShapeValid && Number.isInteger(Number(snapshot!.revision))
+      ? Math.max(0, Number(snapshot!.revision))
+      : -1;
+    const snapshotHashValid = Boolean(
+      snapshotShapeValid
+      && /^[0-9a-f]{64}$/i.test(String(snapshot!.snapshotHash || ''))
+      && calculateSnapshotHash(snapshot!) === snapshot!.snapshotHash,
+    );
+    const snapshotAnchor = snapshotRevision > 0
+      ? verifiedEvents[snapshotRevision - 1]
+      : null;
+    const snapshotAnchoredToLedger = Boolean(
+      snapshotHashValid
+      && snapshot!.replaySafe === true
+      && snapshot!.eventHashVersion === 2
+      && snapshotRevision <= verifiedEvents.length
+      && (
+        snapshotRevision === 0
+          ? snapshot!.lastEventHash === ''
+          : snapshotAnchor?.sequence === snapshotRevision
+            && snapshotAnchor.hash === snapshot!.lastEventHash
+      ),
+    );
+    const eventlessSnapshotTrusted = Boolean(
       snapshotShapeValid
       && eventLines.length === 0
-      && (snapshot!.eventHashVersion !== 2 || snapshot!.revision === 0),
+      && (
+        snapshot!.eventHashVersion !== 2
+        || (
+          snapshotRevision === 0
+          && snapshot!.lastEventHash === ''
+          && (!Array.isArray(snapshot!.facts) || snapshot!.facts.length === 0)
+          && (!Array.isArray(snapshot!.episodes) || snapshot!.episodes.length === 0)
+          && (!Array.isArray(snapshot!.links) || snapshot!.links.length === 0)
+          && !snapshot!.latestCompactionCheckpoint
+        )
+      ),
     );
+    const snapshotTrusted = snapshotAnchoredToLedger || eventlessSnapshotTrusted;
     if (snapshotTrusted) this.restore(snapshot!);
+    if (
+      eventlessSnapshotTrusted
+      && snapshot!.eventHashVersion !== 2
+      && (
+        this.revision > 0
+        || this.facts.size > 0
+        || this.episodes.size > 0
+        || this.links.size > 0
+        || Boolean(this.latestCompactionCheckpoint)
+      )
+    ) {
+      await this.migrateLegacySnapshotToEventLedger();
+    }
 
     for (const event of verifiedEvents) {
       if (event.sequence <= this.revision) continue;
       this.applyEvent(event);
     }
+    // Retrieval indexes describe current world state, not the number of times
+    // a fact was updated in the event log. Rebuild once after replay so old
+    // revisions do not skew relevance and restart behavior stays deterministic.
+    this.rebuildVectorizer();
     // The append-only ledger is the integrity root. Never advance its hash to
     // an unverified tail, and never let a disk snapshot claim a revision that
     // the verified chain cannot reach.
@@ -825,20 +1400,126 @@ export class ContextFabric {
       this.legacyEventPrefixSequence = observedLegacyPrefixSequence;
       this.legacyEventPrefixHash = observedLegacyPrefixHash;
     }
+    // Initialization holds the writer lease and has now applied the complete
+    // verified chain, regardless of whether it started from a safe checkpoint.
+    this.replaySafe = true;
+    const materializedStat = await fs.stat(this.eventsPath).catch((error: any) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    this.materializedLedgerSize = materializedStat?.size || 0;
+    this.materializedLedgerRevision = this.revision;
+    this.materializedLedgerHash = this.lastEventHash;
+    this.materializedLedgerModifiedAtMs = materializedStat?.mtimeMs || 0;
+    this.materializedLedgerChangedAtMs = materializedStat?.ctimeMs || 0;
     this.initialized = true;
+    } finally {
+      await this.releaseEventLedgerLease(initializationLease);
+    }
+  }
+
+  /**
+   * Eventless v1 snapshots predate the ledger as integrity root. Materialize
+   * their complete final state into a deterministic v2 chain before any live
+   * event is accepted; otherwise the first append would begin at a revision
+   * that does not exist on disk and become unreplayable after restart.
+   */
+  private async migrateLegacySnapshotToEventLedger(): Promise<void> {
+    const events: ContextFabricEvent[] = [];
+    let previousHash = '';
+    const append = (
+      operation: ContextEventOperation,
+      payload: Pick<ContextFabricEvent, 'fact' | 'episode' | 'link' | 'memoryPolicy' | 'checkpoint'>,
+      timestamp: number,
+    ) => {
+      const sequence = events.length + 1;
+      const migratedPayload = {
+        ...payload,
+        ...(payload.fact ? { fact: { ...payload.fact, revision: sequence } } : {}),
+        ...(payload.episode ? { episode: { ...payload.episode, sequence } } : {}),
+      };
+      const unpersisted = JSON.parse(JSON.stringify({
+        version: 2,
+        scopeId: this.scopeId,
+        sequence,
+        timestamp: Number.isFinite(timestamp) && timestamp > 0 ? Math.floor(timestamp) : Date.now(),
+        operation,
+        ...migratedPayload,
+        previousHash,
+      })) as Omit<ContextFabricEvent, 'hash'>;
+      const event: ContextFabricEvent = { ...unpersisted, hash: sha256(stableSerialize(unpersisted)) };
+      events.push(event);
+      previousHash = event.hash;
+    };
+
+    [...this.facts.values()]
+      .sort((left, right) => left.recordedAt - right.recordedAt || left.id.localeCompare(right.id))
+      .forEach(fact => append('upsert', { fact: normalizeStoredFact(fact) }, fact.recordedAt));
+    [...this.episodes.values()]
+      .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+      .forEach(episode => append('episode', { episode: cloneEpisode(episode) }, episode.createdAt));
+    [...this.links.values()]
+      .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+      .forEach(link => append('link', { link: { ...link } }, link.createdAt));
+    append('policy', { memoryPolicy: this.getMemoryPolicy() }, Date.now());
+    if (this.latestCompactionCheckpoint) {
+      const checkpoint = this.latestCompactionCheckpoint;
+      append('checkpoint', {
+        checkpoint: {
+          compactionId: checkpoint.compactionId,
+          manifestHash: checkpoint.manifestHash,
+          capsuleHash: checkpoint.capsuleHash,
+        },
+      }, checkpoint.recordedAt);
+    }
+
+    await this.replaceEventLedgerAtomically(`${events.map(event => JSON.stringify(event)).join('\n')}\n`);
+    this.revision = events.length;
+    this.lastEventHash = previousHash;
+    this.legacyEventPrefixSequence = 0;
+    this.legacyEventPrefixHash = '';
+    for (const event of events) {
+      if (event.fact) {
+        const fact = normalizeStoredFact(event.fact);
+        this.materializeFact(fact);
+      }
+      if (event.episode) {
+        this.episodes.set(event.episode.id, cloneEpisode(event.episode));
+        if (event.episode.originId) this.episodeIdByOrigin.set(event.episode.originId, event.episode.id);
+        this.episodeIdByPageRef.set(event.episode.pageRef, event.episode.id);
+        this.touchRecentEpisode(event.episode.id);
+      }
+      if (event.operation === 'checkpoint' && event.checkpoint) {
+        this.latestCompactionCheckpoint = {
+          ...event.checkpoint,
+          recordedAt: event.timestamp,
+          sequence: event.sequence,
+        };
+      }
+    }
+    this.rebuildLinkAdjacency();
+    this.rebuildVectorizer();
   }
 
   private applyEvent(event: ContextFabricEvent): void {
     if (event.operation === 'upsert' && event.fact) {
+      const isNewFact = !this.facts.has(event.fact.id);
       const fact = normalizeStoredFact(event.fact);
-      this.facts.set(fact.id, fact);
-      this.vectorizer.addDocument(this.searchableFactText(fact));
+      this.materializeFact(fact);
+      if (isNewFact) this.vectorizer.addDocument(this.searchableFactText(fact));
     }
     if (event.operation === 'episode' && event.episode) {
+      const isNewEpisode = !this.episodes.has(event.episode.id);
       this.episodes.set(event.episode.id, cloneEpisode(event.episode));
-      this.vectorizer.addDocument(this.searchableEpisodeText(event.episode));
+      if (event.episode.originId) this.episodeIdByOrigin.set(event.episode.originId, event.episode.id);
+      this.episodeIdByPageRef.set(event.episode.pageRef, event.episode.id);
+      this.touchRecentEpisode(event.episode.id);
+      if (isNewEpisode) this.vectorizer.addDocument(this.searchableEpisodeText(event.episode));
     }
-    if (event.operation === 'link' && event.link) this.links.set(event.link.id, event.link);
+    if (event.operation === 'link' && event.link) {
+      this.links.set(event.link.id, event.link);
+      this.indexLink(event.link);
+    }
     if (event.operation === 'policy' && event.memoryPolicy) {
       this.memoryPolicy = clonePolicy({
         ...this.memoryPolicy,
@@ -869,6 +1550,7 @@ export class ContextFabric {
     operation: ContextEventOperation,
     payload: Pick<ContextFabricEvent, 'fact' | 'episode' | 'link' | 'memoryPolicy' | 'checkpoint'>,
   ): void {
+    this.localEmissionEpoch += 1;
     const unpersistedBody: Omit<ContextFabricEvent, 'hash'> = {
       version: 2,
       scopeId: this.scopeId,
@@ -882,11 +1564,22 @@ export class ContextFabric {
     // properties participated in the in-memory hash and then disappeared from
     // JSON, making authentic events impossible to verify after a restart.
     const body = JSON.parse(JSON.stringify(unpersistedBody)) as Omit<ContextFabricEvent, 'hash'>;
-    const event: ContextFabricEvent = { ...body, hash: sha256(stableSerialize(body)) };
+    let event: ContextFabricEvent = { ...body, hash: sha256(stableSerialize(body)) };
     this.lastEventHash = event.hash;
-    if (event.fact) this.facts.set(event.fact.id, normalizeStoredFact(event.fact));
-    if (event.episode) this.episodes.set(event.episode.id, cloneEpisode(event.episode));
-    if (event.link) this.links.set(event.link.id, event.link);
+    if (event.fact) {
+      const fact = normalizeStoredFact(event.fact);
+      this.materializeFact(fact);
+    }
+    if (event.episode) {
+      this.episodes.set(event.episode.id, cloneEpisode(event.episode));
+      if (event.episode.originId) this.episodeIdByOrigin.set(event.episode.originId, event.episode.id);
+      this.episodeIdByPageRef.set(event.episode.pageRef, event.episode.id);
+      this.touchRecentEpisode(event.episode.id);
+    }
+    if (event.link) {
+      this.links.set(event.link.id, event.link);
+      this.indexLink(event.link);
+    }
     if (event.memoryPolicy) this.memoryPolicy = clonePolicy(event.memoryPolicy);
     if (event.checkpoint) {
       this.latestCompactionCheckpoint = {
@@ -896,18 +1589,377 @@ export class ContextFabric {
       };
     }
     if (!this.durable) return;
-    const line = `${JSON.stringify(event)}\n`;
+    let line = `${JSON.stringify(event)}\n`;
     let firstAppendAttempt = true;
     this.enqueuePersistence(async () => {
       await fs.ensureDir(this.scopeDir);
-      if (firstAppendAttempt) {
-        firstAppendAttempt = false;
-        await fs.appendFile(this.eventsPath, line, 'utf8');
-        return;
+      const lease = await this.acquireEventLedgerLease();
+      try {
+        if (firstAppendAttempt) {
+          const prepared = await this.prepareEventForDurableAppend(event);
+          event = prepared.event;
+          line = `${JSON.stringify(event)}\n`;
+          if (prepared.alreadyPresent) {
+            await this.markOwnEventDurablyMaterialized(event);
+            return;
+          }
+          // Flip only after preparation succeeds. A lease timeout or a damaged
+          // pre-existing ledger has not made the append outcome ambiguous and
+          // must be allowed to run preparation again on the queued retry.
+          firstAppendAttempt = false;
+          await fs.appendFile(this.eventsPath, line, 'utf8');
+          await this.markOwnEventDurablyMaterialized(event);
+          return;
+        }
+        // The prior append may have committed, partially committed, or failed
+        // before touching disk. Reconciliation handles all three while the
+        // same cross-process lease prevents a competing writer from moving the
+        // tail during repair.
+        await this.reconcileAmbiguousEventAppend(event, line);
+        await this.markOwnEventDurablyMaterialized(event);
+      } finally {
+        await this.releaseEventLedgerLease(lease);
       }
-      await this.reconcileAmbiguousEventAppend(event, line);
     });
     this.scheduleSnapshot();
+  }
+
+  /**
+   * Advance the byte frontier only when this exact event is the durable tail
+   * and directly follows the materialized chain. If another process inserted
+   * anything first, incremental replay must absorb that complete suffix before
+   * a snapshot may be considered safe.
+   */
+  private async markOwnEventDurablyMaterialized(event: ContextFabricEvent): Promise<void> {
+    const adjacent = event.sequence === this.materializedLedgerRevision + 1
+      && event.previousHash === this.materializedLedgerHash;
+    if (!adjacent) {
+      this.replaySafe = false;
+      return;
+    }
+    const tail = await readDurableLedgerTail(this.eventsPath);
+    let durableTail: ContextFabricEvent | null = null;
+    try {
+      durableTail = tail.tailText ? JSON.parse(tail.tailText) as ContextFabricEvent : null;
+    } catch {
+      this.replaySafe = false;
+      return;
+    }
+    if (
+      !durableTail
+      || durableTail.sequence !== event.sequence
+      || durableTail.hash !== event.hash
+      || stableSerialize(durableTail) !== stableSerialize(event)
+    ) {
+      this.replaySafe = false;
+      return;
+    }
+    const stat = await fs.stat(this.eventsPath);
+    this.materializedLedgerSize = stat.size;
+    this.materializedLedgerRevision = event.sequence;
+    this.materializedLedgerHash = event.hash;
+    this.materializedLedgerModifiedAtMs = stat.mtimeMs;
+    this.materializedLedgerChangedAtMs = stat.ctimeMs;
+  }
+
+  /**
+   * Bring a retained fabric up to the newest cross-process durable state.
+   * This is called when a chat fabric is acquired, never inside the provider
+   * iteration loop. The unchanged path is one stat; the changed path verifies
+   * and applies only bytes appended after our known-good frontier.
+   */
+  async refreshDurableState(): Promise<void> {
+    if (!this.durable || !this.initialized) return;
+    if (this.durableRefreshPromise) return this.durableRefreshPromise;
+    // A new chat turn may acquire the retained fabric just as the prior turn's
+    // terminal events are finishing. Settle that bounded queue first, then use
+    // its final local epoch as the stable base for cross-process catch-up.
+    const refresh = (async () => {
+      await this.flushPersistenceOperations();
+      await this.refreshDurableStateOnce(this.localEmissionEpoch);
+    })();
+    this.durableRefreshPromise = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.durableRefreshPromise === refresh) this.durableRefreshPromise = null;
+    }
+  }
+
+  private async refreshDurableStateOnce(emissionEpoch: number): Promise<void> {
+    const observedStat = await fs.stat(this.eventsPath).catch((error: any) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (
+      observedStat
+      && this.replaySafe
+      && observedStat.size === this.materializedLedgerSize
+      && observedStat.mtimeMs === this.materializedLedgerModifiedAtMs
+      && observedStat.ctimeMs === this.materializedLedgerChangedAtMs
+    ) return;
+    if (
+      !observedStat
+      && this.replaySafe
+      && this.materializedLedgerSize === 0
+      && this.materializedLedgerRevision === 0
+      && this.materializedLedgerHash === ''
+    ) return;
+
+    let requiresCompleteRehydrate = false;
+    const lease = await this.acquireEventLedgerLease();
+    try {
+      // A same-process run began mutating this fabric while the asynchronous
+      // freshness check was in flight. Its queued append will rebase safely;
+      // defer replay until the next clean acquisition rather than interleave
+      // external history with an in-progress synchronous materialization.
+      if (
+        this.pendingPersistenceOperations.length > 0
+        || this.localEmissionEpoch !== emissionEpoch
+      ) {
+        this.replaySafe = false;
+        return;
+      }
+      try {
+        const slice = await readDurableLedgerSlice(this.eventsPath, this.materializedLedgerSize);
+        if (slice.size === this.materializedLedgerSize) {
+          // The pre-lease stat fast path already handled a byte-identical,
+          // unchanged file. Reaching this branch means the same-size ledger
+          // was replaced/touched or this fabric was previously known unsafe.
+          // Its middle cannot be authenticated from the tail alone, so use the
+          // complete verified hydration path before sealing another snapshot.
+          throw new Error('Context Fabric event ledger identity changed without an append-only size increase.');
+        }
+
+        let expectedSequence = this.materializedLedgerRevision;
+        let expectedHash = this.materializedLedgerHash;
+        const appendedEvents: ContextFabricEvent[] = [];
+        const lines = slice.text.split(/\r?\n/).filter(line => Boolean(line.trim()));
+        for (const line of lines) {
+          let event: ContextFabricEvent;
+          try {
+            event = JSON.parse(line) as ContextFabricEvent;
+          } catch {
+            throw new Error('Context Fabric appended event is not valid JSON.');
+          }
+          const body = { ...event, hash: undefined } as any;
+          delete body.hash;
+          if (
+            event.version !== 2
+            || event.scopeId !== this.scopeId
+            || !isContextFabricEventPayloadValid(event)
+            || event.sequence !== expectedSequence + 1
+            || event.previousHash !== expectedHash
+            || sha256(stableSerialize(body)) !== event.hash
+          ) {
+            throw new Error('Context Fabric appended event failed its integrity or continuity check.');
+          }
+          appendedEvents.push(event);
+          expectedSequence = event.sequence;
+          expectedHash = event.hash;
+        }
+        if (appendedEvents.length === 0) {
+          // A writer can normalize a valid newline-free ledger before its next
+          // event. Advancing that byte alone is safe because chain identity did
+          // not move.
+          const tail = await readDurableLedgerTail(this.eventsPath);
+          const durableTail = tail.tailText ? JSON.parse(tail.tailText) as ContextFabricEvent : null;
+          if (
+            this.materializedLedgerRevision !== 0
+            && (
+              durableTail?.sequence !== this.materializedLedgerRevision
+              || durableTail?.hash !== this.materializedLedgerHash
+            )
+          ) {
+            throw new Error('Context Fabric normalized ledger has a different chain tail.');
+          }
+        }
+        if (
+          this.pendingPersistenceOperations.length > 0
+          || this.localEmissionEpoch !== emissionEpoch
+        ) {
+          this.replaySafe = false;
+          return;
+        }
+        for (const event of appendedEvents) this.applyEvent(event);
+        // With no local pending mutations, the verified durable tail is the
+        // complete materialized revision, including any local events that had
+        // previously been rebased around a competing process.
+        this.revision = expectedSequence;
+        this.lastEventHash = expectedHash;
+        this.materializedLedgerSize = slice.size;
+        this.materializedLedgerRevision = expectedSequence;
+        this.materializedLedgerHash = expectedHash;
+        this.materializedLedgerModifiedAtMs = slice.modifiedAtMs;
+        this.materializedLedgerChangedAtMs = slice.changedAtMs;
+        this.replaySafe = true;
+        if (appendedEvents.length > 0) this.scheduleSnapshot();
+      } catch {
+        // A same-size atomic repair, truncation, or rejected suffix cannot be
+        // understood from the old byte frontier. Reuse the authoritative full
+        // initialization path, which verifies and repairs the chain before it
+        // replaces materialized state.
+        requiresCompleteRehydrate = true;
+      }
+    } finally {
+      await this.releaseEventLedgerLease(lease);
+    }
+
+    if (!requiresCompleteRehydrate) return;
+    if (
+      this.pendingPersistenceOperations.length > 0
+      || this.localEmissionEpoch !== emissionEpoch
+    ) {
+      this.replaySafe = false;
+      return;
+    }
+    await this.initializeFromStorage();
+  }
+
+  private async acquireEventLedgerLease(): Promise<{
+    lockPath: string;
+    ownerToken: string;
+    heartbeat: ReturnType<typeof setInterval>;
+    heartbeatState: { stopped: boolean; inFlight: Promise<void> };
+  }> {
+    const lockPath = `${this.eventsPath}.lock`;
+    const ownerToken = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2, 12)}`;
+    const deadline = Date.now() + EVENT_LEDGER_LEASE_WAIT_MS;
+    while (true) {
+      try {
+        await fs.writeFile(lockPath, JSON.stringify({
+          version: 1,
+          scopeId: this.scopeId,
+          ownerToken,
+          pid: process.pid,
+          acquiredAt: Date.now(),
+        }), { encoding: 'utf8', flag: 'wx' });
+        const heartbeatState = { stopped: false, inFlight: Promise.resolve() };
+        const heartbeat = setInterval(() => {
+          heartbeatState.inFlight = heartbeatState.inFlight.then(async () => {
+            if (heartbeatState.stopped) return;
+            try {
+              const current = await fs.readJson(lockPath);
+              if (heartbeatState.stopped || current?.ownerToken !== ownerToken) return;
+              const now = new Date();
+              await fs.utimes(lockPath, now, now);
+            } catch {
+              // A moved/replaced lock is not ours to revive. The guarded token
+              // check also prevents a resumed stale owner from touching the
+              // successor's lock path and extending its lifetime indefinitely.
+            }
+          });
+        }, 10_000);
+        heartbeat.unref?.();
+        return { lockPath, ownerToken, heartbeat, heartbeatState };
+      } catch (error: any) {
+        if (error?.code !== 'EEXIST') throw error;
+        try {
+          const stat = await fs.stat(lockPath);
+          if (Date.now() - stat.mtimeMs > EVENT_LEDGER_LEASE_STALE_MS) {
+            const stalePath = `${lockPath}.stale.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+            await fs.move(lockPath, stalePath, { overwrite: false });
+            await fs.remove(stalePath).catch(() => undefined);
+            continue;
+          }
+        } catch (statError: any) {
+          if (statError?.code === 'ENOENT') continue;
+        }
+        if (Date.now() >= deadline) throw new Error('Timed out waiting for the Context Fabric event writer.');
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+  }
+
+  private async releaseEventLedgerLease(lease: {
+    lockPath: string;
+    ownerToken: string;
+    heartbeat: ReturnType<typeof setInterval>;
+    heartbeatState: { stopped: boolean; inFlight: Promise<void> };
+  }): Promise<void> {
+    lease.heartbeatState.stopped = true;
+    clearInterval(lease.heartbeat);
+    await lease.heartbeatState.inFlight.catch(() => undefined);
+    try {
+      const current = await fs.readJson(lease.lockPath);
+      if (current?.ownerToken === lease.ownerToken) await fs.remove(lease.lockPath);
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        // Never delete an unreadable or replacement lock owned by another
+        // process. Its stale-owner path will recover independently.
+      }
+    }
+  }
+
+  private async prepareEventForDurableAppend(event: ContextFabricEvent): Promise<{
+    event: ContextFabricEvent;
+    alreadyPresent: boolean;
+  }> {
+    const ledgerTail = await readDurableLedgerTail(this.eventsPath);
+    const tailText = ledgerTail.tailText;
+    let tail: ContextFabricEvent | null = null;
+    if (tailText) {
+      try {
+        tail = JSON.parse(tailText) as ContextFabricEvent;
+      } catch {
+        throw new Error('Context Fabric event ledger has an incomplete tail and requires recovery before append.');
+      }
+    }
+    if (tail) {
+      const body = { ...tail, hash: undefined } as any;
+      delete body.hash;
+      if (
+        tail.scopeId !== this.scopeId
+        || !isContextFabricEventPayloadValid(tail)
+        || (tail.version === 2 && sha256(stableSerialize(body)) !== tail.hash)
+        || (
+          tail.version === 1
+          && (
+            tail.sequence !== this.legacyEventPrefixSequence
+            || tail.hash !== this.legacyEventPrefixHash
+          )
+        )
+      ) {
+        throw new Error('Context Fabric event ledger tail failed its integrity check.');
+      }
+      if (
+        tail.sequence === event.sequence
+        && tail.hash === event.hash
+        && stableSerialize(tail) === stableSerialize(event)
+      ) {
+        return { event, alreadyPresent: true };
+      }
+    }
+    if (ledgerTail.size > 0 && !ledgerTail.endsWithNewline) {
+      // The existing final record was parsed and integrity-checked above. The
+      // writer lease makes a one-byte normalization safe without copying an
+      // arbitrarily large ledger to a replacement file.
+      await fs.appendFile(this.eventsPath, '\n', 'utf8');
+    }
+    const expectedSequence = tail ? tail.sequence + 1 : 1;
+    const expectedPreviousHash = tail?.hash || '';
+    if (event.sequence === expectedSequence && event.previousHash === expectedPreviousHash) {
+      return { event, alreadyPresent: false };
+    }
+    const unpersisted = {
+      ...event,
+      sequence: expectedSequence,
+      previousHash: expectedPreviousHash,
+      ...(event.fact ? { fact: { ...event.fact, revision: expectedSequence } } : {}),
+      ...(event.episode ? { episode: { ...event.episode, sequence: expectedSequence } } : {}),
+      hash: undefined,
+    } as any;
+    delete unpersisted.hash;
+    const body = JSON.parse(JSON.stringify(unpersisted)) as Omit<ContextFabricEvent, 'hash'>;
+    const rebased: ContextFabricEvent = { ...body, hash: sha256(stableSerialize(body)) };
+    // Another writer committed an event this live instance has not replayed.
+    // Our own pending state remains usable, but a snapshot of it is not a
+    // complete materialization of the shared ledger and must never accelerate
+    // a future restart.
+    this.replaySafe = false;
+    this.revision = Math.max(this.revision, rebased.sequence);
+    this.lastEventHash = rebased.hash;
+    return { event: rebased, alreadyPresent: false };
   }
 
   /**
@@ -946,10 +1998,15 @@ export class ContextFabric {
       && candidate.sequence === event.sequence
       && candidate.hash === event.hash
     );
+    const alreadyCommitted = completeLines.some(value => isSameEvent(parseEvent(value)));
 
     // The first append completed despite reporting an error. Normalize a
     // missing final newline if necessary, but never append the event twice.
-    if (isSameEvent(lastComplete) && !trailingFragment) return;
+    if (alreadyCommitted && !trailingFragment) return;
+    if (alreadyCommitted && fragmentEvent) {
+      await this.replaceEventLedgerAtomically(`${completePrefix}${trailingFragment}\n`);
+      return;
+    }
     if (isSameEvent(fragmentEvent)) {
       await this.replaceEventLedgerAtomically(`${completePrefix}${trailingFragment}\n`);
       return;
@@ -1028,14 +2085,25 @@ export class ContextFabric {
   }
 
   private scheduleSnapshot(): void {
-    if (!this.durable || this.snapshotTimer) return;
+    if (!this.durable) return;
+    const revisionDelta = Math.max(0, this.revision - this.lastSnapshotRevision);
+    if (this.lastSnapshotRevision >= 0 && revisionDelta === 0) return;
+    const urgent = this.lastSnapshotRevision < 0 || revisionDelta >= SNAPSHOT_EVENT_INTERVAL;
+    if (this.snapshotTimer) {
+      clearTimeout(this.snapshotTimer);
+      this.snapshotTimer = null;
+    }
+    // Checkpoints accelerate restart; the event ledger is the durability root.
+    // Debounce ordinary writes until the chat is idle so a long streaming/tool
+    // run never repeatedly serializes its complete history in the hot path.
+    const delay = urgent ? 750 : SNAPSHOT_IDLE_DELAY_MS;
     this.snapshotTimer = setTimeout(() => {
       this.snapshotTimer = null;
-      void this.flush().catch(() => {
-        // The pending operation remains queued and a caller-visible flush or
-        // the next event will retry it. Avoid an unhandled timer rejection.
+      void this.persistSnapshotCheckpoint().catch(() => {
+        // The verified ledger is already durable. The next event schedules a
+        // fresh acceleration checkpoint; avoid an unhandled timer rejection.
       });
-    }, 750);
+    }, delay);
     (this.snapshotTimer as any).unref?.();
   }
 
@@ -1051,8 +2119,178 @@ export class ContextFabric {
     ].join('\n');
   }
 
+  private indexFactProvenance(fact: ContextFact): void {
+    for (const item of fact.provenance || []) {
+      if (item?.sourceId) this.provenanceSourceIds.add(item.sourceId);
+    }
+  }
+
+  /**
+   * Apply one fact revision and maintain the single active value for a
+   * kind/key identity. This also deterministically resolves concurrent writers
+   * that could not see each other's just-committed active revision.
+   */
+  private materializeFact(fact: ContextFact): void {
+    const priorSameId = this.facts.get(fact.id);
+    if (priorSameId?.status === 'active') {
+      const priorIdentity = activeFactIdentity(priorSameId.kind, priorSameId.key);
+      if (this.activeFactIdByIdentity.get(priorIdentity) === priorSameId.id) {
+        this.activeFactIdByIdentity.delete(priorIdentity);
+      }
+    }
+    if (fact.status === 'active') {
+      const identity = activeFactIdentity(fact.kind, fact.key);
+      const conflictingId = this.activeFactIdByIdentity.get(identity);
+      const conflicting = conflictingId ? this.facts.get(conflictingId) : undefined;
+      if (conflicting && conflicting.id !== fact.id && conflicting.status === 'active') {
+        const boundaryAt = Math.max(conflicting.validFrom, fact.validFrom);
+        this.facts.set(conflicting.id, {
+          ...conflicting,
+          status: 'superseded',
+          supersededBy: fact.id,
+          validTo: boundaryAt,
+          invalidatedAt: boundaryAt,
+          lastObservedAt: Math.max(conflicting.lastObservedAt, boundaryAt),
+        });
+      }
+      this.activeFactIdByIdentity.set(identity, fact.id);
+    }
+    this.facts.set(fact.id, fact);
+    this.factKindsPresent.add(fact.kind);
+    this.latestFactIdByKind.set(fact.kind, fact.id);
+    this.touchRecentFact(fact.id);
+    this.indexFactTerms(fact);
+    this.indexFactProvenance(fact);
+  }
+
+  private touchRecentFact(factId: string): void {
+    this.recentFactIds.delete(factId);
+    this.recentFactIds.set(factId, true);
+    while (this.recentFactIds.size > MAX_RECENT_FACT_INDEX) {
+      const oldest = this.recentFactIds.keys().next().value;
+      if (!oldest) break;
+      this.recentFactIds.delete(oldest);
+    }
+  }
+
+  private indexFactTerms(fact: ContextFact): void {
+    const previousTerms = this.lexicalTermsByFactId.get(fact.id) || [];
+    for (const term of previousTerms) {
+      const postings = this.lexicalFactIdsByTerm.get(term);
+      postings?.delete(fact.id);
+      if (postings?.size === 0) this.lexicalFactIdsByTerm.delete(term);
+    }
+    const identityTerms = queryTerms([
+      fact.kind,
+      fact.network,
+      fact.key,
+      fact.exactValues.join(' '),
+      fact.targets.join(' '),
+      fact.entities.join(' '),
+    ].join('\n'));
+    const terms = Array.from(new Set([
+      ...identityTerms,
+      ...queryTerms(fact.text),
+    ])).slice(0, MAX_LEXICAL_TERMS_PER_FACT);
+    this.lexicalTermsByFactId.set(fact.id, terms);
+    for (const term of terms) {
+      let postings = this.lexicalFactIdsByTerm.get(term);
+      if (!postings) {
+        postings = new Map();
+        this.lexicalFactIdsByTerm.set(term, postings);
+      }
+      postings.delete(fact.id);
+      postings.set(fact.id, true);
+      while (postings.size > MAX_LEXICAL_POSTINGS_PER_TERM) {
+        const oldest = postings.keys().next().value;
+        if (!oldest) break;
+        postings.delete(oldest);
+      }
+    }
+  }
+
+  private rebuildFactIndexes(): void {
+    this.provenanceSourceIds = new Set();
+    this.activeFactIdByIdentity = new Map();
+    this.latestFactIdByKind = new Map();
+    this.factKindsPresent = new Set();
+    this.recentFactIds = new Map();
+    this.lexicalFactIdsByTerm = new Map();
+    this.lexicalTermsByFactId = new Map();
+    const ordered = Array.from(this.facts.values()).sort((left, right) =>
+      left.revision - right.revision
+      || left.lastObservedAt - right.lastObservedAt
+      || left.id.localeCompare(right.id)
+    );
+    for (const fact of ordered) {
+      this.factKindsPresent.add(fact.kind);
+      this.latestFactIdByKind.set(fact.kind, fact.id);
+      this.touchRecentFact(fact.id);
+      this.indexFactTerms(fact);
+      this.indexFactProvenance(fact);
+      if (fact.status !== 'active') continue;
+      const identity = activeFactIdentity(fact.kind, fact.key);
+      const conflictingId = this.activeFactIdByIdentity.get(identity);
+      const conflicting = conflictingId ? this.facts.get(conflictingId) : undefined;
+      if (conflicting && conflicting.status === 'active') {
+        const boundaryAt = Math.max(conflicting.validFrom, fact.validFrom);
+        this.facts.set(conflicting.id, {
+          ...conflicting,
+          status: 'superseded',
+          supersededBy: fact.id,
+          validTo: boundaryAt,
+          invalidatedAt: boundaryAt,
+          lastObservedAt: Math.max(conflicting.lastObservedAt, boundaryAt),
+        });
+      }
+      this.activeFactIdByIdentity.set(identity, fact.id);
+    }
+  }
+
+  private activeFactsSnapshot(): ContextFact[] {
+    const active: ContextFact[] = [];
+    for (const factId of this.activeFactIdByIdentity.values()) {
+      const fact = this.facts.get(factId);
+      if (fact?.status === 'active') active.push(fact);
+    }
+    return active;
+  }
+
+  private latestFactOfKind(kind: ContextFactKind): ContextFact | undefined {
+    const factId = this.latestFactIdByKind.get(kind);
+    return factId ? this.facts.get(factId) : undefined;
+  }
+
   private searchableEpisodeText(episode: ContextEpisode): string {
     return [episode.header, episode.contentPreview, episode.toolName || '', episode.targets.join(' ')].join('\n');
+  }
+
+  private touchRecentEpisode(episodeId: string): void {
+    this.recentEpisodeIds.delete(episodeId);
+    this.recentEpisodeIds.set(episodeId, true);
+    while (this.recentEpisodeIds.size > MAX_RECENT_EPISODE_INDEX) {
+      const oldest = this.recentEpisodeIds.keys().next().value;
+      if (!oldest) break;
+      this.recentEpisodeIds.delete(oldest);
+    }
+  }
+
+  private indexLink(link: ContextLink): void {
+    const indexDirection = (fromFactId: string, toFactId: string) => {
+      let neighbors = this.linkAdjacency.get(fromFactId);
+      if (!neighbors) {
+        neighbors = new Map();
+        this.linkAdjacency.set(fromFactId, neighbors);
+      }
+      neighbors.set(toFactId, Math.max(neighbors.get(toFactId) || 0, clamp01(link.weight)));
+    };
+    indexDirection(link.fromFactId, link.toFactId);
+    indexDirection(link.toFactId, link.fromFactId);
+  }
+
+  private rebuildLinkAdjacency(): void {
+    this.linkAdjacency = new Map();
+    for (const link of this.links.values()) this.indexLink(link);
   }
 
   private rebuildVectorizer(): void {
@@ -1072,7 +2310,8 @@ export class ContextFabric {
   }): ContextEpisode {
     const normalizedOriginId = input.originId ? normalizeText(input.originId, 700) : '';
     if (normalizedOriginId) {
-      const existing = Array.from(this.episodes.values()).find(episode => episode.originId === normalizedOriginId);
+      const existingId = this.episodeIdByOrigin.get(normalizedOriginId);
+      const existing = existingId ? this.episodes.get(existingId) : undefined;
       if (existing) return existing;
     }
     const createdAt = Number.isFinite(input.createdAt)
@@ -1080,7 +2319,14 @@ export class ContextFabric {
       : Date.now();
     const serialized = stableSerialize(input.content);
     const serializedBuffer = Buffer.from(serialized, 'utf8');
-    const id = `ep_${sha256(`${this.scopeId}\u0000${createdAt}\u0000${this.revision}\u0000${input.header}`).slice(0, 20)}`;
+    if (serializedBuffer.length > MAX_EPISODE_BYTES) {
+      throw new Error('Context episode exceeds the bounded durable page size.');
+    }
+    const contentHash = sha256(serialized);
+    // Include content identity so two desktop/background processes observing
+    // the same revision and millisecond cannot map different episodes onto the
+    // same page path before their ledger events are rebased under the lease.
+    const id = `ep_${sha256(`${this.scopeId}\u0000${createdAt}\u0000${this.revision}\u0000${input.header}\u0000${contentHash}`).slice(0, 20)}`;
     const oversized = serializedBuffer.length > MAX_PAGE_BYTES;
     const pageRef = oversized ? `pages/${id}.manifest.json` : `pages/${id}.json.gz`;
     const episode: ContextEpisode = {
@@ -1091,7 +2337,7 @@ export class ContextFabric {
       ...(normalizedOriginId ? { originId: normalizedOriginId } : {}),
       header: normalizeText(input.header, 700),
       contentPreview: normalizeText(serialized, 1_600),
-      contentHash: sha256(serialized),
+      contentHash,
       pageRef,
       toolName: input.toolName,
       targets: uniqueStrings(input.targets || [], 32),
@@ -1105,7 +2351,11 @@ export class ContextFabric {
         await fs.ensureDir(pagesDir);
         if (!oversized) {
           const compressed = await gzipAsync(serializedBuffer);
-          await fs.writeFile(path.join(this.scopeDir, pageRef), compressed);
+          await persistImmutableContextPageFile(
+            path.join(this.scopeDir, pageRef),
+            compressed,
+            async existing => (await gunzipContextPage(existing)).equals(serializedBuffer),
+          );
           return;
         }
         const chunkRefs: string[] = [];
@@ -1113,13 +2363,31 @@ export class ContextFabric {
           const chunk = serializedBuffer.subarray(offset, Math.min(serializedBuffer.length, offset + MAX_PAGE_BYTES));
           const chunkRef = `pages/${id}.part-${String(index).padStart(4, '0')}.txt.gz`;
           chunkRefs.push(chunkRef);
-          await fs.writeFile(path.join(this.scopeDir, chunkRef), await gzipAsync(chunk));
+          const compressedChunk = await gzipAsync(chunk);
+          await persistImmutableContextPageFile(
+            path.join(this.scopeDir, chunkRef),
+            compressedChunk,
+            async existing => (await gunzipContextPage(existing)).equals(chunk),
+          );
         }
-        await fs.writeJson(path.join(this.scopeDir, pageRef), {
+        const manifest = {
           version: 1,
           contentHash: episode.contentHash,
           chunks: chunkRefs,
-        });
+        };
+        const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+        await persistImmutableContextPageFile(
+          path.join(this.scopeDir, pageRef),
+          manifestBytes,
+          async existing => {
+            if (existing.byteLength > MAX_PAGE_MANIFEST_BYTES) return false;
+            try {
+              return stableSerialize(JSON.parse(existing.toString('utf8'))) === stableSerialize(manifest);
+            } catch {
+              return false;
+            }
+          },
+        );
       });
     }
     this.emit('episode', { episode });
@@ -1136,7 +2404,8 @@ export class ContextFabric {
     if (!absolute.startsWith(path.resolve(this.scopeDir) + path.sep)) {
       throw new Error('Context page reference escapes its scope.');
     }
-    const episode = Array.from(this.episodes.values()).find(item => item.pageRef === normalized);
+    const episodeId = this.episodeIdByPageRef.get(normalized);
+    const episode = episodeId ? this.episodes.get(episodeId) : undefined;
     if (!episode) throw new Error(`Unknown context page: ${normalized}`);
     if (!this.durable) {
       const serialized = this.ephemeralPages.get(normalized);
@@ -1146,12 +2415,33 @@ export class ContextFabric {
     }
     let serialized = '';
     if (normalized.endsWith('.manifest.json')) {
+      const manifestStat = await fs.stat(absolute);
+      if (!manifestStat.isFile() || manifestStat.size > MAX_PAGE_MANIFEST_BYTES) {
+        throw new Error('Context page manifest exceeds its bounded size.');
+      }
       const manifest = await fs.readJson(absolute);
+      const chunkRefs = Array.isArray(manifest?.chunks) ? manifest.chunks : [];
+      const expectedChunkPattern = new RegExp(`^pages/${episode.id}\\.part-[0-9]{4}\\.txt\\.gz$`);
+      if (
+        manifest?.version !== 1
+        || manifest?.contentHash !== episode.contentHash
+        || chunkRefs.length < 1
+        || chunkRefs.length > MAX_PAGE_CHUNKS
+        || new Set(chunkRefs.map((value: unknown) => String(value))).size !== chunkRefs.length
+      ) {
+        throw new Error('Context page manifest failed its integrity check.');
+      }
       const chunks: Buffer[] = [];
-      for (const chunkRef of Array.isArray(manifest?.chunks) ? manifest.chunks : []) {
-        const chunkPath = path.resolve(this.scopeDir, String(chunkRef));
+      let expandedBytes = 0;
+      for (const chunkRef of chunkRefs) {
+        const normalizedChunkRef = String(chunkRef).replace(/\\/g, '/');
+        if (!expectedChunkPattern.test(normalizedChunkRef)) throw new Error('Invalid page chunk reference.');
+        const chunkPath = path.resolve(this.scopeDir, ...normalizedChunkRef.split('/'));
         if (!chunkPath.startsWith(path.resolve(this.scopeDir) + path.sep)) throw new Error('Invalid page chunk reference.');
-        chunks.push(await gunzipContextPage(await fs.readFile(chunkPath)));
+        const expandedChunk = await gunzipContextPage(await fs.readFile(chunkPath));
+        expandedBytes += expandedChunk.length;
+        if (expandedBytes > MAX_EPISODE_BYTES) throw new Error('Context page exceeds its bounded expanded size.');
+        chunks.push(expandedChunk);
       }
       serialized = Buffer.concat(chunks).toString('utf8');
       if (sha256(serialized) !== manifest?.contentHash) throw new Error('Context page integrity check failed.');
@@ -1160,6 +2450,13 @@ export class ContextFabric {
     }
     if (sha256(serialized) !== episode.contentHash) throw new Error('Context page integrity check failed.');
     try { return JSON.parse(serialized); } catch { return serialized; }
+  }
+
+  getEpisodeByPageRef(pageRef: string): ContextEpisode | undefined {
+    const normalized = String(pageRef || '').trim().replace(/\\/g, '/').replace(/^\/+/, '');
+    const episodeId = this.episodeIdByPageRef.get(normalized);
+    const episode = episodeId ? this.episodes.get(episodeId) : undefined;
+    return episode ? cloneEpisode(episode) : undefined;
   }
 
   private upsertFact(input: {
@@ -1180,13 +2477,14 @@ export class ContextFabric {
     const entities = extractEntities(text, targets);
     const observedAt = Number(input.provenance.observedAt || Date.now());
     const importance = Math.max(0, Math.min(10, input.importance));
-    const same = Array.from(this.facts.values()).find(fact =>
-      fact.status === 'active'
-      && fact.key === key
-      && fact.kind === input.kind
-      && fact.text === text
-      && stableSerialize(fact.exactValues) === stableSerialize(exactValues),
-    );
+    const activeId = this.activeFactIdByIdentity.get(activeFactIdentity(input.kind, key));
+    const active = activeId ? this.facts.get(activeId) : undefined;
+    const same = active
+      && active.status === 'active'
+      && active.text === text
+      && stableSerialize(active.exactValues) === stableSerialize(exactValues)
+        ? active
+        : undefined;
     if (same) {
       const observations = same.observations + 1;
       const reinforced: ContextFact = {
@@ -1209,6 +2507,7 @@ export class ContextFabric {
           usageHistory: clamp01(observations / (observations + 1)),
         },
         entities: uniqueStrings([...same.entities, ...entities], 32),
+        targets: uniqueStrings([...same.targets, ...targets], 24),
         provenance: [...same.provenance, input.provenance].slice(-MAX_PROVENANCE_PER_FACT),
       };
       this.emit('upsert', { fact: reinforced });
@@ -1217,12 +2516,11 @@ export class ContextFabric {
 
     const id = `cf_${sha256(`${this.scopeId}\u0000${key}\u0000${text}\u0000${observedAt}\u0000${this.revision}`).slice(0, 18)}`;
     const superseded: ContextFact[] = [];
-    for (const existing of Array.from(this.facts.values())) {
-      if (existing.status !== 'active' || existing.key !== key || existing.kind !== input.kind) continue;
-      superseded.push(existing);
+    if (active && active.status === 'active') {
+      superseded.push(active);
       this.emit('upsert', {
         fact: {
-          ...existing,
+          ...active,
           status: 'superseded',
           supersededBy: id,
           validTo: observedAt,
@@ -1293,10 +2591,13 @@ export class ContextFabric {
   private connectFact(fact: ContextFact): void {
     const targetKeys = new Set(fact.targets.map(normalizeKey).filter(Boolean));
     const entityKeys = new Set(fact.entities.map(normalizeKey).filter(Boolean));
-    const candidates = Array.from(this.facts.values())
-      .filter(other => other.id !== fact.id)
-      .sort((a, b) => b.lastObservedAt - a.lastObservedAt)
-      .slice(0, 240);
+    const candidates: ContextFact[] = [];
+    const recentIds = Array.from(this.recentFactIds.keys());
+    for (let index = recentIds.length - 1; index >= 0 && candidates.length < 240; index -= 1) {
+      if (recentIds[index] === fact.id) continue;
+      const candidate = this.facts.get(recentIds[index]);
+      if (candidate) candidates.push(candidate);
+    }
     let linked = 0;
     for (const other of candidates) {
       const sameTarget = other.targets.some(target => targetKeys.has(normalizeKey(target)));
@@ -1318,15 +2619,31 @@ export class ContextFabric {
     mode: 'new' | 'continuation' | 'retry' = 'new',
     runId = '',
   ): void {
+    request = visibleUserRequest(request);
     const text = normalizeText(request);
     if (!text) return;
+    const stableRunId = normalizeText(runId, 220);
+    const liveOriginId = stableRunId ? `user-run:${stableRunId}` : '';
+    const transcriptOriginId = stableRunId ? `chat-trace:${stableRunId}:user` : '';
+    // Key rotation and provider failover can re-enter an execution loop for
+    // the same immutable UI turn. That is transport recovery, not another
+    // user observation; duplicating it bloats the ledger and overweights the
+    // request in retrieval. Recognize both live and hydrated transcript IDs.
+    if (
+      liveOriginId
+      && (
+        this.episodeIdByOrigin.has(liveOriginId)
+        || this.episodeIdByOrigin.has(transcriptOriginId)
+        || this.episodeIdByOrigin.has(`chat-trace:user-turn-${stableRunId}:user`)
+      )
+    ) return;
     const now = Date.now();
     const sourceId = `request_${sha256(text).slice(0, 14)}`;
     const episode = this.archiveEpisode({
       source: 'user',
       header: `User request (${mode})`,
       content: { mode, request },
-      originId: runId ? `user-run:${normalizeText(runId, 220)}` : undefined,
+      originId: liveOriginId || undefined,
     });
     const provenance: ContextProvenance = {
       source: 'user',
@@ -1335,17 +2652,21 @@ export class ContextFabric {
       mutationEpoch: this.mutationEpoch,
       pageRef: episode.pageRef,
     };
-    if (mode === 'new') {
+    // Task boundaries retire the old root explicitly. Every other message is
+    // interpreted with that root, not through a list of continuation words.
+    if (!this.activeFactIdByIdentity.has(activeFactIdentity('objective', 'objective:root'))) {
       this.upsertFact({
         key: 'objective:root', kind: 'objective', text, importance: 10,
         epistemic: 'user_asserted', provenance,
       });
     }
     this.upsertFact({
-      key: 'objective:current-directive', kind: 'objective', text, importance: 10,
+      key: 'objective:current-directive', kind: 'objective',
+      text,
+      importance: 10,
       epistemic: 'user_asserted', provenance,
     });
-    for (const clause of extractConstraintClauses(text)) {
+    for (const clause of extractConstraintClauses(String(request || ''))) {
       const subject = normalizeKey(clause) || sha256(clause).slice(0, 16);
       this.upsertFact({
         key: `constraint:${subject}`, kind: 'constraint', text: clause,
@@ -1367,14 +2688,23 @@ export class ContextFabric {
     text: string;
     createdAt?: number;
   }>): number {
-    const knownOrigins = new Set(
-      Array.from(this.episodes.values()).map(episode => episode.originId).filter(Boolean) as string[],
-    );
     let imported = 0;
     for (const turn of turns) {
       const originId = normalizeText(turn?.originId, 700);
       const exactText = String(turn?.text ?? '').replace(/\u0000/g, '');
-      if (!originId || !exactText.trim() || knownOrigins.has(originId)) continue;
+      const liveRun = originId.match(/^chat-trace:(.+):(user|assistant)$/);
+      const liveOriginAlias = liveRun
+        ? `${liveRun[2]}-run:${normalizeText(liveRun[1], 220)}`
+        : '';
+      if (
+        !originId
+        || !exactText.trim()
+        || this.episodeIdByOrigin.has(originId)
+        // The live request path records run-owned pages before the UI snapshot
+        // receives its stable trace ID. Recognize that alias so next-turn
+        // hydration does not archive the same user/assistant turn a second time.
+        || Boolean(liveOriginAlias && this.episodeIdByOrigin.has(liveOriginAlias))
+      ) continue;
       this.archiveEpisode({
         source: turn.role === 'user' ? 'user' : 'runtime',
         header: turn.role === 'user' ? 'Imported user message' : 'Imported assistant response',
@@ -1382,7 +2712,6 @@ export class ContextFabric {
         originId,
         createdAt: turn.createdAt,
       });
-      knownOrigins.add(originId);
       imported += 1;
     }
     return imported;
@@ -1403,7 +2732,7 @@ export class ContextFabric {
       originId: sourceId,
       createdAt: now,
     });
-    for (const fact of Array.from(this.facts.values())) {
+    for (const fact of this.activeFactsSnapshot()) {
       if (
         fact.status !== 'active' ||
         !['objective', 'constraint', 'decision', 'next_action', 'failure'].includes(fact.kind)
@@ -1429,18 +2758,28 @@ export class ContextFabric {
     }
   }
 
-  observeSteering(text: string, sourceId = `steering_${Date.now()}`): void {
+  observeSteering(text: string, sourceId = `steering_${Date.now()}`, origin: 'human' | 'agent' = 'human'): void {
     const normalized = normalizeText(text);
     if (!normalized) return;
+    if (this.provenanceSourceIds.has(sourceId)) return;
     const episode = this.archiveEpisode({
-      source: 'steering',
-      header: 'User steering update',
-      content: { sourceId, text },
+      source: origin === 'human' ? 'steering' : 'runtime',
+      header: origin === 'human' ? 'User steering update' : 'Agent-proposed guidance',
+      content: { sourceId, text, origin },
     });
     const provenance: ContextProvenance = {
-      source: 'steering', sourceId, observedAt: Date.now(), mutationEpoch: this.mutationEpoch,
+      source: origin === 'human' ? 'steering' : 'runtime', sourceId, observedAt: Date.now(), mutationEpoch: this.mutationEpoch,
       pageRef: episode.pageRef,
     };
+    if (origin === 'agent') {
+      this.upsertFact({
+        key: 'next_action:agent-guidance', kind: 'next_action',
+        text: `Agent-proposed guidance, subject to the human user's scope and constraints: ${normalized}`,
+        importance: 8, epistemic: 'inferred', provenance,
+      });
+      return;
+    }
+    // The root and prior constraints stay separate from the latest directive.
     this.upsertFact({
       key: 'objective:current-directive', kind: 'objective', text: normalized,
       importance: 10, epistemic: 'user_asserted', provenance,
@@ -1461,24 +2800,53 @@ export class ContextFabric {
     rawResult: any = result,
   ): string {
     const semantics = classifyToolSemantics(toolName, args);
+    const normalizedToolName = String(toolName || '').trim().toLowerCase();
     const success = toolResultSucceeded(rawResult);
-    if (success && semantics.isMutation) this.mutationEpoch += 1;
-    const targets = extractToolTargets(args, rawResult);
+    const outcome = getToolResultOutcome(rawResult);
+    let targets = extractToolTargets(args, rawResult);
+    if (
+      success
+      && normalizedToolName.startsWith('workspace_')
+      && ['observation', 'verification'].includes(semantics.effect)
+    ) {
+      targets = enrichWorkspaceObservationTargets(targets, args, rawResult);
+    }
+    const changedState = toolResultChangedState(rawResult, semantics);
+    if (changedState) this.mutationEpoch += 1;
     const resultHash = sha256(stableSerialize(rawResult));
     const sourceId = `tool_${sha256(`${toolName}\u0000${stableSerialize(args)}\u0000${this.revision}`).slice(0, 16)}`;
+    const observedAt = Date.now();
     const episode = this.archiveEpisode({
       source: 'tool',
-      header: `${toolName}: ${success ? 'completed' : 'failed'} (${semantics.effect})`,
-      content: { toolName, arguments: args, result: rawResult, semantics, mutationEpoch: this.mutationEpoch },
+      header: `${toolName}: ${outcome} (${semantics.effect})`,
+      content: { toolName, arguments: args, result: rawResult, semantics, changedState, mutationEpoch: this.mutationEpoch },
       toolName,
       targets,
     });
     const provenance: ContextProvenance = {
-      source: 'tool', sourceId, observedAt: Date.now(), toolName, resultHash,
+      source: 'tool', sourceId, observedAt, toolName, resultHash,
       mutationEpoch: this.mutationEpoch,
       pageRef: episode.pageRef,
+      ...(
+        normalizedToolName.startsWith('workspace_')
+        && ['observation', 'verification'].includes(semantics.effect)
+          ? {
+              observationScope: 'workspace' as const,
+              targetSnapshots: captureTargetSnapshots(targets),
+            }
+          : semantics.effect === 'observation'
+            ? { observationScope: 'external' as const }
+            : {}
+      ),
     };
-    const summary = summarizeResult(toolName, args, result, semantics.effect);
+    const reusableWorkspaceObservation = provenance.observationScope === 'workspace';
+    const summary = summarizeResult(
+      toolName,
+      args,
+      result,
+      semantics.isMutation && !changedState ? 'observation' : semantics.effect,
+      reusableWorkspaceObservation ? MAX_REUSABLE_OBSERVATION : MAX_RESULT_SUMMARY,
+    );
     const exactValues = uniqueStrings([
       ...targets,
       result?.exitCode,
@@ -1486,6 +2854,24 @@ export class ContextFabric {
       result?.code,
       ...extractExactValues(summary),
     ], 48);
+
+    if (changedState && normalizedToolName.startsWith('workspace_')) {
+      this.invalidateWorkspaceObservationsForTargets(targets, sourceId, observedAt);
+    }
+    const workId = String(rawResult?.taskId || rawResult?.backgroundTaskId || args?.taskId || '').trim();
+    const pendingKey = `next_action:tool:${normalizedToolName}:${workId || sha256(stableSerialize(args)).slice(0, 16)}`;
+    if (outcome === 'pending') {
+      this.upsertFact({
+        key: pendingKey, kind: 'next_action',
+        text: `${toolName} accepted; completion is pending${workId ? ` (taskId=${workId})` : ''}. ${summary}`,
+        exactValues: uniqueStrings([...exactValues, workId], 48), targets,
+        importance: 9, epistemic: 'observed', provenance,
+      });
+      return episode.pageRef;
+    }
+    const pendingId = this.activeFactIdByIdentity.get(activeFactIdentity('next_action', pendingKey));
+    if (pendingId) this.invalidateFact(pendingId, `${toolName} reported ${outcome}`);
+    if (outcome === 'noop') return episode.pageRef;
 
     if (!success) {
       const signature = sha256(`${toolName}\u0000${stableSerialize(args)}`).slice(0, 16);
@@ -1496,7 +2882,7 @@ export class ContextFabric {
       return episode.pageRef;
     }
 
-    if (semantics.isMutation || semantics.effect === 'artifact') {
+    if (changedState) {
       const stateTargets = targets.length > 0 ? targets : [`${toolName}:workspace-state`];
       for (const target of stateTargets.slice(0, 12)) {
         this.upsertFact({
@@ -1525,21 +2911,160 @@ export class ContextFabric {
         kind: coordinationKind, text: summary, exactValues, targets,
         importance: 8, epistemic: 'observed', provenance,
       });
-    } else if (semantics.effect === 'observation') {
+    } else if (
+      reusableWorkspaceObservation
+      && normalizedToolName === 'workspace_run_command'
+      && semantics.effect === 'observation'
+      && Array.isArray(args.commands)
+      && args.commands.length > 1
+    ) {
+      // Preserve each parallel source read as its own reusable unit. The
+      // terminal returns one chronological aggregate string to the provider;
+      // treating that aggregate as one fact made its bounded preview favor the
+      // first command and forced later turns to reopen the remaining files.
+      const childResults = Array.isArray(rawResult?.results) ? rawResult.results : [];
+      args.commands.slice(0, 32).forEach((entry: any, index: number) => {
+        const childArgs = {
+          ...(entry && typeof entry === 'object' ? entry : { command: String(entry || '') }),
+          cwd: entry?.cwd || args.cwd,
+        };
+        const childRaw = {
+          ...(childResults[index] || {}),
+          stdout: batchCommandOutput(rawResult?.stdout, index),
+          stderr: batchCommandOutput(rawResult?.stderr, index),
+        };
+        const childTargets = enrichWorkspaceObservationTargets(
+          extractToolTargets(childArgs, childRaw),
+          childArgs,
+          childRaw,
+        );
+        const childSourceId = `${sourceId}_part_${index + 1}`;
+        const childProvenance: ContextProvenance = {
+          ...provenance,
+          sourceId: childSourceId,
+          resultHash: sha256(stableSerialize(childRaw)),
+          targetSnapshots: captureTargetSnapshots(childTargets),
+        };
+        const childSummary = summarizeResult(
+          toolName,
+          childArgs,
+          childRaw,
+          'observation',
+          MAX_REUSABLE_OBSERVATION,
+        );
+        this.upsertFact({
+          key: `evidence:${sha256(`${toolName}\u0000${stableSerialize(childArgs)}`).slice(0, 16)}`,
+          kind: 'evidence',
+          text: childSummary,
+          exactValues: uniqueStrings([
+            ...childTargets,
+            childRaw?.exitCode,
+            childRaw?.exit_code,
+            childRaw?.code,
+            ...extractExactValues(childSummary),
+          ], 48),
+          targets: childTargets,
+          importance: 8,
+          epistemic: 'observed',
+          provenance: childProvenance,
+        });
+      });
+    } else if (semantics.effect === 'observation' || semantics.effect === 'command' || semantics.isMutation) {
+      const observationSignature = sha256(`${toolName}\u0000${stableSerialize(args)}`).slice(0, 16);
       this.upsertFact({
-        key: `evidence:${sha256(`${toolName}\u0000${stableSerialize(args)}`).slice(0, 16)}`,
+        key: `evidence:${observationSignature}`,
         kind: 'evidence', text: summary, exactValues, targets,
-        importance: /web|research|scrap/i.test(toolName) ? 7 : 5,
+        importance: reusableWorkspaceObservation
+          ? 8
+          : /web|research|scrap/i.test(toolName)
+            ? 7
+            : semantics.isMutation
+              ? 7
+              : 5,
         epistemic: 'observed', provenance,
       });
     }
     return episode.pageRef;
   }
 
+  /**
+   * A local read is authoritative only until an overlapping local mutation.
+   * Resolve just those observations; unrelated file knowledge remains fresh
+   * and useful on later user turns instead of being discarded by one global
+   * workspace epoch.
+   */
+  private invalidateWorkspaceObservationsForTargets(
+    mutationTargets: string[],
+    resolvedBy: string,
+    invalidatedAt: number,
+  ): void {
+    for (const fact of this.activeFactsSnapshot()) {
+      if (fact.kind !== 'evidence' || fact.status !== 'active') continue;
+      const latest = fact.provenance[fact.provenance.length - 1];
+      const isWorkspaceObservation = latest?.observationScope === 'workspace'
+        || String(latest?.toolName || '').toLowerCase().startsWith('workspace_');
+      if (!isWorkspaceObservation) continue;
+      const hasVerifiedTargetIdentity = Array.isArray(latest?.targetSnapshots)
+        && latest.targetSnapshots.length > 0;
+      // A search command can contain path-shaped regex text while omitting an
+      // explicit search root. If no reported target could be matched to a real
+      // local object, its scope is unknown and every workspace mutation must
+      // invalidate it conservatively instead of trusting a guessed path.
+      if (hasVerifiedTargetIdentity && !targetsOverlap(fact.targets, mutationTargets)) continue;
+      this.emit('upsert', {
+        fact: {
+          ...fact,
+          status: 'superseded',
+          validTo: invalidatedAt,
+          invalidatedAt,
+          resolvedBy,
+          lastObservedAt: invalidatedAt,
+          revision: this.revision + 1,
+        },
+      });
+    }
+  }
+
+  /**
+   * Detect an out-of-agent file change just before an observation can enter a
+   * prompt. Retrieval used to stat every remembered file on every provider
+   * cycle, making larger coding chats slower as their evidence graph grew.
+   * Ranked, lazy validation keeps the same freshness guarantee for evidence
+   * the model may use while leaving unrelated durable observations untouched.
+   */
+  private ensureWorkspaceObservationFresh(
+    fact: ContextFact,
+    observedAt: number,
+    currentStatCache: Map<string, CurrentTargetSnapshot>,
+  ): boolean {
+    const latest = fact.provenance[fact.provenance.length - 1];
+    if (
+      fact.kind !== 'evidence'
+      || fact.status !== 'active'
+      || latest?.observationScope !== 'workspace'
+      || !Array.isArray(latest.targetSnapshots)
+      || latest.targetSnapshots.length === 0
+    ) return fact.status === 'active';
+    if (targetSnapshotsStillMatch(latest.targetSnapshots, currentStatCache)) return true;
+    const sourceId = `external_change_${sha256(`${fact.id}\u0000${observedAt}`).slice(0, 16)}`;
+    this.emit('upsert', {
+      fact: {
+        ...fact,
+        status: 'superseded',
+        validTo: observedAt,
+        invalidatedAt: observedAt,
+        resolvedBy: sourceId,
+        lastObservedAt: observedAt,
+        revision: this.revision + 1,
+      },
+    });
+    return false;
+  }
+
   private resolveFailuresForTargets(targets: string[], resolvedBy: string): void {
     const normalizedTargets = new Set(targets.map(normalizeKey).filter(Boolean));
     if (normalizedTargets.size === 0) return;
-    for (const fact of Array.from(this.facts.values())) {
+    for (const fact of this.activeFactsSnapshot()) {
       if (fact.kind !== 'failure' || fact.status !== 'active') continue;
       if (!fact.targets.some(target => normalizedTargets.has(normalizeKey(target)))) continue;
       this.emit('upsert', {
@@ -1571,9 +3096,7 @@ export class ContextFabric {
       : `assistant_${sha256(`${outcome}\u0000${exactAnswer}`).slice(0, 16)}`;
     // Provider-specific completion paths and the central registry may both
     // observe the same terminal boundary. Persist it once per run.
-    if (Array.from(this.facts.values()).some(fact =>
-      fact.provenance.some(item => item.sourceId === sourceId)
-    )) return;
+    if (this.provenanceSourceIds.has(sourceId)) return;
     const episode = this.archiveEpisode({
       source: 'runtime',
       header: `Assistant response (${outcome})`,
@@ -1602,12 +3125,14 @@ export class ContextFabric {
     }
     this.upsertFact({
       key: `milestone:completion:${this.mutationEpoch}`, kind: 'milestone',
-      text: `Run completed at mutation epoch ${this.mutationEpoch}: ${answerSummary}`,
-      importance: 9, epistemic: 'observed', provenance,
+      text: `Assistant reply finished at mutation epoch ${this.mutationEpoch}. Completion claims below are assistant-reported, not independent verification: ${answerSummary}`,
+      importance: 9, epistemic: 'inferred', provenance,
     });
     this.learnFromOutcome(true);
-    for (const fact of Array.from(this.facts.values())) {
-      if (fact.status !== 'active' || !['objective', 'next_action'].includes(fact.kind)) continue;
+    for (const fact of this.activeFactsSnapshot()) {
+      // Returning a final reply settles this query, not the entire root task
+      // or every pending action. Those need explicit task/evidence transitions.
+      if (fact.status !== 'active' || fact.kind !== 'objective' || fact.key !== 'objective:current-directive') continue;
       this.emit('upsert', {
         fact: {
           ...fact,
@@ -1653,10 +3178,13 @@ export class ContextFabric {
     const next = clonePolicy(this.memoryPolicy);
     next.failedOutcomes += 1;
     next.learnedGuidelines = uniqueStrings([...next.learnedGuidelines, guideline], 18);
-    for (const fact of this.facts.values()) {
-      if (missingKinds.length > 0 && !missingKinds.includes(fact.kind)) continue;
-      fact.valueFactors.taskUtility = clamp01(fact.valueFactors.taskUtility + 0.12);
-      fact.valueFactors.reliability = clamp01(fact.valueFactors.reliability + (fact.epistemic === 'observed' ? 0.05 : 0));
+    const affectedKinds = uniqueStrings(missingKinds, 12) as ContextFactKind[];
+    if (affectedKinds.length > 0) {
+      const boosts = { ...(next.kindUtilityBoosts || {}) };
+      for (const kind of affectedKinds) {
+        boosts[kind] = clamp01(Number(boosts[kind] || 0) + 0.12);
+      }
+      next.kindUtilityBoosts = boosts;
     }
     const retrieved = this.recentRetrievedFactIds
       .map(id => this.facts.get(id))
@@ -1686,7 +3214,7 @@ export class ContextFabric {
   }
 
   buildContinuityManifest(): ContextContinuityManifest {
-    const active = Array.from(this.facts.values()).filter(fact => fact.status === 'active');
+    const active = this.activeFactsSnapshot();
     const critical = active.filter(isCriticalFact);
     const latestStateByTarget = new Map<string, ContextFact>();
     for (const fact of active.filter(item => ['state', 'artifact', 'evidence'].includes(item.kind))) {
@@ -1697,25 +3225,48 @@ export class ContextFabric {
       const previous = latestStateByTarget.get(key);
       if (!previous || previous.lastObservedAt < fact.lastObservedAt) latestStateByTarget.set(key, fact);
     }
+    const criticalKindPriority: Partial<Record<ContextFactKind, number>> = {
+      objective: 10,
+      constraint: 9,
+      next_action: 8,
+      failure: 7,
+      decision: 6,
+      preference: 5,
+    };
     const ordered = Array.from(new Map(
       [...critical, ...latestStateByTarget.values()]
-        .sort((a, b) => b.importance - a.importance || b.lastObservedAt - a.lastObservedAt)
+        .sort((a, b) =>
+          b.importance - a.importance
+          || Number(criticalKindPriority[b.kind] || 0) - Number(criticalKindPriority[a.kind] || 0)
+          || b.lastObservedAt - a.lastObservedAt
+        )
         .map(fact => [fact.id, fact]),
     ).values());
     const facts: ContextManifestFact[] = [];
     const mandatoryIds = new Set(critical.map(fact => fact.id));
+    const omittedCritical: ContextFact[] = [];
     let usedChars = 0;
     for (const fact of ordered) {
       const mandatory = mandatoryIds.has(fact.id);
-      if (!mandatory && facts.length >= MAX_MANIFEST_FACTS) continue;
+      if (facts.length >= MAX_MANIFEST_FACTS) {
+        if (mandatory) omittedCritical.push(fact);
+        continue;
+      }
+      const textLimit = fact.kind === 'objective'
+        ? 2_400
+        : fact.kind === 'constraint'
+          ? 1_200
+          : fact.kind === 'evidence'
+            ? MAX_REUSABLE_OBSERVATION
+            : 2_000;
       const manifestFact: ContextManifestFact = {
         id: fact.id,
         fingerprint: factFingerprint(fact),
         kind: fact.kind,
         status: fact.status,
         epistemic: fact.epistemic,
-        text: fact.text,
-        exactValues: fact.exactValues,
+        text: normalizeText(fact.text, textLimit),
+        exactValues: boundedValues(fact.exactValues, 1_200),
         source: sourceLabel(fact),
         importance: fact.importance,
         network: fact.network,
@@ -1724,10 +3275,17 @@ export class ContextFabric {
         pageRefs: uniqueStrings(fact.provenance.map(item => item.pageRef).filter(Boolean) as string[], 8),
       };
       const renderedLength = renderManifestFact(manifestFact).length;
-      if (!mandatory && facts.length > 0 && usedChars + renderedLength > MAX_MANIFEST_CHARS) continue;
+      if (usedChars + renderedLength > MAX_MANIFEST_CHARS) {
+        if (mandatory) omittedCritical.push(fact);
+        continue;
+      }
       facts.push(manifestFact);
       usedChars += renderedLength;
     }
+    const omittedCriticalPageRefs = uniqueStrings(
+      omittedCritical.flatMap(fact => fact.provenance.map(item => item.pageRef).filter(Boolean)),
+      64,
+    );
     const body = {
       version: 1 as const,
       scopeId: this.scopeId,
@@ -1735,22 +3293,35 @@ export class ContextFabric {
       mutationEpoch: this.mutationEpoch,
       createdAt: Date.now(),
       facts,
+      ...(omittedCritical.length > 0 ? {
+        omittedCriticalCount: omittedCritical.length,
+        omittedCriticalPageRefs,
+      } : {}),
       learnedGuidelines: [...this.memoryPolicy.learnedGuidelines],
-      pageRefs: uniqueStrings(facts.flatMap(fact => fact.pageRefs), 64),
+      pageRefs: uniqueStrings([
+        ...facts.flatMap(fact => fact.pageRefs),
+        ...omittedCriticalPageRefs,
+      ], 64),
     };
     return { ...body, manifestHash: sha256(stableSerialize(body)) };
   }
 
-  private adaptiveWorkingSetTokenBudget(query: string): number {
-    const active = Array.from(this.facts.values()).filter(fact => fact.status === 'active');
-    const binding = active.filter(fact => ['objective', 'constraint', 'preference'].includes(fact.kind)).length;
-    const unresolvedFailures = active.filter(fact => fact.kind === 'failure').length;
-    const decisionLoad = active.filter(fact => ['decision', 'next_action'].includes(fact.kind)).length;
+  private adaptiveWorkingSetTokenBudget(query: string, facts: Iterable<ContextFact> = this.facts.values()): number {
+    let binding = 0;
+    let unresolvedFailures = 0;
+    let decisionLoad = 0;
+    let hasFreshVerification = false;
+    for (const fact of facts) {
+      if (fact.status !== 'active') continue;
+      if (['objective', 'constraint', 'preference'].includes(fact.kind)) binding += 1;
+      if (fact.kind === 'failure') unresolvedFailures += 1;
+      if (['decision', 'next_action'].includes(fact.kind)) decisionLoad += 1;
+      if (
+        fact.kind === 'evidence'
+        && fact.provenance.some(item => item.mutationEpoch === this.mutationEpoch)
+      ) hasFreshVerification = true;
+    }
     const queryComplexity = Math.min(1_800, queryTerms(query).size * 45 + extractExactValues(query).length * 90);
-    const hasFreshVerification = active.some(fact =>
-      fact.kind === 'evidence'
-      && fact.provenance.some(item => item.mutationEpoch === this.mutationEpoch),
-    );
     const verificationPressure = this.mutationEpoch > 0 && !hasFreshVerification ? 900 : 0;
     return Math.max(2_200, Math.min(9_000, Math.round(
       2_200
@@ -1762,16 +3333,149 @@ export class ContextFabric {
     )));
   }
 
-  retrieve(query: string, tokenBudget?: number): ContextRetrievalResult {
-    const now = Date.now();
-    const terms = queryTerms(query);
-    const queryVector = this.vectorizer.vectorize(query);
-    const allFacts = Array.from(this.facts.values());
-    const candidates = allFacts.filter(fact =>
-      fact.status === 'active'
-      || fact.importance >= 8
-      || relevance(this.searchableFactText(fact), terms) > 0,
+  private expandContinuationRetrievalQuery(query: string): string {
+    const priority: Partial<Record<ContextFactKind, number>> = {
+      objective: 7,
+      next_action: 6,
+      failure: 5,
+      decision: 4,
+      constraint: 3,
+      artifact: 2,
+      state: 1,
+    };
+    const anchors = boundedTop(
+      this.activeFactsSnapshot().filter(fact =>
+        fact.status === 'active' && Boolean(priority[fact.kind])
+      ),
+      12,
+      (left, right) =>
+        Number(priority[right.kind] || 0) - Number(priority[left.kind] || 0)
+        || right.importance - left.importance
+        || right.lastObservedAt - left.lastObservedAt,
     );
+    if (anchors.length === 0) return query;
+    return normalizeText([query, ...anchors.map(fact => [
+      fact.text,
+      fact.exactValues.join(' '),
+      fact.targets.join(' '),
+    ].filter(Boolean).join('\n'))].join('\n'), 12_000);
+  }
+
+  retrieve(
+    query: string,
+    tokenBudget?: number,
+    options: { excludeCurrentRequestEcho?: boolean } = {},
+  ): ContextRetrievalResult {
+    const now = Date.now();
+    const currentStatCache = new Map<string, CurrentTargetSnapshot>();
+    const freshnessByFactId = new Map<string, boolean>();
+    const ensureFresh = (fact: ContextFact): boolean => {
+      const cached = freshnessByFactId.get(fact.id);
+      if (cached !== undefined) return cached;
+      const fresh = this.ensureWorkspaceObservationFresh(fact, now, currentStatCache);
+      freshnessByFactId.set(fact.id, fresh);
+      return fresh;
+    };
+    const retrievalQuery = this.expandContinuationRetrievalQuery(query);
+    const terms = queryTerms(retrievalQuery);
+    const normalizedQueryText = normalizeText(query);
+    const normalizedQueryKey = normalizeKey(query);
+    const searchableByFactId = new Map<string, string>();
+    const lexicalByFactId = new Map<string, number>();
+    const semanticByFactId = new Map<string, number>();
+    const searchableFor = (fact: ContextFact): string => {
+      let searchable = searchableByFactId.get(fact.id);
+      if (searchable === undefined) {
+        searchable = this.searchableFactText(fact);
+        searchableByFactId.set(fact.id, searchable);
+      }
+      return searchable;
+    };
+    const lexicalFor = (fact: ContextFact): number => {
+      let score = lexicalByFactId.get(fact.id);
+      if (score === undefined) {
+        score = relevance(searchableFor(fact), terms);
+        lexicalByFactId.set(fact.id, score);
+      }
+      return score;
+    };
+    const isCurrentRequestEcho = (fact: ContextFact) => {
+      if (!options.excludeCurrentRequestEcho || !['objective', 'constraint'].includes(fact.kind)) return false;
+      const factText = normalizeText(fact.text);
+      if (factText === normalizedQueryText) return true;
+      const factKey = normalizeKey(fact.text);
+      return fact.kind === 'constraint'
+        && factKey.length >= 4
+        && normalizedQueryKey.includes(factKey);
+    };
+    const queryVector = this.vectorizer.vectorize(retrievalQuery);
+    const semanticFor = (fact: ContextFact): number => {
+      let score = semanticByFactId.get(fact.id);
+      if (score === undefined) {
+        score = cosineSimilarity(queryVector, this.vectorizer.vectorize(searchableFor(fact)));
+        semanticByFactId.set(fact.id, score);
+      }
+      return score;
+    };
+    const activeFacts = this.activeFactsSnapshot();
+    const matchedFactIds = new Set<string>();
+    // Process selective terms first. A common leading word must not consume the
+    // entire bounded pool before a later file name, identifier, or exact value
+    // gets a chance to contribute its historical matches.
+    const queryPostings = Array.from(terms)
+      .slice(0, MAX_LEXICAL_TERMS_PER_FACT)
+      .map(term => ({ term, postings: this.lexicalFactIdsByTerm.get(term) }))
+      .filter((entry): entry is { term: string; postings: Map<string, true> } => Boolean(entry.postings))
+      .sort((left, right) => left.postings.size - right.postings.size);
+    for (const { postings } of queryPostings) {
+      const postingIds = Array.from(postings.keys());
+      for (let index = postingIds.length - 1; index >= 0; index -= 1) {
+        matchedFactIds.add(postingIds[index]);
+        if (matchedFactIds.size >= MAX_LEXICAL_MATCH_POOL) break;
+      }
+      if (matchedFactIds.size >= MAX_LEXICAL_MATCH_POOL) break;
+    }
+    const queryMatchedFacts = Array.from(matchedFactIds)
+      .map(id => this.facts.get(id))
+      .filter((fact): fact is ContextFact => Boolean(fact) && !isCurrentRequestEcho(fact));
+    const recentHistoricalFacts: ContextFact[] = [];
+    const recentFactIds = Array.from(this.recentFactIds.keys());
+    for (let index = recentFactIds.length - 1; index >= 0; index -= 1) {
+      const fact = this.facts.get(recentFactIds[index]);
+      if (fact && fact.status !== 'active' && fact.importance >= 8 && !isCurrentRequestEcho(fact)) {
+        recentHistoricalFacts.push(fact);
+      }
+    }
+    const activeCriticalCandidates = boundedTop(
+      activeFacts.filter(fact => isCriticalFact(fact) && !isCurrentRequestEcho(fact)),
+      320,
+      (left, right) => right.importance - left.importance || right.lastObservedAt - left.lastObservedAt,
+    );
+    const queryMatchedCandidates = boundedTop(
+      queryMatchedFacts.filter(fact => lexicalFor(fact) > 0),
+      240,
+      (left, right) => lexicalFor(right) - lexicalFor(left) || right.lastObservedAt - left.lastObservedAt,
+    );
+    const recentActiveCandidates = boundedTop(
+      activeFacts.filter(fact => !isCriticalFact(fact) && !isCurrentRequestEcho(fact)),
+      240,
+      (left, right) => right.lastObservedAt - left.lastObservedAt,
+    );
+    const recentHistoricalCandidates = boundedTop(
+      recentHistoricalFacts,
+      80,
+      (left, right) => right.lastObservedAt - left.lastObservedAt,
+    );
+    // Semantic ranking is intentionally bounded. Exact historical records stay
+    // durable and lexical-recallable, but thousands of superseded objectives
+    // must not each allocate a dense vector for a one-word continuation.
+    const candidates = Array.from(new Map<string, ContextFact>([
+      ...activeCriticalCandidates,
+      ...queryMatchedCandidates,
+      ...recentActiveCandidates,
+      ...recentHistoricalCandidates,
+    ].map(fact => [fact.id, fact] as [string, ContextFact])).values())
+      .slice(0, MAX_SEMANTIC_FACT_CANDIDATES);
     const strategyCounts: ContextRetrievalResult['strategyCounts'] = {
       lexical: 0,
       semantic: 0,
@@ -1794,12 +3498,12 @@ export class ContextFabric {
 
     addRanking('lexical', candidates.map(fact => ({
       id: fact.id,
-      score: relevance(this.searchableFactText(fact), terms)
-        + (normalizeKey(fact.text).includes(normalizeKey(query)) && query.trim().length > 3 ? 0.4 : 0),
+      score: lexicalFor(fact)
+        + (normalizedQueryKey.length > 0 && normalizeKey(fact.text).includes(normalizedQueryKey) && query.trim().length > 3 ? 0.4 : 0),
     })), 1.15);
     addRanking('semantic', candidates.map(fact => ({
       id: fact.id,
-      score: cosineSimilarity(queryVector, this.vectorizer.vectorize(this.searchableFactText(fact))),
+      score: semanticFor(fact),
     })), 1.25);
     addRanking('temporal', candidates.map(fact => {
       const ageHours = Math.max(0, now - fact.lastObservedAt) / 3_600_000;
@@ -1807,7 +3511,12 @@ export class ContextFabric {
     }), 0.7);
     addRanking('value', candidates.map(fact => ({
       id: fact.id,
-      score: memoryValue(fact.valueFactors, this.memoryPolicy.weights) + fact.importance / 10,
+      score: memoryValue(fact.valueFactors, this.memoryPolicy.weights)
+        + fact.importance / 10
+        + Number(this.memoryPolicy.kindUtilityBoosts?.[fact.kind] || 0)
+        + (fact.epistemic === 'observed'
+          ? Number(this.memoryPolicy.kindUtilityBoosts?.[fact.kind] || 0) * 0.4
+          : 0),
     })), 1.15);
 
     // Graph traversal starts only from query-grounded lexical/semantic hits.
@@ -1815,8 +3524,7 @@ export class ContextFabric {
     // graph a seed and erase the distinction between retrieval and expansion.
     const groundedSeeds = candidates.map(fact => ({
       id: fact.id,
-      score: relevance(this.searchableFactText(fact), terms) * 1.2
-        + cosineSimilarity(queryVector, this.vectorizer.vectorize(this.searchableFactText(fact))),
+      score: lexicalFor(fact) * 1.2 + semanticFor(fact),
     })).filter(item => item.score > 0.05);
     const seedIds = new Set(groundedSeeds
       .sort((a, b) => b.score - a.score)
@@ -1829,13 +3537,10 @@ export class ContextFabric {
       const next: typeof frontier = [];
       for (const node of frontier) {
         if (node.depth >= 2) continue;
-        for (const link of this.links.values()) {
-          let neighbor = '';
-          if (link.fromFactId === node.id) neighbor = link.toFactId;
-          else if (link.toFactId === node.id) neighbor = link.fromFactId;
+        for (const [neighbor, edgeWeight] of this.linkAdjacency.get(node.id) || []) {
           if (!neighbor || visited.has(neighbor) || !this.facts.has(neighbor)) continue;
           visited.add(neighbor);
-          const strength = node.strength * link.weight * 0.72;
+          const strength = node.strength * edgeWeight * 0.72;
           graphScores.set(neighbor, Math.max(graphScores.get(neighbor) || 0, strength));
           next.push({ id: neighbor, strength, depth: node.depth + 1 });
         }
@@ -1855,16 +3560,59 @@ export class ContextFabric {
 
     const selected: ContextFact[] = [];
     const selectedIds = new Set<string>();
-    const resolvedTokenBudget = tokenBudget ?? this.adaptiveWorkingSetTokenBudget(query);
+    const resolvedTokenBudget = tokenBudget ?? this.adaptiveWorkingSetTokenBudget(query, activeFacts);
     const budgetChars = Math.max(1_200, Math.floor(resolvedTokenBudget * 4));
     let usedChars = 0;
-    const mandatory = allFacts
-      .filter(fact => fact.status === 'active' && ['objective', 'constraint'].includes(fact.kind))
-      .sort((a, b) => b.importance - a.importance || b.lastObservedAt - a.lastObservedAt);
-    for (const fact of [...mandatory, ...ranked.map(item => item.fact)]) {
-      if (selectedIds.has(fact.id)) continue;
+    const mandatoryCandidates = activeFacts
+      .filter(fact =>
+        ['objective', 'constraint'].includes(fact.kind)
+        && !isCurrentRequestEcho(fact)
+      )
+      .sort((a, b) =>
+        (a.kind === b.kind ? 0 : a.kind === 'objective' ? -1 : 1)
+        || lexicalFor(b) - lexicalFor(a)
+        || b.importance - a.importance
+        || b.lastObservedAt - a.lastObservedAt
+      );
+    const mandatory: ContextFact[] = [];
+    const mandatoryIds = new Set<string>();
+    let mandatoryChars = 0;
+    const mandatoryCharBudget = Math.max(1_200, Math.floor(budgetChars * 0.55));
+    for (const fact of mandatoryCandidates) {
       const chars = this.renderWorkingFact(fact).length + 1;
-      const isMandatory = mandatory.some(item => item.id === fact.id);
+      if (mandatory.length > 0 && mandatoryChars + chars > mandatoryCharBudget) continue;
+      mandatory.push(fact);
+      mandatoryIds.add(fact.id);
+      mandatoryChars += chars;
+    }
+    // Keep a small recent-file frontier in every coding continuation. Pure
+    // lexical retrieval performs badly for messages such as "continue" even
+    // though the last observed source is exactly what the model needs. The
+    // normal character budget still bounds this list, and exact pages remain
+    // available when the preview is insufficient.
+    const reusableWorkspaceCandidates = boundedTop(
+      activeFacts.filter(fact => {
+        if (fact.kind !== 'evidence' || fact.status !== 'active') return false;
+        const latest = fact.provenance[fact.provenance.length - 1];
+        return latest?.observationScope === 'workspace';
+      }),
+      MAX_WORKSPACE_FRESHNESS_CANDIDATES,
+      (a, b) => {
+        const relevanceDelta = lexicalFor(b) - lexicalFor(a);
+        return relevanceDelta || b.lastObservedAt - a.lastObservedAt;
+      },
+    );
+    const reusableWorkspaceObservations: ContextFact[] = [];
+    for (const fact of reusableWorkspaceCandidates) {
+      if (!ensureFresh(fact)) continue;
+      reusableWorkspaceObservations.push(fact);
+      if (reusableWorkspaceObservations.length >= 5) break;
+    }
+    for (const fact of [...mandatory, ...reusableWorkspaceObservations, ...ranked.map(item => item.fact)]) {
+      if (selectedIds.has(fact.id)) continue;
+      if (!ensureFresh(fact)) continue;
+      const chars = this.renderWorkingFact(fact).length + 1;
+      const isMandatory = mandatoryIds.has(fact.id);
       if (!isMandatory && selected.length > 0 && usedChars + chars > budgetChars * 0.82) continue;
       selected.push(fact);
       selectedIds.add(fact.id);
@@ -1872,13 +3620,21 @@ export class ContextFabric {
       if (usedChars >= budgetChars * 0.82 && !isMandatory) break;
     }
 
-    const episodeCandidates = Array.from(this.episodes.values())
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, 800)
+    const selectedPageRefs = new Set(selected.flatMap(fact =>
+      fact.provenance.map(item => item.pageRef).filter(Boolean) as string[]
+    ));
+    const episodeCandidates = boundedTop(
+      Array.from(this.recentEpisodeIds.keys())
+        .map(id => this.episodes.get(id))
+        .filter((episode): episode is ContextEpisode => Boolean(episode)),
+      MAX_RECENT_EPISODE_CANDIDATES,
+      (left, right) => right.createdAt - left.createdAt,
+    )
       .map(episode => {
-        const lexical = relevance(this.searchableEpisodeText(episode), terms);
-        const semantic = cosineSimilarity(queryVector, this.vectorizer.vectorize(this.searchableEpisodeText(episode)));
-        const referenced = selected.some(fact => fact.provenance.some(item => item.pageRef === episode.pageRef));
+        const searchable = this.searchableEpisodeText(episode);
+        const lexical = relevance(searchable, terms);
+        const semantic = cosineSimilarity(queryVector, this.vectorizer.vectorize(searchable));
+        const referenced = selectedPageRefs.has(episode.pageRef);
         const ageHours = Math.max(0, now - episode.createdAt) / 3_600_000;
         return { episode, score: lexical * 1.3 + semantic + (referenced ? 1.5 : 0) + 0.2 / (1 + ageHours / 24) };
       })
@@ -1901,12 +3657,12 @@ export class ContextFabric {
       fact.retrievalCount += 1;
       fact.valueFactors.usageHistory = clamp01(fact.retrievalCount / (fact.retrievalCount + 5));
     }
-    this.scheduleSnapshot();
     return {
       facts: selected.map(normalizeStoredFact),
       episodes: episodes.map(cloneEpisode),
       strategyCounts,
       estimatedTokens: Math.ceil(usedChars / 4),
+      omittedActiveCritical: Math.max(0, mandatoryCandidates.length - mandatory.length),
     };
   }
 
@@ -1915,29 +3671,97 @@ export class ContextFabric {
   }
 
   compileWorkingSet(query: string, maxChars?: number): string {
+    const normalizedQuery = normalizeText(query, 12_000);
+    const boundedMaxChars = typeof maxChars === 'number'
+      ? Math.floor(Math.min(MAX_WORKING_SET_CHARS * 2, maxChars))
+      : 0;
+    const cacheKey = sha256(`${normalizedQuery}\u0000${boundedMaxChars || 'adaptive'}`);
+    const cached = this.compiledWorkingSetCache.get(cacheKey);
+    if (
+      cached
+      && cached.revision === this.revision
+      && cached.mutationEpoch === this.mutationEpoch
+    ) {
+      const observedAt = Date.now();
+      const currentStatCache = new Map<string, CurrentTargetSnapshot>();
+      let allSelectedWorkspaceFactsFresh = true;
+      for (const factId of cached.workspaceFactIds) {
+        const fact = this.facts.get(factId);
+        if (!fact || !this.ensureWorkspaceObservationFresh(fact, observedAt, currentStatCache)) {
+          allSelectedWorkspaceFactsFresh = false;
+          break;
+        }
+      }
+      if (allSelectedWorkspaceFactsFresh && cached.revision === this.revision) {
+        // LRU touch. The exact same prompt state should not redo lexical,
+        // semantic, temporal, graph, and value fusion on every provider loop.
+        this.compiledWorkingSetCache.delete(cacheKey);
+        this.compiledWorkingSetCache.set(cacheKey, cached);
+        return cached.value;
+      }
+      this.compiledWorkingSetCache.delete(cacheKey);
+    }
     const result = this.retrieve(
       query,
-      typeof maxChars === 'number' ? Math.floor(Math.min(MAX_WORKING_SET_CHARS * 2, maxChars) / 4) : undefined,
+      boundedMaxChars > 0 ? Math.floor(boundedMaxChars / 4) : undefined,
+      { excludeCurrentRequestEcho: true },
     );
-    if (result.facts.length === 0 && result.episodes.length === 0) return '';
-    const activeCritical = Array.from(this.facts.values()).filter(isCriticalFact).length;
-    return [
-      '[CONTEXT FABRIC - TEMPORAL EPISTEMIC WORKING SET]',
-      `scope=${this.scopeId} revision=${this.revision} mutation_epoch=${this.mutationEpoch} active_critical=${activeCritical} estimated_tokens=${result.estimatedTokens}`,
-      `retrieval=lexical:${result.strategyCounts.lexical},semantic:${result.strategyCounts.semantic},graph:${result.strategyCounts.graph},temporal:${result.strategyCounts.temporal},learned_value:${result.strategyCounts.value}`,
-      'This is executable continuity state, not a narrative summary. Active user constraints govern. Superseded records are historical. Page pointers recover exact source observations on demand.',
-      ...result.facts.map(fact => this.renderWorkingFact(fact)),
-      ...(result.episodes.length > 0 ? ['## Exact source pages (open only when decision-relevant)', ...result.episodes.map(episode => this.renderEpisodePointer(episode))] : []),
-      '[END CONTEXT FABRIC]',
-    ].join('\n');
+    const value = result.facts.length === 0 && result.episodes.length === 0
+      ? ''
+      : [
+          '[CONTEXT FABRIC - TEMPORAL EPISTEMIC WORKING SET]',
+          `scope=${this.scopeId} revision=${this.revision} mutation_epoch=${this.mutationEpoch} active_critical=${this.activeFactsSnapshot().filter(isCriticalFact).length} estimated_tokens=${result.estimatedTokens}`,
+          `retrieval=lexical:${result.strategyCounts.lexical},semantic:${result.strategyCounts.semantic},graph:${result.strategyCounts.graph},temporal:${result.strategyCounts.temporal},learned_value:${result.strategyCounts.value}`,
+          'This is executable continuity state, not a narrative summary. Active user constraints govern. Superseded records are stale historical evidence. A fresh workspace observation should be reused instead of rereading the same unchanged target; open its exact page only when omitted detail is decision-relevant.',
+          ...(result.omittedActiveCritical > 0
+            ? [`binding_frontier=${result.facts.filter(fact => isCriticalFact(fact)).length} selected; ${result.omittedActiveCritical} lower-ranked active binding records remain durable and are available through context_memory search.`]
+            : []),
+          ...result.facts.map(fact => this.renderWorkingFact(fact)),
+          ...(result.episodes.length > 0 ? ['## Exact source pages (open only when decision-relevant)', ...result.episodes.map(episode => this.renderEpisodePointer(episode))] : []),
+          '[END CONTEXT FABRIC]',
+        ].join('\n');
+    this.compiledWorkingSetCache.set(cacheKey, {
+      revision: this.revision,
+      mutationEpoch: this.mutationEpoch,
+      value,
+      workspaceFactIds: result.facts.filter(fact => {
+        const latest = fact.provenance[fact.provenance.length - 1];
+        return fact.status === 'active' && latest?.observationScope === 'workspace';
+      }).map(fact => fact.id),
+    });
+    while (this.compiledWorkingSetCache.size > MAX_COMPILED_WORKING_SET_CACHE) {
+      const oldest = this.compiledWorkingSetCache.keys().next().value;
+      if (!oldest) break;
+      this.compiledWorkingSetCache.delete(oldest);
+    }
+    return value;
   }
 
   private renderWorkingFact(fact: ContextFact): string {
-    const exact = fact.exactValues.length > 0 ? ` | exact=${fact.exactValues.join(' ; ')}` : '';
+    const exactValues = renderBoundedValues(fact.exactValues, 1_200);
+    const exact = exactValues ? ` | exact=${exactValues}` : '';
     const pages = uniqueStrings(fact.provenance.map(item => item.pageRef).filter(Boolean) as string[], 4);
     const pageText = pages.length > 0 ? ` | pages=${pages.join(',')}` : '';
     const validity = `${new Date(fact.validFrom).toISOString()}${fact.validTo ? `..${new Date(fact.validTo).toISOString()}` : '..present'}`;
-    return `- [ctx:${fact.id}; ${fact.network}/${fact.kind}; ${fact.status}; ${fact.epistemic}; valid=${validity}; source=${sourceLabel(fact)}] ${fact.text}${exact}${pageText}`;
+    const latest = fact.provenance[fact.provenance.length - 1];
+    const workspaceObservation = latest?.observationScope === 'workspace';
+    const freshness = workspaceObservation
+      ? fact.status === 'active'
+        ? '; freshness=fresh-until-overlapping-mutation; reuse=yes'
+        : '; freshness=stale-after-mutation; reuse=no'
+      : '';
+    const resultIdentity = workspaceObservation && latest?.resultHash
+      ? ` | result_sha256=${latest.resultHash}`
+      : '';
+    const textLimit = fact.kind === 'objective'
+      ? 2_400
+      : fact.kind === 'constraint'
+        ? 1_200
+        : fact.kind === 'evidence'
+          ? MAX_REUSABLE_OBSERVATION
+          : 2_000;
+    const renderedText = normalizeText(fact.text, textLimit);
+    return `- [ctx:${fact.id}; ${fact.network}/${fact.kind}; ${fact.status}; ${fact.epistemic}; valid=${validity}; source=${sourceLabel(fact)}${freshness}] ${renderedText}${exact}${resultIdentity}${pageText}`;
   }
 
   private renderEpisodePointer(episode: ContextEpisode): string {
@@ -2025,8 +3849,24 @@ export class ContextFabric {
       : null;
   }
 
+  getRevision(): number {
+    return this.revision;
+  }
+
   listFacts(): ContextFact[] {
     return Array.from(this.facts.values()).map(normalizeStoredFact);
+  }
+
+  hasFactKind(kind: ContextFactKind): boolean {
+    return this.factKindsPresent.has(kind);
+  }
+
+  hasActiveFactKind(kind: ContextFactKind): boolean {
+    for (const factId of this.activeFactIdByIdentity.values()) {
+      const fact = this.facts.get(factId);
+      if (fact?.kind === kind && fact.status === 'active') return true;
+    }
+    return false;
   }
 
   listEpisodes(): ContextEpisode[] {
@@ -2038,13 +3878,14 @@ export class ContextFabric {
   }
 
   snapshot(): ContextFabricSnapshot {
-    return {
+    const snapshot: ContextFabricSnapshot = {
       version: 1,
       scopeId: this.scopeId,
       revision: this.revision,
       mutationEpoch: this.mutationEpoch,
       lastEventHash: this.lastEventHash,
       eventHashVersion: 2,
+      ...(this.replaySafe ? { replaySafe: true as const } : {}),
       ...(this.legacyEventPrefixSequence > 0 && this.legacyEventPrefixHash
         ? {
             legacyEventPrefix: {
@@ -2062,6 +3903,7 @@ export class ContextFabric {
         : {}),
       ...(!this.durable ? { ephemeralPageContents: Object.fromEntries(this.ephemeralPages) } : {}),
     };
+    return { ...snapshot, snapshotHash: calculateSnapshotHash(snapshot) };
   }
 
   restore(snapshot: ContextFabricSnapshot): void {
@@ -2082,6 +3924,8 @@ export class ContextFabric {
     this.legacyEventPrefixHash = this.legacyEventPrefixSequence > 0
       ? String(snapshot.legacyEventPrefix?.hash || '')
       : '';
+    this.replaySafe = snapshot.replaySafe === true;
+    this.lastSnapshotRevision = Math.floor(snapshotRevision);
     const snapshotFacts = Array.isArray(snapshot.facts)
       ? snapshot.facts.filter(isStoredFactShape)
       : [];
@@ -2092,8 +3936,18 @@ export class ContextFabric {
       ? snapshot.links.filter(link => isRecord(link) && typeof link.id === 'string')
       : [];
     this.facts = new Map(snapshotFacts.map(fact => [fact.id, normalizeStoredFact(fact)]));
+    this.rebuildFactIndexes();
     this.episodes = new Map(snapshotEpisodes.map(episode => [episode.id, cloneEpisode(episode)]));
+    this.episodeIdByOrigin = new Map(snapshotEpisodes
+      .filter(episode => Boolean(episode.originId))
+      .map(episode => [episode.originId!, episode.id] as [string, string]));
+    this.episodeIdByPageRef = new Map(snapshotEpisodes.map(episode => [episode.pageRef, episode.id]));
+    this.recentEpisodeIds = new Map(snapshotEpisodes
+      .sort((left, right) => left.createdAt - right.createdAt || left.sequence - right.sequence)
+      .slice(-MAX_RECENT_EPISODE_INDEX)
+      .map(episode => [episode.id, true] as [string, true]));
     this.links = new Map(snapshotLinks.map(link => [link.id, { ...link } as ContextLink]));
+    this.rebuildLinkAdjacency();
     this.ephemeralPages = new Map(
       isRecord(snapshot.ephemeralPageContents)
         ? Object.entries(snapshot.ephemeralPageContents).filter(([, content]) => typeof content === 'string') as Array<[string, string]>
@@ -2130,65 +3984,141 @@ export class ContextFabric {
     this.rebuildVectorizer();
   }
 
+  /** Commit append-only events without serializing the full materialized graph. */
+  async flushLedger(): Promise<void> {
+    if (!this.durable) return;
+    await this.flushPersistenceOperations();
+  }
+
+  /** Commit exact events; acceleration checkpoints are independently debounced. */
   async flush(): Promise<void> {
     if (!this.durable) return;
-    if (this.snapshotTimer) {
-      clearTimeout(this.snapshotTimer);
-      this.snapshotTimer = null;
-    }
     await this.flushPersistenceOperations();
-    const snapshot = this.snapshot();
-    await fs.ensureDir(this.scopeDir);
-    let lastSnapshotError: unknown = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const temporary = path.join(this.scopeDir, `.snapshot.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
-      try {
-        await fs.writeJson(temporary, snapshot, { spaces: 2 });
-        await fs.move(temporary, this.snapshotPath, { overwrite: true });
-        return;
-      } catch (error) {
-        lastSnapshotError = error;
-        await fs.remove(temporary).catch(() => undefined);
+    // Terminal correctness depends only on the append-only ledger. A complete
+    // snapshot is intentionally deferred and debounced; eagerly rebuilding it
+    // here made every completed turn O(total chat history).
+    this.scheduleSnapshot();
+    await this.snapshotWriteQueue;
+  }
+
+  private async persistSnapshotCheckpoint(): Promise<void> {
+    if (!this.durable) return;
+    const writeSnapshot = async () => {
+      // Serialize capture as well as the write. Otherwise two overlapping
+      // checkpoints could capture revisions in one order and finish in another,
+      // allowing an older acceleration snapshot to overwrite a newer one.
+      await this.flushPersistenceOperations();
+      if (!this.replaySafe || this.lastSnapshotRevision >= this.revision) return;
+      const snapshot = this.snapshot();
+      await fs.ensureDir(this.scopeDir);
+      let lastSnapshotError: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const temporary = path.join(this.scopeDir, `.snapshot.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+        try {
+          await fs.writeJson(temporary, snapshot, { spaces: 2 });
+          await fs.move(temporary, this.snapshotPath, { overwrite: true });
+          this.lastSnapshotRevision = snapshot.revision;
+          return;
+        } catch (error) {
+          lastSnapshotError = error;
+          await fs.remove(temporary).catch(() => undefined);
+        }
       }
-    }
-    throw (lastSnapshotError instanceof Error
-      ? lastSnapshotError
-      : new Error(`Context Fabric snapshot persistence failed: ${String(lastSnapshotError || 'unknown error')}`));
+      throw (lastSnapshotError instanceof Error
+        ? lastSnapshotError
+        : new Error(`Context Fabric snapshot persistence failed: ${String(lastSnapshotError || 'unknown error')}`));
+    };
+    const queuedWrite = this.snapshotWriteQueue.then(writeSnapshot, writeSnapshot);
+    this.snapshotWriteQueue = queuedWrite.catch(() => undefined);
+    await queuedWrite;
   }
 }
 
-const activeFabrics = new Map<string, ContextFabric>();
+type ContextFabricReference = { deref: () => ContextFabric | undefined };
+const WeakContextFabricReference = (globalThis as any).WeakRef as
+  | (new (value: ContextFabric) => ContextFabricReference)
+  | undefined;
+const activeFabrics = new Map<string, ContextFabricReference>();
+const ephemeralFabrics = new Map<string, ContextFabricReference>();
+const recentFabrics = new Map<string, ContextFabric>();
+const MAX_STRONGLY_RETAINED_FABRICS = 24;
+
+const retainContextFabricWeakly = (fabric: ContextFabric): ContextFabricReference =>
+  WeakContextFabricReference
+    ? new WeakContextFabricReference(fabric)
+    // WeakRef exists in every supported desktop runtime. Keep a compatibility
+    // holder for unusual embedders rather than making context unavailable.
+    : { deref: () => fabric };
+
+const touchRecentContextFabric = (scopeId: string, fabric: ContextFabric): void => {
+  recentFabrics.delete(scopeId);
+  recentFabrics.set(scopeId, fabric);
+  while (recentFabrics.size > MAX_STRONGLY_RETAINED_FABRICS) {
+    const oldestScopeId = recentFabrics.keys().next().value;
+    if (!oldestScopeId) break;
+    recentFabrics.delete(oldestScopeId);
+  }
+  // Weak-map keys themselves are strong. Opportunistically remove dead keys
+  // after many distinct chats without paying this scan on ordinary turns.
+  if (activeFabrics.size > MAX_STRONGLY_RETAINED_FABRICS * 8) {
+    for (const [candidateScopeId, reference] of activeFabrics) {
+      if (!reference.deref()) activeFabrics.delete(candidateScopeId);
+    }
+  }
+};
 
 export async function getContextFabricForChat(
   scopeId: string,
   options: ContextFabricOptions = {},
 ): Promise<ContextFabric> {
   if (options.durable === false) {
-    const ephemeral = new ContextFabric(scopeId, options);
-    await ephemeral.initialize();
-    return ephemeral;
+    let ephemeral = ephemeralFabrics.get(scopeId)?.deref();
+    let createdEphemeral = false;
+    if (!ephemeral) {
+      ephemeral = new ContextFabric(scopeId, options);
+      ephemeralFabrics.set(scopeId, retainContextFabricWeakly(ephemeral));
+      createdEphemeral = true;
+    }
+    try {
+      await ephemeral.initialize();
+      return ephemeral;
+    } catch (error) {
+      if (createdEphemeral && ephemeralFabrics.get(scopeId)?.deref() === ephemeral) {
+        ephemeralFabrics.delete(scopeId);
+      }
+      throw error;
+    }
   }
-  let fabric = activeFabrics.get(scopeId);
+  let fabric = activeFabrics.get(scopeId)?.deref();
   let createdForThisRequest = false;
   if (!fabric) {
     fabric = new ContextFabric(scopeId, options);
-    activeFabrics.set(scopeId, fabric);
+    activeFabrics.set(scopeId, retainContextFabricWeakly(fabric));
     createdForThisRequest = true;
   }
+  touchRecentContextFabric(scopeId, fabric);
   // An existing live fabric already contains the newest admitted events.
   // Reapplying a survivor snapshot here could replace same-revision state or
   // move it onto an uncommitted hash. Snapshots are construction-time seeds;
   // the live instance and its serialized persist queue remain authoritative.
   try {
     await fabric.initialize();
+    if (!createdForThisRequest) await fabric.refreshDurableState();
     return fabric;
   } catch (error) {
     // A failed first hydration can leave partially reconstructed in-memory
     // state. Never pin that instance to the chat indefinitely: every caller
     // sharing the same initialization promise observes the same failure, and
     // the next request gets a clean reconstruction from durable storage.
-    if (createdForThisRequest && activeFabrics.get(scopeId) === fabric) {
-      activeFabrics.delete(scopeId);
+    if (createdForThisRequest) {
+      if (activeFabrics.get(scopeId)?.deref() === fabric) activeFabrics.delete(scopeId);
+      if (recentFabrics.get(scopeId) === fabric) recentFabrics.delete(scopeId);
+    } else {
+      // A refresh failure can be caused by a transient lock/filter-driver
+      // interruption or a recoverable durable-ledger problem. Keep the last
+      // fully materialized instance strongly reachable; never turn a failed
+      // freshness check into in-memory context erasure.
+      touchRecentContextFabric(scopeId, fabric);
     }
     throw error;
   }

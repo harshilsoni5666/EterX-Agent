@@ -160,9 +160,9 @@ const handleMenuKeyboardNavigation = (event: React.KeyboardEvent<HTMLElement>) =
 };
 
 const lightweightSidebarCss = `
-  :root[data-theme="dark"] .eterx-sidebar-shell {
-    --sidebar-hover-bg: rgba(255, 255, 255, 0.07);
-    --sidebar-toggle-hover-bg: rgba(255, 255, 255, 0.07);
+:root[data-theme="dark"] .eterx-sidebar-shell {
+    --sidebar-hover-bg: #262626;
+    --sidebar-toggle-hover-bg: #262626;
     --sidebar-active-bg: #262626;
     --sidebar-toggle-active-bg: rgba(255, 255, 255, 0.105);
     --sidebar-active-border: rgba(255, 255, 255, 0.08);
@@ -179,12 +179,14 @@ const lightweightSidebarCss = `
   }
 
   :root[data-theme="light"] .eterx-sidebar-shell {
-    --sidebar-hover-bg: #F2F2EF;
-    --sidebar-toggle-hover-bg: #F2F2EF;
-    --sidebar-active-bg: #EBEBE8;
-    --sidebar-toggle-active-bg: #EBEBE8;
-    --sidebar-active-border: rgba(31, 31, 29, 0.09);
-    --sidebar-active-fade: #EBEBE8;
+    --sidebar-hover-bg: #E8E8E8;
+    --sidebar-toggle-hover-bg: #E8E8E8;
+    --sidebar-active-bg: #E8E8E8;
+    --sidebar-toggle-active-bg: #DEDEDE;
+    --sidebar-hover-border: transparent;
+    --sidebar-active-border: transparent;
+    --sidebar-focus-ring: transparent;
+    --sidebar-active-fade: #E8E8E8;
     --sidebar-menu-bg: #FFFFFF;
     --sidebar-menu-border: transparent;
     --sidebar-active-shadow: 0 3px 10px rgba(31, 31, 29, 0.055), inset 0 1px 0 rgba(255, 255, 255, 0.58);
@@ -630,6 +632,15 @@ const lightweightSidebarCss = `
     color: var(--sidebar-active-text) !important;
   }
 
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:focus,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:focus-visible {
+    border: 1px solid transparent !important;
+    border-color: transparent !important;
+    outline: none !important;
+    box-shadow: none !important;
+  }
+
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-selected:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-active:hover,
@@ -797,6 +808,83 @@ const lightweightSidebarCss = `
     }
   }
 
+  /* Navigation rows stay completely still in both themes. This rule is kept
+     after the shared interaction policy so no later hover/focus transition,
+     ring, shadow, or border can be reintroduced. */
+  .eterx-sidebar-shell .eterx-sidebar-nav-item,
+  .eterx-sidebar-shell .eterx-sidebar-new-chat,
+  .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
+  .eterx-sidebar-shell .eterx-sidebar-new-chat:hover,
+  .eterx-sidebar-shell .eterx-sidebar-nav-item:active,
+  .eterx-sidebar-shell .eterx-sidebar-new-chat:active,
+  .eterx-sidebar-shell .eterx-sidebar-nav-item:focus,
+  .eterx-sidebar-shell .eterx-sidebar-new-chat:focus,
+  .eterx-sidebar-shell .eterx-sidebar-nav-item:focus-visible,
+  .eterx-sidebar-shell .eterx-sidebar-new-chat:focus-visible,
+  .eterx-sidebar-shell .eterx-sidebar-nav-active,
+  .eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
+  .eterx-sidebar-shell .eterx-sidebar-nav-active:active,
+  .eterx-sidebar-shell .eterx-sidebar-nav-active:focus-visible {
+    border: 1px solid transparent !important;
+    border-color: transparent !important;
+    outline: none !important;
+    box-shadow: none !important;
+    transform: none !important;
+    filter: none !important;
+    transition: none !important;
+    will-change: auto !important;
+    --tw-ring-offset-shadow: 0 0 transparent !important;
+    --tw-ring-shadow: 0 0 transparent !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-nav-item::before,
+  .eterx-sidebar-shell .eterx-sidebar-nav-item::after,
+  .eterx-sidebar-shell .eterx-sidebar-new-chat::before,
+  .eterx-sidebar-shell .eterx-sidebar-new-chat::after {
+    content: none !important;
+    display: none !important;
+  }
+
+  /* Settings follows the same quiet interaction language as primary nav. */
+  .eterx-sidebar-shell .eterx-sidebar-settings-button,
+  .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
+  .eterx-sidebar-shell .eterx-sidebar-settings-button:active,
+  .eterx-sidebar-shell .eterx-sidebar-settings-button:focus,
+  .eterx-sidebar-shell .eterx-sidebar-settings-button:focus-visible {
+    border: 1px solid transparent !important;
+    border-color: transparent !important;
+    outline: none !important;
+    box-shadow: none !important;
+    transform: none !important;
+    filter: none !important;
+    transition: none !important;
+    --tw-ring-offset-shadow: 0 0 transparent !important;
+    --tw-ring-shadow: 0 0 transparent !important;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-settings-button:focus-visible {
+    background: #E7E7E7 !important;
+    color: #2B2B2B !important;
+  }
+
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-settings-button:focus-visible {
+    background: var(--sidebar-hover-bg) !important;
+    color: var(--sidebar-hover-text) !important;
+  }
+
+  /* The open desktop shell has a 32px geometry buffer behind the workspace.
+     Keep it continuous with the real sidebar; the transparent workspace lane
+     can then reveal Recents without placing a white block over the feed. */
+  :root[data-theme="light"] .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell {
+    background: #F3F3F3 !important;
+  }
+
+  :root[data-theme="light"] .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell > #eterx-sidebar-content {
+    background: #F3F3F3 !important;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .eterx-sidebar-shell *,
     .eterx-sidebar-menu,
@@ -816,6 +904,7 @@ const lightweightSidebarCss = `
       transform: none !important;
     }
   }
+
 
 `;
 
@@ -846,6 +935,7 @@ interface SidebarProps {
   setIsOpen: (open: boolean) => void;
   createNewChat: () => void;
   chats: ChatSession[];
+  isLoadingChats?: boolean;
   activeChatId: string | null;
   loadChat: (id: string) => void;
   deleteChat: (id: string) => void;
@@ -863,7 +953,7 @@ interface SidebarProps {
 
 export const Sidebar = React.memo<SidebarProps>(
   ({
-    isOpen, setIsOpen, createNewChat, chats, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
+    isOpen, setIsOpen, createNewChat, chats, isLoadingChats = false, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
 }) => {
   const reduceMotion = useReducedMotion();
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean } | null>(null);
@@ -1478,6 +1568,7 @@ export const Sidebar = React.memo<SidebarProps>(
 
   return (
     <>
+
       <style suppressHydrationWarning dangerouslySetInnerHTML={{ __html: lightweightSidebarCss }} />
       <motion.aside
         animate={{
@@ -1487,8 +1578,18 @@ export const Sidebar = React.memo<SidebarProps>(
         className="eterx-sidebar-shell relative bg-[var(--sidebar-bg)] shadow-none flex flex-col flex-shrink-0 z-[100] h-full overflow-hidden [-webkit-app-region:no-drag]"
       >
         <div className="eterx-sidebar-sheen pointer-events-none absolute inset-0 bg-transparent overflow-hidden">
-          <div className="ambient-glow-layer ambient-glow-idle absolute inset-0" />
-          <div className={`ambient-glow-layer ambient-glow-thinking absolute inset-0 transition-opacity duration-[3000ms] ease-in-out ${isThinking ? 'opacity-100' : 'opacity-0'}`} />
+          <div
+            className="ambient-glow-layer ambient-glow-idle absolute inset-0"
+            style={{ animationPlayState: isThinking ? 'paused' : 'running' }}
+          />
+          <div
+            className={`absolute inset-0 transition-opacity duration-[3000ms] ease-in-out ${isThinking ? 'opacity-100' : 'opacity-0'}`}
+          >
+            <div
+              className="ambient-glow-layer ambient-glow-thinking absolute inset-0"
+              style={{ animationPlayState: isThinking ? 'running' : 'paused' }}
+            />
+          </div>
         </div>
 
         <div id="eterx-sidebar-content" className="relative z-10 flex flex-col h-full w-full overflow-hidden">
@@ -1530,9 +1631,9 @@ export const Sidebar = React.memo<SidebarProps>(
                   onMouseDown={(e) => triggerGlassClick(e, 'new-chat-expanded')}
                   onClick={() => { createNewChat(); setActiveView('chat'); }}
                   style={glassClickStyle('new-chat-expanded')}
-                  className={`eterx-sidebar-click-surface eterx-sidebar-nav-item eterx-sidebar-new-chat ${ glassClickClass('new-chat-expanded') } ${ isNewChatActive ? 'eterx-sidebar-nav-active' : '' } w-full h-[38px] flex items-center justify-between px-3 text-[13.5px] font-medium transition-colors duration-150 ease-out group border relative overflow-hidden ${ isNewChatActive
-                      ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)] border-transparent rounded-[13px]'
-                      : 'text-[var(--sidebar-text)] bg-transparent border-transparent rounded-[13px]'
+                  className={`eterx-sidebar-click-surface eterx-sidebar-nav-item eterx-sidebar-new-chat ${ glassClickClass('new-chat-expanded') } ${ isNewChatActive ? 'eterx-sidebar-nav-active' : '' } w-full h-[38px] flex items-center justify-between px-3 text-[13.5px] font-medium transition-colors duration-150 ease-out group relative overflow-hidden ${ isNewChatActive
+                      ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)] rounded-[13px]'
+                      : 'text-[var(--sidebar-text)] bg-transparent rounded-[13px]'
                     }`}
                 >
                   <div className="flex items-center gap-3 relative z-10">
@@ -1550,9 +1651,9 @@ export const Sidebar = React.memo<SidebarProps>(
                   onMouseDown={(e) => triggerGlassClick(e, 'new-chat-collapsed')}
                   onClick={() => { createNewChat(); setActiveView('chat'); }}
                   style={glassClickStyle('new-chat-collapsed')}
-                  className={`eterx-sidebar-click-surface eterx-sidebar-nav-item eterx-sidebar-new-chat ${ glassClickClass('new-chat-collapsed') } ${ isNewChatActive ? 'eterx-sidebar-nav-active' : '' } w-[38px] h-[38px] flex items-center justify-center transition-colors duration-150 ease-out group relative mx-auto border ${ isNewChatActive
-                      ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)] border-transparent rounded-full'
-                      : 'text-[var(--sidebar-text)] bg-transparent border-transparent rounded-full'
+                  className={`eterx-sidebar-click-surface eterx-sidebar-nav-item eterx-sidebar-new-chat ${ glassClickClass('new-chat-collapsed') } ${ isNewChatActive ? 'eterx-sidebar-nav-active' : '' } w-[38px] h-[38px] flex items-center justify-center transition-colors duration-150 ease-out group relative mx-auto ${ isNewChatActive
+                      ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)] rounded-full'
+                      : 'text-[var(--sidebar-text)] bg-transparent rounded-full'
                     }`}
                 >
                   <PremiumEdit className={`w-[17px] h-[17px] transition-colors duration-150 relative z-10 ${ isNewChatActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]' }`} strokeWidth={2.15} />
@@ -1581,9 +1682,9 @@ export const Sidebar = React.memo<SidebarProps>(
                         onMouseDown={(e) => triggerGlassClick(e, `nav-${ item.id }`)}
                         onClick={item.onClick}
                         style={glassClickStyle(`nav-${ item.id }`)}
-                        className={`eterx-sidebar-click-surface eterx-sidebar-nav-item ${ glassClickClass(`nav-${ item.id }`) } ${ isActive ? 'eterx-sidebar-nav-active' : '' } w-full h-[38px] flex items-center gap-3 px-3 text-[13.5px] font-medium rounded-[12px] transition-colors duration-150 ease-out group border relative overflow-hidden ${ isActive
-                            ? 'text-[var(--sidebar-active-text)] border-transparent bg-[var(--sidebar-active-bg)]'
-                            : 'text-[var(--sidebar-text)] border-transparent'
+                        className={`eterx-sidebar-click-surface eterx-sidebar-nav-item ${ glassClickClass(`nav-${ item.id }`) } ${ isActive ? 'eterx-sidebar-nav-active' : '' } w-full h-[38px] flex items-center gap-3 px-3 text-[13.5px] font-medium rounded-[12px] transition-colors duration-150 ease-out group relative overflow-hidden ${ isActive
+                            ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)]'
+                            : 'text-[var(--sidebar-text)]'
                           }`}
                       >
                         <Icon
@@ -1605,9 +1706,9 @@ export const Sidebar = React.memo<SidebarProps>(
                         onMouseDown={(e) => triggerGlassClick(e, `nav-${ item.id }`)}
                         onClick={item.onClick}
                         style={glassClickStyle(`nav-${ item.id }`)}
-                        className={`eterx-sidebar-click-surface eterx-sidebar-nav-item ${ glassClickClass(`nav-${ item.id }`) } ${ isActive ? 'eterx-sidebar-nav-active' : '' } w-[38px] h-[38px] flex items-center justify-center rounded-full transition-colors duration-150 ease-out group border relative mx-auto ${ isActive
-                            ? 'text-[var(--sidebar-active-text)] border-transparent bg-[var(--sidebar-active-bg)]'
-                            : 'text-[var(--sidebar-text)] border-transparent'
+                        className={`eterx-sidebar-click-surface eterx-sidebar-nav-item ${ glassClickClass(`nav-${ item.id }`) } ${ isActive ? 'eterx-sidebar-nav-active' : '' } w-[38px] h-[38px] flex items-center justify-center rounded-full transition-colors duration-150 ease-out group relative mx-auto ${ isActive
+                            ? 'text-[var(--sidebar-active-text)] bg-[var(--sidebar-active-bg)]'
+                            : 'text-[var(--sidebar-text)]'
                           }`}
                       >
                         <Icon
@@ -1625,7 +1726,7 @@ export const Sidebar = React.memo<SidebarProps>(
 
           {/* Expanded Recents List */}
           {isOpen ? (
-            <div className="eterx-sidebar-recents flex-1 mt-2 ml-1 mr-1 mb-1 bg-transparent rounded-[16px] border border-transparent flex flex-col py-3 overflow-hidden relative">
+            <div className="eterx-sidebar-recents flex-1 mt-0 ml-1 mr-1 mb-1 bg-transparent rounded-[16px] border border-transparent flex flex-col py-3 overflow-hidden relative">
               <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-transparent" />
               <div className="flex items-center justify-between pl-3.5 pr-1.5 mb-1.5 min-h-[26px] relative z-30">
                 <div ref={projectMenuRef} className="relative flex min-w-0 flex-1">
@@ -1796,7 +1897,7 @@ export const Sidebar = React.memo<SidebarProps>(
                 className={`eterx-sidebar-recents-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto eterx-scrollbar pl-2 pr-2 space-y-0.5 relative z-10 ${ recentScrollFades.top && recentScrollFades.bottom ? 'eterx-sidebar-scroll-fade-both' : recentScrollFades.top ? 'eterx-sidebar-scroll-fade-top' : recentScrollFades.bottom ? 'eterx-sidebar-scroll-fade-bottom' : '' }`}
                 style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined, overscrollBehavior: 'contain' }}
               >
-                {isProjectPending ? (
+                {isLoadingChats || isProjectPending ? (
                   <div className="eterx-sidebar-empty flex items-center gap-2 px-3 py-2 text-[12.5px] text-[var(--sidebar-muted-text)]">
                     <span className="eterx-sidebar-project-loading h-3 w-3 shrink-0 rounded-full border border-current border-r-transparent" aria-hidden="true" />
                     Loading chats…

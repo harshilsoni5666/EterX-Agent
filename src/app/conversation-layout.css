@@ -1,0 +1,122 @@
+/* Each conversation measures its own width, excluding the terminal. */
+.eterx-chat-column[data-terminal-placement="right"] {
+  container-type: normal;
+  min-width: 0 !important;
+  max-width: 100%;
+  isolation: isolate;
+  transition: none !important;
+}
+.eterx-conversation-pane {
+  container-name: eterx-conversation;
+  container-type: inline-size;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+.eterx-chat-column[data-terminal-placement="right"] > .eterx-conversation-pane {
+  flex: 1 1 0%;
+  overflow: clip;
+}
+.eterx-chat-column[data-terminal-placement="right"] .eterx-chat-feed-content,
+.eterx-chat-column[data-terminal-placement="right"] .eterx-chat-input-dock {
+  transform: none !important;
+  translate: none !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+  transition-property: background-color, color, border-color !important;
+}
+.eterx-chat-column[data-terminal-placement="right"] .eterx-composer-shell {
+  max-width: 100% !important;
+}
+.eterx-chat-column[data-terminal-placement="right"] > .eterx-terminal-dock {
+  min-width: min(240px, 45%);
+  max-width: calc(100% - min(320px, 55%));
+}
+.eterx-chat-column[data-terminal-placement="right"] .eterx-proxy-dock {
+  position: relative !important;
+  inset: auto !important;
+  transform: none !important;
+  translate: none !important;
+  width: 100% !important;
+  flex: 0 0 auto;
+  transition: none !important;
+}
+.eterx-proxy-compact-bar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-height: 34px;
+  width: fit-content;
+  max-width: calc(100% - 20px);
+  margin: 6px 10px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--background) 94%, var(--foreground) 6%);
+  color: var(--foreground);
+  pointer-events: auto;
+}
+.eterx-proxy-compact-bar button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: 6px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.eterx-proxy-compact-bar button:hover { background: var(--sidebar-toggle-hover-bg); }
+.eterx-proxy-compact-bar button:focus-visible { outline: 2px solid var(--muted-foreground); }
+.eterx-proxy-compact-bar .eterx-proxy-compact-title { margin-right: 0; padding-inline: 8px; }
+.eterx-proxy-compact-bar > button + button { border-left: 1px solid var(--border); border-radius: 0 7px 7px 0; padding-inline: 8px; }
+.eterx-proxy-status-dot { width: 6px; height: 6px; border-radius: 50%; background: #55ad84; }
+.eterx-proxy-status-dot.is-paused { background: var(--muted-foreground); }
+.eterx-chat-column[data-terminal-placement="right"] .eterx-proxy-card {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 10px;
+  width: min(224px, calc(100% - 20px));
+}
+.eterx-proxy-card[hidden] { display: none !important; }
+
+/* During dragging, allow either panel to shrink past its normal minimum.
+   Releasing near the outer edge hides it without terminating its sessions. */
+.eterx-terminal-dock[data-resizing][data-placement="bottom"] { min-height: 0 !important; }
+.eterx-chat-column .eterx-terminal-dock[data-resizing][data-placement="right"] { min-width: 0 !important; }
+.eterx-terminal-dock[data-resizing] .eterx-terminal-toolbar,
+.eterx-terminal-dock[data-resizing] .eterx-terminal-host { overflow: hidden; }
+.eterx-terminal-dock[data-close-ready="true"] .eterx-terminal-toolbar,
+.eterx-terminal-dock[data-close-ready="true"] .eterx-terminal-host,
+.eterx-terminal-dock[data-close-ready="true"] .eterx-terminal-empty,
+.eterx-terminal-dock[data-close-ready="true"] .eterx-terminal-error { visibility: hidden; }
+
+/* At tight widths Proxy floats within the conversation instead of consuming
+   another row. It stays still while the transcript beneath it scrolls. */
+.eterx-chat-column[data-terminal-placement="right"] .eterx-conversation-pane[data-proxy-layout="floating"] .eterx-proxy-dock {
+  position: absolute !important;
+  top: 8px !important;
+  right: 10px !important;
+  left: auto !important;
+  bottom: auto !important;
+  width: fit-content !important;
+  max-width: calc(100% - 20px);
+}
+.eterx-conversation-pane[data-proxy-layout="floating"] .eterx-proxy-compact-bar {
+  min-height: 32px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--background) 92%, var(--foreground) 8%);
+  margin: 0;
+  max-width: 100%;
+}
+.eterx-chat-column[data-terminal-placement="right"] .eterx-conversation-pane[data-proxy-layout="floating"] .eterx-proxy-card {
+  left: auto;
+  right: 0;
+  width: 224px;
+  max-width: calc(100cqw - 20px);
+}

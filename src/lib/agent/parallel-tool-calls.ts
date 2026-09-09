@@ -6,6 +6,8 @@
  * remain ordered so one action cannot observe another action halfway through.
  */
 
+import { isReadOnlyShellCommand } from './shell-command-shape';
+
 export type ParallelToolCallLike = {
   name?: string;
   args?: Record<string, unknown>;
@@ -24,6 +26,9 @@ const READ_ONLY_TOOLS = new Set([
   'web_search',
   'get_skill_guidelines',
   'image_asset_search',
+  'context_memory',
+  'agent_flow_blackboard_get',
+  'agent_flow_blackboard_list',
 ]);
 
 const READ_ONLY_ACTIONS: Record<string, Set<string>> = {
@@ -97,16 +102,6 @@ export function getParallelToolCallArgs(call: ParallelToolCallLike): Record<stri
   );
 }
 
-function isReadOnlyShellCommand(command: string): boolean {
-  const normalized = command.trim();
-  if (!normalized) return false;
-  if (/[>]{1,2}/.test(normalized)) return false;
-  if (/(?:^|[\s;&|])(?:rm|rmdir|del|erase|mv|move|cp|copy|ren|rename|remove-item|set-content|out-file|tee|npm\s+(?:install|ci|run\s+build)|pnpm\s+(?:install|run\s+build)|yarn\s+(?:install|build)|git\s+(?:checkout|switch|reset|clean|commit|merge|rebase|pull|push))\b/i.test(normalized)) {
-    return false;
-  }
-  return /^(?:cat|type|get-content|get-childitem|dir|ls|pwd|where|where\.exe|which|head|tail|rg|grep|find|findstr|select-string|test-path|git\s+(?:status|diff|log|show|branch|rev-parse)|node\s+--version|npm\s+--version|pnpm\s+--version|yarn\s+--version|python(?:3)?\s+--version|py\s+--version)\b/i.test(normalized);
-}
-
 /** Return true only when a call is safe to start with other independent reads. */
 export function isParallelSafeToolCall(call: ParallelToolCallLike): boolean {
   const name = getParallelToolCallName(call);
@@ -133,9 +128,9 @@ export function isParallelSafeToolCall(call: ParallelToolCallLike): boolean {
     if (args.background === true) return false;
     const commands = Array.isArray(args.commands) ? args.commands : [];
     if (commands.length > 0) {
-      return commands.every((entry: any) => entry?.background !== true && isReadOnlyShellCommand(String(entry?.command || '')));
+      return commands.every((entry: any) => entry?.background !== true && isReadOnlyShellCommand(String(entry?.command || entry?.cmd || '')));
     }
-    return isReadOnlyShellCommand(String(args.command || ''));
+    return isReadOnlyShellCommand(String(args.command || args.cmd || ''));
   }
 
   if (STATEFUL_NAME_PARTS.some(part => lowerName.includes(part))) return false;
@@ -165,4 +160,26 @@ export function splitLeadingParallelToolCalls<T extends ParallelToolCallLike>(
   }
 
   return { parallel, ordered };
+}
+
+/** Adjacent independent reads share a batch; mutations remain order barriers. */
+export function groupParallelToolCalls<T extends ParallelToolCallLike>(calls: T[], maxParallel = 6): T[][] {
+  const limit = Number.isFinite(maxParallel) ? Math.max(1, Math.floor(maxParallel)) : 6;
+  const groups: T[][] = [];
+  let reads: T[] = [];
+  const flush = () => {
+    if (reads.length) groups.push(reads);
+    reads = [];
+  };
+  for (const call of calls) {
+    if (isParallelSafeToolCall(call)) {
+      reads.push(call);
+      if (reads.length === limit) flush();
+    } else {
+      flush();
+      groups.push([call]);
+    }
+  }
+  flush();
+  return groups;
 }

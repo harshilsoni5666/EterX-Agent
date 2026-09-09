@@ -90,6 +90,8 @@ let pauseDeepThinkingTimer: TimerId | null = null;
 let idleWaitingTimer: TimerId | null = null;
 let idleSleepyTimer: TimerId | null = null;
 let idleSleepingTimer: TimerId | null = null;
+let inputReactionTimer: TimerId | null = null;
+let pendingInputReaction: { previousValue: string; nextValue: string } | null = null;
 let lastActivityScheduleAt = Date.now();
 
 const subscribers = new Set<() => void>();
@@ -347,7 +349,7 @@ export function ensureAgentFaceController() {
   scheduleIdle();
 }
 
-export function notifyAgentFaceInputChange(previousValue: string, nextValue: string) {
+function applyAgentFaceInputChange(previousValue: string, nextValue: string) {
   const now = Date.now();
   const delta = nextValue.length - previousValue.length;
   const elapsedSeconds = Math.max(0.08, (now - lastInputAt) / 1000);
@@ -420,7 +422,30 @@ export function notifyAgentFaceInputChange(previousValue: string, nextValue: str
   }, 8_000);
 }
 
+export function notifyAgentFaceInputChange(previousValue: string, nextValue: string) {
+  latestInputValue = nextValue;
+  if (pendingInputReaction) {
+    pendingInputReaction.nextValue = nextValue;
+  } else {
+    pendingInputReaction = { previousValue, nextValue };
+  }
+  if (inputReactionTimer) return;
+
+  // Agent-face reactions are decorative. Coalesce rapid keystrokes so its
+  // animation subscribers cannot compete with the native caret and textarea
+  // paint on the renderer's hot path.
+  inputReactionTimer = setTimeout(() => {
+    inputReactionTimer = null;
+    const pending = pendingInputReaction;
+    pendingInputReaction = null;
+    if (pending) applyAgentFaceInputChange(pending.previousValue, pending.nextValue);
+  }, 96);
+}
+
 export function notifyAgentFaceSend() {
+  clearTimer(inputReactionTimer);
+  inputReactionTimer = null;
+  pendingInputReaction = null;
   clearTimer(pauseThinkingTimer);
   clearTimer(pauseDeepThinkingTimer);
   setAttentionInternal('work', 0.82, 2400);

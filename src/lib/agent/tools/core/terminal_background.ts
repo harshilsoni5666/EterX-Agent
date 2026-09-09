@@ -14,6 +14,7 @@ import {
 import { authorizeToolCommand } from '../security/command_broker';
 import { buildTerminalShellInvocation } from './shell_resolver';
 import { getEterxWorkspaceDir } from '../../storage-paths';
+import { resolveTerminalOutputKind, type TerminalOutputKind } from '../../source-read-policy';
 
 type TerminalTaskStatus = 'running' | 'completed' | 'failed' | 'killed';
 
@@ -35,6 +36,7 @@ export interface TerminalCommandRunOptions {
   checkInMs?: number;
   hardTimeoutMs?: number;
   maxOutputChars?: number;
+  outputKind?: TerminalOutputKind;
   traceThrottleMs?: number;
   immediateHandoff?: boolean;
   surviveRunSettlement?: boolean;
@@ -66,6 +68,7 @@ export interface TerminalBackgroundTask {
   traceOutputOffset: number;
   droppedOutputChars: number;
   maxOutputChars: number;
+  outputKind?: TerminalOutputKind;
   checkInMs: number;
   hardTimeoutMs?: number;
   handedOff: boolean;
@@ -268,6 +271,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     traceOutputOffset: 0,
     droppedOutputChars: 0,
     maxOutputChars: options.maxOutputChars || DEFAULT_MAX_OUTPUT_CHARS,
+    outputKind: resolveTerminalOutputKind(options.command, options.outputKind),
     checkInMs,
     hardTimeoutMs,
     handedOff: false,
@@ -500,7 +504,8 @@ export async function getTerminalBackgroundTaskStatus(
     ? status.outputFile
     : resolveUnder(TASKS_DIR, `${taskId}_output.txt`);
   const persistedOutputLimit = Math.max(4_000, Math.min(256_000, Number(status.maxOutputChars) || 24_000));
-  const output = await readOutputTail(outputFile, persistedOutputLimit);
+  const outputKind = resolveTerminalOutputKind(String(status.command || ''), status.outputKind);
+  const output = await readOutputTail(outputFile, outputKind === 'read' ? Number.POSITIVE_INFINITY : persistedOutputLimit);
   let persistedStatus = status.status || 'unknown';
   if (persistedStatus === 'running' && (!status.pid || !isProcessAlive(status.pid))) {
     // A status file can outlive the Node process that launched it. Persist the
@@ -528,6 +533,7 @@ export async function getTerminalBackgroundTaskStatus(
     status: persistedStatus,
     running: persistedStatus === 'running',
     command: status.command,
+    outputKind,
     cwd: status.cwd,
     shell: status.shell,
     pid: status.pid,
@@ -640,9 +646,11 @@ function appendTaskOutput(task: TerminalBackgroundTask, stream: 'stdout' | 'stde
   task.lastActivityAt = Date.now();
   task.totalOutputChars += text.length;
   task.pendingTraceOutput += text;
-  task[stream] = trimOutput(task[stream] + text, task.maxOutputChars).text;
+  const outputLimit = resolveTerminalOutputKind(task.command, task.outputKind) === 'read'
+    ? Number.POSITIVE_INFINITY : task.maxOutputChars;
+  task[stream] = trimOutput(task[stream] + text, outputLimit).text;
 
-  const combined = trimOutput(task.output + text, task.maxOutputChars);
+  const combined = trimOutput(task.output + text, outputLimit);
   task.output = combined.text;
   task.droppedOutputChars += combined.dropped;
 
@@ -662,7 +670,7 @@ function scheduleTaskOutputWrite(task: TerminalBackgroundTask) {
     }
 
     const stats = await fs.stat(task.outputFile).catch(() => null);
-    if (stats && stats.size > MAX_PERSISTED_OUTPUT_BYTES) {
+    if (resolveTerminalOutputKind(task.command, task.outputKind) !== 'read' && stats && stats.size > MAX_PERSISTED_OUTPUT_BYTES) {
       const content = await fs.readFile(task.outputFile);
       let retainFrom = Math.max(0, content.length - PERSISTED_OUTPUT_RETAIN_BYTES);
       // Advance past UTF-8 continuation bytes so rotation never begins in the
@@ -784,6 +792,7 @@ function scheduleAutomatedCheckIns(task: TerminalBackgroundTask) {
 function buildRunningResult(task: TerminalBackgroundTask, note: string): any {
   return {
     success: true,
+    outputKind: resolveTerminalOutputKind(task.command, task.outputKind),
     stdout: task.stdout,
     stderr: task.stderr,
     output: visibleOutput(task),
@@ -816,6 +825,7 @@ function buildTerminalResult(task: TerminalBackgroundTask): any {
     : '';
   return {
     success: task.status === 'completed',
+    outputKind: resolveTerminalOutputKind(task.command, task.outputKind),
     stdout: task.stdout,
     stderr: task.stderr + (hardTimeoutNote ? `\n${hardTimeoutNote}` : ''),
     output: visibleOutput(task),
@@ -860,6 +870,7 @@ function buildStatusResult(task: TerminalBackgroundTask, sinceOffset?: number): 
     status: task.status,
     running: task.status === 'running',
     command: task.command,
+    outputKind: resolveTerminalOutputKind(task.command, task.outputKind),
     cwd: task.cwd,
     shell: task.shell,
     pid: task.pid,
@@ -915,7 +926,7 @@ function buildOutputWindow(
   const retainedStart = Math.max(0, total - retainedOutput.length);
   const requested = Number.isFinite(Number(sinceOffset))
     ? Math.max(0, Math.min(total, Math.floor(Number(sinceOffset))))
-    : retainedStart;
+    : 0;
   const start = Math.max(retainedStart, requested);
   const delta = retainedOutput.slice(start - retainedStart);
   const omitted = Math.max(0, retainedStart - requested);
@@ -927,6 +938,7 @@ function buildOutputWindow(
 
 function terminalTraceSnapshotOutput(task: TerminalBackgroundTask, maxChars = 1024 * 1024): string {
   const output = visibleOutput(task);
+  if (resolveTerminalOutputKind(task.command, task.outputKind) === 'read') return output;
   if (output.length <= maxChars) return output;
   const headChars = Math.floor(maxChars * 0.2);
   const tailChars = maxChars - headChars;
@@ -979,11 +991,14 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
     completedAt: task.completedAt,
     exitCode: task.exitCode ?? null,
     signal: task.signal ?? null,
-    stderr: task.stderr.slice(-12_000),
+    // Exact read output lives in outputFile; do not duplicate it in status JSON.
+    stderr: resolveTerminalOutputKind(task.command, task.outputKind) === 'read' ? undefined : task.stderr.slice(-12_000),
     outputFile: task.outputFile,
     statusFile: task.statusFile,
     droppedOutputChars: task.droppedOutputChars,
     totalOutputChars: task.totalOutputChars,
+    maxOutputChars: task.maxOutputChars,
+    outputKind: resolveTerminalOutputKind(task.command, task.outputKind),
     checkInMs: task.checkInMs,
     hardTimeoutMs: task.hardTimeoutMs,
     handedOff: task.handedOff,

@@ -2,41 +2,19 @@
  * Preserve the model's user-facing communication as written. Work-note
  * selection belongs to the response/action boundary, not an output rewriter.
  */
+export const WORK_NOTE_POLICY = `Start tool-assisted work with one short, task-specific note. Then do the related work without narrating each call: several reads or commands can belong to one step. Add a note when a finding changes the approach, the next meaningful phase begins, recovery matters, or a long stretch needs a useful progress update. Use plain professional sentences without bold, headings, lists, emojis, decorative icons, or celebratory badges; state what matters, not tool labels or plan bookkeeping. Never repeat intent, expose private reasoning, or claim results before evidence. Answer simple questions directly.`;
+
 export function isFinalAnswerOrRegularText(_value: string): boolean {
   return false;
 }
 
-export function formatVisibleWorkNote(value: string, maxLength = 720, _suppressFinalAnswers = false): string {
-  const cleaned = String(value || '')
+export function formatVisibleWorkNote(value: string, _maxLength = 720, _suppressFinalAnswers = false): string {
+  // Keep user-facing wording and Markdown intact. Brevity and professional
+  // style are generation guidance, not reasons to suppress or clip a note.
+  return String(value || '')
     // Some compatible providers place private reasoning tags in their normal
     // text channel. Never promote those blocks into visible progress notes.
     .replace(/<(analysis|thinking|reasoning|thought|scratchpad)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
     .replace(/<\/?(?:analysis|thinking|reasoning|thought|scratchpad)\b[^>]*>/gi, '')
     .trim();
-
-  if (!cleaned) return '';
-
-  // Providers sometimes leak private planning headings into their normal text
-  // channel. Do not promote those planning/meta lines into user-facing work
-  // notes; genuine progress phrased as an inspection or check remains valid.
-  const internalHeading = /^(?:#{1,6}\s*)?(?:internal\s+)?(?:analysis|reasoning|thinking|scratchpad)\s*:/i;
-  const mediaAnalysisHeading = /^(?:#{1,6}\s*)?(?:image|attachment|screenshot|photo)\s*#?\s*\d*\s*(?:analysis|reasoning|inspection)\s*:/i;
-  const responseDrafting = /^(?:i|we)\s+(?:need|must|should|have)\s+(?:to\s+)?(?:answer|respond|draft|output|analy[sz]e)\b/i;
-  const userMeta = /^the\s+user\s+(?:asks?|asked|wants?|wanted|requests?|requested|needs?)\b/i;
-
-  if (
-    internalHeading.test(cleaned)
-    || mediaAnalysisHeading.test(cleaned)
-    || responseDrafting.test(cleaned)
-    || userMeta.test(cleaned)
-  ) return '';
-
-  // A single provider response is one work-note lifecycle. Collapse
-  // paragraph/list whitespace so one response cannot masquerade as unrelated
-  // notes while preserving its actual user-facing words.
-  const continuous = cleaned.replace(/\s+/g, ' ').trim();
-  const safeLimit = Math.max(120, Math.floor(maxLength));
-  if (continuous.length <= safeLimit) return continuous;
-  const clipped = continuous.slice(0, safeLimit - 1).replace(/\s+\S*$/, '').trim();
-  return `${clipped || continuous.slice(0, safeLimit - 1).trim()}…`;
 }

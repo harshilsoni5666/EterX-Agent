@@ -1,23 +1,30 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
-import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, MessageSquarePlus, Activity, Minimize2, CircleStop, TriangleAlert } from 'lucide-react';
+import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, MessageSquarePlus, Activity, Minimize2, Info } from 'lucide-react';
+import { InlineRunNotice } from './inline-run-notice';
 import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
+import { getTextPlaybackId, TextPlaybackScope } from './use-paced-text';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
 import { Tooltip } from '../ui/tooltip';
 import { Shimmer } from '../ui/shimmer';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
-import { LocalFileLinkChip, decodeLocalFileHref } from './local-file-link';
-import { areLikelySameFeedActionLifecycle, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary, isSettledAnswerTrace, isTerminalWorkTrace, isTurnWorkActive, mergeUserTurnBoundaries, orderFeedTimelineLogs, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles, shouldRenderContextCompactionEvent } from '../../lib/chat-feed-lifecycle';
+import { LocalFileLinkChip, LocalFileWorkspaceContext, decodeLocalFileHref } from './local-file-link';
+import { areLikelySameFeedActionLifecycle, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary, isSettledAnswerTrace, isTerminalWorkTrace, isTurnWorkActive, mergeUserTurnBoundaries, orderFeedTimelineLogs, reconcileTerminalRunNotices, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles, shouldRenderContextCompactionEvent } from '../../lib/chat-feed-lifecycle';
 import { shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
 import { isLiveUserVisibleTrace } from '../../lib/agent/trace-visibility';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 import { buildFilePreviewUrl } from '../../lib/path-utils';
 import { normalizeLifecycleTimestamp, useLifecycleElapsedMs } from './lifecycle-clock';
+import { projectSteeringDelivery, sameUserAdmission, userAdmissionKey } from '../../lib/steering-delivery';
+import { visibleUserRequest } from '../../lib/chat-user-payload';
+import { formatUnknownError } from '../../lib/agent/error-format';
+import { mergeFeedTracePayload } from '../../lib/chat-feed-lifecycle';
 
 interface ChatFeedProps {
+  workspacePath?: string | null;
   traceLogs: any[];
   chatId: string | null;
   isThinking: boolean;
@@ -311,6 +318,87 @@ const chatFeedSurfaceStyles = `
     scroll-padding-block: 16px;
   }
 
+  .eterx-chat-turns-list {
+    position: relative;
+    padding-block: 12px;
+    scroll-padding-block: 12px;
+  }
+  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker {
+    width: 28px;
+    height: 10px;
+    min-height: 10px;
+    padding: 0;
+    justify-content: flex-start;
+    background: transparent !important;
+    border-radius: 3px;
+  }
+  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turns-dash {
+    width: 8px;
+    height: 2px;
+    background: var(--muted-foreground) !important;
+    opacity: 0.4;
+    transition: width 140ms ease-out, opacity 140ms ease-out;
+  }
+  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker:is(:hover, :focus-visible) .eterx-chat-turns-dash {
+    width: 24px;
+    opacity: 0.85;
+  }
+  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker[aria-current="step"] .eterx-chat-turns-dash {
+    width: 20px;
+    background: var(--foreground) !important;
+    opacity: 1;
+  }
+  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker[aria-current="step"]:is(:hover, :focus-visible) .eterx-chat-turns-dash {
+    width: 26px;
+  }
+  :root[data-theme] .eterx-chat-turn-preview .eterx-chat-turns-popover {
+    min-height: 0;
+    max-height: 160px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: #242423 !important;
+    border-color: #363635 !important;
+    box-shadow: 0 8px 24px #00000024 !important;
+    backdrop-filter: none !important;
+  }
+  :root[data-theme="light"] .eterx-chat-turn-preview .eterx-chat-turns-popover {
+    background: #ffffff !important;
+    border-color: #e5e5e5 !important;
+  }
+  :root[data-theme] .eterx-chat-turn-preview .eterx-chat-turns-usertext {
+    -webkit-line-clamp: 1 !important;
+    font-size: 12px;
+    line-height: 18px;
+  }
+  :root[data-theme] .eterx-chat-turn-preview .eterx-chat-turns-assistanttext {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin-top: 5px;
+    padding-top: 0;
+    border: 0;
+    font-size: 12px;
+    line-height: 19px;
+    color: #a7a7a4 !important;
+    overflow-wrap: anywhere;
+  }
+  :root[data-theme="light"] .eterx-chat-turn-preview .eterx-chat-turns-assistanttext {
+    color: #686868 !important;
+  }
+  :root[data-theme] .eterx-chat-turn-preview .eterx-chat-turns-attachment {
+    align-self: flex-start;
+    margin-top: 6px;
+    padding: 0;
+    border: 0;
+    background: transparent !important;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turns-dash {
+      transition: none;
+    }
+  }
+
   .eterx-user-message-action-fade {
     filter: none;
     background:
@@ -409,14 +497,15 @@ const getVisibleUserBoundaryText = (log: any): string => {
   const text = [log?.text, log?.prompt, log?.task, log?.message]
     .map(value => String(value || '').trim())
     .find(Boolean);
-  if (text) return text;
-  return 'Request';
+  if (text) return visibleUserRequest(text);
+  return log?.attachments?.length ? '' : 'Request';
 };
 
 const isHiddenRecoveredUserBoundary = (log: any): boolean => Boolean(
   log?.type === 'user_action' &&
   log?._recoveredBoundary === true &&
-  log?._hiddenRecoveredBoundary === true
+  log?._hiddenRecoveredBoundary === true &&
+  !log?.attachments?.length
 );
 
 const isProviderBootstrapTrace = (log: any): boolean => {
@@ -441,7 +530,12 @@ const normalizeInternalUserActionLogs = (logs: any[]) => {
     // state. It is not agent narration and must never become a permanent
     // "OpenRouter is starting" (or equivalent provider-name) transcript row.
     if (isProviderBootstrapTrace(log)) return next;
-    if (log?.type === 'answer' && /\[LIVE GUIDANCE\b/i.test(String(log.text || ''))) {
+    if (log?.type === 'error' || (['agent_status', 'run_status'].includes(log?.type) && log.status === 'failed')) {
+      const text = formatUnknownError(log.detail || log.text || log.data, 'The run failed.');
+      next.push({ ...log, text, detail: text });
+      return next;
+    }
+    if (log?.type === 'answer' && log.internalGuidanceEnvelope === true && /\[LIVE GUIDANCE\b/i.test(String(log.text || ''))) {
       const rawText = String(log.text || '');
       const envelopePattern = /\[LIVE GUIDANCE\s+\d+(?:\s*\|\s*id=([^\]|]+))?(?:\s*\|\s*source=([^\]]+))?\]\s*([\s\S]*?)\s*\[\/LIVE GUIDANCE\]/gi;
       let match: RegExpExecArray | null;
@@ -475,7 +569,8 @@ const normalizeInternalUserActionLogs = (logs: any[]) => {
       next.push(log);
       return next;
     }
-    const rawText = String(log.text || '');
+    const rawText = visibleUserRequest(log.text);
+    if (rawText !== String(log.text || '')) log = { ...log, text: rawText, _internalEnvelopeBoundary: true };
     const match = rawText.match(AGENT_BUILDER_INTERNAL_REQUEST_PATTERN);
     if (!match) {
       next.push(log);
@@ -508,6 +603,7 @@ const getFeedPresentationEventId = (log: any): string => {
 };
 
 const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
+  if (previous === incoming) return previous;
   if (previous?.type === 'user_action' && incoming?.type === 'user_action') {
     return mergeUserTurnBoundaries(previous, incoming);
   }
@@ -571,9 +667,8 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
   const preferredType = narrativeRank(previous?.type) > narrativeRank(incoming?.type)
     ? previous.type
     : incoming?.type;
-  return {
-    ...previous,
-    ...incoming,
+  const merged: Record<string, any> = {
+    ...mergeFeedTracePayload(previous, incoming),
     _feedPresentationId: getFeedPresentationEventId(previous) || getFeedPresentationEventId(incoming) || undefined,
     _feedBoundaryId: previous?._feedBoundaryId || incoming?._feedBoundaryId || undefined,
     _feedBoundaryOrder: previous?._feedBoundaryOrder ?? incoming?._feedBoundaryOrder,
@@ -623,6 +718,11 @@ const mergeDuplicateFeedLog = (previous: any, incoming: any) => {
       incoming?.isLiveTyping
     ),
   };
+  // Reconciliation runs when unrelated live events arrive. Preserve an
+  // unchanged payload so completed subgroups can actually reuse their rows.
+  const fields = Object.keys(merged);
+  if (previous && fields.length === Object.keys(previous).length && fields.every(field => Object.is(previous[field], merged[field]))) return previous;
+  return merged;
 };
 
 // The transport is incremental, but reconnect/catch-up frames can still be
@@ -834,6 +934,7 @@ const dedupeFeedLogs = (logs: any[]) => {
   const userBoundaryTurnIndexes = new Map<string, number>();
   const liveUserTextIndexes = new Map<string, number>();
   const steeringIndexes = new Map<string, number>();
+  const admissionIndexes = new Map<string, number>();
   const actionReplayIndexes = new Map<string, Set<number>>();
   let semanticIndexes = new Map<string, number>();
   let boundaryScope = 0;
@@ -953,6 +1054,12 @@ const dedupeFeedLogs = (logs: any[]) => {
 
   logs.forEach((log: any) => {
     if (!log) return;
+    const admission = userAdmissionKey(log);
+    const priorAdmissionIndex = admission ? admissionIndexes.get(admission) : undefined;
+    if (priorAdmissionIndex !== undefined) {
+      deduped[priorAdmissionIndex] = mergeDuplicateFeedLog(deduped[priorAdmissionIndex], log);
+      return;
+    }
     const candidateBoundaryScope = boundaryScope + (isFeedTurnBoundary(log) ? 1 : 0);
     const runId = String(log.runId || log.turnId || '').trim();
     const turnId = String(log.turnId || '').trim();
@@ -1166,6 +1273,7 @@ const dedupeFeedLogs = (logs: any[]) => {
       boundaryScope = candidateBoundaryScope;
       semanticIndexes = new Map();
       userBoundaryIndexes.set(userBoundaryKey, deduped.length);
+      if (admission) admissionIndexes.set(admission, deduped.length);
       if (explicitTurnKey) userBoundaryTurnIndexes.set(explicitTurnKey, deduped.length);
       if (normalizedUserText) liveUserTextIndexes.set(liveUserKey, deduped.length);
     }
@@ -1190,7 +1298,8 @@ const dedupeFeedLogs = (logs: any[]) => {
       // distinct guidance phase even if its transport identity was reused.
       if (
         priorSteeringIndex !== undefined &&
-        !hasMeaningfulTurnContent(deduped.slice(priorSteeringIndex + 1))
+        (sameUserAdmission(deduped[priorSteeringIndex], log) ||
+          !hasMeaningfulTurnContent(deduped.slice(priorSteeringIndex + 1)))
       ) {
         deduped[priorSteeringIndex] = mergeDuplicateFeedLog(deduped[priorSteeringIndex], log);
         registerStableKeys(priorSteeringIndex, deduped[priorSteeringIndex]);
@@ -1198,6 +1307,7 @@ const dedupeFeedLogs = (logs: any[]) => {
         return;
       }
       steeringKeys.forEach(key => steeringIndexes.set(key, deduped.length));
+      if (admission) admissionIndexes.set(admission, deduped.length);
       boundaryScope = candidateBoundaryScope;
       semanticIndexes = new Map();
     }
@@ -1355,6 +1465,7 @@ const getAgentRunNotice = (log: any): AgentRunNotice | null => {
     // their final summary in its text field; the answer surface already owns
     // that content. Only an explicitly failed/stopped done event is visible.
     if (
+      ['completed', 'complete', 'done', 'success', 'succeeded', 'running', 'working', 'pending', 'streaming', 'started'].includes(lifecycleStatus) ||
       log.type === 'done' &&
       !['failed', 'error', 'stopped', 'cancelled', 'canceled', 'warning'].includes(lifecycleStatus)
     ) return null;
@@ -1388,28 +1499,60 @@ const getAgentRunNotice = (log: any): AgentRunNotice | null => {
   return { tone: 'error', title: 'Request failed', detail: detail || 'The request could not be completed.' };
 };
 
-const AgentRunStatusNotice = ({ notice }: { notice: AgentRunNotice }) => {
-  const isStopped = notice.tone === 'stopped';
-  const Icon = isStopped ? CircleStop : TriangleAlert;
+const AgentRunStatusNotice = ({ notice }: { notice: AgentRunNotice }) => (
+  <InlineRunNotice kind={notice.tone === 'stopped' ? 'stopped' : 'error'} title={notice.title}>
+    {notice.detail || notice.title}
+  </InlineRunNotice>
+);
+
+const ContextCompactionNotice = ({ log }: { log: any }) => {
+  const phase = ['compacting', 'retrying', 'compacted', 'failed'].includes(String(log?.phase || ''))
+    ? String(log.phase)
+    : 'compacting';
+  const before = Number(log?.beforeTokens || 0);
+  const hasAfter = Number.isFinite(Number(log?.afterTokens));
+  const after = hasAfter ? Number(log.afterTokens) : 0;
+  const nextAttempt = Number(log?.nextAttemptTokens || 0);
+  const nextWindow = Number(log?.nextContextWindow || 0);
+  const active = phase === 'compacting' || phase === 'retrying';
+  const label = phase === 'failed'
+    ? 'Failed to compact'
+    : phase === 'compacted'
+      ? 'Context successfully compacted'
+      : phase === 'retrying'
+        ? 'Retrying context compaction'
+        : 'Compacting context';
+  const detail = phase === 'failed'
+    ? [
+        'Full context preserved.',
+        nextAttempt > 0 ? `Next attempt at ${formatProviderTokenCount(nextAttempt)} tokens.` : '',
+        nextWindow > 0 ? `Chat budget raised to ${formatProviderTokenCount(nextWindow)} tokens.` : '',
+      ].filter(Boolean).join(' ')
+    : phase === 'compacted'
+      ? before > 0 && hasAfter
+        ? `${formatProviderTokenCount(before)} → ${formatProviderTokenCount(after)} tokens`
+        : ''
+      : phase === 'retrying'
+        ? String(log?.summary || '').trim()
+        : before > 0 ? `${formatProviderTokenCount(before)} tokens` : '';
 
   return (
     <div
-      role={isStopped ? 'status' : 'alert'}
-      className={`eterx-agent-run-notice eterx-agent-run-notice-${ notice.tone } mb-3 flex w-full items-start gap-2 py-1 text-[13px] leading-[1.5]`}
+      className="eterx-context-compaction my-2 flex w-full items-center gap-2"
+      data-phase={phase}
+      role={phase === 'failed' ? 'alert' : 'status'}
+      aria-live={active || phase === 'failed' ? 'polite' : undefined}
     >
-      <Icon className="eterx-agent-run-notice-icon mt-[3px] h-3.5 w-3.5 shrink-0" strokeWidth={2} />
-      <span className="min-w-0 whitespace-pre-wrap break-words">
-        <span className="font-semibold">{notice.title}.</span>{' '}
-        <span className="eterx-agent-run-notice-detail">{notice.detail}</span>
+      <Info className="h-[15px] w-[15px] shrink-0 text-[var(--muted-foreground)]" strokeWidth={1.7} aria-hidden="true" />
+      <span className="eterx-context-compaction-content inline-flex min-w-0 items-baseline gap-1.5 text-[11.5px] leading-5">
+        <Shimmer active={active} className="eterx-context-compaction-label font-semibold">
+          {label}
+        </Shimmer>
+        {detail && <span className="eterx-context-compaction-detail">{detail}</span>}
       </span>
     </div>
   );
 };
-
-// Compaction is request infrastructure, not conversation content. Its live and
-// failure states belong in the context meter; a permanent success row would
-// consume feed height forever and make the transcript itself noisier.
-const ContextCompactionNotice = (_props: { log: any }) => null;
 
 const getTraceActivitySignature = (logs: any[]) => {
   const start = Math.max(0, logs.length - 3);
@@ -1571,19 +1714,25 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | 
   // reset when the first real Thought or action arrived. The turn timestamp is
   // retained only as a compatibility anchor for an actual legacy work event
   // whose own timestamp is missing.
-  const recordedStart = bounds.start ?? (hasTimedWork ? normalizedFallbackStart : null);
+  const recordedStart = bounds.start !== null
+    ? Math.max(bounds.start, normalizedFallbackStart ?? bounds.start)
+    : hasTimedWork ? normalizedFallbackStart : null;
   const recordedEnd = normalizedEndedAt ?? bounds.end;
   const elapsedMs = useLifecycleElapsedMs({
-    active,
+    active: active && hasTimedWork,
     startedAt: recordedStart,
     endedAt: recordedEnd,
+    allowLiveFallback: hasTimedWork,
   });
   if (elapsedMs === null) return null;
-  return Math.max(1, Math.floor(elapsedMs / 1_000));
+  return Math.max(0, Math.floor(elapsedMs / 1_000));
 };
 
+const renderFeedContextCompaction = (log: any) => <ContextCompactionNotice log={log} />;
+const EMPTY_LIVE_SEQUENCE_LOGS: any[] = [];
+
 const ThoughtSequence = ({
-  logs, liveLogs = [], isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes
+  logs, liveLogs = EMPTY_LIVE_SEQUENCE_LOGS, isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes
 }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
   // The trace stream is more precise than the briefly stale global running
   // flag. Scan the whole turn: terminal events are often followed by late
@@ -1599,7 +1748,6 @@ const ThoughtSequence = ({
   const containerRef = React.useRef<HTMLDivElement>(null);
   const anchorFrameRef = React.useRef<number | null>(null);
   const userControlledOpenRef = React.useRef(false);
-  const wasLiveThinkingRef = React.useRef(isLiveThinking);
 
   const setOpenPreservingViewport = React.useCallback((nextOpen: boolean, preserveViewport = false) => {
     if (!preserveViewport) {
@@ -1636,15 +1784,9 @@ const ThoughtSequence = ({
   }, []);
 
   React.useEffect(() => {
-    const wasLive = wasLiveThinkingRef.current;
-    wasLiveThinkingRef.current = isLiveThinking;
     if (userControlledOpenRef.current) return;
     if (isLiveThinking) {
       setOpenPreservingViewport(true, false);
-    } else if (wasLive) {
-      // Every untouched live sequence closes on a real terminal transition,
-      // including stopped/error turns that never produced an answer.
-      setOpenPreservingViewport(false, false);
     }
   }, [isLiveThinking, setOpenPreservingViewport]);
 
@@ -1662,9 +1804,7 @@ const ThoughtSequence = ({
       (log?.type !== 'thought_stream' || shouldRenderThoughtStream(log))
     )
   );
-  // Start the timer as soon as the turn is active. Waiting for the first
-  // trace made the live pill appear late, then disappear/reappear as polling
-  // swapped between an empty group and its first streamed event.
+  // Mount the pill immediately; begin counting only when work arrives.
   const workElapsedSeconds = useWorkElapsedSeconds(isLiveThinking, turnLogs, turnEndedAt, turnStartedAt);
   const workElapsedLabel = formatWorkElapsed(workElapsedSeconds);
 
@@ -1674,7 +1814,7 @@ const ThoughtSequence = ({
   if (!isLiveThinking && !hasRealActions && !hasNarrativeWork && !hasRenderableTimelineWork) return null;
 
   return (
-    <div className="relative" ref={containerRef}>
+    <div className="eterx-work-sequence relative" ref={containerRef}>
       <div className={`eterx-worked-summary eterx-worked-summary-complete ${ isLiveThinking ? 'eterx-worked-summary-live' : '' } mb-1 flex w-full items-center gap-3 pt-0`}>
         <button
           type="button"
@@ -1685,7 +1825,7 @@ const ThoughtSequence = ({
           <span className="eterx-worked-summary-label py-[1px] text-[13px] font-semibold leading-[1.4] tracking-normal text-[var(--muted-foreground)]">
             <span>{isLiveThinking
               ? workElapsedLabel ? 'Working for\u00a0' : 'Working'
-              : 'Worked for\u00a0'}</span>
+              : workElapsedLabel ? 'Worked for\u00a0' : 'Worked'}</span>
             {workElapsedLabel && <RollingTimeDisplay label={workElapsedLabel} />}
           </span>
           <ChevronDown className={`eterx-worked-summary-chevron h-3.5 w-3.5 transition-transform ${ isOpen ? '' : '-rotate-90' }`} aria-hidden="true" />
@@ -1694,7 +1834,7 @@ const ThoughtSequence = ({
       </div>
 
       {isOpen && (
-        <div className="overflow-hidden">
+        <div hidden={!isOpen} className="overflow-hidden">
           <ThinkingProcess
             logs={logs}
             liveLogs={liveLogs}
@@ -1705,7 +1845,7 @@ const ThoughtSequence = ({
             isSubAgentTab={isSubAgentTab}
             isAgentBuilder={isAgentBuilder}
             onEditUserMessage={onEditUserMessage}
-            renderContextCompaction={(log) => <ContextCompactionNotice log={log} />}
+            renderContextCompaction={renderFeedContextCompaction}
           />
         </div>
       )}
@@ -1714,7 +1854,7 @@ const ThoughtSequence = ({
 };
 
 const RENDER_RELEVANT_LOG_FIELDS = [
-  'id', '_traceIdx', 'type', 'text', 'secondary', 'output', 'content',
+  'id', 'admissionId', 'steeringIds', 'steeringMessages', 'deliveryState', '_queuedFollowUp', '_traceIdx', 'type', 'text', 'secondary', 'output', 'content',
   'timestamp', 'startTime', 'endTime', 'streamStartedAt', 'isStreaming', 'isLiveTyping',
   'wasStreaming', 'isLive', 'streamState', 'final', 'done', 'answerId', 'spokenText', 'noteId', 'thoughtId',
   'subAgent', 'subAgentId', 'subAgentChatId', 'isSubAgent', 'agentRole', 'terminalTask', 'agentName', 'status', 'state', 'finishReason', 'finish_reason', 'progress', 'error',
@@ -1736,6 +1876,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'icon', 'iconCategory', 'size', '_autonomyProxy', '_streamingCancelled', '_cancelTraceIdx', '_cancelledAt',
   '_autonomyCheckpoint', '_autonomyBoundaryFollowUp', '_connection', 'model', 'modelName',
   'phase', 'compactionId', 'beforeTokens', 'afterTokens', 'contextWindow', 'modelProvider',
+  'failureTier', 'nextAttemptTokens', 'nextContextWindow', 'summary',
   'provider', 'source', 'promptTokens', 'inputTokens', 'completionTokens', 'outputTokens',
   'totalTokens', 'providerReportedTotalTokens', 'cachedTokens', 'uncachedPromptTokens', 'cacheHitRatio',
   'visibleOutputTokens', 'generatedTokens',
@@ -1751,14 +1892,24 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   '_feedPresentationId', '_feedBoundaryId', '_feedBoundaryOrder', '_feedEventOrder', '_internalEnvelopeBoundary',
 ] as const;
 
-const haveSameNestedValue = (left: unknown, right: unknown) => {
+const haveSameNestedValue = (left: unknown, right: unknown, seen?: WeakMap<object, object>): boolean => {
   if (left === right) return true;
   if (typeof left !== 'object' || left === null || typeof right !== 'object' || right === null) return false;
-  try {
-    return JSON.stringify(left) === JSON.stringify(right);
-  } catch {
-    return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left) && left.length !== (right as unknown[]).length) return false;
+  if (left instanceof Date || right instanceof Date) {
+    return left instanceof Date && right instanceof Date && left.getTime() === right.getTime();
   }
+  const pairs = seen || new WeakMap<object, object>();
+  if (pairs.has(left)) return pairs.get(left) === right;
+  pairs.set(left, right);
+  const a = left as Record<string, unknown>;
+  const b = right as Record<string, unknown>;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  // Stop at the first changed field; never serialize large terminal output,
+  // attachments or diffs just to decide whether a history row needs rendering.
+  return keys.every(key => Object.prototype.hasOwnProperty.call(b, key) && haveSameNestedValue(a[key], b[key], pairs));
 };
 
 const haveSameRenderedLog = (left: any, right: any) => {
@@ -1803,8 +1954,8 @@ const ChatFeedMessageGroup = React.memo(({
   setPreviewUserMessage: (msg: { text: string; index: number } | null) => void;
   showTokenCount: boolean;
 }) => {
-  // Retain only a fuller snapshot of an answer that is still present. An
-  // explicit cancellation or turn replacement must be able to clear it.
+  // This cache belongs to one user turn. Stream closure and a running
+  // successor are not retractions; only a matching explicit transition is.
   const lastKnownAnswerRef = React.useRef<any>(null);
   // This component is keyed to one immutable user turn. Preserve everything
   // already shown in that turn across sparse polling frames; newer snapshots
@@ -1842,11 +1993,15 @@ const ChatFeedMessageGroup = React.memo(({
                   const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
                   const isImage = mimeType.startsWith('image/') || ['PNG', 'JPG', 'JPEG', 'GIF', 'WEBP', 'AVIF'].includes(extension);
                   const isVideo = mimeType.startsWith('video/') || ['MP4', 'WEBM', 'MOV', 'M4V'].includes(extension);
-                  const previewUrl = att.preview || (att.localPath || att.path ? buildFilePreviewUrl(att.localPath || att.path) : '');
+                  // Blob URLs belong to the composer and may be revoked on send.
+                  // Persisted files remain available after navigation and restart.
+                  const previewUrl = att.localPath || att.path
+                    ? buildFilePreviewUrl(att.localPath || att.path)
+                    : att.preview || '';
                   const isPdf = extension === 'PDF';
                   const isDocPreviewable = extension === 'PDF' || extension === 'DOCX';
 
-                  if (isImage || isVideo) {
+                  if ((isImage || isVideo) && previewUrl) {
                     return (
                       <button
                         type="button"
@@ -1864,7 +2019,7 @@ const ChatFeedMessageGroup = React.memo(({
                         {isVideo ? (
                           <video src={previewUrl} muted playsInline preload="metadata" className="h-full w-full rounded-[14px] object-cover opacity-90" />
                         ) : (
-                          <img src={previewUrl} alt={fileName} className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
+                          <img src={previewUrl} alt={fileName} loading="lazy" decoding="async" className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
                         )}
                         {isVideo && <span className="pointer-events-none absolute inset-x-0 bottom-1 text-center text-[9px] font-semibold uppercase tracking-[0.12em] text-white/80">Video</span>}
                       </button>
@@ -1937,7 +2092,7 @@ const ChatFeedMessageGroup = React.memo(({
   const rawStandardLogs = visibleGroupLogs.filter((log: any, index: number, logs: any[]) =>
     shouldRenderContextCompactionEvent(log, index, logs, isThinkingTurn || isLiveSessionActive)
   );
-  const normalizedStandardLogs = rawStandardLogs.map((rawLog: any, index: number) => {
+  const normalizedStandardLogs = rawStandardLogs.map((rawLog: any) => {
     const log = rawLog.type === 'thought' && !isInternalStatusThought(rawLog)
       ? { ...rawLog, type: 'thought_stream', isStreaming: false, streamState: 'closed' }
       : rawLog.type === 'tool_call'
@@ -1947,34 +2102,14 @@ const ChatFeedMessageGroup = React.memo(({
           text: String(rawLog.text || rawLog.action || rawLog.toolName || rawLog.tool || rawLog.name || 'Tool call'),
         }
         : rawLog;
-    const turnIsActive = isThinkingTurn || isLiveSessionActive;
-    const isProvisionalAnswer =
-      log.type === 'answer' &&
-      turnIsActive;
-    const hasLaterWorkflowActivity = rawStandardLogs.slice(index + 1).some((later: any) =>
-      later.type === 'work_note' ||
-      (WORKFLOW_COUNT_TYPES.has(later.type) && !HIDDEN_HELPER_TYPES.has(later.type))
-    );
-    // An answer followed by real workflow activity is an intermediate model
-    // checkpoint even when its individual stream already settled. Only the
-    // last answer after all actions can own the final-answer surface.
-    const shouldStayInWorkSequence = isProvisionalAnswer || hasLaterWorkflowActivity;
-    if (
-      log.type !== 'answer' ||
-      !shouldStayInWorkSequence
-    ) {
-      return log;
-    }
-
-    // Answer-shaped provider text is not user-facing until its response phase
-    // conclusively settles. Hiding the provisional row prevents live model
-    // reasoning from leaking as either an answer or a synthetic work note.
-    return null;
+    // Ingestion already resolves explicit answer-to-note transitions. A
+    // running transport or late tool settlement cannot revoke visible text.
+    return log;
   }).filter((log: any) => Boolean(log));
-  const standardLogs = reconcileLandedTurnLogs(
+  const standardLogs = reconcileTerminalRunNotices(reconcileLandedTurnLogs(
     landedTurnLogsRef.current,
     normalizedStandardLogs,
-  );
+  ));
   landedTurnLogsRef.current = standardLogs;
   let processLogs: any[] = [];
   let finalAnswer: any = null;
@@ -1996,6 +2131,7 @@ const ChatFeedMessageGroup = React.memo(({
     const answerText = lastAnswerLog?.text || '';
 
     finalAnswer = {
+      ...lastAnswerLog,
       type: 'answer',
       text: answerText,
       isLive: lastAnswerLog?.isLive,
@@ -2021,14 +2157,20 @@ const ChatFeedMessageGroup = React.memo(({
   }
 
   const displayProcessLogs = processLogs;
-  // Open provider answer snapshots are genuine live output and should render
-  // immediately. A closed answer while the run is still active can still be
-  // a pre-tool draft, so it remains hidden until the turn settles (or an
-  // answer_cancel converts it into its owning work-note lifecycle).
   const answerTurnIsActive = isThinkingTurn || isLiveSessionActive;
-  if (answerTurnIsActive) {
+  const cachedAnswer = lastKnownAnswerRef.current;
+  const answerWasRetracted = cachedAnswer && group.some(log => {
+    if (!log || !['answer_cancel', 'work_note'].includes(log.type)) return false;
+    if (cachedAnswer.runId && log.runId && cachedAnswer.runId !== log.runId) return false;
+    if (cachedAnswer.turnId && log.turnId && cachedAnswer.turnId !== log.turnId) return false;
+    const samePresentation = cachedAnswer._feedPresentationId && log._feedPresentationId === cachedAnswer._feedPresentationId;
+    const sameAnswer = cachedAnswer.answerId && log.answerId === cachedAnswer.answerId;
+    return Boolean(sameAnswer || samePresentation);
+  });
+  if (answerWasRetracted) {
     lastKnownAnswerRef.current = null;
-  } else if (finalAnswer !== null) {
+  }
+  if (finalAnswer !== null) {
     const cached = lastKnownAnswerRef.current;
     const newText = finalAnswer.text || '';
     const cachedText = cached?.text || '';
@@ -2036,22 +2178,21 @@ const ChatFeedMessageGroup = React.memo(({
       cached &&
       (
         (cached.answerId && finalAnswer.answerId && cached.answerId === finalAnswer.answerId) ||
+        (cached._feedPresentationId && cached._feedPresentationId === finalAnswer._feedPresentationId &&
+          (!cached.answerId || !finalAnswer.answerId || cached.answerId === finalAnswer.answerId)) ||
         (!cached.answerId && !finalAnswer.answerId)
       )
     );
-    if (!sameAnswer || newText.length >= cachedText.length) {
-      lastKnownAnswerRef.current = finalAnswer;
-    }
+    const staleOpenSnapshot = sameAnswer && isSettledAnswerTrace(cached) && isFeedTraceOpen(finalAnswer);
+    lastKnownAnswerRef.current = staleOpenSnapshot ? cached : sameAnswer
+      ? { ...cached, ...finalAnswer, text: newText.length >= cachedText.length ? newText : cachedText }
+      : finalAnswer;
   }
   // Incremental poll frames commonly omit an already-settled answer. Absence
   // from that sparse frame is not a retraction; this component is scoped to
-  // one immutable turn, so keep the landed answer until the turn is replaced
-  // (unmount) or becomes active again (the explicit clear above).
-  const displayFinalAnswer = answerTurnIsActive
-    ? finalAnswer && isFeedTraceOpen(finalAnswer)
-      ? finalAnswer
-      : null
-    : finalAnswer ?? lastKnownAnswerRef.current;
+  // one immutable turn, so keep the landed answer until an explicit
+  // transition supersedes it or its owning component is replaced.
+  const displayFinalAnswer = lastKnownAnswerRef.current;
   // Only a real active stream may animate token-by-token. A settled answer can
   // be delivered again by polling or history restoration, but must render once
   // without replaying its entrance animation.
@@ -2060,12 +2201,10 @@ const ChatFeedMessageGroup = React.memo(({
     isFeedTraceOpen(displayFinalAnswer)
   );
   const shouldAnimateAnswerReveal = isAnswerActivelyTyping && !suppressInitialReveal;
-  // A provider may close a text snapshot immediately before revealing its
-  // tool call. While the transport is still active, keep the phase live so a
-  // provisional answer cannot collapse Thought and then reopen it one frame
-  // later when the action arrives.
-  const hasSettledAnswer = isSettledAnswerTrace(displayFinalAnswer) &&
-    !answerTurnIsActive;
+  // Completion belongs to the answer lifecycle. A polling connection can
+  // stay active after the answer closes; it must not keep Worked counting.
+  // Provisional text is retracted through the explicit answer-to-note path.
+  const hasSettledAnswer = isSettledAnswerTrace(displayFinalAnswer);
 
   const selectWorkLogs = (logs: any[]) => logs.filter(log =>
     isInternalStatusThought(log) || (
@@ -2162,15 +2301,15 @@ const ChatFeedMessageGroup = React.memo(({
     [...standardLogs, ...liveActionLogs],
   );
 
-  if (currentThoughts.length > 0 || groupIsThinking) {
+  if (currentThoughts.length > 0 || (groupIsThinking && !displayFinalAnswer)) {
     segments.push({ type: 'thoughts', logs: currentThoughts });
   }
 
-  const groupTerminalEndedAt = standardLogs.reduce((latest: number, log: any) => {
-    if (!isTerminalWorkTrace(log)) return latest;
+  const groupTerminalEndedAt = [...standardLogs, ...liveActionLogs].reduce((earliest: number | null, log: any) => {
+    if (!isTerminalWorkTrace(log)) return earliest;
     const timestamp = normalizeWorkTimestamp(log?.endTime ?? log?.timestamp);
-    return timestamp === null ? latest : Math.max(latest, timestamp);
-  }, 0) || null;
+    return timestamp === null ? earliest : earliest === null ? timestamp : Math.min(earliest, timestamp);
+  }, null);
 
   // A live empty phase must keep its mount when its first trace arrives, but
   // later phases should not be keyed only by their ordinal. A delayed status,
@@ -2238,16 +2377,17 @@ const ChatFeedMessageGroup = React.memo(({
           ...(seg.logs || []),
           ...(isLastThoughts ? liveActionLogs : []),
         ]);
-        const segmentTerminalEndedAt = [
-          ...(seg.logs || []),
-          ...(isLastThoughts ? liveActionLogs : []),
-        ].reduce((latest: number, log: any) => {
-          if (!isTerminalWorkTrace(log)) return latest;
-          return Math.max(latest, Number(log?.endTime || log?.timestamp || 0));
-        }, 0) || null;
-        const terminalTurnEndedAt = isLastThoughts
-          ? groupTerminalEndedAt ?? segmentTerminalEndedAt
-          : segmentTerminalEndedAt;
+        const nextBoundary = segments[segIdx + 1]?.log;
+        const phaseEndedAt = normalizeWorkTimestamp(nextBoundary?.startTime ?? nextBoundary?.timestamp);
+        const answerEndedAt = hasSettledAnswer
+          ? normalizeWorkTimestamp(displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp)
+          : null;
+        // A question/status closes only its preceding section. Do not charge
+        // user response time or later phases to every earlier Worked label.
+        // The first terminal boundary wins over delayed reconnect notices.
+        const endCandidates = [phaseEndedAt, groupTerminalEndedAt, answerEndedAt]
+          .filter((value): value is number => value !== null);
+        const terminalTurnEndedAt = endCandidates.length ? Math.min(...endCandidates) : null;
 
         // A settled or streaming direct answer may have a provider narration
         // row but no actual workflow action. Keep that answer on the normal
@@ -2264,9 +2404,7 @@ const ChatFeedMessageGroup = React.memo(({
             hasAnswer={hasSettledAnswer && isLastThoughts}
             stepCount={stepCount}
             turnStartedAt={seg.phaseKey === 'root' ? turnStartedAt : undefined}
-            turnEndedAt={hasSettledAnswer
-              ? displayFinalAnswer?.endTime ?? displayFinalAnswer?.timestamp ?? terminalTurnEndedAt
-              : terminalTurnEndedAt}
+            turnEndedAt={terminalTurnEndedAt}
             onOpenAgentTeam={onOpenAgentTeam}
             subAgentAssetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
@@ -2283,6 +2421,7 @@ const ChatFeedMessageGroup = React.memo(({
             <div className={`eterx-assistant-answer-body ${ isAnswerActivelyTyping ? 'eterx-assistant-live-text' : '' } text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative`}>
               <ProfessionalThought
                 text={displayFinalAnswer.text}
+                playbackId={getTextPlaybackId(displayFinalAnswer)}
                 // A completed answer must stay in the answer surface even if
                 // a late trace event keeps the turn marked as active. Using
                 // the turn flag here made direct answers look like thoughts
@@ -2411,9 +2550,13 @@ const ChatDateDivider = React.memo(({ label }: { label: string }) => (
 ));
 
 export const ChatFeed = React.memo<ChatFeedProps>(({
-  traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, subAgentAssetIndexes, isFeedActivityPaused = false, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState
+  traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, subAgentAssetIndexes, isFeedActivityPaused = false, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState, workspacePath
 }) => {
   const isAgentBuilderFeed = String(chatId || '').startsWith('agent_builder_');
+  const steeringDelivery = useMemo(
+    () => projectSteeringDelivery(Array.isArray(incomingTraceLogs) ? incomingTraceLogs : []),
+    [incomingTraceLogs],
+  );
   // The selected chat ledger is already normalized and owner-stamped upstream.
   // Do not delete rows again at presentation time: a briefly stale owner field
   // used to make a query, Thought, or action vanish while the ledger repaired.
@@ -2421,13 +2564,15 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     () => normalizeInternalUserActionLogs(
       settleFeedTraceLifecycles(ensureStableFeedPresentationIds(
         recoverMissingUserTurnBoundaries(
-          (Array.isArray(incomingTraceLogs) ? incomingTraceLogs : [])
-            .filter(log => !isProviderBootstrapTrace(log)),
+          steeringDelivery.timeline
+            .filter(log => !isProviderBootstrapTrace(log) && !(
+              log?.type === 'progress' && String(log?.text || '').startsWith('This chat history differs from its saved working context.')
+            )),
         ),
         chatId || undefined,
       )),
     ),
-    [incomingTraceLogs, chatId]
+    [steeringDelivery.timeline, chatId]
   );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const navContainerRef = useRef<HTMLDivElement>(null);
@@ -2642,13 +2787,19 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       ) {
         const nextGroup = groups[idx + 1] || [];
         const answerLog = [...nextGroup].reverse().find((l: any) => l.type === 'answer' && l.text && !isErrorText(l.text));
-        const fallbackLog = [...nextGroup].reverse().find((l: any) => l.text && l.type !== 'user_action' && l.type !== 'steering_received' && !isErrorText(l.text));
         const firstAttachment = g[0]?.attachments?.[0];
         const attachmentName = firstAttachment?.name || firstAttachment?.file?.name || null;
         return {
           idx,
           userText: getVisibleUserBoundaryText(g[0]),
-          assistantText: answerLog?.text || fallbackLog?.text || '',
+          // Navigation previews are excerpts, not another rich message renderer.
+          // Only use an answer; tool logs may contain internal execution payloads.
+          assistantText: String(answerLog?.text || '')
+            .replace(/```[\s\S]*?```/g, ' ')
+            .replace(/!?\[([^\]]*)\]\([^)]+\)/g, '$1')
+            .replace(/(^|\n)\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+)/g, ' ')
+            .replace(/[*_`]/g, '')
+            .replace(/\s+/g, ' ').trim().slice(0, 420),
           attachmentName
         };
       }
@@ -2831,6 +2982,8 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     prevTraceActivityRef.current = traceActivitySignature;
 
     if (!hasTraceActivity && !isThinking) return;
+    // Share the resize observer's frame. Do not force synchronous layout
+    // inside every streamed React commit, especially during manual scrolling.
     scheduleAutoFollow();
   }, [traceActivitySignature, isThinking, scheduleAutoFollow]);
 
@@ -2843,6 +2996,8 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     // can all change geometry without adding a trace. Keep a bottom-following
     // reader pinned through those changes, but never move someone reading up.
     const observer = new ResizeObserver(() => {
+      // Multiple children can resize in one commit (note arrival, action
+      // settlement, composer). Coalesce those callbacks into one scroll write.
       scheduleAutoFollow();
     });
     observer.observe(container);
@@ -2918,18 +3073,22 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       let closestIdx = -1;
       let minDistance = Infinity;
 
-      userTurns.forEach((turn, k) => {
+      // User-turn centers are ordered vertically. Locate the nearest one in
+      // logarithmic reads instead of measuring every turn on every scroll.
+      let low = 0;
+      let high = userTurns.length - 1;
+      while (low <= high) {
+        const middle = (low + high) >>> 1;
+        const turn = userTurns[middle];
         const el = latestContainer.querySelector<HTMLElement>(`[data-chat-group-index="${ turn.idx }"]`);
-        if (el) {
-          const rect = el.getBoundingClientRect();
-          const elCenter = rect.top + rect.height / 2;
-          const distance = Math.abs(elCenter - containerCenter);
-          if (distance < minDistance) {
-            minDistance = distance;
-            closestIdx = k;
-          }
-        }
-      });
+        if (!el) { high = middle - 1; continue; }
+        const rect = el.getBoundingClientRect();
+        const center = rect.top + rect.height / 2;
+        const distance = Math.abs(center - containerCenter);
+        if (distance < minDistance) { minDistance = distance; closestIdx = middle; }
+        if (center < containerCenter) low = middle + 1;
+        else high = middle - 1;
+      }
 
       if (closestIdx !== -1) {
         setActiveTurnIdx(closestIdx);
@@ -2988,7 +3147,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   const previewViewportWidth = typeof window === 'undefined' ? 1440 : window.innerWidth;
   const previewViewportHeight = typeof window === 'undefined' ? 900 : window.innerHeight;
   const previewLeft = hoveredTurn
-    ? Math.max(12, Math.min(hoveredTurn.rect.right + 10, previewViewportWidth - 312))
+    ? Math.max(12, Math.min(hoveredTurn.rect.right + 10, previewViewportWidth - 332))
     : 12;
   const previewTop = hoveredTurn
     ? Math.max(90, Math.min(hoveredTurn.rect.top + hoveredTurn.rect.height / 2, previewViewportHeight - 90))
@@ -3001,7 +3160,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
         {hoveredTurn && typeof document !== 'undefined' && createPortal(
           <div
             role="tooltip"
-            className="pointer-events-none fixed z-[10000] -translate-y-1/2 transition-[left,top] duration-200 ease-out"
+            className="eterx-chat-turn-preview pointer-events-none fixed z-[10000] -translate-y-1/2"
             style={{ left: previewLeft, top: previewTop }}
           >
             <motion.div
@@ -3028,35 +3187,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                 </p>
                 {hoveredTurn.turn.assistantText && (
                   <div className="eterx-chat-turns-assistanttext mt-2 max-h-[92px] overflow-hidden border-t border-[var(--border)] pt-2 text-[11px] leading-[1.45] text-[var(--muted-foreground)]">
-                    <ReactMarkdown
-                      remarkPlugins={remarkPlugins}
-                      rehypePlugins={rehypePlugins}
-                      components={{
-                        ...markdownComponents,
-                        p: ({ node, ...props }: any) => <p className="mb-1.5 last:mb-0" {...props} />,
-                        h1: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                        h2: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                        h3: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                        h4: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                        h5: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                        h6: ({ node, ...props }: any) => <span className="font-semibold text-[var(--foreground)]" {...props} />,
-                        ul: ({ node, ...props }: any) => <ul className="my-1 list-disc space-y-0.5 pl-4" {...props} />,
-                        ol: ({ node, ...props }: any) => <ol className="my-1 list-decimal space-y-0.5 pl-4" {...props} />,
-                        li: ({ node, ...props }: any) => <li className="pl-0.5" {...props} />,
-                        blockquote: ({ node, ...props }: any) => <blockquote className="my-1 border-l border-[var(--border)] pl-2 text-[var(--muted-foreground)]" {...props} />,
-                        strong: ({ node, ...props }: any) => <strong className="font-semibold text-[var(--foreground)]" {...props} />,
-                        em: ({ node, ...props }: any) => <em className="italic text-[var(--muted-foreground)]" {...props} />,
-                        code: ({ node, inline, ...props }: any) => <code className="rounded bg-[var(--muted)] px-1 py-0.5 font-mono text-[10px] text-[var(--foreground)]" {...props} />,
-                        pre: ({ node, children }: any) => <div className="my-1 overflow-hidden rounded bg-[var(--muted)] px-2 py-1 font-mono text-[10px]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{children}</div>,
-                        a: ({ node, href, children, ...props }: any) => {
-                          const localPath = decodeLocalFileHref(href);
-                          if (localPath) return <LocalFileLinkChip filePath={localPath} compact />;
-                          return <a className="text-[#E2765A] underline-offset-2 hover:underline" target="_blank" rel="noopener noreferrer" href={href} {...props}>{children}</a>;
-                        },
-                      }}
-                    >
-                      {normalizeMarkdownForRendering(String(hoveredTurn.turn.assistantText))}
-                    </ReactMarkdown>
+                    {hoveredTurn.turn.assistantText}
                   </div>
                 )}
                 {hoveredTurn.turn.attachmentName && (
@@ -3078,15 +3209,14 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
         >
           {userTurns.length > 1 && (
             <motion.div
-              ref={navContainerRef}
-              role="navigation"
+                            role="navigation"
               aria-label="Conversation turns"
               initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.24, ease: 'easeOut' }}
               className="eterx-chat-turns-nav pointer-events-none absolute inset-y-0 left-2 z-[60] flex items-center"
             >
-              <div className="pointer-events-auto flex max-h-[min(52vh,460px)] flex-col gap-0 overflow-y-auto overscroll-contain py-3 pl-1.5 pr-1.5 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div ref={navContainerRef} className="eterx-chat-turns-list pointer-events-auto flex max-h-[min(52vh,460px)] flex-col gap-0 overflow-y-auto overscroll-contain py-3 pl-1.5 pr-1.5 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {userTurns.map((turn, k) => (
                   <motion.button
                     type="button"
@@ -3094,13 +3224,14 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                     data-turn-index={k}
                     aria-label={`Go to turn ${ k + 1 }: ${ turn.userText.slice(0, 80) }`}
                     aria-current={activeTurnIdx === k ? 'step' : undefined}
-                    className="group relative flex min-h-[18px] w-[34px] shrink-0 items-center justify-center rounded-lg py-1 text-left outline-none transition-colors duration-150 hover:bg-[var(--muted)] focus-visible:bg-[var(--muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
+                    className="eterx-chat-turn-marker group relative flex min-h-[18px] w-[34px] shrink-0 items-center justify-center rounded-lg py-1 text-left outline-none transition-colors duration-150 hover:bg-[var(--muted)] focus-visible:bg-[var(--muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
                     whileTap={{ scale: 0.94 }}
                     transition={{ type: 'spring', stiffness: 520, damping: 32 }}
                     onMouseEnter={(event) => showHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
                     onMouseLeave={hideHoveredTurn}
                     onFocus={(event) => showHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
                     onBlur={hideHoveredTurn}
+                    onKeyDown={(event) => { if (event.key === 'Escape') setHoveredTurn(null); }}
                     onClick={() => navigateToTurn(turn, k)}
                   >
                     <span
@@ -3124,6 +3255,11 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
             }}
             ref={scrollContainerRef}
             onScroll={handleScrollWrap}
+            onPointerDownCapture={(event) => {
+              // Expanding details or selecting text is reader intent too.
+              // Cancel a queued bottom jump before the disclosure changes size.
+              if (event.target instanceof Element && event.target.closest('.eterx-chat-message-group')) pauseAutoFollow();
+            }}
             onWheel={(e) => {
               const container = e.currentTarget;
               const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
@@ -3150,8 +3286,10 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
               </div>
             )}
 
-            {traceLogs.length > 0 && (
+            {(traceLogs.length > 0 || steeringDelivery.pending.length > 0) && (
               <div ref={feedContentRef} className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isAgentBuilderFeed ? 'eterx-agent-builder-feed-content' : '' } ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[var(--eterx-reference-composer-max)] pt-16' }`}>
+                <LocalFileWorkspaceContext.Provider value={workspacePath || null}>
+                <TextPlaybackScope key={conversationIdentity} logs={traceLogs}>
                 {visibleGroups.map((group, visibleGroupIdx) => {
                   const groupIdx = visibleGroupIdx;
                   let turnStartedAt: number | null = null;
@@ -3171,7 +3309,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                   if (isHiddenRecoveredUserBoundary(group[0])) return null;
                   const isThinkingTurn = feedWorkActive && groupIdx === activeWorkGroupIndex;
                   const isLiveSessionActive =
-                    groupIdx === groups.length - 1 &&
+                    feedWorkActive && groupIdx === activeWorkGroupIndex &&
                     !isFeedActivityPaused &&
                     !isSubAgentTab &&
                     liveState !== undefined &&
@@ -3213,6 +3351,25 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                   );
                 })}
 
+                </TextPlaybackScope>
+                </LocalFileWorkspaceContext.Provider>
+                {/* Pending messages occupy ordinary document space. They do
+                    not own an agent phase until delivery is acknowledged. */}
+            {steeringDelivery.pending.map((message, index) => (
+              <ChatFeedMessageGroup
+                key={`waiting-${message.steeringId || message.id}`}
+                group={[{ ...message, type: 'steering_received' }]}
+                groupIdx={-1 - index}
+                isThinkingTurn={false}
+                isLiveSessionActive={false}
+                suppressInitialReveal
+                isCompressed={isCompressed}
+                isSubAgentTab={isSubAgentTab}
+                isAgentBuilder={isAgentBuilderFeed}
+                setPreviewUserMessage={setPreviewUserMessage}
+                showTokenCount={false}
+              />
+            ))}
                 <div ref={messagesEndRef} className="h-[2px]" />
               </div>
             )}

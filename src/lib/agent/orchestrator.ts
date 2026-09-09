@@ -57,6 +57,7 @@ interface QueuedTask {
 }
 
 type RuntimeProjectContext = ProjectContext & {
+  workingContextRequest?: { visibleText: string; runtimeText: string };
   disableSubAgents?: boolean;
   disableMemoryHydration?: boolean;
   disableLongTermMemory?: boolean;
@@ -71,6 +72,7 @@ type RuntimeProjectContext = ProjectContext & {
   disableWorkspaceInit?: boolean;
   forceFastMode?: boolean;
   agentRuntime?: string;
+  agentProfile?: string;
   agentName?: string;
   autonomy?: { enabled?: boolean; verification?: 'adaptive' | 'strict' | 'light'; initiative?: 'balanced' | 'high' | 'maximum'; maxRecoveryAttempts?: number; collaboration?: 'auto' | 'solo' | 'human_partner' | 'cognitive_team' };
   agentId?: string;
@@ -84,6 +86,13 @@ type RuntimeProjectContext = ProjectContext & {
     customInstructions?: string;
     activeContextWindow?: number;
     activeModelContextWindow?: number;
+    activeContextWindowUsesModelMaximum?: boolean;
+    requestedContextWindow?: number;
+    activeContextModelProvider?: string;
+    activeContextModelId?: string;
+    modelContextWindows?: Record<string, number>;
+    contextBudgetChatId?: string;
+    contextBudgetRevision?: number;
   };
   selectedThinkingLevel?: MainAgentThinkingLevel;
   terminalShell?: string;
@@ -443,6 +452,10 @@ export class AgentOrchestrator {
     // explicit. Child agents replace only memoryScopeId; main-agent routing
     // still uses projectId for cancellation and live steering.
     context.conversationScopeId = projectId;
+    context.workingContextRequest = {
+      visibleText: typeof pinnedContext?.visibleUserRequest === 'string' ? pinnedContext.visibleUserRequest : userRequest,
+      runtimeText: effectiveRequest,
+    };
     // Keep the main runtime's scratch work in the isolated per-project
     // workspace. The app checkout is infrastructure and must never become the
     // implicit place for drafts or helper scripts.
@@ -453,6 +466,8 @@ export class AgentOrchestrator {
     context.selfImprovementEnabled = selfImprovementEnabled;
     context.runtimeSettings = runtimeSettings || null;
     context.ownerChatId = String(pinnedContext?.ownerChatId || projectId);
+    // Runtime selection is per admission, never inherited from chat memory.
+    context.agentProfile = pinnedContext?.agentProfile;
     context.runId = String(pinnedContext?.runId || '').trim() || undefined;
     context.turnId = String(pinnedContext?.turnId || context.runId || '').trim() || undefined;
     context.subAgentTurnId = String(pinnedContext?.subAgentTurnId || '').trim() || undefined;
@@ -562,6 +577,8 @@ export class AgentOrchestrator {
       context.disableWorkspaceInit = !!pinnedContext.disableWorkspaceInit;
       context.forceFastMode = !!pinnedContext.forceFastMode;
       context.agentRuntime = pinnedContext.agentRuntime;
+      // Profile is a run snapshot, never inferred from a previous chat turn.
+      context.agentProfile = pinnedContext.agentProfile;
       context.autonomy = pinnedContext.autonomy;
       context.agentId = pinnedContext.agentId;
       context.agentName = pinnedContext.agentName;
@@ -713,11 +730,12 @@ export class AgentOrchestrator {
       // ═══════════════════════════════════════════════════════
       if (
         context.agentRuntime === AGENT_BUILDER_RUNTIME &&
-        context.agentId
+        context.agentId &&
+        modelConfig.provider === 'gemini'
       ) {
-        // Builder chats use a separate draft-aware runtime. The normal Agent
-        // loop is intentionally not used here: it exposes the main agent's
-        // tool surface and cannot dynamically update agent_tool_load/unload.
+        // Gemini keeps the dedicated draft-aware runner. Other providers use
+        // the universal Agent runtime below, which already recognizes the
+        // Builder context and exposes only the Builder control surface.
         const builderRunner = new AgentRunner();
         const builderAnswerParts: string[] = [];
         const builderToolStarts = new Map<string, {
@@ -730,9 +748,6 @@ export class AgentOrchestrator {
         let builderError = '';
         const builderAgentName = String(context.agentName || context.agentId);
         const builderModelName = String(context.selectedModelName || '').trim();
-        if (context.selectedModelProvider !== 'gemini' || !builderModelName) {
-          throw new Error('MODEL_SELECTION_REQUIRED: Agent Builder currently requires an explicitly selected added Gemini model.');
-        }
         const builderTurnId = String(context.agentSessionId || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
         const builderMessages = [
           ...history
@@ -758,6 +773,10 @@ export class AgentOrchestrator {
           runLocation,
           pinnedContext: {
             ...(pinnedContext || {}),
+            workingContextRequest: {
+              visibleText: context.workingContextRequest!.visibleText,
+              runtimeText: userRequest,
+            },
             agentRuntime: AGENT_BUILDER_RUNTIME,
             agentId: String(context.agentId),
             agentName: builderAgentName,

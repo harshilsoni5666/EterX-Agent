@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { formatModelName, groupModelsByProvider } from '../src/lib/agent/model-presentation';
 import {
   AUTO_MODEL_SELECTION,
   composeApiKeysForSelection,
@@ -16,6 +17,27 @@ import {
   type ModelThinkingCapabilities,
 } from '../src/lib/agent/model-routing';
 import { applyCompatibleThinkingParameters } from '../src/lib/agent/provider-capabilities';
+
+assert.equal(formatModelName('google/gemma-4-31b-it:free'), 'Gemma 4 31B IT');
+assert.equal(formatModelName('z-ai/glm-5.2:free'), 'GLM 5.2');
+assert.equal(formatModelName('minimax/minimax-m2.7:free'), 'MiniMax M2.7');
+assert.equal(formatModelName('gemini-3.5-flash-lite'), 'Gemini 3.5 Flash Lite');
+assert.equal(formatModelName('openai/o3-mini'), 'o3 Mini');
+assert.equal(formatModelName('future-vendor/brand-new-model-9.2-preview'), 'Brand New Model 9.2 Preview');
+assert.equal(formatModelName('accounts/vendor/models/NewModel-8b:q4_K_M'), 'NewModel 8B:q4_K_M');
+assert.equal(formatModelName(''), '');
+const crossProviderModels = [
+  { provider: 'future-gateway', modelId: 'vendor/new-model:free' },
+  { provider: 'direct-vendor', modelId: 'new-model' },
+  { provider: 'future-gateway', modelId: 'vendor/another-model' },
+];
+assert.deepEqual(groupModelsByProvider(crossProviderModels), [
+  { provider: 'future-gateway', models: [crossProviderModels[0], crossProviderModels[2]] },
+  { provider: 'direct-vendor', models: [crossProviderModels[1]] },
+]);
+assert.equal(crossProviderModels[0].modelId, 'vendor/new-model:free');
+assert.notEqual(modelEntryKey('openrouter', 'vendor/new-model'), modelEntryKey('groq', 'vendor/new-model'));
+assert.deepEqual(groupModelsByProvider([]), []);
 
 const first = ensureModelSelectorEntry([], 'openrouter', 'openai/gpt-test-a');
 const multiple = ensureModelSelectorEntry(first, 'openrouter', 'anthropic/claude-test-b');

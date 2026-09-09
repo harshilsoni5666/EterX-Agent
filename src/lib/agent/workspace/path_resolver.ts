@@ -374,7 +374,13 @@ export function getRuntimeWorkspaceRoot(context?: any): string {
   const explicitWorkspacePath = typeof context?.workspacePath === 'string'
     ? context.workspacePath.trim()
     : '';
-  if (explicitWorkspacePath) return path.resolve(explicitWorkspacePath);
+  if (explicitWorkspacePath) {
+    const resolvedWorkspace = path.resolve(explicitWorkspacePath);
+    if (context?.scratchRoot && context?.allowEterXSource !== true && isEterXInternalPath(resolvedWorkspace)) {
+      return getRuntimeScratchRoot(context);
+    }
+    return resolvedWorkspace;
+  }
 
   for (const candidate of rawCandidates) {
     const resolved = path.resolve(candidate);

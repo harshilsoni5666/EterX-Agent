@@ -54,6 +54,7 @@ async function submitAnswer(
 ) {
   const res = await fetch('/api/agent/answer', {
     method: 'POST',
+    signal: AbortSignal.timeout(15_000),
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ responseKey, answer, selectedOption: option, answers }),
   });
@@ -136,6 +137,7 @@ export const AskUserPrompt: React.FC<AskUserProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
+  const submissionInFlightRef = useRef(false);
 
   const normalizedQuestions = useMemo(() => {
     const sourceQuestions = Array.isArray(questions) && questions.length > 0
@@ -294,23 +296,25 @@ export const AskUserPrompt: React.FC<AskUserProps> = ({
 
   const commitAnswers = useCallback(async (answers: AskUserAnswer[]) => {
     const cleanDisplay = formatAnswerSummary(answers).trim();
-    if (answered || isSubmitting || !cleanDisplay) return;
+    if (answered || isSubmitting || submissionInFlightRef.current || !cleanDisplay) return;
+    submissionInFlightRef.current = true;
 
     const selectedOption = answers.length === 1 ? (answers[0].selectedOption || null) : answers;
 
     setIsSubmitting(true);
     setSubmitError('');
-    setAnswered(true);
-    setAnsweredValue(cleanDisplay);
 
     try {
       await submitAnswer(responseKey || `ask_user_${timestamp}`, cleanDisplay, selectedOption, answers);
+      setAnswered(true);
+      setAnsweredValue(cleanDisplay);
       onAnswer(cleanDisplay, selectedOption as any);
     } catch (error: any) {
       setAnswered(false);
       setAnsweredValue('');
       setSubmitError(error?.message || 'Could not submit answer.');
     } finally {
+      submissionInFlightRef.current = false;
       setIsSubmitting(false);
     }
   }, [answered, isSubmitting, onAnswer, responseKey, timestamp]);

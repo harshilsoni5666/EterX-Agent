@@ -7,6 +7,7 @@ export type ProxyControlState = {
   version: 1;
   chatId: string;
   enabled: boolean;
+  paused: boolean;
   intervention: ProxyInterventionLevel;
   modelSelection: string;
   dormantDirectives: ProxyManagerDirective[];
@@ -21,16 +22,46 @@ export type ProxyQueuedTask = {
   rationale: string;
   dependency?: string;
   createdAt: number;
-  status: 'pending' | 'starting' | 'started' | 'failed' | 'cancelled';
+  status: 'pending' | 'starting' | 'started' | 'completed' | 'failed' | 'cancelled';
   runId?: string;
   error?: string;
+  mediaAttachments?: ProxyTaskInput['mediaAttachments'];
+  model?: ProxyTaskInput['model'];
+  dependsOnTaskId?: string;
+  result?: string;
+  completedAt?: number;
 };
 
-const MAX_DIRECTIVES = 24;
+export type ProxyTaskInput = {
+  prompt: string;
+  rationale?: string;
+  dependency?: string;
+  mediaAttachments?: Array<{ id?: string; name?: string; path: string; mimeType: string }>;
+  model?: { provider: string; modelId: string };
+};
+
 const MAX_TASKS = 20;
+const controlListeners = new Map<string, Set<(state: ProxyControlState) => void>>();
+export function subscribeProxyControl(chatId: string, listener: (state: ProxyControlState) => void): () => void {
+  const listeners = controlListeners.get(chatId) || new Set();
+  listeners.add(listener);
+  controlListeners.set(chatId, listeners);
+  return () => { listeners.delete(listener); if (!listeners.size) controlListeners.delete(chatId); };
+}
 
 const compact = (value: unknown, max: number): string =>
   String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+
+// Keep executable instructions intact, including indentation and line breaks.
+const promptText = (value: unknown): string => String(value ?? '').replace(/\u0000/g, '').trim();
+const retainTaskQueue = (tasks: ProxyQueuedTask[]): ProxyQueuedTask[] => {
+  const settled = tasks.filter(task => !['pending', 'starting'].includes(task.status)).slice(-MAX_TASKS);
+  const retained = new Set(settled.map(task => task.id));
+  tasks.filter(task => ['pending', 'starting', 'started'].includes(task.status)).forEach(task => {
+    if (task.dependsOnTaskId) retained.add(task.dependsOnTaskId);
+  });
+  return tasks.filter(task => ['pending', 'starting'].includes(task.status) || retained.has(task.id));
+};
 
 const controlPath = (chatId: string): string => {
   const safe = chatId.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 140);
@@ -50,10 +81,11 @@ export function readProxyControl(chatId: string): ProxyControlState {
         // Autonomy is strictly opt-in. Older or partially-written control
         // records without an explicit boolean must never reactivate Proxy.
         enabled: saved.enabled === true,
+        paused: saved.enabled === true && saved.paused === true,
         intervention: ['minimal', 'normal', 'high'].includes(saved.intervention) ? saved.intervention : 'normal',
         modelSelection: compact(saved.modelSelection, 320) || 'auto',
-        dormantDirectives: Array.isArray(saved.dormantDirectives) ? saved.dormantDirectives.slice(-MAX_DIRECTIVES) : [],
-        taskQueue: Array.isArray(saved.taskQueue) ? saved.taskQueue.slice(-MAX_TASKS) : [],
+        dormantDirectives: Array.isArray(saved.dormantDirectives) ? saved.dormantDirectives.filter((item: any) => item && typeof item.message === 'string' && (!item.expiresAt || item.expiresAt > Date.now())) : [],
+        taskQueue: Array.isArray(saved.taskQueue) ? retainTaskQueue(saved.taskQueue.filter((task: any) => task && typeof task.id === 'string' && typeof task.prompt === 'string')) : [],
         stopGeneration: Number(saved.stopGeneration || 0),
         updatedAt: Number(saved.updatedAt || Date.now()),
         };
@@ -66,6 +98,7 @@ export function readProxyControl(chatId: string): ProxyControlState {
     version: 1,
     chatId,
     enabled: false,
+    paused: false,
     intervention: 'normal',
     modelSelection: 'auto',
     dormantDirectives: [],
@@ -82,8 +115,8 @@ function writeProxyControl(state: ProxyControlState): void {
   try {
     fs.writeJsonSync(temporary, {
       ...state,
-      dormantDirectives: state.dormantDirectives.slice(-MAX_DIRECTIVES),
-      taskQueue: state.taskQueue.slice(-MAX_TASKS),
+      dormantDirectives: state.dormantDirectives,
+      taskQueue: retainTaskQueue(state.taskQueue),
       updatedAt: Date.now(),
     }, { spaces: 2 });
     if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
@@ -95,10 +128,13 @@ function writeProxyControl(state: ProxyControlState): void {
 
 export function updateProxyControl(
   chatId: string,
-  patch: Partial<Pick<ProxyControlState, 'enabled' | 'intervention' | 'modelSelection'>>,
+  patch: Partial<Pick<ProxyControlState, 'enabled' | 'paused' | 'intervention' | 'modelSelection'>>,
 ): ProxyControlState {
   const state = readProxyControl(chatId);
   if (typeof patch.enabled === 'boolean') state.enabled = patch.enabled;
+  if (typeof patch.paused === 'boolean') state.paused = patch.paused;
+  if (!state.enabled) state.paused = false;
+  if (patch.enabled === false || patch.paused === true) state.stopGeneration += 1;
   if (patch.intervention && ['minimal', 'normal', 'high'].includes(patch.intervention)) {
     state.intervention = patch.intervention;
   }
@@ -106,6 +142,7 @@ export function updateProxyControl(
     state.modelSelection = compact(patch.modelSelection, 320) || 'auto';
   }
   writeProxyControl(state);
+  for (const listener of controlListeners.get(chatId) || []) listener(state);
   return state;
 }
 
@@ -119,7 +156,7 @@ export function saveDormantProxyDirective(
     id: `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     createdAt: Date.now(),
     status: 'pending',
-    expiresAt: input.expiresAt || Date.now() + (input.scope === 'persistent_mandate' ? 30 : 2) * 24 * 60 * 60_000,
+    expiresAt: input.expiresAt || (input.scope === 'persistent_mandate' ? Date.now() + 30 * 24 * 60 * 60_000 : undefined),
   };
   if (directive.supersedesDirectiveId) {
     state.dormantDirectives = state.dormantDirectives.filter(item => item.id !== directive.supersedesDirectiveId);
@@ -144,27 +181,57 @@ export function enqueueProxyTask(
   rationale = '',
   options: { dependency?: string; supersedesTaskId?: string } = {},
 ): ProxyQueuedTask {
+  return enqueueProxyTasks(chatId, [{ prompt, rationale, dependency: options.dependency }], options.supersedesTaskId)[0];
+}
+
+export function enqueueProxyTasks(
+  chatId: string,
+  inputs: ProxyTaskInput[],
+  supersedesTaskId?: string,
+): ProxyQueuedTask[] {
   const state = readProxyControl(chatId);
-  if (options.supersedesTaskId) {
-    const superseded = state.taskQueue.find(item =>
-      item.id === options.supersedesTaskId && item.status === 'pending',
-    );
-    if (superseded) {
-      superseded.status = 'cancelled';
-      superseded.error = 'Replaced by a newer side-agent instruction.';
-    }
+  const superseded = supersedesTaskId
+    ? state.taskQueue.find(item => item.id === supersedesTaskId && item.status === 'pending')
+    : undefined;
+  if (supersedesTaskId && !superseded) {
+    throw new Error('That queued task is no longer pending. Refresh its status before replacing it.');
   }
-  const task: ProxyQueuedTask = {
+  if (!inputs.length || inputs.some(input => !promptText(input.prompt))) {
+    throw new Error('Every queued task needs a complete instruction.');
+  }
+  const pendingCount = state.taskQueue.filter(item => ['pending', 'starting'].includes(item.status)).length;
+  if (pendingCount + inputs.length - (superseded ? 1 : 0) > MAX_TASKS) {
+    throw new Error(`The task queue has room for ${Math.max(0, MAX_TASKS - pendingCount)} more tasks. No tasks were changed.`);
+  }
+  const tasks: ProxyQueuedTask[] = inputs.map(input => ({
     id: randomUUID(),
-    prompt: compact(prompt, 12000),
-    rationale: compact(rationale, 1200),
-    dependency: compact(options.dependency, 1200) || undefined,
+    prompt: promptText(input.prompt),
+    rationale: compact(input.rationale, 1200),
+    dependency: promptText(input.dependency) || undefined,
+    mediaAttachments: input.mediaAttachments?.length ? input.mediaAttachments : undefined,
+    model: input.model,
     createdAt: Date.now(),
     status: 'pending',
-  };
-  state.taskQueue.push(task);
+  }));
+  const priorTasks = superseded ? state.taskQueue.slice(0, state.taskQueue.indexOf(superseded)) : state.taskQueue;
+  const previousTaskId = superseded?.dependsOnTaskId || [...priorTasks].reverse().find(item => ['pending', 'starting', 'started'].includes(item.status))?.id;
+  tasks.forEach((task, index) => {
+    if (task.dependency) task.dependsOnTaskId = index > 0 ? tasks[index - 1].id : previousTaskId;
+  });
+  if (superseded) {
+    // Preserve queue order when revising a task with dependent successors.
+    const index = state.taskQueue.indexOf(superseded);
+    superseded.status = 'cancelled';
+    superseded.error = 'Replaced by a newer side-agent instruction.';
+    state.taskQueue.splice(index, 0, ...tasks);
+    for (const successor of state.taskQueue) {
+      if (successor.dependsOnTaskId === superseded.id && successor.status === 'pending') successor.dependsOnTaskId = tasks[tasks.length - 1].id;
+    }
+  } else {
+    state.taskQueue.push(...tasks);
+  }
   writeProxyControl(state);
-  return task;
+  return tasks;
 }
 
 export function claimNextProxyTask(chatId: string): ProxyQueuedTask | null {
@@ -188,7 +255,7 @@ export function settleProxyTask(
 ): void {
   const state = readProxyControl(chatId);
   const task = state.taskQueue.find(item => item.id === taskId);
-  if (!task) return;
+  if (!task || task.status === 'cancelled') return;
   task.status = result.status;
   task.runId = result.runId;
   task.error = compact(result.error, 1200) || undefined;
@@ -197,6 +264,16 @@ export function settleProxyTask(
 
 export function getPendingProxyTaskCount(chatId: string): number {
   return readProxyControl(chatId).taskQueue.filter(item => item.status === 'pending' || item.status === 'starting').length;
+}
+
+export function completeProxyTask(chatId: string, taskId: string, runId: string, status: 'completed' | 'failed' | 'stopped', result: string): void {
+  const state = readProxyControl(chatId);
+  const task = state.taskQueue.find(item => item.id === taskId && item.runId === runId);
+  if (!task) return;
+  task.status = status === 'stopped' ? 'cancelled' : status;
+  task.result = result;
+  task.completedAt = Date.now();
+  writeProxyControl(state);
 }
 
 export function cancelPendingProxyTasks(

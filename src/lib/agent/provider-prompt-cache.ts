@@ -121,8 +121,6 @@ export function normalizeProviderCacheUsage(
     const cacheTokensMeasured = wasProvided(
       raw.cache_read_input_tokens,
       raw.cacheReadInputTokens,
-      raw.cache_creation_input_tokens,
-      raw.cacheCreationInputTokens,
     );
     const normalized: Record<string, number> = {
       promptTokens,

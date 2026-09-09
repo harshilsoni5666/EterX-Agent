@@ -1,11 +1,12 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { createHash } from 'crypto';
 import type { ProjectContext } from '../schemas';
 import type { MainAgentMode } from '../model-routing';
 import type { ScopedRuntimeSettings } from '../runtime-api-keys';
 import { getEterxWorkspaceDir } from '../storage-paths';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from '../self-improvement/engine';
-import { resolveModelContextWindow } from '../model-context-window';
+import { rebaseContextCompactionWindow } from '../model-context-window';
 import {
   delegationTelemetryFromTrace,
   type DelegatedAgentEvidence,
@@ -28,6 +29,7 @@ type ProxyDecision = {
   evidenceEventIds?: number[];
   visibilityGap?: string;
   optionalImprovement?: boolean;
+  deliverableUpdates?: Array<{ name: string; observed: boolean; verified: boolean; evidenceEventIds: number[] }>;
   attentionSignals?: string[];
   contractUpdate?: Partial<Pick<TaskContract, 'requiredDeliverables' | 'forbiddenActions' | 'safetyConstraints' | 'completionConditions'>>;
   managerDirectiveId?: string;
@@ -207,7 +209,6 @@ const CADENCE_SETTINGS = {
     bootstrapAfterEvents: 2,
     failuresBeforeGuidance: 3,
     eventsAfterIntervention: 4,
-    maxMidRunInterventions: 1,
   },
   normal: {
     scoreThreshold: REVIEW_SCORE_THRESHOLD,
@@ -216,7 +217,6 @@ const CADENCE_SETTINGS = {
     bootstrapAfterEvents: 1,
     failuresBeforeGuidance: 2,
     eventsAfterIntervention: MIN_EVENTS_AFTER_INTERVENTION,
-    maxMidRunInterventions: 4,
   },
   close: {
     scoreThreshold: 5,
@@ -225,7 +225,6 @@ const CADENCE_SETTINGS = {
     bootstrapAfterEvents: 1,
     failuresBeforeGuidance: 2,
     eventsAfterIntervention: 1,
-    maxMidRunInterventions: 8,
   },
 } as const;
 
@@ -235,7 +234,7 @@ const compact = (value: unknown, max = 1600): string => {
 };
 
 const objectiveSignature = (value: string): string =>
-  compact(value, 1200).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  createHash('sha256').update(String(value || '').trim()).digest('hex');
 
 const unique = (values: string[], limit = 24): string[] =>
   Array.from(new Set(values.map(value => compact(value, 500)).filter(Boolean))).slice(0, limit);
@@ -334,7 +333,7 @@ function extractDecision(raw: string): ProxyDecision {
     const severity = new Set(['low', 'medium', 'high', 'critical']).has(parsed.severity) ? parsed.severity : undefined;
     return {
       action: actions.has(parsed.action) ? parsed.action : 'observe',
-      message: compact(parsed.message, 1600),
+      message: typeof parsed.message === 'string' ? parsed.message.replace(/\u0000/g, '').trim() : '',
       reason: compact(parsed.reason, 900),
       remainingGoalGap: compact(parsed.remainingGoalGap, 1200),
       severity,
@@ -352,6 +351,10 @@ function extractDecision(raw: string): ProxyDecision {
         : [],
       visibilityGap: compact(parsed.visibilityGap, 700),
       optionalImprovement: parsed.optionalImprovement === true,
+      deliverableUpdates: Array.isArray(parsed.deliverableUpdates) ? parsed.deliverableUpdates.map((item: any) => ({
+        name: compact(item?.name, 500), observed: item?.observed === true, verified: item?.verified === true,
+        evidenceEventIds: Array.isArray(item?.evidenceEventIds) ? item.evidenceEventIds.map(Number).filter(Number.isFinite).slice(-8) : [],
+      })).filter((item: { name: string }) => item.name).slice(0, 20) : [],
       attentionSignals: Array.isArray(parsed.attentionSignals)
         ? unique(parsed.attentionSignals.map((item: any) => String(item)), 10)
         : [],
@@ -425,93 +428,10 @@ function guidanceTopicKey(value: string): string {
   return operations.length > 0 ? `work:${operations.join('|')}:${fileTypes.join('|')}` : '';
 }
 
-function humanDelegatedInstruction(message: string, goalGap: string, managerMessage = ''): string {
-  const clean = compact(message, 1600);
-  if (!clean) return '';
-  const isInternalNarration =
-    /\b(?:main|proxy-agent|proxy agent|user proxy|runtime proxy|manager directive|evidence event)\b/i.test(clean) ||
-    /^(?:the agent|it)\s+(?:is|has|keeps|repeatedly)/i.test(clean);
-  if (!isInternalNarration) return clean;
-  const directManagerMessage = compact(managerMessage, 1600);
-  if (directManagerMessage && !/\b(?:main|proxy-agent|user proxy|runtime proxy|manager directive)\b/i.test(directManagerMessage)) {
-    return directManagerMessage;
-  }
-  const outcome = compact(goalGap, 700);
-  return outcome
-    ? `Please continue toward this outcome: ${outcome}. Change the approach if the current one is failing, and report completion only after the result is verified.`
-    : 'Please change the failing approach, continue toward the requested outcome, and report completion only after the result is verified.';
-}
-
-function outcomeLevelInstruction(message: string, goalGap: string, preserveExactMechanism = false): string {
-  const clean = compact(message, 1600);
-  if (preserveExactMechanism) return clean;
-  const micromanagesExecution =
-    /\b(?:powershell|cmd(?:\.exe)?|bash|shell|curl(?:\.exe)?|invoke-restmethod|invoke-webrequest|python|node|npm|pip|git)\b/i.test(clean) ||
-    /(?:^|\s)(?:--?[a-z][\w-]*|\/[A-Z])(?:\s|$)/.test(clean) ||
-    /[`$][({\w]|(?:\|\s*(?:convert|select|where|out)-)/i.test(clean);
-  if (!micromanagesExecution) return clean;
-  const outcome = compact(goalGap, 700);
-  return outcome
-    ? `Please continue toward this outcome: ${outcome}. Use a materially different strategy if the current approach is failing, and confirm the result with direct evidence before reporting success.`
-    : 'Please change the failing strategy, continue toward the requested outcome, and confirm the result with direct evidence before reporting success.';
-}
-
-function formHumanProxyPrompt(decision: ProxyDecision, contract: TaskContract): string {
-  const intent = decision.promptIntent;
-  const outcome = compact(intent?.outcome || decision.remainingGoalGap || contract.goal, 800);
-  const exactMechanismRequired = intent?.strategyFreedom === 'exact';
-  const raw = outcomeLevelInstruction(
-    humanDelegatedInstruction(decision.message || '', outcome, ''),
-    outcome,
-    exactMechanismRequired,
-  );
-  const internallyFramed =
-    /\b(?:main|proxy-agent|proxy agent|user proxy|runtime|directive|telemetry|evidence event)\b/i.test(raw);
-  const executionPrescription =
-    /\b(?:powershell|cmd(?:\.exe)?|bash|shell|curl(?:\.exe)?|invoke-restmethod|python|node|npm|pip)\b/i.test(raw) ||
-    /(?:^|\s)(?:--?[a-z][\w-]*|\/[A-Z])(?:\s|$)/.test(raw);
-  const outcomeAligned =
-    decision.action === 'request_real_user' ||
-    !outcome ||
-    messageSimilarity(raw, outcome) >= 0.12;
-  if (
-    raw &&
-    !internallyFramed &&
-    (!executionPrescription || exactMechanismRequired) &&
-    outcomeAligned &&
-    raw.length <= 1000
-  ) return raw;
-
-  const preserved = unique(
-    intent?.preserveRules?.length ? intent.preserveRules : contract.explicitRules,
-    2,
-  );
-  const acceptance = compact(
-    intent?.acceptanceEvidence ||
-    contract.successEvidence[0] ||
-    'direct evidence that the requested result is complete and usable',
-    500,
-  );
-  if (decision.action === 'request_real_user') {
-    const question = outcome.replace(/^(?:please\s+)?(?:clarify|confirm|decide|choose)\s+/i, '');
-    return compact(
-      question
-        ? `Before I continue, please confirm ${question.replace(/[.?!]+$/, '')}?`
-        : 'Before I continue, what outcome or authority should I use for this decision?',
-      700,
-    );
-  }
-  const parts = [
-    outcome ? `Please make sure ${outcome.replace(/^[Pp]lease\s+/, '')}` : 'Please complete the requested outcome',
-    preserved.length > 0 ? `Keep these requirements unchanged: ${preserved.join('; ')}.` : '',
-    intent?.strategyFreedom === 'exact'
-      ? 'Use the exact mechanism the user required.'
-      : intent?.strategyFreedom === 'bounded'
-        ? 'You may change the approach as long as those requirements remain intact.'
-        : 'Choose a different approach if it is more reliable.',
-    acceptance ? `Treat it as complete only after ${acceptance.replace(/^direct evidence that\s+/i, 'there is direct evidence that ')}.` : '',
-  ].filter(Boolean);
-  return compact(parts.join(' '), 1600);
+function formHumanProxyPrompt(decision: ProxyDecision): string {
+  // The model authors the instruction. Mechanical rewrites used to erase
+  // constraints such as "do not run git" simply because they named a tool.
+  return String(decision.message || '').replace(/\u0000/g, '').trim();
 }
 
 export class UserProxyRuntime {
@@ -522,6 +442,7 @@ export class UserProxyRuntime {
   private consecutiveFailures = 0;
   private reviewPromise: Promise<ProxyDecision> | null = null;
   private reviewEpoch = 0;
+  private reviewAbortController: AbortController | null = null;
   private deferredReviewTrigger: string | null = null;
   private reviewTimer: NodeJS.Timeout | null = null;
   private armedReviewTrigger: string | null = null;
@@ -539,6 +460,7 @@ export class UserProxyRuntime {
 
   constructor(options: RuntimeOptions) {
     this.options = options;
+    this.paused = (options.context as any)?.autonomy?.paused === true;
     const configuredIntervention = (options.context as any)?.autonomy?.intervention;
     this.selectedIntervention = configuredIntervention === 'minimal' || configuredIntervention === 'high'
       ? configuredIntervention
@@ -595,9 +517,10 @@ export class UserProxyRuntime {
   }
 
   start(): void {
-    this.state.status = 'watching';
+    this.state.status = this.paused ? 'stopped' : 'watching';
     this.bootstrapReviewPending = true;
     this.schedulePersist();
+    if (this.paused) return;
     if (this.state.managerDirectives.some(item => item.status === 'active')) {
       this.reviewScore = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].scoreThreshold;
       if (this.scheduleReview('proxy_manager_directive')) this.bootstrapReviewPending = false;
@@ -606,6 +529,8 @@ export class UserProxyRuntime {
 
   stop(): void {
     this.stopped = true;
+    this.reviewEpoch += 1;
+    this.reviewAbortController?.abort();
     this.deferredReviewTrigger = null;
     if (this.reviewTimer) clearTimeout(this.reviewTimer);
     this.reviewTimer = null;
@@ -616,6 +541,8 @@ export class UserProxyRuntime {
 
   pause(): void {
     this.paused = true;
+    this.reviewEpoch += 1;
+    this.reviewAbortController?.abort();
     this.deferredReviewTrigger = null;
     if (this.reviewTimer) clearTimeout(this.reviewTimer);
     this.reviewTimer = null;
@@ -628,6 +555,13 @@ export class UserProxyRuntime {
     if (this.stopped) return;
     this.paused = false;
     this.state.status = 'watching';
+    this.mainPhase = 'working';
+    this.bootstrapReviewPending = true;
+    if (this.state.managerDirectives.some(item => item.status === 'active')) {
+      this.scheduleReview('proxy_manager_directive');
+    } else if (this.state.events.length) {
+      this.scheduleReview('task_bootstrap');
+    }
     this.schedulePersist();
   }
 
@@ -658,17 +592,28 @@ export class UserProxyRuntime {
     mode: MainAgentMode;
     apiKey: string;
     runtimeSettings?: ScopedRuntimeSettings | null;
+    modelSelection?: string;
   }): void {
+    this.reviewEpoch += 1;
+    this.reviewAbortController?.abort();
     this.options.mode = input.mode;
     this.options.apiKey = input.apiKey;
     this.options.runtimeSettings = input.runtimeSettings;
+    if (input.modelSelection !== undefined) {
+      const context = this.options.context as any;
+      context.autonomy = { ...context.autonomy, proxyModelSelection: input.modelSelection };
+    }
   }
 
   receiveManagerDirective(input: Omit<ProxyManagerDirective, 'id' | 'createdAt' | 'status'>): { accepted: boolean; status: ProxyManagerDirective['status']; id?: string } {
-    const message = compact(input.message, 2400);
+    const message = String(input.message || '').replace(/\u0000/g, '').trim();
     if (!message || this.stopped) return { accepted: false, status: 'pending' };
     const duplicate = this.state.managerDirectives.slice(-8).find(item =>
-      (item.status === 'active' || item.status === 'pending') && messageSimilarity(item.message, message) >= 0.82,
+      !input.supersedesDirectiveId &&
+      (item.status === 'active' || item.status === 'pending') &&
+      item.message === message && item.target === input.target && item.timing === input.timing &&
+      item.scope === input.scope && item.activationCondition === input.activationCondition &&
+      item.requestedAction === input.requestedAction && item.urgency === input.urgency,
     );
     if (duplicate) return { accepted: true, status: duplicate.status, id: duplicate.id };
 
@@ -678,7 +623,8 @@ export class UserProxyRuntime {
       message,
       createdAt: Date.now(),
       status: input.timing === 'now' ? 'active' : 'pending',
-      expiresAt: input.expiresAt || (Date.now() + (input.timing === 'after_current' ? 24 * 60 * 60_000 : 30 * 60_000)),
+      // Task-scoped requirements live until the task settles, however long it takes.
+      expiresAt: input.expiresAt || (input.scope === 'persistent_mandate' ? Date.now() + 30 * 24 * 60 * 60_000 : undefined),
     };
     if (directive.supersedesDirectiveId) {
       const superseded = this.state.managerDirectives.find(item => item.id === directive.supersedesDirectiveId && (item.status === 'active' || item.status === 'pending'));
@@ -689,10 +635,15 @@ export class UserProxyRuntime {
       }
     }
     this.state.managerDirectives.push(directive);
-    this.state.managerDirectives.splice(0, Math.max(0, this.state.managerDirectives.length - 24));
+    const settledDirectives = this.state.managerDirectives.filter(item =>
+      item.scope !== 'persistent_mandate' && !['active', 'pending'].includes(item.status),
+    ).slice(-24);
+    this.state.managerDirectives = this.state.managerDirectives.filter(item =>
+      item.scope === 'persistent_mandate' || ['active', 'pending'].includes(item.status) || settledDirectives.includes(item),
+    );
     this.addCoordinationEvent('manager_request', `Proxy Manager requested ${directive.requestedAction || 'adaptive supervision'}: ${directive.message}`, directive.id);
 
-    const directEmergencySteer = directive.timing === 'now' &&
+    const directEmergencySteer = !this.paused && directive.timing === 'now' &&
       directive.requestedAction === 'interrupt_main' &&
       (directive.urgency === 'high' || directive.urgency === 'critical') &&
       (directive.target === 'main' || directive.target === 'both');
@@ -729,7 +680,7 @@ export class UserProxyRuntime {
       this.addCoordinationEvent('proxy_acknowledgement', 'Runtime Proxy accepted the request for contextual review.', directive.id);
       this.reviewScore = Math.max(this.reviewScore, CADENCE_SETTINGS[this.state.adaptivePolicy.cadence].scoreThreshold);
       this.scheduleReview('proxy_manager_directive');
-    } else {
+    } else if (!directEmergencySteer) {
       this.addCoordinationEvent('proxy_deferral', `Runtime Proxy staged this request for ${directive.timing.replace(/_/g, ' ')}${directive.activationCondition ? `: ${directive.activationCondition}` : '.'}`, directive.id);
     }
     this.options.onTrace?.({
@@ -774,7 +725,7 @@ export class UserProxyRuntime {
   }
 
   observe(trace: any): void {
-    if (this.stopped || this.paused || !trace) return;
+    if (this.stopped || !trace) return;
 
     const now = Date.now();
     for (const directive of this.state.managerDirectives) {
@@ -818,6 +769,7 @@ export class UserProxyRuntime {
 
     if (
       this.deferredReviewTrigger &&
+      !this.paused &&
       !this.reviewPromise &&
       !this.reviewTimer &&
       !this.pendingGuidance &&
@@ -831,6 +783,8 @@ export class UserProxyRuntime {
 
     if (trace.type === 'steering_received') {
       this.humanOverrideUntil = Date.now() + HUMAN_OVERRIDE_SILENCE_MS;
+      this.reviewEpoch += 1;
+      this.reviewAbortController?.abort();
     }
 
     const event = this.normalizeEvent(trace);
@@ -839,8 +793,14 @@ export class UserProxyRuntime {
     if (this.state.events.length > MAX_EVENTS) this.state.events = this.state.events.slice(-MAX_EVENTS);
     this.updateDelegationModel(event);
     this.updateWorldModel(event);
+    if (this.paused) {
+      // Retain Main's progress without running reviews or delivering guidance.
+      // Resume uses these events to pick up at the current execution boundary.
+      this.schedulePersist();
+      return;
+    }
     const conditionalDirective = this.state.managerDirectives.find(item =>
-      item.status === 'pending' && item.timing === 'when_relevant' && item.expiresAt && item.expiresAt > Date.now(),
+      item.status === 'pending' && item.timing === 'when_relevant' && (!item.expiresAt || item.expiresAt > Date.now()),
     );
     if (conditionalDirective) {
       // Telemetry is the wake-up signal; the model decides semantic relevance.
@@ -930,6 +890,7 @@ export class UserProxyRuntime {
     // Invalidate any in-flight advisory review. Completion must not wait for a
     // second model or allow a stale background decision to reopen finished work.
     this.reviewEpoch += 1;
+    this.reviewAbortController?.abort();
     this.deferredReviewTrigger = null;
     if (this.reviewTimer) {
       clearTimeout(this.reviewTimer);
@@ -977,7 +938,8 @@ export class UserProxyRuntime {
     // needs no semantic critic pass. Flush it once through the normal steering
     // queue; the agent loop will consume it as late steering if still active.
     const stagedDirective = this.state.managerDirectives.find(item =>
-      item.status === 'pending' &&
+      (item.status === 'pending' || item.status === 'active') &&
+      (!item.expiresAt || item.expiresAt > Date.now()) &&
       item.timing === 'before_completion' &&
       item.target !== 'proxy',
     );
@@ -1012,13 +974,13 @@ export class UserProxyRuntime {
         },
       };
       if (this.applyDecision(decision, true)) return decision;
-      stagedDirective.status = 'delivered';
-      stagedDirective.deliveredAt = Date.now();
-      stagedDirective.disposition = 'Equivalent guidance was already delivered; no duplicate completion interruption was emitted.';
+      // Do not claim delivery when Main rejected the handoff. Keep the
+      // requirement pending so a later boundary can retry it.
+      if (stagedDirective.status === 'active') stagedDirective.status = 'pending';
     }
 
-    const followUp = this.state.managerDirectives.find(item => item.status === 'pending' && item.timing === 'after_current');
-    if (followUp) {
+    const followUps = this.state.managerDirectives.filter(item => item.status === 'pending' && item.timing === 'after_current' && (!item.expiresAt || item.expiresAt > Date.now()));
+    for (const followUp of followUps) {
       const queued = this.options.queueNext(
         followUp.message,
         followUp.rationale || 'The user explicitly scheduled this as a separate task after the current task.',
@@ -1050,10 +1012,10 @@ export class UserProxyRuntime {
     try {
       const saved = readStateSync(freshState.projectId);
       if (saved?.version !== 2) return freshState;
-      if (saved?.objectiveSignature !== freshState.objectiveSignature || saved?.status === 'complete') {
+      if ((saved?.objectiveSignature !== freshState.objectiveSignature && String(saved.objective || '').trim() !== freshState.objective.trim()) || saved?.status === 'complete') {
         const carried = (Array.isArray(saved.managerDirectives) ? saved.managerDirectives : [])
           .filter((item: ProxyManagerDirective) =>
-            (item.status === 'active' || item.status === 'pending') &&
+            (item.status === 'active' || item.status === 'pending' || (item.scope === 'persistent_mandate' && item.status === 'delivered')) &&
             (item.scope === 'next_task' || item.scope === 'persistent_mandate') &&
             (!item.expiresAt || item.expiresAt > Date.now()),
           )
@@ -1068,7 +1030,7 @@ export class UserProxyRuntime {
         if (carried.length === 0) return freshState;
         return {
           ...freshState,
-          managerDirectives: carried.slice(-12),
+          managerDirectives: carried,
           coordinationEvents: [
             ...(Array.isArray(saved.coordinationEvents) ? saved.coordinationEvents.slice(-8) : []),
             ...carried.map((item: ProxyManagerDirective) => ({
@@ -1087,6 +1049,13 @@ export class UserProxyRuntime {
       }
       return {
         ...freshState,
+        contract: {
+          ...freshState.contract,
+          requiredDeliverables: Array.isArray(saved.contract?.requiredDeliverables) ? saved.contract.requiredDeliverables : freshState.contract.requiredDeliverables,
+          completionConditions: Array.isArray(saved.contract?.completionConditions) ? saved.contract.completionConditions : freshState.contract.completionConditions,
+          forbiddenActions: unique([...freshState.contract.forbiddenActions, ...(Array.isArray(saved.contract?.forbiddenActions) ? saved.contract.forbiddenActions : [])], 24),
+          safetyConstraints: unique([...freshState.contract.safetyConstraints, ...(Array.isArray(saved.contract?.safetyConstraints) ? saved.contract.safetyConstraints : [])], 24),
+        },
         events: Array.isArray(saved.events) ? saved.events.slice(-MAX_EVENTS) : [],
         interventions: Array.isArray(saved.interventions) ? saved.interventions.slice(-MAX_INTERVENTIONS) : [],
         deliverableEvidence: { ...freshState.deliverableEvidence, ...(saved.deliverableEvidence || {}) },
@@ -1102,7 +1071,7 @@ export class UserProxyRuntime {
             ? unique(saved.adaptivePolicy.attentionSignals, 10)
             : [],
         },
-        managerDirectives: Array.isArray(saved.managerDirectives) ? saved.managerDirectives.slice(-24) : [],
+        managerDirectives: Array.isArray(saved.managerDirectives) ? saved.managerDirectives.filter((item: ProxyManagerDirective) => !item.expiresAt || item.expiresAt > Date.now()) : [],
         coordinationEvents: Array.isArray(saved.coordinationEvents) ? saved.coordinationEvents.slice(-40) : [],
         situationModel: {
           progress: compact(saved?.situationModel?.progress, 1400),
@@ -1259,19 +1228,11 @@ export class UserProxyRuntime {
 
   private updateWorldModel(event: ProxyEvent): void {
     this.state.actionCounts[event.signature] = (this.state.actionCounts[event.signature] || 0) + 1;
-    this.consecutiveFailures = event.failed ? this.consecutiveFailures + 1 : event.kind === 'result' || event.kind === 'artifact' ? 0 : this.consecutiveFailures;
-
-    for (const [deliverable, evidence] of Object.entries(this.state.deliverableEvidence)) {
-      const stopWords = new Set(['create', 'produce', 'write', 'generate', 'save', 'output', 'deliver', 'open', 'copy', 'export', 'report', 'when', 'then', 'with', 'from', 'into', 'inside', 'should', 'must']);
-      const tokens = (deliverable.toLowerCase().match(/[a-z0-9_.-]{3,}/g) || [])
-        .filter(token => !stopWords.has(token));
-      const matched = tokens.filter(token => event.text.toLowerCase().includes(token));
-      const requiredMatches = tokens.some(token => token.includes('.')) ? 1 : Math.min(2, tokens.length);
-      if (tokens.length === 0 || matched.length < requiredMatches) continue;
-      evidence.observed = true;
-      evidence.verified = evidence.verified || (!event.failed && ['artifact', 'result'].includes(event.kind));
-      evidence.evidenceEventIds = unique([...evidence.evidenceEventIds.map(String), String(event.id)], 8).map(Number);
+    if (Object.keys(this.state.actionCounts).length > MAX_EVENTS * 2) {
+      const recentSignatures = new Set(this.state.events.map(item => item.signature));
+      this.state.actionCounts = Object.fromEntries(Object.entries(this.state.actionCounts).filter(([signature]) => recentSignatures.has(signature)));
     }
+    this.consecutiveFailures = event.failed ? this.consecutiveFailures + 1 : event.kind === 'result' || event.kind === 'artifact' ? 0 : this.consecutiveFailures;
   }
 
   private eventScore(event: ProxyEvent): number {
@@ -1352,11 +1313,20 @@ export class UserProxyRuntime {
       const scheduledTrigger = this.armedReviewTrigger || trigger;
       this.reviewTimer = null;
       this.armedReviewTrigger = null;
-      if (this.stopped || this.reviewPromise || this.pendingGuidance || this.mainPhase === 'composing' || this.mainPhase === 'completion_review' || (scheduledTrigger !== 'proxy_manager_directive' && Date.now() < this.humanOverrideUntil)) {
+      if (this.stopped || this.paused || this.reviewPromise || this.pendingGuidance || this.mainPhase === 'composing' || this.mainPhase === 'completion_review' || (scheduledTrigger !== 'proxy_manager_directive' && Date.now() < this.humanOverrideUntil)) {
         this.deferReview(scheduledTrigger);
         return;
       }
-      this.reviewPromise = this.runReview(scheduledTrigger)
+      const controller = new AbortController();
+      this.reviewAbortController = controller;
+      const timeout = setTimeout(() => controller.abort(), 180_000);
+      timeout.unref?.();
+      let onAbort: () => void;
+      const cancelled = new Promise<ProxyDecision>((_, reject) => {
+        onAbort = () => reject(new Error('Proxy review interrupted.'));
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      this.reviewPromise = Promise.race([this.runReview(scheduledTrigger, controller.signal), cancelled])
         .then(decision => {
           if (reviewEpoch !== this.reviewEpoch || this.stopped || this.paused || this.state.status === 'complete') {
             return { action: 'observe' as const, reason: 'Review became stale at the completion boundary.' };
@@ -1370,12 +1340,15 @@ export class UserProxyRuntime {
           return decision;
         })
         .catch(() => {
-          this.state.status = 'watching';
+          if (reviewEpoch === this.reviewEpoch && !this.stopped && !this.paused && this.state.status !== 'complete') this.state.status = 'watching';
           return { action: 'observe' as const, reason: 'Proxy review unavailable; Main continues uninterrupted.' };
         })
         .finally(() => {
+          clearTimeout(timeout);
+          controller.signal.removeEventListener('abort', onAbort);
+          if (this.reviewAbortController === controller) this.reviewAbortController = null;
           this.reviewPromise = null;
-          this.schedulePersist();
+          if (!this.stopped) this.schedulePersist();
           const deferred = this.deferredReviewTrigger;
           this.deferredReviewTrigger = null;
           if (deferred && !this.stopped && !this.paused && this.state.status !== 'complete') {
@@ -1387,7 +1360,7 @@ export class UserProxyRuntime {
     return true;
   }
 
-  private async runReview(trigger: string): Promise<ProxyDecision> {
+  private async runReview(trigger: string, signal: AbortSignal): Promise<ProxyDecision> {
     this.reviewScore = 0;
     this.state.lastDecisionAt = Date.now();
     this.state.status = 'reviewing';
@@ -1522,14 +1495,17 @@ export class UserProxyRuntime {
       `USER-SELECTED INTERVENTION POSTURE: ${this.state.adaptivePolicy.cadence === 'quiet' ? 'MINIMAL — remain silent unless evidence shows a serious safety, constraint, blockage, or required-completion failure' : this.state.adaptivePolicy.cadence === 'close' ? 'HIGH — inspect material uncertainty and deviations earlier, while still requiring evidence and avoiding optional-polish interruptions' : 'NORMAL — balance flow protection with timely intervention on consequential gaps'}. This posture changes initiative, never the truthfulness or safety standard.`,
       `RECENT MAIN EVIDENCE:\n${recent}`,
       `PRIOR PROXY GUIDANCE (do not repeat or paraphrase):\n${prior}`,
-      `USER-APPROVED PROXY MANAGER DIRECTIVES:\n${this.state.managerDirectives.filter(item => item.status === 'active' || item.status === 'pending').slice(-10).map(item => `- [id=${item.id}; status=${item.status}; timing=${item.timing}; target=${item.target}; intent=${item.intent}; requested=${item.requestedAction || 'adaptive'}; urgency=${item.urgency || 'normal'}] ${item.message}`).join('\n') || '(none)'}`,
+      `USER-APPROVED PROXY MANAGER DIRECTIVES:\n${this.state.managerDirectives.filter(item => item.status === 'active' || item.status === 'pending' || (item.scope === 'persistent_mandate' && item.status === 'delivered')).map(item => `- [id=${item.id}; status=${item.status}; timing=${item.timing}; scope=${item.scope || 'current_task'}; target=${item.target}; intent=${item.intent}; requested=${item.requestedAction || 'adaptive'}; urgency=${item.urgency || 'normal'}; activation=${item.activationCondition || 'none'}] ${item.message}`).join('\n') || '(none)'}`,
+      'Own the semantic judgment: distinguish a recoverable error from a failed strategy by reading the evidence and current recovery plan. Do not react to keywords, impose an intervention quota, or assume long elapsed time means failure. Use recent interventions to decide whether new guidance adds value. Preserve explicit user exclusions, exact commands, formatting, and acceptance criteria in your message; the transport will deliver your wording without rewriting it. Verification must respect what the user permitted; never introduce tests, checks, Git, or extra work when the user excluded them.',
       `PROXY COORDINATION HISTORY:\n${this.state.coordinationEvents.slice(-12).map(item => `- [${item.kind}${item.directiveId ? `/${item.directiveId}` : ''}] ${item.message}`).join('\n') || '(none)'}`,
       'Choose observe unless intervention is necessary now. If visibility is insufficient, record visibilityGap and observe; do not nag Main for information it is likely still gathering.',
+      'Assess deliverable evidence semantically, including when you choose observe. Optionally return deliverableUpdates as [{"name":"exact deliverable name","observed":true,"verified":false,"evidenceEventIds":[1]}]. verified requires cited successful result or artifact evidence that actually establishes the requested acceptance criteria. A matching filename, an intention, or a successful unrelated command is insufficient. Set verified false when later evidence invalidates an earlier conclusion. Respect user limits on verification work.',
       'Return exactly one JSON object:',
       '{"action":"observe|steer|redirect|challenge|request_real_user|interrupt_main|stop_main|approve_completion","message":"exact short natural user prompt, blank for observe/approve","reason":"private rationale including the counterfactual necessity test","remainingGoalGap":"concrete remaining goal gap or blank","severity":"low|medium|high|critical","counterfactualImpact":"none|minor|material|critical","evidenceQuality":"none|indirect|direct|user_authorized","interventionCost":"low|medium|high","evidenceEventIds":[1],"promptIntent":{"outcome":"what must change now","preserveRules":["binding user rule relevant now"],"acceptanceEvidence":"observable proof of completion","strategyFreedom":"free|bounded|exact","whyNow":"private evidence-backed timing"},"managerDirectiveId":"matching active directive id or blank","managerNotice":"only a consequential concise update worth surfacing to Proxy Manager, otherwise blank","visibilityGap":"missing telemetry, if any","optionalImprovement":false,"attentionSignals":["task-specific signal"],"situationUpdate":{"progress":"durable compact progress summary","activeStrategy":"Main current strategy","unresolvedRisks":[],"nextExpectedBoundary":"next meaningful checkpoint"},"complexityUpdate":{"level":"simple|moderate|complex|frontier","criticalPath":[],"dependencies":[],"invariants":[],"decisionPoints":[],"uncertainty":[],"recoveryBranches":[],"verificationGates":[]},"contractUpdate":null}',
     ].filter(Boolean).join('\n\n');
 
     const { createIsolatedClient } = await import('../Agent');
+    signal.throwIfAborted();
     const client = createIsolatedClient(this.options.apiKey, this.options.mode, this.options.runtimeSettings);
     const selectedProxyModel = String((this.options.context as any).autonomy?.proxyModelSelection || '').trim();
     const selectedProxySeparator = selectedProxyModel.indexOf(':');
@@ -1539,12 +1515,13 @@ export class UserProxyRuntime {
     const selectedProxyModelName = selectedProxySeparator > 0
       ? selectedProxyModel.slice(selectedProxySeparator + 1).trim()
       : '';
-    const proxyModelContextWindow = selectedProxyProvider && selectedProxyModelName
-      ? resolveModelContextWindow(selectedProxyProvider as any, selectedProxyModelName)
-      : Number((this.options.context as any).contextCompaction?.activeModelContextWindow || 0) || undefined;
-    const requestedProxyContextWindow = Number((this.options.context as any).contextCompaction?.activeContextWindow || 0) || undefined;
+    const inheritedContextPolicy = (this.options.context as any).contextCompaction;
+    const proxyContextPolicy = selectedProxyProvider && selectedProxyModelName
+      ? rebaseContextCompactionWindow(inheritedContextPolicy, selectedProxyProvider, selectedProxyModelName)
+      : { ...inheritedContextPolicy };
     const proxyContext: any = {
       projectId: `${this.options.context.projectId}::user-proxy`,
+      abortSignal: signal,
       agentRuntime: 'user_proxy',
       isUserProxy: true,
       isProxyManager: false,
@@ -1562,15 +1539,7 @@ export class UserProxyRuntime {
       selectedModelName: selectedProxyModelName || (this.options.context as any).selectedModelName,
       strictModelSelection: Boolean(selectedProxyProvider && selectedProxyModelName)
         || (this.options.context as any).strictModelSelection === true,
-      contextCompaction: {
-        enabled: (this.options.context as any).contextCompaction?.enabled !== false,
-        model: (this.options.context as any).contextCompaction?.model || null,
-        customInstructions: String((this.options.context as any).contextCompaction?.customInstructions || ''),
-        activeContextWindow: requestedProxyContextWindow && proxyModelContextWindow
-          ? Math.min(requestedProxyContextWindow, proxyModelContextWindow)
-          : requestedProxyContextWindow,
-        activeModelContextWindow: proxyModelContextWindow,
-      },
+      contextCompaction: proxyContextPolicy,
       selectedThinkingLevel: this.selectedIntervention === 'high'
         ? 'high'
         : this.selectedIntervention === 'minimal' ? 'low' : 'medium',
@@ -1586,6 +1555,7 @@ export class UserProxyRuntime {
     } catch (error) {
       throw error;
     }
+    signal.throwIfAborted();
     this.state.helperUsed = Boolean(proxyContext._userProxyHelperUsed);
     const decision = extractDecision(response.text);
     const investigationEvidenceIds = this.recordInvestigationEvidence(response.trace);
@@ -1643,7 +1613,6 @@ export class UserProxyRuntime {
   private isGroundedDecision(decision: ProxyDecision): boolean {
     if (decision.action === 'observe' || decision.action === 'approve_completion') return false;
     if (decision.optionalImprovement) return false;
-    const policy = CADENCE_SETTINGS[this.state.adaptivePolicy.cadence];
     if (!compact(decision.message, 1600)) return false;
     const knownIds = new Set(this.state.events.map(event => event.id));
     const evidenceIds = decision.evidenceEventIds || [];
@@ -1655,32 +1624,6 @@ export class UserProxyRuntime {
       ? this.state.managerDirectives.find(item => item.id === decision.managerDirectiveId && (item.status === 'active' || item.status === 'pending'))
       : undefined;
     const hasEvidence = citedEvents.some(event => event.kind !== 'intent' && event.kind !== 'other');
-    const onlyRecoverableFailureEvidence =
-      citedEvents.length > 0 &&
-      citedEvents.every(event => event.failed && !event.risk && !event.repeated);
-    const structuralFailureDecision =
-      (decision.severity === 'high' || decision.severity === 'critical') &&
-      /\b(?:invalid|false|wrong)\s+(?:assumption|target|premise)|missing\s+(?:authority|credential|capability|permission)|unauthori[sz]ed|infeasible|not viable|cannot satisfy|fundamentally blocked\b/i.test(
-        `${decision.reason || ''} ${decision.promptIntent?.whyNow || ''}`,
-      );
-    if (
-      onlyRecoverableFailureEvidence &&
-      this.consecutiveFailures < policy.failuresBeforeGuidance &&
-      !structuralFailureDecision
-    ) {
-      return false;
-    }
-    const midRunInterventions = this.state.interventions.filter(item =>
-      item.timestamp >= this.startedAt &&
-      item.action !== 'stop_main'
-    ).length;
-    if (
-      midRunInterventions >= policy.maxMidRunInterventions &&
-      decision.severity !== 'critical' &&
-      !citedEvents.some(event => event.risk)
-    ) {
-      return false;
-    }
     const pendingCanActivate = managerDirective?.status !== 'pending' ||
       managerDirective.timing === 'when_relevant';
     if (managerDirective?.status === 'pending' && !pendingCanActivate) return false;
@@ -1718,8 +1661,13 @@ export class UserProxyRuntime {
   private settleObservedManagerDirective(decision: ProxyDecision): void {
     const directive = decision.managerDirectiveId
       ? this.state.managerDirectives.find(item => item.id === decision.managerDirectiveId)
-      : [...this.state.managerDirectives].reverse().find(item => item.status === 'active');
-    if (!directive) return;
+      : undefined;
+    if (!directive || directive.status !== 'active') return;
+    if (directive.target !== 'proxy') {
+      directive.disposition = decision.reason || 'The model deferred guidance until it becomes useful.';
+      this.addCoordinationEvent('proxy_deferral', directive.disposition, directive.id);
+      return;
+    }
     directive.status = 'delivered';
     directive.deliveredAt = Date.now();
     directive.disposition = decision.reason || 'Absorbed into the runtime Proxy mandate without interrupting Main.';
@@ -1727,6 +1675,17 @@ export class UserProxyRuntime {
   }
 
   private applyAdaptiveUpdates(decision: ProxyDecision): void {
+    for (const update of decision.deliverableUpdates || []) {
+      const deliverables = decision.contractUpdate?.requiredDeliverables || this.state.contract.requiredDeliverables;
+      if (!deliverables.includes(update.name)) continue;
+      const cited = this.state.events.filter(event => update.evidenceEventIds.includes(event.id));
+      if (!cited.length) continue;
+      this.state.deliverableEvidence[update.name] = {
+        observed: update.observed,
+        verified: update.observed && update.verified && cited.some(event => !event.failed && ['artifact', 'result'].includes(event.kind)),
+        evidenceEventIds: cited.map(event => event.id).slice(-8),
+      };
+    }
     if (decision.attentionSignals?.length) {
       this.state.adaptivePolicy.attentionSignals = unique(decision.attentionSignals, 10);
     }
@@ -1790,21 +1749,17 @@ export class UserProxyRuntime {
       ...decision,
       message: decision.message || directive?.message || '',
       remainingGoalGap: decision.remainingGoalGap || this.state.lastGoalGap,
-    }, this.state.contract);
+    });
     if (!message) return false;
     const topicKey = guidanceTopicKey(message);
-    const recentInterventions = this.state.interventions.slice(-6);
+    const recentInterventions = this.state.interventions.slice(-6).filter(item => Date.now() - item.timestamp < 10 * 60_000);
     const newMaterialEvidence = this.state.events.some(event =>
       event.id > this.state.lastInterventionEventId &&
       (event.failed || event.repeated || event.risk || event.kind === 'artifact' || event.kind === 'result')
     );
-    const repeatsRecentTopic = Boolean(topicKey && recentInterventions.some(item =>
-      (item.topicKey || guidanceTopicKey(item.message)) === topicKey &&
-      Date.now() - item.timestamp < 10 * 60_000 &&
-      !newMaterialEvidence,
-    ));
-    const similarityThreshold = newMaterialEvidence ? 0.82 : 0.58;
-    if (repeatsRecentTopic || recentInterventions.some(item => messageSimilarity(item.message, message) >= similarityThreshold)) {
+    // Deduplicate only the same delivery without new evidence. Similar wording
+    // can represent a material correction, especially a changed negation.
+    if (!directive && !newMaterialEvidence && recentInterventions.some(item => item.message === message)) {
       this.state.status = 'watching';
       this.schedulePersist();
       return false;
@@ -1819,6 +1774,7 @@ export class UserProxyRuntime {
       topicKey,
       timestamp: Date.now(),
     });
+    this.state.interventions = this.state.interventions.slice(-MAX_INTERVENTIONS);
     this.state.lastInterventionEventId = this.eventCounter;
     if (directive) {
       directive.status = 'active';
@@ -1846,6 +1802,7 @@ export class UserProxyRuntime {
     this.state.status = decision.action === 'request_real_user' ? 'needs_user' : 'waiting_for_main';
     const accepted = this.options.steer(message, {
       _autonomyProxy: true,
+      _proxyManager: Boolean(directive),
       proxyAction: decision.action,
       proxyReason: decision.reason,
       proxySeverity: decision.severity,
@@ -1854,6 +1811,7 @@ export class UserProxyRuntime {
       proxyManagerIntent: directive?.intent,
       interruptMain: decision.action === 'interrupt_main',
       atCompletionBoundary,
+      completionReview: atCompletionBoundary,
     });
     if (accepted && directive) {
       directive.status = 'delivered';
@@ -1861,6 +1819,7 @@ export class UserProxyRuntime {
       this.addCoordinationEvent(decision.action === 'interrupt_main' ? 'main_interrupted' : 'proxy_delivery', message, directive.id);
     }
     if (!accepted) {
+      this.state.interventions.pop();
       this.pendingGuidance = false;
       this.state.status = 'watching';
     }
@@ -1873,8 +1832,10 @@ export class UserProxyRuntime {
   }
 
   private schedulePersist(): void {
+    if (this.stopped) return;
     this.state.updatedAt = Date.now();
-    if (this.persistTimer) clearTimeout(this.persistTimer);
+    // Throttle writes: a continuous trace stream must not postpone saving forever.
+    if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => this.persistNow(), 250);
     this.persistTimer.unref?.();
   }
@@ -1945,7 +1906,7 @@ export function setUserProxyIntervention(projectId: string, level: ProxyInterven
 
 export function setUserProxyModel(
   projectId: string,
-  input: { mode: MainAgentMode; apiKey: string; runtimeSettings?: ScopedRuntimeSettings | null },
+  input: { mode: MainAgentMode; apiKey: string; runtimeSettings?: ScopedRuntimeSettings | null; modelSelection?: string },
 ): boolean {
   const runtime = runtimes.get(projectId);
   if (!runtime) return false;
@@ -1960,13 +1921,14 @@ export function getUserProxyManagerSnapshot(projectId: string): Record<string, a
     const saved = readStateSync(projectId);
     if (!saved || saved.version !== 2) return null;
     return {
-      status: saved.status || 'stopped',
+      status: saved.status === 'complete' ? 'complete' : 'stopped',
       objective: compact(saved.objective, 6000),
       contract: saved.contract || null,
       mainPhase: 'complete',
       lastGoalGap: compact(saved.lastGoalGap, 1800),
       situationModel: saved.situationModel || null,
       complexityModel: saved.complexityModel || null,
+      delegationModel: saved.delegationModel || null,
       interventionLevel: saved?.adaptivePolicy?.cadence === 'quiet' ? 'minimal' : saved?.adaptivePolicy?.cadence === 'close' ? 'high' : 'normal',
       recentEvents: Array.isArray(saved.events) ? saved.events.slice(-18) : [],
       recentInterventions: Array.isArray(saved.interventions) ? saved.interventions.slice(-6) : [],

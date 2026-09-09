@@ -21,6 +21,8 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+import { groupParallelToolCalls } from '../parallel-tool-calls';
+
 export interface ToolPrediction {
   toolName: string;
   confidence: number;  // 0-1
@@ -50,7 +52,6 @@ export interface ToolUsageRecord {
 // ─── Common Chains ────────────────────────────────────────────────────────────
 
 const KNOWN_CHAINS: Array<{ trigger: string; chain: string[]; name: string }> = [
-  { trigger: 'workspace_edit_file', chain: ['workspace_edit_file', 'workspace_run_command'], name: 'edit->verify' },
   { trigger: 'workspace_run_command', chain: ['workspace_run_command', 'workspace_edit_file'], name: 'inspect->edit' },
 ];
 
@@ -60,15 +61,15 @@ const INTENT_TOOL_MAP: Array<{ pattern: RegExp; tools: string[]; priority: numbe
   // Code modification
   { pattern: /\b(edit|modify|change|update|fix|patch|refactor)\b/i, tools: ['workspace_run_command', 'workspace_edit_file'], priority: 1 },
   // File creation
-  { pattern: /\b(create|write|generate|make|build|scaffold)\b.*\b(file|component|module|page|class)\b/i, tools: ['workspace_edit_file', 'workspace_run_command'], priority: 1 },
+  { pattern: /\b(create|write|generate|make|build|scaffold)\b.*\b(file|component|module|page|class|game|app|website|project|tool|artifact)\b/i, tools: ['workspace_edit_file'], priority: 1 },
   // Debugging
   { pattern: /\b(debug|fix|error|crash|broken|not\s*work)\b/i, tools: ['workspace_run_command', 'workspace_edit_file'], priority: 1 },
   // Research
   { pattern: /\b(research|investigate|find out|learn|explore)\b/i, tools: ['web_search'], priority: 2 },
   // Project setup
-  { pattern: /\b(init|initialize|setup|install|create project|new project)\b/i, tools: ['workspace_run_command', 'workspace_edit_file'], priority: 1 },
+  { pattern: /\b(init|initialize|setup|install)\b/i, tools: ['workspace_run_command'], priority: 1 },
   // Running/testing
-  { pattern: /\b(run|execute|test|build|compile|start|deploy)\b/i, tools: ['workspace_run_command'], priority: 1 },
+  { pattern: /\b(run|execute|test|compile|deploy|start\s+(?:the\s+)?(?:server|app|process)|run\s+(?:the\s+)?build)\b/i, tools: ['workspace_run_command'], priority: 1 },
   // Analysis
   { pattern: /\b(analyze|examine|inspect|review|audit)\b/i, tools: ['workspace_run_command'], priority: 2 },
   // Documents
@@ -270,28 +271,7 @@ export class ToolIntelligenceEngine {
    * Check if independent tool calls can be parallelized.
    */
   canParallelize(calls: Array<{ name: string; args: any }>): Array<Array<{ name: string; args: any }>> {
-    if (calls.length <= 1) return [calls];
-
-    // Group into independent and dependent
-    const writingTools = new Set(['workspace_edit_file']);
-    const readingTools = new Set(['workspace_run_command', 'web_search']);
-
-    const readers = calls.filter(c => readingTools.has(c.name));
-    const writers = calls.filter(c => writingTools.has(c.name));
-    const others = calls.filter(c => !readingTools.has(c.name) && !writingTools.has(c.name));
-
-    const groups: Array<Array<{ name: string; args: any }>> = [];
-
-    // All readers can run in parallel
-    if (readers.length > 0) groups.push(readers);
-
-    // Writers must be sequential (or at least serialized for same file)
-    for (const writer of writers) groups.push([writer]);
-
-    // Others depend on context
-    if (others.length > 0) groups.push(others);
-
-    return groups;
+    return groupParallelToolCalls(calls);
   }
 }
 

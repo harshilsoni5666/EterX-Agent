@@ -35,6 +35,12 @@ export async function PUT(req: NextRequest) {
     if (!Number.isFinite(savedAt) || savedAt <= 0) {
       return NextResponse.json({ error: 'savedAt must be a positive number' }, { status: 400, headers: noStoreHeaders });
     }
+    if (body.partial === true && (
+      !Array.isArray(body.chatIds)
+      || (body.deletedChatIds !== undefined && !Array.isArray(body.deletedChatIds))
+    )) {
+      return NextResponse.json({ error: 'Partial updates require chatIds and an optional deletedChatIds array' }, { status: 400, headers: noStoreHeaders });
+    }
     const mutationId = typeof body.mutationId === 'string' ? body.mutationId.trim().slice(0, 200) : '';
     const snapshot = body.partial === true && Array.isArray(body.chatIds)
       ? await patchChatSnapshot(body.chats, body.chatIds, savedAt, body.deletedChatIds, mutationId)

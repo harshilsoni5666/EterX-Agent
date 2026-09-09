@@ -1,11 +1,10 @@
 /**
  * Small client-safe concurrency gate for live agent polling.
  *
- * A browser can keep many chats live, but allowing every timer to open a
- * request at the exact same moment causes connection contention and a React
- * update storm. The gate keeps the polling cadence low-latency while making
- * request admission fair and bounded. AbortSignals are intentionally
- * supported so stopping a chat never leaves a waiter stranded in the queue.
+ * This bounds logical consumers, including recovery reads. The transport
+ * separately multiplexes them over a small number of HTTP connections, so
+ * the caller's subscription limit must allow the desired live-chat count.
+ * AbortSignals ensure stopping a chat never strands an admission waiter.
  */
 
 export type PollSlotRelease = () => void;

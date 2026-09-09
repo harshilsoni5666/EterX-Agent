@@ -3,9 +3,8 @@
  *
  * Optionally caches the static portion of the EterX system prompt (base
  * identity + rules + all tool declarations) on the Gemini server as reusable,
- * content-addressed variants. This paid/explicit provider feature is opt-in;
- * normal requests retain a stable prefix so provider-managed implicit caching
- * can work without cache-create calls.
+ * content-addressed variants. Explicit caching is attempted by default and can
+ * be disabled independently; stable prefixes also allow provider-managed caching.
  *
  * Savings depend on the active prompt/tool surface and provider cache tier.
  *
@@ -14,7 +13,7 @@
  *  - Keyed by (apiKey_suffix + modelName) — each rotated key gets its own cache.
  *  - TTL = 1 hour; heartbeat every 14 min extends it automatically.
  *  - Self-heals on NOT_FOUND: clears stale entry, recreates immediately.
- *  - Opt in with ETERX_ENABLE_EXPLICIT_GEMINI_CACHE=1.
+ *  - Opt out with ETERX_ENABLE_EXPLICIT_GEMINI_CACHE=0.
  *  - Fully opt out with ETERX_DISABLE_CONTEXT_CACHE=1.
  */
 
@@ -130,7 +129,7 @@ function normalizeGeminiCacheToolDeclarations(toolDeclarations: any[]): any[] {
 }
 
 export function isExplicitGeminiCacheEnabled(): boolean {
-  return process.env.ETERX_ENABLE_EXPLICIT_GEMINI_CACHE === '1'
+  return process.env.ETERX_ENABLE_EXPLICIT_GEMINI_CACHE !== '0'
     && process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1';
 }
 
@@ -172,6 +171,16 @@ function startHeartbeat(ai: any, entry: CacheEntry, entryStoreKey: string): void
   if (entry.heartbeatTimer) return; // already running
 
   const timer = setInterval(async () => {
+    if (getCacheStore().get(entryStoreKey) !== entry) {
+      clearEntry(entry);
+      return;
+    }
+    // Do not keep charging for a cache indefinitely after its agent/chat goes
+    // idle. The existing remote TTL remains bounded; reuse can restart renewal.
+    if (Date.now() - entry.lastUsedAt >= HEARTBEAT_INTERVAL_MS) {
+      clearEntry(entry);
+      return;
+    }
     try {
       await ai.caches.update({
         name: entry.name,
@@ -185,7 +194,7 @@ function startHeartbeat(ai: any, entry: CacheEntry, entryStoreKey: string): void
       if (msg.includes('not_found') || msg.includes('not found') || msg.includes('404')) {
         // Cache vanished on Google's side — clear so next request rebuilds
         clearEntry(entry);
-        getCacheStore().delete(entryStoreKey);
+        if (getCacheStore().get(entryStoreKey) === entry) getCacheStore().delete(entryStoreKey);
         console.log(`[AgentCache] 🗑️ Stale cache cleared (NOT_FOUND on heartbeat): ${entry.name}`);
       }
     }
@@ -205,7 +214,7 @@ function startHeartbeat(ai: any, entry: CacheEntry, entryStoreKey: string): void
  * (apiKey × modelName) pair, creating it on first call.
  *
  * Returns `null` if:
- *  - ETERX_ENABLE_EXPLICIT_GEMINI_CACHE is not 1
+ *  - ETERX_ENABLE_EXPLICIT_GEMINI_CACHE=0
  *  - ETERX_DISABLE_CONTEXT_CACHE=1
  *  - Model doesn't support caching
  *  - Any error during creation (silent fallback to uncached)
@@ -237,6 +246,7 @@ async function getOrCreateAgentCacheUnlocked(
   const existing = store.get(key);
   if (existing && Date.now() < existing.expiresAt) {
     existing.lastUsedAt = Date.now();
+    startHeartbeat(ai, existing, key);
     console.log(`[AgentCache] ♻️ Reusing cache: ${existing.name}`);
     return existing.name;
   }
@@ -334,6 +344,7 @@ async function getOrCreateAgentCacheUnlocked(
         `(free-tier, quota, or permission). Falling back temporarily; EterX will retry.`
       );
     } else {
+      getCacheBackoffStore().set(ownerKey, Date.now() + 30_000);
       console.warn(`[AgentCache] ⚠️ Cache creation failed (falling back to uncached): ${msg.slice(0, 120)}`);
     }
     return null;
@@ -355,16 +366,8 @@ export async function getOrCreateAgentCache(
     buildContentHash(staticSystemInstruction, cacheToolDeclarations),
   );
   const inflight = getInflightStore();
-  while (inflight.has(inflightKey)) {
-    const pending = inflight.get(inflightKey);
-    if (!pending) break;
-    try {
-      await pending;
-    } catch {
-      // The unlocked path returns null on provider errors, but do not let an
-      // unexpected rejection permanently block later cache attempts.
-    }
-  }
+  const pending = inflight.get(inflightKey);
+  if (pending) return pending;
 
   const creation = getOrCreateAgentCacheUnlocked(
     ai,

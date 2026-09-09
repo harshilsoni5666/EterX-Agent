@@ -8,12 +8,7 @@ export interface IconProps {
 
 const W = '#E8E6E3';
 
-/**
- * The EterX mark used by task/agent surfaces. Keep both raster variants in
- * the DOM and let the app's data-theme attribute select the readable one.
- * This is more reliable than relying on the OS preference or Tailwind's
- * `dark:` variant while the Electron shell is switching themes at runtime.
- */
+/** The unified EterX mark used by task and agent surfaces. */
 export const EterxLogo = ({
   size = 32,
   className = '',
@@ -30,18 +25,11 @@ export const EterxLogo = ({
     aria-label={alt}
   >
     <img
-      src="/logo-whitetheme.png"
+      src="/logo.png"
       alt=""
       aria-hidden="true"
       draggable={false}
-      className="eterx-theme-logo-light h-full w-full select-none object-contain"
-    />
-    <img
-      src="/logo-white.png"
-      alt=""
-      aria-hidden="true"
-      draggable={false}
-      className="eterx-theme-logo-dark h-full w-full select-none object-contain"
+      className="h-full w-full select-none object-contain"
     />
   </span>
 );
@@ -597,6 +585,30 @@ const SKILL_CATEGORIES: Record<string, string> = {
   rag_architect: 'memory',
   api_design_reviewer: 'api',
   data_analyst: 'database',
+};
+
+/** Timeline icons follow tool identity/category, never command text or paths. */
+const TRACE_TOOL_CATEGORIES: Record<string, string> = {
+    workspace_run_command: 'terminal', terminal_access: 'terminal', exec_command: 'terminal', write_stdin: 'terminal',
+    workspace_edit_file: 'file_edit', apply_patch: 'file_edit',
+    read_file: 'file_read', workspace_read_file: 'file_read',
+    web_search: 'web_search', web_fetch: 'web_search',
+    browser: 'browser', browser_use: 'browser', computer_use: 'computer',
+    image_generator: 'image', load_skill: 'skill',
+    spawn_sub_agent: 'agent', connector_mcp: 'connector',
+};
+
+export const resolveToolTraceIcon = (log: any): { Icon: React.FC<IconProps>; color: string } => {
+  const tool = String(log?.toolName || log?.tool || log?.name || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const category = TRACE_TOOL_CATEGORIES[tool]
+    || (log?.type === 'file_edit' ? 'file_edit' : '')
+    || String(log?.iconCategory || '').toLowerCase();
+  if (category && CAT_MAP[category]) return { Icon: CAT_MAP[category], color: W };
+  if (log?.type === 'file_edit') return { Icon: FileEditIcon, color: W };
+  if (log?.type === 'console_output') return { Icon: TerminalIcon, color: W };
+  if (log?.type === 'browser') return { Icon: ComputerIcon, color: W };
+  const exact = AGENT_ICONS[String(log?.text || '')];
+  return exact ? { ...exact, color: W } : { Icon: ApiNodeIcon, color: W };
 };
 
 export const resolveAgentIcon = (

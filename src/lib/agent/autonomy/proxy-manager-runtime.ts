@@ -7,7 +7,7 @@ import { buildScopedRuntimeSettings, getScopedRuntimeApiKey, type ScopedRuntimeS
 import type { MainAgentMode, MainAgentProvider } from '../model-routing';
 import { getEterxWorkspaceDir } from '../storage-paths';
 import { taskStore } from '../task-store';
-import { readProxyControl } from './proxy-control-plane';
+import { readProxyControl, subscribeProxyControl } from './proxy-control-plane';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from '../self-improvement/engine';
 import { delegationTelemetryFromTrace } from '../delegation-evidence';
 
@@ -19,6 +19,19 @@ export type ProxyManagerChatMessage = {
   operation?: ProxyManagerOperation;
   delivery?: 'none' | 'active' | 'pending' | 'delivered' | 'rejected' | 'expired' | 'unavailable';
   work?: Array<{ text: string; tool: string }>;
+  requestId?: string;
+};
+
+type ProxyManagerInput = {
+  chatId: string;
+  message: string;
+  requestId?: string;
+  attachmentContext?: string;
+  mediaAttachments?: Array<{ path: string; mimeType: string; name?: string; id?: string }>;
+  mainModel?: { provider: string; modelId: string };
+  model?: { provider?: string; modelId?: string };
+  contextCompaction?: unknown;
+  onProgress?: (event: ProxyManagerProgress) => void;
 };
 
 export type ProxyManagerOperation = 'none' | 'brief_proxy' | 'guide_adaptively' | 'watch_condition' | 'before_completion' | 'queue_after_current' | 'start_main' | 'schedule_workflow' | 'replace_queued_task' | 'interrupt_main' | 'stop_main';
@@ -33,6 +46,8 @@ export type ProxyManagerProgress = {
 
 type ManagerDecision = {
   reply: string;
+  deliveryReplies?: Partial<Record<NonNullable<ProxyManagerChatMessage['delivery']>, string>>;
+  stateUpdateProvided?: string[];
   operation: ProxyManagerOperation;
   target: 'proxy' | 'main' | 'both';
   instruction: string;
@@ -90,6 +105,7 @@ const EMPTY_COORDINATION_MODEL: ManagerStore['coordinationModel'] = {
 
 const compact = (value: unknown, max = 6000) =>
   String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+const instructionText = (value: unknown) => typeof value === 'string' ? value.replace(/\u0000/g, '').trim() : '';
 
 const storePath = (chatId: string) => {
   const safe = chatId.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 140);
@@ -150,10 +166,14 @@ function extractDecision(raw: string): ManagerDecision {
     const targets = new Set(['proxy', 'main', 'both']);
     const intents = new Set(['goal', 'constraint', 'correction', 'preference', 'follow_up']);
     return {
-      reply: compact(parsed.reply, 8000),
+      reply: instructionText(parsed.reply),
+      deliveryReplies: parsed.deliveryReplies && typeof parsed.deliveryReplies === 'object'
+        ? Object.fromEntries(Object.entries(parsed.deliveryReplies).filter(([key, value]) => ['active', 'pending', 'delivered', 'rejected', 'expired', 'unavailable'].includes(key) && typeof value === 'string').map(([key, value]) => [key, instructionText(value)]))
+        : undefined,
+      stateUpdateProvided: parsed.stateUpdate && typeof parsed.stateUpdate === 'object' ? Object.keys(parsed.stateUpdate) : [],
       operation: operations.has(parsed.operation) ? parsed.operation : 'none',
       target: targets.has(parsed.target) ? parsed.target : 'proxy',
-      instruction: compact(parsed.instruction, 2400),
+      instruction: instructionText(parsed.instruction),
       intent: intents.has(parsed.intent) ? parsed.intent : 'preference',
       rationale: compact(parsed.rationale, 1200),
       evidenceQuality: new Set(['none', 'contextual', 'direct', 'explicit_user']).has(parsed.evidenceQuality) ? parsed.evidenceQuality : 'none',
@@ -164,8 +184,8 @@ function extractDecision(raw: string): ManagerDecision {
       scope: new Set(['current_step', 'current_task', 'next_task', 'persistent_mandate']).has(parsed.scope) ? parsed.scope : 'current_task',
       supersedesDirectiveId: compact(parsed.supersedesDirectiveId, 160),
       supersedesTaskId: compact(parsed.supersedesTaskId, 160),
-      tasks: Array.isArray(parsed.tasks) ? parsed.tasks.slice(0, 8).map((task: any) => ({
-        prompt: compact(task?.prompt, 12000),
+      tasks: Array.isArray(parsed.tasks) ? parsed.tasks.map((task: any) => ({
+        prompt: instructionText(task?.prompt),
         dependency: compact(task?.dependency, 1200),
         rationale: compact(task?.rationale, 1200),
       })).filter((task: any) => task.prompt) : [],
@@ -178,7 +198,7 @@ function extractDecision(raw: string): ManagerDecision {
       },
     };
   } catch {
-    return { reply: compact(cleaned, 8000) || 'I could not form a reliable response.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', evidenceQuality: 'none', counterfactualImpact: 'none', coordinationCost: 'low', urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [], stateUpdate: { ...EMPTY_COORDINATION_MODEL } };
+    return { reply: 'I could not interpret the coordination response. No instruction was delivered; please try again.', operation: 'none', target: 'proxy', instruction: '', intent: 'preference', rationale: '', evidenceQuality: 'none', counterfactualImpact: 'none', coordinationCost: 'low', urgency: 'normal', activationCondition: '', scope: 'current_task', supersedesDirectiveId: '', supersedesTaskId: '', tasks: [], stateUpdate: { ...EMPTY_COORDINATION_MODEL } };
   }
 }
 
@@ -213,7 +233,7 @@ function groundedOperationReply(
   operation: ProxyManagerOperation,
   delivery: ProxyManagerChatMessage['delivery'],
 ): string {
-  if (delivery === 'unavailable') {
+  if (delivery === 'unavailable' || delivery === 'rejected' || delivery === 'expired') {
     return 'I could not deliver that request because the required runtime is not active in this chat.';
   }
   const started = delivery === 'active' || delivery === 'delivered';
@@ -222,14 +242,18 @@ function groundedOperationReply(
       ? 'The workflow has started. Each stage will appear in the Main chat as a delegated user request when it begins.'
       : 'The workflow is queued. Each stage will appear in the Main chat as a delegated user request when it begins.';
   }
-  if (operation === 'start_main') return 'The request has started and is now visible in the Main chat.';
+  if (operation === 'start_main') return started
+    ? 'The request has started and is now visible in the Main chat.'
+    : 'The request is queued and will start after the current work settles.';
   if (operation === 'queue_after_current' || operation === 'replace_queued_task') {
     return started
       ? 'The delegated request has started and is now visible in the Main chat.'
       : 'The delegated request is queued and will appear in the Main chat when the current run finishes.';
   }
   if (operation === 'stop_main') return 'The stop request was delivered.';
-  if (operation === 'interrupt_main') return 'The correction was delivered as a new user turn in the active Main run.';
+  if (operation === 'interrupt_main') return delivery === 'delivered'
+    ? 'The correction was accepted for Main’s next model boundary.'
+    : 'The correction is pending supervisor review.';
   if (operation === 'before_completion') return 'The completion requirement is staged for the final review boundary.';
   if (operation === 'watch_condition') return 'The condition is being watched and will only be delivered if it becomes relevant.';
   if (operation === 'brief_proxy' || operation === 'guide_adaptively') {
@@ -238,27 +262,32 @@ function groundedOperationReply(
   return '';
 }
 
-export function getProxyManagerHistory(chatId: string): ProxyManagerChatMessage[] {
-  return readStore(chatId).messages;
+export function getProxyManagerHistory(chatId: string, afterMessageId?: string): ProxyManagerChatMessage[] {
+  const messages = readStore(chatId).messages;
+  const index = afterMessageId ? messages.findIndex(message => message.id === afterMessageId) : -1;
+  return index < 0 ? messages : messages.slice(index + 1);
 }
 
-async function runProxyManagerTurn(input: {
-  chatId: string;
-  message: string;
-  attachmentContext?: string;
-  model?: { provider?: string; modelId?: string };
-  contextCompaction?: unknown;
-  onProgress?: (event: ProxyManagerProgress) => void;
-}): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
-  const stopGenerationAtStart = readProxyControl(input.chatId).stopGeneration;
+export function isProxyManagerBusy(chatId: string): boolean {
+  return proxyManagerTurnChains.has(chatId);
+}
+
+async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal, stopGenerationAtStart: number): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
+  const admissionControl = readProxyControl(input.chatId);
+  if (!admissionControl.enabled || admissionControl.paused) throw new Error(admissionControl.paused ? 'Proxy is paused. Resume Proxy to continue coordinating.' : 'Turn on Autonomous mode to use Proxy.');
+  if (admissionControl.stopGeneration !== stopGenerationAtStart) throw new Error('Proxy controls changed while this request was waiting. Send it again to continue.');
   const store = readStore(input.chatId);
+  const resolved = resolveModel(input.model);
+  const existingReply = input.requestId ? store.messages.find(item => item.role === 'proxy' && item.requestId === input.requestId) : undefined;
+  if (existingReply) return { message: existingReply, history: store.messages, model: { provider: resolved.provider, modelId: resolved.modelId }, wakeRequested: agentRegistry.getProxyManagerContext(input.chatId)?.run?.status === 'running' };
   const userMessage: ProxyManagerChatMessage = {
-    id: randomUUID(),
+    id: input.requestId || randomUUID(),
+    requestId: input.requestId,
     role: 'user',
     text: String(input.message || '').replace(/\u0000/g, '').trim(),
     createdAt: Date.now(),
   };
-  store.messages.push(userMessage);
+  if (!store.messages.some(item => item.id === userMessage.id)) store.messages.push(userMessage);
   store.model = input.model;
   // Persist the accepted user turn before model/tool work begins. A provider
   // failure must not make the prompt disappear from the side conversation.
@@ -295,11 +324,10 @@ async function runProxyManagerTurn(input: {
       });
     }
   }
-  const priorConversation = store.messages.slice(0, -1).map(item => ({
+  const priorConversation = store.messages.filter(item => item.id !== userMessage.id).map(item => ({
     role: item.role === 'user' ? 'user' : 'model',
     parts: [{ text: item.text }],
   }));
-  const resolved = resolveModel(input.model);
   const learnedOperatingModel = resolveSelfImprovementEnabled()
     ? await adaptiveExperience.getExecutionContext({
       enabled: true,
@@ -343,19 +371,24 @@ async function runProxyManagerTurn(input: {
     'Professional response doctrine: lead with what is understood or what changed. State an operational action only if one was actually selected. Keep ordinary replies concise and calm; use a short structured list only for multiple goals, constraints, or queued stages. Never use hype, filler, fake certainty, or generic phrases such as "I will handle everything." If clarification is necessary, explain the exact decision it blocks in one sentence.',
     'Conversation-mode discipline: for a greeting, acknowledgement, thanks, or casual message, reply naturally in one short sentence and choose none—do not introduce yourself, summarize Main, list capabilities, or ask a broad follow-up. For a status question, answer only the requested status in at most three short points. For an authorized action, confirm the concrete routing result without repeating the full task. For a complex workflow, summarize only the stage boundaries and dependencies that help the user understand what will happen.',
     'Do not end every response with a question. Ask one only when a specific unresolved decision blocks safe routing. Never respond to "hi" with workspace history or a long menu of possibilities.',
+    'Let meaning and the current task decide your behavior. Handle shorthand, typos, multilingual instructions, corrections, and references to earlier turns naturally. Preserve explicit exclusions and exact user requirements in every dependent task. Do not invent approvals, checks, tests, or extra stages. Track unfinished goals, completed artifacts, unresolved decisions, and the user’s latest corrections in stateUpdate; omitted fields stay unchanged, while an explicit empty array clears a resolved list.',
+    'For an operation, optionally return deliveryReplies with short, task-specific replies keyed by active, pending, delivered, rejected, or unavailable. The server selects the actual delivery state. active means a task started or a supervisor accepted guidance, depending on the operation; pending means queued or staged, never executed; delivered means handed off, never proof the requested work is complete. Include useful workflow stages and constraints without repeating the full request. For none, use reply as your natural answer.',
     `LIVE MAIN + RUNTIME PROXY CONTEXT:\n${JSON.stringify(live, null, 2)}`,
     `DURABLE PER-CHAT COORDINATION MODEL:\n${JSON.stringify(store.coordinationModel, null, 2)}`,
     `CURRENT USER REQUEST:\n${input.message}`,
     input.attachmentContext
       ? `USER-PROVIDED ATTACHMENT CONTEXT FOR THIS TURN:\n${input.attachmentContext}`
       : '',
+    input.mediaAttachments?.length ? `ATTACHMENTS AVAILABLE TO THIS MODEL AND TO DELEGATED TASKS:\n${input.mediaAttachments.map(item => `${item.name || 'Attachment'} (${item.mimeType}): ${item.path}`).join('\n')}` : '',
     'Return exactly one JSON object with no markdown:',
     '{"reply":"natural professional answer","operation":"none|brief_proxy|guide_adaptively|watch_condition|before_completion|queue_after_current|start_main|schedule_workflow|replace_queued_task|interrupt_main|stop_main","target":"proxy|main|both","instruction":"standalone directive for single-task operations, blank for none or schedule_workflow","intent":"goal|constraint|correction|preference|follow_up","rationale":"short private routing reason","evidenceQuality":"none|contextual|direct|explicit_user","counterfactualImpact":"none|minor|material|critical","coordinationCost":"low|medium|high","urgency":"low|normal|high|critical","activationCondition":"semantic activation condition or blank","scope":"current_step|current_task|next_task|persistent_mandate","supersedesDirectiveId":"prior directive id or blank","supersedesTaskId":"pending task id for replacement or blank","tasks":[{"prompt":"complete Main-ready task","dependency":"what this consumes from the prior task, blank if independent","rationale":"why this is a separate stage"}],"stateUpdate":{"activeIntent":"current durable user intent","constraints":[],"dependencies":[],"openDecisions":[],"durableOutcomes":[]}}',
   ].join('\n\n');
 
   const client = createIsolatedClient(resolved.apiKey, resolved.mode, resolved.settings);
+  signal.throwIfAborted();
   const context: any = {
     projectId: `${input.chatId}::proxy-manager`,
+    abortSignal: signal,
     agentRuntime: 'proxy_manager',
     isUserProxy: true,
     isProxyManager: true,
@@ -383,7 +416,7 @@ async function runProxyManagerTurn(input: {
     phase: 'reviewing',
     timestamp: Date.now(),
   });
-  const response = await client.executeMessageLoop(context, prompt, priorConversation, (trace: any) => {
+  const reportProgress = (trace: any) => {
     const type = String(trace?.type || '');
     const text = compact(trace?.text || trace?.message || '', 240);
     const tool = compact(trace?.tool || trace?.toolName || trace?.name || '', 100);
@@ -398,13 +431,36 @@ async function runProxyManagerTurn(input: {
     if (type === 'error' && text) {
       input.onProgress?.({ type: 'status', text, phase: 'error', timestamp: Date.now() });
     }
-  }, []);
-  const decision = extractDecision(response.text);
-  if (readProxyControl(input.chatId).stopGeneration !== stopGenerationAtStart && decision.operation !== 'none') {
+  };
+  let response = await client.executeMessageLoop(context, prompt, priorConversation, reportProgress, input.mediaAttachments || []);
+  signal.throwIfAborted();
+  let decision = extractDecision(response.text);
+  let freshMainContext = agentRegistry.getProxyManagerContext(input.chatId);
+  const executionBoundary = (snapshot: any) => `${snapshot?.run?.runId || ''}:${snapshot?.run?.status || 'idle'}:${snapshot?.run?.settling === true}`;
+  if (decision.operation !== 'none' && executionBoundary(live) !== executionBoundary(freshMainContext)
+    && readProxyControl(input.chatId).stopGeneration === stopGenerationAtStart) {
+    // Give the model the changed situation instead of mechanically converting
+    // a correction for one run into an instruction for an unrelated successor.
+    const replanningBoundary = executionBoundary(freshMainContext);
+    input.onProgress?.({ type: 'status', text: 'Main changed state; updating the handoff', phase: 'reviewing', timestamp: Date.now() });
+    const revised = await client.executeMessageLoop(context,
+      `${prompt}\n\nLATEST EXECUTION SNAPSHOT — this replaces the earlier live snapshot:\n${JSON.stringify(freshMainContext, null, 2)}\nYour earlier proposed operation was ${decision.operation}. No operation has been delivered. Reconsider timing and task ownership using the latest state, keep the original user intent, and return the same JSON contract. Do not attach an old correction to unrelated new work.`,
+      priorConversation, reportProgress, input.mediaAttachments || []);
+    signal.throwIfAborted();
+    response = { ...revised, trace: [...(response.trace || []), ...(revised.trace || [])] };
+    decision = extractDecision(revised.text);
+    freshMainContext = agentRegistry.getProxyManagerContext(input.chatId);
+    if (decision.operation !== 'none' && replanningBoundary !== executionBoundary(freshMainContext)) {
+      decision.operation = 'none';
+      decision.reply = 'Main changed tasks again while I was coordinating. Your request is saved, but I have not delivered an instruction to the new task.';
+    }
+  }
+  const deliveryControl = readProxyControl(input.chatId);
+  if ((deliveryControl.stopGeneration !== stopGenerationAtStart || !deliveryControl.enabled || deliveryControl.paused) && decision.operation !== 'none') {
     decision.operation = 'none';
     decision.instruction = '';
     decision.tasks = [];
-    decision.reply = 'Main was stopped while I was reviewing this request, so I did not start or queue more work.';
+    decision.reply = 'Execution controls changed while I was reviewing this request, so I did not deliver further instructions. Resume Proxy when you are ready.';
     input.onProgress?.({
       type: 'status',
       text: 'Main was stopped; the pending routing decision was safely discarded',
@@ -412,34 +468,20 @@ async function runProxyManagerTurn(input: {
       timestamp: Date.now(),
     });
   }
-  const conversationalText = input.message.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
-  const isGreetingOnly = /^(hi|hello|hey|hiya|yo|good morning|good afternoon|good evening)$/.test(conversationalText);
-  const isThanksOnly = /^(thanks|thank you|thx|got it|okay thanks|ok thanks)$/.test(conversationalText);
-  if (isGreetingOnly || isThanksOnly) {
-    decision.operation = 'none';
-    decision.instruction = '';
-    decision.tasks = [];
-    decision.reply = isThanksOnly ? 'You’re welcome.' : 'Hi — what would you like to coordinate?';
-  }
-  const freshMainContext = agentRegistry.getProxyManagerContext(input.chatId);
-  const mainIsRunning = freshMainContext?.run?.status === 'running';
+  // Conversation intent belongs to the model; keyword overrides lose meaning
+  // when a short message refers to an attachment or an earlier decision.
+  const mainIsRunning = freshMainContext?.run?.status === 'running' || freshMainContext?.run?.settling === true;
   if (decision.operation === 'start_main' && mainIsRunning) {
-    const belongsToCurrentRun =
-      decision.scope === 'current_step' ||
-      decision.scope === 'current_task' ||
-      decision.intent === 'correction' ||
-      decision.intent === 'preference';
-    decision.operation = belongsToCurrentRun ? 'guide_adaptively' : 'queue_after_current';
-    decision.target = belongsToCurrentRun ? 'both' : 'main';
-    decision.reply = belongsToCurrentRun
-      ? 'Main is already active, so I routed this request into the current run through Proxy-Agent supervision.'
-      : 'Main is already active, so I queued this as a separate next task.';
+    decision.operation = 'queue_after_current';
+    decision.target = 'main';
+    decision.deliveryReplies = undefined;
   } else if (decision.operation === 'queue_after_current' && !mainIsRunning) {
     decision.operation = 'start_main';
     decision.target = 'main';
     decision.reply = 'Main was idle, so I started this task now.';
+    decision.deliveryReplies = undefined;
   }
-  const work = (isGreetingOnly || isThanksOnly ? [] : (Array.isArray(response.trace) ? response.trace : []))
+  const work = (Array.isArray(response.trace) ? response.trace : [])
     .filter((item: any) => item?.tool && item?.text)
     .map((item: any) => ({ text: compact(item.text, 180), tool: compact(item.tool, 100) }))
     .filter((item: { text: string; tool: string }, index: number, items: Array<{ text: string; tool: string }>) =>
@@ -449,6 +491,7 @@ async function runProxyManagerTurn(input: {
 
   let delivery: ProxyManagerChatMessage['delivery'] = 'none';
   let wakeRequested = false;
+  let deliveryError = '';
   const hasOperationPayload = decision.operation === 'schedule_workflow'
     ? decision.tasks.length >= 2
     : Boolean(decision.instruction);
@@ -470,32 +513,24 @@ async function runProxyManagerTurn(input: {
       timestamp: Date.now(),
     });
     if (decision.operation === 'schedule_workflow') {
-      let firstStatus: 'pending' | 'starting' | 'failed' = 'pending';
-      let firstAccepted = true;
-      for (let index = 0; index < decision.tasks.length; index += 1) {
-        const task = decision.tasks[index];
-        const queued = agentRegistry.queueProxyTask(input.chatId, task.prompt, task.rationale, {
-          dependency: task.dependency,
-        });
-        if (index === 0) {
-          firstStatus = queued.status;
-          firstAccepted = queued.accepted;
-          if (!queued.accepted) break;
-        }
-      }
-      delivery = !firstAccepted || firstStatus === 'failed'
+      const queued = agentRegistry.queueProxyWorkflow(input.chatId, decision.tasks.map(task => ({ ...task, mediaAttachments: input.mediaAttachments, model: input.mainModel })));
+      deliveryError = queued.error || '';
+      delivery = !queued.accepted || queued.status === 'failed'
         ? 'unavailable'
-        : firstStatus === 'starting' ? 'active' : 'pending';
+        : queued.status === 'starting' ? 'active' : 'pending';
       wakeRequested = delivery === 'active';
     } else if (decision.operation === 'queue_after_current' || decision.operation === 'start_main' || decision.operation === 'replace_queued_task') {
       const queued = agentRegistry.queueProxyTask(input.chatId, decision.instruction, decision.rationale, {
         dependency: decision.activationCondition,
         supersedesTaskId: decision.operation === 'replace_queued_task' ? decision.supersedesTaskId : undefined,
+        mediaAttachments: input.mediaAttachments,
+        model: input.mainModel,
       });
       delivery = !queued.accepted || queued.status === 'failed'
         ? 'unavailable'
         : queued.status === 'starting' ? 'active' : 'pending';
       wakeRequested = delivery === 'active';
+      deliveryError = queued.error || '';
     } else {
       const timing = decision.operation === 'watch_condition'
         ? 'when_relevant'
@@ -517,16 +552,17 @@ async function runProxyManagerTurn(input: {
         scope: decision.scope,
         supersedesDirectiveId: decision.supersedesDirectiveId || undefined,
       });
-      delivery = result.accepted ? result.status : 'unavailable';
+      delivery = result.accepted ? result.status : result.status === 'rejected' ? 'rejected' : 'unavailable';
     }
   }
 
   const deliveredOperation: ProxyManagerOperation = delivery === 'none' ? 'none' : decision.operation;
-  const groundedReply = deliveredOperation === 'none'
-    ? decision.reply || 'Understood.'
-    : groundedOperationReply(deliveredOperation, delivery);
+  const groundedReply = deliveryError || (deliveredOperation === 'none'
+    ? decision.operation === 'none' ? decision.reply || 'Understood.' : 'No instruction was delivered. The proposed action did not contain a complete, grounded request.'
+    : decision.deliveryReplies?.[delivery || 'none'] || groundedOperationReply(deliveredOperation, delivery));
   const proxyMessage: ProxyManagerChatMessage = {
     id: randomUUID(),
+    requestId: input.requestId,
     role: 'proxy',
     text: groundedReply.trim(),
     createdAt: Date.now(),
@@ -534,22 +570,19 @@ async function runProxyManagerTurn(input: {
     delivery,
     work,
   };
-  if (decision.stateUpdate.activeIntent) {
+  if (decision.stateUpdateProvided?.length) {
     store.coordinationModel = {
-      activeIntent: decision.stateUpdate.activeIntent,
-      constraints: decision.stateUpdate.constraints,
-      dependencies: decision.stateUpdate.dependencies,
-      openDecisions: decision.stateUpdate.openDecisions,
-      durableOutcomes: decision.stateUpdate.durableOutcomes,
-      lastOperation: decision.operation,
+      ...store.coordinationModel,
+      ...Object.fromEntries(Object.entries(decision.stateUpdate).filter(([key]) => decision.stateUpdateProvided?.includes(key))),
+      lastOperation: deliveredOperation,
     };
   } else {
-    store.coordinationModel.lastOperation = decision.operation;
+    store.coordinationModel.lastOperation = deliveredOperation;
   }
   store.messages.push(proxyMessage);
   writeStore(store);
   if (resolveSelfImprovementEnabled()) {
-    await adaptiveExperience.queueReflection({
+    void adaptiveExperience.queueReflection({
       enabled: true,
       userId: 'user',
       projectId: input.chatId,
@@ -578,16 +611,43 @@ async function runProxyManagerTurn(input: {
   };
 }
 
-export async function talkToProxyManager(input: {
-  chatId: string;
-  message: string;
-  attachmentContext?: string;
-  model?: { provider?: string; modelId?: string };
-  contextCompaction?: unknown;
-  onProgress?: (event: ProxyManagerProgress) => void;
-}): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
+export async function talkToProxyManager(input: ProxyManagerInput): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
+  const stopGenerationAtAdmission = readProxyControl(input.chatId).stopGeneration;
   const previous = proxyManagerTurnChains.get(input.chatId) || Promise.resolve();
-  const turn = previous.catch(() => undefined).then(() => runProxyManagerTurn(input));
+  if (proxyManagerTurnChains.has(input.chatId)) input.onProgress?.({ type: 'status', text: 'Waiting for the previous coordination request', phase: 'queued', timestamp: Date.now() });
+  const turn = previous.catch(() => undefined).then(async () => {
+    const controller = new AbortController();
+    const unsubscribe = subscribeProxyControl(input.chatId, state => {
+      if (!state.enabled || state.paused) controller.abort(new Error(state.paused ? 'Proxy paused. Autonomous mode remains on.' : 'Autonomous mode turned off.'));
+    });
+    let onAbort: () => void;
+    const interrupted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(controller.signal.reason || new Error('Proxy interrupted.'));
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+    });
+    let timeout: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        const error = new Error('The side agent took too long to respond. Your message is saved; Main continues independently.');
+        controller.abort(error);
+        reject(error);
+      }, 150_000);
+      timeout.unref?.();
+    });
+    try {
+      return await Promise.race([runProxyManagerTurn(input, controller.signal, stopGenerationAtAdmission), deadline, interrupted]);
+    } catch (error: any) {
+      const store = readStore(input.chatId);
+      const failure: ProxyManagerChatMessage = { id: randomUUID(), requestId: input.requestId, role: 'proxy', text: error?.message || 'Proxy Manager is temporarily unavailable.', createdAt: Date.now(), operation: 'none', delivery: 'unavailable' };
+      store.messages.push(failure);
+      writeStore(store);
+      throw error;
+    } finally {
+      clearTimeout(timeout!);
+      unsubscribe();
+      controller.signal.removeEventListener('abort', onAbort!);
+    }
+  });
   const settled = turn.then(() => undefined, () => undefined);
   proxyManagerTurnChains.set(input.chatId, settled);
   try {

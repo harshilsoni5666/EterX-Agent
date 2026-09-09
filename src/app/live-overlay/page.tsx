@@ -154,6 +154,7 @@ export default function LiveOverlayPage() {
       <style dangerouslySetInnerHTML={{
         __html: `
         :root, html, body, #__next, main { background: transparent !important; background-color: transparent !important; margin: 0; padding: 0; overflow: hidden; pointer-events: none; color-scheme: dark; }
+        :root[data-theme="light"], :root[data-theme="light"] body { background: transparent !important; background-color: transparent !important; }
         body::before, body::after { display: none !important; content: none !important; }
         canvas { background: transparent !important; }
         button, a, input { pointer-events: auto !important; }

@@ -1,5 +1,6 @@
 import type { ToolDefinition } from '../../schemas';
 import { SANDBOX_BLOCKED_TOOLS, SANDBOX_ALLOWED_CAPABILITIES } from '../../../sandbox/sandbox-guard';
+import { getCodingMode } from '../../../code/coding-modes';
 
 export type ToolCapabilityDecision = {
   allowed: boolean;
@@ -82,6 +83,13 @@ export function enforceToolCapability(
   _args: any,
   context?: any,
 ): ToolCapabilityDecision {
+  const codingMode = !context?.isUserProxy && getCodingMode(context?.agentProfile);
+  if (codingMode && !(codingMode.tools as readonly string[]).includes(toolName)) {
+    return {
+      allowed: false,
+      reason: `${toolName} is not available in ${codingMode.label}. Use this run's declared tools; a different agent selection takes effect on a later turn.`,
+    };
+  }
   // ── Sandbox enforcement (ONLY when sandbox mode is active) ──
   if (context?.runLocation === 'sandbox') {
     if (SANDBOX_BLOCKED_TOOLS.has(toolName)) {

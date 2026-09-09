@@ -9,6 +9,7 @@ export const ToolParameterSchema = z.record(z.string(), z.any());
 export const ToolDefinitionSchema = z.object({
   name: z.string(),
   description: z.string(),
+  modelDescription: z.string().optional(), // Complete compact usage contract; do not truncate.
   category: z.enum(['core', 'workspace', 'automation', 'support', 'research', 'communication', 'monitoring']),
   inputSchema: z.any(), // Should be a Zod schema object
   outputSchema: z.any(), // Map to expected output structure

@@ -1,3 +1,5 @@
+import { requestJson } from './request-json';
+
 type StorageValues = Record<string, string>;
 
 const PREFERENCES_ENDPOINT = '/api/preferences';
@@ -14,6 +16,8 @@ const memory = new Map<string, string>();
 const pendingRemovals = new Set<string>();
 const pendingMutations = new Map<string, string | null>();
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let persistRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+let persistRecoveryAttempt = 0;
 let persistChain: Promise<boolean> = Promise.resolve(true);
 let storageHydrated = false;
 let storageLoadFailed = false;
@@ -51,12 +55,18 @@ const normalizeStoredValues = (raw: unknown): StorageValues | null => {
 const loadStoredValues = async (): Promise<StorageValues | null> => {
   const desktopApi = getDesktopPreferencesApi();
   if (desktopApi?.getRendererPreferences) {
-    const payload = await desktopApi.getRendererPreferences();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const payload = await Promise.race([
+      desktopApi.getRendererPreferences(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Desktop preference read timed out.')), 15_000);
+      }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
     if (payload?.ok === false) throw new Error(payload.error || 'Desktop preference read failed.');
     return normalizeStoredValues(payload?.values);
   }
 
-  const response = await fetch(PREFERENCES_ENDPOINT, { cache: 'no-store' });
+  const response = await requestJson(PREFERENCES_ENDPOINT, { cache: 'no-store' });
   const payload = await response.json();
   if (!response.ok || !payload?.ok) throw new Error(payload?.error || `Preference read failed: ${response.status}`);
   return normalizeStoredValues(payload.values);
@@ -70,11 +80,13 @@ const saveStoredValues = async (values: StorageValues, remove: string[]): Promis
     return;
   }
 
-  const response = await fetch(PREFERENCES_ENDPOINT, {
+  const response = await requestJson(PREFERENCES_ENDPOINT, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ values, remove }),
-    keepalive: true,
+    // Browser keepalive requests share a 64 KiB body budget. Larger settings
+    // must use a normal request instead of failing every retry immediately.
+    keepalive: new Blob([JSON.stringify({ values, remove })]).size < 60_000,
   });
   if (!response.ok) throw new Error(`Preference write failed: ${response.status}`);
 };
@@ -94,6 +106,10 @@ const getPendingPersistableMutations = () => {
 
 const enqueuePersist = (): Promise<boolean> => {
   const write = async () => {
+    if (persistRecoveryTimer) {
+      clearTimeout(persistRecoveryTimer);
+      persistRecoveryTimer = null;
+    }
     const { values, remove, snapshot } = getPendingPersistableMutations();
     if (snapshot.size === 0) return true;
 
@@ -110,6 +126,7 @@ const enqueuePersist = (): Promise<boolean> => {
           if (value === null) pendingRemovals.delete(key);
         });
         notifyPreferencesCommitted();
+        persistRecoveryAttempt = 0;
         return true;
       } catch {
         if (attempt < 2) {
@@ -117,6 +134,14 @@ const enqueuePersist = (): Promise<boolean> => {
         }
       }
     }
+    // A failed debounced save must retry even when no further setting changes
+    // occur. The pending map retains the latest values for the next attempt.
+    const delay = Math.min(30_000, 2_000 * (2 ** persistRecoveryAttempt));
+    persistRecoveryAttempt = Math.min(persistRecoveryAttempt + 1, 4);
+    persistRecoveryTimer = setTimeout(() => {
+      persistRecoveryTimer = null;
+      void enqueuePersist();
+    }, delay);
     return false;
   };
 
@@ -288,6 +313,7 @@ export const appStorageReady = (async () => {
 
 export async function refreshAppStorage(): Promise<boolean> {
   if (!isBrowser) return true;
+  await appStorageReady;
   if (storageRefreshPromise) return storageRefreshPromise;
 
   storageRefreshPromise = (async () => {
@@ -319,7 +345,7 @@ export async function refreshAppStorage(): Promise<boolean> {
       clearTimeout(storageRecoveryTimer);
       storageRecoveryTimer = null;
     }
-    const hadPendingWrites = persistRequestedDuringHydration;
+    const hadPendingWrites = persistRequestedDuringHydration || getPendingPersistableMutations().snapshot.size > 0;
     persistRequestedDuringHydration = false;
     window.dispatchEvent(new CustomEvent(FOLDER_STORAGE_READY_EVENT, { detail: { loaded: true } }));
     const pendingWriteSaved = !hadPendingWrites || await enqueuePersist();

@@ -29,6 +29,11 @@ export function isPrivateReasoningTrace(trace: any): boolean {
  */
 export function isUserVisibleTrace(trace: any): boolean {
   if (!trace || typeof trace !== 'object') return false;
+  const toolName = String(trace.toolName || trace.name || '').trim().toLowerCase();
+  // Attachment ingestion is part of the message payload, not a user-facing
+  // tool action. Keep legacy persisted rows out of restored chats as well as
+  // preventing new runs from emitting them.
+  if (toolName === 'attachment_view') return false;
   if (!isPrivateReasoningTrace(trace)) return true;
   const type = String(trace.type || '').trim().toLowerCase();
   return type === 'thought_stream' && trace.uiOnly === true;

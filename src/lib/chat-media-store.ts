@@ -26,7 +26,11 @@ export type ChatMediaAttachment = {
 const CHAT_MEDIA_ROOT = path.join(getEterxDataDir(), 'chat-media');
 const MAX_CHAT_MEDIA = 200;
 const MAX_REQUEST_MEDIA = 50;
-const MEDIA_REFERENCE_PATTERN = /\b(?:image|images|photo|photos|picture|pictures|screenshot|screenshots|video|videos|media|attachment|attachments|attached|document|documents|pdf|spreadsheet|audio|recording|view|see|analy[sz]e|compare|above|earlier|previous|before|it|this|that|these|those)\b/i;
+// Recalling durable media is intentionally stricter than ordinary pronoun or
+// action matching. Words such as "it", "this", "see", and "analyze" occur in
+// normal follow-up messages and previously caused every stored upload to be
+// attached to later provider requests.
+const MEDIA_REFERENCE_PATTERN = /(?:\b(?:the|this|that|these|those|same|previous|earlier|last|above|uploaded|attached)\s+(?:image|images|photo|photos|picture|pictures|screenshot|screenshots|video|videos|media|attachment|attachments|document|documents|pdf|spreadsheet|audio|recording|file|files)\b|\b(?:image|images|photo|photos|picture|pictures|screenshot|screenshots|video|videos|attachment|attachments|document|documents|pdf|spreadsheet|audio|recording|file|files)\s+(?:above|again|previously|earlier|before)\b|\b(?:look|view|inspect|analy[sz]e|compare|recheck|revisit|describe|read)\s+(?:at\s+)?(?:the\s+|this\s+|that\s+|these\s+|those\s+|previous\s+|earlier\s+|last\s+|uploaded\s+|attached\s+)?(?:image|images|photo|photos|picture|pictures|screenshot|screenshots|video|videos|media|attachment|attachments|document|documents|pdf|spreadsheet|audio|recording|file|files)\b|\b(?:attachment|file)\s*(?:#|number\s*)?\d+\b)/i;
 
 const safeMediaName = (value: unknown, fallback = 'attachment') => {
   const raw = String(value || '').trim() || fallback;
@@ -147,15 +151,14 @@ export async function resolveChatMediaForRequest(
   prompt: string,
   currentAttachments: any[] = [],
 ): Promise<ChatMediaAttachment[]> {
-  const registered = await registerChatMediaAttachments(chatId, currentAttachments);
+  await registerChatMediaAttachments(chatId, currentAttachments);
   const manifest = await readManifest(chatId);
-  if (manifest.length === 0) return registered;
+  if (manifest.length === 0) return [];
 
   const currentIds = new Set(currentAttachments.map(item => String(item?.id || '')).filter(Boolean));
-  const mentionsMedia = MEDIA_REFERENCE_PATTERN.test(String(prompt || ''));
-  if (!mentionsMedia) {
-    if (currentIds.size === 0) return registered;
-
+  if (currentIds.size > 0) {
+    // A newly submitted upload owns this turn. Even if its prompt says "this
+    // image", do not mix every older chat upload into the provider request.
     const current = manifest.filter(item => currentIds.has(item.id)).slice(0, MAX_REQUEST_MEDIA);
     const missingCurrent = currentAttachments.filter(item => {
       const id = String(item?.id || '');
@@ -164,10 +167,13 @@ export async function resolveChatMediaForRequest(
     return [...current, ...missingCurrent];
   }
 
-  // A visual reference such as “the image above”, “compare the screenshots”,
-  // or “look at it again” resolves the complete chat media set. This gives the
-  // model stable ordinal context while avoiding unrelated media on text-only
-  // turns. The provider layer may still omit unsupported media types safely.
+  // A text-only follow-up does not implicitly carry media. Durable originals
+  // remain available for an explicit request such as "look at the previous
+  // screenshot again", but ordinary queries are sent without attachments.
+  if (!MEDIA_REFERENCE_PATTERN.test(String(prompt || ''))) return [];
+
+  // An explicit prior-media reference resolves the complete stable set so
+  // ordinal requests such as "compare the earlier screenshots" keep working.
   return manifest.slice(-MAX_REQUEST_MEDIA);
 }
 

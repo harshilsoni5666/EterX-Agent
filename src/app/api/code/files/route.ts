@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { promises as fs } from 'fs';
+import { promises as fs, watch, type FSWatcher } from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { getPathResolverInfo, resolveReadableWorkspacePath } from '@/lib/agent/workspace/path_resolver';
@@ -22,6 +22,8 @@ interface TreeBuildState {
   entries: number;
   truncated: boolean;
   signatureParts: string[];
+  observeDirectory?: (directory: string) => void;
+  onReadError?: () => void;
 }
 
 const MAX_TREE_DEPTH = 4;
@@ -59,6 +61,121 @@ const isSkippedName = (name: string) => {
   return name.startsWith('.') && name !== '.vscode';
 };
 
+type TreeSnapshot = {
+  root: string;
+  tree: FileEntry[];
+  name: string;
+  truncated: boolean;
+  totalEntries: number;
+  signature: string;
+};
+type TreeCacheEntry = {
+  snapshot?: TreeSnapshot;
+  pending?: Promise<TreeSnapshot>;
+  watchers: FSWatcher[];
+  revision: number;
+  builtRevision: number;
+  builtAt: number;
+  lastUsedAt: number;
+  watchFailed: boolean;
+  disposed: boolean;
+  expiryTimer?: ReturnType<typeof setTimeout>;
+};
+const treeCache = new Map<string, TreeCacheEntry>();
+const TREE_CACHE_IDLE_MS = 60_000;
+const TREE_RECONCILE_MS = 15_000;
+const MAX_CACHED_TREES = 6;
+
+function disposeTreeCacheEntry(key: string, entry: TreeCacheEntry) {
+  entry.disposed = true;
+  entry.watchers.forEach(watcher => watcher.close());
+  entry.watchers = [];
+  if (entry.expiryTimer) clearTimeout(entry.expiryTimer);
+  if (treeCache.get(key) === entry) treeCache.delete(key);
+}
+
+async function readTreeSnapshot(root: string, maxDepth: number): Promise<TreeSnapshot> {
+  const key = `${root}:${maxDepth}`;
+  let entry = treeCache.get(key);
+  if (!entry) {
+    if (treeCache.size >= MAX_CACHED_TREES) {
+      const oldest = [...treeCache.entries()].sort((left, right) => left[1].lastUsedAt - right[1].lastUsedAt)[0];
+      if (oldest) disposeTreeCacheEntry(oldest[0], oldest[1]);
+    }
+    entry = {
+      watchers: [], revision: 0, builtRevision: -1, builtAt: 0,
+      lastUsedAt: Date.now(), watchFailed: false, disposed: false,
+    };
+    treeCache.set(key, entry);
+    const ownedEntry = entry;
+    const expire = () => {
+      const remaining = TREE_CACHE_IDLE_MS - (Date.now() - ownedEntry.lastUsedAt);
+      if (remaining <= 0) disposeTreeCacheEntry(key, ownedEntry);
+      else {
+        ownedEntry.expiryTimer = setTimeout(expire, remaining);
+        ownedEntry.expiryTimer.unref?.();
+      }
+    };
+    entry.expiryTimer = setTimeout(expire, TREE_CACHE_IDLE_MS);
+    entry.expiryTimer.unref?.();
+  }
+  entry.lastUsedAt = Date.now();
+  if (entry.pending) return entry.pending;
+  if (entry.snapshot && !entry.watchFailed && entry.builtRevision === entry.revision && Date.now() - entry.builtAt < TREE_RECONCILE_MS) {
+    return entry.snapshot;
+  }
+
+  const ownedEntry = entry;
+  ownedEntry.watchers.forEach(watcher => watcher.close());
+  ownedEntry.watchers = [];
+  ownedEntry.watchFailed = false;
+  const revision = ownedEntry.revision;
+  const state: TreeBuildState = {
+    entries: 0, truncated: false, signatureParts: [],
+    onReadError() { ownedEntry.watchFailed = true; },
+    observeDirectory(directory) {
+      if (ownedEntry.disposed) return;
+      try {
+        // Observe only directories that actually appear in the bounded tree.
+        // This avoids recursive watchers over dependencies and build output.
+        const watcher = watch(directory, { persistent: false }, (_event, filename) => {
+          if (filename && isSkippedName(String(filename))) return;
+          ownedEntry.revision += 1;
+        });
+        watcher.on('error', () => {
+          ownedEntry.watchFailed = true;
+          ownedEntry.revision += 1;
+          watcher.close();
+        });
+        ownedEntry.watchers.push(watcher);
+      } catch {
+        // Network volumes and watcher limits retain the original fresh scan
+        // on every request. A failed watch must never freeze the explorer.
+        ownedEntry.watchFailed = true;
+      }
+    },
+  };
+  ownedEntry.pending = (async () => {
+    const tree = await getFileTree(root, 0, maxDepth, state);
+    const hash = createHash('sha1').update(state.signatureParts.join('|')).digest('hex');
+    const snapshot: TreeSnapshot = {
+      root, tree, name: path.basename(root), truncated: state.truncated,
+      totalEntries: state.entries,
+      signature: `${state.entries}:${state.truncated ? 1 : 0}:${hash}`,
+    };
+    ownedEntry.snapshot = snapshot;
+    // An edit during traversal leaves the snapshot dirty for the next caller.
+    ownedEntry.builtRevision = revision;
+    ownedEntry.builtAt = Date.now();
+    return snapshot;
+  })();
+  try {
+    return await ownedEntry.pending;
+  } finally {
+    ownedEntry.pending = undefined;
+  }
+}
+
 const parsePositiveInt = (value: unknown, fallback?: number) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -73,6 +190,7 @@ async function getFileTree(dirPath: string, depth: number, maxDepth: number, sta
   if (depth > maxDepth || state.entries >= MAX_TREE_ENTRIES) return [];
 
   try {
+    state.observeDirectory?.(dirPath);
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
     const sorted = entries
       .filter(entry => !isSkippedName(entry.name) && !entry.isSymbolicLink())
@@ -112,6 +230,7 @@ async function getFileTree(dirPath: string, depth: number, maxDepth: number, sta
             extension: path.extname(entry.name).slice(1).toLowerCase(),
           });
         } catch {
+          state.onReadError?.();
           state.signatureParts.push(`f:${fullPath}:0:0`);
           result.push({
             name: entry.name,
@@ -125,6 +244,7 @@ async function getFileTree(dirPath: string, depth: number, maxDepth: number, sta
 
     return result;
   } catch {
+    state.onReadError?.();
     return [];
   }
 }
@@ -152,19 +272,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Path is not a directory' }, { status: 400 });
     }
 
-    const state: TreeBuildState = { entries: 0, truncated: false, signatureParts: [] };
-    const tree = await getFileTree(dirPath, 0, maxDepth, state);
-
-    const signature = createHash('sha1').update(state.signatureParts.join('|')).digest('hex');
-
-    return NextResponse.json({
-      root: dirPath,
-      tree,
-      name: path.basename(dirPath),
-      truncated: state.truncated,
-      totalEntries: state.entries,
-      signature: `${state.entries}:${state.truncated ? 1 : 0}:${signature}`,
-    });
+    return NextResponse.json(await readTreeSnapshot(dirPath, maxDepth));
   } catch (error: any) {
     return NextResponse.json({ error: formatUnknownError(error, 'Could not read workspace files') }, { status: 500 });
   }

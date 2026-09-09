@@ -1,3 +1,5 @@
+import { describeTimeout } from './timeout-error';
+
 /** Convert provider/tool error payloads into stable user-visible text. */
 export const formatUnknownError = (
   value: unknown,
@@ -12,6 +14,8 @@ export const formatUnknownError = (
     if (typeof candidate === 'string') {
       const text = candidate.trim();
       if (!text || text === '[object Object]') return '';
+      const legacyTaskFailure = text.match(/^taskId:\s*[^;]+;\s*success:\s*false;\s*finalAnswer:\s*([\s\S]*?)(?:;\s*(?:artifactsGenerated|executionTimeMs|complexity|modelMode):|$)/i);
+      if (legacyTaskFailure) return legacyTaskFailure[1].trim();
       if (depth < 4 && ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']')))) {
         try {
           const parsed = JSON.parse(text);
@@ -37,7 +41,7 @@ export const formatUnknownError = (
     }
 
     const record = candidate as Record<string, unknown>;
-    for (const key of ['message', 'error', 'detail', 'reason', 'data', 'cause']) {
+    for (const key of ['message', 'error', 'detail', 'reason', 'finalAnswer', 'data', 'cause']) {
       if (!(key in record) || record[key] === candidate) continue;
       const nested = visit(record[key], depth + 1);
       if (nested) return nested;
@@ -59,5 +63,9 @@ export const formatUnknownError = (
   };
 
   const formatted = visit(value, 0).replace(/\s+/g, ' ').trim();
-  return (formatted || fallback).slice(0, Math.max(1, maxLength));
+  const timeout = describeTimeout(value);
+  const detail = timeout && !formatted.startsWith(timeout.label)
+    ? `${timeout.label}${formatted ? `: ${formatted}` : ''}`
+    : formatted;
+  return (detail || fallback).slice(0, Math.max(1, maxLength));
 };

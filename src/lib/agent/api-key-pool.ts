@@ -313,8 +313,8 @@ class APIKeyPool {
 
     // 503/500 are Google-side overloads — NOT the key's fault.
     // Never penalize key health for server-side overload.
-    if (errorType === 'server_error') {
-      console.warn(`[APIKeyPool] Key #${failedKeyIndex} got server overload (503/500); rotating without health penalty.`);
+    if (errorType === 'server_error' || errorType === 'transient' || /timeout|timed out|deadline/i.test(errorMsg)) {
+      console.warn(`[APIKeyPool] Request failed (${errorType}); rotating without a credential-health penalty.`);
       this.activeLeases.delete(chatId);
       return this.leaseKey(chatId, currentLease.purpose, failedKeyIndex);
     }

@@ -138,6 +138,9 @@ export class TfIdfVectorizer {
   /** Maximum vocabulary size before pruning */
   private maxVocab: number;
 
+  /** Reused until corpus statistics change; vectorize is the retrieval hot path. */
+  private dynamicStopWordsCache: Set<string> | null = null;
+
   constructor(maxVocab = MAX_VOCAB_SIZE) {
     this.maxVocab = maxVocab;
   }
@@ -184,6 +187,7 @@ export class TfIdfVectorizer {
     const terms = this.tokenize(text);
     const uniqueTerms = new Set(terms);
     this.documentCount++;
+    this.dynamicStopWordsCache = null;
 
     for (const term of uniqueTerms) {
       this.documentFrequency.set(
@@ -249,13 +253,18 @@ export class TfIdfVectorizer {
 
   /** Get dynamic stop words (frequency > 70% in corpus) */
   private getDynamicStopWords(): Set<string> {
+    if (this.dynamicStopWordsCache) return this.dynamicStopWordsCache;
     const dynamicStop = new Set<string>();
-    if (this.documentCount < 5) return dynamicStop;
+    if (this.documentCount < 5) {
+      this.dynamicStopWordsCache = dynamicStop;
+      return dynamicStop;
+    }
     for (const [term, df] of this.documentFrequency.entries()) {
       if (df / this.documentCount > 0.70) {
         dynamicStop.add(term);
       }
     }
+    this.dynamicStopWordsCache = dynamicStop;
     return dynamicStop;
   }
 
@@ -264,6 +273,7 @@ export class TfIdfVectorizer {
    */
   private pruneVocabulary(): void {
     if (this.vocabulary.size <= this.maxVocab * 0.8) return;
+    this.dynamicStopWordsCache = null;
 
     const sorted = [...this.documentFrequency.entries()]
       .sort((a, b) => b[1] - a[1]);
@@ -316,6 +326,7 @@ export class TfIdfVectorizer {
     this.documentFrequency = new Map(state.documentFrequency);
     this.documentCount = state.documentCount;
     this.termOrder = [...state.termOrder];
+    this.dynamicStopWordsCache = null;
   }
 }
 

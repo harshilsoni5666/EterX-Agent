@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
+import { FaceMotion } from './face-motion';
+import { useAnimationVisibility } from '../ui/use-animation-visibility';
 import {
   hashAgentFaceSignal,
   resolveAgentFaceExpression,
@@ -42,7 +44,8 @@ export const AgentFace = React.memo(({
   className = '',
   ariaLabel = 'EterX agent identity',
 }: AgentFaceProps) => {
-  const controllerSnapshot = useAgentFaceSnapshot(syncWithController);
+  const { ref: visibilityRef, visible: pageVisible } = useAnimationVisibility<HTMLButtonElement>();
+  const controllerSnapshot = useAgentFaceSnapshot(syncWithController && pageVisible);
   const [wiggleToken, setWiggleToken] = useState(0);
   const [reaction, setReaction] = useState<AgentFaceReaction>('none');
   const clickCountRef = useRef(0);
@@ -95,7 +98,7 @@ export const AgentFace = React.memo(({
   }, []);
 
   useEffect(() => {
-    if (size === 'inline') return;
+    if (size === 'inline' || !pageVisible) return;
 
     const scheduleAmbientFocus = () => {
       ambientTimerRef.current = setTimeout(() => {
@@ -112,7 +115,25 @@ export const AgentFace = React.memo(({
     return () => {
       if (ambientTimerRef.current) clearTimeout(ambientTimerRef.current);
     };
-  }, [size]);
+  }, [size, pageVisible]);
+
+  // Chromium background throttling stays disabled so scheduled tasks can be
+  // admitted on time. Replace the face with an equal-size inert placeholder
+  // only while the face is not visible, preventing its many decorative
+  // motion tracks from consuming CPU where no frame can be seen.
+  if (!pageVisible) {
+    return (
+      <motion.button
+        ref={visibilityRef}
+        type="button"
+        aria-hidden="true"
+        tabIndex={-1}
+        animate={{ y: 0, rotate: 0, scale: 1 }}
+        transition={{ duration: 0 }}
+        className={`pointer-events-none relative z-20 shrink-0 rounded-full ${ sizeProfile.outer } ${ className }`}
+      />
+    );
+  }
 
   const resetReaction = (delay: number) => {
     if (reactionTimerRef.current) clearTimeout(reactionTimerRef.current);
@@ -313,6 +334,7 @@ export const AgentFace = React.memo(({
 
   return (
     <motion.button
+      ref={visibilityRef}
       type="button"
       aria-label={ariaLabel}
       tabIndex={interactive ? 0 : -1}
@@ -339,7 +361,7 @@ export const AgentFace = React.memo(({
         className={`absolute inset-0 ${ wiggleToken ? 'eterx-agent-face-click' : '' }`}
         onAnimationEnd={() => setWiggleToken(0)}
       >
-        <motion.div
+        <FaceMotion.div
           animate={{
             x: '-50%',
             y: '-50%',
@@ -364,22 +386,22 @@ export const AgentFace = React.memo(({
           <div className="pointer-events-none absolute inset-[2.5px] rounded-full shadow-none" />
           <span className="pointer-events-none absolute left-[7px] top-[4px] h-[7px] w-[12px] rotate-[-18deg] rounded-full bg-white/42 blur-[2px]" />
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_74%_78%,rgba(4,13,38,0.52),transparent_44%)]" />
-          <motion.span
+          <FaceMotion.span
             animate={{ opacity: active || isCurious || isLaughing ? [0.2, 0.38, 0.22] : 0.24, x: active || isLaughing ? [-5, 4, -5] : 0 }}
             transition={{ duration: pace + 0.6, repeat: Infinity, ease: 'easeInOut' }}
             className="absolute -left-3 top-1 h-7 w-7 rounded-full bg-white/20 blur-[5px]"
           />
-          <motion.span
+          <FaceMotion.span
             animate={{ x: active || isCurious || isLaughing ? [-18, 30] : [-14, 24], opacity: active || isCurious || isLaughing ? [0, 0.30, 0] : [0, 0.16, 0] }}
             transition={{ duration: shimmerDuration, repeat: Infinity, ease: 'easeInOut', delay: profile.shine }}
             className="absolute -top-2 h-11 w-[7px] rotate-[22deg] bg-white/24 blur-[3px]"
           />
-          <motion.span
+          <FaceMotion.span
             animate={{ opacity: effectiveMode === 'error' ? [0.22, 0.38, 0.24] : isLaughing ? [0.22, 0.38, 0.22] : [0.16, 0.3, 0.16] }}
             transition={{ duration: pace, repeat: Infinity, ease: 'easeInOut' }}
             className="absolute inset-x-0 top-0 h-[12px] bg-[linear-gradient(180deg,rgba(255,255,255,0.32),transparent)]"
           />
-          <motion.span
+          <FaceMotion.span
               animate={{
                 opacity: isInputAttention || isWorkAttention ? [0.12, 0.22, 0.14] : isAlertAttention ? [0.16, 0.28, 0.18] : [0.06, 0.13, 0.08],
                 y: isInputAttention ? [0.8, 1.25, 0.95] : isWorkAttention ? [0.35, 0.75, 0.42] : isAlertAttention ? [0.62, 1, 0.72] : [0, ambientFocus.lid * motionProfile.lidPressure, 0.15],
@@ -387,18 +409,18 @@ export const AgentFace = React.memo(({
             transition={{ duration: isInputAttention ? 1.8 : isWorkAttention ? 2.6 : isAlertAttention ? 1.7 : 4.6, repeat: Infinity, ease: 'easeInOut' }}
             className="pointer-events-none absolute inset-x-[5px] top-[8.5px] h-[3.5px] rounded-full bg-[linear-gradient(180deg,rgba(255,255,255,0.42),rgba(255,255,255,0.02))] blur-[0.6px]"
           />
-          <motion.span
+          <FaceMotion.span
             animate={{ opacity: cheekLeftOpacity, scale: active || isLaughing ? [1, 1.08, 1] : 1 }}
             transition={{ duration: pace + 1.1, repeat: Infinity, ease: 'easeInOut' }}
             className="absolute left-[6px] top-[18px] h-[5px] w-[6px] rounded-full bg-white/40 blur-[2.5px]"
           />
-          <motion.span
+          <FaceMotion.span
             animate={{ opacity: cheekRightOpacity, scale: active || isLaughing ? [1, 1.06, 1] : 1 }}
             transition={{ duration: pace + 1.4, repeat: Infinity, ease: 'easeInOut', delay: 0.2 }}
             className="absolute right-[6px] top-[18.5px] h-[5px] w-[6px] rounded-full bg-white/34 blur-[2.5px]"
           />
           {!isSleeping && (
-            <motion.svg
+            <FaceMotion.svg
               viewBox="0 0 31 22"
               animate={{
                 opacity: active || isCurious || isLaughing ? [0.1, 0.2, 0.12] : 0.12,
@@ -410,15 +432,15 @@ export const AgentFace = React.memo(({
             >
               <path d="M8.85 10.55 C10.15 9.95 12.2 9.95 13.5 10.55" fill="none" stroke="rgba(255,255,255,0.38)" strokeWidth="0.95" strokeLinecap="round" />
               <path d="M17.5 10.55 C18.8 9.95 20.85 9.95 22.15 10.55" fill="none" stroke="rgba(255,255,255,0.38)" strokeWidth="0.95" strokeLinecap="round" />
-            </motion.svg>
+            </FaceMotion.svg>
           )}
-          <motion.div
+          <FaceMotion.div
             animate={{ x: eyeMotionX, y: eyeMotionY }}
             transition={eyeMotionTransition}
             className="absolute inset-x-0 top-[11.25px] h-[9px]"
           >
             {[0, 1].map((eye) => (
-              <motion.span
+              <FaceMotion.span
                 key={eye}
                 animate={{
                   scaleX: isInputAttention
@@ -453,7 +475,7 @@ export const AgentFace = React.memo(({
                   transformOrigin: isInputAttention ? '50% 82%' : '50% 50%',
                 }}
               >
-                <motion.span
+                <FaceMotion.span
                   animate={{
                     opacity: isInputAttention || isWorkAttention ? [0.16, 0.3, 0.2] : isAlertAttention ? [0.2, 0.34, 0.22] : [0.08, 0.18, 0.1],
                     y: isInputAttention ? [0, 0.45, 0.15] : isWorkAttention ? [0.1, 0.34, 0.16] : isAlertAttention ? [0.18, 0.5, 0.24] : [0, ambientFocus.lid * 0.35, 0],
@@ -461,17 +483,17 @@ export const AgentFace = React.memo(({
                   transition={{ duration: isInputAttention ? 1.5 : isWorkAttention ? 2.4 : isAlertAttention ? 1.5 : 4.2, repeat: Infinity, ease: 'easeInOut' }}
                   className="pointer-events-none absolute inset-x-[-1px] top-[-1px] h-[2.4px] rounded-t-full bg-[#CFE6FF]/70 blur-[0.25px]"
                 />
-                <motion.span
+                <FaceMotion.span
                   animate={{ opacity: isScanAttention ? [0.28, 0.62, 0.32] : [0.18, 0.3, 0.2] }}
                   transition={{ duration: isScanAttention ? 0.9 : pace + 0.9, repeat: Infinity, ease: 'easeInOut' }}
                   className="absolute inset-x-[0.6px] top-[2.3px] h-px rounded-full bg-[#EAF6FF]/45"
                 />
                 <span className="absolute inset-x-[0.7px] bottom-[0.75px] h-[1.4px] rounded-full bg-[#BFDFFF]/25 blur-[0.3px]" />
-              </motion.span>
+              </FaceMotion.span>
             ))}
-          </motion.div>
+          </FaceMotion.div>
 
-          <motion.span
+          <FaceMotion.span
             animate={{
               opacity: isInputAttention ? [0.18, 0.28, 0.2] : active || isCurious || isWorking ? [0.1, 0.18, 0.12] : [0.08, 0.14, 0.1],
               width: isInputAttention ? [7, 10, 8] : 8,
@@ -480,7 +502,7 @@ export const AgentFace = React.memo(({
             className="pointer-events-none absolute left-1/2 top-[23px] h-[1.5px] -translate-x-1/2 rounded-full bg-white/35 blur-[1.1px]"
           />
           {sizeProfile.sparkScale > 0 && [0, 1, 2].map((spark) => (
-            <motion.span
+            <FaceMotion.span
               key={spark}
               animate={{
                 opacity: active || isCurious || isLaughing || isSettling ? [0, 0.42, 0] : [0, 0.18, 0],
@@ -515,7 +537,7 @@ export const AgentFace = React.memo(({
               })}
             </span>
           )}
-        </motion.div>
+        </FaceMotion.div>
         {controllerSnapshot.progress > 0 && size !== 'inline' && (
           <svg className="pointer-events-none absolute inset-0 h-full w-full -rotate-90 overflow-visible" viewBox="0 0 46 46">
             <motion.circle

@@ -1,0 +1,1003 @@
+/* White-theme visual system. Loaded after the legacy theme and menu layers.
+   Keep layout, sizing, animation transforms, and component behavior in their
+   owning stylesheets; this layer owns color, typography, and interaction ink. */
+:root[data-theme="light"] {
+  --light-canvas: #ffffff;
+  --light-chrome: #f6f6f6;
+  --light-surface: #fafafa;
+  --light-hover: #f2f2f2;
+  --light-selected: #ebebeb;
+  --light-pressed: #e2e2e2;
+  --light-ink: #202020;
+  --light-body: #303030;
+  --light-secondary: #626262;
+  --light-muted: #808080;
+  --light-placeholder: #929292;
+  --light-disabled: #a6a6a6;
+  --light-line: #e9e9e9;
+  --light-line-hover: #dddddd;
+  --light-line-strong: #bcbcbc;
+  --light-link: #285fc5;
+  --light-link-hover: #1e4795;
+  --light-focus: #969696;
+  --light-focus-halo: rgba(0, 0, 0, 0.08);
+  --light-success: #187447;
+  --light-success-soft: #edf7f1;
+  --light-danger: #b83240;
+  --light-danger-soft: #fdf0f1;
+  --light-warning: #956017;
+  --light-warning-soft: #fff7e8;
+  --light-shadow: 0 1px 3px rgba(0, 0, 0, 0.025), 0 4px 18px rgba(0, 0, 0, 0.035);
+  --light-menu-shadow: 0 2px 6px rgba(0, 0, 0, 0.035), 0 12px 32px rgba(0, 0, 0, 0.08);
+  --chat-activity-ink: #808080;
+  --chat-detail-ink: #939393;
+  --chat-placeholder-ink: #b8b8b8;
+  --chat-hairline: #ededed;
+  --chat-card-surface: #fcfcfc;
+  --chat-card-border: #e7e7e7;
+  --chat-row-hover: #f7f7f7;
+  --chat-primary-action: #000000;
+  --light-font: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  /* The root layout supplies the offline fallback as an inline variable. */
+  --font-sans: var(--light-font) !important;
+
+  --background: var(--light-canvas);
+  --foreground: var(--light-ink);
+  --muted: var(--light-surface);
+  --muted-foreground: var(--light-muted);
+  --border: var(--light-line);
+  --primary: var(--light-ink);
+  --primary-foreground: var(--light-canvas);
+  --secondary: var(--light-hover);
+  --secondary-foreground: var(--light-body);
+  --accent: var(--light-link);
+  --accent-foreground: var(--light-canvas);
+  --input-bg: var(--light-canvas);
+  --info: var(--light-link);
+  --success: var(--light-success);
+  --destructive: var(--light-danger);
+  --font-dm-sans: var(--light-font);
+  --sidebar-bg: var(--light-chrome);
+  --sidebar-shell-bg: var(--light-chrome);
+  --sidebar-shell-border: var(--light-line);
+  --sidebar-surface-bg: var(--light-canvas);
+  --sidebar-surface-border: var(--light-line);
+  --sidebar-profile-bg: var(--light-chrome);
+  --sidebar-menu-bg: var(--light-canvas);
+  --sidebar-menu-border: var(--light-line);
+  --sidebar-menu-shadow: var(--light-menu-shadow);
+  --sidebar-text: var(--light-secondary);
+  --sidebar-muted-text: var(--light-muted);
+  --sidebar-strong-text: var(--light-ink);
+  --sidebar-icon: var(--light-secondary);
+  --sidebar-working-text: var(--light-body);
+  --sidebar-danger-text: var(--light-danger);
+  --sidebar-danger-bg: var(--light-danger-soft);
+  --sidebar-focus-ring: var(--light-focus);
+  --sidebar-toggle-hover-bg: #e8e8e8;
+  --sidebar-toggle-active-bg: var(--light-pressed);
+  --sidebar-active-bg: var(--light-selected);
+  --sidebar-active-border: transparent;
+  --sidebar-active-text: var(--light-ink);
+  --sidebar-active-fade: var(--light-selected);
+  --sidebar-active-shadow: none;
+  --sidebar-hover-bg: #e8e8e8;
+  --sidebar-selected-hover-bg: var(--sidebar-hover-bg);
+  --sidebar-hover-border: transparent;
+  --sidebar-hover-text: var(--light-ink);
+  --eterx-main-panel-border: var(--light-line);
+  --eterx-topbar-text: var(--light-secondary);
+  --eterx-topbar-hover-bg: #e8e8e8;
+  --eterx-topbar-hover-text: var(--light-ink);
+  --eterx-theme-menu-bg: var(--light-canvas);
+  --eterx-theme-menu-border: var(--light-line);
+  --eterx-theme-menu-text: var(--light-secondary);
+  --eterx-theme-menu-strong: var(--light-ink);
+  --eterx-theme-menu-hover: var(--light-hover);
+  --eterx-theme-menu-active: var(--light-selected);
+  --eterx-chat-canvas: var(--light-canvas);
+  --eterx-chat-ink: var(--light-body);
+  --eterx-chat-strong: var(--light-ink);
+  --eterx-chat-muted: var(--light-secondary);
+  --eterx-chat-subtle: var(--light-muted);
+  --eterx-chat-hairline: var(--light-line);
+  --eterx-chat-soft: var(--light-surface);
+  --eterx-chat-soft-hover: var(--light-hover);
+  --eterx-chat-focus: var(--light-focus-halo);
+  --eterx-ui-working-text: var(--light-secondary);
+  --eterx-ui-working-highlight: var(--light-ink);
+  --composer-menu-surface: var(--light-canvas);
+  --composer-menu-ink: var(--light-body);
+  --composer-menu-muted: var(--light-muted);
+  --composer-menu-line: var(--light-line);
+  --composer-menu-active: var(--light-hover);
+  --composer-control-surface: #f0f0f0;
+  --eterx-sb-thumb: rgba(0, 0, 0, 0.16);
+  --eterx-sb-thumb-hover: rgba(0, 0, 0, 0.26);
+  --eterx-sb-thumb-active: rgba(0, 0, 0, 0.36);
+  --terminal-red: var(--light-danger);
+  --terminal-green: var(--light-success);
+  --terminal-yellow: var(--light-warning);
+  --terminal-blue: var(--light-link);
+  --terminal-magenta: #8242a6;
+  --terminal-cyan: #147477;
+  --terminal-white: var(--light-body);
+  --terminal-gray: var(--light-muted);
+  --terminal-light-red: #c13644;
+  --terminal-light-green: #167445;
+  --terminal-light-yellow: #996019;
+  --terminal-light-blue: #2c64c9;
+  --terminal-light-magenta: #8d43af;
+  --terminal-light-cyan: #147477;
+}
+
+/* Native, offline typography with a single readable hierarchy. Code and math
+   keep their own font families and all existing size preferences. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-agent-option-description {
+  color: #686868 !important;
+}
+
+:root[data-theme="light"] body,
+:root[data-theme="light"] .eterx-app-shell,
+:root[data-theme="light"] .font-sans,
+:root[data-theme="light"] :where(button, input, textarea, select):not(.font-mono) {
+  font-family: var(--light-font);
+}
+
+:root[data-theme="light"] body,
+:root[data-theme="light"] .eterx-app-shell {
+  background: var(--light-chrome) !important;
+  color: var(--light-ink) !important;
+  font-weight: 400;
+}
+
+:root[data-theme="light"] :is(.eterx-assistant-answer-body, .eterx-professional-answer, .eterx-professional-thought, .eterx-professional-note, .eterx-answer-paragraph, .eterx-answer-list-item) {
+  color: var(--light-body) !important;
+}
+
+:root[data-theme="light"] .eterx-professional-answer :is(.eterx-answer-paragraph, .eterx-answer-list, .eterx-answer-list-item),
+:root[data-theme="light"] .eterx-work-note-block :is(.eterx-professional-thought, .eterx-answer-paragraph, .eterx-answer-list-item) {
+  color: var(--light-body) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-answer-heading, .eterx-answer-strong, .eterx-view-header-label, .eterx-connectors-title),
+:root[data-theme="light"] .eterx-professional-answer :is(h1, h2, h3, h4, h5, h6, strong) {
+  color: var(--light-ink) !important;
+  font-weight: 600;
+}
+
+:root[data-theme="light"] :is(.eterx-chat-message-time, .eterx-chat-muted, .eterx-chat-subtle, .eterx-worked-summary-label, .eterx-context-compaction-detail, .eterx-command-chat-meta, .eterx-command-chat-date),
+:root[data-theme="light"] .eterx-assistant-answer .eterx-professional-number {
+  color: var(--light-muted) !important;
+}
+
+/* Resolve low-opacity legacy text without flattening semantic status colors. */
+:root[data-theme="light"] :is([class~="text-white/30"], [class~="text-white/32"], [class~="text-white/35"], [class~="text-white/40"], [class~="text-white/45"], [class~="text-white/48"], [class~="text-white/50"], [class~="text-white/52"], [class~="text-white/55"], [class~="text-white/60"], [class~="text-[#666]"], [class~="text-[#777]"], [class~="text-[#888]"], [class~="text-[#999]"], [class~="text-zinc-400"], [class~="text-zinc-500"], [class~="text-neutral-400"], [class~="text-neutral-500"]) {
+  color: var(--light-muted);
+}
+
+/* Neutral chrome frames an unbroken white workspace. */
+:root[data-theme="light"] .eterx-app-shell :is(.eterx-sidebar-shell, .eterx-sidebar-topbar, .eterx-sidebar-profile),
+:root[data-theme="light"] .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell,
+:root[data-theme="light"] .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell > #eterx-sidebar-content,
+:root[data-theme="light"] .eterx-app-shell .eterx-global-topbar .eterx-topbar-actions {
+  background: var(--light-chrome) !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-recents {
+  background: var(--light-canvas) !important;
+  border-color: var(--light-line) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-main-panel, .eterx-main-header, .eterx-chat-feed, .eterx-chat-feed-scroll, .eterx-chat-feed-content) {
+  background: var(--light-canvas) !important;
+  border-color: var(--light-line) !important;
+  color: var(--light-body) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed-empty,
+:root[data-theme="light"] .eterx-chat-feed-empty :is(.eterx-chat-feed-scroll, .eterx-chat-feed-content) {
+  background: transparent !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell :is(.eterx-sidebar-brand-text, .eterx-sidebar-brand span, .eterx-sidebar-profile-name, .eterx-sidebar-settings-button) {
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-brand-text {
+  color: #505050 !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell :is(.eterx-sidebar-nav-item, .eterx-sidebar-chat-row, .eterx-sidebar-toggle, .eterx-sidebar-toggle svg, .eterx-sidebar-toggle svg *) {
+  color: var(--light-secondary) !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell :is(.eterx-sidebar-nav-item, .eterx-sidebar-new-chat, .eterx-sidebar-chat-row):not(.eterx-sidebar-nav-active):not(.eterx-sidebar-chat-active):hover {
+  background: var(--sidebar-hover-bg) !important;
+  background-color: var(--sidebar-hover-bg) !important;
+  border-color: transparent !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell :is(.eterx-sidebar-nav-active, .eterx-sidebar-chat-active, .eterx-sidebar-chat-active.eterx-sidebar-chat-working) {
+  background: var(--sidebar-hover-bg) !important;
+  border-color: transparent !important;
+  color: var(--light-ink) !important;
+  font-weight: 500;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell :is(.eterx-sidebar-nav-active, .eterx-sidebar-chat-active, .eterx-sidebar-chat-active.eterx-sidebar-chat-working):hover {
+  background: var(--sidebar-selected-hover-bg) !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell :is(.eterx-sidebar-nav-item, .eterx-sidebar-new-chat, .eterx-sidebar-chat-row):active {
+  background: var(--light-pressed) !important;
+}
+
+/* Existing navigation and toolbar targets keep their original geometry;
+   hover feedback comes from the same neutral fills across the light shell. */
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell :is(.eterx-sidebar-toggle, .eterx-sidebar-project-filter, .eterx-sidebar-settings-button, .eterx-sidebar-click-surface):not(.eterx-sidebar-nav-item):not(.eterx-sidebar-chat-row):not(:disabled):not([aria-disabled="true"]):hover {
+  background: var(--sidebar-hover-bg) !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell :is(.eterx-sidebar-nav-item, .eterx-sidebar-new-chat, .eterx-sidebar-toggle):hover svg {
+  color: var(--light-body) !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-topbar-btn:is(:hover, :focus-visible, [data-state="open"]),
+:root[data-theme="light"] .eterx-app-shell .eterx-header-icon-button:not(:disabled):hover {
+  background: var(--eterx-topbar-hover-bg) !important;
+  color: var(--eterx-topbar-hover-text) !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-topbar-btn:active {
+  background: var(--light-pressed) !important;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell :is(.eterx-sidebar-nav-item, .eterx-sidebar-new-chat, .eterx-sidebar-chat-row, .eterx-sidebar-click-surface),
+  :root[data-theme="light"] .eterx-app-shell .eterx-topbar-btn {
+    transition-property: background-color, color !important;
+    transition-duration: 120ms !important;
+    transition-timing-function: ease-out !important;
+  }
+}
+
+/* Translate the original dark-theme cards into light surfaces without
+   changing their containers, borders, or nested layout. */
+:root[data-theme="light"] :is(.eterx-thought-card, .eterx-action-card, .eterx-action-group, .eterx-browser-activity-group, .eterx-terminal-trace, .eterx-file-change-trace, .eterx-agent-comm-card) {
+  background: var(--chat-card-surface) !important;
+  border-color: var(--chat-card-border) !important;
+  color: var(--chat-activity-ink) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] :is(.eterx-thought-card, .eterx-action-card, .eterx-action-group, .eterx-browser-activity-group, .eterx-terminal-trace, .eterx-file-change-trace, .eterx-agent-comm-card):hover {
+  background: var(--chat-card-surface) !important;
+  border-color: var(--light-line-hover) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-thought-toggle, .eterx-browser-activity-header, .eterx-action-group-header, .eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
+  color: var(--chat-activity-ink) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-thought-toggle, .eterx-browser-activity-header, .eterx-action-group-header, .eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row):is(:hover, :focus-visible) {
+  background: var(--chat-row-hover) !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-thought-toggle, .eterx-browser-activity-header, .eterx-action-group-header) :is(svg, .eterx-thinking-shimmer),
+:root[data-theme="light"] .eterx-browser-activity-header > span {
+  color: var(--light-secondary) !important;
+}
+
+:root[data-theme="light"] .eterx-browser-activity-header svg {
+  stroke: currentColor;
+}
+
+:root[data-theme="light"] :is(.eterx-action-verb, .eterx-file-change-title, .eterx-file-change-filename) {
+  color: var(--light-ink) !important;
+  font-weight: 500 !important;
+}
+
+:root[data-theme="light"] :is(.eterx-action-icon, .eterx-terminal-icon, .eterx-file-change-icon),
+:root[data-theme="light"] :is(.eterx-action-icon, .eterx-terminal-icon, .eterx-file-change-icon) svg {
+  color: var(--light-secondary) !important;
+}
+
+:root[data-theme="light"] .eterx-thought-expanded,
+:root[data-theme="light"] .eterx-thought-expanded :is(p, li, ol, ul) {
+  color: var(--light-secondary) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-chat-feed-user-bubble, .eterx-steering-bubble) {
+  background: #f4f4f4 !important;
+  color: var(--light-body) !important;
+  border-color: transparent !important;
+}
+
+/* Composer and menus use the same paper, ink, and soft selection surfaces. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]),
+:root[data-theme="light"] .eterx-composer-surface {
+  background: var(--light-canvas) !important;
+  border-color: var(--chat-hairline) !important;
+  color: var(--light-body) !important;
+  box-shadow: var(--light-shadow) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]):hover,
+:root[data-theme="light"] .eterx-composer-surface:hover {
+  border-color: #e5e5e5 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]):focus-within,
+:root[data-theme="light"] .eterx-composer-surface:focus-within {
+  border-color: #dcdcdc !important;
+  box-shadow: var(--light-shadow) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea {
+  color: var(--light-ink) !important;
+  caret-color: var(--light-ink) !important;
+  font-weight: 400;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea::placeholder {
+  color: var(--chat-placeholder-ink) !important;
+  opacity: 1 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) :is(.eterx-agent-button, .eterx-model-button) {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--light-ink) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) :is(.eterx-agent-button, .eterx-model-button):not(:disabled):is(:hover, [data-open="true"]) {
+  background: var(--light-hover) !important;
+  color: var(--light-ink) !important;
+}
+
+/* Open menus retain their highlight; resting selectors remain transparent. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) :is(.eterx-agent-button, .eterx-model-button):not(:hover):not([data-open="true"]) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] :is(.eterx-thread-switcher, .eterx-chat-action-menu, .eterx-composer-popout, .eterx-model-menu-popout, .eterx-agent-popout, .eterx-status-popout, .eterx-sidebar-project-menu, .eterx-command-palette-dialog),
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-popout {
+  background: var(--light-canvas) !important;
+  border-color: var(--light-line) !important;
+  color: var(--light-body) !important;
+  box-shadow: var(--light-menu-shadow) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-thread-tab, .eterx-thread-switcher-item, .eterx-command-chat-row):hover,
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible {
+  background: var(--light-hover) !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-thread-tab[data-open="true"], .eterx-thread-switcher-item[data-active="true"]) {
+  background: var(--light-selected) !important;
+  color: var(--light-ink) !important;
+}
+
+/* Neutral utility states are shared by settings, tasks, agents, file panels,
+   and portaled menus. Exact tokens leave colored/destructive actions alone. */
+:root[data-theme="light"] :is([class~="hover:bg-white/5"], [class~="hover:bg-white/10"], [class~="hover:bg-white/[0.03]"], [class~="hover:bg-white/[0.04]"], [class~="hover:bg-white/[0.05]"], [class~="hover:bg-white/[0.06]"], [class~="hover:bg-white/[0.08]"], [class~="hover:bg-white/[0.10]"], [class~="hover:bg-[#202020]"], [class~="hover:bg-[#252525]"], [class~="hover:bg-[#2A2A2A]"], [class~="hover:bg-[#2a2a2a]"], [class~="hover:bg-[#333333]"]):not(:disabled):not([aria-disabled="true"]):hover {
+  background-color: var(--light-hover);
+}
+
+:root[data-theme="light"] :is([class~="hover:text-white"], [class~="hover:text-white/80"], [class~="hover:text-white/90"], [class~="hover:text-[#F1F1F1]"]):not(:disabled):not([aria-disabled="true"]):hover {
+  color: var(--light-ink);
+}
+
+:root[data-theme="light"] :is(.eterx-agent-card, .eterx-connectors-card, .eterx-channel-agent-card, .eterx-browser-runtime-card, .eterx-browser-service-card) {
+  background: var(--light-canvas) !important;
+  border-color: var(--light-line) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-agent-card, .eterx-connectors-card, .eterx-channel-agent-card):hover {
+  background: var(--light-surface) !important;
+  border-color: var(--light-line-hover) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-settings-dialog, .eterx-connectors-panel, .eterx-skill-action-dialog-card) {
+  background: var(--light-canvas) !important;
+  color: var(--light-body) !important;
+  border-color: var(--light-line) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-settings-tab, .eterx-settings-back-button, .eterx-connectors-tab, .eterx-connectors-close, .eterx-agent-icon-button, .eterx-agent-open-button):not(:disabled):hover {
+  background: var(--light-hover) !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-setting-row, .eterx-settings-stack) {
+  background: var(--light-canvas) !important;
+  border-color: var(--light-line) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-stack-row {
+  border-color: var(--light-line) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-setting-row, .eterx-settings-stack-row):focus-within {
+  background: var(--light-surface) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog .eterx-setting-label {
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-setting-description, .eterx-connectors-desc, .eterx-settings-select-option [class~="text-[#8F8F8F]"]) {
+  color: var(--light-muted) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog .eterx-setting-row[data-danger="true"] {
+  background: var(--light-danger-soft) !important;
+  border-color: #f0ccd1 !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog .eterx-setting-row[data-danger="true"] .eterx-setting-label {
+  color: var(--light-danger) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-settings-tab, .eterx-settings-segment) {
+  color: var(--light-secondary) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-settings-tab[data-active="true"], .eterx-settings-segment[aria-pressed="true"]),
+:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-settings-tab[data-active="true"], .eterx-settings-segment[aria-pressed="true"]):hover {
+  background: var(--light-selected) !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog .eterx-settings-segment[aria-pressed="false"]:hover {
+  background: var(--light-hover) !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog .eterx-settings-select-trigger {
+  background: var(--light-surface) !important;
+  border-color: var(--light-line-hover) !important;
+  color: var(--light-body) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog .eterx-settings-select-trigger:is(:hover, [aria-expanded="true"]) {
+  background: var(--light-hover) !important;
+  border-color: var(--light-line-strong) !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-select-menu,
+:root[data-theme="light"] .eterx-tooltip-card,
+:root[data-theme="light"] .eterx-work-menu,
+:root[data-theme="light"] .eterx-composer-shell [data-adaptive-menu="true"],
+:root[data-theme="light"] .eterx-model-thinking-popout {
+  background: var(--light-canvas) !important;
+  color: var(--light-body) !important;
+  border-color: var(--light-line) !important;
+  box-shadow: var(--light-menu-shadow) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-select-option {
+  color: var(--light-body) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-settings-select-option, .eterx-work-menu-row, .eterx-work-menu-task-row, .eterx-chat-action-menu-item):not(:disabled):not([data-danger="true"]):not([class*="text-red-"]):hover {
+  background: var(--light-hover) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-select-option[data-active="true"],
+:root[data-theme="light"] .eterx-settings-select-option[data-active="true"]:hover {
+  background: var(--light-selected) !important;
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-settings-dialog :is(.eterx-settings-select-option, .eterx-settings-select-trigger, .eterx-settings-segment):not(:disabled):active {
+  background: var(--light-pressed) !important;
+}
+
+/* Technical content gets a quiet neutral frame. Token-level syntax and diff
+   colors remain owned by the renderer. */
+:root[data-theme="light"] :is(.eterx-inline-code-panel, .eterx-inline-diff-panel, .eterx-terminal-console, .eterx-trp-card, .eterx-patch-summary-panel) {
+  background: var(--light-surface) !important;
+  border-color: var(--light-line) !important;
+  color: var(--light-body) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-inline-code-header, .eterx-inline-diff-header, .eterx-trp-card-header, .eterx-markdown-code-header) {
+  background: var(--light-surface) !important;
+  border-color: var(--light-line) !important;
+  color: var(--light-secondary) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-inline-code-scroll, .eterx-inline-diff-scroll) {
+  background: var(--light-canvas) !important;
+  color: var(--light-body) !important;
+}
+
+:root[data-theme="light"] .eterx-markdown-inline-code {
+  background: var(--light-surface) !important;
+  border-color: var(--light-line) !important;
+  color: var(--light-body) !important;
+  box-shadow: none !important;
+}
+
+/* Form text, placeholders, autofill, and validation remain clear on white. */
+:root[data-theme="light"] :is(.eterx-settings-dialog, .eterx-connectors-panel, .eterx-agents-view, .eterx-channels-view, .eterx-skill-action-dialog-card) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]), textarea, select) {
+  color: var(--light-body) !important;
+  border-color: var(--light-line-hover) !important;
+  caret-color: var(--light-ink);
+}
+
+:root[data-theme="light"] :is(input, textarea)::placeholder {
+  color: var(--light-placeholder);
+  opacity: 1;
+}
+
+:root[data-theme="light"] :is(.eterx-settings-dialog, .eterx-connectors-panel, .eterx-agents-view, .eterx-channels-view, .eterx-skill-action-dialog-card) :is(input, textarea, select):not(:disabled):not([readonly]):not([aria-invalid="true"]):hover {
+  border-color: var(--light-line-strong) !important;
+}
+
+:root[data-theme="light"] :is(.eterx-settings-dialog, .eterx-connectors-panel, .eterx-agents-view, .eterx-channels-view, .eterx-skill-action-dialog-card) :is(input, textarea, select):not([aria-invalid="true"]):focus-visible {
+  border-color: var(--light-focus) !important;
+}
+
+:root[data-theme="light"] :is(input, textarea, select)[aria-invalid="true"] {
+  border-color: var(--light-danger) !important;
+  outline-color: var(--light-danger) !important;
+}
+
+:root[data-theme="light"] input:-webkit-autofill {
+  -webkit-text-fill-color: var(--light-body);
+  -webkit-box-shadow: 0 0 0 1000px var(--light-surface) inset;
+  caret-color: var(--light-ink);
+}
+
+:root[data-theme="light"] :is(input[type="checkbox"], input[type="radio"], input[type="range"]) {
+  accent-color: var(--light-link);
+}
+
+:root[data-theme="light"] [role="switch"][aria-checked="false"] {
+  background: #c3cad3 !important;
+}
+
+:root[data-theme="light"] [role="switch"][aria-checked="true"] {
+  background: var(--light-link) !important;
+}
+
+:root[data-theme="light"] [role="switch"] > :is(span, div) {
+  background-color: var(--light-canvas) !important;
+}
+
+:root[data-theme="light"] [role="switch"][aria-checked="false"]:not(:disabled):hover {
+  background: #aeb8c5 !important;
+}
+
+:root[data-theme="light"] [role="switch"][aria-checked="true"]:not(:disabled):hover {
+  background: var(--light-link-hover) !important;
+}
+
+/* Links use color and underline; statuses retain their distinct meaning. */
+:root[data-theme="light"] :is(.eterx-professional-answer, .eterx-professional-thought, .eterx-thought-expanded) a[href],
+:root[data-theme="light"] .eterx-action-file-link {
+  color: var(--light-link) !important;
+  text-decoration-color: rgba(40, 95, 197, 0.35);
+  text-underline-offset: 3px;
+}
+
+:root[data-theme="light"] :is(.eterx-professional-answer, .eterx-professional-thought, .eterx-thought-expanded) a[href]:hover,
+:root[data-theme="light"] .eterx-action-file-link:hover {
+  color: var(--light-link-hover) !important;
+  text-decoration-line: underline;
+  text-decoration-color: currentColor;
+}
+
+:root[data-theme="light"] :is([class~="text-emerald-400"], [class~="text-emerald-500"], [class~="text-green-400"], [class~="text-green-500"]) {
+  color: var(--light-success);
+}
+
+:root[data-theme="light"] :is([class~="text-red-400"], [class~="text-red-500"]) {
+  color: var(--light-danger);
+}
+
+:root[data-theme="light"] :is([class~="text-amber-400"], [class~="text-amber-500"], [class~="text-yellow-400"]) {
+  color: var(--light-warning);
+}
+
+/* Primary actions always keep white icons, including their hover state. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) :is(.eterx-composer-send-button, .eterx-composer-stop-button),
+:root[data-theme="light"] :is(.eterx-agents-primary-button, .eterx-project-conversation-send) {
+  background: var(--light-ink) !important;
+  border-color: var(--light-ink) !important;
+  color: var(--light-canvas) !important;
+  box-shadow: 0 1px 2px rgba(24, 32, 45, 0.12) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) :is(.eterx-composer-send-button, .eterx-composer-stop-button):not(:disabled):hover,
+:root[data-theme="light"] :is(.eterx-agents-primary-button, .eterx-project-conversation-send):not(:disabled):hover {
+  background: #303030 !important;
+  color: var(--light-canvas) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) :is(.eterx-composer-send-button, .eterx-composer-stop-button) svg,
+:root[data-theme="light"] :is(.eterx-agents-primary-button, .eterx-project-conversation-send) svg {
+  color: var(--light-canvas) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) :is(.eterx-composer-send-button, .eterx-composer-stop-button):not(:disabled):active,
+:root[data-theme="light"] :is(.eterx-agents-primary-button, .eterx-project-conversation-send):not(:disabled):active {
+  background: #111111 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-send-button:disabled,
+:root[data-theme="light"] :is(.eterx-agents-primary-button, .eterx-project-conversation-send):disabled {
+  background: var(--light-selected) !important;
+  border-color: transparent !important;
+  color: var(--light-muted) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-send-button:disabled svg,
+:root[data-theme="light"] :is(.eterx-agents-primary-button, .eterx-project-conversation-send):disabled svg {
+  color: var(--light-muted) !important;
+}
+
+/* Light chat palette on the existing dark-theme container hierarchy. */
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-thought-card, .eterx-action-card, .eterx-action-group, .eterx-browser-activity-group, .eterx-terminal-trace, .eterx-file-change-trace, .eterx-agent-comm-card) {
+  background: var(--chat-card-surface) !important;
+  border-color: var(--chat-card-border) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-thought-card, .eterx-action-card, .eterx-action-group, .eterx-browser-activity-group, .eterx-terminal-trace, .eterx-file-change-trace, .eterx-agent-comm-card):hover {
+  background: var(--chat-card-surface) !important;
+  border-color: var(--light-line-hover) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-action-group, .eterx-browser-activity-group) :is(.eterx-action-card, .eterx-terminal-trace, .eterx-file-change-trace),
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-action-group, .eterx-browser-activity-group) :is(.eterx-action-card, .eterx-terminal-trace, .eterx-file-change-trace):hover {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-thought-toggle, .eterx-browser-activity-header, .eterx-action-group-header, .eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
+  color: var(--chat-activity-ink) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-thought-toggle, .eterx-browser-activity-header, .eterx-action-group-header, .eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row):hover,
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-action-group, .eterx-browser-activity-group) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row):hover {
+  background: var(--chat-row-hover) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-worked-summary-label, .eterx-worked-summary-label .eterx-professional-number, .eterx-thinking-shimmer, .eterx-action-verb, .eterx-action-icon, .eterx-terminal-icon, .eterx-file-change-icon),
+:root[data-theme="light"] .eterx-chat-feed .eterx-terminal-trace-row > .eterx-trace-label,
+:root[data-theme="light"] .eterx-chat-feed .eterx-browser-activity-header > span,
+:root[data-theme="light"] .eterx-chat-feed .eterx-thought-toggle .eterx-thinking-shimmer {
+  color: var(--chat-activity-ink) !important;
+  font-weight: 400 !important;
+  --shimmer-base: #939393;
+  --shimmer-color: #606060;
+  --shimmer-surface: #ffffff;
+}
+
+/* LineIcon paints its stroke on a child group. Recolor those neutral glyphs
+   without changing connector logos, file-type assets, or live status marks. */
+:root[data-theme="light"] .eterx-chat-feed .eterx-action-icon:not([data-connector]) svg,
+:root[data-theme="light"] .eterx-chat-feed .eterx-browser-activity-header svg {
+  color: var(--chat-activity-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed .eterx-action-icon:not([data-connector]) svg g[stroke="#DAD6CF"],
+:root[data-theme="light"] .eterx-chat-feed .eterx-browser-activity-header svg g[stroke="#DAD6CF"] {
+  stroke: currentColor !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-action-chip, .eterx-terminal-trace-row) > .font-mono,
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-worked-summary-chevron, .eterx-action-group-header > span:last-child) {
+  color: var(--chat-detail-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-file-change-title, .eterx-file-change-filename, .eterx-action-file-link) {
+  color: #494949 !important;
+  font-weight: 500 !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed .eterx-action-file-link:hover {
+  color: var(--light-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed .eterx-worked-summary-line {
+  background: var(--chat-hairline) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-action-row-divider, .eterx-action-group-header) {
+  border-color: var(--chat-hairline) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-process-summary-icon, .eterx-action-icon-button) {
+  background: var(--light-hover) !important;
+  border-color: var(--chat-card-border) !important;
+  outline-color: var(--chat-card-border) !important;
+  color: var(--chat-activity-ink) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed .eterx-action-icon-button:hover {
+  background: var(--chat-row-hover) !important;
+  color: var(--light-body) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed .eterx-proxy-status-divider-label {
+  color: var(--chat-detail-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed .eterx-proxy-status-divider-line {
+  background: var(--chat-hairline) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-process-summary-chip, .eterx-process-summary-chip-live),
+:root[data-theme="light"] .eterx-chat-feed .eterx-process-summary-chip:not(.eterx-process-summary-chip-live) {
+  background: var(--light-hover) !important;
+  border-color: var(--chat-card-border) !important;
+  outline-color: var(--chat-card-border) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-process-summary-chip, .eterx-process-summary-chip-live):hover {
+  background: var(--chat-row-hover) !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed .eterx-thought-expanded {
+  background: var(--light-surface) !important;
+  border-top-color: var(--chat-hairline) !important;
+  color: #737373 !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed .eterx-thought-expanded :is(p, li, ul, ol) {
+  color: #737373 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) {
+  background: #ffffff !important;
+  border-color: var(--chat-hairline) !important;
+  box-shadow: var(--light-shadow) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]):hover {
+  border-color: #e5e5e5 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]):focus-within {
+  border-color: #dcdcdc !important;
+  box-shadow: var(--light-shadow) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea-wrap > .relative > span[aria-hidden="true"] {
+  font-family: var(--light-font) !important;
+  font-weight: 400 !important;
+}
+
+/* Joined task progress and its composer share one quiet outer edge. */
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-task-tracker-dock {
+  background: #ffffff !important;
+  border-color: var(--chat-hairline) !important;
+  color: var(--chat-activity-ink) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::before,
+:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::after {
+  background: #ffffff;
+  border-color: var(--chat-hairline) !important;
+}
+
+/* The enclosing composer supplies focus feedback; the editable text area
+   must not draw a second rectangular box inside the rounded surface. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea:is(:focus, :focus-visible) {
+  background: transparent !important;
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 transparent !important;
+  --tw-ring-offset-shadow: 0 0 transparent !important;
+}
+
+/* Preserve the original attachment button's circular surface. Use its own
+   hook so palette rules cannot accidentally fill the context or mic controls. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-attach-button {
+  background: var(--composer-control-surface) !important;
+  border-color: var(--chat-card-border) !important;
+  color: var(--light-ink) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-attach-button:not(:disabled):is(:hover, :focus-visible) {
+  background: #e6e6e6 !important;
+  border-color: #dddddd !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-attach-button:not(:disabled):active {
+  background: #dedede !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-composer-attach-button .eterx-composer-control-icon {
+  color: var(--light-ink) !important;
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+/* Match the shared live control: a visible circle and an inherited icon color.
+   Both colors change together, so idle voice never becomes white on pale gray. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-live-button {
+  background: var(--composer-control-surface) !important;
+  border-color: transparent !important;
+  color: var(--light-ink) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-live-button:not(:disabled):hover {
+  background: #e3e3e3 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-live-button:not(:disabled):active {
+  background: #dbdbdb !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-live-button[data-active="true"] {
+  background: #e5f1eb !important;
+  color: var(--light-success) !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-live-button[data-active="true"]:not(:disabled):hover {
+  background: #d8eade !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-live-button .eterx-composer-control-icon.eterx-composer-live-icon {
+  color: inherit !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls .eterx-control-button.eterx-composer-live-button:disabled {
+  opacity: 0.45 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) :is(.eterx-agent-button, .eterx-model-button) .eterx-selector-label {
+  color: var(--light-ink) !important;
+  font-weight: 400 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) :is(.eterx-model-thinking-closed-label, .eterx-model-thinking-label, .eterx-selector-chevron-wrapper, .eterx-selector-chevron) {
+  color: #929292 !important;
+  font-weight: 400 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls .eterx-composer-dictation-button:not([data-active="true"]) .eterx-composer-control-icon {
+  color: #242424 !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls :is(.eterx-composer-send-button.eterx-composer-action-send, .eterx-composer-stop-button.eterx-composer-action-stop):not(:disabled) {
+  background: #000000 !important;
+  background-color: #000000 !important;
+  border-color: transparent !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls :is(.eterx-composer-send-button.eterx-composer-action-send, .eterx-composer-stop-button.eterx-composer-action-stop):not(:disabled):hover {
+  --chat-primary-action: #272727;
+  background: #272727 !important;
+  background-color: #272727 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls :is(.eterx-composer-send-button.eterx-composer-action-send, .eterx-composer-stop-button.eterx-composer-action-stop):not(:disabled):active {
+  --chat-primary-action: #111111;
+  background: #111111 !important;
+  background-color: #111111 !important;
+}
+
+/* Keep component-owned focus behavior, as in dark mode. A search field's
+   rounded wrapper owns its focus border, not its inner text input. */
+:root[data-theme="light"] .eterx-composer-shell .eterx-status-search input,
+:root[data-theme="light"] .eterx-composer-shell .eterx-status-search input:is(:focus, :focus-visible) {
+  outline: none !important;
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 transparent !important;
+  --tw-ring-offset-shadow: 0 0 transparent !important;
+}
+
+:root[data-theme="light"] .eterx-composer-shell .eterx-status-popout .eterx-status-search:focus-within {
+  border-color: var(--light-line-strong) !important;
+}
+
+:root[data-theme="light"] :is(button, input, textarea, select, [role="button"]):is(:disabled, [aria-disabled="true"]) {
+  cursor: not-allowed;
+}
+
+:root[data-theme="light"] :is(input, textarea, select):disabled {
+  color: var(--light-disabled) !important;
+  -webkit-text-fill-color: var(--light-disabled);
+}
+
+/* Paint-only feedback does not add movement or change target sizes. */
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-theme="light"] :where(button, a[href], input, textarea, select, [role="button"], [role="tab"], [role="menuitem"], .eterx-agent-card, .eterx-connectors-card) {
+    transition-property: color, background-color, border-color, box-shadow, opacity;
+    transition-duration: 140ms;
+    transition-timing-function: ease-out;
+  }
+}
+
+:root[data-theme="light"] ::selection,
+:root[data-theme="light"] .eterx-professional-thought *::selection,
+:root[data-theme="light"] .eterx-chat-feed-user-bubble::selection {
+  background: #dbe8fc !important;
+  color: #193964 !important;
+}
+
+/* Final activity-surface balance. The feed keeps the same hierarchy in both
+   themes, but its neutral surfaces are always derived from the active canvas. */
+:root[data-theme="dark"] {
+  --chat-card-surface: #151515;
+  --chat-card-border: rgba(255, 255, 255, 0.085);
+  --chat-row-hover: rgba(255, 255, 255, 0.045);
+  --chat-activity-ink: #a9a9a9;
+  --chat-detail-ink: #888888;
+}
+
+:root[data-theme="light"] {
+  --chat-card-surface: #fdfdfd;
+  --chat-card-border: #ededed;
+  --chat-row-hover: #f8f8f8;
+  --chat-activity-ink: #858585;
+  --chat-detail-ink: #9a9a9a;
+}
+
+:root[data-theme] .eterx-chat-feed :is(.eterx-thought-card, .eterx-action-card, .eterx-action-group, .eterx-browser-activity-group, .eterx-terminal-trace, .eterx-file-change-trace, .eterx-agent-comm-card) {
+  background: var(--chat-card-surface) !important;
+  border-color: var(--chat-card-border) !important;
+  color: var(--chat-activity-ink) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme] .eterx-chat-feed :is(.eterx-thought-toggle, .eterx-browser-activity-header, .eterx-action-group-header, .eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
+  color: var(--chat-activity-ink) !important;
+}
+
+:root[data-theme] .eterx-chat-feed :is(.eterx-thought-toggle, .eterx-browser-activity-header, .eterx-action-group-header, .eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row):is(:hover, :focus-visible, [aria-expanded="true"]) {
+  background: var(--chat-row-hover) !important;
+  color: var(--foreground) !important;
+}
+
+:root[data-theme="dark"] .eterx-chat-feed .eterx-thought-expanded {
+  background: #121212 !important;
+  border-top-color: rgba(255, 255, 255, 0.07) !important;
+  color: #a9a9a9 !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed .eterx-thought-expanded {
+  background: #fbfbfb !important;
+  border-top-color: #efefef !important;
+  color: #858585 !important;
+}
+
+:root[data-theme="dark"] .eterx-chat-feed :is(.eterx-action-file-link, .eterx-file-change-filename, .eterx-inline-code-filename) {
+  color: #b8b8b8 !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed :is(.eterx-action-file-link, .eterx-file-change-filename, .eterx-inline-code-filename) {
+  color: #767676 !important;
+}

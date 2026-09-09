@@ -338,8 +338,8 @@ export function getProviderRuntime(provider: MainAgentProvider): ProviderRuntime
     : OPENAI_COMPATIBLE_PROVIDERS[provider];
 }
 
-export function getProviderBaseURL(provider: MainAgentProvider): string {
-  const override = runtimeBaseURLs[provider];
+export function getProviderBaseURL(provider: MainAgentProvider, scopedOverrides?: Partial<Record<MainAgentProvider, string>>): string {
+  const override = (scopedOverrides || runtimeBaseURLs)[provider];
   if (override) return override;
   if (provider === 'anthropic') {
     return normalizeProviderBaseURL('anthropic', String(process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'))

@@ -68,6 +68,7 @@ const planStepSchema = z.object({
 
 export const checkpointTool: ToolDefinition = {
   name: 'task_checkpoint',
+  modelDescription: 'Requires action. Active-plan actions: advance (evidence/reason satisfying done_when), skip/fail (reason required), activate (stepNumber), revise (revisedSteps and reason), complete (summary/evidence; force requires justification). Without a plan: save (taskSummary/nextSteps), load, clear. Do not create a plan merely to use this tool. No checkpoint does not mean earlier work is absent.',
   description: `Control task plan progression and save/load checkpoints.
 
 PLAN CONTROL (use when a task plan is active):
@@ -89,13 +90,13 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
     action: z.enum(['save', 'load', 'clear', 'advance', 'skip', 'fail', 'activate', 'revise', 'complete']).describe(
       'Plan control: advance, skip, fail, activate, revise, complete. Checkpoint: save, load, clear.'
     ),
-    reason: z.string().optional().describe('Reason for skip/fail/complete action'),
+    reason: z.string().optional().describe('Required for advance (why done_when is satisfied), skip, fail, and revise. May justify forced completion.'),
     stepNumber: z.number().int().optional().describe('Step number to activate (for "activate" action)'),
     summary: z.string().optional().describe('Completion summary (for "complete" action)'),
     evidence: z.array(z.string()).optional().describe('Concrete evidence supporting step or plan completion'),
     force: z.boolean().optional().describe('Explicitly complete despite unfinished steps; requires justification'),
     revisedGoal: z.string().optional().describe('Updated goal for a revised plan'),
-    revisedSteps: z.array(planStepSchema).optional().describe('Replacement plan steps for intelligent replanning'),
+    revisedSteps: z.array(planStepSchema).min(1).optional().describe('Required non-empty replacement steps for revise; include reason. Completed work is preserved.'),
     taskSummary: z.string().optional().describe('Brief description of progress (for checkpoint save)'),
     nextSteps: z.array(z.string()).optional().describe('Remaining steps (for checkpoint save)'),
     filesCreated: z.array(z.string()).optional().describe('Files created/modified (for checkpoint save)'),
@@ -117,7 +118,7 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
       if (!planEngine.hasActivePlan()) {
         return {
           success: false,
-          message: `No active plan. Use task_decomposer first to create a plan, or use "save"/"load" for checkpoints.`,
+          message: 'No active plan. Work directly unless persistent coordination is actually needed. save/load are available for an explicit checkpoint; do not create a plan just to advance it.',
         };
       }
 
@@ -256,7 +257,7 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
 
           return {
             success: true,
-            message: `Checkpoint saved. ${input.nextSteps?.length || 0} steps remaining. Resume with "continue".`
+            message: `Checkpoint saved with ${input.nextSteps?.length || 0} remaining steps. Interpret later requests with this state and the current conversation.`
           };
         }
 
@@ -264,7 +265,7 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
           if (!await fs.pathExists(checkpointFile)) {
             return {
               success: false,
-              message: 'No checkpoint found. This appears to be a fresh task — start from scratch.'
+              message: 'No checkpoint found. Use the existing conversation and context state; absence of a checkpoint does not mean earlier work is absent.'
             };
           }
 
@@ -274,7 +275,8 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
           if (Date.now() - checkpoint.savedAt > 24 * 60 * 60 * 1000) {
             return {
               success: false,
-              message: `Found checkpoint from ${ageMinutes} minutes ago, but it's too old (>24h). Starting fresh.`
+              checkpoint,
+              message: `Checkpoint is ${ageMinutes} minutes old. Treat it as historical context, not current execution evidence; do not restart completed work.`
             };
           }
 
@@ -307,7 +309,7 @@ When a plan is active, prefer plan control actions over checkpoint save/load.`,
         }
 
         default:
-          return { success: false, message: 'Unknown action. Use save, load, clear, advance, skip, activate, or complete.' };
+          return { success: false, message: 'Unknown action. Use save, load, clear, advance, skip, fail, activate, revise, or complete.' };
       }
     } catch (err: any) {
       return { success: false, message: `Checkpoint error: ${formatUnknownError(err, 'Unknown checkpoint failure')}` };

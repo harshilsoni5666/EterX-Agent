@@ -24,6 +24,7 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+
 export type BoundaryDecision =
   | 'continue_task'     // Same task, keep full context
   | 'new_task'          // Different task, archive old context
@@ -47,6 +48,22 @@ export interface BoundaryResult {
   reason: string;         // Human-readable explanation
   shouldArchiveContext: boolean;
   shouldResetSession: boolean;
+}
+
+export interface BoundaryHistoryMessage {
+  role?: string;
+  text?: unknown;
+  content?: unknown;
+  parts?: Array<{ text?: unknown }>;
+}
+
+export interface HistoryBoundaryInput {
+  newMessage: string;
+  history?: BoundaryHistoryMessage[];
+  hasActiveTask?: boolean;
+  recentToolNames?: string[];
+  recentFileNames?: string[];
+  pendingAskUser?: boolean;
 }
 
 // ─── Stop words for keyword extraction ────────────────────────────────────────
@@ -124,9 +141,6 @@ export function computeKeywordOverlap(text1: string, text2: string): number {
 
 // ─── Pattern constants ────────────────────────────────────────────────────────
 
-/** Messages that unambiguously mean "keep going with current work" */
-const CONTINUE_PATTERN = /^(continue|cont|go|next|more|keep going|do it|proceed|carry on|go ahead|resume|finish it|keep it up|lets go|let's go|go on|yes go|ok go|ok continue|yes continue|yes proceed|yep|y)$/i;
-
 /** Action verbs that indicate a NEW instruction (not an answer to a question) */
 const ACTION_VERBS = /\b(build|create|make|fix|write|search|find|install|run|deploy|implement|generate|develop|design|setup|configure|construct|compile|execute|launch|start|initialize|refactor|migrate|convert|transform|analyze|scan|crawl|scrape|download|upload|export|import|connect|integrate)\b/i;
 
@@ -185,12 +199,12 @@ function referencesRecentContext(
 
 function hasPendingSteps(plan: Array<{ name: string; status: string }> | null): boolean {
   if (!plan || plan.length === 0) return false;
-  return plan.some(s => s.status === 'pending');
+  return plan.some(s => ['pending', 'in_progress', 'blocked', 'failed'].includes(s.status));
 }
 
 function isAllComplete(plan: Array<{ name: string; status: string }> | null): boolean {
-  if (!plan || plan.length === 0) return true;
-  return plan.every(s => s.status === 'done');
+  if (!plan || plan.length === 0) return false;
+  return plan.every(s => ['done', 'completed', 'skipped'].includes(s.status));
 }
 
 // ─── Main classifier ─────────────────────────────────────────────────────────
@@ -238,11 +252,11 @@ export function detectChatBoundary(ctx: BoundaryContext): BoundaryResult {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PASS 2: EXPLICIT CONTINUE — unambiguous "keep going" messages
+    // PASS 2: EXPLICIT REPLACEMENT — user abandons the active task
     // ═══════════════════════════════════════════════════════════════════════
 
-    if (CONTINUE_PATTERN.test(msg)) {
-      return result('continue_task', 0.95, 'Explicit continuation command');
+    if (/^(?:new unrelated task\b|(?:forget|drop|abandon) (?:the )?(?:previous|current|earlier) task\b|switch (?:to a different|tasks)\b)/i.test(msg)) {
+      return result('new_task', 0.99, 'User explicitly replaced the active task');
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -308,28 +322,13 @@ export function detectChatBoundary(ctx: BoundaryContext): BoundaryResult {
     const overlapWithPrevAgent = computeKeywordOverlap(msg, ctx.lastAgentOutput);
     const combinedOverlap = Math.max(overlapWithPrevUser, overlapWithPrevAgent);
 
-    // Long message with explicit task description and no overlap
-    if (words > 50 && combinedOverlap < 0.05 && TASK_STARTERS.test(msg)) {
-      return result('new_task', 0.92, `Long message (${words} words) with task-starter + near-zero context overlap (${combinedOverlap.toFixed(2)})`);
-    }
-
     // A completed prior task plus a distinct task-starter is a new objective,
     // even when the user states it concisely. Requiring a long prompt caused
     // ordinary second turns to inherit stale plans and memory.
     if (TASK_STARTERS.test(msg) && combinedOverlap < 0.05 && isAllComplete(ctx.activeTaskPlan)) {
-      if (words >= 6) {
-        return result('new_task', 0.85, `Task-starter phrase + no overlap + completed/no plan (${words} words)`);
+      if (words >= 3) {
+        return result('new_task', 0.85, `Distinct request after recorded plan completion (${words} words)`);
       }
-    }
-
-    // Long message, zero overlap, new domain keywords
-    if (words > 50 && combinedOverlap < 0.08) {
-      return result('new_task', 0.80, `Long message (${words} words) with minimal context overlap (${combinedOverlap.toFixed(2)})`);
-    }
-
-    // Task-starting phrase with low overlap even with active plan
-    if (TASK_STARTERS.test(msg) && combinedOverlap < 0.08 && words > 25) {
-      return result('new_task', 0.80, `Task-starter + low overlap (${combinedOverlap.toFixed(2)}) + substantial message (${words} words)`);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -355,6 +354,59 @@ export function detectChatBoundary(ctx: BoundaryContext): BoundaryResult {
   } catch (err: any) {
     console.warn(`[ChatBoundary] ⚠️ Classification error: ${err?.message || 'unknown'}. Defaulting to continue_task.`);
     return result('continue_task', 0.50, 'Error during classification — safe default');
+  }
+}
+
+function historyMessageText(message: BoundaryHistoryMessage | null | undefined): string {
+  if (!message) return '';
+  if (typeof message.text === 'string') return message.text.trim();
+  if (typeof message.content === 'string') return message.content.trim();
+  if (Array.isArray(message.parts)) {
+    return message.parts.map(part => String(part?.text || '')).join('\n').trim();
+  }
+  return '';
+}
+
+/**
+ * Build a boundary decision from the transcript shapes used by direct chat,
+ * custom agents, and lightweight adapters. The current user turn may already
+ * be appended optimistically; remove only an identical trailing copy.
+ */
+export function detectChatBoundaryFromHistory(input: HistoryBoundaryInput): BoundaryResult {
+  try {
+    const newMessage = String(input.newMessage || '').trim();
+    const history = Array.isArray(input.history) ? input.history : [];
+    let lastIndex = history.length - 1;
+    const trailing = history[lastIndex];
+    if (
+      String(trailing?.role || '').toLowerCase() === 'user'
+      && historyMessageText(trailing) === newMessage
+    ) {
+      lastIndex -= 1;
+    }
+    let lastUser: BoundaryHistoryMessage | undefined;
+    let lastAgent: BoundaryHistoryMessage | undefined;
+    for (let index = lastIndex; index >= 0 && (!lastUser || !lastAgent); index -= 1) {
+      const message = history[index];
+      if (!message) continue;
+      const role = String(message.role || '').toLowerCase();
+      if (!lastUser && role === 'user') lastUser = message;
+      if (!lastAgent && (role === 'model' || role === 'assistant')) lastAgent = message;
+    }
+    const lastAgentOutput = historyMessageText(lastAgent);
+    return detectChatBoundary({
+      newMessage,
+      lastUserMessage: historyMessageText(lastUser),
+      lastAgentOutput,
+      activeTaskPlan: input.hasActiveTask
+        ? [{ name: 'Active objective', status: 'pending' }]
+        : null,
+      recentToolNames: input.recentToolNames || [],
+      recentFileNames: input.recentFileNames || [],
+      pendingAskUser: input.pendingAskUser ?? /\?\s*$/.test(lastAgentOutput),
+    });
+  } catch {
+    return result('continue_task', 0.50, 'History classification failed; preserving continuity');
   }
 }
 

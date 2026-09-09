@@ -23,6 +23,8 @@
 
 // ─── Plan Step ────────────────────────────────────────────────────────────────
 
+import { getToolResultOutcome } from './tool-semantics';
+
 export type StepStatus = 'blocked' | 'ready' | 'active' | 'done' | 'skipped' | 'failed';
 
 export type ExecutionStep = {
@@ -183,7 +185,7 @@ export class PlanExecutionEngine {
       toolName,
       argsDigest: argsStr.slice(0, 300),
       outputDigest: outputStr.slice(0, 400),
-      succeeded,
+      succeeded: succeeded && getToolResultOutcome(output) === 'completed',
       timestamp: Date.now(),
     });
 

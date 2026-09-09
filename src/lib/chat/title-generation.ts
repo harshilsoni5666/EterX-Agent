@@ -9,23 +9,51 @@ export const TITLE_SYSTEM_PROMPT = [
 export const TITLE_MAX_CONTEXT_MESSAGES = 6;
 export const TITLE_MAX_MESSAGE_CHARS = 500;
 export const TITLE_MAX_CONTEXT_CHARS = 2_400;
+export const TITLE_REQUEST_TIMEOUT_MS = 90_000;
+export const TITLE_REFRESH_USER_TURNS = 20;
+
+export type ChatTitleMetadata = {
+  title: string;
+  titleState?: 'temporary' | 'generated' | 'manual';
+  titleUpdatedAt?: number;
+  titleLastAttemptTurn?: number;
+};
+
+/** Title revisions are independent of transcript activity and sidebar ordering. */
+export const mergeChatTitleMetadata = (
+  durable: ChatTitleMetadata,
+  incoming: ChatTitleMetadata,
+): ChatTitleMetadata => {
+  const preserveManual = durable.titleState === 'manual' && incoming.titleState !== 'manual';
+  const source = preserveManual || Number(durable.titleUpdatedAt || 0) > Number(incoming.titleUpdatedAt || 0)
+    ? durable
+    : incoming;
+  return {
+    title: source.title,
+    titleState: source.titleState,
+    titleUpdatedAt: source.titleUpdatedAt,
+    titleLastAttemptTurn: Math.max(durable.titleLastAttemptTurn || 0, incoming.titleLastAttemptTurn || 0),
+  };
+};
 
 const textFromPart = (part: unknown): string => {
   if (typeof part === 'string') return part;
   if (!part || typeof part !== 'object') return '';
   const source = part as Record<string, unknown>;
-  return typeof source.text === 'string' ? source.text : '';
+  if (source.thought === true || /reason|think|analysis/i.test(String(source.type || ''))) return '';
+  if (typeof source.text === 'string') return source.text;
+  return typeof (source.text as any)?.value === 'string' ? (source.text as any).value : '';
 };
 
 const textFromMessage = (message: unknown): string => {
   if (!message || typeof message !== 'object') return '';
   const source = message as Record<string, unknown>;
-  const raw = Array.isArray(source.parts)
+  const raw = (Array.isArray(source.parts)
     ? source.parts.map(textFromPart).join(' ')
     : Array.isArray(source.content)
       ? source.content.map(textFromPart).join(' ')
-      : source.text ?? source.content ?? '';
-  return String(raw || '').replace(/\s+/g, ' ').trim();
+      : textFromPart(source)) || (typeof source.content === 'string' ? source.content : '');
+  return raw.replace(/\s+/g, ' ').trim();
 };
 
 const normalizedRole = (role: unknown): 'user' | 'assistant' | null => {
@@ -64,7 +92,23 @@ export const compactTitleHistory = (history: unknown): CompactTitleMessage[] => 
 
   const selected: CompactTitleMessage[] = [];
   let remainingChars = TITLE_MAX_CONTEXT_CHARS;
+  // Reserve space for the request even when many assistant messages follow it.
+  let latestUserIndex = -1;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    if (normalizedRole(history[index]?.role) === 'user' && textFromMessage(history[index])) {
+      latestUserIndex = index;
+      break;
+    }
+  }
+  const selectedIndexes: number[] = [];
+  if (latestUserIndex >= 0) {
+    const text = textFromMessage(history[latestUserIndex]).slice(0, TITLE_MAX_MESSAGE_CHARS).trim();
+    selected.push({ role: 'user', text });
+    selectedIndexes.push(latestUserIndex);
+    remainingChars -= text.length;
+  }
   for (let index = history.length - 1; index >= 0 && selected.length < TITLE_MAX_CONTEXT_MESSAGES; index -= 1) {
+    if (index === latestUserIndex) continue;
     const role = normalizedRole(history[index]?.role);
     if (!role) continue;
     const available = Math.min(TITLE_MAX_MESSAGE_CHARS, remainingChars);
@@ -72,9 +116,12 @@ export const compactTitleHistory = (history: unknown): CompactTitleMessage[] => 
     const text = textFromMessage(history[index]).slice(0, available).trim();
     if (!text) continue;
     selected.push({ role, text });
+    selectedIndexes.push(index);
     remainingChars -= text.length;
   }
-  return selected.reverse();
+  return selected.map((message, index) => ({ message, index: selectedIndexes[index] }))
+    .sort((a, b) => a.index - b.index)
+    .map(entry => entry.message);
 };
 
 export const getLatestTitleUserText = (history: unknown): string => {
@@ -119,13 +166,23 @@ export const extractGeneratedTitleText = (value: unknown, depth = 0): string => 
 
   const source = value as Record<string, unknown>;
   const type = String(source.type || '').toLowerCase();
-  if (/reason|think|analysis/.test(type)) return '';
+  if (source.thought === true || /reason|think|analysis|refusal/.test(type)) return '';
+
+  // Alternatives are separate completions, not words in the same title.
+  for (const key of ['choices', 'candidates']) {
+    if (Array.isArray(source[key])) {
+      for (const alternative of source[key] as unknown[]) {
+        const text = extractGeneratedTitleText(alternative, depth + 1);
+        if (text) return text;
+      }
+    }
+  }
 
   for (const key of ['title', 'output_text', 'text']) {
     const text = extractGeneratedTitleText(source[key], depth + 1);
     if (text) return text;
   }
-  for (const key of ['content', 'parts', 'message', 'output']) {
+  for (const key of ['content', 'parts', 'message', 'output', 'response', 'delta', 'value']) {
     const text = extractGeneratedTitleText(source[key], depth + 1);
     if (text) return text;
   }
@@ -134,15 +191,27 @@ export const extractGeneratedTitleText = (value: unknown, depth = 0): string => 
 
 export const cleanGeneratedTitle = (rawTitle: unknown): string | null => {
   let extracted = extractGeneratedTitleText(rawTitle).trim();
+  extracted = extracted
+    .replace(/<(think|thinking|analysis|reasoning)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+    .trim();
+  // Never turn an unfinished reasoning block into a visible sidebar title.
+  if (/<(?:think|thinking|analysis|reasoning)\b/i.test(extracted)) return null;
+  extracted = extracted
+    .replace(/^\s*```(?:text|markdown|json)?\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
+    .replace(/^\s*<(?:title|final|answer)>\s*|\s*<\/(?:title|final|answer)>\s*$/gi, '')
+    .trim();
   if (!extracted) return null;
 
   // Models sometimes obey semantically but serialize the answer as JSON.
-  if (/^\s*\{/.test(extracted)) {
+  if (/^[\[{]/.test(extracted)) {
     try {
       const parsed = JSON.parse(extracted);
-      extracted = extractGeneratedTitleText(parsed).trim() || extracted;
-    } catch { }
+      extracted = extractGeneratedTitleText(parsed).trim();
+    } catch { return null; }
   }
+
+  extracted = extracted.replace(/^(?:\*\*|__)?(?:chat\s+)?title(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*/i, '');
 
   const title = extracted
     .replace(/^\s*```(?:text|markdown|json)?\s*/i, '')
@@ -165,6 +234,10 @@ export const cleanGeneratedTitle = (rawTitle: unknown): string | null => {
   if (
     leakedPromptLabel ||
     /^\[object Object\]$/i.test(title) ||
+    /^(?:untitled(?: chat)?|none|null|undefined)$/i.test(title) ||
+    /^(?:I (?:cannot|can't|will|need to)|let me|here (?:is|are)|sure\b)/i.test(title) ||
+    /[<>{}\[\]]/.test(title) ||
+    !/[\p{L}\p{N}]/u.test(title) ||
     title.toLowerCase() === DEFAULT_CHAT_TITLE.toLowerCase() ||
     words.length < 1
   ) return null;

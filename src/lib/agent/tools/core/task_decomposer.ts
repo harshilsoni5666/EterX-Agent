@@ -9,6 +9,7 @@ import { getAgentConversationScope } from '../../context-scope';
 import { formatUnknownError } from '../../error-format';
 
 /** Singleton plan execution engine — shared with the agent loop and governor. */
+const pendingPlanGenerations = new Map<string, Promise<any>>();
 
 /**
  * Task Decomposer v3 — API-Powered Deep Step Protocol Engine
@@ -26,32 +27,64 @@ import { formatUnknownError } from '../../error-format';
  */
 export const taskDecomposerTool: ToolDefinition = {
   name: 'task_decomposer',
-  description: `Create a live execution plan for genuinely complex work using the user's configured model. The user does not need to ask for planning explicitly: use this when the request has several dependent actions, spans multiple files or systems, needs deep research, or has a meaningful verification phase. Do not use it for direct answers or tiny edits. Call it once per task; then keep the live plan current with task_checkpoint.
+  modelDescription: 'Create one persistent plan only for a requested tracker or genuine dependent outcomes/shared ownership across systems or deliverables. Not a default startup step, routine fix, or single artifact. Required: complexTask; optional context must carry constraints; maxSubtasks is 1–20 (default 8). Reuse an existing plan with task_checkpoint. A skipped result means work directly, not retry decomposition.',
+  description: `Create one persistent live execution plan only when coordination state is materially necessary. This is never a default first action. Use it when the user explicitly requests a visible plan/tracker, or when losing explicit step state could skip dependencies, duplicate work, conflict across parallel owners, or cause false completion across several dependent phases, multiple systems/deliverables, a long resumed run, or a separate release/validation gate. Call it at most once per task; then use task_checkpoint.
   
   Examples:
-  - Use only when the task likely needs 4+ ordered steps, multiple files/systems, a long deliverable, deep research, or the user explicitly asks for tasks/a tracker
-  - Do NOT use for direct questions, tiny edits, one command, one-file reads, simple fixes, greetings, or short follow-ups
-  - "Build me a full website with authentication"
-  - "Create a 10-page research report on climate change"
-  - "Set up CI/CD pipeline for this project"
+  - Use for a coordinated frontend + backend + database migration + deployment whose later phases depend on earlier evidence
+  - Use for several independent deliverables owned by parallel agents when Main must track integration dependencies
+  - Do NOT use for a single artifact—even a large game, page, app, report, or document—when it can be produced directly
+  - Do NOT use for direct questions, focused fixes, a few related files, one command, routine inspect/edit/verify work, greetings, or short follow-ups
   
   Returns: Structured plan with steps, tools, verification conditions, and dependency graph.`,
   category: 'core',
   inputSchema: z.object({
     complexTask: z.string().describe('The full complex task description from the user'),
     context: z.string().optional().describe('Additional context (file list, project type, constraints)'),
-    maxSubtasks: z.number().int().min(3).max(20).optional().default(15).describe('Maximum number of subtasks (default: 15, max: 20)')
+    maxSubtasks: z.number().int().min(1).max(20).optional().default(8).describe('Upper limit, not a target. Use the fewest meaningful outcomes (default 8, range 1–20).')
   }),
   outputSchema: z.object({
     success: z.boolean(),
+    skipped: z.boolean().optional(),
+    skippedDuplicate: z.boolean().optional(),
     plan: z.array(z.any()),
     totalSteps: z.number(),
     estimatedTools: z.array(z.string()),
     plannerVersion: z.string().optional(),
     qualityWarnings: z.array(z.string()).optional(),
+    message: z.string().optional(),
     error: z.string().optional(),
   }),
   execute: async (input: { complexTask: string, context?: string, maxSubtasks?: number }, runtimeContext?: any) => {
+    const scopeId = getAgentConversationScope(runtimeContext);
+    const pendingGeneration = pendingPlanGenerations.get(scopeId);
+    if (pendingGeneration) return pendingGeneration;
+    const existing = getPlanEngine(scopeId).serialize();
+    if (existing?.steps?.length) return {
+      success: true, skippedDuplicate: true, plan: existing.steps,
+      totalSteps: existing.steps.length,
+      estimatedTools: [...new Set(existing.steps.flatMap(step => step.tools || []))],
+      message: 'This task already has a plan. Reuse its current state; use task_checkpoint to advance or revise unfinished work.',
+    };
+    const generation = (async () => {
+    const taskText = `${input.complexTask || ''}\n${input.context || ''}`.trim();
+    const planningForbidden = /\b(?:(?:do\s+not|don't|dont|never|skip|avoid|without)(?:\s+\w+){0,3}|no\s+need\s+to)\s+(?:plan|decompose|use\s+(?:a\s+)?planner|create\s+(?:a\s+)?(?:plan|roadmap|task\s+tracker|checklist))\b|\bno\s+(?:plan|planning|decomposition|task\s+tracker|checklist)\b/i.test(taskText);
+    // The main agent decides whether coordination is warranted from context.
+    // A vocabulary counter must not reject that decision and trigger retries.
+    if (planningForbidden) {
+      return {
+        success: true,
+        skipped: true,
+        plan: [],
+        totalSteps: 0,
+        estimatedTools: [],
+        plannerVersion: 'direct-execution-gate-v1',
+        qualityWarnings: [],
+        message: planningForbidden
+          ? 'Planning was explicitly declined. Execute the requested outcome directly without a task plan or checkpoints.'
+          : 'A persistent plan is not justified by this request. Execute the requested outcome directly without task checkpoints.',
+      };
+    }
     console.log(`[Tool: task_decomposer] Decomposing via API: "${ input.complexTask.substring(0, 80) }..."`);
     const chatId = getAgentConversationScope(runtimeContext);
     const emitTrace = typeof runtimeContext?._onTrace === 'function' ? runtimeContext._onTrace : null;
@@ -86,6 +119,14 @@ export const taskDecomposerTool: ToolDefinition = {
         modelName: runtimeContext?.selectedModelName,
       });
       const steps = planResult.steps;
+      if (runtimeContext?.abortSignal?.aborted || runtimeContext?.signal?.aborted || runtimeContext?.isCancelled?.()) {
+        throw new Error('CANCELLED_BY_USER');
+      }
+      // Install execution state before publishing a generated tracker. The UI
+      // must not announce a plan that checkpoint actions cannot find.
+      const planEngine = getPlanEngine(chatId);
+      planEngine.loadPlan(input.complexTask, steps);
+      const persistenceWarnings: string[] = [];
 
       // Write synchronized machine-readable and human-readable tracker files.
       const trackerJson: TaskTrackerData = {
@@ -122,6 +163,7 @@ export const taskDecomposerTool: ToolDefinition = {
         trackerFiles = [paths.mdPath, paths.jsonPath];
         console.log(`[Tool: task_decomposer] ✅ Trackers written (${ steps.length } steps, complexity: ${ planResult.estimated_complexity })`);
       } catch (e) {
+        persistenceWarnings.push('Tracker files could not be saved; the active in-memory plan remains available.');
         console.warn("[Tool: task_decomposer] Could not write tracker files, proceeding anyway.");
       }
       // The generated plan is the authoritative lifecycle result. Tracker
@@ -152,8 +194,6 @@ export const taskDecomposerTool: ToolDefinition = {
 
       // 4. Load plan into the evidence-based execution engine
       try {
-        const planEngine = getPlanEngine(chatId);
-        planEngine.loadPlan(input.complexTask, steps);
         if (chatId) {
           globalSessionManager.setTaskDecomposerUsedForChat(chatId, true);
           globalSessionManager.setExecutionPlanForChat(chatId, planEngine.serialize());
@@ -161,7 +201,7 @@ export const taskDecomposerTool: ToolDefinition = {
         }
         console.log(`[Tool: task_decomposer] ✅ PlanExecutionEngine loaded (${steps.length} steps in causal graph)`);
       } catch (engineErr: any) {
-        throw new Error(`The real execution plan could not be initialized: ${engineErr.message}`);
+        persistenceWarnings.push(`Session persistence failed: ${formatUnknownError(engineErr, 'Could not save the plan session')}. Keep using the active plan instead of generating another.`);
       }
 
       // Collect unique tools used across all steps
@@ -175,7 +215,7 @@ export const taskDecomposerTool: ToolDefinition = {
         complexity: planResult.estimated_complexity,
         estimatedMinutes: planResult.estimated_time_minutes,
         plannerVersion: planResult.planner_version,
-        qualityWarnings: planResult.quality_warnings || [],
+        qualityWarnings: [...(planResult.quality_warnings || []), ...persistenceWarnings],
         strategy: 'sequential_with_parallel_tool_calls',
         trackerFiles,
         message: `Task decomposed into ${ steps.length } concrete execution steps (${ planResult.estimated_complexity } complexity, ~${ planResult.estimated_time_minutes } min). Tracker is stored inside this chat's task folder. Execute the NEXT pending step only, using its expected_output and done_when as the completion contract. Do NOT repeat completed steps.`
@@ -195,6 +235,11 @@ export const taskDecomposerTool: ToolDefinition = {
         steps: [],
       }, 'failed');
       return { success: false, plan: [], totalSteps: 0, estimatedTools: [], error: errorMessage };
+    }
+    })();
+    pendingPlanGenerations.set(scopeId, generation);
+    try { return await generation; } finally {
+      if (pendingPlanGenerations.get(scopeId) === generation) pendingPlanGenerations.delete(scopeId);
     }
   }
 };

@@ -20,6 +20,8 @@ import {
   isFeedTurnBoundary,
 } from '../chat-feed-lifecycle';
 import { formatUnknownError } from './error-format';
+import { sameUserAdmission } from '../steering-delivery';
+import { contextUsageScopeKey, mergeContextCompactionSnapshot, mergeContextUsageSnapshot, upsertContextUsageSnapshot } from '../context-usage-snapshot';
 
 /**
  * TaskStore — Persistent Server-Side Task State
@@ -34,14 +36,16 @@ import { formatUnknownError } from './error-format';
  *
  * What this does NOT do:
  * - Running tasks are NOT resumed after a process restart. The Node.js
- *   process dies with the task; on the next cleanup pass those entries
- *   are detected (status='running' + age > 2 h) and marked 'failed'.
+ *   process dies with the task; records predating this process are recovered
+ *   as interrupted, without counting time while the application was closed.
  *
  * Storage: .workspaces/.tasks/{chatId}.json
  */
 
 const TASKS_DIR = getEterxWorkspaceDir('.tasks');
-const TASK_STORE_PROCESS_STARTED_AT = Date.now();
+// Module reloads are not process restarts. Using module evaluation time could
+// mark a still-running task as orphaned after a development hot reload.
+const TASK_STORE_PROCESS_STARTED_AT = Date.now() - process.uptime() * 1_000;
 const MAX_TASK_CACHE_ENTRIES = 80;
 // Match the live registry budget so settling or reloading a run never causes
 // the visible timeline to collapse from hundreds of events to a short tail.
@@ -421,6 +425,7 @@ function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
   const actionIndexes = new Map<string, number>();
   const likelyActionIndexes = new Map<string, Set<number>>();
   const taskPlanIndexes = new Map<string, number>();
+  const contextUsageIndexes = new Map<string, number>();
   const registerLikelyAction = (log: any, index: number) => {
     getFeedActionLifecycleCandidateKeys(log).forEach(key => {
       const indexes = likelyActionIndexes.get(key) || new Set<number>();
@@ -440,6 +445,18 @@ function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
   };
 
   for (const log of Array.isArray(traceLogs) ? traceLogs : []) {
+    if (String(log?.type || '') === 'context_usage') {
+      const usageKey = contextUsageScopeKey(log);
+      const existingUsageIndex = usageKey ? contextUsageIndexes.get(usageKey) : undefined;
+      const previous = existingUsageIndex === undefined ? null : canonical[existingUsageIndex];
+      const merged = mergeContextUsageSnapshot(previous, log);
+      if (merged === previous) continue;
+      if (existingUsageIndex !== undefined) canonical[existingUsageIndex] = null;
+      const nextIndex = canonical.length;
+      canonical.push(merged);
+      if (usageKey) contextUsageIndexes.set(usageKey, nextIndex);
+      continue;
+    }
     if (String(log?.type || '') === 'task_plan') {
       const scope = String(log?.turnId || log?.runId || '').trim();
       const planKey = scope ? `task-plan:${ scope }` : '';
@@ -545,7 +562,7 @@ function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
     registerLikelyAction(canonical[existingIndex], existingIndex);
   }
 
-  return canonical;
+  return canonical.filter(Boolean);
 }
 
 function trimTask(task: PersistedTask, compactAll = false): void {
@@ -597,6 +614,19 @@ function settleOrphanedLiveTraces(traceLogs: any[], completedAt: number, interru
   });
 }
 
+function lastRecordedTaskActivity(task: PersistedTask): number {
+  let latest = Math.max(
+    normalizeStreamTimestamp(task.startedAt, 0),
+    normalizeStreamTimestamp(task.lastUpdatedAt, 0),
+  );
+  for (const trace of Array.isArray(task.traceLogs) ? task.traceLogs : []) {
+    latest = Math.max(latest, ...[trace?.startTime, trace?.timestamp, trace?.endTime]
+      .map(value => normalizeStreamTimestamp(value, 0)));
+  }
+  // A recovery timestamp is an observation of a crash, not its occurrence.
+  return latest || TASK_STORE_PROCESS_STARTED_AT;
+}
+
 function rememberTask(chatId: string, task: PersistedTask): void {
   taskCache.delete(chatId);
   taskCache.set(chatId, task);
@@ -606,7 +636,12 @@ function rememberTask(chatId: string, task: PersistedTask): void {
     let oldestUpdatedAt = Number.POSITIVE_INFINITY;
 
     for (const [id, cached] of taskCache.entries()) {
+      if (id === chatId) continue;
       if (cached.status === 'running') continue;
+      // A busy workspace can exceed the cache target with live chats alone.
+      // Never evict a just-finished transcript before its scheduled write has
+      // taken a snapshot, or completion/steering rows can disappear on reload.
+      if (writeTimers.has(id) || writeChains.has(id) || pendingWriteSnapshots.has(id)) continue;
       const updatedAt = cached.completedAt || cached.lastUpdatedAt || cached.startedAt || 0;
       if (updatedAt < oldestUpdatedAt) {
         oldestUpdatedAt = updatedAt;
@@ -622,7 +657,7 @@ function rememberTask(chatId: string, task: PersistedTask): void {
 /**
  * Flush a task to disk immediately (bypassing debounce).
  */
-async function flushToDisk(chatId: string): Promise<void> {
+async function flushToDisk(chatId: string, throwOnError = false): Promise<void> {
   const task = taskCache.get(chatId);
   if (!task) return;
 
@@ -650,6 +685,7 @@ async function flushToDisk(chatId: string): Promise<void> {
     await nextWrite;
   } catch (err: any) {
     console.warn(`[TaskStore] ⚠️ Failed to persist task for ${chatId}: ${err.message}`);
+    if (throwOnError) throw err;
   } finally {
     if (writeChains.get(chatId) === nextWrite) writeChains.delete(chatId);
     if (pendingWriteSnapshots.has(chatId) && taskCache.has(chatId)) void flushToDisk(chatId);
@@ -671,6 +707,19 @@ function scheduleDiskWrite(chatId: string): void {
 }
 
 export const taskStore = {
+  async flushPendingWrites(chatIds?: string[]): Promise<void> {
+    const ids = chatIds || [...taskCache.keys()];
+    await Promise.all(ids.map(async chatId => {
+      const timer = writeTimers.get(chatId);
+      if (timer) clearTimeout(timer);
+      writeTimers.delete(chatId);
+      await flushToDisk(chatId, true);
+      // A terminal update can join an existing writer while its last await is
+      // returning. Include that writer before the desktop kills its server.
+      await writeChains.get(chatId);
+    }));
+  },
+
   /**
    * A desktop close kills the Node process. No in-memory execution can exist
    * after restart, so persisted running tasks must never be presented as live.
@@ -691,13 +740,18 @@ export const taskStore = {
             // Only tasks that existed before this module initialized are
             // orphans; a newer timestamp belongs to this live process.
             if ((task.startedAt || 0) >= TASK_STORE_PROCESS_STARTED_AT) continue;
+            // A cold-start scan can overlap a new run or an independently
+            // restored chat. Never overwrite that newer in-memory owner with
+            // a disk record that was read before its admission.
+            if (taskCache.has(task.chatId)) continue;
             task.status = 'failed';
             task.finalAnswer = 'Agent interrupted because EterX was closed or restarted. Previous activity is preserved above.';
-            task.completedAt = Date.now();
-            task.lastUpdatedAt = task.completedAt;
+            task.completedAt = lastRecordedTaskActivity(task);
+            task.lastUpdatedAt = Date.now();
             task.traceLogs = settleOrphanedLiveTraces(task.traceLogs, task.completedAt);
             trimTask(task, true);
-            await writeJsonAtomic(taskPath, task);
+            rememberTask(task.chatId, task);
+            await flushToDisk(task.chatId);
           } catch (error: any) {
             console.warn(`[TaskStore] Could not recover orphaned task ${file}: ${error?.message || error}`);
           }
@@ -807,16 +861,15 @@ export const taskStore = {
       const traceIndex = timedEvent._traceIdx;
       const existingUserIndex = task.traceLogs.findIndex((log: any) => {
         if (log?.type !== 'user_action') return false;
+        if (sameUserAdmission(log, timedEvent)) return true;
         const logRunId = String(log.runId || log.turnId || '').trim();
         if (eventRunId && logRunId && eventRunId !== logRunId) return false;
         const incomingTurnId = String(timedEvent.turnId || '').trim();
         const existingTurnId = String(log.turnId || '').trim();
         if (incomingTurnId && existingTurnId && incomingTurnId !== existingTurnId) return false;
         const sameTraceIndex = traceIndex !== undefined && traceIndex !== null && log._traceIdx === traceIndex;
-        // TaskStore receives canonical server traces, never the client's
-        // optimistic bubble. Therefore an event id is not a valid upsert key:
-        // adapters can recycle it on a later Send. Only a cursor inside the
-        // same explicit run/turn namespace proves this is the same boundary.
+        // Legacy adapters can recycle generic event IDs. Without a canonical
+        // admission identity, require a cursor in the same run/turn namespace.
         return Boolean(
           sameTraceIndex &&
           ((eventRunId && logRunId && eventRunId === logRunId) ||
@@ -845,17 +898,17 @@ export const taskStore = {
       const incomingRunId = String(timedEvent.runId || '').trim();
       const incomingTurnId = String(timedEvent.turnId || '').trim();
       const incomingTraceIndex = timedEvent._traceIdx;
-      const existingSteeringIndex = incomingTraceIndex !== undefined && incomingTraceIndex !== null
-        ? task.traceLogs.findIndex(log => {
-          if (log?.type !== 'steering_received' || log._traceIdx !== incomingTraceIndex) return false;
+      const existingSteeringIndex = task.traceLogs.findIndex(log => {
+          if (log?.type !== 'steering_received') return false;
+          if (sameUserAdmission(log, timedEvent)) return true;
+          if (incomingTraceIndex === undefined || incomingTraceIndex === null || log._traceIdx !== incomingTraceIndex) return false;
           const existingRunId = String(log.runId || '').trim();
           const existingTurnId = String(log.turnId || '').trim();
           return Boolean(
             (incomingRunId && existingRunId && incomingRunId === existingRunId) ||
             (incomingTurnId && existingTurnId && incomingTurnId === existingTurnId)
           );
-        })
-        : -1;
+        });
       if (existingSteeringIndex >= 0) {
         const previous = task.traceLogs[existingSteeringIndex];
         task.traceLogs[existingSteeringIndex] = {
@@ -922,6 +975,29 @@ export const taskStore = {
         };
       } else {
         task.traceLogs.push(timedEvent);
+      }
+    } else if (timedEvent?.type === 'context_usage') {
+      upsertContextUsageSnapshot(task.traceLogs, timedEvent);
+    } else if (timedEvent?.type === 'context_compaction' && String(timedEvent.compactionId || '').trim()) {
+      const incomingCompactionId = String(timedEvent.compactionId).trim();
+      const incomingChatId = String(timedEvent.chatId || timedEvent.ownerChatId || chatId).trim();
+      const existingCompactionIndex = task.traceLogs.findIndex((log: any) => {
+        if (log?.type !== 'context_compaction') return false;
+        if (String(log.compactionId || '').trim() !== incomingCompactionId) return false;
+        const existingChatId = String(log.chatId || log.ownerChatId || chatId).trim();
+        return !incomingChatId || !existingChatId || incomingChatId === existingChatId;
+      });
+      if (existingCompactionIndex >= 0) {
+        task.traceLogs[existingCompactionIndex] = mergeContextCompactionSnapshot(
+          task.traceLogs[existingCompactionIndex],
+          timedEvent,
+        );
+      } else {
+        task.traceLogs.push({
+          ...timedEvent,
+          id: timedEvent.id || `context-compaction:${ incomingCompactionId }`,
+          startTime: timedEvent.startTime || timedEvent.timestamp,
+        });
       }
     } else if (timedEvent?.type === 'thought_stream') {
       mergeThoughtStreamTrace(task.traceLogs, timedEvent);
@@ -1114,6 +1190,11 @@ export const taskStore = {
       const answerId = String(timedEvent.answerId || '').trim();
       const replacementNoteId = String(timedEvent.replacementNoteId || '').trim();
       const incomingScope = String(timedEvent.turnId || timedEvent.runId || '').trim();
+      const incomingOwner = timedEvent.subAgentChatId || timedEvent.subAgentId || timedEvent.subAgent || null;
+      const replacementExists = Boolean(replacementNoteId && task.traceLogs.some(log =>
+        log?.type === 'work_note' && log.noteId === replacementNoteId &&
+        (log.subAgentChatId || log.subAgentId || log.subAgent || null) === incomingOwner &&
+        (!incomingScope || String(log.turnId || log.runId || '').trim() === incomingScope)));
       for (let i = task.traceLogs.length - 1; i >= 0; i--) {
         const log = task.traceLogs[i];
         if (isFeedTurnBoundary(log)) {
@@ -1122,12 +1203,17 @@ export const taskStore = {
         }
         if (
           log?.type === 'answer' &&
+          (log.subAgentChatId || log.subAgentId || log.subAgent || null) === incomingOwner &&
           (!incomingScope || !String(log.turnId || log.runId || '').trim() || String(log.turnId || log.runId || '').trim() === incomingScope) &&
           (
             (answerId && String(log.answerId || '') === answerId) ||
             (!answerId && (log.isStreaming || log.isLiveTyping || log.streamState === 'open'))
           )
         ) {
+          if (replacementExists) {
+            task.traceLogs.splice(i, 1);
+            continue;
+          }
           if (replacementNoteId && String(log.text || '').trim()) {
             // Persist the same row transition that live clients observe. The
             // cancel delivery index becomes `_pollIdx`, so a reconnect that
@@ -1281,6 +1367,7 @@ export const taskStore = {
     } else if (timedEvent?.type === 'work_note') {
       const noteText = String(timedEvent.text || '');
       if (!noteText.trim()) return;
+      const normalizedNoteText = noteText.replace(/\s+/g, ' ').trim();
       const noteId = timedEvent.noteId || null;
       const subAgent = timedEvent.subAgent || null;
       const subAgentIdentity = timedEvent.subAgentChatId || timedEvent.subAgentId || subAgent;
@@ -1311,7 +1398,7 @@ export const taskStore = {
           (log.subAgentChatId || log.subAgentId || log.subAgent || null) !== subAgentIdentity
         ) continue;
         const sameNote = noteId && log.noteId && log.noteId === noteId;
-        const sameText = String(log.text || '').trim() === noteText.trim();
+        const sameText = String(log.text || '').replace(/\s+/g, ' ').trim() === normalizedNoteText;
         if (sameNote && log._streamingCancelled && !incomingIsFinal) {
           ignoreCancelledUpdate = true;
           break;
@@ -1347,7 +1434,23 @@ export const taskStore = {
           incomingIsFinal &&
           isOpenPersistedWorkNote(log)
         );
-        if (sameNote || canFinalizeAdjacentText || canMergeIdlessStream || isCancelledPlaceholder) {
+        const isAdjacentExactDuplicate = Boolean(
+          !crossedPhaseBoundary &&
+          sameText &&
+          i === task.traceLogs.length - 1 &&
+          closeInTime
+        );
+        // Two adapters can publish the same note under different local IDs
+        // during a live->durable hand-off. Exact adjacent same-owner text in
+        // one query is one lifecycle; a repeat after any action/phase boundary
+        // remains a separate, intentional note.
+        if (
+          sameNote ||
+          canFinalizeAdjacentText ||
+          canMergeIdlessStream ||
+          isCancelledPlaceholder ||
+          isAdjacentExactDuplicate
+        ) {
           mergeIdx = i;
           break;
         }
@@ -1545,10 +1648,21 @@ export const taskStore = {
       if (readableTaskPath) {
         const task = await readTaskWithBackup(readableTaskPath);
         if (String(task.chatId || '') !== chatId) return null;
+        // A new run may have been admitted while this disk read was pending.
+        const admitted = taskCache.get(chatId);
+        if (admitted) return admitted;
+        const interrupted = task.status === 'running' && task.startedAt < TASK_STORE_PROCESS_STARTED_AT;
+        if (interrupted) {
+          task.status = 'failed';
+          task.finalAnswer = 'Agent interrupted because EterX was closed or restarted. Previous activity is preserved above.';
+          task.completedAt = lastRecordedTaskActivity(task);
+          task.lastUpdatedAt = Date.now();
+          task.traceLogs = settleOrphanedLiveTraces(task.traceLogs, task.completedAt);
+        }
         trimTask(task, true);
         rememberTask(chatId, task);
         // Migrate a verified legacy record to its collision-proof namespace.
-        if (readableTaskPath !== taskPath) await flushToDisk(chatId);
+        if (interrupted || readableTaskPath !== taskPath) await flushToDisk(chatId);
         return task;
       }
     } catch { /* silent */ }
@@ -1579,7 +1693,8 @@ export const taskStore = {
     error?: string;
     terminalTurnId?: string;
   }> {
-    await this.recoverOrphanedRunningTasks();
+    // Recover this chat directly. Waiting for a workspace-wide archive scan
+    // held every reopened chat behind unrelated files and slow disk reads.
     const task = await this.getTask(chatId);
     if (!task) {
       return { status: 'idle', traces: [], totalTraces: 0, maxIndex: -1, finalAnswer: '' };
@@ -1691,13 +1806,14 @@ export const taskStore = {
           const data = await fs.readJson(taskPath);
           let lastUpdated = data.completedAt || data.lastUpdatedAt || data.startedAt || 0;
           
-          // Auto-recover/fail tasks that have been "running" globally for >2 hours (likely App crashed)
-          if (data.status === 'running' && (Date.now() - (data.lastUpdatedAt || data.startedAt)) > 2 * 60 * 60 * 1000) {
-            console.log(`[TaskStore] 🧹 Task ${data.taskId} stuck in running state for >2 hours. Marking as failed.`);
+          // Quiet long-running work is not a crashed process. Only a record
+          // predating this process can be an orphan; age alone proves nothing.
+          if (data.status === 'running' && data.startedAt < TASK_STORE_PROCESS_STARTED_AT) {
+            console.log(`[TaskStore] Recovering interrupted task ${data.taskId}.`);
             data.status = 'failed';
             data.finalAnswer = 'Task failed due to a system crash or timeout.';
-            data.completedAt = Date.now();
-            data.lastUpdatedAt = data.completedAt;
+            data.completedAt = lastRecordedTaskActivity(data);
+            data.lastUpdatedAt = Date.now();
             data.traceLogs = trimTraceLedgerWithBoundary(
               settleOrphanedLiveTraces(data.traceLogs, data.completedAt),
               MAX_COMPLETED_TRACE_LOGS,

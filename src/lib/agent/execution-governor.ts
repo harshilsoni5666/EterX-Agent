@@ -13,7 +13,7 @@
  *   - Mutation/verification evidence tracking
  */
 
-import { classifyToolSemantics, toolResultSucceeded } from './tool-semantics';
+import { classifyToolSemantics, getToolResultOutcome, toolResultChangedState, toolResultMadeProgress, toolResultSucceeded } from './tool-semantics';
 
 export type ExecutionGovernorDecision = {
   allowed: boolean;
@@ -80,7 +80,8 @@ function stableSerialize(value: unknown): string {
  * collapse repeated separators, strip trailing slash.
  */
 function normalizePath(p: string): string {
-  return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '').toLowerCase();
+  const normalized = p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 /**
@@ -103,11 +104,20 @@ function isSemanticallyDuplicateSignature(sigA: string, sigB: string): boolean {
   const argsA = sigA.slice(colonA + 1);
   const argsB = sigB.slice(colonB + 1);
 
-  // Path-based tools: normalize paths before comparing
+  // Only paths are case-insensitive on Windows. Search/replacement content
+  // and quoted shell arguments must keep their exact bytes for retry identity.
   if (toolA.startsWith('workspace_')) {
-    if (normalizePath(argsA) === normalizePath(argsB)) return true;
-    // Collapse whitespace for command strings
-    if (argsA.replace(/\s+/g, ' ').trim() === argsB.replace(/\s+/g, ' ').trim()) return true;
+    const normalizeTargets = (args: Record<string, any>): Record<string, any> => {
+      const normalized = { ...args };
+      for (const key of ['filename', 'path', 'filePath', 'cwd']) {
+        if (typeof normalized[key] === 'string') normalized[key] = normalizePath(normalized[key]);
+      }
+      if (Array.isArray(normalized.files)) normalized.files = normalized.files.map(normalizeTargets);
+      return normalized;
+    };
+    try {
+      return stableSerialize(normalizeTargets(JSON.parse(argsA))) === stableSerialize(normalizeTargets(JSON.parse(argsB)));
+    } catch { return false; }
   }
 
   // Token overlap for search/research queries
@@ -117,20 +127,11 @@ function isSemanticallyDuplicateSignature(sigA: string, sigB: string): boolean {
     if (tokensA.size === 0 || tokensB.size === 0) return false;
     let overlap = 0;
     for (const t of tokensA) { if (tokensB.has(t)) overlap++; }
-    const similarity = overlap / Math.min(tokensA.size, tokensB.size);
+    const similarity = overlap / Math.max(tokensA.size, tokensB.size);
     if (similarity >= 0.8) return true;
   }
 
   return false;
-}
-
-function outputHasArtifact(output: any): boolean {
-  return Boolean(
-    output?.path || output?.filePath ||
-    (Array.isArray(output?.filesCreated) && output.filesCreated.length > 0) ||
-    (Array.isArray(output?.filesModified) && output.filesModified.length > 0) ||
-    (Array.isArray(output?.artifacts) && output.artifacts.length > 0),
-  );
 }
 
 /**
@@ -195,7 +196,7 @@ export class ExecutionGovernor {
     }
 
     const semantics = classifyToolSemantics(normalizedName, args);
-    if (!normalizedName || semantics.isMutation || semantics.isRefreshSensitive) {
+    if (!normalizedName || semantics.isRefreshSensitive) {
       return { allowed: true };
     }
 
@@ -225,9 +226,9 @@ export class ExecutionGovernor {
 
     const success = toolResultSucceeded(output);
     const semantics = classifyToolSemantics(normalizedName, args);
-    const isMutation = semantics.isMutation;
+    const isMutation = toolResultChangedState(output, semantics);
     const isVerification = semantics.isVerification;
-    const materialProgress = success && (semantics.materialOnSuccess || outputHasArtifact(output));
+    const materialProgress = toolResultMadeProgress(output, semantics);
 
     this.attempts.push({
       signature: this.signature(normalizedName, args),
@@ -237,11 +238,20 @@ export class ExecutionGovernor {
       materialProgress,
     });
 
+    if (isMutation) {
+      this.hasMutation = true;
+      this.mutationEpoch++;
+      this.hasVerification = false;
+    }
+
     if (!success) {
       this.consecutiveFailures++;
       this.consecutiveNoProgress++;
       return;
     }
+
+    // An accepted background job is neither a failed tactic nor completed work.
+    if (getToolResultOutcome(output) === 'pending') return;
 
     this.consecutiveFailures = 0;
     if (materialProgress) {
@@ -250,11 +260,7 @@ export class ExecutionGovernor {
       this.consecutiveNoProgress++;
     }
 
-    if (isMutation) {
-      this.hasMutation = true;
-      this.mutationEpoch++;
-    }
-    if (isVerification) this.hasVerification = true;
+    if (isVerification && getToolResultOutcome(output) === 'completed') this.hasVerification = true;
   }
 
   public buildGuidance(): string {

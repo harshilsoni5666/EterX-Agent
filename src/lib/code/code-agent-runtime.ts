@@ -24,7 +24,7 @@ CODING FAST MODE:
 - Once planned, use task_checkpoint to advance each item only after its done_when condition has evidence; revise changed work and never finalize an unresolved plan.
 - Use sub-agents and background scouting only when they create real leverage: independent review, long-running checks, or UI/server workflows.
 - Explore with workspace_semantic_search + workspace_search_text before broad reads.
-- Batch reads with workspace_read_many_files. Never read the same file twice in one task unless it changed.
+- Batch reads with workspace_read_many_files. Reuse a fresh Context Fabric workspace observation across turns; never read the same unchanged file twice merely to reconstruct context.
 - Use workspace_edit_file for every file mutation: new files, targeted existing-file edits, deletion, and atomic multi-file changes.
 - Single file: filename plus edits/delete. Multiple files: files=[{filename, edits/delete}].
 - Never create persistent source files through shell commands.
@@ -44,7 +44,7 @@ TOOL ERROR RECOVERY (coding only):
 
 export const CODING_LONG_TASK_RULES = `
 LONG TASK RULES (active after 10+ iterations):
-- After 10+ iterations, re-read the user request to stay precisely on-task. Do not drift.
+- After 10+ iterations, use the active Context Fabric objective/constraint frontier to stay precisely on-task. Do not re-inject or re-read the full request when that frontier is available.
 - After 15+ edits, run workspace_verify_code or a targeted test before continuing.
 - Keep each workspace_edit_file call focused on one file and group its related edits.
 - If approaching 400+ iterations, summarize all work done and ask if the user wants to continue.

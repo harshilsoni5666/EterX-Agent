@@ -7,6 +7,50 @@
  */
 
 import { distillEvidence } from './evidence-distiller';
+import { getToolResultOutcome } from '../tool-semantics';
+import { resolveTerminalOutputKind } from '../source-read-policy';
+
+function isSourceRead(toolName: string, args: Record<string, any>, result?: any): boolean {
+  if (toolName === 'context_memory' && args.action === 'open') return true;
+  if (toolName !== 'workspace_run_command') return false;
+  if (result?.outputKind === 'read' || result?.outputKind === 'mixed') return true;
+  if (result?.outputKind === 'log') return false;
+  if (args.mode === 'check') return resolveTerminalOutputKind(String(result?.command || ''), result?.outputKind) === 'read';
+  if (!['run', undefined].includes(args.mode)) return false;
+  return resolveTerminalOutputKind(String(args.command || args.cmd || ''), args.outputKind) === 'read' ||
+    (Array.isArray(args.commands) && args.commands.some((entry: any) =>
+      resolveTerminalOutputKind(String(entry?.command || entry?.cmd || ''), entry?.outputKind ?? args.outputKind) === 'read'));
+}
+
+/** Small lifecycle fields must survive every reduction of a tool payload. */
+function outcomeEnvelope(result: any): Record<string, any> {
+  const outcome = getToolResultOutcome(result);
+  const envelope: Record<string, any> = {
+    success: outcome !== 'failed',
+    ...(outcome === 'pending' ? { status: 'running', stillRunning: true } : {}),
+    ...(outcome === 'noop' ? { skipped: true } : {}),
+  };
+  if (result && typeof result === 'object') {
+    for (const key of [
+      'error', 'exitCode', 'exit_code', 'timedOut', 'cancelled', 'isError',
+      'taskId', 'backgroundTaskId', 'streamId', 'outputEnd', 'hasNewOutput',
+      'operation', 'editsApplied', 'stateChanged', 'rollbackIncomplete', 'rolledBack',
+    ]) {
+      const value = result[key];
+      if (value === null || ['string', 'boolean', 'number'].includes(typeof value)) {
+        envelope[key] = typeof value === 'string' ? value.slice(0, 1200) : value;
+      }
+    }
+    if (Array.isArray(result.results)) {
+      const pending = result.results.filter((entry: any) => getToolResultOutcome(entry) === 'pending');
+      if (pending.length) envelope.pendingTasks = pending.slice(0, 32).map((entry: any) => ({
+        taskId: entry.taskId || entry.backgroundTaskId,
+        command: String(entry.command || '').slice(0, 300),
+      }));
+    }
+  }
+  return envelope;
+}
 
 interface CompactionResult {
   compacted: any;
@@ -31,6 +75,7 @@ export class ToolResultCompactor {
    */
   compact(toolName: string, args: Record<string, any>, result: any): any {
     if (result === null || result === undefined) return result;
+    if (isSourceRead(toolName, args, result)) return this.preserveReadOutput(result);
     
     // Estimate size
     const size = this.estimateSize(result);
@@ -74,38 +119,43 @@ export class ToolResultCompactor {
   }
 
   /** Link a reduced provider payload to the immutable exact Context Fabric page. */
-  withExactPageRef(result: any, pageRef?: string): any {
+  withExactPageRef(result: any, pageRef?: string, canOpenContextMemory = true): any {
     const normalizedPageRef = String(pageRef || '').trim();
     if (!normalizedPageRef || !result || typeof result !== 'object') return result;
     if (result.__eterxContextDigest !== true && result._compacted !== true) return result;
     return {
       ...result,
       exactContextPageRef: normalizedPageRef,
-      recovery: `Use context_memory action="open" with pageRef="${normalizedPageRef}" for the exact result.`,
+      recovery: canOpenContextMemory
+        ? `Use context_memory action="open" with pageRef="${normalizedPageRef}" for the exact result.`
+        : 'This is a reduced tool result. Use this run\'s declared terminal/file tools to obtain the relevant evidence; do not infer omitted content or call an unavailable memory tool.',
     };
   }
 
   /**
-   * Bound the combined payload of one parallel tool batch. Small results stay
-   * exact; only oversized siblings are distilled. Raw outputs are retained by
-   * Context Fabric before this provider-facing reduction is applied.
+   * Bound non-reading output only. A log sibling must never shrink a file
+   * read, and a file read must never expand a log sibling's allowance.
    */
   compactBatch(toolNames: string[], argsList: Record<string, any>[], results: any[]): any[] {
     if (results.length <= 1) return results;
-    const sizes = results.map(result => this.estimateSize(result));
+    const reads = results.map((result, index) => isSourceRead(toolNames[index], argsList[index] || {}, result));
+    const sizes = results.map((result, index) => reads[index] ? 0 : this.estimateSize(result));
     const total = sizes.reduce((sum, size) => sum + size, 0);
-    if (total <= MAX_TOOL_BATCH_SIZE) return results;
+    const batchBudget = MAX_TOOL_BATCH_SIZE;
+    if (total <= batchBudget) return results;
 
-    const exactIndexes = sizes
-      .map((size, index) => ({ size, index }))
-      .filter(item => item.size <= 2_000);
-    const exactChars = exactIndexes.reduce((sum, item) => sum + item.size, 0);
-    const largeCount = Math.max(1, results.length - exactIndexes.length);
-    const perLargeBudget = Math.max(2_400, Math.floor((MAX_TOOL_BATCH_SIZE - exactChars) / largeCount));
-
-    return results.map((result, index) => sizes[index] <= 2_000
-      ? result
-      : this.compactToBudget(toolNames[index] || 'tool', argsList[index] || {}, result, perLargeBudget));
+    // Water-fill: keep small siblings exact and give their unused allowance
+    // to larger reads. A batch cannot multiply a minimum per-result budget.
+    const allocations = sizes.map(() => 0);
+    let remaining = batchBudget;
+    const bounded = sizes.map((size, index) => ({ size, index })).filter(item => !reads[item.index]);
+    bounded.sort((a, b) => a.size - b.size)
+      .forEach((item, index) => {
+        allocations[item.index] = Math.min(item.size, Math.floor(remaining / (bounded.length - index)));
+        remaining -= allocations[item.index];
+      });
+    return results.map((result, index) => reads[index] || sizes[index] <= allocations[index] ? result
+      : this.compactToBudget(toolNames[index] || 'tool', argsList[index] || {}, result, allocations[index]));
   }
 
   private compactToBudget(
@@ -114,6 +164,7 @@ export class ToolResultCompactor {
     result: any,
     maxChars: number,
   ): any {
+    if (isSourceRead(toolName, args, result)) return this.preserveReadOutput(result);
     const exactContextPageRef = typeof result?.exactContextPageRef === 'string'
       ? result.exactContextPageRef
       : undefined;
@@ -134,6 +185,7 @@ export class ToolResultCompactor {
           }))
         : [];
       return {
+        ...outcomeEnvelope(result),
         success: compacted?.success !== false,
         message: compacted?.message,
         error: compacted?.error,
@@ -158,6 +210,7 @@ export class ToolResultCompactor {
       tool: toolName,
       originalChars: digest.originalChars,
       status: digest.status,
+      ...outcomeEnvelope(result),
       evidence: digest.text,
       recovery: 'Use a narrower follow-up read/search call if omitted detail becomes decision-relevant.',
       ...(exactContextPageRef ? { exactContextPageRef } : {}),
@@ -207,6 +260,14 @@ export class ToolResultCompactor {
     }
 
     return this.compactGeneric(result);
+  }
+
+  private preserveReadOutput(result: any): any {
+    if (!result || typeof result !== 'object') return result;
+    const output = { ...result };
+    // Removing an identical alias is lossless, unlike clipping source text.
+    if (output.output === output.stdout || output.output === output.stderr) delete output.output;
+    return output;
   }
 
   /** Compact shell output — keep exit code + head + tail of stdout/stderr */

@@ -1,6 +1,9 @@
 "use client";
 
-import React, { startTransition, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { requestJson } from '../lib/request-json';
+import Loading from './loading';
+import React, { startTransition, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal, flushSync } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { Sidebar } from '../components/layout/sidebar';
 import { CommandPalette } from '../components/layout/command-palette';
@@ -8,6 +11,8 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../components/theme/theme-bridge';
 import { ChatInput } from '../components/layout/chat-input';
 import { ChatFeed } from '../components/chat/chat-feed';
+import { ChatTerminalDock } from '../components/chat/chat-terminal-dock';
+import { createTerminal, disposeChatTerminals, toggleTerminalPlacement, transferChatTerminals, useChatTerminalControls } from '../lib/chat-terminal-store';
 import { FloatingLiveWidget } from '../components/chat/FloatingLiveWidget';
 import {
   type LiveMissionEntry,
@@ -21,6 +26,7 @@ import { Maximize2, Minimize2, AlertTriangle, CheckCircle2, ChevronDown, Sun, Mo
 import { Tooltip } from '../components/ui/tooltip';
 import { safeCopyTextToClipboard } from '../components/ui/copy-button';
 import { getNativeFilePath } from '../lib/path-utils';
+import { captureProxyScreenshot, prepareProxyAttachments, readProxyManagerResponse, writeProxyControl } from '../lib/proxy-chat-client';
 import { Shimmer } from '../components/ui/shimmer';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -67,14 +73,20 @@ import { formatVisibleWorkNote } from '../lib/agent/work-note';
 import { isLiveUserVisibleTrace } from '../lib/agent/trace-visibility';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../lib/agent/tool-trace';
 import { canonicalizeThoughtStreamLogs, closeThoughtStreamsForBoundary, mergeThoughtStreamTrace } from '../lib/thought-stream-lifecycle';
-import { agentIdentitiesOverlap, areLikelySameFeedActionLifecycle, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isConclusiveSettledAnswerTrace, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary, isSettledAnswerTrace, isTerminalWorkTrace, isTurnWorkActive, mergeFeedTraceHistories, mergeUserTurnBoundaries, orderFeedTimelineLogs, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles } from '../lib/chat-feed-lifecycle';
+import { agentIdentitiesOverlap, areLikelySameFeedActionLifecycle, createStoppedRunTrace, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isConclusiveSettledAnswerTrace, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary, isSettledAnswerTrace, isTerminalWorkTrace, isTurnWorkActive, mergeFeedTraceHistories, mergeUserTurnBoundaries, orderFeedTimelineLogs, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles } from '../lib/chat-feed-lifecycle';
 import { resolveChatSendTarget } from '../lib/chat-send-lifecycle';
+import { projectSteeringDelivery, sameUserAdmission, steeringMessageIds, upsertQueuedSteering, settledQueueAdmissionIds } from '../lib/steering-delivery';
+import { mergeContextCompactionSnapshot, upsertContextUsageSnapshot } from '../lib/context-usage-snapshot';
+import { readContextUsageMeter } from '../lib/context-usage-meter';
+import { CONTEXT_BUDGET_REVISIONS_KEY, contextWindowLimitNote, normalizeContextWindow, normalizeModelContextWindows, resolveContextWindowBudget, resolveSavedContextBudget } from '../lib/context-window-policy';
 import {
   chatComposerStateKey,
   hasOwnedComposerState,
   publishOwnedComposerState,
 } from '../lib/chat-composer-ownership';
-import { buildTemporaryTitle, compactTitleHistory } from '../lib/chat/title-generation';
+import { buildTemporaryTitle, cleanGeneratedTitle, compactTitleHistory, mergeChatTitleMetadata, TITLE_REQUEST_TIMEOUT_MS, TITLE_REFRESH_USER_TURNS, type ChatTitleMetadata } from '../lib/chat/title-generation';
+import { getCodingMode } from '../lib/code/coding-modes';
+import { ProxyRuntimeModelPicker } from '../components/layout/proxy-runtime-model-picker';
 import {
   GENERAL_AGENT_SELECTION,
   normalizeChatAgentSelection,
@@ -106,10 +118,7 @@ import {
   normalizeSubAgentRuntimeSettings,
 } from '../lib/agent/sub-agent-settings';
 import { PollingConcurrencyGate } from '../lib/agent/polling-coordinator';
-import {
-  normalizeContextUsageBreakdown,
-  type ContextUsageBreakdown,
-} from '../lib/context-usage-breakdown';
+import { fetchBatchedAgentPoll, reconnectAgentPollStreams } from '../lib/agent/poll-transport';
 
 const SettingsPanel = dynamic(
   () => import('../components/layout/settings-panel').then(mod => mod.SettingsPanel),
@@ -166,6 +175,7 @@ const WORK_NOTE_PHASE_BOUNDARY_TYPES = new Set([
   'progress',
   'ask_user',
   'steering_received',
+  'context_compaction',
   'sub_agent_spawn',
   'sub_agent_action',
   'sub_agent_complete',
@@ -191,6 +201,8 @@ const MUTABLE_POLL_SNAPSHOT_TYPES = new Set([
   'communication',
   'sub_agent_action',
   'task_plan',
+  'context_compaction',
+  'context_usage',
 ]);
 
 const isExplicitFinalAnswerTrace = (log: any): boolean => Boolean(
@@ -242,6 +254,32 @@ const traceTurnOwnershipMatches = (left: any, right: any): boolean => {
   // slice, so missing scope is compatible while two conflicting explicit
   // scopes remain rejected above.
   return true;
+};
+
+/**
+ * A context transfer is one mutable transaction. Keep its first chronological
+ * slot while accepting newer delivery cursors and terminal state. This is
+ * shared by live polling, reconnect polling, and local snapshot cleanup so a
+ * durable upsert cannot be discarded merely because it retained _traceIdx.
+ */
+const upsertContextCompactionTrace = (logs: any[], incoming: any): void => {
+  const compactionId = String(incoming?.compactionId || '').trim();
+  if (!compactionId) {
+    logs.push(incoming);
+    return;
+  }
+  const incomingChatId = String(incoming?.ownerChatId || incoming?.chatId || '').trim();
+  const existingIndex = logs.findIndex((candidate: any) => {
+    if (candidate?.type !== 'context_compaction') return false;
+    if (String(candidate.compactionId || '').trim() !== compactionId) return false;
+    const candidateChatId = String(candidate.ownerChatId || candidate.chatId || '').trim();
+    return !incomingChatId || !candidateChatId || incomingChatId === candidateChatId;
+  });
+  const previous = existingIndex >= 0 ? logs[existingIndex] : null;
+  const merged = mergeContextCompactionSnapshot(previous, incoming);
+  if (merged === previous) return;
+  if (existingIndex >= 0) logs[existingIndex] = merged;
+  else logs.push(merged);
 };
 
 const settleOpenFeedRowsForTurn = (
@@ -327,6 +365,20 @@ const reconcileCancelledAnswerTrace = (logs: any[], cancelTrace: any): void => {
   const answerId = String(cancelTrace?.answerId || '').trim();
   const replacementNoteId = String(cancelTrace?.replacementNoteId || '').trim();
   const replacementText = String(cancelTrace?.replacementText || '').trim();
+  const replacementIndex = replacementNoteId ? logs.findIndex(log =>
+    log?.type === 'work_note' && log.noteId === replacementNoteId &&
+    traceTurnOwnershipMatches(log, cancelTrace) &&
+    String(log.subAgentChatId || log.subAgentId || log.subAgent || 'main') ===
+      String(cancelTrace.subAgentChatId || cancelTrace.subAgentId || cancelTrace.subAgent || 'main')) : -1;
+  if (replacementIndex >= 0) {
+    // A reconnect can carry both the converted row and its transition event.
+    // The transition has already happened; never append a second replacement.
+    for (let index = logs.length - 1; index >= 0; index--) {
+      if (logs[index]?.type === 'answer' && answerId && logs[index].answerId === answerId &&
+        traceTurnOwnershipMatches(logs[index], cancelTrace)) logs.splice(index, 1);
+    }
+    return;
+  }
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     if (isFeedTurnBoundary(logs[index])) {
       if (answerId) continue;
@@ -392,68 +444,7 @@ const traceBelongsToChatFeed = (log: any, chatId: string | null | undefined): bo
   return String(log.chatId || '').trim() === target;
 };
 
-const providerUsageMetricsFromTrace = (usage: any) => {
-  if (!usage || usage.type !== 'model_usage') return undefined;
-  const inputTokens = Number(usage.promptTokens || usage.inputTokens || 0);
-  if (!Number.isFinite(inputTokens) || inputTokens <= 0) return undefined;
-  const measuredNumber = (...keys: string[]): number | undefined => {
-    for (const key of keys) {
-      if (usage[key] === undefined || usage[key] === null || usage[key] === '') continue;
-      const value = Number(usage[key]);
-      if (Number.isFinite(value)) return Math.max(0, value);
-    }
-    return undefined;
-  };
-  const wasMeasured = (flag: string, ...keys: string[]) => usage[flag] !== undefined
-    ? Number(usage[flag]) > 0
-    : keys.some(key => usage[key] !== undefined && Number.isFinite(Number(usage[key])));
-  const hasCacheMeasurement = wasMeasured(
-    'cacheTokensMeasured',
-    'cacheHitRatio',
-    'cachedTokens',
-    'uncachedPromptTokens',
-  );
-  const cachedInputTokens = hasCacheMeasurement
-    ? Math.max(0, Math.min(inputTokens, Number(usage.cachedTokens || 0)))
-    : undefined;
-  const uncachedInputTokens = hasCacheMeasurement
-    ? Math.max(0, Number.isFinite(Number(usage.uncachedPromptTokens))
-      ? Number(usage.uncachedPromptTokens)
-      : inputTokens - Number(cachedInputTokens || 0))
-    : undefined;
-  const explicitHitRatio = Number(usage.cacheHitRatio);
-  const cacheHitRatio = hasCacheMeasurement
-    ? Math.max(0, Math.min(1, Number.isFinite(explicitHitRatio)
-      ? explicitHitRatio
-      : Number(cachedInputTokens || 0) / inputTokens))
-    : undefined;
-  const reasoningTokens = wasMeasured('reasoningTokensMeasured', 'reasoningTokens')
-    ? measuredNumber('reasoningTokens')
-    : undefined;
-  const outputMeasured = wasMeasured(
-    'completionTokensMeasured',
-    'visibleOutputTokens',
-    'outputTokens',
-    'completionTokens',
-  );
-  const visibleOutputTokens = outputMeasured ? measuredNumber('visibleOutputTokens') : undefined;
-  const totalOutputTokens = outputMeasured ? measuredNumber('outputTokens', 'completionTokens') : undefined;
-  const outputTokens = visibleOutputTokens !== undefined
-    ? visibleOutputTokens
-    : totalOutputTokens !== undefined
-      ? Math.max(0, totalOutputTokens - (reasoningTokens || 0))
-      : undefined;
-  return {
-    cacheHitRatio,
-    cachedInputTokens,
-    uncachedInputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheWriteTokens: wasMeasured('cacheWriteTokensMeasured', 'cacheWriteTokens', 'cacheCreationTokens')
-      ? measuredNumber('cacheWriteTokens', 'cacheCreationTokens')
-      : undefined,
-  };
-};
+
 
 const normalizeBuilderUserActionLogs = (logs: any[] = []): any[] => {
   const source = Array.isArray(logs) ? logs : [];
@@ -487,6 +478,8 @@ const buildAgentHistory = (logs: any[]) => {
   for (let index = visibleLogs.length - 1; index >= 0; index--) {
     const log = visibleLogs[index];
     if (log?.type !== 'user_action' && log?.type !== 'answer') continue;
+    if (log?.subAgentId || log?.subAgentChatId || (log?.subAgent && log.subAgent !== 'Main')) continue;
+    if (log?.type === 'answer' && (log?.isStreaming === true || log?.streamState === 'open' || log?.streamState === 'cancelled')) continue;
     if (excludedProxyTurnIndexes.has(index)) continue;
     const text = String(log.text || '');
     if (!text) continue;
@@ -560,7 +553,7 @@ const TaskStatusGlyphMini = React.memo(({ status, active }: { status?: string; a
   return <span className="block h-3.5 w-3.5 shrink-0 rounded-full border-[1.5px] border-[#A9A9A9]/50" />;
 });
 
-interface ChatSession {
+interface ChatSession extends ChatTitleMetadata {
   id: string;
   title: string;
   updatedAt: number;
@@ -594,6 +587,7 @@ type QueuedFollowUp = {
   runId?: string;
   attachmentCount?: number;
   serverBacked?: boolean;
+  deliveryState?: 'pending' | 'uncertain' | 'rejected';
   runOptions?: QueuedRunOptions;
 };
 
@@ -638,52 +632,6 @@ const makeFollowUpAdmissionKey = (
   selectedAgent?.chatMode === true,
 ]);
 
-const speechWordKey = (word: string) => word.toLocaleLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
-
-const getSpeechWordOverlap = (existingWords: string[], incomingWords: string[]) => {
-  const maximumOverlap = Math.min(existingWords.length, incomingWords.length, 160);
-  for (let size = maximumOverlap; size > 0; size -= 1) {
-    const existingTail = existingWords.slice(-size).map(speechWordKey);
-    const incomingHead = incomingWords.slice(0, size).map(speechWordKey);
-    if (existingTail.every((word, index) => word && word === incomingHead[index])) return size;
-  }
-  return 0;
-};
-
-const mergeSpeechText = (existingText: string, incomingText: string) => {
-  const existing = String(existingText || '').trim();
-  const incoming = String(incomingText || '').trim();
-  if (!existing) return incoming;
-  if (!incoming) return existing;
-
-  const existingWords = existing.split(/\s+/);
-  const incomingWords = incoming.split(/\s+/);
-  const existingKeys = existingWords.map(speechWordKey);
-  const incomingKeys = incomingWords.map(speechWordKey);
-  const commonPrefixLength = Math.min(existingKeys.length, incomingKeys.length);
-  const hasCommonPrefix = existingKeys
-    .slice(0, commonPrefixLength)
-    .every((word, index) => word && word === incomingKeys[index]);
-  if (hasCommonPrefix) {
-    return incomingKeys.length >= existingKeys.length ? incoming : existing;
-  }
-  const overlap = getSpeechWordOverlap(existingWords, incomingWords);
-
-  return [...existingWords, ...incomingWords.slice(overlap)].join(' ');
-};
-
-const appendSpeechToDraft = (draftText: string, speechText: string) => {
-  const draft = String(draftText || '');
-  const speech = String(speechText || '').trim();
-  if (!speech) return draft;
-  if (!draft) return speech;
-  const incomingWords = speech.split(/\s+/);
-  const draftWords = draft.trim().split(/\s+/);
-  const newSpeech = incomingWords.slice(getSpeechWordOverlap(draftWords, incomingWords)).join(' ');
-  if (!newSpeech) return draft;
-  if (/\s$/.test(draft)) return `${draft}${newSpeech}`;
-  return `${draft} ${newSpeech}`;
-};
 
 type TaskTrackerStep = {
   id?: string;
@@ -1024,13 +972,7 @@ const isDefaultChatTitle = (title?: string | null) => {
 };
 
 const formatProxyManagerMarkdown = (value: string) => {
-  const normalized = normalizeMarkdownForRendering(String(value || '').replace(/\\n/g, '\n')).trim();
-  // Models sometimes begin a numbered deliverable list immediately after a
-  // sentence. Put each item on a Markdown block boundary so emphasis and list
-  // rendering work instead of exposing raw ** markers.
-  return normalized
-    .replace(/([.!?:]\s*)(?=\d{1,2}\.\s+(?:\*\*|__)?[A-Za-z])/g, '$1\n\n')
-    .replace(/([^\n])\s+(?=([-*])\s+(?:\*\*|__)?[A-Za-z])/g, '$1\n\n');
+  return normalizeMarkdownForRendering(String(value || '')).trim();
 };
 
 const proxyManagerMarkdownComponents = {
@@ -1097,7 +1039,7 @@ const normalizeProxyHistoryMessages = (items: any[]): ProxyChatMessage[] =>
       createdAt,
       delivery: item?.delivery,
       operation: item?.operation,
-      work: Array.isArray(item?.work) ? item.work : [],
+      work: Array.isArray(item?.work) ? item.work.filter((entry: any) => entry && typeof entry.text === 'string' && typeof entry.tool === 'string') : [],
     };
   });
 
@@ -1108,7 +1050,9 @@ const reconcileProxyChatMessages = (
   const canonicalIds = new Set(canonical.map(message => message.id).filter(Boolean));
   const pending = existing.filter(message => {
     if (message.id && canonicalIds.has(message.id)) return false;
-    if (!message.optimistic) return false;
+    // An older GET can finish after the current streamed reply. Retain messages
+    // absent from that snapshot instead of erasing newer canonical messages.
+    if (!message.optimistic) return true;
     return !canonical.some(serverMessage =>
       serverMessage.sender === message.sender &&
       serverMessage.text === message.text &&
@@ -1147,7 +1091,7 @@ const readContextCompactionSettings = (
     // the active model, not the settings reader.
     let contextWindows: Record<string, number> = {};
     try {
-      contextWindows = JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}');
+      contextWindows = normalizeModelContextWindows(JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}'));
     } catch { }
     const explicitModelMaximum = parsedModel
       ? Number(contextWindows?.[modelEntryKey(parsedModel.provider, parsedModel.modelId)] || 0)
@@ -1163,30 +1107,28 @@ const readContextCompactionSettings = (
       : null;
     let activeContextWindow = 0;
     let activeModelContextWindow = 0;
+    let activeContextWindowUsesModelMaximum = true;
+    let requestedContextWindow: number | undefined;
+    let contextBudgetRevision = 0;
+    try {
+      const revisions = JSON.parse(appStorage.getItem(CONTEXT_BUDGET_REVISIONS_KEY) || '{}');
+      contextBudgetRevision = Math.max(Number(revisions.global || 0), Number(revisions.chats?.[chatId || ''] || 0));
+    } catch { }
     if (activeModelEntry) {
       const discoveredMaximum = Number(contextWindows?.[modelEntryKey(activeModelEntry.provider, activeModelEntry.modelId)] || 0);
-      const modelMaximum = Number.isFinite(discoveredMaximum) && discoveredMaximum >= 16_000
-        ? Math.floor(discoveredMaximum)
-        : resolveClientContextWindow(activeModelEntry.provider, activeModelEntry.modelId);
+      const modelMaximum = normalizeContextWindow(discoveredMaximum)
+        || resolveClientContextWindow(activeModelEntry.provider, activeModelEntry.modelId);
       activeModelContextWindow = modelMaximum;
-      const legacyBudgetSelection = String(settings.contextWindowSizeSelection || '').trim();
-      const contextBudgetWasTouched = settings.contextWindowSizeSelectionTouched === true
-        || Boolean(legacyBudgetSelection && legacyBudgetSelection !== '258000');
-      let budgetSelection = contextBudgetWasTouched ? legacyBudgetSelection : 'model_max';
+      let chatOverride: unknown;
       if (chatId) {
         try {
-          const chatOverrides = JSON.parse(appStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}');
-          const chatBudget = String(chatOverrides?.[chatId] || '').trim();
-          if (chatBudget) budgetSelection = chatBudget;
+          chatOverride = JSON.parse(appStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}')?.[chatId];
         } catch { }
       }
-      const requestedBudget = budgetSelection === 'model_max'
-        ? modelMaximum
-        : Number(budgetSelection || modelMaximum);
-      activeContextWindow = Math.min(
-        modelMaximum,
-        Number.isFinite(requestedBudget) && requestedBudget >= 16_000 ? Math.floor(requestedBudget) : modelMaximum,
-      );
+      const budget = resolveContextWindowBudget(resolveSavedContextBudget(settings, chatOverride), modelMaximum);
+      activeContextWindowUsesModelMaximum = budget.activeContextWindowUsesModelMaximum;
+      requestedContextWindow = budget.requestedContextWindow;
+      activeContextWindow = budget.configuredContextWindow;
     }
     return {
       enabled: settings.contextCompactionEnabled !== false,
@@ -1205,89 +1147,30 @@ const readContextCompactionSettings = (
       activeModelContextWindow: Number.isFinite(activeModelContextWindow) && activeModelContextWindow >= 16_000
         ? Math.floor(activeModelContextWindow)
         : undefined,
+      activeContextWindowUsesModelMaximum,
+      requestedContextWindow,
+      activeContextModelProvider: activeModelEntry?.provider,
+      activeContextModelId: activeModelEntry?.modelId,
+      modelContextWindows: contextWindows,
+      contextBudgetChatId: chatId || undefined,
+      contextBudgetRevision,
     };
   } catch {
     return { enabled: true, model: null, customInstructions: '' };
   }
 };
 
-const estimateLiveTraceTokens = (log: any): number => {
-  if (!log) return 0;
-  const type = String(log.type || '');
-  if ([
-    'context_usage',
-    'context_compaction',
-    'answer_cancel',
-    'work_note',
-    'work_note_cancel',
-    'progress',
-    'tool_result_preview',
-    'agent_decision',
-    'done',
-  ].includes(type)) return 0;
-  const textCanEnterContext = [
-    'user_action',
-    'answer',
-    'tool_result',
-    'ask_user',
-    'steering_applied',
-  ].includes(type);
-  const fragments = [
-    textCanEnterContext ? log.text : null,
-    log.output,
-    log.command,
-    log.toolResult,
-    log.result,
-    log.question,
-    log.answeredWith,
-  ];
-  let chars = 0;
-  const seen = new Set<string>();
-  for (const fragment of fragments) {
-    if (typeof fragment === 'string') {
-      if (!seen.has(fragment)) {
-        seen.add(fragment);
-        chars += fragment.length;
-      }
-    }
-    else if (fragment && typeof fragment === 'object') {
-      try {
-        const serialized = JSON.stringify(fragment);
-        if (!seen.has(serialized)) {
-          seen.add(serialized);
-          chars += serialized.length;
-        }
-      } catch { }
-    }
-  }
-  return chars > 0 ? Math.ceil(chars / 4) + 4 : 0;
-};
 
-const contextTraceEstimateIdentity = (log: any): string => {
-  const eventId = String(
-    log?.thoughtId ||
-    log?.answerId ||
-    log?.toolCallId ||
-    log?.callId ||
-    log?.questionId ||
-    log?.id ||
-    '',
-  ).trim();
-  if (!eventId) return '';
-  return `${String(log?.runId || log?.turnId || '')}|${String(log?.type || '')}|${eventId}`;
-};
-
-const isProviderOutputContextTrace = (log: any): boolean => [
-  'answer',
-  'ask_user',
-  'tool_call',
-].includes(String(log?.type || ''));
 
 const traceLogIdentity = (log: any) => [
   log?.id || '',
   log?.type || '',
   log?.timestamp || log?.startTime || '',
   String(log?.text || log?.output || '').slice(0, 160),
+  ...(['context_usage', 'context_compaction', 'model_usage'].includes(String(log?.type || ''))
+    ? [log.contextRequestId, log._contextMeasurementIdx, log._pollIdx, log._traceIdx,
+        log.usedTokens, log.contextWindow, log.phase, log.afterTokens, log.promptTokens, log.outputTokens]
+    : []),
 ].join('|');
 
 const chatHasLogsMissingFromDurable = (durable: ChatSession, cached: ChatSession) => {
@@ -1330,6 +1213,7 @@ const mergeConcurrentChatRevisions = (durable: ChatSession, current: ChatSession
   return enforceChatTraceOwnership({
     ...mergedHistory,
     ...newestMetadata,
+    ...mergeChatTitleMetadata(durable, current),
     // Metadata follows the newest revision; admitted feed events are a
     // monotonic union and can never be erased by a delayed restore.
     traceLogs: mergedHistory.traceLogs,
@@ -1404,13 +1288,28 @@ export default function DeepWorkUIWrapper() {
 function DeepWorkUI() {
   const { openFiles } = useGlobalFilePanel();
   const hasOpenFiles = openFiles.length > 0;
-  const isRightPanelVisible = hasOpenFiles;
+  const [filePanelHidden, setFilePanelHidden] = useState(false);
+  const isRightPanelVisible = hasOpenFiles && !filePanelHidden;
+  useEffect(() => { setFilePanelHidden(false); }, [openFiles]);
+  const [documentVisible, setDocumentVisible] = useState(true);
   const splitContainerRef = useRef<HTMLDivElement>(null);
+  const conversationPaneRef = useRef<HTMLDivElement>(null);
   const latestChatPanelWidthRef = useRef<number | null>(null);
   const chatScrollPositionsRef = useRef<Record<string, number>>({});
   const [chatPanelWidth, setChatPanelWidth] = useState<number | null>(null);
   const [isResizingPanels, setIsResizingPanels] = useState(false);
   const [inputValue, setInputValue] = useState("");
+  const [inputValueRevision, setInputValueRevision] = useState(0);
+  useEffect(() => {
+    const syncVisibility = () => setDocumentVisible(document.visibilityState === 'visible');
+    syncVisibility();
+    document.addEventListener('visibilitychange', syncVisibility);
+    return () => document.removeEventListener('visibilitychange', syncVisibility);
+  }, []);
+  const inputValueRef = useRef(inputValue);
+  const inputDraftCommitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputDraftPersistenceIdleRef = useRef<number | null>(null);
+  const pendingInputDraftCommitRef = useRef<{ ownerKey: string; value: string } | null>(null);
   // Interface for all composer state elements saved per-chat
   interface ChatComposerState {
     inputValue: string;
@@ -1461,6 +1360,7 @@ function DeepWorkUI() {
   // stale manager read from visually re-enabling Proxy/Autonomous mode.
   const transferredProxyControlsRef = useRef<Map<string, {
     enabled: boolean;
+    paused?: boolean;
     intervention: 'minimal' | 'normal' | 'high';
     runtimeModel: string;
   }>>(new Map());
@@ -1545,7 +1445,14 @@ function DeepWorkUI() {
     // A background or queued send may target a different chat. Never erase
     // the draft currently visible in another chat while clearing that target.
     if (targetChatKey === visibleComposerKey) {
+      inputValueRef.current = '';
+      if (inputDraftCommitTimerRef.current) {
+        clearTimeout(inputDraftCommitTimerRef.current);
+        inputDraftCommitTimerRef.current = null;
+      }
+      pendingInputDraftCommitRef.current = null;
       setInputValue('');
+      setInputValueRevision(revision => revision + 1);
       setAttachments([]);
     }
     setComposerStates(prevStates => {
@@ -1610,7 +1517,9 @@ function DeepWorkUI() {
       agentMode: target.agentMode || composerRuntimeSelectionRef.current.agentMode,
       thinkingLevel: target.thinkingLevel || composerRuntimeSelectionRef.current.thinkingLevel,
     };
+    inputValueRef.current = target.inputValue;
     setInputValue(target.inputValue);
+    setInputValueRevision(revision => revision + 1);
     setActiveRunLocation(target.runLocation);
     setSelectedAgentState(target.selectedAgent);
     setAgentMode(target.agentMode);
@@ -1669,12 +1578,109 @@ function DeepWorkUI() {
   const updateInputValue = useCallback((value: string | ((prev: string) => string)) => {
     const chatKey = activeChatIdRef.current || 'new_chat';
     const key = composerStateKey(chatKey, activeComposerSurfaceRef.current);
-    setInputValue(prev => {
-      const resolved = typeof value === 'function' ? value(prev) : value;
-      updateComposerStateAtKey(key, state => ({ ...state, inputValue: resolved }));
-      return resolved;
-    });
+    if (inputDraftCommitTimerRef.current) {
+      clearTimeout(inputDraftCommitTimerRef.current);
+      inputDraftCommitTimerRef.current = null;
+    }
+    pendingInputDraftCommitRef.current = null;
+    const previous = inputValueRef.current;
+    const resolved = typeof value === 'function' ? value(previous) : value;
+    inputValueRef.current = resolved;
+    setInputValue(resolved);
+    setInputValueRevision(revision => revision + 1);
+    updateComposerStateAtKey(key, state => ({ ...state, inputValue: resolved }));
   }, [updateComposerStateAtKey]);
+
+  // Native typing updates the textarea immediately and lands here only to
+  // refresh the imperative draft owner. Publishing the full page state and
+  // serializing every chat on every character was the main renderer stall.
+  // Coalesce those expensive operations after a short typing pause while Send
+  // and navigation keep reading the exact latest value from refs.
+  const updateInputValueDraft = useCallback((value: string) => {
+    const chatKey = activeChatIdRef.current || 'new_chat';
+    const ownerKey = composerStateKey(chatKey, activeComposerSurfaceRef.current);
+    const currentState = composerStatesRef.current[ownerKey] || {
+      inputValue: '',
+      runLocation: 'local' as const,
+      selectedAgent: composerRuntimeSelectionRef.current.selectedAgent,
+      agentMode: composerRuntimeSelectionRef.current.agentMode,
+      thinkingLevel: composerRuntimeSelectionRef.current.thinkingLevel,
+      attachments: [],
+      pinnedItems: [],
+      chatModelSelection: composerRuntimeSelectionRef.current.modelSelection,
+    };
+
+    inputValueRef.current = value;
+    if (
+      dictationSessionRef.current !== null &&
+      dictationTargetRef.current === 'main' &&
+      lastDictationRenderRef.current !== null &&
+      value !== lastDictationRenderRef.current
+    ) {
+      dictationBaseTextRef.current = value;
+      dictationCommittedTextRef.current = '';
+      dictationRevisionRef.current += 1;
+      (window as any).electronAPI?.resetSpeechDictation?.(dictationSessionRef.current, dictationRevisionRef.current);
+      lastDictationRenderRef.current = value;
+    }
+    locallyEditedComposerOwnersRef.current.add(ownerKey);
+    composerStatesRef.current = {
+      ...composerStatesRef.current,
+      [ownerKey]: { ...currentState, inputValue: value },
+    };
+    pendingInputDraftCommitRef.current = { ownerKey, value };
+
+    if (inputDraftCommitTimerRef.current) clearTimeout(inputDraftCommitTimerRef.current);
+    inputDraftCommitTimerRef.current = setTimeout(() => {
+      inputDraftCommitTimerRef.current = null;
+      const pending = pendingInputDraftCommitRef.current;
+      pendingInputDraftCommitRef.current = null;
+      const snapshot = composerStatesRef.current;
+      setComposerStatesState(snapshot);
+      const persistLatestDrafts = () => {
+        inputDraftPersistenceIdleRef.current = null;
+        try {
+          appStorage.setItem('eterx_chat_composer_states', JSON.stringify(composerStatesRef.current));
+        } catch { }
+      };
+      const idleWindow = window as typeof window & {
+        requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+        cancelIdleCallback?: (handle: number) => void;
+      };
+      if (inputDraftPersistenceIdleRef.current !== null) {
+        if (idleWindow.cancelIdleCallback) idleWindow.cancelIdleCallback(inputDraftPersistenceIdleRef.current);
+        else clearTimeout(inputDraftPersistenceIdleRef.current);
+      }
+      inputDraftPersistenceIdleRef.current = idleWindow.requestIdleCallback
+        ? idleWindow.requestIdleCallback(persistLatestDrafts, { timeout: 1200 })
+        : window.setTimeout(persistLatestDrafts, 0);
+
+      if (!pending) return;
+      const activeOwnerKey = composerStateKey(
+        activeChatIdRef.current || 'new_chat',
+        activeComposerSurfaceRef.current,
+      );
+      if (activeOwnerKey === pending.ownerKey && inputValueRef.current === pending.value) {
+        setInputValue(pending.value);
+      }
+    }, 180);
+  }, []);
+
+  useEffect(() => () => {
+    const hasUnflushedDraft = Boolean(
+      pendingInputDraftCommitRef.current || inputDraftPersistenceIdleRef.current !== null,
+    );
+    if (inputDraftCommitTimerRef.current) clearTimeout(inputDraftCommitTimerRef.current);
+    if (inputDraftPersistenceIdleRef.current !== null) {
+      const idleWindow = window as typeof window & { cancelIdleCallback?: (handle: number) => void };
+      if (idleWindow.cancelIdleCallback) idleWindow.cancelIdleCallback(inputDraftPersistenceIdleRef.current);
+      else clearTimeout(inputDraftPersistenceIdleRef.current);
+    }
+    if (!hasUnflushedDraft) return;
+    try {
+      appStorage.setItem('eterx_chat_composer_states', JSON.stringify(composerStatesRef.current));
+    } catch { }
+  }, []);
 
   const updateAttachments = useCallback((value: ComposerAttachment[] | ((prev: ComposerAttachment[]) => ComposerAttachment[])) => {
     const chatKey = activeChatIdRef.current || 'new_chat';
@@ -1724,18 +1730,18 @@ function DeepWorkUI() {
         provider: entry.provider,
         modelId: entry.modelId,
       })).find(candidate => candidate.optionKey === selection);
-    if (!option) return;
+    if (!option && selection !== AUTO_MODEL_SELECTION) return;
 
     const chatKey = activeChatIdRef.current || 'new_chat';
     proxyManagerModelRevisionsRef.current[chatKey] = (proxyManagerModelRevisionsRef.current[chatKey] || 0) + 1;
-    setProxyModelSelection(option.optionKey);
+    setProxyModelSelection(selection);
     // `new_chat` is a real transient owner. Persist the explicit choice there
     // so admission can transfer it to the chat created by this send.
-    try { appStorage.setItem(`eterx_proxy_manager_model_${ chatKey }`, option.optionKey); } catch { }
+    try { appStorage.setItem(`eterx_proxy_manager_model_${ chatKey }`, selection); } catch { }
   }, [proxyModelEntries]);
 
   const handleProxyRuntimeModelSelectionChange = useCallback((selection: string) => {
-    const valid = proxyModelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === selection);
+    const valid = selection === AUTO_MODEL_SELECTION || proxyModelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === selection);
     if (!valid || selection === proxyRuntimeModelSelection) return;
     const previousSelection = proxyRuntimeModelSelection;
     const chatId = activeChatIdRef.current;
@@ -1748,17 +1754,15 @@ function DeepWorkUI() {
       appStorage.setItem(`eterx_proxy_runtime_model_${ chatKey }`, selection);
     } catch { }
     if (chatId) {
-      void fetch('/api/agent/proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId, action: 'model', modelSelection: selection }),
-      }).then(async response => response.ok && Boolean((await response.json().catch(() => ({}))).success))
-        .catch(() => false)
+      setProxyComposerError('');
+      let failureMessage = 'The proxy model could not be updated. Please try again.';
+      void writeProxyControl(chatId, { action: 'model', modelSelection: selection }, message => { failureMessage = message; })
         .then(success => {
           if (success || proxyControlRevisionsRef.current[chatKey] !== revision) return;
           try { appStorage.setItem(`eterx_proxy_runtime_model_${ chatKey }`, previousSelection); } catch { }
           if ((activeChatIdRef.current || 'new_chat') === chatKey) {
             setProxyRuntimeModelSelection(previousSelection);
+            setProxyComposerError(failureMessage);
           }
         });
     }
@@ -1786,9 +1790,29 @@ function DeepWorkUI() {
   }, []);
   const [selectedProjectSection, setSelectedProjectSection] = useState('new-tasks');
   const [pendingSteering, setPendingSteering] = useState<{ id: string, text: string, chatId: string, runId: string }[]>([]);
-  const [queuedFollowUps, setQueuedFollowUps] = useState<QueuedFollowUp[]>([]);
+  const [queuedFollowUps, setQueuedFollowUpsState] = useState<QueuedFollowUp[]>([]);
+  const queuedFollowUpsRef = useRef<QueuedFollowUp[]>([]);
   const queuedFollowUpDispatchRef = useRef<Set<string>>(new Set());
   const queuedFollowUpIdsRef = useRef<Map<string, string>>(new Map());
+  const cancelledQueuedFollowUpsRef = useRef<Set<string>>(new Set());
+  const retiredQueuedFollowUpsRef = useRef<Set<string>>(new Set());
+  const stoppingQueuedFollowUpsRef = useRef<Set<string>>(new Set());
+  const queueSnapshotRevisionsRef = useRef<Map<string, number>>(new Map());
+  const setQueuedFollowUps = useCallback((next: React.SetStateAction<QueuedFollowUp[]>) => {
+    const resolved = typeof next === 'function' ? next(queuedFollowUpsRef.current) : next;
+    const seen = new Set<string>();
+    const filtered = resolved.filter(item => {
+      const key = `${item.chatId}:${item.id}`;
+      if (seen.has(key) || cancelledQueuedFollowUpsRef.current.has(key) || retiredQueuedFollowUpsRef.current.has(key) || stoppingQueuedFollowUpsRef.current.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    // Queue actions and network callbacks share one synchronous authority.
+    if (filtered.length === queuedFollowUpsRef.current.length &&
+      filtered.every((item, index) => item === queuedFollowUpsRef.current[index])) return;
+    queuedFollowUpsRef.current = filtered;
+    setQueuedFollowUpsState(filtered);
+  }, []);
   // Admission is scoped per chat. A process-wide latch made a send in chat A
   // silently block chat B until the first request was accepted or timed out.
   const sendAdmissionsRef = useRef<Map<string, number>>(new Map());
@@ -1799,21 +1823,32 @@ function DeepWorkUI() {
   const stopRequestsRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const steeringAdmissionsRef = useRef<Set<string>>(new Set());
   const queuedFollowUpAdmissionsRef = useRef<Set<string>>(new Set());
-  const reconcileServerQueuedFollowUps = useCallback((chatId: string, items: unknown) => {
+  const reconcileServerQueuedFollowUps = useCallback((chatId: string, items: unknown, revision?: number) => {
     if (!chatId || !Array.isArray(items)) return;
+    const lastRevision = queueSnapshotRevisionsRef.current.get(chatId) || 0;
+    if (lastRevision && (!Number.isFinite(revision) || Number(revision) <= lastRevision)) return;
+    if (Number.isFinite(revision)) queueSnapshotRevisionsRef.current.set(chatId, Number(revision));
+    if (items.length === 0 && !queuedFollowUpsRef.current.some(item => item.chatId === chatId)) return;
+    const settledAdmissions = settledQueueAdmissionIds(chatsRef.current.find(chat => chat.id === chatId)?.traceLogs || []);
     setQueuedFollowUps(previous => {
       const previousForChat = new Map(
         previous.filter(item => item.chatId === chatId).map(item => [item.id, item]),
       );
       const remoteItems: QueuedFollowUp[] = items
         .filter((item: any) => item && typeof item.id === 'string')
+        .filter((item: any) => !cancelledQueuedFollowUpsRef.current.has(`${chatId}:${item.id}`))
+        .filter((item: any) => !settledAdmissions.has(item.id))
+        // Steering already owns its ordinary floating query bubbles. Its
+        // internal successor job is not a second visible queued message.
+        .filter((item: any) => !Array.isArray(item.steeringIds) || item.steeringIds.length === 0)
         .map((item: any) => {
           const existing = previousForChat.get(item.id);
-          return {
+          const next: QueuedFollowUp = {
             id: String(item.id),
             chatId,
             text: String(item.text || ''),
-            attachments: existing?.attachments || [],
+            attachments: existing?.attachments?.length || (existing && !item.attachments?.length)
+              ? existing.attachments : (Array.isArray(item.attachments) ? item.attachments : []),
             createdAt: Number(item.createdAt || existing?.createdAt || Date.now()),
             admissionKey: existing?.admissionKey,
             runId: typeof item.runId === 'string' ? item.runId : existing?.runId,
@@ -1821,6 +1856,9 @@ function DeepWorkUI() {
             serverBacked: true,
             runOptions: existing?.runOptions,
           };
+          return existing && Object.keys(next).every(key =>
+            existing[key as keyof QueuedFollowUp] === next[key as keyof QueuedFollowUp],
+          ) ? existing : next;
         });
       const remoteIds = new Set(remoteItems.map(item => item.id));
       for (const removed of previousForChat.values()) {
@@ -1829,15 +1867,19 @@ function DeepWorkUI() {
           queuedFollowUpAdmissionsRef.current.delete(removed.admissionKey);
           queuedFollowUpIdsRef.current.delete(removed.admissionKey);
         }
-        queuedFollowUpDispatchRef.current.delete(removed.id);
+        // The snapshot cannot release an action's in-flight lock. Only the
+        // action's finally block owns it. Missing server items are settled.
+        retiredQueuedFollowUpsRef.current.add(`${chatId}:${removed.id}`);
       }
       const pendingLocal = previous.filter(item =>
         item.chatId === chatId && item.serverBacked === false && !remoteIds.has(item.id)
       );
+      const nextForChat = [...remoteItems, ...pendingLocal];
+      const previousItems = [...previousForChat.values()];
+      if (nextForChat.length === previousItems.length && nextForChat.every((item, index) => item === previousItems[index])) return previous;
       return [
         ...previous.filter(item => item.chatId !== chatId),
-        ...remoteItems,
-        ...pendingLocal,
+        ...nextForChat,
       ];
     });
   }, []);
@@ -1870,13 +1912,35 @@ function DeepWorkUI() {
     traceLogsRef.current = resolved;
     setTraceLogsState(resolved);
   }, []);
-  const traceLogsLengthRef = useRef(0);
-  useEffect(() => {
-    traceLogsLengthRef.current = traceLogs.length;
-  }, [traceLogs.length]);
-  const [greeting, setGreeting] = useState("Initializing...");
+  const [greeting, setGreeting] = useState("What can I help you with?");
+  const [startupPreferencesReady, setStartupPreferencesReady] = useState(false);
+  const [startupTakingLong, setStartupTakingLong] = useState(false);
 
   const [chats, setChatsState] = useState<ChatSession[]>([]);
+  const [isChatHistoryLoading, setIsChatHistoryLoading] = useState(true);
+  const workspaceStartupReady = startupPreferencesReady && !isChatHistoryLoading;
+
+  useEffect(() => {
+    let cancelled = false;
+    const onPreferencesReady = (event: Event) => {
+      void event;
+      setStartupPreferencesReady(true);
+    };
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, onPreferencesReady);
+    void appStorageReady.then(() => {
+      if (!cancelled) setStartupPreferencesReady(true);
+    });
+    return () => {
+      cancelled = true;
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onPreferencesReady);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (workspaceStartupReady) return;
+    const timer = window.setTimeout(() => setStartupTakingLong(true), 15_000);
+    return () => window.clearTimeout(timer);
+  }, [workspaceStartupReady]);
   const sidebarChatsRef = useRef<ChatSession[]>([]);
   const nonBuilderChats = useMemo(() => {
     // Sidebar rows need metadata only. Keep this array referentially stable
@@ -1908,6 +1972,12 @@ function DeepWorkUI() {
     return next;
   }, [chats]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [terminalDraftId, setTerminalDraftId] = useState('terminal-draft-initial');
+  const terminalChatId = activeChatId || terminalDraftId;
+  const terminalState = useChatTerminalControls(terminalChatId);
+  const sideTerminalVisible = terminalState.open && terminalState.placement === 'right';
+  const [compactProxyOpen, setCompactProxyOpen] = useState(false);
+  useEffect(() => { setCompactProxyOpen(false); }, [activeChatId, sideTerminalVisible]);
   const [buildingAgentId, setBuildingAgentId] = useState<string | null>(null);
   const [buildingAgentName, setBuildingAgentName] = useState<string | null>(null);
 
@@ -1974,6 +2044,7 @@ function DeepWorkUI() {
   }, [selectedAgentState.agentId, selectedAgentState.chatMode, updateComposerState]);
 
   const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [proxyPaused, setProxyPaused] = useState(false);
   const [proxyIntervention, setProxyIntervention] = useState<'minimal' | 'normal' | 'high'>('normal');
   const [proxyDropdownOpen, setProxyDropdownOpen] = useState(false);
   const [showProxyChat, setShowProxyChat] = useState(false);
@@ -1985,6 +2056,10 @@ function DeepWorkUI() {
   const [proxyManagerContext, setProxyManagerContext] = useState<any>(null);
   const [proxyChatHistoryChatId, setProxyChatHistoryChatId] = useState<string | null>(null);
   const [proxyChatLoading, setProxyChatLoading] = useState(false);
+  const [proxyComposerError, setProxyComposerError] = useState('');
+  const proxyHistoryCursorsRef = useRef<Map<string, string>>(new Map());
+  const proxyAutoScrollRef = useRef(true);
+  const proxyTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const proxyLoadingChatIdsRef = useRef<Set<string>>(new Set());
   const proxyLiveTurnsRef = useRef<Map<string, ProxyLiveTurn>>(new Map());
   const [proxyLiveTurn, setProxyLiveTurn] = useState<ProxyLiveTurn | null>(null);
@@ -2062,7 +2137,10 @@ function DeepWorkUI() {
     const saved = composerStatesRef.current[composerStateKey(chatKey, nextSurface)];
     // Only the draft payload is run-specific. Model, mode, workspace, and
     // pinned project context remain properties of the parent chat.
-    setInputValue(saved?.inputValue || '');
+    const nextInputValue = saved?.inputValue || '';
+    inputValueRef.current = nextInputValue;
+    setInputValue(nextInputValue);
+    setInputValueRevision(revision => revision + 1);
     setAttachments(saved?.attachments || []);
   }, [activeChatId, activeSubAgentTab]);
   const autoOpenedAgentDockChatsRef = useRef<Set<string>>(new Set());
@@ -2092,7 +2170,11 @@ function DeepWorkUI() {
         if (active) {
           setIsHeaderGitRepo(false);
           setCurrentBranch('main');
-          setGitBranches([{ name: 'main', uncommitted: null }]);
+          setGitBranches(previous => (
+            previous.length === 1 && previous[0]?.name === 'main' && previous[0]?.uncommitted === null
+              ? previous
+              : [{ name: 'main', uncommitted: null }]
+          ));
         }
         return;
       }
@@ -2137,7 +2219,13 @@ function DeepWorkUI() {
                     })
                     .map((name: string) => ({ name, uncommitted: null }));
                   if (list.length > 0) {
-                    setGitBranches(list);
+                    setGitBranches(previous => (
+                      previous.length === list.length && previous.every((branch, index) => (
+                        branch.name === list[index]?.name && branch.uncommitted === list[index]?.uncommitted
+                      ))
+                        ? previous
+                        : list
+                    ));
                   }
                 }
               })
@@ -2372,9 +2460,10 @@ function DeepWorkUI() {
     const settings = saved ? JSON.parse(saved) : {};
     settings.theme = newTheme;
     appStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-    transitionEterxTheme(newTheme);
+    transitionEterxTheme(newTheme, () => {
+      flushSync(() => setTopbarThemeOpen(false));
+    });
     broadcastEterxSettingsUpdate(settings);
-    setTopbarThemeOpen(false);
   }, []);
   const openSettingsWindow = useCallback((tab?: any) => {
     if (tab && typeof tab === 'string') {
@@ -2629,7 +2718,7 @@ function DeepWorkUI() {
   // Long-poll requests are dormant until a trace arrives, so a larger fair
   // pool keeps many simultaneous agents genuinely live without generating
   // the empty-request storm that the old rapid polling loop caused.
-  if (!pollingGateRef.current) pollingGateRef.current = new PollingConcurrencyGate(32);
+  if (!pollingGateRef.current) pollingGateRef.current = new PollingConcurrencyGate(256);
   // Abort the active HTTP poll when a run is replaced or stopped. Generation
   // checks still protect state, but cancellation prevents old requests from
   // occupying a connection slot while a successor catches up.
@@ -2659,7 +2748,10 @@ function DeepWorkUI() {
     apply: (logs: any[]) => any[];
     touchUpdatedAt: boolean;
   }>>>(new Map());
-  const backgroundUpdateTimerRef = useRef<number | null>(null);
+  const backgroundFlushPendingRef = useRef(false);
+  const chatLedgerRenderTimerRef = useRef<number | null>(null);
+  const selectedFeedRenderFrameRef = useRef<number | null>(null);
+  const selectedFeedRenderOwnerRef = useRef<string | null>(null);
   const immediateChatFlushesRef = useRef<Set<string>>(new Set());
   // CRITICAL: Ref for activeChatId so polling closures always see the latest value
   const activeChatIdRef = useRef<string | null>(null);
@@ -2669,6 +2761,7 @@ function DeepWorkUI() {
   const persistedChatSignaturesRef = useRef<Map<string, string>>(new Map());
   const chatObjectSignaturesRef = useRef<WeakMap<object, string>>(new WeakMap());
   const durableChatWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  const chatWriteReservationRef = useRef(0);
   const chatSnapshotReadyRef = useRef(false);
   const pendingChatRestoreRevisionRef = useRef(0);
   const requestChatRestoreRef = useRef<(() => void) | null>(null);
@@ -2706,9 +2799,6 @@ function DeepWorkUI() {
     // that a chat's saved model was invalid permanently replaced it with Auto
     // and made revisiting chats show whichever selection happened to be last.
     if (!proxyModelCatalogHydratedRef.current) return;
-    const onlyModelSelection = proxyModelEntries.length === 1
-      ? modelEntryKey(proxyModelEntries[0].provider, proxyModelEntries[0].modelId)
-      : AUTO_MODEL_SELECTION;
     const chatKey = activeChatId || 'new_chat';
     const configuredSelections = new Set(
       proxyModelEntries.map(entry => modelEntryKey(entry.provider, entry.modelId)),
@@ -2719,14 +2809,14 @@ function DeepWorkUI() {
     const savedRuntimeSelection = String(
       appStorage.getItem(`eterx_proxy_runtime_model_${ chatKey }`) || '',
     ).trim();
-    if (!configuredSelections.has(proxyModelSelection) && proxyModelSelection !== onlyModelSelection) {
+    if (!configuredSelections.has(proxyModelSelection) && proxyModelSelection !== AUTO_MODEL_SELECTION) {
       setProxyModelSelection(
-        configuredSelections.has(savedManagerSelection) ? savedManagerSelection : onlyModelSelection,
+        configuredSelections.has(savedManagerSelection) ? savedManagerSelection : AUTO_MODEL_SELECTION,
       );
     }
-    if (!configuredSelections.has(proxyRuntimeModelSelection) && proxyRuntimeModelSelection !== onlyModelSelection) {
+    if (!configuredSelections.has(proxyRuntimeModelSelection) && proxyRuntimeModelSelection !== AUTO_MODEL_SELECTION) {
       setProxyRuntimeModelSelection(
-        configuredSelections.has(savedRuntimeSelection) ? savedRuntimeSelection : onlyModelSelection,
+        configuredSelections.has(savedRuntimeSelection) ? savedRuntimeSelection : AUTO_MODEL_SELECTION,
       );
     }
   }, [activeChatId, proxyModelEntries, proxyModelSelection, proxyRuntimeModelSelection]);
@@ -2988,17 +3078,8 @@ function DeepWorkUI() {
     } catch { }
   }, [updateComposerState]);
 
-  const updateProxyControl = useCallback(async (chatId: string, action: 'pause' | 'resume' | 'intervention', level?: 'minimal' | 'normal' | 'high') => {
-    try {
-      const response = await fetch('/api/agent/proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId, action, level }),
-      });
-      return response.ok && Boolean((await response.json().catch(() => ({}))).success);
-    } catch {
-      return false;
-    }
+  const updateProxyControl = useCallback(async (chatId: string, action: 'enable' | 'disable' | 'pause' | 'resume' | 'intervention', level?: 'minimal' | 'normal' | 'high') => {
+    return writeProxyControl(chatId, { action, level });
   }, []);
 
   const handleProxyToggle = useCallback(async () => {
@@ -3010,6 +3091,8 @@ function DeepWorkUI() {
     const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
     proxyControlRevisionsRef.current[chatKey] = revision;
     setProxyEnabled(nextEnabled);
+    const previousPaused = proxyPaused;
+    setProxyPaused(false);
     if (!nextEnabled) {
       setShowProxyChat(false);
       setProxyDropdownOpen(false);
@@ -3017,16 +3100,31 @@ function DeepWorkUI() {
       setShowProxyRuntimeModelMenu(false);
       setShowProxyInterventionMenu(false);
     }
-    try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: nextEnabled, intervention: proxyIntervention })); } catch { }
+    try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: nextEnabled, paused: false, intervention: proxyIntervention })); } catch { }
     if (
       targetChatId &&
-      !await updateProxyControl(targetChatId, nextEnabled ? 'resume' : 'pause') &&
+      !await updateProxyControl(targetChatId, nextEnabled ? 'enable' : 'disable') &&
       proxyControlRevisionsRef.current[chatKey] === revision
     ) {
-      try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: previousEnabled, intervention: proxyIntervention })); } catch { }
-      if ((activeChatIdRef.current || 'new_chat') === chatKey) setProxyEnabled(previousEnabled);
+      try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: previousEnabled, paused: previousPaused, intervention: proxyIntervention })); } catch { }
+      if ((activeChatIdRef.current || 'new_chat') === chatKey) { setProxyEnabled(previousEnabled); setProxyPaused(previousPaused); setProxyComposerError('Autonomous mode could not be updated. Please try again.'); }
     }
-  }, [activeChatId, proxyEnabled, proxyIntervention, updateProxyControl]);
+  }, [activeChatId, proxyEnabled, proxyPaused, proxyIntervention, updateProxyControl]);
+
+  const handleProxyPauseToggle = useCallback(async () => {
+    if (!proxyEnabled) return;
+    const chatKey = activeChatId || 'new_chat';
+    const nextPaused = !proxyPaused;
+    transferredProxyControlsRef.current.delete(chatKey);
+    const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
+    proxyControlRevisionsRef.current[chatKey] = revision;
+    setProxyPaused(nextPaused);
+    try { appStorage.setItem(`eterx_proxy_controls_${chatKey}`, JSON.stringify({ enabled: true, paused: nextPaused, intervention: proxyIntervention })); } catch { }
+    if (activeChatId && !await updateProxyControl(activeChatId, nextPaused ? 'pause' : 'resume') && proxyControlRevisionsRef.current[chatKey] === revision) {
+      try { appStorage.setItem(`eterx_proxy_controls_${chatKey}`, JSON.stringify({ enabled: true, paused: proxyPaused, intervention: proxyIntervention })); } catch { }
+      if ((activeChatIdRef.current || 'new_chat') === chatKey) { setProxyPaused(proxyPaused); setProxyComposerError('Proxy supervision could not be updated. Please try again.'); }
+    }
+  }, [activeChatId, proxyEnabled, proxyPaused, proxyIntervention, updateProxyControl]);
 
   useEffect(() => {
     if (proxyEnabled) return;
@@ -3046,16 +3144,16 @@ function DeepWorkUI() {
     const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
     proxyControlRevisionsRef.current[chatKey] = revision;
     setProxyIntervention(level);
-    try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: proxyEnabled, intervention: level })); } catch { }
+    try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: proxyEnabled, paused: proxyPaused, intervention: level })); } catch { }
     if (
       targetChatId &&
       !await updateProxyControl(targetChatId, 'intervention', level) &&
       proxyControlRevisionsRef.current[chatKey] === revision
     ) {
-      try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: proxyEnabled, intervention: previousLevel })); } catch { }
+      try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify({ enabled: proxyEnabled, paused: proxyPaused, intervention: previousLevel })); } catch { }
       if ((activeChatIdRef.current || 'new_chat') === chatKey) setProxyIntervention(previousLevel);
     }
-  }, [activeChatId, proxyEnabled, proxyIntervention, updateProxyControl]);
+  }, [activeChatId, proxyEnabled, proxyPaused, proxyIntervention, updateProxyControl]);
 
   useEffect(() => {
     const chatKey = activeChatId || 'new_chat';
@@ -3072,9 +3170,11 @@ function DeepWorkUI() {
       try {
         const saved = JSON.parse(appStorage.getItem(key) || '{}');
         setProxyEnabled(saved.enabled === true);
+        setProxyPaused(saved.enabled === true && saved.paused === true);
         setProxyIntervention(['minimal', 'normal', 'high'].includes(saved.intervention) ? saved.intervention : 'normal');
       } catch {
         setProxyEnabled(false);
+        setProxyPaused(false);
         setProxyIntervention('normal');
       }
     };
@@ -3089,23 +3189,46 @@ function DeepWorkUI() {
     let cancelled = false;
     let refreshInFlight = false;
     const refreshProxyContext = async () => {
-      if (refreshInFlight) return;
+      if (cancelled || refreshInFlight || document.hidden) return;
       refreshInFlight = true;
       try {
-        const response = await fetch(`/api/agent/proxy-manager?chatId=${encodeURIComponent(targetChatId)}`, {
+        const afterMessageId = proxyHistoryCursorsRef.current.get(targetChatId) || '';
+        const response = await fetch(`/api/agent/proxy-manager?chatId=${encodeURIComponent(targetChatId)}&afterMessageId=${encodeURIComponent(afterMessageId)}`, {
           cache: 'no-store',
+          signal: AbortSignal.timeout(15_000),
         });
         const data = response.ok ? await response.json() : null;
         if (cancelled || activeChatIdRef.current !== targetChatId || !data?.context) return;
         setProxyManagerContext(data.context);
+        const canonicalMessages = normalizeProxyHistoryMessages(data.messages);
+        if (canonicalMessages.length) {
+          setProxyChatMessages(previous => reconcileProxyChatMessages(previous, canonicalMessages));
+          setProxyChatHistoryChatId(targetChatId);
+          const lastId = canonicalMessages[canonicalMessages.length - 1].id;
+          if (lastId) proxyHistoryCursorsRef.current.set(targetChatId, lastId);
+          if (canonicalMessages.some(message => message.sender === 'proxy' && message.delivery !== 'unavailable')) setProxyComposerError('');
+        }
+        setProxyChatLoading(proxyLoadingChatIdsRef.current.has(targetChatId) || data.processing === true);
+        if (data.context.run?.status === 'running' && !activePollersRef.current.has(targetChatId)) {
+          const generation = pollGenerationRef.current.get(targetChatId) || 0;
+          const poll = await fetchAgentPoll(targetChatId, -1, 5000);
+          if (cancelled || activeChatIdRef.current !== targetChatId || activePollersRef.current.has(targetChatId) || (pollGenerationRef.current.get(targetChatId) || 0) !== generation) return;
+          setChatLogsById(targetChatId, previous => mergeAgentPollSnapshot(previous, poll, targetChatId));
+          if (poll.status === 'running') {
+            setRunningChats(previous => new Set(previous).add(targetChatId));
+            startPolling(targetChatId, getPollCursor(poll), poll.startedAt, poll.runId);
+          }
+        }
       } catch { }
       finally { refreshInFlight = false; }
     };
     void refreshProxyContext();
-    const interval = window.setInterval(refreshProxyContext, 2500);
+    const interval = window.setInterval(refreshProxyContext, 4000);
+    document.addEventListener('visibilitychange', refreshProxyContext);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshProxyContext);
     };
   }, [activeChatId, showProxyChat]);
 
@@ -3135,9 +3258,18 @@ function DeepWorkUI() {
   const proxyAttachMenuRef = useRef<HTMLDivElement>(null);
   const [proxyAttachments, setProxyAttachments] = useState<ComposerAttachment[]>([]);
   const [customInputHeight, setCustomInputHeight] = useState<number | null>(null);
+  const proxyInputResizeCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => proxyInputResizeCleanupRef.current?.(), []);
+  useEffect(() => {
+    const textarea = proxyTextareaRef.current;
+    if (!textarea || customInputHeight) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
+  }, [proxyChatInput, customInputHeight, showProxyChat, activeChatId]);
 
   const startInputHeightResize = useCallback((downEvent: React.PointerEvent) => {
     downEvent.preventDefault();
+    proxyInputResizeCleanupRef.current?.();
     const startY = downEvent.clientY;
     const startHeight = customInputHeight || 36;
 
@@ -3150,12 +3282,37 @@ function DeepWorkUI() {
     const handlePointerUp = () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+      proxyInputResizeCleanupRef.current = null;
     };
 
+    proxyInputResizeCleanupRef.current = handlePointerUp;
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
   }, [customInputHeight]);
   const [proxyPinnedItems, setProxyPinnedItems] = useState<{ name: string; isFolder?: boolean; path?: string }[]>([]);
+  const proxyDraftsRef = useRef(new Map<string, { text: string; attachments: ComposerAttachment[]; pins: typeof proxyPinnedItems }>());
+  const proxyDraftOwnerRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const key = activeChatId || 'new_chat';
+    if (proxyDraftOwnerRef.current !== key) {
+      proxyDraftOwnerRef.current = key;
+      proxyHistoryCursorsRef.current.delete(key);
+      const draft = proxyDraftsRef.current.get(key);
+      setProxyChatInput(draft?.text || '');
+      setProxyAttachments(draft?.attachments || []);
+      setProxyPinnedItems(draft?.pins || []);
+      setProxyComposerError('');
+      proxyAutoScrollRef.current = true;
+      return;
+    }
+    proxyDraftsRef.current.set(key, { text: proxyChatInput, attachments: proxyAttachments, pins: proxyPinnedItems });
+  }, [activeChatId, proxyChatInput, proxyAttachments, proxyPinnedItems]);
+  useEffect(() => () => {
+    const previews = new Set([...proxyDraftsRef.current.values()].flatMap(draft => draft.attachments.map(attachment => attachment.preview)));
+    previews.forEach(preview => { if (preview?.startsWith('blob:')) URL.revokeObjectURL(preview); });
+  }, []);
   const proxyFileInputRef = useRef<HTMLInputElement>(null);
   const proxyPinInputRef = useRef<HTMLInputElement>(null);
 
@@ -3175,55 +3332,46 @@ function DeepWorkUI() {
   const handleProxyPinSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
-    const newPins = files.map(file => {
+    const browserFiles = files.filter(file => !getNativeFilePath(file));
+    if (browserFiles.length) setProxyAttachments(previous => [...previous, ...browserFiles.map(file => ({
+      id: crypto.randomUUID(), file, name: file.name, preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : '',
+    }))]);
+    const newPins = files.filter(file => Boolean(getNativeFilePath(file))).map(file => {
       const relPath = (file as any).webkitRelativePath || file.name;
       const parts = relPath.split('/');
       const name = parts.length > 1 ? parts[0] : file.name;
       return {
         name,
         isFolder: parts.length > 1,
-        path: getNativeFilePath(file) || relPath || file.name,
+        path: getNativeFilePath(file) || undefined,
       };
     });
     setProxyPinnedItems(prev => {
       const existing = new Set(prev.map(p => p.path || p.name));
-      const added = newPins.filter(p => !existing.has(p.path || p.name));
+      const added = newPins.filter(p => {
+        const key = p.path || p.name;
+        if (existing.has(key)) return false;
+        existing.add(key);
+        return true;
+      });
       return [...prev, ...added];
     });
     if (event.target) event.target.value = '';
   };
 
   const handleProxyTakeScreenshot = async () => {
+    const owner = activeChatIdRef.current || 'new_chat';
     try {
-      const canvas = document.createElement('canvas');
-      const w = window.innerWidth || 1280;
-      const h = window.innerHeight || 800;
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.fillStyle = '#181818';
-        ctx.fillRect(0, 0, w, h);
-        ctx.fillStyle = '#252525';
-        ctx.fillRect(40, 40, w - 80, h - 80);
-        ctx.font = '16px sans-serif';
-        ctx.fillStyle = '#888';
-        ctx.fillText('App Screenshot Preview', 60, 80);
+      const file = await captureProxyScreenshot();
+      const attachment = { id: crypto.randomUUID(), file, name: file.name, preview: URL.createObjectURL(file) };
+      if ((activeChatIdRef.current || 'new_chat') === owner) setProxyAttachments(prev => [...prev, attachment]);
+      else {
+        const draft = proxyDraftsRef.current.get(owner) || { text: '', attachments: [], pins: [] };
+        proxyDraftsRef.current.set(owner, { ...draft, attachments: [...draft.attachments, attachment] });
       }
-      const dataUrl = canvas.toDataURL('image/png');
-      const res = await fetch(dataUrl);
-      const blob = await res.blob();
-      const file = new File([blob], `screenshot_${Date.now()}.png`, { type: 'image/png' });
-      setProxyAttachments(prev => [
-        ...prev,
-        {
-          id: `proxy-att-${Date.now()}-${Math.random()}`,
-          file,
-          name: file.name,
-          preview: dataUrl,
-        }
-      ]);
-    } catch (e) { }
+    } catch (error: any) {
+      if (error?.name !== 'NotAllowedError' && (activeChatIdRef.current || 'new_chat') === owner) setProxyComposerError(error?.message || 'Screen capture failed.');
+    }
   };
 
   useEffect(() => {
@@ -3266,6 +3414,7 @@ function DeepWorkUI() {
       }
       setProxyManagerContext(null);
       setProxyLiveTurn(null);
+      setProxyChatLoading(false);
       return;
     }
     const targetChatId = activeChatId;
@@ -3275,7 +3424,7 @@ function DeepWorkUI() {
     let cancelled = false;
     setProxyChatMessages([]);
     setProxyChatHistoryChatId(null);
-    setProxyChatInput('');
+    setProxyManagerContext(null);
     setShowProxyModelMenu(false);
     setShowProxyRuntimeModelMenu(false);
     setShowProxyInterventionMenu(false);
@@ -3309,11 +3458,14 @@ function DeepWorkUI() {
             ? data.control.intervention
             : 'normal');
           setProxyEnabled(restoredEnabled);
+          const restoredPaused = restoredEnabled && (transferred?.paused ?? data.control.paused === true);
+          setProxyPaused(restoredPaused);
           setProxyIntervention(restoredIntervention);
           if (!transferred && ['minimal', 'normal', 'high'].includes(data.control.intervention)) {
             try {
               appStorage.setItem(`eterx_proxy_controls_${ targetChatId }`, JSON.stringify({
                 enabled: restoredEnabled,
+                paused: restoredPaused,
                 intervention: restoredIntervention,
               }));
             } catch { }
@@ -3327,6 +3479,7 @@ function DeepWorkUI() {
           if (
             transferred &&
             data.control.enabled === transferred.enabled &&
+            (data.control.paused === true) === (transferred.paused === true) &&
             restoredIntervention === (
               ['minimal', 'normal', 'high'].includes(data.control.intervention)
                 ? data.control.intervention
@@ -3342,6 +3495,8 @@ function DeepWorkUI() {
         }
         setProxyManagerContext(data.context || null);
         const canonicalMessages = normalizeProxyHistoryMessages(data.messages);
+        const lastId = canonicalMessages[canonicalMessages.length - 1]?.id;
+        if (lastId) proxyHistoryCursorsRef.current.set(targetChatId, lastId);
         setProxyChatMessages(previous => reconcileProxyChatMessages(previous, canonicalMessages));
         setProxyChatHistoryChatId(targetChatId);
       })
@@ -3352,9 +3507,10 @@ function DeepWorkUI() {
   const visibleProxyChatMessages = proxyChatHistoryChatId === activeChatId ? proxyChatMessages : [];
 
   useEffect(() => {
-    if (!showProxyChat) return;
+    if (!showProxyChat || !proxyAutoScrollRef.current) return;
     const frame = window.requestAnimationFrame(() => {
-      proxyMessagesEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
+      const feed = proxyMessageFeedRef.current;
+      if (feed) feed.scrollTop = feed.scrollHeight;
     });
     return () => window.cancelAnimationFrame(frame);
   }, [activeChatId, proxyChatLoading, proxyChatMessages.length, proxyLiveTurn?.events.length, showProxyChat]);
@@ -3364,53 +3520,25 @@ function DeepWorkUI() {
     const hasAttachments = proxyAttachments.length > 0 || proxyPinnedItems.length > 0;
     if (
       (!rawText && !hasAttachments) ||
+      !proxyEnabled || proxyPaused ||
       !activeChatId ||
       proxyChatLoading ||
       proxyLoadingChatIdsRef.current.has(activeChatId)
     ) return;
-    const parsedModel = parseModelEntryKey(proxyModelSelection);
-    if (!parsedModel || !proxyModelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === proxyModelSelection)) {
-      const createdAt = Date.now();
-      setProxyChatMessages(prev => [...prev, {
-        id: crypto.randomUUID(),
-        sender: 'proxy',
-        text: 'Select a configured model before messaging the Proxy Manager.',
-        time: new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        createdAt,
-        delivery: 'unavailable',
-      }]);
+    const effectiveProxySelection = proxyModelSelection === AUTO_MODEL_SELECTION
+      ? composerRuntimeSelectionRef.current.modelSelection : proxyModelSelection;
+    const parsedModel = parseModelEntryKey(effectiveProxySelection);
+    if (!parsedModel || !proxyModelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === effectiveProxySelection)) {
+      setProxyComposerError('Select a configured model before messaging the Proxy Manager.');
       return;
     }
     const requestChatId = activeChatId;
+    const mainModel = parseModelEntryKey(composerRuntimeSelectionRef.current.modelSelection);
+    if (dictationTargetRef.current === 'proxy') stopSpeechDictation();
     proxyLoadingChatIdsRef.current.add(requestChatId);
     setProxyChatLoading(true);
-
-    const attachmentContextParts = await Promise.all(proxyAttachments.map(async attachment => {
-      const file = attachment.file;
-      const name = attachment.name || file?.name || 'attachment';
-      const localPath = (attachment as any).localPath || (file as any)?.path;
-      const metadata = `${name} (${file?.type || 'application/octet-stream'}, ${Number(file?.size || 0)} bytes)`;
-      if (localPath) return `${metadata}\nLocal path: ${localPath}`;
-      const isReadableText =
-        file &&
-        (
-          file.type.startsWith('text/') ||
-          /\.(?:txt|md|json|ya?ml|csv|tsv|js|jsx|ts|tsx|css|html|xml|py|java|go|rs|sql|sh|ps1)$/i.test(name)
-        );
-      if (!isReadableText) return metadata;
-      try {
-        const content = await file.text();
-        return `${metadata}\nContent:\n${content}`;
-      } catch {
-        return metadata;
-      }
-    }));
-    proxyPinnedItems.forEach(item => {
-      attachmentContextParts.push(
-        `${item.isFolder ? 'Pinned folder' : 'Pinned item'}: ${item.name}${(item as any).path ? `\nLocal path: ${(item as any).path}` : ''}`,
-      );
-    });
-    const attachmentContext = attachmentContextParts.join('\n\n');
+    setProxyComposerError('');
+    proxyAutoScrollRef.current = true;
 
     let fullText = rawText;
     if (proxyPinnedItems.length > 0) {
@@ -3454,52 +3582,32 @@ function DeepWorkUI() {
       proxyLiveTurnsRef.current.set(requestChatId, next);
       if (activeChatIdRef.current === requestChatId) setProxyLiveTurn(next);
     };
+    let requestStarted = false;
     try {
+      if (proxyAttachments.length) applyProxyProgress({ type: 'status', text: 'Preparing attachments', phase: 'attachments', timestamp: Date.now() });
+      const mediaAttachments = await prepareProxyAttachments(proxyAttachments);
+      const attachmentContext = [
+        ...mediaAttachments.map(item => `Attachment: ${item.name}\nLocal path: ${item.path}`),
+        ...proxyPinnedItems.map(item => `${item.isFolder ? 'Pinned folder' : 'Pinned item'}: ${item.name}${item.path ? `\nLocal path: ${item.path}` : ''}`),
+      ].join('\n\n');
+      requestStarted = true;
       const response = await fetch('/api/agent/proxy-manager', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chatId: requestChatId,
           message: fullText,
+          requestId: optimisticId,
           attachmentContext,
+          mediaAttachments,
           model: parsedModel || {},
+          mainModel,
           contextCompaction: readContextCompactionSettings(parsedModel, requestChatId),
           stream: true,
         }),
+        signal: AbortSignal.timeout(240_000),
       });
-      if (!response.ok) {
-        const failure = await response.json().catch(() => ({}));
-        throw new Error(failure.error || 'Proxy Manager request failed');
-      }
-      let data: any = {};
-      const contentType = response.headers.get('content-type') || '';
-      if (response.body && contentType.includes('application/x-ndjson')) {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffered = '';
-        const processLine = (line: string) => {
-          if (!line.trim()) return;
-          const event = JSON.parse(line);
-          if (event.type === 'progress' && event.progress) {
-            applyProxyProgress(event.progress);
-          } else if (event.type === 'complete') {
-            data = { success: true, ...(event.result || {}), context: event.context };
-          } else if (event.type === 'error') {
-            throw new Error(event.error || 'Proxy Manager request failed');
-          }
-        };
-        while (true) {
-          const chunk = await reader.read();
-          buffered += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
-          const lines = buffered.split('\n');
-          buffered = lines.pop() || '';
-          lines.forEach(processLine);
-          if (chunk.done) break;
-        }
-        if (buffered.trim()) processLine(buffered);
-      } else {
-        data = await response.json().catch(() => ({}));
-      }
+      const data = await readProxyManagerResponse(response, applyProxyProgress);
       if (!response.ok || !data.success) throw new Error(data.error || 'Proxy Manager request failed');
       const historyArr = Array.isArray(data.history) ? data.history : [];
       if (activeChatIdRef.current === requestChatId) {
@@ -3508,13 +3616,13 @@ function DeepWorkUI() {
         // Full history from server — replace list (canonical source of truth)
         const canonicalMessages = normalizeProxyHistoryMessages(historyArr);
         setProxyChatMessages(previous => reconcileProxyChatMessages(previous, canonicalMessages));
-        } else if (data.reply) {
+        } else if (data.message?.text || data.reply) {
         // Server returned only the reply (no full history) — append it
         const createdAt = Date.now();
         setProxyChatMessages(prev => [...prev, {
           id: crypto.randomUUID(),
           sender: 'proxy' as const,
-          text: String(data.reply || ''),
+          text: String(data.message?.text || data.reply || ''),
           time: new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           createdAt,
         }]);
@@ -3557,20 +3665,23 @@ function DeepWorkUI() {
         };
         window.setTimeout(() => connectProxyRun(), 250);
       }
-      // else: server sent empty history + no reply → keep optimistic user msg
     } catch (error: any) {
+      if (!requestStarted) {
+        const draft = proxyDraftsRef.current.get(requestChatId) || { text: '', attachments: [], pins: [] };
+        const restored = { text: [rawText, draft.text].filter(Boolean).join('\n\n'), attachments: [...proxyAttachments, ...draft.attachments], pins: [...proxyPinnedItems, ...draft.pins] };
+        proxyDraftsRef.current.set(requestChatId, restored);
+        if (activeChatIdRef.current === requestChatId) {
+          setProxyChatInput(restored.text);
+          setProxyAttachments(restored.attachments);
+          setProxyPinnedItems(restored.pins);
+          setProxyChatMessages(previous => previous.filter(message => message.id !== optimisticId));
+        }
+      }
       if (activeChatIdRef.current === requestChatId) {
-        const createdAt = Date.now();
-        setProxyChatMessages(prev => [...prev, {
-          id: crypto.randomUUID(),
-          sender: 'proxy',
-          text: String(error?.message || 'Proxy Manager is temporarily unavailable.'),
-          time: new Date(createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          createdAt,
-          delivery: 'unavailable',
-        }]);
+        setProxyComposerError(String(error?.message || 'Proxy Manager is temporarily unavailable.'));
       }
     } finally {
+      if (requestStarted) proxyAttachments.forEach(attachment => { if (attachment.preview?.startsWith('blob:')) URL.revokeObjectURL(attachment.preview); });
       proxyLoadingChatIdsRef.current.delete(requestChatId);
       if (proxyLiveTurnsRef.current.get(requestChatId)?.turnId === optimisticId) {
         proxyLiveTurnsRef.current.delete(requestChatId);
@@ -3580,7 +3691,7 @@ function DeepWorkUI() {
         setProxyChatLoading(false);
       }
     }
-  }, [activeChatId, proxyAttachments, proxyChatInput, proxyChatLoading, proxyModelEntries, proxyModelSelection, proxyPinnedItems]);
+  }, [activeChatId, proxyEnabled, proxyPaused, proxyAttachments, proxyChatInput, proxyChatLoading, proxyModelEntries, proxyModelSelection, proxyPinnedItems]);
 
   const handleProxyWindowPointerMove = useCallback((event: PointerEvent) => {
     const interaction = proxyWindowInteractionRef.current;
@@ -3680,9 +3791,11 @@ function DeepWorkUI() {
   useEffect(() => {
     window.addEventListener('pointermove', handleProxyWindowPointerMove);
     window.addEventListener('pointerup', handleProxyWindowPointerUp);
+    window.addEventListener('pointercancel', handleProxyWindowPointerUp);
     return () => {
       window.removeEventListener('pointermove', handleProxyWindowPointerMove);
       window.removeEventListener('pointerup', handleProxyWindowPointerUp);
+      window.removeEventListener('pointercancel', handleProxyWindowPointerUp);
     };
   }, [handleProxyWindowPointerMove, handleProxyWindowPointerUp]);
 
@@ -3691,6 +3804,7 @@ function DeepWorkUI() {
     event.stopPropagation();
     const rect = proxyChatWindowRef.current?.getBoundingClientRect();
     if (!rect) return;
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { }
     proxyWindowInteractionRef.current = {
       type,
       startX: event.clientX,
@@ -3857,14 +3971,18 @@ function DeepWorkUI() {
   // clean PCM here and sends it to the bundled local whisper.cpp runtime.
   const speechRecognitionRef = useRef<any>(null);
   const dictationShouldRunRef = useRef(false);
+  const dictationSessionRef = useRef<string | null>(null);
+  const dictationRevisionRef = useRef(0);
+  const dictationOwnerRef = useRef<string | null>(null);
+  const dictationTargetRef = useRef<'main' | 'proxy'>('main');
+  const getDictationOwner = () => dictationTargetRef.current === 'proxy'
+    ? `${activeChatIdRef.current || 'new_chat'}::proxy-manager`
+    : composerStateKey(activeChatIdRef.current || 'new_chat', activeComposerSurfaceRef.current);
   const dictationRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dictationBaseTextRef = useRef('');
   const dictationCommittedTextRef = useRef('');
-  const dictationTranscriptAnchorRef = useRef('');
   const lastDictationRenderRef = useRef<string | null>(null);
   const dictationRenderedValuesRef = useRef<Set<string>>(new Set());
-  const inputValueRef = useRef(inputValue);
-
   const rememberDictationRender = useCallback((value: string) => {
     const renderedValues = dictationRenderedValuesRef.current;
     renderedValues.add(value);
@@ -3876,10 +3994,10 @@ function DeepWorkUI() {
   }, []);
 
   useEffect(() => {
-    inputValueRef.current = inputValue;
+    if (dictationTargetRef.current !== 'main') return;
     if (dictationRenderedValuesRef.current.delete(inputValue)) return;
     if (
-      dictationShouldRunRef.current &&
+      dictationSessionRef.current !== null &&
       lastDictationRenderRef.current !== null &&
       inputValue !== lastDictationRenderRef.current
     ) {
@@ -3887,70 +4005,93 @@ function DeepWorkUI() {
       // exact draft the new base so a later speech event cannot restore an old
       // value or erase the edit.
       dictationBaseTextRef.current = inputValue;
-      dictationTranscriptAnchorRef.current = dictationCommittedTextRef.current;
+      dictationCommittedTextRef.current = '';
+      dictationRevisionRef.current += 1;
+      (window as any).electronAPI?.resetSpeechDictation?.(dictationSessionRef.current, dictationRevisionRef.current);
       lastDictationRenderRef.current = inputValue;
     }
   }, [inputValue]);
 
-  const stopSpeechDictation = useCallback(() => {
+  useEffect(() => {
+    if (dictationTargetRef.current !== 'proxy' || !dictationSessionRef.current) return;
+    if (dictationRenderedValuesRef.current.delete(proxyChatInput)) return;
+    if (proxyChatInput === lastDictationRenderRef.current) return;
+    dictationBaseTextRef.current = proxyChatInput;
+    dictationCommittedTextRef.current = '';
+    dictationRevisionRef.current += 1;
+    (window as any).electronAPI?.resetSpeechDictation?.(dictationSessionRef.current, dictationRevisionRef.current);
+    lastDictationRenderRef.current = proxyChatInput;
+  }, [proxyChatInput]);
+
+  const stopSpeechDictation = useCallback((discard = true) => {
+    const sessionId = dictationSessionRef.current;
     dictationShouldRunRef.current = false;
+    if (discard) dictationSessionRef.current = null;
     if (dictationRestartTimerRef.current) {
       clearTimeout(dictationRestartTimerRef.current);
       dictationRestartTimerRef.current = null;
     }
     const recognition = speechRecognitionRef.current;
     speechRecognitionRef.current = null;
-    if (recognition) {
-      try { recognition.stop?.(); } catch { }
-    }
+    try { recognition?.stop?.(); } catch { }
     setIsRecording(false);
-    void (window as any).electronAPI?.stopSpeechDictation?.().finally?.(() => {
-      lastDictationRenderRef.current = null;
-      dictationRenderedValuesRef.current.clear();
-    });
+    if (!sessionId) return;
+    // Stopping via the mic drains the final audio. Sending, navigating or
+    // switching voice modes discards pending results before the draft changes.
+    void Promise.resolve((window as any).electronAPI?.stopSpeechDictation?.(sessionId, discard))
+      .catch(() => {})
+      .finally(() => {
+        if (dictationSessionRef.current !== sessionId) return;
+        dictationSessionRef.current = null;
+        lastDictationRenderRef.current = null;
+        dictationRenderedValuesRef.current.clear();
+      });
   }, []);
 
   useEffect(() => () => stopSpeechDictation(), [stopSpeechDictation]);
 
   useEffect(() => {
+    const owner = getDictationOwner();
+    if (dictationSessionRef.current && (dictationOwnerRef.current !== owner || (dictationTargetRef.current === 'proxy' && !showProxyChat))) stopSpeechDictation();
+  });
+
+  useEffect(() => {
     const desktopApi = (window as any).electronAPI;
     if (typeof desktopApi?.onSpeechDictationEvent !== 'function') return;
-
-    const applyNativeTranscript = (speechText: string) => {
-      const anchor = dictationTranscriptAnchorRef.current.trim();
-      const anchoredSpeech = anchor && speechText.toLocaleLowerCase().startsWith(anchor.toLocaleLowerCase())
-        ? speechText.slice(anchor.length).trimStart()
-        : speechText;
-      const nextText = appendSpeechToDraft(dictationBaseTextRef.current, anchoredSpeech);
-      inputValueRef.current = nextText;
-      lastDictationRenderRef.current = nextText;
-      rememberDictationRender(nextText);
-      updateInputValue(nextText);
-    };
-
     return desktopApi.onSpeechDictationEvent((event: any) => {
+      if (!dictationSessionRef.current || event?.sessionId !== dictationSessionRef.current) return;
+      const owner = getDictationOwner();
+      if (dictationOwnerRef.current !== owner) {
+        stopSpeechDictation();
+        return;
+      }
       const type = String(event?.type || '');
       const text = String(event?.text || '');
-      if (!dictationShouldRunRef.current && type !== 'final' && type !== 'stopped') return;
-
-      if (type === 'partial') {
-        dictationCommittedTextRef.current = mergeSpeechText(dictationCommittedTextRef.current, text);
-        applyNativeTranscript(dictationCommittedTextRef.current);
-        return;
-      }
-      if (type === 'final') {
-        dictationCommittedTextRef.current = mergeSpeechText(dictationCommittedTextRef.current, text);
-        applyNativeTranscript(dictationCommittedTextRef.current);
-        return;
-      }
-      if (type === 'error') {
+      if (type === 'partial' || type === 'final') {
+        if (event.revision !== dictationRevisionRef.current) return;
+        // Native events are full snapshots, including revisions of the current
+        // audio window. Never concatenate two versions of the same utterance.
+        dictationCommittedTextRef.current = text;
+        const base = dictationBaseTextRef.current;
+        const nextText = text ? base + (base && !/\s$/.test(base) ? ' ' : '') + text : base;
+        lastDictationRenderRef.current = nextText;
+        rememberDictationRender(nextText);
+        if (dictationTargetRef.current === 'proxy') setProxyChatInput(nextText);
+        else {
+          inputValueRef.current = nextText;
+          updateInputValue(nextText);
+        }
+      } else if (type === 'error') {
         stopSpeechDictation();
         alert(text || 'Local voice dictation could not start. Check microphone permission and try again.');
-        return;
-      }
-      if (type === 'stopped') {
+      } else if (type === 'stopped') {
         dictationShouldRunRef.current = false;
+        dictationSessionRef.current = null;
+        const recognition = speechRecognitionRef.current;
+        speechRecognitionRef.current = null;
+        try { recognition?.stop?.(); } catch { }
         lastDictationRenderRef.current = null;
+        dictationRenderedValuesRef.current.clear();
         setIsRecording(false);
       }
     });
@@ -3978,6 +4119,7 @@ function DeepWorkUI() {
   }, []);
 
   const startLiveSession = useCallback(async () => {
+    stopSpeechDictation();
     liveBootstrapAbortRef.current?.abort();
     const bootstrapController = new AbortController();
     liveBootstrapAbortRef.current = bootstrapController;
@@ -4838,8 +4980,9 @@ function DeepWorkUI() {
                 const executionMode = String(args.executionMode).trim().toLowerCase();
                 if (executionMode === 'autonomous' || executionMode === 'team') {
                   requestedWorkerAgent = { agentId: 'autonomous', agentName: 'Autonomous' };
-                } else if (executionMode === 'coding') {
-                  requestedWorkerAgent = { agentId: 'coding', agentName: 'Coding' };
+                } else if (getCodingMode(executionMode)) {
+                  const codingMode = getCodingMode(executionMode)!;
+                  requestedWorkerAgent = { agentId: codingMode.id, agentName: codingMode.label };
                 } else if (executionMode === 'general') {
                   requestedWorkerAgent = { agentId: null, agentName: 'General' };
                 }
@@ -4945,7 +5088,8 @@ function DeepWorkUI() {
               const resolveTaskAgent = async (requestedId: unknown, requestedName: unknown) => {
                 const agentId = String(requestedId || '').trim();
                 if (!agentId || agentId === 'general') return { agentId: null, agentName: 'General' };
-                if (agentId === 'coding') return { agentId, agentName: 'Coding' };
+                const codingMode = getCodingMode(agentId);
+                if (codingMode) return { agentId: codingMode.id, agentName: codingMode.label };
                 if (agentId === 'autonomous') return { agentId, agentName: 'Autonomous' };
                 try {
                   const response = await fetch('/api/agents/list', { cache: 'no-store' });
@@ -5527,7 +5671,7 @@ function DeepWorkUI() {
         liveBootstrapAbortRef.current = null;
       }
     }
-  }, [activeChatId, activeRunLocation, activeWorkspacePath, discardEphemeralLiveRoom, revealNetworkBanner, syncLiveMissionTask, updateLiveMission, upsertLiveMissionEntry]);
+  }, [activeChatId, activeRunLocation, activeWorkspacePath, discardEphemeralLiveRoom, revealNetworkBanner, stopSpeechDictation, syncLiveMissionTask, updateLiveMission, upsertLiveMissionEntry]);
 
   const stopLiveSession = useCallback(() => {
     liveBootstrapAbortRef.current?.abort();
@@ -5798,8 +5942,9 @@ function DeepWorkUI() {
         let snapshot: any = null;
         let lastError: unknown = null;
         for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (cancelled) return;
           try {
-            const response = await fetch('/api/chats', { cache: 'no-store' });
+            const response = await requestJson('/api/chats', { cache: 'no-store' });
             if (!response.ok) throw new Error(`Chat restore HTTP ${ response.status }`);
             snapshot = await response.json();
             if (!Array.isArray(snapshot?.chats)) throw new Error('Chat restore returned an invalid snapshot');
@@ -5814,6 +5959,7 @@ function DeepWorkUI() {
         }
 
         if (lastError || cancelled) {
+          if (!cancelled) setIsChatHistoryLoading(false);
           if (lastError && !cancelled) {
             console.error('[Chats] Durable restore failed:', lastError);
             if (restoreRetryTimer === null) {
@@ -5859,6 +6005,7 @@ function DeepWorkUI() {
         const restoredChats = removeGeneratedEmptyChats(sortChats(Array.from(mergedById.values())));
         chatSnapshotReadyRef.current = true;
         applyRestoredChats(restoredChats);
+        setIsChatHistoryLoading(false);
         if (persistRestoredSnapshot) persistChats(restoredChats);
       } finally {
         restoreInFlight = false;
@@ -5932,18 +6079,35 @@ function DeepWorkUI() {
   const catchUpPollersRef = useRef<Map<string, () => void>>(new Map());
 
   useEffect(() => {
+    const resume = () => {
+      // A socket held over sleep can look connected until its timeout. Reopen
+      // it from committed cursors and publish the already-received ledger now.
+      reconnectAgentPollStreams();
+      flushBackgroundChatUpdates();
+      if (document.visibilityState === 'visible') {
+        setChatsState(chatsRef.current);
+        const visible = chatsRef.current.find(chat => chat.id === activeChatIdRef.current);
+        if (visible) setTraceLogs(visible.traceLogs || []);
+      }
+      for (const catchUpPoll of catchUpPollersRef.current.values()) catchUpPoll();
+      window.dispatchEvent(new Event('eterx-agent-resume'));
+    };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         if (activeViewRef.current === 'chat') clearUnreadChat(activeChatIdRef.current);
         // Page just became visible — immediately trigger a catch-up for all running chats
         // so we deliver all accumulated traces smoothly rather than waiting for next timeout
-        for (const catchUpPoll of catchUpPollersRef.current.values()) {
-          catchUpPoll();
-        }
+        resume();
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', resume);
+    const unsubscribeResume = (window as any).electronAPI?.onDesktopResume?.(resume);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', resume);
+      unsubscribeResume?.();
+    };
   }, [clearUnreadChat]);
 
 
@@ -5959,22 +6123,16 @@ function DeepWorkUI() {
   }, []);
 
   useEffect(() => {
-    // The native title is intentionally visible only on macOS. Windows and
-    // Linux already expose their window controls in the overlay, so mirroring
-    // document.title there creates a duplicate EterX wordmark beside them.
-    if (desktopPlatform !== 'macos') {
-      document.title = '\u200B';
-      return;
-    }
+    // Browser tabs retain the chat context and the application name.
     if (activeChatId) {
       const activeChat = chats.find(c => c.id === activeChatId);
       if (activeChat && !isDefaultChatTitle(activeChat.title)) {
-        document.title = activeChat.title;
+        document.title = `${activeChat.title} — EterX`;
         return;
       }
     }
     document.title = "EterX";
-  }, [activeChatId, chats, desktopPlatform]);
+  }, [activeChatId, chats]);
 
   useEffect(() => {
     if (activeView === 'chat' && activeChatId) clearUnreadChat(activeChatId);
@@ -6033,9 +6191,20 @@ function DeepWorkUI() {
     // reconciliation. Provider open/final snapshots can carry different turn
     // aliases; once ordered, `_feedBoundaryId` is the canonical lifecycle
     // scope shared by both copies.
-    const canonicalLogs = orderFeedTimelineLogs(canonicalizeThoughtStreamLogs(
+    const orderedLogs = orderFeedTimelineLogs(canonicalizeThoughtStreamLogs(
       settleFeedTraceLifecycles(ensureStableFeedPresentationIds(recoveredLogs, ownerChatId)),
     ));
+    // Older client snapshots may contain every streamed phase even though the
+    // durable task store now persists one row. Collapse them before action
+    // reconciliation so storage and rendering share the same lifecycle shape.
+    const canonicalLogs: any[] = [];
+    orderedLogs.forEach((log: any) => {
+      if (log?.type === 'context_compaction') {
+        upsertContextCompactionTrace(canonicalLogs, log);
+      } else {
+        canonicalLogs.push(log);
+      }
+    });
     const actionTypes = new Set([
       'command', 'tool_call', 'exploration', 'file_edit', 'browser',
       'communication', 'sub_agent_action',
@@ -6603,6 +6772,21 @@ function DeepWorkUI() {
       ),
     }));
   const persistChats = async (chatList: ChatSession[], keepalive = false, forceFull = false): Promise<boolean> => {
+    if (!chatSnapshotReadyRef.current) return false;
+    // Reserve chronology before yielding or entering the queue. A snapshot
+    // captured now must never acquire a newer revision merely by saving late.
+    const reservedSavedAt = Math.max(Date.now(), lastChatSnapshotAtRef.current + 1, chatWriteReservationRef.current + 1);
+    chatWriteReservationRef.current = reservedSavedAt;
+    // Queue preparation as well as the request. Concurrent saves must not
+    // serialize whole histories at once or compute against an older baseline.
+    const write = async (): Promise<boolean> => {
+    if (!chatSnapshotReadyRef.current) return false;
+    let sliceStartedAt = performance.now();
+    const yieldToInteraction = async () => {
+      if (keepalive || performance.now() - sliceStartedAt < 6) return;
+      await new Promise<void>(resolve => window.setTimeout(resolve, 0));
+      sliceStartedAt = performance.now();
+    };
     const persistenceSignature = (chat: ChatSession) => {
       const cached = chatObjectSignaturesRef.current.get(chat);
       if (cached) return cached;
@@ -6618,7 +6802,11 @@ function DeepWorkUI() {
       chatObjectSignaturesRef.current.set(chat, signature);
       return signature;
     };
-    const nextSignatures = new Map(chatList.map(chat => [chat.id, persistenceSignature(chat)]));
+    const nextSignatures = new Map<string, string>();
+    for (const chat of chatList) {
+      nextSignatures.set(chat.id, persistenceSignature(chat));
+      await yieldToInteraction();
+    }
     const previousSignatures = persistedChatSignaturesRef.current;
     const changedChats = chatList.filter(chat => previousSignatures.get(chat.id) !== nextSignatures.get(chat.id));
     const hasDeletion = Array.from(previousSignatures.keys()).some(id => !nextSignatures.has(id));
@@ -6628,32 +6816,30 @@ function DeepWorkUI() {
     if (!chatSnapshotReadyRef.current) return false;
     if (!forceFull && changedChats.length === 0 && !hasDeletion) return true;
 
-    const stripped = stripChatsForStorage(forceFull ? chatList : changedChats);
+    const serializedChats: string[] = [];
+    for (const chat of forceFull ? chatList : changedChats) {
+      serializedChats.push(JSON.stringify(stripChatsForStorage([chat])[0]));
+      await yieldToInteraction();
+    }
     const chatIds = chatList.map(chat => chat.id);
     const chatIdSet = new Set(chatIds);
     const deletedChatIds = Array.from(pendingChatDeletionIdsRef.current)
       .filter(chatId => !chatIdSet.has(chatId));
-    const savedAt = Math.max(Date.now(), lastChatSnapshotAtRef.current + 1);
-    lastChatSnapshotAtRef.current = savedAt;
+    const savedAt = reservedSavedAt;
+    lastChatSnapshotAtRef.current = Math.max(lastChatSnapshotAtRef.current, savedAt);
     const mutationId = crypto.randomUUID();
     // State updaters can schedule several writes in one turn. Serialize
     // filesystem writes so an older request cannot finish after a newer one
     // and erase a freshly-created chat.
-    const write = async () => {
-      const body = JSON.stringify({
-        savedAt,
-        mutationId,
-        chats: stripped,
-        chatIds,
-        partial: true,
-        deletedChatIds,
-      });
+      // Each chat was encoded once above, with opportunities for input between
+      // large histories. Assemble that valid JSON without traversing it again.
+      const body = `{"savedAt":${savedAt},"mutationId":${JSON.stringify(mutationId)},"chats":[${serializedChats.join(',')}],"chatIds":${JSON.stringify(chatIds)},"partial":true,"deletedChatIds":${JSON.stringify(deletedChatIds)}}`;
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const response = await fetch('/api/chats', {
+        const response = await requestJson('/api/chats', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body,
-          keepalive,
+          keepalive: keepalive && new Blob([body]).size < 60_000,
         }).catch(() => null);
         const payload = response ? await response.json().catch(() => ({})) : {};
         const durableSavedAt = Number(payload?.savedAt);
@@ -6847,6 +7033,7 @@ function DeepWorkUI() {
     at = Date.now(),
     scope: { ownerChatId?: string; runId?: string; turnId?: string; mainTurnTerminal?: boolean } = {},
   ) => {
+    if (status === 'stopped') return { ...createStoppedRunTrace(scope, at), title, text: detail, detail };
     const lifecycleScope = String(scope.turnId || scope.runId || '').trim();
     const titleKey = String(title || 'status')
       .trim()
@@ -6920,7 +7107,7 @@ function DeepWorkUI() {
     if (hydratedChatIdsRef.current.has(chatId)) return;
     if (chatDetailRequestsRef.current.has(chatId)) return;
 
-    const detailRequest = fetch(`/api/chats?id=${ encodeURIComponent(chatId) }`, { cache: 'no-store' })
+    const detailRequest = requestJson(`/api/chats?id=${ encodeURIComponent(chatId) }`, { cache: 'no-store' })
       .then(response => response.ok ? response.json() : Promise.reject(new Error(`Chat load HTTP ${ response.status }`)));
 
     const request = detailRequest
@@ -7091,7 +7278,7 @@ function DeepWorkUI() {
           .then(data => {
             const currentChat = chatsRef.current.find(candidate => candidate.id === id);
             if (!currentChat) return;
-            reconcileServerQueuedFollowUps(id, data.queuedFollowUps);
+            reconcileServerQueuedFollowUps(id, data.queuedFollowUps, data.queueRevision);
             if (
               activePollersRef.current.has(id) ||
               (pollGenerationRef.current.get(id) || 0) !== observedPollGeneration
@@ -7107,7 +7294,6 @@ function DeepWorkUI() {
                 setChatLogsById(
                   id,
                   previousLogs => mergeAgentPollSnapshot(previousLogs, data, id),
-                  { touchUpdatedAt: true },
                 );
               }
               setRunningChats(prev => new Set(prev).add(id));
@@ -7116,7 +7302,6 @@ function DeepWorkUI() {
               setChatLogsById(
                 id,
                 previousLogs => mergeAgentPollSnapshot(previousLogs, data, id),
-                { touchUpdatedAt: true },
               );
               removeRunningChat(id);
             }
@@ -7223,6 +7408,7 @@ function DeepWorkUI() {
   }, [handleAgentChange, updateInputValue]);
 
   const createNewChat = useCallback(() => {
+    setTerminalDraftId(`terminal-draft-${crypto.randomUUID()}`);
     setChats(previous => {
       const updated = removeGeneratedEmptyChats(previous);
       if (updated.length === previous.length) return previous;
@@ -7298,6 +7484,7 @@ function DeepWorkUI() {
   }, [composerStates, applyComposerState, updateComposerState]);
 
   const deleteChats = useCallback((ids: string[]) => {
+    ids.forEach(disposeChatTerminals);
     const idsToDelete = [...new Set(ids)].filter(Boolean);
     if (idsToDelete.length === 0) return;
 
@@ -7410,13 +7597,15 @@ function DeepWorkUI() {
   }, [deleteChats]);
 
   const renameChat = useCallback((id: string, newTitle: string) => {
+    newTitle = newTitle.trim();
+    if (!newTitle) return;
     titleAbortControllersRef.current.get(id)?.abort();
     titleAbortControllersRef.current.delete(id);
     pendingTitleRequestsRef.current.delete(id);
     pendingTemporaryTitlesRef.current.delete(id);
     setChats(prev => {
       const updated = prev.map(c =>
-        c.id === id ? { ...c, title: newTitle, updatedAt: Date.now() } : c
+        c.id === id ? { ...c, title: newTitle, titleState: 'manual' as const, titleUpdatedAt: Math.max(Date.now(), Number(c.titleUpdatedAt || 0) + 1) } : c
       );
       const sorted = sortChats(updated);
       persistChats(sorted);
@@ -7442,6 +7631,7 @@ function DeepWorkUI() {
     selectedModel?: ModelSelectorEntry,
     signal?: AbortSignal,
   ): Promise<{ title: string; provider?: string; model?: string; usage?: Record<string, number> } | null> => {
+    if (!selectedModel) return null;
     const res = await fetch('/api/chat/title', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -7450,14 +7640,15 @@ function DeepWorkUI() {
         history: compactTitleHistory(history),
         currentTitle: currentTitle || DEFAULT_CHAT_TITLE,
         mode,
-        selectedModel: selectedModel || null,
+        selectedModel,
       })
     });
 
     if (!res.ok) return null;
 
     const data = await res.json();
-    const title = String(data.title || '').trim();
+    if (data.provider !== selectedModel.provider || data.model !== selectedModel.modelId) return null;
+    const title = cleanGeneratedTitle(data.title);
     return title && !isDefaultChatTitle(title) ? { ...data, title } : null;
   };
 
@@ -7468,25 +7659,41 @@ function DeepWorkUI() {
     mode: MainAgentMode = agentMode,
     selectedModel?: ModelSelectorEntry,
   ) => {
+    const ownerChat = chatsRef.current.find(chat => chat.id === chatId);
+    if (!ownerChat || ownerChat.titleState === 'manual') return;
+    const titleModel = selectedModel || parseModelEntryKey(ownerChat.modelSelection);
+    if (!titleModel) return;
+    const userTurn = (ownerChat.traceLogs || []).filter(log => log.type === 'user_action').length;
+    if (!userTurn || Number(ownerChat.titleLastAttemptTurn || 0) >= userTurn) return;
+    // Claim this turn synchronously before starting I/O. Persist failures too:
+    // reopening a chat must not restart the same optional metadata request.
+    setChats(currentChats => {
+      const updated = currentChats.map(chat => chat.id === chatId
+        ? { ...chat, titleLastAttemptTurn: userTurn }
+        : chat);
+      void persistChats(updated);
+      return updated;
+    });
     titleAbortControllersRef.current.get(chatId)?.abort();
     const controller = new AbortController();
     // Local and reasoning models can need longer than a normal metadata call,
     // especially while the first chat turn is running concurrently.
-    const timeout = window.setTimeout(() => controller.abort(), 32_000);
+    const timeout = window.setTimeout(() => controller.abort(), TITLE_REQUEST_TIMEOUT_MS + 5_000);
     titleAbortControllersRef.current.set(chatId, controller);
     try {
       // Use passed title or fall back to finding in current state (for background updates)
-      const existingTitle = currentTitle || chats.find(c => c.id === chatId)?.title || DEFAULT_CHAT_TITLE;
+      const existingTitle = currentTitle || ownerChat.title || DEFAULT_CHAT_TITLE;
+      const existingTitleRevision = Number(ownerChat.titleUpdatedAt || 0);
+      const owningUser = [...(ownerChat.traceLogs || [])].reverse().find((log: any) => log?.type === 'user_action');
 
-      const generated = await fetchGeneratedTitle(history, existingTitle, mode, selectedModel, controller.signal);
+      const generated = await fetchGeneratedTitle(history, existingTitle, mode, titleModel, controller.signal);
       // A later user turn may have replaced this naming request while the
       // provider was responding. Never let the stale result win that race.
-      if (generated && titleAbortControllersRef.current.get(chatId) === controller) {
+      if (generated && !controller.signal.aborted && titleAbortControllersRef.current.get(chatId) === controller) {
         setChats(prev => {
           const updated = prev.map(c => {
             if (c.id !== chatId) return c;
             const totalTokens = Number(generated.usage?.totalTokens || 0);
-            const latestUser = [...(c.traceLogs || [])].reverse().find((log: any) => log?.type === 'user_action');
             const usageLog = totalTokens > 0 ? {
               type: 'model_usage',
               usageId: `usage_title_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
@@ -7495,20 +7702,24 @@ function DeepWorkUI() {
               model: generated.model,
               ...(generated.usage || {}),
               phase: 'chat_title',
-              runId: latestUser?.runId || latestUser?.turnId,
-              turnId: latestUser?.turnId || latestUser?.runId,
+              runId: owningUser?.runId || owningUser?.turnId,
+              turnId: owningUser?.turnId || owningUser?.runId,
               timestamp: Date.now(),
             } : null;
             const ownedTemporaryTitle = pendingTemporaryTitlesRef.current.get(chatId);
-            const titleWasNotEdited = c.title === existingTitle ||
+            const titleWasNotEdited = c.titleState !== 'manual' &&
+              c.titleLastAttemptTurn === userTurn &&
+              Number(c.titleUpdatedAt || 0) === existingTitleRevision && (c.title === existingTitle ||
               c.title === ownedTemporaryTitle ||
-              isDefaultChatTitle(c.title);
+              isDefaultChatTitle(c.title));
+            if (titleWasNotEdited) pendingTemporaryTitlesRef.current.delete(chatId);
             return {
               ...c,
               // Replace the complete string atomically. The temporary title
               // is never concatenated with or retained beside the final one.
               title: titleWasNotEdited ? generated.title : c.title,
-              updatedAt: Date.now(),
+              titleState: titleWasNotEdited ? 'generated' as const : c.titleState,
+              titleUpdatedAt: titleWasNotEdited ? Math.max(Date.now(), existingTitleRevision + 1) : c.titleUpdatedAt,
               traceLogs: usageLog ? [...(c.traceLogs || []), usageLog] : c.traceLogs,
             };
           });
@@ -7523,17 +7734,29 @@ function DeepWorkUI() {
       window.clearTimeout(timeout);
       if (titleAbortControllersRef.current.get(chatId) === controller) {
         titleAbortControllersRef.current.delete(chatId);
-        pendingTemporaryTitlesRef.current.delete(chatId);
       }
     }
   };
 
+  const scrollButtonIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (scrollButtonIdleRef.current) clearTimeout(scrollButtonIdleRef.current); }, [activeChatId]);
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
     const key = activeChatId || 'new_chat';
+    const previousTop = chatScrollPositionsRef.current[key] ?? scrollTop;
     chatScrollPositionsRef.current[key] = scrollTop;
     const next = scrollHeight - scrollTop - clientHeight > 100;
-    setShowScrollBottom(prev => prev === next ? prev : next);
+    if (scrollButtonIdleRef.current) clearTimeout(scrollButtonIdleRef.current);
+    if (scrollTop < previousTop - 1) {
+      setShowScrollBottom(false);
+      const container = e.currentTarget;
+      scrollButtonIdleRef.current = setTimeout(() => {
+        scrollButtonIdleRef.current = null;
+        if (container.isConnected) setShowScrollBottom(container.scrollHeight - container.scrollTop - container.clientHeight > 100);
+      }, 220);
+    } else {
+      setShowScrollBottom(prev => prev === next ? prev : next);
+    }
   }, [activeChatId]);
 
   const handleAnswerAskUser = useCallback((timestamp: number, answer: string, responseKey?: string) => {
@@ -7580,23 +7803,12 @@ function DeepWorkUI() {
     }
     let releasePollSlot: (() => void) | null = null;
     try {
-      // Gate every poll request, including reconnect/recovery probes. This
-      // keeps startup and visibility bursts from bypassing the live poller
-      // capacity limit.
+      // These are logical subscriptions. The transport multiplexes them over
+      // at most two HTTP streams, leaving browser slots free for Send/Stop.
       releasePollSlot = await pollingGateRef.current!.acquire(controller.signal);
-      const requestedRunQuery = requestedRunId
-        ? `&runId=${ encodeURIComponent(requestedRunId) }`
-        : '';
-      // A long poll wakes immediately on a trace, so a longer idle hold lowers
-      // HTTP/JSON churn without adding event latency. Keep headroom for the
-      // request's abort timeout, including shorter startup/recovery probes.
-      const longPollWaitMs = Math.max(0, Math.min(7000, timeoutMs - 750));
-      const res = await fetch(`/api/agent/poll?chatId=${ encodeURIComponent(chatId) }&after=${ after }&wait=${ longPollWaitMs }${ requestedRunQuery }`, {
-        cache: 'no-store',
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error(`Poll HTTP ${ res.status }`);
-      const payload = await res.json();
+      const payload = await fetchBatchedAgentPoll(
+        { chatId, after, runId: requestedRunId }, controller.signal,
+      );
       if (
         !payload ||
         typeof payload !== 'object' ||
@@ -7633,6 +7845,11 @@ function DeepWorkUI() {
     );
   };
 
+  // Naming runs only on admitted user turns, never on a timer or reconnect.
+  useEffect(() => () => {
+    titleAbortControllersRef.current.forEach(controller => controller.abort());
+    titleAbortControllersRef.current.clear();
+  }, []);
   const mergeTaskPlanLog = (logs: any[], trace: any) => {
     let planIdx = -1;
     for (let i = logs.length - 1; i >= 0; i--) {
@@ -7691,6 +7908,7 @@ function DeepWorkUI() {
 
   const isSameOptimisticUserBoundary = (localLog: any, incomingLog: any) => {
     if (localLog?.type !== 'user_action' || incomingLog?.type !== 'user_action') return false;
+    if (sameUserAdmission(localLog, incomingLog)) return true;
     if (localLog._traceIdx !== undefined && localLog._traceIdx !== null) return false;
     const localEventId = String(localLog.id || localLog.messageId || localLog.traceId || '').trim();
     const incomingEventId = String(incomingLog.id || incomingLog.messageId || incomingLog.traceId || '').trim();
@@ -7804,6 +8022,10 @@ function DeepWorkUI() {
       });
       processedLog = ensureStableFeedPresentationIds([processedLog], ownerChatId)[0];
       if (!isLiveUserVisibleTrace(processedLog)) continue;
+      if (processedLog.type === 'steering_queued') {
+        upsertQueuedSteering(logs, processedLog);
+        continue;
+      }
       if (processedLog.type === 'inter_agent_message' && processedLog.messageId) {
         const existingMessageIndex = logs.findIndex((log: any) =>
           log?.type === 'inter_agent_message' && log?.messageId === processedLog.messageId
@@ -7849,7 +8071,7 @@ function DeepWorkUI() {
             selectedAgentId: processedLog.selectedAgentId || optimisticUserLog.selectedAgentId,
             selectedAgentName: processedLog.selectedAgentName || optimisticUserLog.selectedAgentName,
             chatMode: processedLog.chatMode ?? optimisticUserLog.chatMode,
-            id: processedLog.id || optimisticUserLog.id,
+            id: optimisticUserLog.id || processedLog.id,
             source: processedLog.source || optimisticUserLog.source,
             delegatedBy: processedLog.delegatedBy || optimisticUserLog.delegatedBy,
             _traceIdx: processedLog._traceIdx,
@@ -7866,7 +8088,7 @@ function DeepWorkUI() {
           if (!isSameSteeringBoundary(log, processedLog)) return false;
           const sameTraceIndex = processedLog._traceIdx !== undefined && processedLog._traceIdx !== null &&
             log._traceIdx === processedLog._traceIdx && sharesTraceIndexNamespace(log, processedLog);
-          return sameTraceIndex || !hasMeaningfulBoundaryActivityAfter(logs, logIndex);
+          return sameTraceIndex || sameUserAdmission(log, processedLog) || !hasMeaningfulBoundaryActivityAfter(logs, logIndex);
         });
         if (existingSteeringIdx >= 0) {
           const optimisticBoundary = logs[existingSteeringIdx];
@@ -8150,6 +8372,10 @@ function DeepWorkUI() {
         } else {
           logs.push(nextAskLog);
         }
+      } else if (trace.type === 'context_compaction') {
+        upsertContextCompactionTrace(logs, processedLog);
+      } else if (trace.type === 'context_usage') {
+        upsertContextUsageSnapshot(logs, processedLog);
       } else if (trace.type === 'model_usage') {
         // Chat-mode streams provider-measured usage through this same merge
         // path. Keep one record per usage id so a late stream boundary cannot
@@ -8639,7 +8865,6 @@ function DeepWorkUI() {
 
     const boundary = mergedLogs[boundaryIndex];
     const turnId = terminalTurnId || String(boundary?.turnId || boundary?.runId || runId).trim();
-    const completedAt = normalizeClientTraceTime(data?.completedAt || Date.now());
     const ownedTerminalFields = {
       ownerChatId: chatId,
       ...(runId ? { runId } : {}),
@@ -8670,6 +8895,19 @@ function DeepWorkUI() {
       // rows from another run/turn never do.
       return !logRunId && !logTurnId;
     };
+    const recordedTerminalTimes = turnLogs
+      .filter((log: any) => ownsTerminalTurn(log) && isTerminalWorkTrace(log))
+      .map((log: any) => normalizeClientTraceTime(log.endTime ?? log.timestamp, 0))
+      .filter((at: number) => at > 0);
+    const reportedCompletedAt = normalizeClientTraceTime(data?.completedAt, 0);
+    if (reportedCompletedAt > 0) recordedTerminalTimes.push(reportedCompletedAt);
+    // Replaying a terminal poll without completedAt must not assign a new
+    // close time on every poll. Prefer the existing owning terminal boundary.
+    const completedAt = recordedTerminalTimes.length
+      ? Math.min(...recordedTerminalTimes)
+      : turnLogs.reduce((latest: number, log: any) => ownsTerminalTurn(log)
+          ? Math.max(latest, normalizeClientTraceTime(log.endTime ?? log.timestamp, 0)) : latest,
+        normalizeClientTraceTime(boundary.startTime ?? boundary.timestamp, 0)) || Date.now();
     const hasTerminalBoundary = turnLogs.some((log: any) =>
       ownsTerminalTurn(log) && isTerminalWorkTrace(log)
     );
@@ -8697,8 +8935,10 @@ function DeepWorkUI() {
           status: 'completed',
           final: true,
           done: true,
-          endTime: Math.max(Number(previousAnswer?.endTime || 0), completedAt),
-          timestamp: Math.max(Number(previousAnswer?.timestamp || 0), completedAt),
+          endTime: isFeedTraceExplicitlySettled(previousAnswer)
+            ? normalizeClientTraceTime(previousAnswer.endTime ?? previousAnswer.timestamp, completedAt)
+            : completedAt,
+          timestamp: previousAnswer.timestamp || completedAt,
           ...ownedTerminalFields,
           // The separate done/run_status lifecycle owns terminal grouping;
           // keep the answer itself as content rather than a second terminal.
@@ -8769,7 +9009,7 @@ function DeepWorkUI() {
         isDelta: false,
         streamState: 'closed',
         status: data.status === 'completed' ? 'completed' : data.status,
-        endTime: Math.max(Number(log.endTime || log.timestamp || 0), completedAt),
+        endTime: Math.max(normalizeClientTraceTime(log.startTime, 0), completedAt),
       };
     });
 
@@ -8786,11 +9026,9 @@ function DeepWorkUI() {
       durableSnapshotTimerRef.current = null;
       if (pendingDurableSnapshotWrite.current) {
         pendingDurableSnapshotWrite.current = false;
-        // Read current chats state and write to the folder-backed store.
-        setChats(currentChats => {
-          persistChats(currentChats);
-          return currentChats; // Don't modify state
-        });
+        // Persistence reads the authoritative ledger directly. A save must
+        // not enqueue a React state update or replay an updater side effect.
+        void persistChats(chatsRef.current);
         if (pendingChatRestoreRevisionRef.current > lastChatSnapshotAtRef.current) {
           // A second window may have committed while this local debounce was
           // protecting an in-flight trace write. Reconcile it after the local
@@ -8803,10 +9041,7 @@ function DeepWorkUI() {
   };
 
   const flushBackgroundChatUpdates = (onlyChatId?: string): ChatSession[] => {
-    if (!onlyChatId && backgroundUpdateTimerRef.current !== null) {
-      window.clearTimeout(backgroundUpdateTimerRef.current);
-      backgroundUpdateTimerRef.current = null;
-    }
+    if (!onlyChatId) backgroundFlushPendingRef.current = false;
     if (backgroundChatUpdatesRef.current.size === 0) return chatsRef.current;
     const pending = new Map<string, Array<{
       apply: (logs: any[]) => any[];
@@ -8858,13 +9093,31 @@ function DeepWorkUI() {
       // large streaming feed is non-urgent, so interaction work (typing,
       // scrolling, resizing and menus) can preempt superseded feed frames.
       chatsRef.current = committed;
-      // The active feed is the user's live surface. Commit it immediately so
-      // a continuous stream cannot starve it behind superseded transitions.
-      // Keep the heavier all-chat state update interruptible.
-      if (visibleChatLogs && activeChatIdRef.current) setTraceLogs(visibleChatLogs);
-      startTransition(() => {
-        setChats(committed);
-      });
+      // The selected ledger remains current synchronously. Paint the newest
+      // cumulative snapshot once per frame instead of once per network chunk.
+      if (visibleChatLogs && activeChatIdRef.current) {
+        traceLogsRef.current = visibleChatLogs;
+        selectedFeedRenderOwnerRef.current = activeChatIdRef.current;
+        if (document.visibilityState === 'visible' && selectedFeedRenderFrameRef.current === null) {
+          selectedFeedRenderFrameRef.current = window.requestAnimationFrame(() => {
+            selectedFeedRenderFrameRef.current = null;
+            // Navigation owns the new transcript. Never paint a previous
+            // chat's scheduled snapshot into the newly selected conversation.
+            if (selectedFeedRenderOwnerRef.current !== activeChatIdRef.current || document.hidden) return;
+            const snapshot = traceLogsRef.current;
+            startTransition(() => setTraceLogsState(snapshot));
+          });
+        }
+      }
+      // Sidebar/history snapshots do not need token cadence. Bound all-chat
+      // publication independently of agent count, without delaying ledger
+      // commits, polling cursors, terminal events, or durable writes.
+      if (chatLedgerRenderTimerRef.current === null) {
+        chatLedgerRenderTimerRef.current = window.setTimeout(() => {
+          chatLedgerRenderTimerRef.current = null;
+          if (!document.hidden) startTransition(() => setChatsState(chatsRef.current));
+        }, 120);
+      }
       debouncedSaveToFolder();
       return committed;
     }
@@ -8892,7 +9145,20 @@ function DeepWorkUI() {
       const scheduledTasksSaved = await flushScheduledTaskWrites();
       return chatsSaved && preferencesSaved && scheduledTasksSaved;
     });
-    const unsubscribe = desktopApi.onPrepareForQuit(async () => {
+    const unsubscribe = desktopApi.onPrepareForQuit(async (options: { stoppedChatIds?: string[] } = {}) => {
+      if (Array.isArray(options.stoppedChatIds)) {
+        await Promise.allSettled(options.stoppedChatIds.map(async chatId => {
+          if (!chatsRef.current.some(chat => chat.id === chatId)) return;
+          const snapshot = await fetchAgentPoll(chatId, -1, 5000);
+          flushBackgroundChatUpdates(chatId);
+          setChatLogsById(chatId, previous => mergeAgentPollSnapshot(previous, snapshot, chatId));
+          reconcileServerQueuedFollowUps(chatId, snapshot.queuedFollowUps, snapshot.queueRevision);
+          if (isTerminalAgentStatus(snapshot.status)) {
+            stopPolling(chatId);
+            removeRunningChat(chatId);
+          }
+        }));
+      }
       // Persistence already runs continuously. Give the final coordinated
       // flush a bounded window so a suspended API route or stale renderer can
       // never deadlock a verified desktop update.
@@ -8932,17 +9198,25 @@ function DeepWorkUI() {
       }
       return;
     }
-    if (backgroundUpdateTimerRef.current === null) {
-      // Coalesce all background responses that completed in this event-loop
-      // turn, then commit before any poller's reconnect timer can acknowledge
-      // another batch. This keeps every chat current without 32ms UI lag.
-      backgroundUpdateTimerRef.current = window.setTimeout(flushBackgroundChatUpdates, 0);
+    if (!backgroundFlushPendingRef.current) {
+      // Commit received data even when a hidden window throttles its timers.
+      // The UI publishes at display cadence; durable cursors need no timer.
+      backgroundFlushPendingRef.current = true;
+      queueMicrotask(() => {
+        if (!backgroundFlushPendingRef.current) return;
+        backgroundFlushPendingRef.current = false;
+        flushBackgroundChatUpdates();
+      });
     }
   };
 
   useEffect(() => () => {
-    if (backgroundUpdateTimerRef.current !== null) window.clearTimeout(backgroundUpdateTimerRef.current);
-    backgroundUpdateTimerRef.current = null;
+    backgroundFlushPendingRef.current = false;
+    if (chatLedgerRenderTimerRef.current !== null) window.clearTimeout(chatLedgerRenderTimerRef.current);
+    chatLedgerRenderTimerRef.current = null;
+    if (selectedFeedRenderFrameRef.current !== null) window.cancelAnimationFrame(selectedFeedRenderFrameRef.current);
+    selectedFeedRenderFrameRef.current = null;
+    selectedFeedRenderOwnerRef.current = null;
     immediateChatFlushesRef.current.clear();
     backgroundChatUpdatesRef.current.clear();
   }, []);
@@ -9073,30 +9347,21 @@ function DeepWorkUI() {
       let delay: number;
       if (errorBackoff > 0) {
         delay = Math.min(4000, 250 * Math.pow(2, errorBackoff - 1));
+      } else if (idleCount > 0) {
+        // A start that has not reached the registry has no event waiter yet.
+        // Avoid a tight empty-response loop while admission is still pending.
+        delay = 150;
       } else {
-        // PERFORMANCE: Adaptive poll delay.
-        // Very long active chats receive events in slightly larger batches so
-        // React does not rebuild thousands of timeline entries five times/sec.
-        const isActive = activeChatIdRef.current === chatId;
-        const isLargeActiveChat = isActive && traceLogsLengthRef.current > 1500;
-        // Keep every chat near-real-time, including background chats. Only a
-        // very large visible feed receives a slightly wider batch window.
-        // The request itself waits for new traces, so this delay is only the
-        // reconnect yield between long-poll responses. All chats remain live
-        // and equally current without a tight HTTP spin loop.
-        delay = isLargeActiveChat
-          ? (lastHadData ? 4 : 8)
-          : (lastHadData ? 0 : 4);
+        // Re-arm only this consumer. HTTP remains open and waits for events,
+        // so neither feed size nor the number of chats needs a polling delay.
+        delay = 0;
       }
 
       // A visibility catch-up or a recovery pass may have left an older
       // timeout behind. One poller owns one future tick at most.
       const previousTimeout = pollingIntervalsRef.current.get(chatId);
       if (previousTimeout) clearTimeout(previousTimeout);
-      const jitter = errorBackoff === 0 && activePollersRef.current.size > 1
-        ? Math.floor(Math.random() * 8)
-        : 0;
-      const timeoutId = setTimeout(pollOnce, delay + jitter);
+      const timeoutId = setTimeout(pollOnce, delay);
       pollingIntervalsRef.current.set(chatId, timeoutId as any);
     };
 
@@ -9124,7 +9389,7 @@ function DeepWorkUI() {
 
           // The request may have been replaced while awaiting the response.
           if (!ownsPollGeneration()) return;
-          reconcileServerQueuedFollowUps(chatId, data.queuedFollowUps);
+          reconcileServerQueuedFollowUps(chatId, data.queuedFollowUps, data.queueRevision);
 
           // Reset error backoff on successful fetch
           errorBackoff = 0;
@@ -9340,6 +9605,10 @@ function DeepWorkUI() {
                   ...(activeRunId && !String(trace?.runId || '').trim() ? { runId: activeRunId } : {}),
                   ...(traceTurnId ? { turnId: traceTurnId } : {}),
                 })], chatId)[0];
+                if (timedTrace.type === 'steering_queued') {
+                  upsertQueuedSteering(logs, timedTrace);
+                  continue;
+                }
                 if (timedTrace.type === 'inter_agent_message' && timedTrace.messageId) {
                   const existingMessageIndex = logs.findIndex((log: any) =>
                     log?.type === 'inter_agent_message' && log?.messageId === timedTrace.messageId
@@ -9381,7 +9650,7 @@ function DeepWorkUI() {
                       selectedAgentId: timedTrace.selectedAgentId || optimisticUserLog.selectedAgentId,
                       selectedAgentName: timedTrace.selectedAgentName || optimisticUserLog.selectedAgentName,
                       chatMode: timedTrace.chatMode ?? optimisticUserLog.chatMode,
-                      id: timedTrace.id || optimisticUserLog.id,
+                      id: optimisticUserLog.id || timedTrace.id,
                       source: timedTrace.source || optimisticUserLog.source,
                       delegatedBy: timedTrace.delegatedBy || optimisticUserLog.delegatedBy,
                       _traceIdx: timedTrace._traceIdx,
@@ -9405,7 +9674,7 @@ function DeepWorkUI() {
                     if (!isSameSteeringBoundary(log, timedTrace)) return false;
                     const sameTraceIndex = timedTrace._traceIdx !== undefined && timedTrace._traceIdx !== null &&
                       log._traceIdx === timedTrace._traceIdx && sharesTraceIndexNamespace(log, timedTrace);
-                    return sameTraceIndex || !hasMeaningfulBoundaryActivityAfter(logs, logIndex);
+                    return sameTraceIndex || sameUserAdmission(log, timedTrace) || !hasMeaningfulBoundaryActivityAfter(logs, logIndex);
                   });
                   if (existingSteeringIdx >= 0) {
                     const optimisticBoundary = logs[existingSteeringIdx];
@@ -9674,6 +9943,10 @@ function DeepWorkUI() {
                   } else {
                     logs.push(nextAskLog);
                   }
+                } else if (trace.type === 'context_compaction') {
+                  upsertContextCompactionTrace(logs, timedTrace);
+                } else if (trace.type === 'context_usage') {
+                  upsertContextUsageSnapshot(logs, timedTrace);
                 } else if (trace.type === 'model_usage') {
                   // Usage is a first-class measured event. Replace only the
                   // same provider usage id; never merge different model turns.
@@ -10206,20 +10479,34 @@ function DeepWorkUI() {
   useEffect(() => {
     const getWatchedChatIds = () => {
       const ids = new Set<string>();
-      if (activeChatId) ids.add(activeChatId);
       // Read the live ref inside the interval. Capturing `runningChats` here
       // leaves newly started background chats outside the recovery safety net.
       runningChatsRef.current.forEach(id => ids.add(id));
+      // A run can be admitted just before runningChats state commits. Keep
+      // that narrow startup recovery path without probing an ordinary idle
+      // active chat forever.
+      if (activeChatId && pollRunIdRef.current.has(activeChatId)) ids.add(activeChatId);
       return ids;
     };
 
     let cancelled = false;
     let reconcileInFlight = false;
-    const reconcileDetachedPollers = async () => {
+    const reconcileDetachedPollers = async (discover = false) => {
       if (cancelled || reconcileInFlight) return;
-      reconcileInFlight = true;
       const ids = getWatchedChatIds();
+      reconcileInFlight = true;
       try {
+        if (discover) {
+          try {
+            const response = await fetch('/api/agent/active', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+            if (response.ok) {
+              const snapshot = await response.json();
+              for (const agent of snapshot.agents || []) {
+                if (chatsRef.current.some(chat => chat.id === agent.chatId)) ids.add(agent.chatId);
+              }
+            }
+          } catch { /* The regular per-chat recovery remains available offline. */ }
+        }
         // Repair every detached chat independently. A recovery probe is a
         // long poll and may wait for seconds; awaiting these serially made the
         // tenth live chat recover tens of seconds after the first. The shared
@@ -10239,7 +10526,7 @@ function DeepWorkUI() {
               (pollGenerationRef.current.get(chatId) || 0) !== observedPollGeneration ||
               stoppingChatsRef.current.has(chatId)
             ) return;
-            reconcileServerQueuedFollowUps(chatId, data.queuedFollowUps);
+            reconcileServerQueuedFollowUps(chatId, data.queuedFollowUps, data.queueRevision);
 
             if ((data.traces && data.traces.length > 0) || isTerminalAgentStatus(data.status)) {
               setChatLogsById(chatId, previousLogs => mergeAgentPollSnapshot(previousLogs, data, chatId));
@@ -10291,10 +10578,13 @@ function DeepWorkUI() {
       }
     };
 
-    reconcileDetachedPollers();
-    const interval = window.setInterval(reconcileDetachedPollers, 8000); // Safety net only — 8s is plenty
+    const resume = () => { void reconcileDetachedPollers(true); };
+    resume();
+    window.addEventListener('eterx-agent-resume', resume);
+    const interval = window.setInterval(() => void reconcileDetachedPollers(), 8000);
     return () => {
       cancelled = true;
+      window.removeEventListener('eterx-agent-resume', resume);
       window.clearInterval(interval);
     };
   }, [activeChatId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -10314,10 +10604,13 @@ function DeepWorkUI() {
     // mode. A follow-up admitted after this value must survive even if its
     // queue request reaches the backend just before the Stop request.
     const stopRequestedAt = reserveClientAdmissionTimestamp();
-    const queuedMessages = queuedFollowUps.filter(message => message.chatId === chatId);
+    const queuedMessages = queuedFollowUpsRef.current.filter(message => message.chatId === chatId);
     const steeringMessages = pendingSteering.filter(message => message.chatId === chatId);
-    const releaseQueuedAdmissions = () => {
+    queuedMessages.forEach(message => stoppingQueuedFollowUpsRef.current.add(`${chatId}:${message.id}`));
+    const releaseQueuedAdmissions = (retire = true) => {
       for (const message of queuedMessages) {
+        stoppingQueuedFollowUpsRef.current.delete(`${chatId}:${message.id}`);
+        if (retire) retiredQueuedFollowUpsRef.current.add(`${chatId}:${message.id}`);
         queuedFollowUpDispatchRef.current.delete(message.id);
         if (message.admissionKey) {
           queuedFollowUpAdmissionsRef.current.delete(message.admissionKey);
@@ -10372,7 +10665,7 @@ function DeepWorkUI() {
           nextBoundaryIndex >= 0 ? nextBoundaryIndex : clean.length,
         );
         const alreadyMarked = stoppedTurnLogs.some(log =>
-          log?.type === 'agent_status' && log.status === 'stopped'
+          isTerminalWorkTrace(log)
         );
         if (alreadyMarked) return clean;
         const stoppedMarker = agentStatusLog('stopped', 'Chat stopped', 'Stopped by you.', stoppedAt, {
@@ -10429,7 +10722,7 @@ function DeepWorkUI() {
             } else {
               catchUpPollersRef.current.get(chatId)?.();
             }
-            releaseQueuedAdmissions();
+            releaseQueuedAdmissions(false);
             return true;
           }
         }
@@ -10456,6 +10749,9 @@ function DeepWorkUI() {
         }
         releaseQueuedAdmissions();
         setChatLogsById(chatId, previous => {
+          if (isTerminalAgentStatus(payload?.terminalState?.status)) {
+            return stripAgentConnectionLogs(mergeAgentPollSnapshot(previous, payload.terminalState, chatId));
+          }
           const stoppedAt = Date.now();
           const cleared = settleOpenFeedRowsForTurn(previous, stopRunId, stopTurnId, stoppedAt);
           const clean = stripAgentConnectionLogs(cleared);
@@ -10463,8 +10759,8 @@ function DeepWorkUI() {
             if (!isFeedTurnBoundary(log)) return false;
             const boundaryRunId = String(log?.runId || '').trim();
             const boundaryTurnId = String(log?.turnId || '').trim();
-            if (stopRunId && boundaryRunId) return boundaryRunId === stopRunId;
             if (stopTurnId && boundaryTurnId) return boundaryTurnId === stopTurnId;
+            if (stopRunId && boundaryRunId) return boundaryRunId === stopRunId;
             return !stopRunId && !stopTurnId;
           });
           const nextBoundaryIndex = clean.findIndex((log, index) =>
@@ -10475,8 +10771,7 @@ function DeepWorkUI() {
             nextBoundaryIndex >= 0 ? nextBoundaryIndex : clean.length,
           );
           const alreadyMarked = stoppedTurnLogs.some(log =>
-            (log.type === 'agent_status' && log.status === 'stopped') ||
-            (log.type === 'thought' && String(log.text || '').includes('Generation stopped by user.'))
+            isTerminalWorkTrace(log)
           );
           if (alreadyMarked) return clean;
           const stoppedMarker = agentStatusLog('stopped', 'Run stopped', 'Stopped by you.', Date.now(), {
@@ -10494,6 +10789,7 @@ function DeepWorkUI() {
         });
         return true;
       } catch (error: any) {
+        queuedMessages.forEach(message => stoppingQueuedFollowUpsRef.current.delete(`${chatId}:${message.id}`));
         setQueuedFollowUps(previous => {
           const existingIds = new Set(previous.map(message => message.id));
           return [...previous, ...queuedMessages.filter(message => !existingIds.has(message.id))];
@@ -10524,36 +10820,15 @@ function DeepWorkUI() {
     return chatId ? stopChatAgent(chatId) : Promise.resolve(false);
   };
 
-  // Remove pending steering messages when they appear in traceLogs
+  // Only model delivery clears pending guidance, never an admission receipt.
   useEffect(() => {
     if (pendingSteering.length === 0) return;
-
-    const lastBoundaryIdx = traceLogs.reduceRight(
-      (found, log, index) => found === -1 && isFeedTurnBoundary(log) ? index : found,
-      -1,
-    );
-    const currentTurnLogs = lastBoundaryIdx >= 0 ? traceLogs.slice(lastBoundaryIdx) : traceLogs;
-
-    const receivedSteeringLogs = currentTurnLogs.filter(l => l.type === 'steering_received');
-    const receivedIds = new Set(
-      receivedSteeringLogs
-        .map(l => String(l.steeringId || ''))
-        .filter(Boolean)
-    );
-    const receivedLegacyKeys = new Set(
-      receivedSteeringLogs
-        .filter(l => !String(l.steeringId || '').trim())
-        .map(l => `${ String(l.runId || l.turnId || '').trim() }::${ String(l.text || '') }`)
-    );
-
-    if (receivedIds.size > 0 || receivedLegacyKeys.size > 0) {
-      setPendingSteering(prev => prev.filter(p =>
-        p.chatId !== activeChatId || (
-          !receivedIds.has(p.id) &&
-          !receivedLegacyKeys.has(`${ p.runId }::${ p.text }`)
-        )
-      ));
-    }
+    const deliveredIds = new Set(traceLogs
+      .filter(log => ['steering_received', 'steering_applied', 'steering_cancelled', 'user_action'].includes(log?.type))
+      .flatMap(steeringMessageIds));
+    if (deliveredIds.size === 0) return;
+    setPendingSteering(previous => previous.filter(message =>
+      message.chatId !== activeChatId || !deliveredIds.has(message.id)));
   }, [activeChatId, traceLogs, pendingSteering.length]);
 
   /**
@@ -10568,11 +10843,13 @@ function DeepWorkUI() {
     clearComposer = true,
     requestedSteeringId?: string,
     requestedCreatedAt?: number,
+    nextAttachments: ComposerAttachment[] = [],
   ) => {
-    const steerMessage = message.trim();
+    const steerMessage = message.trim() || (nextAttachments.length ? 'Please review the attached files.' : '');
     const immutableSteeringId = requestedSteeringId || crypto.randomUUID();
     const admissionKey = makeFollowUpAdmissionKey(targetChatId, steerMessage, [], undefined, immutableSteeringId);
-    if (!targetChatId || !steerMessage || steeringAdmissionsRef.current.has(admissionKey)) return false;
+    if (!targetChatId || !steerMessage) return false;
+    if (steeringAdmissionsRef.current.has(admissionKey)) return true;
     steeringAdmissionsRef.current.add(admissionKey);
     // Steering can be invoked outside the main composer submit path (for
     // example by a recovered/scheduled guidance request). A poll batch may
@@ -10592,14 +10869,16 @@ function DeepWorkUI() {
       targetUserLog?.turnId ||
       ''
     ).trim();
-    const steeringCreatedAt = reserveClientAdmissionTimestamp(requestedCreatedAt);
+    const steeringCreatedAt = Number.isFinite(requestedCreatedAt) && Number(requestedCreatedAt) > 0
+      ? Number(requestedCreatedAt) : reserveClientAdmissionTimestamp();
     const newSteering = {
       id: immutableSteeringId,
       text: steerMessage,
       chatId: targetChatId,
       runId: targetRunId,
     };
-    setPendingSteering(prev => [...prev, newSteering]);
+    setPendingSteering(prev => prev.some(item => item.id === newSteering.id && item.chatId === targetChatId)
+      ? prev : [...prev, newSteering]);
     const optimisticSteeringId = `steering-${ newSteering.id }`;
     setChatLogsById(targetChatId, previous => {
       if (previous.some(log => String(log?.steeringId || '') === newSteering.id)) return previous;
@@ -10607,14 +10886,16 @@ function DeepWorkUI() {
         ...stripAgentConnectionLogs(previous),
         {
           id: optimisticSteeringId,
-          type: 'steering_received',
+          type: 'steering_queued',
+          deliveryState: 'sending',
           text: steerMessage,
           source: 'human',
+          attachments: [...nextAttachments],
           steeringId: newSteering.id,
           steeringIds: [newSteering.id],
           ownerChatId: targetChatId,
           ...(targetRunId ? { runId: targetRunId } : {}),
-          turnId: `steering-turn-${ newSteering.id }`,
+          turnId: String([...targetLogs].reverse().find(isFeedTurnBoundary)?.turnId || targetRunId),
           timestamp: steeringCreatedAt,
           startTime: steeringCreatedAt,
           endTime: steeringCreatedAt,
@@ -10622,16 +10903,23 @@ function DeepWorkUI() {
         },
       ];
     });
+    // Release the submitted draft synchronously. A late network response must
+    // never erase a second message typed while this one was in flight.
+    if (clearComposer && activeChatIdRef.current === targetChatId &&
+      inputValueRef.current.trim() === message.trim()) clearDraftComposerState(targetChatId);
     const removeOptimisticSteering = () => {
       setChatLogsById(targetChatId, previous => previous.filter(log =>
-        String(log?.steeringId || '') !== newSteering.id &&
-        String(log?.id || '') !== optimisticSteeringId
+        log?.type !== 'steering_queued' || (
+          String(log?.steeringId || '') !== newSteering.id &&
+          String(log?.id || '') !== optimisticSteeringId
+        )
       ));
     };
 
     try {
       const res = await fetch('/api/agent/steer', {
         method: 'POST',
+        signal: AbortSignal.timeout(15_000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chatId: targetChatId,
@@ -10639,34 +10927,50 @@ function DeepWorkUI() {
           id: newSteering.id,
           runId: targetRunId || undefined,
           createdAt: steeringCreatedAt,
+          mediaAttachments: nextAttachments.map(attachment => ({
+            id: attachment.id, name: attachment.name || attachment.file?.name || 'attachment',
+            path: attachment.localPath || getNativeFilePath(attachment.file) || undefined,
+            mimeType: attachment.mimeType || attachment.file?.type || 'application/octet-stream',
+            size: attachment.size || attachment.file?.size || 0,
+          })),
         }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
+      const receipt = await res.json().catch(() => ({}));
+      if (receipt.status === 'cancelled') {
+        setPendingSteering(previous => previous.filter(item => item.id !== newSteering.id || item.chatId !== targetChatId));
+        setChatLogsById(targetChatId, previous => [...previous, {
+          id: `steering-cancelled:${targetChatId}:${newSteering.runId}:${newSteering.id}`,
+          type: 'steering_cancelled', ownerChatId: targetChatId, runId: newSteering.runId,
+          steeringId: newSteering.id, steeringIds: [newSteering.id], timestamp: Date.now(),
+        }]);
+        return true;
+      }
+      if (!res.ok || receipt.success !== true) {
+        const err = receipt;
+        if (err.accepted !== false) throw new Error(err.reason || `Steering receipt unavailable (${res.status})`);
         console.warn('[handleSteer] Steer failed:', err.reason || res.status);
         setPendingSteering(prev => prev.filter(item => item.id !== newSteering.id));
         removeOptimisticSteering();
-        if (clearComposer && activeChatIdRef.current === newSteering.chatId) {
-          updateInputValue(current => current.trim() ? current : steerMessage);
-        }
         return false;
       } else {
         console.log('[handleSteer] Steering message sent:', steerMessage.substring(0, 60));
-        if (clearComposer) clearDraftComposerState(targetChatId);
+        setChatLogsById(targetChatId, previous => previous.map(log =>
+          log?.type === 'steering_queued' && log.steeringId === newSteering.id
+            ? { ...log, deliveryState: 'queued' } : log));
         return true;
       }
     } catch (e: any) {
       console.warn('[handleSteer] Network error:', e?.message);
-      setPendingSteering(prev => prev.filter(item => item.id !== newSteering.id));
-      removeOptimisticSteering();
-      if (clearComposer && activeChatIdRef.current === newSteering.chatId) {
-        updateInputValue(current => current.trim() ? current : steerMessage);
-      }
-      return false;
+      // The server may have accepted the request before the response was lost.
+      // Keep the same pending identity; never enqueue a duplicate successor.
+      setChatLogsById(targetChatId, previous => previous.map(log =>
+        log?.type === 'steering_queued' && log.steeringId === newSteering.id
+          ? { ...log, deliveryState: 'uncertain' } : log));
+      return true;
     } finally {
       steeringAdmissionsRef.current.delete(admissionKey);
     }
-  }, [clearDraftComposerState, revealNetworkBanner, updateInputValue]);
+  }, [clearDraftComposerState]);
 
   const sendSteeringMessage = useCallback(async (message: string) => {
     const targetChatId = activeChatIdRef.current;
@@ -10692,6 +10996,7 @@ function DeepWorkUI() {
     runOptions?: QueuedRunOptions,
     forceRendererQueue = false,
     requestedCreatedAt?: number,
+    retryAdmission = false,
   ): Promise<boolean> => {
     const queuedMessage = message.trim();
     if (!targetChatId || (!queuedMessage && nextAttachments.length === 0)) return false;
@@ -10708,16 +11013,28 @@ function DeepWorkUI() {
       runOptions?.selectedAgent,
       requestedQueueId || runOptions?.clientRunId,
     );
-    if (queuedFollowUpAdmissionsRef.current.has(admissionKey)) return false;
+    if (queuedFollowUpAdmissionsRef.current.has(admissionKey) && !retryAdmission) return false;
 
     queuedFollowUpAdmissionsRef.current.add(admissionKey);
     const queuedId = requestedQueueId || runOptions?.clientRunId || queuedFollowUpIdsRef.current.get(admissionKey) || crypto.randomUUID();
+    const deliveredAdmissions = settledQueueAdmissionIds(chatsRef.current.find(chat => chat.id === targetChatId)?.traceLogs || []);
+    if (deliveredAdmissions.has(queuedId)) {
+      queuedFollowUpAdmissionsRef.current.delete(admissionKey);
+      retiredQueuedFollowUpsRef.current.add(`${targetChatId}:${queuedId}`);
+      setQueuedFollowUps(previous => previous.filter(item => item.chatId !== targetChatId || item.id !== queuedId));
+      return true;
+    }
+    if (cancelledQueuedFollowUpsRef.current.has(`${targetChatId}:${queuedId}`) || retiredQueuedFollowUpsRef.current.has(`${targetChatId}:${queuedId}`)) {
+      queuedFollowUpAdmissionsRef.current.delete(admissionKey);
+      return true;
+    }
     queuedFollowUpIdsRef.current.set(admissionKey, queuedId);
     const createdAt = reserveClientAdmissionTimestamp(
       requestedCreatedAt ?? runOptions?.clientCreatedAt,
     );
+    const rendererOwned = forceRendererQueue || directChatRunsRef.current.has(targetChatId);
     setQueuedFollowUps(previous => [
-      ...previous,
+      ...previous.filter(item => item.id !== queuedId),
       {
         id: queuedId,
         chatId: targetChatId,
@@ -10727,6 +11044,7 @@ function DeepWorkUI() {
         admissionKey,
         attachmentCount: nextAttachments.length,
         serverBacked: false,
+        deliveryState: rendererOwned ? undefined : 'pending',
         ...(runOptions ? { runOptions } : {}),
       },
     ]);
@@ -10735,11 +11053,17 @@ function DeepWorkUI() {
         ? { ...log, _queuedFollowUp: true, status: 'queued' }
         : log
     ));
+    // The queue owns this exact draft now. A late receipt must never clear
+    // attachments or text belonging to the user's next message.
+    if (clearComposer) {
+      clearDraftComposerState(targetChatId);
+      clearComposer = false;
+    }
 
     // Direct-chat streams intentionally do not enter AgentRegistry. Keep their
     // next turn local to the renderer that owns that stream; full agent queues
     // continue through the durable backend path below.
-    if (forceRendererQueue || directChatRunsRef.current.has(targetChatId)) {
+    if (rendererOwned) {
       if (clearComposer) clearDraftComposerState(targetChatId);
       return true;
     }
@@ -10753,6 +11077,7 @@ function DeepWorkUI() {
       fileUri: undefined,
     }));
     const queuedModelEntry = parseModelEntryKey(runOptions?.modelSelection);
+    let rejected = false;
 
     try {
       const pendingStop = stopRequestsRef.current.get(targetChatId);
@@ -10764,8 +11089,10 @@ function DeepWorkUI() {
         // settles, so the user's message never disappears from the composer.
         await pendingStop;
       }
+      if (cancelledQueuedFollowUpsRef.current.has(`${targetChatId}:${queuedId}`)) return true;
       const response = await fetch('/api/agent/queue', {
         method: 'POST',
+        signal: AbortSignal.timeout(15_000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'enqueue',
@@ -10787,16 +11114,26 @@ function DeepWorkUI() {
         }),
       });
       const payload = await response.json().catch(() => ({}));
+      if (payload?.status === 'cancelled') {
+        cancelledQueuedFollowUpsRef.current.add(`${targetChatId}:${queuedId}`);
+        setQueuedFollowUps(previous => previous.filter(item => item.chatId !== targetChatId || item.id !== queuedId));
+        queuedFollowUpAdmissionsRef.current.delete(admissionKey);
+        queuedFollowUpIdsRef.current.delete(admissionKey);
+        return true;
+      }
       if (!response.ok || payload?.success !== true) {
+        rejected = response.status >= 400 && response.status < 500 && response.status !== 408;
         throw new Error(payload?.message || payload?.error || `Queue request failed (${ response.status })`);
       }
+      if (cancelledQueuedFollowUpsRef.current.has(`${targetChatId}:${queuedId}`)) return true;
       if (Array.isArray(payload?.items)) {
         if (payload.items.some((item: any) => String(item?.id || '') === queuedId)) {
-          reconcileServerQueuedFollowUps(targetChatId, payload.items);
+          reconcileServerQueuedFollowUps(targetChatId, payload.items, payload.queueRevision);
         } else {
           // An idempotent retry may arrive after the backend has already
           // promoted this item into a real run. It is accepted, but no longer
           // belongs in the visible queue rail.
+          retiredQueuedFollowUpsRef.current.add(`${targetChatId}:${queuedId}`);
           setQueuedFollowUps(previous => previous.filter(item => item.id !== queuedId));
           queuedFollowUpAdmissionsRef.current.delete(admissionKey);
           queuedFollowUpIdsRef.current.delete(admissionKey);
@@ -10808,6 +11145,7 @@ function DeepWorkUI() {
               runId: payload?.item?.runId || item.runId,
               attachmentCount: Number(payload?.item?.attachmentCount || item.attachmentCount || 0),
               serverBacked: true,
+              deliveryState: undefined,
             }
           : item));
       }
@@ -10826,54 +11164,15 @@ function DeepWorkUI() {
       if (clearComposer) clearDraftComposerState(targetChatId);
       return true;
     } catch (error: any) {
-      setQueuedFollowUps(previous => previous.filter(item => item.id !== queuedId));
-      queuedFollowUpAdmissionsRef.current.delete(admissionKey);
+      // A lost HTTP reply is not a rejected admission. Keep the exact query
+      // in the queue surface and retry its idempotent ID; never manufacture a
+      // second failed user turn or dispatch it through the renderer as new work.
+      setQueuedFollowUps(previous => previous.map(item => item.id === queuedId
+        ? { ...item, deliveryState: rejected ? 'rejected' : 'uncertain' }
+        : item));
       console.warn('[Queue] Could not queue follow-up:', error?.message || error);
-      setChatLogsById(targetChatId, previous => {
-        const at = createdAt;
-        const failedTurn = {
-          id: `queue-failed-turn:${ queuedId }`,
-          type: 'user_action',
-          text: queuedMessage,
-          source: 'human',
-          ownerChatId: targetChatId,
-          runId: queuedId,
-          turnId: queuedId,
-          timestamp: at,
-          startTime: at,
-          endTime: at,
-          ...(queuedModelEntry ? {
-            modelSelection: runOptions?.modelSelection,
-            selectedModelProvider: queuedModelEntry.provider,
-            selectedModelName: queuedModelEntry.modelId,
-            thinkingLevel: runOptions?.thinkingLevel,
-          } : {}),
-        };
-        const clean = stripAgentConnectionLogs(previous).map(log =>
-          log?.type === 'user_action' && String(log.runId || log.turnId || '') === queuedId
-            ? { ...log, _queuedFollowUp: false, status: 'failed' }
-            : log
-        );
-        const withBoundary = clean.some(log =>
-          String(log?.id || log?.runId || log?.turnId || '') === queuedId
-        ) ? clean : [...clean, failedTurn];
-        return [
-          ...withBoundary,
-          agentStatusLog(
-            'warning',
-            'Follow-up not queued',
-            formatAgentErrorDetail(error, 'The queue request was not accepted.').slice(0, 180),
-            Date.now(),
-            {
-              ownerChatId: targetChatId,
-              runId: queuedId,
-              turnId: queuedId,
-              mainTurnTerminal: true,
-            },
-          ),
-        ];
-      });
-      return false;
+      if (clearComposer) clearDraftComposerState(targetChatId);
+      return true;
     }
   };
 
@@ -10910,11 +11209,13 @@ function DeepWorkUI() {
       flushBackgroundChatUpdates(targetChatId);
     }
     const admissionLogs = chatsRef.current.find(chat => chat.id === targetChatId)?.traceLogs || [];
-    const admissionBoundaryIndex = admissionLogs.findLastIndex(isFeedTurnBoundary);
+    const observedRunId = String(expectedRunId || pollRunIdRef.current.get(targetChatId) || '').trim();
+    const admissionBoundaryIndex = admissionLogs.findLastIndex(log =>
+      isFeedTurnBoundary(log) && log._queuedFollowUp !== true &&
+      (!observedRunId || String(log.runId || log.turnId || '') === observedRunId));
     const admissionTurnLogs = admissionLogs.slice(admissionBoundaryIndex >= 0 ? admissionBoundaryIndex : 0);
     const admissionBoundary = admissionTurnLogs.find(isFeedTurnBoundary);
     const admissionRunId = String(admissionBoundary?.runId || admissionBoundary?.turnId || '').trim();
-    const observedRunId = String(pollRunIdRef.current.get(targetChatId) || '').trim();
     const transcriptIsTerminal = admissionTurnLogs.some(log =>
       isTerminalWorkTrace(log) || isExplicitFinalAnswerTrace(log),
     );
@@ -10966,7 +11267,7 @@ function DeepWorkUI() {
         followUpTurnId,
         clearComposer,
         runOptions,
-        false,
+        forceRendererQueue,
         followUpCreatedAt,
       );
     }
@@ -10988,9 +11289,9 @@ function DeepWorkUI() {
       );
     }
 
-    // Attachments must become a real next turn. Text-only guidance can be
-    // injected into the current ReAct loop when the user prefers steering.
-    if (forceRendererQueue || nextAttachments.length > 0 || readFollowUpBehavior() === 'queue') {
+    // The preference applies to files as well as text. Steering carries the
+    // durable attachment references; queue mode retains the complete payload.
+    if (forceRendererQueue || readFollowUpBehavior() === 'queue') {
       return queueFollowUpForChat(
         targetChatId,
         followUpMessage,
@@ -11010,6 +11311,7 @@ function DeepWorkUI() {
       clearComposer,
       followUpTurnId,
       followUpCreatedAt,
+      nextAttachments,
     );
     if (steered) {
       return true;
@@ -11023,58 +11325,108 @@ function DeepWorkUI() {
       followUpMessage,
       nextAttachments,
       followUpTurnId,
-      clearComposer,
+      false,
       runOptions,
       forceRendererQueue,
       followUpCreatedAt,
     );
   };
 
+  const steeringRecoveryRef = useRef<() => Promise<void>>(async () => {});
+  const steeringRetryAfterRef = useRef(new Map<string, { attempts: number; at: number }>());
+  const steeringRecoveryProjectionRef = useRef(new WeakMap<any[], any[]>());
+  steeringRecoveryRef.current = async () => {
+    for (const chat of chatsRef.current) {
+      const logs = chat.traceLogs;
+      if (!logs?.length) continue;
+      // Installed trace arrays are immutable. Reuse recovery candidates until
+      // that chat changes instead of copying every saved transcript each tick.
+      let waiting = steeringRecoveryProjectionRef.current.get(logs);
+      if (!waiting) {
+        waiting = projectSteeringDelivery(logs).pending;
+        steeringRecoveryProjectionRef.current.set(logs, waiting);
+      }
+      for (const pending of waiting) {
+        const activeRun = runningChatsRef.current.has(chat.id) || activePollersRef.current.has(chat.id);
+        if (!['sending', 'uncertain'].includes(pending.deliveryState) &&
+          !(pending.deliveryState === 'queued' && !activeRun)) continue;
+        const id = String(pending.steeringId || '');
+        const createdAt = Number(pending.startTime || pending.timestamp || 0);
+        const retryKey = `${chat.id}:${id}`;
+        const retry = steeringRetryAfterRef.current.get(retryKey);
+        const graceMs = pending.deliveryState === 'queued' ? 60_000 : 20_000;
+        if (!id || Date.now() - createdAt < graceMs || (retry && retry.at > Date.now())) continue;
+        const attempts = (retry?.attempts || 0) + 1;
+        steeringRetryAfterRef.current.set(retryKey, {
+          attempts, at: Date.now() + Math.min(60_000, 2_000 * 2 ** Math.min(attempts, 5)),
+        });
+        const admitted = await sendSteeringMessageToChat(
+          chat.id, String(pending.text || ''), String(pending.runId || ''), false, id, createdAt,
+          pending.attachments || [],
+        );
+        if (!admitted) {
+          // Only a definitive rejection can promote this immutable message.
+          await queueFollowUpForChat(chat.id, String(pending.text || ''), pending.attachments || [],
+            `steering-turn-${id}`, false, undefined, false, createdAt);
+        }
+      }
+    }
+  };
+  useEffect(() => {
+    let disposed = false;
+    let inFlight = false;
+    const recover = async () => {
+      if (disposed || inFlight || !navigator.onLine) return;
+      inFlight = true;
+      try { await steeringRecoveryRef.current(); } finally { inFlight = false; }
+    };
+    const timer = window.setInterval(() => void recover(), 5_000);
+    window.addEventListener('online', recover);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener('online', recover);
+    };
+  }, []);
+
   const handleSteer = async () => {
-    if (!inputValue.trim() && attachments.length === 0) return;
-    const steerMessage = inputValue.trim();
+    const currentInputValue = inputValueRef.current;
+    if (!currentInputValue.trim() && attachments.length === 0) return;
+    const steerMessage = currentInputValue.trim();
     const targetChatId = activeChatIdRef.current;
     if (!targetChatId) return;
     await deliverFollowUpToRunningChat(targetChatId, steerMessage, attachments);
   };
 
-  const toggleSpeech = async () => {
+  const toggleSpeech = async (target: 'main' | 'proxy' = 'main') => {
     if (dictationShouldRunRef.current) {
-      stopSpeechDictation();
-      return;
+      const sameTarget = dictationTargetRef.current === target;
+      stopSpeechDictation(!sameTarget);
+      if (sameTarget) return;
     }
-
+    if (dictationSessionRef.current) stopSpeechDictation();
+    if (liveSessionTokenRef.current || liveSessionRef.current) stopLiveSession();
     const desktopApi = (window as any).electronAPI;
-    const desktopPermission = await desktopApi?.requestLiveMediaPermissions?.();
-    if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
-      if (typeof desktopApi?.showMicrophonePermissionHelp === 'function') {
-        await desktopApi.showMicrophonePermissionHelp();
-      } else {
-        alert('Microphone access is blocked. Allow EterX to use the microphone in system settings and try again.');
-      }
-      return;
-    }
-
-    const startingText = inputValue && !/\s$/.test(inputValue) ? `${inputValue} ` : inputValue;
-    dictationBaseTextRef.current = startingText;
-    dictationCommittedTextRef.current = '';
-    dictationTranscriptAnchorRef.current = '';
-    inputValueRef.current = startingText;
-    lastDictationRenderRef.current = startingText;
-    dictationRenderedValuesRef.current.clear();
-    rememberDictationRender(startingText);
-    dictationShouldRunRef.current = true;
-    setIsRecording(true);
-
-    if (
-      typeof desktopApi?.startSpeechDictation !== 'function' ||
-      typeof desktopApi?.pushSpeechDictationAudio !== 'function'
-    ) {
-      dictationShouldRunRef.current = false;
-      setIsRecording(false);
+    if (typeof desktopApi?.startSpeechDictation !== 'function' || typeof desktopApi?.pushSpeechDictationAudio !== 'function') {
       alert('Local whisper.cpp dictation is available in the EterX desktop app.');
       return;
     }
+
+    // Reserve ownership before the first permission await, so a second click
+    // cancels this startup rather than opening another microphone stream.
+    const sessionId = crypto.randomUUID();
+    dictationTargetRef.current = target;
+    dictationSessionRef.current = sessionId;
+    dictationOwnerRef.current = getDictationOwner();
+    dictationRevisionRef.current = 0;
+    dictationBaseTextRef.current = target === 'proxy' ? proxyChatInput : inputValueRef.current;
+    dictationCommittedTextRef.current = '';
+    lastDictationRenderRef.current = dictationBaseTextRef.current;
+    dictationRenderedValuesRef.current.clear();
+    dictationShouldRunRef.current = true;
+    setIsRecording(true);
+    const isCurrentRecording = () => dictationSessionRef.current === sessionId && dictationShouldRunRef.current &&
+      dictationOwnerRef.current === getDictationOwner();
 
     let microphoneStream: MediaStream | null = null;
     let audioContext: AudioContext | null = null;
@@ -11082,37 +11434,40 @@ function DeepWorkUI() {
     let processorNode: ScriptProcessorNode | null = null;
     let silentGain: GainNode | null = null;
     const releaseMicrophone = () => {
+      if (processorNode) processorNode.onaudioprocess = null;
       try { processorNode?.disconnect(); } catch { }
       try { sourceNode?.disconnect(); } catch { }
       try { silentGain?.disconnect(); } catch { }
       microphoneStream?.getTracks().forEach(track => track.stop());
-      if (audioContext && audioContext.state !== 'closed') void audioContext.close();
+      if (audioContext && audioContext.state !== 'closed') void audioContext.close().catch(() => {});
     };
-
+    speechRecognitionRef.current = { stop: releaseMicrophone };
     try {
+      const desktopPermission = await desktopApi.requestLiveMediaPermissions?.();
+      if (!isCurrentRecording()) return;
+      if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
+        throw new Error('Microphone permission is blocked. Allow EterX to use the microphone in system settings.');
+      }
       microphoneStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
-      const nativeResult = await desktopApi.startSpeechDictation(navigator.language || 'auto');
-      if (!dictationShouldRunRef.current) {
+      if (!isCurrentRecording()) { releaseMicrophone(); return; }
+      const nativeResult = await desktopApi.startSpeechDictation(navigator.language || 'auto', sessionId);
+      if (!isCurrentRecording()) {
         releaseMicrophone();
-        if (nativeResult?.started) void desktopApi.stopSpeechDictation?.();
+        void desktopApi.stopSpeechDictation(sessionId, true).catch(() => {});
         return;
       }
       if (!nativeResult?.started) throw new Error(nativeResult?.error || 'Local whisper.cpp could not start.');
-
+      // Edits may have happened while the native engine was starting.
+      desktopApi.resetSpeechDictation?.(sessionId, dictationRevisionRef.current);
       audioContext = new AudioContext({ latencyHint: 'interactive' });
       sourceNode = audioContext.createMediaStreamSource(microphoneStream);
       processorNode = audioContext.createScriptProcessor(4096, 1, 1);
       silentGain = audioContext.createGain();
       silentGain.gain.value = 0;
       processorNode.onaudioprocess = event => {
-        if (!dictationShouldRunRef.current || !audioContext) return;
+        if (!isCurrentRecording() || !audioContext) return;
         const input = event.inputBuffer.getChannelData(0);
         const ratio = audioContext.sampleRate / 16000;
         const outputLength = Math.max(1, Math.floor(input.length / ratio));
@@ -11125,19 +11480,20 @@ function DeepWorkUI() {
           const sample = Math.max(-1, Math.min(1, sum / (end - start)));
           pcm[index] = sample < 0 ? sample * 32768 : sample * 32767;
         }
-        desktopApi.pushSpeechDictationAudio(pcm.buffer);
+        desktopApi.pushSpeechDictationAudio(pcm.buffer, sessionId, dictationRevisionRef.current);
       };
       sourceNode.connect(processorNode);
       processorNode.connect(silentGain);
       silentGain.connect(audioContext.destination);
-      speechRecognitionRef.current = { stop: releaseMicrophone };
+      await audioContext.resume();
+      if (!isCurrentRecording()) { releaseMicrophone(); return; }
+      microphoneStream.getAudioTracks().forEach(track => track.addEventListener('ended', () => {
+        if (isCurrentRecording()) stopSpeechDictation(false);
+      }, { once: true }));
     } catch (error: any) {
       releaseMicrophone();
-      dictationShouldRunRef.current = false;
-      speechRecognitionRef.current = null;
-      lastDictationRenderRef.current = null;
-      setIsRecording(false);
-      void desktopApi.stopSpeechDictation?.();
+      if (dictationSessionRef.current !== sessionId) return;
+      stopSpeechDictation();
       const message = formatAgentErrorDetail(error, 'Local voice dictation could not start.');
       if (/permission|notallowed/i.test(message) && typeof desktopApi?.showMicrophonePermissionHelp === 'function') {
         await desktopApi.showMicrophonePermissionHelp();
@@ -11283,10 +11639,11 @@ function DeepWorkUI() {
     const admissionKey = `${ chatId }:direct:${ subAgentIdentity || agentName }`;
     if (subAgentSendAdmissionsRef.current.has(admissionKey)) return;
 
-    if (dictationShouldRunRef.current) stopSpeechDictation();
-    if (!inputValue.trim() && attachments.length === 0) return;
+    if (dictationSessionRef.current) stopSpeechDictation();
+    const currentInputValue = inputValueRef.current;
+    if (!currentInputValue.trim() && attachments.length === 0) return;
     subAgentSendAdmissionsRef.current.add(admissionKey);
-    const originalInput = inputValue;
+    const originalInput = currentInputValue;
     const sentAt = reserveClientAdmissionTimestamp();
     const currentAttachments = [...attachments];
     const filePaths = currentAttachments
@@ -11299,7 +11656,7 @@ function DeepWorkUI() {
         return `- ${ name }${ path ? ` (${ path })` : '' }`;
       }).join('\n') }`
       : '';
-    const body = `${ inputValue.trim() }${ attachmentContext }`.trim();
+    const body = `${ currentInputValue.trim() }${ attachmentContext }`.trim();
     const optimisticMessageId = `pending_${ sentAt }_${ Math.random().toString(36).slice(2, 8) }`;
     const directTurnId = `direct-turn-${ optimisticMessageId }`;
     const optimisticLog = {
@@ -11437,7 +11794,7 @@ function DeepWorkUI() {
     } finally {
       subAgentSendAdmissionsRef.current.delete(admissionKey);
     }
-  }, [activeChatId, activeSubAgentTab, agentMode, attachments, inputValue, isRecording, subAgentNextModelSelections, thinkingLevel, traceLogs, updateAttachments, updateInputValue]);
+  }, [activeChatId, activeSubAgentTab, agentMode, attachments, isRecording, subAgentNextModelSelections, thinkingLevel, traceLogs, updateAttachments, updateInputValue]);
 
   const restoreComposerDraftIfEmpty = (
     targetChatId: string | null,
@@ -11474,11 +11831,12 @@ function DeepWorkUI() {
       scheduledTaskId?: string;
     },
   ) => {
-    if (dictationShouldRunRef.current) stopSpeechDictation();
-    const promptText = (typeof overridePrompt === 'string' ? overridePrompt : inputValue).trim();
+    if (dictationSessionRef.current) stopSpeechDictation();
+    const currentInputValue = inputValueRef.current;
+    const promptText = (typeof overridePrompt === 'string' ? overridePrompt : currentInputValue).trim();
     const requestedAttachments = overrideAttachments ?? attachments;
     const shouldRestoreComposer = typeof overridePrompt !== 'string' && !runOptionsOverride?.backgroundChat;
-    const originalComposerInput = inputValue;
+    const originalComposerInput = currentInputValue;
     const originalComposerAttachments = [...attachments];
     if (!promptText && requestedAttachments.length === 0) return false;
     // One send gesture owns one immutable identity before we decide whether it
@@ -11522,7 +11880,7 @@ function DeepWorkUI() {
     // supplies an explicit execution target.
     const useActiveComposerContext = !sendTarget.hasExplicitTarget ||
       targetChatIdAtSend === activeChatIdRef.current ||
-      (!targetChatExists && !runOptionsOverride?.workspacePath && !runOptionsOverride?.runLocation);
+      (!targetChatExists && runOptionsOverride?.workspacePath === undefined && !runOptionsOverride?.runLocation);
     const composerContext = useActiveComposerContext
       ? composerRuntimeSelectionRef.current
       : {
@@ -11531,9 +11889,12 @@ function DeepWorkUI() {
           agentMode: targetComposerState?.agentMode || 'think' as MainAgentMode,
           thinkingLevel: targetComposerState?.thinkingLevel || 'low' as MainAgentThinkingLevel,
         };
-    const executionWorkspacePath = runOptionsOverride?.workspacePath ??
-      targetChat?.workspacePath ??
-      (useActiveComposerContext ? activeWorkspacePath : null);
+    // null explicitly means no project; only undefined may inherit a workspace.
+    const executionWorkspacePath = runOptionsOverride?.workspacePath !== undefined
+      ? runOptionsOverride.workspacePath
+      : targetChat?.workspacePath !== undefined
+        ? targetChat.workspacePath
+        : (useActiveComposerContext ? activeWorkspacePath : null);
     const executionRunLocation = runOptionsOverride?.runLocation ||
       targetComposerState?.runLocation ||
       targetChat?.runLocation ||
@@ -11549,6 +11910,7 @@ function DeepWorkUI() {
         const stored = JSON.parse(appStorage.getItem(`eterx_proxy_controls_${proxyControlOwnerKey}`) || '{}');
         return {
           enabled: stored.enabled === true,
+          paused: stored.enabled === true && stored.paused === true,
           intervention: ['minimal', 'normal', 'high'].includes(stored.intervention)
             ? stored.intervention as 'minimal' | 'normal' | 'high'
             : 'normal',
@@ -11562,6 +11924,7 @@ function DeepWorkUI() {
       } catch {
         return {
           enabled: false,
+          paused: false,
           intervention: 'normal' as const,
           managerModel: AUTO_MODEL_SELECTION,
           runtimeModel: AUTO_MODEL_SELECTION,
@@ -11569,6 +11932,7 @@ function DeepWorkUI() {
       }
     })();
     const executionProxyEnabled = targetProxyControls.enabled;
+    const executionProxyPaused = targetProxyControls.paused;
     const executionProxyIntervention = targetProxyControls.intervention;
     const executionProxyManagerModelSelection = targetProxyControls.managerModel;
     const executionProxyRuntimeModelSelection = targetProxyControls.runtimeModel;
@@ -11722,6 +12086,7 @@ function DeepWorkUI() {
     const clientRunId = admissionClientRunId;
     const userLog = {
       id: `user-turn-${ clientRunId }`,
+      admissionId: clientRunId,
       type: 'user_action',
       text: promptText,
       source: runOptionsOverride?.userSource || 'human',
@@ -11733,6 +12098,7 @@ function DeepWorkUI() {
       turnId: clientRunId,
       startTime: runStartedAt,
       endTime: runStartedAt,
+      timestamp: runStartedAt,
       selectedAgentId: runSelectedAgentId,
       selectedAgentName: runSelectedAgentName,
       chatMode: runSelectedAgent.chatMode === true,
@@ -11816,12 +12182,14 @@ function DeepWorkUI() {
 
       transferredProxyControlsRef.current.set(createdChatId, {
         enabled: executionProxyEnabled,
+        paused: executionProxyPaused,
         intervention: executionProxyIntervention,
         runtimeModel: executionProxyRuntimeModelSelection,
       });
       try {
         appStorage.setItem(`eterx_proxy_controls_${ createdChatId }`, JSON.stringify({
           enabled: executionProxyEnabled,
+          paused: executionProxyPaused,
           intervention: executionProxyIntervention,
         }));
         appStorage.setItem(`eterx_proxy_manager_model_${ createdChatId }`, executionProxyManagerModelSelection);
@@ -11845,11 +12213,14 @@ function DeepWorkUI() {
         // from making an explicitly disabled New Chat appear autonomous.
         applyComposerState(createdComposerState);
         setProxyEnabled(executionProxyEnabled);
+        setProxyPaused(executionProxyPaused);
         setProxyIntervention(executionProxyIntervention);
         setProxyRuntimeModelSelection(executionProxyRuntimeModelSelection);
         setProxyModelSelection(executionProxyManagerModelSelection);
         activeChatIdRef.current = createdChatId;
         setActiveChatId(createdChatId);
+        transferChatTerminals(terminalDraftId, createdChatId);
+        setTerminalDraftId(`terminal-draft-${crypto.randomUUID()}`);
       }
 
       const requestedInitialTitle = String(runOptionsOverride?.initialTitle || '').trim();
@@ -11865,6 +12236,8 @@ function DeepWorkUI() {
       const newChat: ChatSession = {
         id: chatIdToUse,
         title: initialTitle,
+        titleState: hasRequestedInitialTitle ? 'manual' : 'temporary',
+        titleUpdatedAt: Date.now(),
         updatedAt: Date.now(),
         traceLogs: [userLog],
         modelSelection: requestedRunModelSelection,
@@ -11882,7 +12255,7 @@ function DeepWorkUI() {
 
       const titleChatId = chatIdToUse;
       const initialTitleHistory = [{ role: 'user', parts: [{ text: promptText }] }];
-      pendingTitleRequestsRef.current.set(titleChatId, {
+      if (!hasRequestedInitialTitle) pendingTitleRequestsRef.current.set(titleChatId, {
         history: initialTitleHistory,
         currentTitle: initialTitle,
         mode: runAgentMode,
@@ -11894,15 +12267,28 @@ function DeepWorkUI() {
       const updatedLogs = [...stripAgentConnectionLogs(baseTargetLogs), userLog];
       setChatLogsById(chatIdToUse, updatedLogs, { touchUpdatedAt: true });
 
-      // Adaptive renaming logic (every 5 messages)
+      // Name once initially, then only on every twentieth admitted user turn.
       const userMessageCount = updatedLogs.filter(l => l.type === 'user_action').length;
       const targetChat = chatsRef.current.find(chat => chat.id === chatIdToUse);
-      const isFirstMessageInUntitledChat = userMessageCount === 1 && (
-        isDefaultChatTitle(targetChat?.title) || isGeneratedEmptyChat(targetChat)
-      );
-      if (isFirstMessageInUntitledChat || (userMessageCount > 1 && userMessageCount % 5 === 0)) {
+      const needsInitialTitle = targetChat?.titleState === 'temporary' || isDefaultChatTitle(targetChat?.title);
+      const lastTitleAttempt = Number(targetChat?.titleLastAttemptTurn || 0);
+      const needsFirstAttempt = needsInitialTitle && lastTitleAttempt === 0;
+      const isRefreshTurn = userMessageCount > 1 && userMessageCount % TITLE_REFRESH_USER_TURNS === 0;
+      if (targetChat?.titleState !== 'manual' && lastTitleAttempt < userMessageCount && (needsFirstAttempt || isRefreshTurn)) {
+        if (needsInitialTitle) {
+          setChats(currentChats => {
+            const updated = currentChats.map(chat => chat.id === chatIdToUse ? {
+              ...chat,
+              title: isDefaultChatTitle(chat.title) ? buildTemporaryTitle(promptText) || DEFAULT_CHAT_TITLE : chat.title,
+              titleState: 'temporary' as const,
+              titleUpdatedAt: Math.max(Date.now(), Number(chat.titleUpdatedAt || 0) + 1),
+            } : chat);
+            void persistChats(updated);
+            return updated;
+          });
+        }
         const chatHistory = updatedLogs
-          .filter(log => log.type === 'user_action' || log.type === 'thought' || log.type === 'answer')
+          .filter(log => log.type === 'user_action' || (log.type === 'answer' && !log.subAgentId && !log.subAgentChatId))
           .slice(-80)
           .map(log => ({
             role: log.type === 'user_action' ? 'user' : 'model',
@@ -12135,7 +12521,7 @@ function DeepWorkUI() {
     }
 
     const subAgentSettings = readStoredSubAgentSettings();
-    const selectedCustomRuntimeId = runSelectedAgentId && runSelectedAgentId !== 'coding' && runSelectedAgentId !== 'autonomous' && !isBuilderChat
+    const selectedCustomRuntimeId = runSelectedAgentId && !getCodingMode(runSelectedAgentId) && runSelectedAgentId !== 'autonomous' && !isBuilderChat
       ? runSelectedAgentId
       : null;
     // Custom agents use the same provider-aware Main Agent transport as every
@@ -12592,19 +12978,24 @@ function DeepWorkUI() {
         agentId: builderAgentId,
         ...(buildingAgentName ? { agentName: buildingAgentName } : {}),
       } : {}),
-      ...(runSelectedAgentId === 'coding' && !isBuilderChat ? { agentRuntime: 'main_coding_agent', agentProfile: 'eterx-code' } : {}),
+      ...(getCodingMode(runSelectedAgentId) && !isBuilderChat ? {
+        agentRuntime: 'main_coding_agent',
+        agentProfile: getCodingMode(runSelectedAgentId)!.profile,
+        agentId: getCodingMode(runSelectedAgentId)!.id,
+        agentName: getCodingMode(runSelectedAgentId)!.label,
+      } : {}),
       // Chat is the only direct path. Every selectable agent run keeps its
       // own runtime identity while sharing the same enabled proxy supervisor.
       ...(!runSelectedAgent.chatMode && !isBuilderChat ? {
         autonomy: {
           enabled: executionProxyEnabled,
+          paused: executionProxyPaused,
           collaboration: 'user_proxy',
           initiative: 'high',
           verification: 'adaptive',
           intervention: executionProxyIntervention,
-          proxyModelSelection: executionProxyRuntimeModelSelection === AUTO_MODEL_SELECTION
-            ? requestedRunModelSelection
-            : executionProxyRuntimeModelSelection,
+          // Resolve the follow-chat choice from each run's exact model.
+          proxyModelSelection: executionProxyRuntimeModelSelection,
         },
       } : {}),
       ...(runSelectedAgentId === 'autonomous' && !isBuilderChat ? { agentRuntime: 'autonomy_v1' } : {}),
@@ -12700,6 +13091,13 @@ function DeepWorkUI() {
         if (alreadyRunning && chatIdToUse) {
           const existingRunId = String(errorPayload?.runId || '').trim();
           const previousRunIsShuttingDown = /previous run is still shutting down/i.test(String(message));
+          // The server rejected this attempted run. Its optimistic opening
+          // cannot remain a second user turn beside the steering/queue row.
+          // Remove only this exact unadmitted submission, never earlier text.
+          setChatLogsById(chatIdToUse, previous => previous.filter(log => !(
+            log?.type === 'user_action' && log.id === `user-turn-${clientRunId}` &&
+            String(log.runId || '') === clientRunId && log._originTraceIdx == null
+          )));
           if (existingRunId && !previousRunIsShuttingDown) {
             // The conflict response is authoritative. Replace the attempted
             // run ownership before reconnecting the poller to the real run.
@@ -12729,7 +13127,7 @@ function DeepWorkUI() {
                 clientRunId,
                 shouldRestoreComposer,
                 retryRunOptions,
-                false,
+                shouldQueueForAgentSwitch(chatsRef.current.find(chat => chat.id === chatIdToUse)?.traceLogs || [], existingRunId, runSelectedAgent),
                 runStartedAt,
               )
             : await deliverFollowUpToRunningChat(
@@ -12739,14 +13137,10 @@ function DeepWorkUI() {
                 existingRunId || undefined,
                 shouldRestoreComposer,
                 retryRunOptions,
+                shouldQueueForAgentSwitch(chatsRef.current.find(chat => chat.id === chatIdToUse)?.traceLogs || [], existingRunId, runSelectedAgent),
               );
           if (delivered) {
-            // This mounted user boundary is the query's presentation owner for
-            // its entire lifetime. Steering acknowledgement, queue promotion,
-            // and the successor's canonical user_action all retain clientRunId
-            // as their turn identity, so normal reconciliation enriches this
-            // exact row. Deleting it here made the query disappear, move into
-            // the queue rail, and then reappear when server traces arrived.
+            // The admitted steering/queue representation now owns this send.
             sendAdmissionsRef.current.delete(admissionKey);
             return true;
           }
@@ -12872,10 +13266,17 @@ function DeepWorkUI() {
   const sendQueuedFollowUp = async (item: QueuedFollowUp): Promise<boolean> => {
     const targetChatId = item.chatId;
     if (!targetChatId || !item.id) return false;
+    const queueKey = `${targetChatId}:${item.id}`;
+    if (cancelledQueuedFollowUpsRef.current.has(queueKey) || retiredQueuedFollowUpsRef.current.has(queueKey)) return false;
     if (queuedFollowUpDispatchRef.current.has(item.id)) return false;
 
     queuedFollowUpDispatchRef.current.add(item.id);
     try {
+      if (item.deliveryState) {
+        if (item.deliveryState === 'pending') return false;
+        return await queueFollowUpForChat(item.chatId, item.text, item.attachments,
+          item.id, false, item.runOptions, false, item.createdAt, true);
+      }
       if (item.serverBacked === false) {
         setQueuedFollowUps(previous => {
           const sameChat = previous.filter(message => message.chatId === targetChatId);
@@ -12891,13 +13292,22 @@ function DeepWorkUI() {
       }
       const response = await fetch('/api/agent/queue', {
         method: 'POST',
+        signal: AbortSignal.timeout(15_000),
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'prioritize', chatId: targetChatId, id: item.id }),
+        body: JSON.stringify({ action: 'steer', chatId: targetChatId, id: item.id }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload?.success !== true) return false;
-      reconcileServerQueuedFollowUps(targetChatId, payload.items || []);
+      if (Array.isArray(payload.items) && !payload.items.some((message: any) => message.id === item.id)) {
+        retiredQueuedFollowUpsRef.current.add(queueKey);
+        setQueuedFollowUps(previous => previous.filter(message => message.chatId !== targetChatId || message.id !== item.id));
+      }
+      reconcileServerQueuedFollowUps(targetChatId, payload.items || [], payload.queueRevision);
+      catchUpPollersRef.current.get(targetChatId)?.();
       return true;
+    } catch {
+      // Keep the item retryable with the same ID if the receipt is uncertain.
+      return false;
     } finally {
       queuedFollowUpDispatchRef.current.delete(item.id);
     }
@@ -12905,7 +13315,43 @@ function DeepWorkUI() {
 
   const removeQueuedFollowUp = async (item: QueuedFollowUp): Promise<boolean> => {
     if (!item.chatId || !item.id) return false;
-    if (item.serverBacked === false) {
+    const queueKey = `${item.chatId}:${item.id}`;
+    if (cancelledQueuedFollowUpsRef.current.has(queueKey)) return true;
+    const rememberRemoval = () => {
+      const cancelled = cancelledQueuedFollowUpsRef.current;
+      cancelled.add(queueKey);
+    };
+    const persistRemoval = () => {
+      const steeringId = item.id.replace(/^steering-turn-/, '');
+      setChatLogsById(item.chatId, previous => {
+        const pending = previous.filter(log => log?.type === 'steering_queued' &&
+          (log.steeringId === steeringId || log.steeringId === item.id));
+        const cancellations = pending.map(log => ({
+          id: `steering-cancelled:${item.chatId}:${log.runId || ''}:${log.steeringId}`,
+          type: 'steering_cancelled',
+          ownerChatId: item.chatId,
+          runId: log.runId,
+          steeringId: log.steeringId,
+          steeringIds: [log.steeringId],
+          timestamp: Date.now(),
+        }));
+        const ids = new Set(previous.map(log => log?.id));
+        return [...previous, ...cancellations.filter(log => !ids.has(log.id))];
+      });
+    };
+    // Reserve Close synchronously, before either an enqueue reply or a poll
+    // can run. All queue writers consult this reservation.
+    rememberRemoval();
+    setQueuedFollowUps(previous => previous.filter(message => message.chatId !== item.chatId || message.id !== item.id));
+    const restoreAfterFailure = () => {
+      cancelledQueuedFollowUpsRef.current.delete(queueKey);
+      setQueuedFollowUps(previous => previous.some(message => message.chatId === item.chatId && message.id === item.id)
+        ? previous : [...previous, { ...item, deliveryState: item.deliveryState === 'pending' ? 'uncertain' : item.deliveryState }]);
+      return false;
+    };
+    if (item.serverBacked === false && item.deliveryState !== 'uncertain' && item.deliveryState !== 'pending') {
+      rememberRemoval();
+      persistRemoval();
       setQueuedFollowUps(previous => previous.filter(message => message.id !== item.id));
       setChatLogsById(item.chatId, previous => previous.filter(log => !(
         log?.type === 'user_action' &&
@@ -12921,11 +13367,14 @@ function DeepWorkUI() {
     try {
       const response = await fetch('/api/agent/queue', {
         method: 'POST',
+        signal: AbortSignal.timeout(15_000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'remove', chatId: item.chatId, id: item.id }),
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok && response.status !== 404) return false;
+      if ((!response.ok && response.status !== 404) || (response.ok && payload?.success !== true)) return restoreAfterFailure();
+      rememberRemoval();
+      persistRemoval();
       setQueuedFollowUps(previous => previous.filter(message => message.id !== item.id));
       if (response.ok && payload?.success === true) {
         setChatLogsById(item.chatId, previous => previous.filter(log => !(
@@ -12938,10 +13387,10 @@ function DeepWorkUI() {
         queuedFollowUpAdmissionsRef.current.delete(item.admissionKey);
         queuedFollowUpIdsRef.current.delete(item.admissionKey);
       }
-      if (Array.isArray(payload?.items)) reconcileServerQueuedFollowUps(item.chatId, payload.items);
+      if (Array.isArray(payload?.items)) reconcileServerQueuedFollowUps(item.chatId, payload.items, payload.queueRevision);
       return true;
     } catch {
-      return false;
+      return restoreAfterFailure();
     }
   };
 
@@ -13097,6 +13546,9 @@ function DeepWorkUI() {
   useEffect(() => {
     const next = queuedFollowUps.find(item =>
       item.serverBacked === false &&
+      !item.deliveryState &&
+      !cancelledQueuedFollowUpsRef.current.has(`${item.chatId}:${item.id}`) &&
+      !retiredQueuedFollowUpsRef.current.has(`${item.chatId}:${item.id}`) &&
       !runningChats.has(item.chatId) &&
       !queuedFollowUpDispatchRef.current.has(item.id)
     );
@@ -13105,12 +13557,17 @@ function DeepWorkUI() {
     let started = false;
     const timer = window.setTimeout(() => {
       started = true;
+      if (cancelledQueuedFollowUpsRef.current.has(`${next.chatId}:${next.id}`) || retiredQueuedFollowUpsRef.current.has(`${next.chatId}:${next.id}`)) {
+        queuedFollowUpDispatchRef.current.delete(next.id);
+        return;
+      }
       void handleSend(next.text, next.attachments, next.chatId, {
         ...(next.runOptions || {}),
         clientRunId: next.id,
         clientCreatedAt: next.createdAt,
       }).then(accepted => {
         if (!accepted) return;
+        retiredQueuedFollowUpsRef.current.add(`${next.chatId}:${next.id}`);
         setQueuedFollowUps(previous => previous.filter(item => item.id !== next.id));
         if (next.admissionKey) {
           queuedFollowUpAdmissionsRef.current.delete(next.admissionKey);
@@ -13126,6 +13583,21 @@ function DeepWorkUI() {
       queuedFollowUpDispatchRef.current.delete(next.id);
     };
   }, [queuedFollowUps, runningChats]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Retry ambiguous transport outcomes, never rejected input, using the same
+  // admission identity. A matching server snapshot clears uncertainty first.
+  const uncertainFollowUpRetryRef = useRef({ queuedFollowUps, sendQueuedFollowUp });
+  uncertainFollowUpRetryRef.current = { queuedFollowUps, sendQueuedFollowUp };
+  useEffect(() => {
+    // Poll snapshots can change on every frame. A timer depending on the
+    // entire queue would keep restarting and never retry an ambiguous send.
+    const timer = window.setInterval(() => {
+      const current = uncertainFollowUpRetryRef.current;
+      current.queuedFollowUps.filter(item => item.deliveryState === 'uncertain')
+        .forEach(item => { void current.sendQueuedFollowUp(item); });
+    }, 20_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Automated real-time agent execution when scheduled task triggers
   useEffect(() => {
@@ -13264,7 +13736,7 @@ function DeepWorkUI() {
             terminalProbeInFlight = true;
             void fetchAgentPoll(taskChatId, -1, 5000)
               .then(data => {
-                reconcileServerQueuedFollowUps(taskChatId, data.queuedFollowUps);
+                reconcileServerQueuedFollowUps(taskChatId, data.queuedFollowUps, data.queueRevision);
                 if ((data.traces && data.traces.length > 0) || isTerminalAgentStatus(data.status)) {
                   setChatLogsById(taskChatId, previous => mergeAgentPollSnapshot(previous, data, taskChatId));
                 }
@@ -13319,7 +13791,7 @@ function DeepWorkUI() {
         let appDataChats: ChatSession[] = [];
         let snapshot: any = null;
         try {
-          const response = await fetch('/api/chats', { cache: 'no-store' });
+          const response = await requestJson('/api/chats', { cache: 'no-store' });
           if (response.ok) {
             snapshot = await response.json();
             if (Array.isArray(snapshot?.chats)) appDataChats = snapshot.chats;
@@ -13354,6 +13826,7 @@ function DeepWorkUI() {
         // trace/status update happened to call setChats. Install the snapshot
         // before asking the agent registry for running work.
         chatSnapshotReadyRef.current = true;
+        setIsChatHistoryLoading(false);
         if (savedChats.length > 0) {
           setChats(currentChats => {
             const merged = new Map(savedChats.map(chat => [chat.id, chat]));
@@ -13373,20 +13846,28 @@ function DeepWorkUI() {
 
         // Reconcile recent chats with persisted task traces. This also restores
         // the final UI state of work interrupted by an application restart.
-        const recoveryChats = savedChats.slice(0, 100);
+        // Reading saved work must preserve recency; new queries touch it when sent.
+        const liveChatIds = new Set<string>();
+        try {
+          const response = await fetch('/api/agent/active', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+          if (response.ok) {
+            const live = await response.json();
+            for (const agent of live.agents || []) liveChatIds.add(String(agent.chatId));
+          }
+        } catch { /* Saved task recovery still works without a live registry. */ }
+        const recoveryChats = savedChats.filter((chat, index) => index < 100 || liveChatIds.has(chat.id));
         // The shared gate is the only concurrency authority. Artificial
         // batches made chat nine wait for the first eight long polls even
         // when the browser and server had free capacity.
         await Promise.all(recoveryChats.map(async (chat) => {
           try {
             const data = await fetchAgentPoll(chat.id, -1, 5000);
-            reconcileServerQueuedFollowUps(chat.id, data.queuedFollowUps);
+            reconcileServerQueuedFollowUps(chat.id, data.queuedFollowUps, data.queueRevision);
 
             if ((data.traces && data.traces.length > 0) || isTerminalAgentStatus(data.status)) {
               setChatLogsById(
                 chat.id,
                 previousLogs => mergeAgentPollSnapshot(previousLogs, data, chat.id),
-                { touchUpdatedAt: true },
               );
             }
 
@@ -13407,8 +13888,9 @@ function DeepWorkUI() {
       }
     };
 
-    // Delay rehydration slightly to let the page render first
-    const timer = setTimeout(rehydrate, 1000);
+    // Yield the initial paint, then attach immediately. Live streams and
+    // per-chat recovery already provide bounded concurrency.
+    const timer = setTimeout(rehydrate, 0);
     return () => clearTimeout(timer);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -13428,7 +13910,7 @@ function DeepWorkUI() {
         fetchAgentPoll(targetChatId, -1, 5000)
           .then(data => {
             if (!chatsRef.current.some(chat => chat.id === targetChatId)) return;
-            reconcileServerQueuedFollowUps(targetChatId, data.queuedFollowUps);
+            reconcileServerQueuedFollowUps(targetChatId, data.queuedFollowUps, data.queueRevision);
             if (
               activePollersRef.current.has(targetChatId) ||
               (pollGenerationRef.current.get(targetChatId) || 0) !== observedPollGeneration
@@ -13470,7 +13952,7 @@ function DeepWorkUI() {
     { icon: <PenTool className="w-3.5 h-3.5" />, text: "Write" },
     { icon: <GraduationCap className="w-3.5 h-3.5" />, text: "Learn" },
     { icon: <MessageSquare className="w-3.5 h-3.5" />, text: "Life stuff" },
-    { icon: <span className="w-4 h-4 inline-block"><img src="/logo-black.png" alt="Logo" className="w-full h-full object-contain dark:hidden" /><img src="/logo-white.png" alt="Logo" className="hidden w-full h-full object-contain dark:block" /></span>, text: "EterX's choice" }
+    { icon: <span className="w-4 h-4 inline-block"><img src="/logo.png" alt="Logo" className="w-full h-full object-contain" /></span>, text: "EterX's choice" }
   ];
   // No longer use full-screen initializing state — always show ChatFeed immediately
   const isInitializingChat = false;
@@ -13905,96 +14387,41 @@ function DeepWorkUI() {
     const ownedAgentLogs = traceLogs.filter((log: any) =>
       traceBelongsToChatFeed(log, activeChatId) && agentIdentitiesOverlap(log, agentIdentity)
     );
-    const usage = [...ownedAgentLogs].reverse().find((log: any) =>
-      log?.type === 'context_usage'
-    );
-    if (!usage) return null;
-    const providerUsage = [...ownedAgentLogs].reverse().find((log: any) =>
-      log?.type === 'model_usage'
-      && log?.phase !== 'chat_title'
-      && Number(log?.timestamp || 0) >= Number(usage?.timestamp || 0)
-    );
-    const providerInputTokens = Number(providerUsage?.promptTokens || providerUsage?.inputTokens || 0);
-    const providerMeasured = Number.isFinite(providerInputTokens) && providerInputTokens > 0;
-    const providerMetrics = providerUsageMetricsFromTrace(providerUsage);
-    const providerOutputMeasured = providerMeasured
-      && providerMetrics?.outputTokens !== undefined
-      && Number.isFinite(Number(providerMetrics.outputTokens));
-    const retainedProviderOutputTokens = providerOutputMeasured
-      ? Math.max(0, Math.round(Number(providerMetrics.outputTokens)))
-      : 0;
-    const requestUsedTokens = providerMeasured ? providerInputTokens : Number(usage.usedTokens || 0);
-    const usageIndex = ownedAgentLogs.lastIndexOf(usage);
-    const providerUsageIndex = providerUsage ? ownedAgentLogs.lastIndexOf(providerUsage) : -1;
-    const liveScanStart = providerMeasured && providerOutputMeasured
-      ? providerUsageIndex + 1
-      : usageIndex + 1;
-    const estimatedByIdentity = new Map<string, number>();
-    let remainingProviderOutputCoverageTokens = providerOutputMeasured
-      ? retainedProviderOutputTokens
-      : 0;
-    let liveEstimateTokens = 0;
-    for (const log of ownedAgentLogs.slice(Math.max(0, liveScanStart))) {
-      const estimate = estimateLiveTraceTokens(log);
-      if (estimate <= 0) continue;
-      const identity = contextTraceEstimateIdentity(log);
-      const previousEstimate = identity ? estimatedByIdentity.get(identity) || 0 : 0;
-      let delta = identity ? Math.max(0, estimate - previousEstimate) : estimate;
-      if (identity) estimatedByIdentity.set(identity, Math.max(previousEstimate, estimate));
-      if (delta <= 0) continue;
-      if (providerOutputMeasured && isProviderOutputContextTrace(log)) {
-        const covered = Math.min(delta, remainingProviderOutputCoverageTokens);
-        remainingProviderOutputCoverageTokens -= covered;
-        delta -= covered;
-      }
-      liveEstimateTokens += delta;
-    }
-    const baseUsedTokens = requestUsedTokens + retainedProviderOutputTokens + liveEstimateTokens;
-    const draftTokens = inputValue.trim() ? Math.ceil(inputValue.length / 4) + 4 : 0;
-    const usedTokens = Math.max(0, Math.round(baseUsedTokens + draftTokens));
-    let contextWindow = Number(usage.contextWindow || 0);
-    const rawBreakdown = usage.breakdown as ContextUsageBreakdown | undefined;
-    const hasMeasuredBreakdown = Number(usage.breakdownVersion || 0) === 3 && rawBreakdown
-      ? Object.values(rawBreakdown).some(value => Number(value || 0) > 0)
-      : false;
-    const breakdown = hasMeasuredBreakdown
-      ? normalizeContextUsageBreakdown(rawBreakdown, Math.max(0, Math.round(requestUsedTokens)))
-      : undefined;
-    const liveBreakdown = breakdown
-      ? {
-          ...breakdown,
-          conversation: breakdown.conversation + retainedProviderOutputTokens + liveEstimateTokens + draftTokens,
-        }
-      : undefined;
-    const compactionEvent = [...ownedAgentLogs].reverse().find((log: any) =>
-      log?.type === 'context_compaction'
-    );
-    if (compactionEvent?.phase === 'failed') {
+    const selectedModel = parseModelEntryKey(effectiveSubAgentModelSelection);
+    const meter = readContextUsageMeter(ownedAgentLogs, inputValue, selectedModel);
+    if (!meter.authoritative) return null;
+    let contextWindow = meter.contextWindow;
+    const compactionEvent = meter.latestCompactionEvent;
+    if (compactionEvent?.phase === 'failed'
+      && Number(meter.latestContextUsage?.contextBudgetRevision || 0) <= Number(compactionEvent.contextBudgetRevision || 0)) {
       const raisedWindow = Number(compactionEvent.nextContextWindow || 0);
       if (Number.isFinite(raisedWindow) && raisedWindow > contextWindow) contextWindow = raisedWindow;
     }
-    const aggregateSource: 'provider' | 'provider_plus_live_estimate' | 'runtime_estimate' = providerMeasured
-      ? (draftTokens > 0 || liveEstimateTokens > 0 || !providerOutputMeasured
-        ? 'provider_plus_live_estimate'
-        : 'provider')
-      : 'runtime_estimate';
+    const modelUsage = meter.latestProviderUsage || meter.latestContextUsage;
+    let contextLimitNote = contextWindowLimitNote(meter.requestedContextWindow, meter.modelContextWindow);
+    if (meter.awaitingSelectedModelMeasurement && selectedModel) {
+      let catalogWindow = 0;
+      let savedSettings: any = {};
+      let chatOverride: unknown;
+      try {
+        catalogWindow = normalizeContextWindow(JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}')?.[effectiveSubAgentModelSelection]);
+        savedSettings = JSON.parse(appStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
+        chatOverride = JSON.parse(appStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}')?.[activeChatId];
+      } catch { }
+      const budget = resolveContextWindowBudget(resolveSavedContextBudget(savedSettings, chatOverride),
+        catalogWindow || resolveClientContextWindow(selectedModel.provider, selectedModel.modelId));
+      // Keep the last observed numerator marked as pending. Never present
+      // the previous model's capacity as the newly selected model's limit.
+      contextWindow = budget.configuredContextWindow;
+      contextLimitNote = contextWindowLimitNote(budget.requestedContextWindow, budget.modelContextWindow);
+    }
     return {
-      usedTokens,
+      ...meter,
       contextWindow,
-      utilizationPct: contextWindow > 0
-        ? Math.max(0, Math.min(100, (usedTokens / contextWindow) * 100))
-        : 0,
-      breakdown: liveBreakdown,
-      providerMetrics,
-      isEstimated: !providerMeasured || !providerOutputMeasured || draftTokens > 0 || liveEstimateTokens > 0,
-      aggregateSource,
-      breakdownSource: hasMeasuredBreakdown ? 'serialized_payload' as const : 'unavailable' as const,
-      providerInputTokens: providerMeasured ? providerInputTokens : undefined,
-      localEstimatedTokens: Number(usage.localEstimatedTokens || 0) || undefined,
-      draftTokens,
-      liveEstimateTokens,
-      providerName: String(providerUsage?.provider || '').trim() || undefined,
-      modelName: String(providerUsage?.model || providerUsage?.modelId || '').trim() || undefined,
+      contextLimitNote,
+      utilizationPct: contextWindow > 0 ? Math.max(0, Math.min(100, (meter.usedTokens / contextWindow) * 100)) : 0,
+      providerName: String(modelUsage?.provider || '').trim() || undefined,
+      modelName: String(modelUsage?.model || modelUsage?.modelId || '').trim() || undefined,
       compaction: compactionEvent ? {
         phase: compactionEvent.phase,
         beforeTokens: Number(compactionEvent.beforeTokens || 0),
@@ -14013,11 +14440,8 @@ function DeepWorkUI() {
         summary: String(compactionEvent.summary || '').trim() || undefined,
         timestamp: Number(compactionEvent.timestamp || 0) || undefined,
       } : undefined,
-      providerMeasured,
-      hasDraftEstimate: draftTokens > 0,
-      updatedAt: Number(providerUsage?.timestamp || usage.timestamp || 0),
     };
-  }, [activeChatId, activeSubAgentInfo, activeSubAgentTab, inputValue, traceLogs]);
+  }, [activeChatId, activeSubAgentInfo, activeSubAgentTab, effectiveSubAgentModelSelection, contextSettingsRevision, inputValue, traceLogs]);
 
   useEffect(() => {
     if (realSubAgents.length > 0) return;
@@ -14608,7 +15032,21 @@ function DeepWorkUI() {
 
   // Which logs to show in ChatFeed — main or sub-agent
   const autonomousSelected = selectedAgent === 'autonomous';
-  const proxyAgentSelected = proxyEnabled && !chatMode && !buildingAgentId && !activeSubAgentTab;
+  const proxyAgentSelected = proxyEnabled && !buildingAgentId && !activeSubAgentTab;
+  useEffect(() => {
+    const pane = conversationPaneRef.current;
+    if (!pane || !sideTerminalVisible || !proxyAgentSelected) return;
+    const setLayout = (width: number) => {
+      const layout = width < 380 ? 'floating' : 'toolbar';
+      if (pane.dataset.proxyLayout !== layout) pane.dataset.proxyLayout = layout;
+    };
+    setLayout(pane.clientWidth);
+    const observer = new ResizeObserver(entries => {
+      for (const entry of entries) setLayout(entry.contentRect.width);
+    });
+    observer.observe(pane);
+    return () => { observer.disconnect(); delete pane.dataset.proxyLayout; };
+  }, [sideTerminalVisible, proxyAgentSelected, activeView]);
   const effectiveDisplayLogs = activeSubAgentTab && !autonomousSelected ? subAgentDisplayLogs : displayTraceLogs;
   const mainTurnWorkActive = useMemo(() => {
     let latestBoundaryIndex = -1;
@@ -14654,14 +15092,17 @@ function DeepWorkUI() {
       && !realSubAgents.some((agent: any) => agentIdentitiesOverlap(log, agent))
     );
 
-    const selectedEntry = parseModelEntryKey(activeModelSelection);
-    if (!selectedEntry && !isAgentBuilderComposer) return null;
+    const selectedEntry = parseModelEntryKey(effectiveMainModelSelection);
     const latestMeasuredModel = [...ownedLogs].reverse().find((log: any) =>
-      log?.type === 'model_usage'
+      (log?.type === 'model_usage' || log?.type === 'context_usage')
       && log?.phase !== 'chat_title'
       && String(log?.provider || '').trim()
       && String(log?.model || log?.modelId || '').trim()
     );
+    // Auto/legacy chats may not own a concrete selection yet. Their latest
+    // provider measurement is still an authoritative model identity and must
+    // keep the live meter available instead of disappearing at this point.
+    if (!selectedEntry && !latestMeasuredModel && !isAgentBuilderComposer) return null;
     const fallbackConfig = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === agentMode) || MAIN_AGENT_MODEL_OPTIONS[0];
     const provider = selectedEntry?.provider
       || String(latestMeasuredModel?.provider || '').trim()
@@ -14670,206 +15111,70 @@ function DeepWorkUI() {
       || String(latestMeasuredModel?.model || latestMeasuredModel?.modelId || '').trim()
       || fallbackConfig.modelName;
 
-    let contextWindow = 0;
+    const meter = readContextUsageMeter(ownedLogs, inputValue, selectedEntry);
+    const {
+      usedTokens, breakdown, providerMetrics, providerMeasured, hasEstimatedDelta,
+      aggregateSource, providerInputTokens, latestContextUsage, latestProviderUsage,
+      latestCompactionEvent, draftTokens, liveEstimateTokens, updatedAt,
+    } = meter;
+    let discoveredMaximum = 0;
+    let savedSettings: any = {};
+    let chatOverride: unknown;
+    let savedBudgetRevision = 0;
     try {
-      const discovered = JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}');
-      contextWindow = Number(discovered?.[modelEntryKey(provider, modelId)] || 0);
-    } catch { }
-    if (!Number.isFinite(contextWindow) || contextWindow < 16_000) {
-      contextWindow = resolveClientContextWindow(provider, modelId);
-    }
-    const modelContextWindow = contextWindow;
-    try {
-      const savedSettings = JSON.parse(appStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
-      const legacyBudgetSelection = String(savedSettings.contextWindowSizeSelection || '').trim();
-      const contextBudgetWasTouched = savedSettings.contextWindowSizeSelectionTouched === true
-        || Boolean(legacyBudgetSelection && legacyBudgetSelection !== '258000');
-      let budgetSelection = contextBudgetWasTouched ? legacyBudgetSelection : 'model_max';
+      discoveredMaximum = normalizeContextWindow(
+        JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}')?.[modelEntryKey(provider, modelId)],
+      );
+      savedSettings = JSON.parse(appStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
+      const budgetRevisions = JSON.parse(appStorage.getItem(CONTEXT_BUDGET_REVISIONS_KEY) || '{}');
+      savedBudgetRevision = Math.max(Number(budgetRevisions.global || 0), Number(budgetRevisions.chats?.[activeChatId || ''] || 0));
       if (activeChatId) {
-        const chatOverrides = JSON.parse(appStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}');
-        const chatBudget = String(chatOverrides?.[activeChatId] || '').trim();
-        if (chatBudget) budgetSelection = chatBudget;
+        chatOverride = JSON.parse(appStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}')?.[activeChatId];
       }
-      const requestedBudget = budgetSelection === 'model_max'
-        ? contextWindow
-        : Number(budgetSelection || contextWindow);
-      if (Number.isFinite(requestedBudget) && requestedBudget >= 16_000) {
-        contextWindow = Math.min(contextWindow, Math.floor(requestedBudget));
-      }
-    } catch { /* The active model's discovered maximum remains authoritative. */ }
-    const configuredContextWindow = contextWindow;
-
-    let displayTokens = 0;
-    let authoritative: any = null;
-    let latestBreakdown: ContextUsageBreakdown | null = null;
-    let latestContextUsage: any = null;
-    let providerMeasured = false;
-    let latestProviderUsage: any = null;
-    let hasEstimatedDelta = false;
-    let liveEstimateTokens = 0;
-    let retainedProviderOutputTokens = 0;
-    let remainingProviderOutputCoverageTokens = 0;
-    let latestCompactionEvent: any = null;
-    let updatedAt = 0;
-    const estimatedByIdentity = new Map<string, number>();
-    const providerCoveredEstimateIdentities = new Set<string>();
-
-    // Authoritative measurements describe the current model payload, not a
-    // lifetime total for the chat. Estimates only fill the gap between those
-    // measurements so bounded history and a new run can lower the live count.
-    for (const log of ownedLogs) {
-      if (log?.type === 'context_compaction') {
-        latestCompactionEvent = log;
-        if (log?.phase === 'compacted') {
-          const compactedTokens = Number(log?.afterTokens);
-          if (Number.isFinite(compactedTokens) && compactedTokens >= 0) {
-            displayTokens = compactedTokens;
-            liveEstimateTokens = 0;
-            retainedProviderOutputTokens = 0;
-            remainingProviderOutputCoverageTokens = 0;
-            estimatedByIdentity.clear();
-            providerCoveredEstimateIdentities.clear();
-          }
-        }
-        continue;
-      }
-
-      if (log?.type === 'context_usage') {
-        const measuredTokens = Number(log?.usedTokens);
-        if (!Number.isFinite(measuredTokens) || measuredTokens < 0) continue;
-        displayTokens = measuredTokens;
-        authoritative = log;
-        latestContextUsage = log;
-        const candidateBreakdown = log.breakdown as ContextUsageBreakdown | undefined;
-        if (
-          Number(log.breakdownVersion || 0) === 3
-          && candidateBreakdown
-          && Object.values(candidateBreakdown).some(value => Number(value || 0) > 0)
-        ) {
-          latestBreakdown = candidateBreakdown;
-        } else {
-          latestBreakdown = null;
-        }
-        providerMeasured = false;
-        latestProviderUsage = null;
-        hasEstimatedDelta = false;
-        liveEstimateTokens = 0;
-        retainedProviderOutputTokens = 0;
-        remainingProviderOutputCoverageTokens = 0;
-        estimatedByIdentity.clear();
-        providerCoveredEstimateIdentities.clear();
-        updatedAt = Number(log.timestamp || updatedAt || 0);
-        continue;
-      }
-
-      if (log?.type === 'model_usage') {
-        if (log?.phase === 'chat_title') continue;
-        const providerInputTokens = Number(log?.promptTokens || log?.inputTokens || 0);
-        if (!Number.isFinite(providerInputTokens) || providerInputTokens <= 0) continue;
-        const measuredProviderMetrics = providerUsageMetricsFromTrace(log);
-        const providerOutputMeasured = measuredProviderMetrics?.outputTokens !== undefined
-          && Number.isFinite(Number(measuredProviderMetrics.outputTokens));
-        retainedProviderOutputTokens = providerOutputMeasured
-          ? Math.max(0, Math.round(Number(measuredProviderMetrics.outputTokens)))
-          : 0;
-        // Input usage supersedes the previous request-payload estimate. If a
-        // provider omits output usage, keep the streamed response estimate that
-        // followed the matching context_usage boundary instead of treating a
-        // missing measurement as a measured zero.
-        displayTokens = providerInputTokens
-          + retainedProviderOutputTokens
-          + (providerOutputMeasured ? 0 : liveEstimateTokens);
-        authoritative = log;
-        providerMeasured = true;
-        latestProviderUsage = log;
-        hasEstimatedDelta = !providerOutputMeasured || liveEstimateTokens > 0;
-        remainingProviderOutputCoverageTokens = providerOutputMeasured
-          ? retainedProviderOutputTokens
-          : 0;
-        if (providerOutputMeasured) {
-          liveEstimateTokens = 0;
-          providerCoveredEstimateIdentities.clear();
-          for (const coveredIdentity of estimatedByIdentity.keys()) {
-            providerCoveredEstimateIdentities.add(coveredIdentity);
-          }
-        }
-        updatedAt = Number(log.timestamp || updatedAt || 0);
-        continue;
-      }
-
-      const estimate = estimateLiveTraceTokens(log);
-      if (estimate <= 0) continue;
-      const identity = contextTraceEstimateIdentity(log);
-      const previousEstimate = identity ? estimatedByIdentity.get(identity) || 0 : 0;
-      if (identity && providerCoveredEstimateIdentities.has(identity)) {
-        estimatedByIdentity.set(identity, Math.max(previousEstimate, estimate));
-        continue;
-      }
-      let delta = identity ? Math.max(0, estimate - previousEstimate) : estimate;
-      if (identity) estimatedByIdentity.set(identity, Math.max(previousEstimate, estimate));
-      if (delta <= 0) continue;
-      if (providerMeasured && isProviderOutputContextTrace(log)) {
-        const covered = Math.min(delta, remainingProviderOutputCoverageTokens);
-        remainingProviderOutputCoverageTokens -= covered;
-        delta -= covered;
-      }
-      if (delta <= 0) continue;
-      displayTokens += delta;
-      liveEstimateTokens += delta;
-      if (providerMeasured) hasEstimatedDelta = true;
-    }
-
-    const authoritativeWindow = Number(authoritative?.contextWindow || 0);
+    } catch { }
+    const measuredModelMatches = latestContextUsage?.provider === provider
+      && String(latestContextUsage?.model || latestContextUsage?.modelId || '') === modelId;
+    const measuredModelWindow = measuredModelMatches ? normalizeContextWindow(latestContextUsage?.modelContextWindow) : 0;
+    const modelContextWindow = (isThinking ? measuredModelWindow || discoveredMaximum : discoveredMaximum || measuredModelWindow)
+      || resolveClientContextWindow(provider, modelId);
+    const budget = resolveContextWindowBudget(resolveSavedContextBudget(savedSettings, chatOverride), modelContextWindow);
+    const configuredContextWindow = budget.configuredContextWindow;
+    let contextWindow = configuredContextWindow;
+    const latestBreakdown = meter.breakdownSource === 'serialized_payload';
+    const authoritativeWindow = meter.contextWindow;
     // While a run is active, its pinned server window is authoritative. Once
     // idle, use the current setting so increasing a chat budget is reflected
     // immediately instead of remaining stuck at an older smaller window.
-    if (isThinking && Number.isFinite(authoritativeWindow) && authoritativeWindow >= 16_000) {
+    if (isThinking && measuredModelMatches && Number.isFinite(authoritativeWindow) && authoritativeWindow >= 16_000) {
       contextWindow = authoritativeWindow;
     } else {
       contextWindow = configuredContextWindow;
     }
-    if (latestCompactionEvent?.phase === 'failed') {
+    if (latestCompactionEvent?.phase === 'failed'
+      && savedBudgetRevision <= Number(latestCompactionEvent.contextBudgetRevision || 0)) {
       const raisedWindow = Number(latestCompactionEvent.nextContextWindow || 0);
       if (Number.isFinite(raisedWindow) && raisedWindow >= 16_000) {
         contextWindow = Math.min(modelContextWindow, Math.max(contextWindow, raisedWindow));
       }
     }
-    const draftTokens = inputValue.trim() ? Math.ceil(inputValue.length / 4) + 4 : 0;
-    const usedTokens = Math.max(0, Math.round(displayTokens + draftTokens));
-    const measuredBaseTokens = Math.max(
-      0,
-      Math.round(displayTokens - liveEstimateTokens - retainedProviderOutputTokens),
-    );
-    const measuredBreakdown = latestBreakdown
-      ? normalizeContextUsageBreakdown(latestBreakdown, measuredBaseTokens)
-      : undefined;
-    const breakdown = measuredBreakdown
-      ? {
-          ...measuredBreakdown,
-          conversation: measuredBreakdown.conversation
-            + retainedProviderOutputTokens
-            + liveEstimateTokens
-            + draftTokens,
-        }
-      : undefined;
-    const providerInputTokens = Number(latestProviderUsage?.promptTokens || latestProviderUsage?.inputTokens || 0);
-    const providerMetrics = providerUsageMetricsFromTrace(latestProviderUsage);
-    const aggregateSource: 'provider' | 'provider_plus_live_estimate' | 'runtime_estimate' = providerMeasured
-      ? (draftTokens > 0 || liveEstimateTokens > 0 || hasEstimatedDelta
-        ? 'provider_plus_live_estimate'
-        : 'provider')
-      : 'runtime_estimate';
 
+    const runtimeLimitIsPinned = isThinking && measuredModelMatches && normalizeContextWindow(latestContextUsage?.configuredContextWindow) > 0;
     return {
       usedTokens,
       contextWindow,
+      contextLimitNote: contextWindowLimitNote(
+        runtimeLimitIsPinned ? latestContextUsage.requestedContextWindow : budget.requestedContextWindow,
+        runtimeLimitIsPinned ? latestContextUsage.modelContextWindow : modelContextWindow,
+      ),
       utilizationPct: contextWindow > 0 ? Math.max(0, Math.min(100, (usedTokens / contextWindow) * 100)) : 0,
       breakdown,
       providerMetrics,
-      isEstimated: !providerMeasured || draftTokens > 0 || hasEstimatedDelta,
+      cacheStatus: meter.cacheStatus,
+      isEstimated: meter.isEstimated,
+      awaitingSelectedModelMeasurement: meter.awaitingSelectedModelMeasurement,
       aggregateSource,
       breakdownSource: latestBreakdown ? 'serialized_payload' as const : 'unavailable' as const,
-      providerInputTokens: providerMeasured && providerInputTokens > 0 ? providerInputTokens : undefined,
+      providerInputTokens,
       localEstimatedTokens: Number(latestContextUsage?.localEstimatedTokens || 0) || undefined,
       draftTokens,
       liveEstimateTokens,
@@ -14898,7 +15203,7 @@ function DeepWorkUI() {
       hasEstimatedDelta,
       updatedAt,
     };
-  }, [activeChatId, activeModelSelection, agentMode, buildingAgentId, contextSettingsRevision, inputValue, isThinking, proxyModelEntries, realSubAgents, traceLogs]);
+  }, [activeChatId, agentMode, buildingAgentId, contextSettingsRevision, effectiveMainModelSelection, inputValue, isThinking, proxyModelEntries, realSubAgents, traceLogs]);
   // Compute effective thinking state
   const mainAgentState = currentSubAgents.find(agent => agent.name === 'Main');
   const selectedSubAgentState = activeSubAgentTab && !autonomousSelected
@@ -15427,6 +15732,7 @@ function DeepWorkUI() {
   }, [sendSteeringMessage]);
 
   const showNewChatMotionField =
+    documentVisible &&
     activeView === 'chat' &&
     !activeChatId &&
     traceLogs.length === 0 &&
@@ -15465,7 +15771,21 @@ function DeepWorkUI() {
   }, [clearUnreadChat]);
 
   return (
-    <div data-active-view={activeView} data-sidebar-open={sidebarOpen ? 'true' : 'false'} data-platform={desktopPlatform} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+    <>
+    {!workspaceStartupReady && (
+      <>
+        <Loading />
+        {startupTakingLong && (
+          <div role="status" className="fixed inset-x-0 bottom-16 z-[2147483647] text-center text-sm text-[var(--foreground)] [-webkit-app-region:no-drag]">
+            <p>Restoring your workspace is taking longer than usual.</p>
+            <button type="button" onClick={() => window.location.reload()} className="mt-3 rounded-lg border border-current/20 px-4 py-2">
+              Reload EterX
+            </button>
+          </div>
+        )}
+      </>
+    )}
+    <div style={!workspaceStartupReady ? { visibility: 'hidden', pointerEvents: 'none' } : undefined} aria-hidden={!workspaceStartupReady || undefined} data-active-view={activeView} data-document-visible={documentVisible ? 'true' : 'false'} data-sidebar-open={sidebarOpen ? 'true' : 'false'} data-platform={desktopPlatform} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
       {/* Global Window Drag Bar (Independent Layer) */}
       <div className="eterx-window-drag-layer pointer-events-none absolute top-0 h-[var(--eterx-shell-topbar-height)] z-[998] [-webkit-app-region:drag]" />
 
@@ -15496,6 +15816,7 @@ function DeepWorkUI() {
         <div className="eterx-topbar-actions pointer-events-auto flex min-w-0 items-center gap-0 overflow-hidden [-webkit-app-region:no-drag]">
           {/* API */}
           <button type="button"
+            data-active={isSettingsOpen && settingsInitialTab === 'api' ? 'true' : undefined}
             onClick={() => { setSettingsInitialTab('api'); setIsSettingsOpen(true); }}
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
@@ -15504,6 +15825,7 @@ function DeepWorkUI() {
 
           {/* Models */}
           <button type="button"
+            data-active={isSettingsOpen && settingsInitialTab === 'models' ? 'true' : undefined}
             onClick={() => { setSettingsInitialTab('models'); setIsSettingsOpen(true); }}
             className="eterx-topbar-btn px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
@@ -15546,7 +15868,6 @@ function DeepWorkUI() {
                         onSelect={(e) => {
                           e.preventDefault();
                           handleThemeChange(value as 'light' | 'dark');
-                          setActiveTopbarMenu(null);
                         }}
                       >
                         <button
@@ -15704,6 +16025,7 @@ function DeepWorkUI() {
 
           {/* Updates stays in its existing position after Help. */}
           <button type="button"
+            data-active={isSettingsOpen && settingsInitialTab === 'updates' ? 'true' : undefined}
             onClick={() => openSettingsWindow('updates')}
             className="eterx-topbar-btn relative px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
@@ -15717,7 +16039,7 @@ function DeepWorkUI() {
             )}
           </button>
         </div>
-        {/* Keep the center draggable while the macOS app title stays at the far right. */}
+        {/* Keep the app name visible here when the sidebar branding is closed. */}
         <div className="flex-1 pointer-events-none" />
         <div className="eterx-global-brand pointer-events-none flex h-full shrink-0 items-center px-3 text-[19px] font-bold tracking-[0.01em] leading-none select-none">
           EterX
@@ -15744,6 +16066,7 @@ function DeepWorkUI() {
             setIsOpen={setSidebarOpen}
             createNewChat={createNewChat}
             chats={nonBuilderChats}
+            isLoadingChats={isChatHistoryLoading}
             activeChatId={activeChatId}
             loadChat={loadChat}
             deleteChat={deleteChat}
@@ -15761,7 +16084,7 @@ function DeepWorkUI() {
         </>
       )}
 
-      <SettingsPanel isOpen={isSettingsOpen} initialTab={settingsInitialTab as any} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsPanel isOpen={isSettingsOpen} initialTab={settingsInitialTab as any} onTabChange={setSettingsInitialTab} onClose={() => setIsSettingsOpen(false)} />
 
       <div className="eterx-workspace-shell flex-1 flex flex-col relative overflow-hidden z-10 transition-colors duration-300">
         {/* Absolute Header (Draggable Region for Electron) */}
@@ -15988,7 +16311,7 @@ function DeepWorkUI() {
                                   </motion.div>
                                 )}
                               </div>
-                              <div className="overflow-y-auto eterx-scrollbar flex-1 space-y-[2px]">
+                              <div className="eterx-thread-switcher-list overflow-y-auto eterx-scrollbar flex-1 space-y-[2px]">
                                 {(() => {
                                   const filteredChats = chats.filter(c =>
                                     c.title &&
@@ -16481,6 +16804,22 @@ function DeepWorkUI() {
                   </Tooltip>
                 )}
                 {canUseMonitor && (
+                  <>
+                    <button type="button" aria-label="Toggle bottom terminal" title="Bottom terminal" aria-pressed={terminalState.open && terminalState.placement === 'bottom'} onClick={() => { toggleTerminalPlacement(terminalChatId, 'bottom'); if (!terminalState.tabCount) void createTerminal(terminalChatId, activeWorkspacePath); }} className={`eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] ${terminalState.open && terminalState.placement === 'bottom' ? 'bg-white/[0.12] text-white' : 'bg-transparent text-[var(--sidebar-muted-text)]'}`}>
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.15" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="3" y="3" width="18" height="18" rx="4" />
+                        <path d="M7 17h10" />
+                      </svg>
+                    </button>
+                    <button type="button" aria-label="Toggle side terminal" title="Side terminal" aria-pressed={terminalState.open && terminalState.placement === 'right'} onClick={() => { toggleTerminalPlacement(terminalChatId, 'right'); if (!terminalState.tabCount) void createTerminal(terminalChatId, activeWorkspacePath); }} className={`eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] ${terminalState.open && terminalState.placement === 'right' ? 'bg-white/[0.12] text-white' : 'bg-transparent text-[var(--sidebar-muted-text)]'}`}>
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.15" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <rect x="3" y="3" width="18" height="18" rx="4" />
+                        <path d="M17 7v10" />
+                      </svg>
+                    </button>
+                  </>
+                )}
+                {canUseMonitor && (
                   <div className="relative">
                     <button
                       type="button"
@@ -16686,27 +17025,38 @@ function DeepWorkUI() {
               </div>
             </div>
 
-            <div className={`eterx-new-chat-motion-field absolute bottom-0 left-0 right-0 h-[38vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center ${ showNewChatMotionField ? 'opacity-100 transition-opacity duration-[1000ms] ease-out' : 'opacity-0 transition-opacity duration-[1000ms] ease-in' }`}>
-              <div key="eterx-home-field-new-chat" className="eterx-home-field">
-                <div className="eterx-home-plasma">
-                  <div className="eterx-home-plasma-blob eterx-home-plasma-pink" />
-                  <div className="eterx-home-plasma-blob eterx-home-plasma-emerald" />
-                  <div className="eterx-home-plasma-blob eterx-home-plasma-blue" />
-                  <div className="eterx-home-plasma-blob eterx-home-plasma-lime" />
-                </div>
-                <div className="eterx-home-wave-stage">
-                  <div className="eterx-home-wave-depth eterx-home-wave-depth-back" />
-                  <div className="eterx-home-wave-volume eterx-home-wave-volume-back" />
-                  <div className="eterx-home-lobe eterx-home-lobe-left" />
-                  <div className="eterx-home-lobe eterx-home-lobe-center" />
-                  <div className="eterx-home-wave-volume eterx-home-wave-volume-mid" />
-                  <div className="eterx-home-lobe eterx-home-lobe-right" />
-                  <div className="eterx-home-wave-depth eterx-home-wave-depth-front" />
-                  <div className="eterx-home-wave-volume eterx-home-wave-volume-front" />
-                </div>
-              </div>
-              <div className="eterx-home-vignette" />
-            </div>
+            <AnimatePresence initial={false}>
+              {showNewChatMotionField && (
+                <motion.div
+                  key="eterx-new-chat-motion-field"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0, transition: { duration: 1, ease: 'easeIn' } }}
+                  transition={{ duration: 1, ease: 'easeOut' }}
+                  className="eterx-new-chat-motion-field absolute bottom-0 left-0 right-0 h-[38vh] pointer-events-none overflow-hidden z-0 flex items-end justify-center"
+                >
+                  <div key="eterx-home-field-new-chat" className="eterx-home-field">
+                    <div className="eterx-home-plasma">
+                      <div className="eterx-home-plasma-blob eterx-home-plasma-pink" />
+                      <div className="eterx-home-plasma-blob eterx-home-plasma-emerald" />
+                      <div className="eterx-home-plasma-blob eterx-home-plasma-blue" />
+                      <div className="eterx-home-plasma-blob eterx-home-plasma-lime" />
+                    </div>
+                    <div className="eterx-home-wave-stage">
+                      <div className="eterx-home-wave-depth eterx-home-wave-depth-back" />
+                      <div className="eterx-home-wave-volume eterx-home-wave-volume-back" />
+                      <div className="eterx-home-lobe eterx-home-lobe-left" />
+                      <div className="eterx-home-lobe eterx-home-lobe-center" />
+                      <div className="eterx-home-wave-volume eterx-home-wave-volume-mid" />
+                      <div className="eterx-home-lobe eterx-home-lobe-right" />
+                      <div className="eterx-home-wave-depth eterx-home-wave-depth-front" />
+                      <div className="eterx-home-wave-volume eterx-home-wave-volume-front" />
+                    </div>
+                  </div>
+                  <div className="eterx-home-vignette" />
+                </motion.div>
+              )}
+            </AnimatePresence>
             <div className={`eterx-chat-top-fade pointer-events-none absolute left-0 right-0 top-[var(--eterx-main-header-height)] z-40 h-[48px] ${ activeView === 'channels' || activeView === 'projects' ? 'hidden' : '' }`} />
 
             {/* Split Content Area */}
@@ -16736,13 +17086,28 @@ function DeepWorkUI() {
                 <>
                   {/* Chat Container */}
                   <div
-                    className={`eterx-chat-column flex flex-col relative h-full min-w-0 ${ sidebarOpen && proxyAgentSelected && activeChatId ? '[&_.eterx-chat-feed-content]:-translate-x-[80px] [&_.eterx-chat-input-dock]:-translate-x-[80px]' : '' } ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${ isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]' }` : 'w-full transition-all duration-300' }`}
-                    data-proxy-active={sidebarOpen && proxyAgentSelected && activeChatId ? 'true' : 'false'}
-                    style={hasOpenFiles ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : undefined}
+                    className={`eterx-chat-column flex flex-col relative h-full min-w-0 ${ !sideTerminalVisible && sidebarOpen && proxyAgentSelected && activeChatId ? '[&_.eterx-chat-feed-content]:-translate-x-[80px] [&_.eterx-chat-input-dock]:-translate-x-[80px]' : '' } ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${ isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]' }` : 'w-full transition-all duration-300' }`}
+                    data-terminal-placement={terminalState.open ? terminalState.placement : undefined}
+                    data-proxy-active={!sideTerminalVisible && sidebarOpen && proxyAgentSelected && activeChatId ? 'true' : 'false'}
+                    style={isRightPanelVisible ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : { width: '100%' }}
                   >
+                    <div ref={conversationPaneRef} className="eterx-conversation-pane relative flex min-h-0 min-w-0 flex-1 flex-col">
                     {proxyAgentSelected && activeChatId && (
-                      <div className="eterx-proxy-dock pointer-events-none absolute right-6 top-1/2 z-[60] w-[224px] -translate-y-1/2 transition-all duration-300 ease-in-out">
-                        <div ref={proxyCardRef} className="eterx-proxy-card pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-none backdrop-blur-xl select-none">
+                      <div data-controls-open={compactProxyOpen ? 'true' : 'false'} className="eterx-proxy-dock pointer-events-none absolute right-6 top-1/2 z-[60] w-[224px] -translate-y-1/2 transition-all duration-300 ease-in-out">
+                        {sideTerminalVisible && (
+                          <div className="eterx-proxy-compact-bar">
+                            <button type="button" className="eterx-proxy-compact-title" aria-expanded={compactProxyOpen} aria-label="Proxy-Settings" onClick={() => setCompactProxyOpen(open => !open)}>
+                              <span className={`eterx-proxy-status-dot ${proxyPaused ? 'is-paused' : ''}`} />
+                              <span>Proxy-Settings</span>
+                              <ChevronDown className={`h-3.5 w-3.5 shrink-0 ${compactProxyOpen ? 'rotate-180' : ''}`} />
+                            </button>
+                            <button type="button" aria-label={proxyPaused ? 'Resume Proxy' : 'Pause Proxy'} title={proxyPaused ? 'Resume Proxy' : 'Pause Proxy'} onClick={handleProxyPauseToggle}>
+                              {proxyPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+                            </button>
+                            <button type="button" aria-label="Talk with Proxy" title="Talk with Proxy" onClick={() => { setCompactProxyOpen(false); setShowProxyChat(value => !value); }}><MessageSquare className="h-3.5 w-3.5" /></button>
+                          </div>
+                        )}
+                        <div ref={proxyCardRef} hidden={sideTerminalVisible && !compactProxyOpen} className="eterx-proxy-card pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-none backdrop-blur-xl select-none">
                           {/* Professional Header */}
                           <div className="pt-1 pb-1 shrink-0 flex items-center justify-center w-full">
                             <span className="eterx-proxy-title text-[14px] font-semibold tracking-[0.02em] text-white/95 text-center">Proxy-Agent</span>
@@ -16753,10 +17118,12 @@ function DeepWorkUI() {
                             {/* 1. Pause / Resume Proxy Button (Top Item) */}
                             <button
                               type="button"
-                              onClick={handleProxyToggle}
+                              onClick={handleProxyPauseToggle}
+                              aria-pressed={proxyPaused}
+                              title={proxyPaused ? 'Resume supervision from current progress' : 'Pause supervision; Autonomous mode stays on'}
                               className="eterx-proxy-group-item w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-t-2xl text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:text-white transition-colors shrink-0"
                             >
-                              {proxyEnabled ? (
+                              {!proxyPaused ? (
                                 <>
                                   <Pause className="h-3.5 w-3.5 text-white/60" />
                                   <span>Pause Proxy</span>
@@ -16772,57 +17139,10 @@ function DeepWorkUI() {
                             <div className="h-[1px] w-full bg-white/[0.06] eterx-proxy-group-divider" />
 
                             {/* 2. Proxy Model Row */}
-                            <div className="group relative">
-                              <div
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setShowProxyInterventionMenu(false);
-                                  setShowProxyRuntimeModelMenu(value => !value);
-                                }}
-                                className="eterx-proxy-group-item w-full flex min-w-0 items-center justify-between gap-2 px-3 py-2.5 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] cursor-pointer transition-colors"
-                              >
-                                <span className="text-white/50 shrink-0 text-[12px]">Proxy model</span>
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setShowProxyInterventionMenu(false);
-                                    setShowProxyRuntimeModelMenu(value => !value);
-                                  }}
-                                  className="flex min-w-0 max-w-[115px] items-center justify-end gap-1 px-1.5 py-0.5 rounded-lg text-white/90 font-semibold bg-transparent hover:bg-white/[0.08] active:bg-white/[0.12] transition-colors"
-                                  title="Model used by the live runtime Proxy-Agent"
-                                >
-                                  <span className="truncate text-[12px]">
-                                    {proxyRuntimeModelSelection === AUTO_MODEL_SELECTION
-                                      ? 'Use active model'
-                                      : (proxyModelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === proxyRuntimeModelSelection)?.modelId || 'Select model')}
-                                  </span>
-                                  <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-white/35 transition-transform duration-200 ${ showProxyRuntimeModelMenu ? 'rotate-180' : '' }`} />
-                                </button>
-                              </div>
-                              {showProxyRuntimeModelMenu && (
-                                <div className="eterx-proxy-runtime-model-menu eterx-scrollbar absolute right-0 top-full z-[110] mt-1.5 w-[220px] max-h-[260px] overflow-y-auto rounded-2xl border border-white/[0.10] bg-[#252525] p-1.5 shadow-none">
-                                  {proxyModelEntries.map(entry => {
-                                    const optionKey = modelEntryKey(entry.provider, entry.modelId);
-                                    const selected = proxyRuntimeModelSelection === optionKey;
-                                    return (
-                                      <button
-                                        key={`runtime-proxy-${ optionKey }`}
-                                        type="button"
-                                        onClick={() => { handleProxyRuntimeModelSelectionChange(optionKey); setShowProxyRuntimeModelMenu(false); }}
-                                        className={`w-full rounded-xl px-2.5 py-2 text-left transition-colors ${ selected ? 'eterx-proxy-model-item-active bg-white/[0.08] text-white' : 'text-white/60 hover:bg-white/[0.05] hover:text-white' }`}
-                                      >
-                                        <span className="block truncate text-[12px] font-medium">{entry.modelId}</span>
-                                        <span className="block text-[9.5px] text-white/30">{entry.provider}</span>
-                                      </button>
-                                    );
-                                  })}
-                                  {proxyModelEntries.length === 0 && (
-                                    <div className="px-2.5 py-3 text-center text-[11px] text-white/45">Add an API key and save a real model in Settings.</div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
+                            <ProxyRuntimeModelPicker selection={proxyRuntimeModelSelection}
+                              chatSelection={effectiveMainModelSelection} entries={proxyModelEntries} open={showProxyRuntimeModelMenu}
+                              onToggle={() => { setShowProxyInterventionMenu(false); setShowProxyRuntimeModelMenu(value => !value); }}
+                              onSelect={selection => { handleProxyRuntimeModelSelectionChange(selection); setShowProxyRuntimeModelMenu(false); }} />
 
                             <div className="h-[1px] w-full bg-white/[0.06] eterx-proxy-group-divider" />
 
@@ -16835,6 +17155,8 @@ function DeepWorkUI() {
                                   setShowProxyRuntimeModelMenu(false);
                                   setShowProxyInterventionMenu(value => !value);
                                 }}
+                                aria-expanded={showProxyInterventionMenu}
+                                aria-label={`Intervention level: ${proxyIntervention}`}
                                 className="eterx-proxy-group-item w-full flex items-center justify-between gap-2 px-3 py-2.5 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] cursor-pointer transition-colors"
                               >
                                 <span className="text-white/50 shrink-0 text-[12px]">Intervention</span>
@@ -16847,7 +17169,7 @@ function DeepWorkUI() {
                               </button>
 
                               {/* Pop-out Dropdown to the Left */}
-                              <div className={`absolute right-full top-1/2 -translate-y-1/2 z-[110] w-[158px] pr-2 transition-all duration-200 ${ showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2' }`}>
+                              <div hidden={!showProxyInterventionMenu} className={`absolute right-full top-1/2 -translate-y-1/2 z-[110] w-[158px] pr-2 transition-all duration-200 ${ showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2' }`}>
                                 <div className="eterx-proxy-popout rounded-2xl border border-white/[0.08] bg-[#252525] shadow-none p-1.5 flex flex-col gap-1 w-full">
                                   {(['minimal', 'normal', 'high'] as const).map((level) => {
                                     const isSelected = proxyIntervention === level;
@@ -16924,9 +17246,9 @@ function DeepWorkUI() {
                             anthropic: 'Anthropic',
                           };
                           const allModelOptions = modelOptions;
-                          const selectedModel = allModelOptions.find(option => option.optionKey === proxyModelSelection) || allModelOptions[0];
+                          const selectedModel = allModelOptions.find(option => option.optionKey === (proxyModelSelection === AUTO_MODEL_SELECTION ? effectiveMainModelSelection : proxyModelSelection));
                           const proxyRunStatus = String(proxyManagerContext?.run?.status || 'idle');
-                          const proxySupervisorStatus = String(proxyManagerContext?.proxy?.status || (proxyEnabled ? 'ready' : 'paused'));
+                          const proxySupervisorStatus = proxyPaused ? 'paused' : String(proxyManagerContext?.proxy?.status || 'ready');
                           const proxyPendingTasks = Number(proxyManagerContext?.proxyControl?.pendingTaskCount || 0);
                           const proxyCapabilityCount = Number(proxyManagerContext?.capabilities?.total || 0);
                           const sideCapabilities = Array.isArray(proxyManagerContext?.sideAgent?.capabilities)
@@ -16945,9 +17267,17 @@ function DeepWorkUI() {
                             stop_main: 'Stop requested',
                           };
 
-                          return (
+                          return createPortal(
                             <div
                               ref={proxyChatWindowRef}
+                              role="dialog"
+                              aria-label="Talk with Proxy"
+                              onKeyDown={event => {
+                                if (event.key !== 'Escape') return;
+                                event.stopPropagation();
+                                if (showProxyModelMenu || showProxyAttachMenu) { setShowProxyModelMenu(false); setShowProxyAttachMenu(false); }
+                                else setShowProxyChat(false);
+                              }}
                               className="eterx-proxy-chat-window pointer-events-auto fixed right-6 bottom-20 z-[9990] max-h-[calc(100vh-32px)] max-w-[calc(100vw-24px)] overflow-hidden rounded-[24px] border border-white/[0.12] bg-[#171717] shadow-none flex flex-col transition-[box-shadow] duration-200"
                               style={{
                                 width: proxyChatWindow.width,
@@ -16970,6 +17300,7 @@ function DeepWorkUI() {
                                     onClick={toggleProxyExpanded}
                                     className="h-7 w-7 rounded-full flex items-center justify-center hover:bg-white/[0.07] text-white/35 hover:text-white/80 transition-colors"
                                     title={isProxyExpanded ? 'Compact view' : 'Expand workspace'}
+                                    aria-label={isProxyExpanded ? 'Compact proxy chat' : 'Expand proxy chat'}
                                   >
                                     {isProxyExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
                                   </button>
@@ -16977,6 +17308,7 @@ function DeepWorkUI() {
                                     type="button"
                                     onPointerDown={(event) => event.stopPropagation()}
                                     onClick={() => setShowProxyChat(false)}
+                                    aria-label="Minimize proxy chat"
                                     className="h-7 w-7 rounded-full flex items-center justify-center hover:bg-white/[0.07] text-white/35 hover:text-white/80 transition-colors"
                                   >
                                     <Minus className="h-3.5 w-3.5" />
@@ -16997,16 +17329,30 @@ function DeepWorkUI() {
                                     {sideCapabilities.join(' · ')}
                                     {proxyCapabilityCount > 0 ? ` · Main: ${proxyCapabilityCount} tools` : ''}
                                   </div>
+                                  {Array.isArray(proxyManagerContext?.proxyControl?.taskQueue) && proxyManagerContext.proxyControl.taskQueue.length > 0 && (
+                                    <details className="mt-2 text-[11px] text-white/60">
+                                      <summary className="cursor-pointer py-1">Workflow tasks · {proxyPendingTasks} waiting</summary>
+                                      <ol className="mt-1 max-h-32 space-y-2 overflow-y-auto eterx-scrollbar">
+                                        {proxyManagerContext.proxyControl.taskQueue.slice(-20).map((task: any) => (
+                                          <li key={task.id} className="rounded-lg border border-white/10 px-2 py-1.5">
+                                            <div className="flex items-start gap-2"><span className="min-w-0 flex-1 whitespace-pre-wrap break-words line-clamp-2">{task.prompt}</span><span className="shrink-0 text-[10px] capitalize">{task.status === 'started' ? 'running' : task.status}</span></div>
+                                            {task.dependency && <p className="mt-1 text-[10px] text-white/40">Depends on: {task.dependency}</p>}
+                                            {task.error && <p className="mt-1 text-[10px] text-red-400">{task.error}</p>}
+                                          </li>
+                                        ))}
+                                      </ol>
+                                    </details>
+                                  )}
                                 </div>
                               )}
 
                               {/* Message Feed */}
-                              <div ref={proxyMessageFeedRef} className="eterx-proxy-message-feed relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 flex flex-col gap-3 eterx-scrollbar overscroll-contain bg-[#171717] [scrollbar-gutter:stable]">
+                              <div ref={proxyMessageFeedRef} onScroll={event => { const feed = event.currentTarget; proxyAutoScrollRef.current = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 64; }} className="eterx-proxy-message-feed relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 flex flex-col gap-3 eterx-scrollbar overscroll-contain bg-[#171717] [scrollbar-gutter:stable]">
                                 {visibleProxyChatMessages.length === 0 ? (
                                   <div className="flex flex-1 flex-col items-center justify-center px-5 py-8 text-center">
-                                    <span className="text-[14px] font-semibold leading-5 text-white/72">Coordinate the work</span>
+                                    <span className="text-[14px] font-semibold leading-5 text-white/72">{proxyPaused ? 'Proxy is paused' : 'Coordinate the work'}</span>
                                     <span className="mt-2 max-w-[270px] text-[12px] leading-[1.55] text-white/42">
-                                      Add a goal, correct the active run, schedule what comes next, or ask for a grounded status update.
+                                      {proxyPaused ? 'Autonomous remains on. Resume Proxy to continue coordinating from the current progress.' : 'Add a goal, guide the active run, schedule what comes next, or ask for a status update.'}
                                     </span>
                                   </div>
                                 ) : (
@@ -17046,7 +17392,7 @@ function DeepWorkUI() {
                                                 <Check className="h-3.5 w-3.5 text-white/34" />
                                                 <span className="font-medium text-white/52">{operationLabels[msg.operation] || msg.operation.replace(/_/g, ' ')}</span>
                                                 {msg.delivery && msg.delivery !== 'none' && (
-                                                  <span className="text-white/22">{msg.delivery}</span>
+                                                  <span className="text-white/45">{msg.delivery === 'active' ? 'accepted' : msg.delivery}</span>
                                                 )}
                                               </div>
                                             )}
@@ -17161,7 +17507,8 @@ function DeepWorkUI() {
                                                </div>
                                                <button
                                                  type="button"
-                                                 onClick={() => setProxyAttachments(prev => prev.filter((_, i) => i !== idx))}
+                                                 aria-label={`Remove ${fileName}`}
+                                                 onClick={() => { if (att.preview?.startsWith('blob:')) URL.revokeObjectURL(att.preview); setProxyAttachments(prev => prev.filter((_, i) => i !== idx)); }}
                                                  className="absolute -top-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white text-black shadow-none transition-transform hover:scale-110 active:scale-95 z-10"
                                                >
                                                  <X className="h-2 w-2 stroke-[3]" />
@@ -17172,6 +17519,9 @@ function DeepWorkUI() {
                                        </div>
                                      )}
                                   <textarea
+                                    ref={proxyTextareaRef}
+                                    rows={1}
+                                    aria-label="Message the proxy agent"
                                     value={proxyChatInput}
                                     onChange={(e) => {
                                       setProxyChatInput(e.target.value);
@@ -17181,12 +17531,12 @@ function DeepWorkUI() {
                                       }
                                     }}
                                     onKeyDown={(e) => {
-                                      if (e.key === 'Enter' && !e.shiftKey) {
+                                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                                         e.preventDefault();
                                         handleSendProxyMessage();
                                       }
                                     }}
-                                    placeholder="Do anything"
+                                    placeholder={proxyPaused ? 'Draft a message, then resume Proxy to send…' : 'Guide the task or ask for an update…'}
                                     style={customInputHeight ? { height: `${customInputHeight}px` } : undefined}
                                     className="eterx-proxy-textarea w-full bg-transparent text-white text-[12.5px] leading-relaxed outline-none placeholder-white/30 resize-none px-1 py-1 min-h-[32px] max-h-[360px] eterx-scrollbar"
                                   />
@@ -17195,6 +17545,8 @@ function DeepWorkUI() {
                                       <button
                                         type="button"
                                         onClick={() => setShowProxyAttachMenu(prev => !prev)}
+                                        aria-label="Attach files or capture a screenshot"
+                                        aria-expanded={showProxyAttachMenu}
                                         className={`h-7 w-7 rounded-full flex-none aspect-square shrink-0 flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/[0.06] active:bg-white/[0.12] transition-colors focus:outline-none ${ showProxyAttachMenu ? 'bg-white/[0.10] text-white' : '' }`}
                                       >
                                         <Plus className={`h-4 w-4 transition-transform duration-200 ${ showProxyAttachMenu ? 'rotate-45 text-white' : '' }`} />
@@ -17235,7 +17587,10 @@ function DeepWorkUI() {
                                     <div className="flex items-center gap-1.5 min-w-0 shrink-0">
                                       {/* Model selector — matches the main chat composer */}
                                       <div ref={proxyModelMenuRef} className="eterx-model-selector relative min-w-0">
-                                        <div
+                                        <button
+                                          type="button"
+                                          aria-label="Select side-agent model"
+                                          aria-expanded={showProxyModelMenu}
                                           onClick={() => {
                                             if (allModelOptions.length === 0) {
                                               setShowProxyModelMenu(false);
@@ -17247,18 +17602,22 @@ function DeepWorkUI() {
                                           className={`eterx-model-button mr-0 flex h-[32px] min-w-0 max-w-[110px] items-center justify-between gap-1 rounded-full border border-transparent bg-transparent px-2 text-[#F4F4F4] transition-colors hover:bg-white/[0.06] hover:text-white active:bg-white/[0.10] group cursor-pointer ${ showProxyModelMenu ? '!bg-white/[0.10] !text-white' : '' }`}
                                         >
                                           <span className="eterx-selector-label min-w-0 truncate text-[12px] font-medium tracking-normal text-white/60">
-                                            {selectedModel?.label || 'Add API to load models'}
+                                            {proxyModelSelection === AUTO_MODEL_SELECTION ? 'Chat model' : selectedModel?.label || 'Select model'}
                                           </span>
                                           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[#F0F0F0] transition-all duration-150 group-hover:text-white">
                                             <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-all duration-200 group-hover:text-white ${ showProxyModelMenu ? 'rotate-180' : 'group-hover:translate-y-px' }`} strokeWidth={2.1} />
                                           </span>
-                                        </div>
+                                        </button>
 
                                         {/* Dropdown Menu */}
                                         {showProxyModelMenu && (
                                           <div className="eterx-composer-popout eterx-scrollbar absolute bottom-[calc(100%+8px)] right-0 z-[130] flex max-h-[184px] w-[232px] max-w-[calc(100vw-24px)] flex-col overflow-y-auto rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 p-1 text-[#F4F1EA] shadow-none backdrop-blur-xl">
+                                            <button type="button" onClick={() => { handleProxyModelSelectionChange(AUTO_MODEL_SELECTION); setShowProxyModelMenu(false); }}
+                                              aria-pressed={proxyModelSelection === AUTO_MODEL_SELECTION} className="flex items-center gap-2 rounded-md px-2 py-2 text-left text-[12px]">
+                                              <span className="flex-1">Follow chat model</span>{proxyModelSelection === AUTO_MODEL_SELECTION && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
+                                            </button>
                                             {allModelOptions.map((option) => {
-                                              const isCurrent = option.optionKey === selectedModel?.optionKey;
+                                              const isCurrent = option.optionKey === proxyModelSelection;
                                               return (
                                                 <button
                                                   key={option.optionKey}
@@ -17297,6 +17656,10 @@ function DeepWorkUI() {
                                       {/* Speech (Mic) Icon */}
                                       <button
                                         type="button"
+                                        onClick={() => void toggleSpeech('proxy')}
+                                        aria-label={isRecording && dictationTargetRef.current === 'proxy' ? 'Stop proxy dictation' : 'Start proxy dictation'}
+                                        aria-pressed={isRecording && dictationTargetRef.current === 'proxy'}
+                                        style={isRecording && dictationTargetRef.current === 'proxy' ? { color: 'var(--foreground)', background: 'var(--muted)' } : undefined}
                                         className="h-7 w-7 rounded-full flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/[0.06] active:bg-white/[0.12] transition-colors focus:outline-none"
                                       >
                                         <Mic className="h-4 w-4" />
@@ -17304,7 +17667,8 @@ function DeepWorkUI() {
                                       {/* Send button */}
                                       <button
                                         type="submit"
-                                        disabled={proxyChatLoading || !selectedModel || (!proxyChatInput.trim() && proxyAttachments.length === 0 && proxyPinnedItems.length === 0) || !activeChatId}
+                                        aria-label={proxyChatLoading ? 'Proxy agent is responding' : 'Send proxy message'}
+                                        disabled={!proxyEnabled || proxyPaused || proxyChatLoading || !selectedModel || (!proxyChatInput.trim() && proxyAttachments.length === 0 && proxyPinnedItems.length === 0) || !activeChatId}
                                         className="eterx-proxy-send-button h-7 w-7 rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:hover:bg-white/10 text-white/80 flex items-center justify-center transition-colors focus:outline-none"
                                       >
                                         <ArrowUp className="h-4 w-4" />
@@ -17312,6 +17676,7 @@ function DeepWorkUI() {
                                     </div>
                                   </div>
                                 </div>
+                                {proxyComposerError && <div role="alert" className="mt-2 flex items-start gap-2 px-1 text-[11px] leading-4 text-red-400"><p className="min-w-0 flex-1 break-words">{proxyComposerError}</p><button type="button" aria-label="Dismiss proxy error" onClick={() => setProxyComposerError('')} className="shrink-0 rounded p-1 hover:bg-white/10"><X className="h-3 w-3" /></button></div>}
                               </form>
                               <div
                                 role="separator"
@@ -17324,7 +17689,8 @@ function DeepWorkUI() {
                                   <path d="M2 10 C 6 10, 10 6, 10 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                                 </svg>
                               </div>
-                            </div>
+                            </div>,
+                            document.body,
                           );
                         })()}
                       </div>
@@ -17332,6 +17698,7 @@ function DeepWorkUI() {
 
                     <ChatFeed
                       key={`${activeChatId || 'new-chat'}::${activeSubAgentTab || 'main'}`}
+                      workspacePath={activeWorkspacePath}
                       chatId={activeChatId}
                       traceLogs={effectiveDisplayLogs}
                       isThinking={effectiveIsThinking}
@@ -17340,7 +17707,7 @@ function DeepWorkUI() {
                       sidebarOpen={sidebarOpen}
                       handleScroll={handleScroll}
                       showScrollBottom={showScrollBottom}
-                      isCompressed={isRightPanelVisible}
+                      isCompressed={isRightPanelVisible || (terminalState.open && terminalState.placement === 'right')}
                       onAnswerAskUser={handleAnswerAskUser}
                       onEditUserMessage={handleEditFeedMessage}
                       onOpenAgentTeam={handleOpenAgentTeam}
@@ -17352,14 +17719,16 @@ function DeepWorkUI() {
 
                     <ChatInput
                       inputValue={inputValue}
+                      inputValueRevision={inputValueRevision}
                       setInputValue={updateInputValue}
+                      onInputValueChange={updateInputValueDraft}
                       isThinking={effectiveIsThinking}
                       canStop={Boolean(canStopSelectedFeed)}
-                      isRecording={isRecording}
+                      isRecording={isRecording && dictationTargetRef.current === 'main'}
                       handleSend={activeSubAgentTab ? handleSendSubAgentMessage : handleSend}
                       handleStop={handleStopSelectedFeed}
                       handleSteer={activeSubAgentTab ? handleSendSubAgentMessage : handleSteer}
-                      toggleSpeech={toggleSpeech}
+                      toggleSpeech={() => void toggleSpeech()}
                       attachments={attachments}
                       setAttachments={updateAttachments}
                       greeting={greeting}
@@ -17393,7 +17762,7 @@ function DeepWorkUI() {
                       onToggleSpeakerMute={toggleLiveSpeakerMute}
                       isNetworkPaused={isNetworkPaused}
                       onNetworkPausedAction={revealNetworkBanner}
-                      isCompressed={isRightPanelVisible}
+                      isCompressed={isRightPanelVisible || (terminalState.open && terminalState.placement === 'right')}
                       showComposerControls
                       executionContextLocked={Boolean(activeSubAgentTab)}
                       allowModelSelectionWhileThinking
@@ -17458,12 +17827,14 @@ function DeepWorkUI() {
 
                     {/* Disclaimer Text */}
                     {traceLogs.length === 0 && !isThinking && !isLiveSessionActive && (
-                      <div className="absolute bottom-6 left-0 right-0 flex flex-col items-center pointer-events-none z-40">
-                        <div className="select-none text-center text-[12px] text-black/60 font-medium tracking-wide mix-blend-overlay">
+                      <div className="eterx-chat-disclaimer absolute bottom-6 left-0 right-0 flex flex-col items-center pointer-events-none z-20">
+                        <div className="select-none text-center text-[12px] text-[var(--muted-foreground)] font-medium tracking-wide">
                           EterX is an AI Agent and can make Mistakes ; Please Double-Check Its Work.
                         </div>
                       </div>
                     )}
+                    </div>
+                    {terminalState.open && <ChatTerminalDock chatId={terminalChatId} cwd={activeWorkspacePath} />}
                   </div>
 
                   {isRightPanelVisible && (
@@ -17556,13 +17927,12 @@ function DeepWorkUI() {
           z-index: 1;
           left: 50%;
           bottom: -14vh;
-          width: min(1480px, 122vw);
+          width: 124%;
           height: 32vh;
           transform: translateX(-50%);
-          filter: blur(36px) saturate(1.10);
           opacity: 0.42;
           mix-blend-mode: normal;
-          animation: eterx-home-plasma-breathe 13s ease-in-out infinite;
+          animation: eterx-home-plasma-breathe 20s ease-in-out infinite;
           will-change: transform;
         }
 
@@ -17571,6 +17941,8 @@ function DeepWorkUI() {
           height: 76%;
           border-radius: 999px;
           mix-blend-mode: normal;
+          filter: blur(36px) saturate(1.10);
+          backface-visibility: hidden;
           will-change: transform;
         }
 
@@ -17606,18 +17978,18 @@ function DeepWorkUI() {
           z-index: 4;
           left: 50%;
           bottom: -9vh;
-          width: min(1620px, 132vw);
+          width: 128%;
           height: 39vh;
-          overflow: hidden;
-          contain: strict;
+          /* Clip at the panel edge only, never at a moving inner rectangle. */
+          overflow: visible;
+          contain: layout style;
           backface-visibility: hidden;
-          transform: translateX(-50%) perspective(820px) rotateX(8deg) translateY(0);
+          transform: translateX(-50%);
           transform-origin: 50% 100%;
           opacity: 0.92;
-          filter: saturate(1.08);
           mix-blend-mode: normal;
-          animation: eterx-home-wave-stage-float 9.2s ease-in-out infinite;
-          will-change: transform;
+          -webkit-mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
+          mask-image: linear-gradient(90deg, transparent, #000 14%, #000 86%, transparent);
         }
 
         .eterx-home-wave-volume {
@@ -17640,10 +18012,10 @@ function DeepWorkUI() {
             radial-gradient(ellipse at 38% 56%, rgba(17, 188, 160, 0.28), transparent 56%),
             radial-gradient(ellipse at 65% 48%, rgba(46, 129, 230, 0.32), transparent 58%),
             radial-gradient(ellipse at 92% 62%, rgba(150, 178, 56, 0.14), transparent 48%);
-          filter: blur(22px);
+          filter: blur(22px) saturate(1.08);
           opacity: 0.32;
           transform: translateX(-50%) rotate(-2deg) scale(1.06, 0.70);
-          animation: eterx-home-wave-volume-back 11.8s ease-in-out infinite;
+          animation: eterx-home-wave-volume-back 24s ease-in-out -8s infinite;
         }
 
         .eterx-home-wave-volume-mid {
@@ -17657,10 +18029,10 @@ function DeepWorkUI() {
             radial-gradient(ellipse at 61% 53%, rgba(39, 187, 228, 0.44), transparent 60%),
             radial-gradient(ellipse at 76% 56%, rgba(58, 139, 241, 0.42), transparent 58%),
             radial-gradient(ellipse at 98% 64%, rgba(158, 188, 58, 0.20), transparent 48%);
-          filter: blur(15px);
+          filter: blur(15px) saturate(1.08);
           opacity: 0.58;
           transform: translateX(-50%) rotate(1.2deg) scale(1.02, 0.78);
-          animation: eterx-home-wave-volume-mid 8.8s ease-in-out infinite;
+          animation: eterx-home-wave-volume-mid 19s ease-in-out -5s infinite;
         }
 
         .eterx-home-wave-volume-front {
@@ -17674,10 +18046,10 @@ function DeepWorkUI() {
             radial-gradient(ellipse at 66% 48%, rgba(53, 204, 239, 0.46), transparent 59%),
             radial-gradient(ellipse at 82% 52%, rgba(77, 150, 246, 0.46), transparent 58%),
             radial-gradient(ellipse at 98% 58%, rgba(170, 198, 62, 0.17), transparent 45%);
-          filter: blur(12px);
+          filter: blur(12px) saturate(1.08);
           opacity: 0.68;
           transform: translateX(-50%) rotate(-0.8deg) scale(1.08, 0.72);
-          animation: eterx-home-wave-volume-front 7.8s ease-in-out infinite;
+          animation: eterx-home-wave-volume-front 22s ease-in-out -12s infinite;
         }
 
         .eterx-home-wave-depth {
@@ -17701,7 +18073,7 @@ function DeepWorkUI() {
           filter: blur(18px);
           opacity: 0.58;
           transform: translateX(-50%) rotate(1.4deg) scale(1.08, 0.66);
-          animation: eterx-home-wave-depth-back 10.4s ease-in-out infinite;
+          animation: eterx-home-wave-depth-back 26s ease-in-out -9s infinite;
         }
 
         .eterx-home-wave-depth-front {
@@ -17712,7 +18084,7 @@ function DeepWorkUI() {
           filter: blur(14px);
           opacity: 0.24;
           transform: translateX(-50%) rotate(-1deg) scale(1.08, 0.58);
-          animation: eterx-home-wave-depth-front 8.4s ease-in-out infinite;
+          animation: eterx-home-wave-depth-front 23s ease-in-out -4s infinite;
         }
 
         .eterx-home-lobe {
@@ -17721,7 +18093,7 @@ function DeepWorkUI() {
           width: 34%;
           height: 28vh;
           border-radius: 999px;
-          filter: blur(22px);
+          filter: blur(22px) saturate(1.08);
           opacity: 0.42;
           will-change: transform, opacity;
           -webkit-mask-image: radial-gradient(ellipse at 50% 70%, black 0%, black 54%, transparent 76%);
@@ -17731,7 +18103,7 @@ function DeepWorkUI() {
         .eterx-home-lobe-left {
           left: 7%;
           background: radial-gradient(ellipse at 50% 50%, rgba(224, 74, 158, 0.46), rgba(20, 222, 188, 0.24) 48%, transparent 76%);
-          animation: eterx-home-lobe-left 9s ease-in-out infinite;
+          animation: eterx-home-lobe-left 21s ease-in-out -7s infinite;
         }
 
         .eterx-home-lobe-center {
@@ -17739,14 +18111,14 @@ function DeepWorkUI() {
           width: 40%;
           background: radial-gradient(ellipse at 50% 54%, rgba(20, 228, 194, 0.52), rgba(53, 204, 240, 0.34) 50%, transparent 76%);
           opacity: 0.46;
-          animation: eterx-home-lobe-center 7.8s ease-in-out infinite;
+          animation: eterx-home-lobe-center 18s ease-in-out -11s infinite;
         }
 
         .eterx-home-lobe-right {
           right: 2%;
           width: 36%;
           background: radial-gradient(ellipse at 50% 52%, rgba(72, 154, 250, 0.48), rgba(170, 202, 64, 0.24) 48%, transparent 76%);
-          animation: eterx-home-lobe-right 10s ease-in-out infinite;
+          animation: eterx-home-lobe-right 25s ease-in-out -3s infinite;
         }
 
         .eterx-home-vignette {
@@ -17804,12 +18176,6 @@ function DeepWorkUI() {
           74% { transform: translate3d(4.4%, 4.2%, 0) scale(0.97); }
         }
 
-        @keyframes eterx-home-wave-stage-float {
-          0%, 100% { transform: translateX(-50%) perspective(820px) rotateX(8deg) translate3d(0, 0, 0); }
-          45% { transform: translateX(-50%) perspective(820px) rotateX(10deg) translate3d(0, -0.8vh, 0); }
-          74% { transform: translateX(-50%) perspective(820px) rotateX(7deg) translate3d(0, 0.35vh, 0); }
-        }
-
         @keyframes eterx-home-wave-volume-back {
           0%, 100% { transform: translateX(-50%) rotate(-2deg) translate3d(-1.2%, 0, 0) scale(1.05, 0.68); opacity: 0.32; }
           43% { transform: translateX(-50%) rotate(-0.7deg) translate3d(1.8%, -1.1vh, 0) scale(1.10, 0.74); opacity: 0.42; }
@@ -17861,12 +18227,12 @@ function DeepWorkUI() {
         @media (max-width: 720px) {
           .eterx-home-plasma {
             bottom: -13vh;
-            width: 148vw;
+            width: 148%;
             height: 34vh;
           }
 
           .eterx-home-wave-stage {
-            width: 158vw;
+            width: 158%;
             height: 42vh;
           }
 
@@ -17891,8 +18257,7 @@ function DeepWorkUI() {
           .eterx-home-wave-volume,
           .eterx-home-wave-depth,
           .eterx-home-lobe {
-            animation-duration: 1ms;
-            animation-iteration-count: 1;
+            animation: none !important;
           }
         }
 
@@ -17909,6 +18274,6 @@ function DeepWorkUI() {
         }
       `}} />
     </div>
+    </>
   );
 }
-

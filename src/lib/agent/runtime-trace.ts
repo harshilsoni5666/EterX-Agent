@@ -4,7 +4,54 @@ import { getEterxWorkspaceDir } from './storage-paths';
 
 const DEFAULT_MAX_TRACE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_TRACE_ARCHIVES = 3;
-let traceWriteQueue: Promise<void> = Promise.resolve();
+const MAX_PENDING_TRACE_CHARS = 4 * 1024 * 1024;
+const TRACE_WRITE_BATCH_CHARS = 256 * 1024;
+interface PendingTraceWrite { target: string; jsonLine: string; readable: string; chars: number }
+const pendingTraceWrites: PendingTraceWrite[] = [];
+let pendingTraceChars = 0;
+let traceWriteActive = false;
+let droppedTraceRecords = 0;
+
+async function drainTraceWrites(): Promise<void> {
+  if (traceWriteActive) return;
+  traceWriteActive = true;
+  try {
+    while (pendingTraceWrites.length) {
+      const first = pendingTraceWrites[0];
+      const json: string[] = [];
+      const readable: string[] = [];
+      let chars = 0;
+      // Rotation and writes remain serialized, but a busy group of agents
+      // shares directory/stat/append work instead of adding one promise and
+      // several filesystem operations per token to an unbounded queue.
+      while (pendingTraceWrites.length && pendingTraceWrites[0].target === first.target && chars < TRACE_WRITE_BATCH_CHARS) {
+        const record = pendingTraceWrites.shift()!;
+        pendingTraceChars -= record.chars;
+        chars += record.chars;
+        json.push(record.jsonLine);
+        if (record.readable) readable.push(record.readable);
+      }
+      if (droppedTraceRecords) {
+        json.unshift(`${JSON.stringify({ ts: new Date().toISOString(), kind: 'trace_backpressure', omittedRecords: droppedTraceRecords })}\n`);
+        droppedTraceRecords = 0;
+      }
+      try {
+        await fs.ensureDir(path.dirname(first.target));
+        const jsonBody = json.join('');
+        await rotateTraceIfNeeded(first.target, Buffer.byteLength(jsonBody));
+        await fs.appendFile(first.target, jsonBody, 'utf8');
+        if (readable.length) {
+          const readableTarget = first.target.replace(/\.jsonl$/i, '-readable.md');
+          const readableBody = readable.join('');
+          await rotateTraceIfNeeded(readableTarget, Buffer.byteLength(readableBody));
+          await fs.appendFile(readableTarget, readableBody, 'utf8');
+        }
+      } catch { /* Diagnostics must never block agent execution or its durable transcript. */ }
+    }
+  } finally {
+    traceWriteActive = false;
+  }
+}
 
 /**
  * Local JSONL trace sink for debugging every live run.
@@ -12,6 +59,10 @@ let traceWriteQueue: Promise<void> = Promise.resolve();
  * It is deliberately fire-and-forget and never affects the agent loop.
  */
 export function writeRuntimeTrace(kind: string, data: Record<string, unknown>): void {
+  if (pendingTraceChars >= MAX_PENDING_TRACE_CHARS || pendingTraceWrites.length >= 4096) {
+    droppedTraceRecords += 1;
+    return;
+  }
   const target = String(process.env.ETERX_TRACE_FILE || getEterxWorkspaceDir('logs', 'syn-live.jsonl')).trim();
   const traceData = kind === 'model_request'
     ? process.env.ETERX_TRACE_FULL_PAYLOAD === '1' ? data : summarizeModelRequest(data)
@@ -22,24 +73,17 @@ export function writeRuntimeTrace(kind: string, data: Record<string, unknown>): 
     ...redact(traceData),
   };
   const resolvedTarget = path.resolve(target);
-  const readableTarget = resolvedTarget.replace(/\.jsonl$/i, '-readable.md');
   const jsonLine = `${JSON.stringify(record)}\n`;
   const readable = process.env.ETERX_TRACE_READABLE === '1' ? formatReadableRecord(record) : '';
 
-  // Serialize writes through one short queue so concurrent agent loops cannot
-  // race rotation or interleave records. Tracing remains fire-and-forget.
-  traceWriteQueue = traceWriteQueue
-    .catch(() => undefined)
-    .then(async () => {
-      await fs.ensureDir(path.dirname(resolvedTarget));
-      await rotateTraceIfNeeded(resolvedTarget, Buffer.byteLength(jsonLine));
-      await fs.appendFile(resolvedTarget, jsonLine, 'utf8');
-      if (readable) {
-        await rotateTraceIfNeeded(readableTarget, Buffer.byteLength(readable));
-        await fs.appendFile(readableTarget, readable, 'utf8');
-      }
-    })
-    .catch(() => undefined);
+  const chars = jsonLine.length + readable.length;
+  if (pendingTraceChars + chars > MAX_PENDING_TRACE_CHARS) {
+    droppedTraceRecords += 1;
+    return;
+  }
+  pendingTraceWrites.push({ target: resolvedTarget, jsonLine, readable, chars });
+  pendingTraceChars += chars;
+  void drainTraceWrites();
 }
 
 function summarizeModelRequest(data: Record<string, unknown>): Record<string, unknown> {

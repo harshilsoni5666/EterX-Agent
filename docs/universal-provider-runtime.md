@@ -1,6 +1,6 @@
 # Universal provider runtime
 
-**Updated:** 2026-08-22  
+**Updated:** 2026-09-02  
 **Scope:** chat and agent model selection, live catalogs, request shaping, native attachments, reasoning, streaming, tool continuation, caching, cancellation, and terminal-status handling.
 
 ## Required model-selection contract
@@ -115,14 +115,14 @@ If the chosen provider/model has no verified native transport for an attachment 
 
 - Several OpenAI-compatible providers expose sparse `/models` metadata. EterX cannot prove tool, modality, reasoning, or parallel-call support when the provider does not publish it. It therefore avoids inventing controls and returns provider errors directly.
 - Custom/local servers can claim OpenAI compatibility while using model-specific chat templates. The selected served model must actually be configured for tool calls if Agent mode is required.
-- Agent Builder currently uses its dedicated Gemini-native runner and therefore requires an explicitly selected added Gemini model. Ordinary Chat and Agent modes use the full provider matrix.
+- Agent Builder accepts the same explicit provider/model selections as Agent mode. Gemini uses the dedicated draft-aware runner; every other provider uses the universal Agent adapter with the Builder-only tool surface.
 - Live provider calls require the user's real credentials/account entitlements; source-level verification cannot guarantee that every account exposes every catalog model.
 
-## Verification completed
+## Previous verification baseline (2026-08-22)
 
 - `npx tsc --noEmit --pretty false`
 - `npm run test:model-selector`
 - `npm run test:provider-runtime`
 - `npm run test:agent-cache`
 
-All four checks passed after the implementation changes.
+These four checks passed for the earlier universal-provider baseline. They were not rerun for the 2026-09-02 Agent Builder routing change.

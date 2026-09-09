@@ -45,6 +45,8 @@
     "@tanstack/react-virtual": "^3.13.23",
     "@tavily/core": "^0.7.2",
     "@types/three": "^0.183.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "adm-zip": "^0.5.17",
     "axios": "^1.15.2",
     "cheerio": "^1.2.0",
@@ -70,6 +72,7 @@
     "mermaid": "^11.15.0",
     "nanoid": "^5.1.7",
     "next": "14.1.4",
+    "node-pty": "^1.1.0",
     "nodemailer": "^8.0.4",
     "openai": "^6.33.0",
     "papaparse": "^5.5.3",
@@ -92,6 +95,7 @@
     "telegram": "^2.26.22",
     "three": "^0.183.2",
     "topojson-client": "^3.1.0",
+    "typescript": "^5",
     "userland": "^0.4.3",
     "ws": "^8.20.0",
     "zod": "^3.25.76",
@@ -110,7 +114,7 @@
     "build": "node scripts/build-production.mjs",
     "start": "next start",
     "test": "npm run test:ci",
-    "test:ci": "npm run test:reference-evals && npm run test:markdown-renderer && npm run test:path-utils && npm run test:platform-shortcuts && npm run test:file-icon-utils && npm run test:model-selector && npm run test:title-generation && npm run test:api-retry && npm run test:live-provider && npm run test:nova-sonic && npm run test:credential-storage && npm run test:connector-storage && npm run test:workspace-tools && npm run test:terminal-output-policy && npm run test:execution-governor && npm run test:adaptive-harness && npm run test:context-fabric && npm run test:agent-cache && npm run test:request-token-budget && npm run test:context-resonance && npm run test:context-compaction-policy && npm run test:context-scope && npm run test:agent-lifecycle && npm run test:tool-schema-router && npm run test:skill-routing && npm run test:parallel-key-pool && npm run test:polling-coordinator && npm run test:search-runtime && npm run test:image-runtime && npm run test:video-runtime && npm run test:external-service-check && npm run test:sub-agent-runtime && npm run test:chat-feed-lifecycle && npm run test:chat-store-recovery && npm run test:chat-send-lifecycle && npm run test:chat-agent-selection && npm run test:thought-stream-lifecycle && npm run test:trace-visibility && npm run test:streaming-lifecycle && npm run test:terminal-live-trace && npm run test:scheduled-task-store && npm run test:agent-builder-quality && npm run test:provider-runtime && npm run test:local-openai-compat && npx tsc --noEmit --pretty false",
+    "test:ci": "npm run test:reference-evals && npm run test:markdown-renderer && npm run test:path-utils && npm run test:platform-shortcuts && npm run test:file-icon-utils && npm run test:model-selector && npm run test:title-generation && npm run test:api-retry && npm run test:live-provider && npm run test:nova-sonic && npm run test:credential-storage && npm run test:connector-storage && npm run test:workspace-tools && npm run test:terminal-output-policy && npm run test:execution-governor && npm run test:adaptive-harness && npm run test:context-fabric && npm run test:agent-cache && npm run test:request-token-budget && npm run test:context-resonance && npm run test:context-compaction-policy && npm run test:context-scope && npm run test:agent-lifecycle && npm run test:tool-schema-router && npm run test:skill-routing && npm run test:parallel-key-pool && npm run test:polling-coordinator && npm run test:search-runtime && npm run test:image-runtime && npm run test:video-runtime && npm run test:external-service-check && npm run test:sub-agent-runtime && npm run test:chat-feed-lifecycle && npm run test:chat-store-recovery && npm run test:chat-send-lifecycle && npm run test:chat-media-store && npm run test:chat-agent-selection && npm run test:thought-stream-lifecycle && npm run test:trace-visibility && npm run test:streaming-lifecycle && npm run test:terminal-live-trace && npm run test:scheduled-task-store && npm run test:agent-builder-quality && npm run test:provider-runtime && npm run test:local-openai-compat && npx tsc --noEmit --pretty false",
     "test:reference-evals": "tsx scripts/run-reference-evals.ts",
     "test:markdown-renderer": "tsx tests/markdown-renderer.integration.tsx",
     "test:path-utils": "tsx tests/path-utils.integration.ts",
@@ -146,6 +150,7 @@
     "test:chat-feed-lifecycle": "tsx tests/chat-feed-lifecycle.integration.ts",
     "test:chat-store-recovery": "tsx tests/chat-store-recovery.integration.ts",
     "test:chat-send-lifecycle": "tsx tests/chat-send-lifecycle.integration.ts",
+    "test:chat-media-store": "tsx tests/chat-media-store.integration.ts",
     "test:chat-agent-selection": "tsx tests/chat-agent-selection.integration.ts && tsx tests/chat-composer-ownership.integration.ts",
     "test:chat-composer-ownership": "tsx tests/chat-composer-ownership.integration.ts",
     "test:thought-stream-lifecycle": "tsx tests/thought-stream-lifecycle.integration.ts",
@@ -208,14 +213,6 @@
         "to": "logo.png"
       },
       {
-        "from": "public/logo-black.png",
-        "to": "logo-black.png"
-      },
-      {
-        "from": "public/logo-white.png",
-        "to": "logo-white.png"
-      },
-      {
         "from": "desktop-runtime/dependencies.asar",
         "to": "runtime/dependencies.asar"
       },
@@ -264,7 +261,7 @@
         }
       ],
       "category": "Development",
-      "icon": "public/logo-whitetheme.png",
+      "icon": "public/logo.png",
       "executableName": "eterx",
       "desktop": {
         "Name": "EterX",
@@ -327,7 +324,6 @@
     "telegraf": "^4.16.3",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
-    "typescript": "^5",
     "wait-on": "^7.2.0"
   }
 }

@@ -44,21 +44,24 @@ export const InteractiveGrid = () => {
         // Calculate distance from original point to mouse
         const dx = this.ox - mouse_x;
         const dy = this.oy - mouse_y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        const distanceSquared = dx * dx + dy * dy;
+        let targetX = this.ox;
+        let targetY = this.oy;
+        let speed = RETURN_SPEED;
 
-        if (dist < REPEL_RADIUS) {
+        if (distanceSquared < REPEL_RADIUS * REPEL_RADIUS) {
           // Push strictly to the edge of the radius — creating a complete void
-          const angle = Math.atan2(dy, dx);
-          const tx = mouse_x + Math.cos(angle) * REPEL_RADIUS;
-          const ty = mouse_y + Math.sin(angle) * REPEL_RADIUS;
-          
-          this.x += (tx - this.x) * PUSH_SPEED;
-          this.y += (ty - this.y) * PUSH_SPEED;
-        } else {
-          // Natural return to original grid position
-          this.x += (this.ox - this.x) * RETURN_SPEED;
-          this.y += (this.oy - this.y) * RETURN_SPEED;
+          const distance = Math.sqrt(distanceSquared);
+          targetX = mouse_x + (distance === 0 ? 1 : dx / distance) * REPEL_RADIUS;
+          targetY = mouse_y + (distance === 0 ? 0 : dy / distance) * REPEL_RADIUS;
+          speed = PUSH_SPEED;
         }
+
+        // Land exactly on the target after the subpixel easing tail. Pointer
+        // presence alone is not movement: a settled grid needs no more frames.
+        this.x = Math.abs(targetX - this.x) < 0.001 ? targetX : this.x + (targetX - this.x) * speed;
+        this.y = Math.abs(targetY - this.y) < 0.001 ? targetY : this.y + (targetY - this.y) * speed;
+        return this.x !== targetX || this.y !== targetY;
       }
 
       draw(context: CanvasRenderingContext2D) {
@@ -113,15 +116,10 @@ export const InteractiveGrid = () => {
       }
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      let moving = mx !== 9999 || my !== 9999;
+      let moving = false;
 
       for (let i = 0; i < particles.length; i++) {
-        const beforeX = particles[i].x;
-        const beforeY = particles[i].y;
-        particles[i].update(mx, my);
-        if (Math.abs(particles[i].x - beforeX) > 0.02 || Math.abs(particles[i].y - beforeY) > 0.02) {
-          moving = true;
-        }
+        if (particles[i].update(mx, my)) moving = true;
         particles[i].draw(ctx);
       }
 
@@ -129,7 +127,7 @@ export const InteractiveGrid = () => {
     };
 
     const requestDraw = () => {
-      if (animationFrameId === null) animationFrameId = requestAnimationFrame(animate);
+      if (isVisible && animationFrameId === null) animationFrameId = requestAnimationFrame(animate);
     };
 
     init();
@@ -147,8 +145,11 @@ export const InteractiveGrid = () => {
     // IMPORTANT: Calculate mouse relative to canvas layout box, not window screen
     // HIGH PERFORMANCE: Uses the cached bounding rect to prevent synchronous layout reflows!
     const onMouseMove = (e: MouseEvent) => {
-      mx = e.clientX - rect.left;
-      my = e.clientY - rect.top;
+      const nextX = e.clientX - rect.left;
+      const nextY = e.clientY - rect.top;
+      if (mx === nextX && my === nextY) return;
+      mx = nextX;
+      my = nextY;
       requestDraw();
     };
     

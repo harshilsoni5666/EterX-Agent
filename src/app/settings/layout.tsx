@@ -4,18 +4,9 @@ import { readInitialThemePreference, resolveInitialTheme } from '../../lib/initi
 export const metadata: Metadata = {
   title: 'Settings',
   icons: {
-    icon: [
-      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
-      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
-    ],
-    shortcut: [
-      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
-      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
-    ],
-    apple: [
-      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
-      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
-    ],
+    icon: '/logo.png',
+    shortcut: '/logo.png',
+    apple: '/logo.png',
   },
 };
 

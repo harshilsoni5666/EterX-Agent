@@ -264,4 +264,103 @@ assert.equal(
   );
 }
 
+{
+  // A normal Send is first mounted locally and can accumulate live work before
+  // a delayed full task snapshot repeats the same canonical trace-zero user
+  // event. The snapshot must replace that stale prefix rather than create a
+  // second Working group for the first (and only) request.
+  const eventId = 'user-turn-normal-run';
+  const ordered = orderFeedTimelineLogs([
+    {
+      type: 'user_action', text: 'Build the report', ownerChatId: 'chat',
+      runId: 'normal-run', turnId: 'normal-run', id: eventId, startTime: 1000,
+    },
+    {
+      type: 'work_note', text: 'Stale optimistic note', ownerChatId: 'chat',
+      runId: 'normal-run', turnId: 'normal-run', noteId: 'work-1', _traceIdx: 8,
+    },
+    {
+      type: 'user_action', text: 'Build the report', ownerChatId: 'chat',
+      runId: 'normal-run', turnId: 'normal-run', id: eventId, startTime: 1000,
+      timestamp: 1200, _traceIdx: 0, _originTraceIdx: 0,
+    },
+    {
+      type: 'thought_stream', text: 'Authoritative thought', ownerChatId: 'chat',
+      runId: 'normal-run', turnId: 'normal-run', _traceIdx: 3,
+    },
+    {
+      type: 'work_note', text: 'Authoritative note', ownerChatId: 'chat',
+      runId: 'normal-run', turnId: 'normal-run', noteId: 'work-1', _traceIdx: 8,
+    },
+    {
+      type: 'command', text: 'Authoritative command', ownerChatId: 'chat',
+      runId: 'normal-run', turnId: 'normal-run', toolCallId: 'tool-1', _traceIdx: 12,
+    },
+  ]);
+
+  assert.deepEqual(
+    ordered.map(log => log.text),
+    ['Build the report', 'Authoritative thought', 'Authoritative note', 'Authoritative command'],
+    'the canonical normal-query snapshot must replace its optimistic partial prefix',
+  );
+  assert.equal(
+    ordered.filter(log => log.type === 'user_action').length,
+    1,
+    'one normal query must mount exactly one user boundary',
+  );
+  assert.ok(
+    ordered.every(log => log._feedBoundaryId === ordered[0]._feedBoundaryId),
+    'all canonical work must remain inside the surviving query group',
+  );
+}
+
+{
+  // Some long-lived providers recycle every local identity on the next Send,
+  // including a boundary that an older client already stamped. Trace position
+  // must still keep the two work-note/action lifecycles in separate requests.
+  const reusedBoundaryId = 'feed-boundary:chat:user:reused-turn';
+  const ordered = orderFeedTimelineLogs([
+    {
+      type: 'user_action', text: 'First request', ownerChatId: 'chat', runId: 'run-proxy',
+      turnId: 'reused-turn', id: 'reused-turn', _feedBoundaryId: reusedBoundaryId, _traceIdx: 0,
+    },
+    {
+      type: 'work_note', text: 'Inspecting the workspace', ownerChatId: 'chat', runId: 'run-proxy',
+      turnId: 'reused-turn', noteId: 'provider-note-1', _feedBoundaryId: reusedBoundaryId, _traceIdx: 1,
+    },
+    {
+      type: 'command', text: 'First command', ownerChatId: 'chat', runId: 'run-proxy',
+      turnId: 'reused-turn', toolCallId: 'provider-tool-1', _feedBoundaryId: reusedBoundaryId, _traceIdx: 2,
+    },
+    {
+      type: 'user_action', text: 'Second request', ownerChatId: 'chat', runId: 'run-proxy',
+      turnId: 'reused-turn', id: 'reused-turn', _feedBoundaryId: reusedBoundaryId, _traceIdx: 3,
+    },
+    {
+      type: 'work_note', text: 'Inspecting the workspace', ownerChatId: 'chat', runId: 'run-proxy',
+      turnId: 'reused-turn', noteId: 'provider-note-1', _traceIdx: 4,
+    },
+    {
+      type: 'command', text: 'Second command', ownerChatId: 'chat', runId: 'run-proxy',
+      turnId: 'reused-turn', toolCallId: 'provider-tool-1', _traceIdx: 5,
+    },
+  ]);
+
+  assert.deepEqual(
+    ordered.map(log => log.text),
+    [
+      'First request', 'Inspecting the workspace', 'First command',
+      'Second request', 'Inspecting the workspace', 'Second command',
+    ],
+    'recycled boundary and event IDs must not mix successive Proxy queries',
+  );
+  const firstBoundaryId = ordered[0]._feedBoundaryId;
+  const secondBoundaryId = ordered[3]._feedBoundaryId;
+  assert.notEqual(firstBoundaryId, secondBoundaryId, 'each surviving query needs a unique feed boundary');
+  assert.equal(ordered[1]._feedBoundaryId, firstBoundaryId);
+  assert.equal(ordered[2]._feedBoundaryId, firstBoundaryId);
+  assert.equal(ordered[4]._feedBoundaryId, secondBoundaryId);
+  assert.equal(ordered[5]._feedBoundaryId, secondBoundaryId);
+}
+
 console.log('Chat feed lifecycle integration checks passed.');

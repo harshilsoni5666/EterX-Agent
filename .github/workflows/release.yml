@@ -159,7 +159,7 @@ jobs:
 
       - name: Include Linux launcher icon
         if: matrix.target == 'linux'
-        run: cp public/logo-whitetheme.png dist/eterx-icon-512.png
+        run: cp public/logo.png dist/eterx-icon-512.png
 
       - name: Verify packaged runtime contents
         run: node scripts/verify-packaged-runtime.mjs dist

@@ -119,6 +119,7 @@ class WhisperDictation {
     this.serverRequestPath = '';
     this.serverStarting = null;
     this.session = null;
+    this.drainingSessions = new Map();
     this.modelDownload = null;
   }
 
@@ -251,39 +252,62 @@ class WhisperDictation {
     return this.serverStarting;
   }
 
-  async start(owner, language) {
-    await this.stop(null, false);
+  async start(owner, language, sessionId = crypto.randomUUID()) {
+    const previousStop = this.stop(null, false, null, true);
+    const request = { ownerId: owner.id, sessionId, revision: 0 };
+    this.pendingStart = request;
+    await previousStop;
     await this.ensureServer(owner);
+    if (this.pendingStart !== request || owner.isDestroyed()) return { started: false, cancelled: true };
+    this.pendingStart = null;
     this.session = {
-      owner,
-      ownerId: owner.id,
-      language: normalizeLanguage(language),
-      chunks: [],
-      sampleCount: 0,
-      samplesSinceInference: 0,
-      inferenceRunning: false,
-      inferencePending: false,
-      transcript: '',
-      stopping: false,
+      owner, ownerId: owner.id, sessionId, revision: request.revision,
+      language: normalizeLanguage(language), chunks: [], sampleCount: 0,
+      samplesSinceInference: 0, inferenceRunning: false, inferencePending: false,
+      committedText: '', transcript: '', stopping: false, cancelled: false,
     };
-    this.send(owner, { type: 'ready', engine: 'whisper.cpp' });
-    return { started: true, supported: true, engine: 'whisper.cpp', local: true };
+    this.emit(this.session, { type: 'ready' });
+    return { started: true, sessionId, supported: true, engine: 'whisper.cpp', local: true };
   }
 
-  push(owner, payload) {
+  emit(active, payload) {
+    if (!active.cancelled) this.send(active.owner, {
+      ...payload, sessionId: active.sessionId, revision: active.revision, engine: 'whisper.cpp',
+    });
+  }
+
+  reset(owner, sessionId, revision) {
+    if (!Number.isSafeInteger(revision) || revision < 0) return;
+    const pending = this.pendingStart;
+    if (pending?.ownerId === owner.id && pending.sessionId === sessionId) {
+      pending.revision = Math.max(pending.revision, revision);
+    }
     const active = this.session;
-    if (!active || active.ownerId !== owner.id || active.stopping) return;
+    if (!active || active.ownerId !== owner.id || active.sessionId !== sessionId || revision <= active.revision) return;
+    active.revision = revision;
+    active.chunks = [];
+    active.sampleCount = 0;
+    active.samplesSinceInference = 0;
+    active.committedText = '';
+    active.transcript = '';
+    active.inferencePending = false;
+  }
+
+  push(owner, payload, sessionId, revision) {
+    const active = this.session;
+    if (!active || active.ownerId !== owner.id || active.stopping || active.sessionId !== sessionId || active.revision !== revision) return;
     const bytes = Buffer.from(payload instanceof ArrayBuffer ? new Uint8Array(payload) : payload || []);
     if (bytes.length < 2) return;
-    const evenBytes = bytes.subarray(0, bytes.length - (bytes.length % 2));
-    const samples = new Int16Array(evenBytes.buffer, evenBytes.byteOffset, evenBytes.byteLength / 2);
-    const copy = Int16Array.from(samples);
+    const copy = new Int16Array(Math.floor(bytes.length / 2));
+    for (let index = 0; index < copy.length; index++) copy[index] = bytes.readInt16LE(index * 2);
     active.chunks.push(copy);
     active.sampleCount += copy.length;
     active.samplesSinceInference += copy.length;
-    while (active.sampleCount > MAX_WINDOW_SAMPLES && active.chunks.length > 1) {
-      const removed = active.chunks.shift();
-      active.sampleCount -= removed.length;
+    // Keep unprocessed audio instead of silently dropping the oldest words.
+    if (active.sampleCount > SAMPLE_RATE * 60) {
+      this.emit(active, { type: 'error', text: 'Dictation could not keep up. Please restart recording.' });
+      void this.stop(owner, true, sessionId, true);
+      return;
     }
     if (active.samplesSinceInference >= INFERENCE_INTERVAL_SAMPLES) {
       active.samplesSinceInference = 0;
@@ -292,65 +316,126 @@ class WhisperDictation {
   }
 
   flattenedSamples(active) {
-    const output = new Int16Array(active.sampleCount);
+    const output = new Int16Array(Math.min(active.sampleCount, MAX_WINDOW_SAMPLES));
     let offset = 0;
     for (const chunk of active.chunks) {
-      output.set(chunk, offset);
-      offset += chunk.length;
+      const count = Math.min(chunk.length, output.length - offset);
+      output.set(chunk.subarray(0, count), offset);
+      offset += count;
+      if (offset === output.length) break;
     }
     return output;
   }
 
+  consumeSamples(active, count) {
+    active.sampleCount -= count;
+    while (count > 0 && active.chunks.length) {
+      const chunk = active.chunks[0];
+      if (chunk.length <= count) {
+        count -= chunk.length;
+        active.chunks.shift();
+      } else {
+        active.chunks[0] = chunk.slice(count);
+        count = 0;
+      }
+    }
+  }
+
   async infer(active, final) {
+    if (active.cancelled) return;
     if (active.inferenceRunning) {
       active.inferencePending = true;
       return;
     }
+    const revision = active.revision;
     const samples = this.flattenedSamples(active);
-    if (samples.length < SAMPLE_RATE / 2 || !samplesHaveSpeech(samples)) return;
+    if (!samples.length) return;
+    const commitWindow = final || samples.length >= MAX_WINDOW_SAMPLES;
+    if (samples.length < SAMPLE_RATE / 2 || !samplesHaveSpeech(samples)) {
+      if (commitWindow) this.consumeSamples(active, samples.length);
+      return;
+    }
     active.inferenceRunning = true;
+    const controller = new AbortController();
+    active.inferenceController = controller;
+    const timeout = setTimeout(() => controller.abort(), 120000);
     try {
       const wav = wavFromPcm16(samples);
-      const multipart = multipartInferenceBody(wav, active.language, active.transcript);
-      const response = await fetch(`http://127.0.0.1:${this.serverPort}${this.serverRequestPath}/inference`, {
-        method: 'POST',
-        headers: { 'content-type': `multipart/form-data; boundary=${multipart.boundary}` },
-        body: multipart.body,
-        signal: AbortSignal.timeout(120000),
-      });
-      if (!response.ok) throw new Error(`whisper.cpp inference failed (${response.status}).`);
+      const multipart = multipartInferenceBody(wav, active.language, active.committedText);
+      const response = await fetch(
+        'http://127.0.0.1:' + this.serverPort + this.serverRequestPath + '/inference', {
+          method: 'POST', headers: { 'content-type': 'multipart/form-data; boundary=' + multipart.boundary },
+          body: multipart.body, signal: controller.signal,
+        });
+      if (!response.ok) throw new Error('whisper.cpp inference failed (' + response.status + ').');
       const result = await response.json();
+      if (active.cancelled || revision !== active.revision) return;
       const text = String(result?.text || '').replace(/\s+/g, ' ').trim();
-      if (text) {
-        active.transcript = text;
-        this.send(active.owner, { type: final ? 'final' : 'partial', text, engine: 'whisper.cpp' });
+      // Every event is a full snapshot. A revised partial replaces the current
+      // window; only non-overlapping audio windows are committed permanently.
+      active.transcript = [active.committedText, text].filter(Boolean).join(' ');
+      if (commitWindow) {
+        active.committedText = active.transcript;
+        this.consumeSamples(active, samples.length);
       }
+      this.emit(active, { type: final ? 'final' : 'partial', text: active.transcript });
     } catch (error) {
-      if (!active.stopping) this.send(active.owner, { type: 'error', code: 'whisper-inference', text: String(error?.message || error) });
+      if (!active.cancelled && revision === active.revision) {
+        this.emit(active, { type: 'error', code: 'whisper-inference', text: String(error?.message || error) });
+        active.cancelled = true;
+      }
     } finally {
+      clearTimeout(timeout);
+      active.inferenceController = null;
       active.inferenceRunning = false;
-      if (active.inferencePending && !active.stopping) {
+      if (active.inferencePending && !active.stopping && !active.cancelled) {
         active.inferencePending = false;
         void this.infer(active, false);
       }
     }
   }
 
-  async stop(owner = null, emitStopped = true) {
-    const active = this.session;
-    if (!active || (owner && active.ownerId !== owner.id)) return false;
-    this.session = null;
+  async stop(owner = null, emitStopped = true, sessionId = null, discard = false) {
+    const pending = this.pendingStart;
+    if (pending && (!owner || pending.ownerId === owner.id) && (!sessionId || pending.sessionId === sessionId)) this.pendingStart = null;
+    if (!owner && discard) {
+      for (const draining of this.drainingSessions.values()) {
+        draining.cancelled = true;
+        draining.inferenceController?.abort();
+      }
+    }
+    const active = sessionId ? (this.session?.sessionId === sessionId ? this.session : this.drainingSessions.get(sessionId)) : this.session;
+    if (!active || (owner && active.ownerId !== owner.id) || (sessionId && active.sessionId !== sessionId)) return false;
+    if (this.session === active) this.session = null;
     active.stopping = true;
-    while (active.inferenceRunning) await delay(50);
-    active.inferencePending = false;
-    active.stopping = false;
-    await this.infer(active, true);
-    active.stopping = true;
-    if (emitStopped) this.send(active.owner, { type: 'stopped', engine: 'whisper.cpp' });
-    return true;
+    if (discard) {
+      active.cancelled = true;
+      active.inferenceController?.abort();
+      return true;
+    }
+    if (this.drainingSessions.has(active.sessionId)) return false;
+    this.drainingSessions.set(active.sessionId, active);
+    try {
+      while (active.inferenceRunning) await delay(50);
+      active.inferencePending = false;
+      while (active.sampleCount > 0 && !active.cancelled) await this.infer(active, true);
+      if (emitStopped) this.emit(active, { type: 'stopped' });
+      return true;
+    } finally {
+      this.drainingSessions.delete(active.sessionId);
+    }
   }
 
   shutdown() {
+    this.pendingStart = null;
+    for (const draining of this.drainingSessions.values()) {
+      draining.cancelled = true;
+      draining.inferenceController?.abort();
+    }
+    if (this.session) {
+      this.session.cancelled = true;
+      this.session.inferenceController?.abort();
+    }
     this.session = null;
     const child = this.server;
     this.server = null;

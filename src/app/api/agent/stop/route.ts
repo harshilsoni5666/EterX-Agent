@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
+import { taskStore } from '../../../../lib/agent/task-store';
 import { cancelAllSubAgents, cancelAgent } from '../../../../lib/agent/roles/sub_agent';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
+import { isTerminalWorkTrace } from '../../../../lib/chat-feed-lifecycle';
 import {
   attachAgentApiSessionCookie,
   getOrCreateAgentApiSession,
@@ -76,6 +78,20 @@ export async function POST(req: NextRequest) {
         runId: afterStop.runId,
         status: stopped ? 'stopping' : 'already_stopped',
         message: stopped ? 'Agent stopped' : 'Agent was already stopped',
+        // Return the actual terminal outcome, not another client-generated
+        // stop. Completion may have won the race before cancellation arrived.
+        ...(['stopped', 'completed', 'failed'].includes(afterStop.status) ? {
+          terminalState: {
+            status: afterStop.status,
+            runId: afterStop.runId,
+            terminalTurnId: afterStop.terminalTurnId,
+            completedAt: afterStop.completedAt,
+            finalAnswer: afterStop.finalAnswer,
+            error: afterStop.error,
+            traces: afterStop.traces.filter(trace => isTerminalWorkTrace(trace) &&
+              (!afterStop.terminalTurnId || trace.turnId === afterStop.terminalTurnId)),
+          },
+        } : {}),
       }), session);
     }
 
@@ -83,9 +99,26 @@ export async function POST(req: NextRequest) {
       return attachAgentApiSessionCookie(jsonError('Global stop requires all=true and confirm="STOP_ALL_AGENTS".', 400), session);
     }
 
+    if (body.desktopResume === true) {
+      agentRegistry.resumeDesktopRuns();
+      return attachAgentApiSessionCookie(NextResponse.json({ success: true }), session);
+    }
+
+    if (body.desktopClose === true) {
+      const chatIds = agentRegistry.stopForDesktopClose({
+        keepScheduled: body.keepScheduled === true,
+        keepChannels: body.keepChannels === true,
+      });
+      // Complete authoritative task persistence before Electron terminates
+      // the server. A renderer ACK alone cannot flush server-side traces.
+      await taskStore.flushPendingWrites(chatIds);
+      return attachAgentApiSessionCookie(NextResponse.json({ success: true, chatIds }), session);
+    }
+
     // Emergency global stop
     agentRegistry.stopAll();
     cancelAllSubAgents();
+    await taskStore.flushPendingWrites();
     console.log('[API] 🛑 EMERGENCY STOP — all agents cancelled');
     return attachAgentApiSessionCookie(NextResponse.json({ success: true, message: 'All agents stopping' }), session);
   } catch (error: any) {

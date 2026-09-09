@@ -12,11 +12,13 @@ export const GENERAL_AGENT_SELECTION: ChatAgentSelection = Object.freeze({
 
 export const normalizeChatAgentSelection = (value?: Partial<ChatAgentSelection> | null): ChatAgentSelection => {
   const chatMode = value?.chatMode === true;
-  const agentId = chatMode ? null : String(value?.agentId || '').trim() || null;
+  const requestedId = String(value?.agentId || '').trim();
+  const codingMode = getCodingMode(requestedId);
+  const agentId = chatMode ? null : codingMode?.id || requestedId || null;
   const agentName = chatMode
     ? 'Chat'
     : agentId
-      ? String(value?.agentName || '').trim() || (agentId === 'coding' ? 'Coding' : agentId)
+      ? codingMode?.label || String(value?.agentName || '').trim() || agentId
       : 'General';
   return { agentId, agentName, chatMode };
 };
@@ -66,6 +68,12 @@ export const findActiveRunAgentSelection = (
     });
   }
 
+  const codingTrace = [...matching].reverse().find(log => getCodingMode(log?.agentProfile));
+  if (codingTrace) {
+    const mode = getCodingMode(codingTrace.agentProfile)!;
+    return normalizeChatAgentSelection({ agentId: mode.id, agentName: mode.label });
+  }
+
   return null;
 };
 
@@ -76,6 +84,8 @@ export const shouldQueueForAgentSwitch = (
 ): boolean => {
   const activeSelection = findActiveRunAgentSelection(logs, runId);
   return Boolean(
+    // Missing metadata in a partial poll is not evidence of a mode switch.
     activeSelection && !chatAgentSelectionsEqual(activeSelection, requestedSelection),
   );
 };
+import { getCodingMode } from './code/coding-modes';

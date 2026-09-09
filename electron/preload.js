@@ -1,6 +1,21 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  terminalCreate: (options) => ipcRenderer.invoke('chat-terminal-create', options),
+  terminalAttach: (id) => ipcRenderer.invoke('chat-terminal-attach', id),
+  terminalClose: (id) => ipcRenderer.invoke('chat-terminal-close', id),
+  terminalInput: (id, data) => ipcRenderer.send('chat-terminal-input', id, data),
+  terminalResize: (id, cols, rows) => ipcRenderer.send('chat-terminal-resize', id, cols, rows),
+  terminalAck: (id, count) => ipcRenderer.send('chat-terminal-ack', id, count),
+  terminalVisible: (id, visible) => ipcRenderer.send('chat-terminal-visible', id, visible),
+  onTerminalEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('chat-terminal-event', listener);
+    return () => ipcRenderer.removeListener('chat-terminal-event', listener);
+  },
+  // One small synchronous read keeps the first HTML paint on the same
+  // profile/theme as the native window, including isolated development runs.
+  initialTheme: ipcRenderer.sendSync('native-theme-bootstrap'),
   platform: process.platform === 'darwin'
     ? 'macos'
     : process.platform === 'win32'
@@ -24,9 +39,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readClipboardImage: () => ipcRenderer.invoke('clipboard-read-image'),
   requestLiveMediaPermissions: () => ipcRenderer.invoke('live-media-permissions'),
   showMicrophonePermissionHelp: () => ipcRenderer.invoke('microphone-permission-help'),
-  startSpeechDictation: (language) => ipcRenderer.invoke('speech-dictation-start', String(language || '')),
-  stopSpeechDictation: () => ipcRenderer.invoke('speech-dictation-stop'),
-  pushSpeechDictationAudio: (samples) => ipcRenderer.send('speech-dictation-audio', samples),
+  startSpeechDictation: (language, sessionId) => ipcRenderer.invoke('speech-dictation-start', String(language || ''), sessionId),
+  stopSpeechDictation: (sessionId, discard = false) => ipcRenderer.invoke('speech-dictation-stop', sessionId, discard),
+  pushSpeechDictationAudio: (samples, sessionId, revision) => ipcRenderer.send('speech-dictation-audio', samples, sessionId, revision),
+  resetSpeechDictation: (sessionId, revision) => ipcRenderer.send('speech-dictation-reset', sessionId, revision),
   onSpeechDictationEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('speech-dictation-event', listener);
@@ -74,14 +90,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('desktop-update-state', listener);
   },
   onPrepareForQuit: (callback) => {
-    const listener = (_event, requestId) => {
+    const listener = (_event, requestId, options = {}) => {
       Promise.resolve()
-        .then(() => callback())
+        .then(() => callback(options))
         .then((ok) => ipcRenderer.send('desktop-durable-flush-complete', requestId, ok !== false))
         .catch(() => ipcRenderer.send('desktop-durable-flush-complete', requestId, false));
     };
     ipcRenderer.on('desktop-prepare-for-quit', listener);
     return () => ipcRenderer.removeListener('desktop-prepare-for-quit', listener);
+  },
+  onDesktopResume: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('desktop-resume', listener);
+    return () => ipcRenderer.removeListener('desktop-resume', listener);
   },
   openPetWindow: (status) => ipcRenderer.invoke('pet-window-open', status),
   updatePetWindow: (status) => ipcRenderer.send('pet-window-status', status),

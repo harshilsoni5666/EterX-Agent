@@ -42,6 +42,7 @@ export const runtime = 'nodejs';
  * Returns: { status: 'started' | 'already_running' | 'no_keys', chatId, message }
  */
 export async function POST(req: NextRequest) {
+  const desktopAdmissionEpoch = agentRegistry.getDesktopAdmissionEpoch();
   hydrateServerRuntimeSettings();
   let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
@@ -127,6 +128,7 @@ export async function POST(req: NextRequest) {
         // Preserve the user's explicit off state. Autonomy must never be
         // inferred merely because a stale control record exists for the chat.
         enabled: safePinnedContext?.autonomy?.enabled === true,
+        paused: safePinnedContext?.autonomy?.paused,
         intervention: safePinnedContext?.autonomy?.intervention,
         modelSelection: safePinnedContext?.autonomy?.proxyModelSelection,
       });
@@ -138,6 +140,7 @@ export async function POST(req: NextRequest) {
         autonomy: {
           ...(safePinnedContext.autonomy || {}),
           enabled: proxyControl.enabled,
+          paused: proxyControl.paused,
           intervention: proxyControl.intervention,
           proxyModelSelection: proxyControl.modelSelection,
         },
@@ -175,6 +178,7 @@ export async function POST(req: NextRequest) {
       runtimeSettings.preferredGeminiApiKey,
       runtimeSettings,
       runId,
+      desktopAdmissionEpoch,
     );
 
     if (result.status === 'no_keys') {

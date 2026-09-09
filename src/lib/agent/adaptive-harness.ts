@@ -116,13 +116,14 @@ type TaskSignals = {
   parallelizable: boolean;
   simpleAnswer: boolean;
   targetScore: number | null;
+  evaluationDeclined: boolean;
 };
 
 const ACTION_VERBS = /\b(build|create|make|implement|develop|fix|debug|edit|change|update|refactor|migrate|install|configure|generate|write|prepare|export|run|execute|test|deploy|publish|send|schedule|connect|integrate)\b/i;
 const MUTATION_VERBS = /\b(build|create|make|implement|develop|fix|edit|change|update|refactor|migrate|install|configure|generate|write|prepare|export|remove|delete|replace)\b/i;
 const RESEARCH_VERBS = /\b(research|investigate|analyze|compare|benchmark|review|audit|latest|current|today|news|market|industry|sources?|citations?)\b/i;
 const EXTERNAL_VERBS = /\b(deploy|publish|send|email|message|notify|schedule|post|upload|share)\b/i;
-const OPTIMIZATION_WORDS = /\b(optimi[sz]e|improve|best|highest|score|benchmark|quality|advanced|polish|iterate|evolve|performance|accuracy|latency|conversion)\b/i;
+const OPTIMIZATION_WORDS = /\b(optimi[sz]e|benchmark|compare\s+(?:candidates|variants|approaches)|target\s+(?:score|accuracy|latency)|measur(?:e|ed)\s+(?:performance|improvement))\b/i;
 const HIGH_RISK_WORDS = /\b(production|deploy|publish|release|security|credential|secret|financial|legal|compliance|delete|remove|payment|medical)\b/i;
 const PARALLEL_WORDS = /\b(in parallel|independent|multiple|compare|research|across|frontend and backend|separately|each)\b/i;
 
@@ -146,6 +147,7 @@ function taskSignals(objective: string): TaskSignals {
   const targetScore = explicitTarget
     ? Number(explicitTarget[1]) / (explicitTarget[2] ? 100 : 1)
     : null;
+  const evaluationDeclined = /\b(?:do not|don't|dont|dotn|never|skip|without|no)(?:\s+(?!skip\b)\w+){0,4}\s+(?:tests?|testing|checks?|validation|verification)\b/i.test(text);
   return {
     expectsAction,
     expectsMutation: MUTATION_VERBS.test(text) && expectsAction && !expectsExternalAction,
@@ -154,9 +156,10 @@ function taskSignals(objective: string): TaskSignals {
     expectsExternalAction,
     optimizationTask: OPTIMIZATION_WORDS.test(text),
     highRisk: HIGH_RISK_WORDS.test(text),
-    parallelizable: PARALLEL_WORDS.test(text) || words > 80,
+    parallelizable: PARALLEL_WORDS.test(text),
     simpleAnswer: !expectsAction && !RESEARCH_VERBS.test(text) && (questionOnly || words < 18),
     targetScore: Number.isFinite(targetScore) ? targetScore : null,
+    evaluationDeclined,
   };
 }
 
@@ -300,7 +303,7 @@ export class AdaptiveHarness {
       });
     }
 
-    if (lastMutation && !this.evidence.hasFreshVerificationEvidence()) {
+    if (!this.signals.evaluationDeclined && lastMutation && !this.evidence.hasFreshVerificationEvidence()) {
       obligations.push({
         id: `verify-epoch-${epoch}`,
         kind: 'verify_latest_state',
@@ -399,7 +402,7 @@ export class AdaptiveHarness {
       byEpoch.set(node.mutationEpoch, bucket);
     }
     return Array.from(byEpoch.entries()).map(([mutationEpoch, nodes]) => {
-      const evaluations = nodes.filter(node => node.effect === 'verification');
+      const evaluations = nodes.filter(node => node.effect === 'verification' && node.outcome !== 'pending' && node.outcome !== 'noop');
       const score = primaryEvaluationScore(evaluations);
       return {
         id: `candidate-${mutationEpoch}`,
@@ -424,12 +427,12 @@ export class AdaptiveHarness {
     const verificationFailures = nodes.filter(node => node.effect === 'verification' && !node.success).length;
     const recent = nodes.slice(-8);
 
-    if ((nodes.length === 0 && !this.signals.simpleAnswer) || obligations.some(item => item.kind === 'ground_research')) modes.add('exploration');
+    if ((nodes.length === 0 && !this.signals.simpleAnswer && !this.signals.expectsMutation) || obligations.some(item => item.kind === 'ground_research')) modes.add('exploration');
     if (this.signals.expectsMutation || obligations.some(item => item.kind === 'produce_outcome')) modes.add('construction');
-    if (this.evidence.lastSuccessfulMutation() || this.signals.highRisk || this.signals.optimizationTask) {
+    if (!this.signals.evaluationDeclined && (this.evidence.lastSuccessfulMutation() || this.signals.highRisk || this.signals.optimizationTask)) {
       modes.add('adversarial_evaluation');
     }
-    if (this.signals.optimizationTask || verificationFailures >= 2 || unresolved.length >= 3 || this.getStrategyPortfolio().length >= 2) {
+    if (this.signals.optimizationTask || verificationFailures >= 2 || unresolved.length >= 3) {
       modes.add('evolutionary_search');
     }
     if (this.signals.parallelizable && distinctTargets(recent) >= 2 && obligations.length > 1) modes.add('delegation');
@@ -521,7 +524,9 @@ export class AdaptiveHarness {
     }
     lines.push(
       'Policy: preserve the objective and constraints, change topology when evidence invalidates the tactic, keep independent alternatives alive for optimization tasks, and never treat stale verification as proof.',
-      'Resolve meaningful verification before composing the final answer. If blocked, report the real blocker honestly. Final-answer generation is a terminal boundary and will not be followed by a generic critic/rewrite loop.',
+      this.signals.evaluationDeclined
+        ? 'The user declined execution checks. Respect that constraint and distinguish implemented work from unverified behavior in the final answer.'
+        : 'Resolve relevant verification before the final answer. Report remaining work honestly; final-answer generation does not start a critic/rewrite loop.',
       'Do not expose this control state or private deliberation in user-facing prose.',
       '[END ADAPTIVE COGNITIVE FABRIC]',
     );

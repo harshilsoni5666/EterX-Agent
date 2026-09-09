@@ -63,7 +63,7 @@ class ToolRegistry {
   public getGeminiFunctionDeclarations() {
     return this.getAllTools().map(tool => ({
       name: tool.name,
-      description: tool.description,
+      description: tool.modelDescription || tool.description,
       parameters: toFunctionParameters(tool),
     }));
   }
@@ -74,7 +74,7 @@ class ToolRegistry {
     if (!tool) return undefined;
     return {
       name: tool.name,
-      description: tool.description,
+      description: tool.modelDescription || tool.description,
       parameters: toFunctionParameters(tool),
     };
   }
@@ -82,17 +82,38 @@ class ToolRegistry {
 
 export const globalToolRegistry = new ToolRegistry();
 
-function toFunctionParameters(tool: ToolDefinition): Record<string, any> {
+const inputSchemaCache = new WeakMap<object, Record<string, any>>();
+
+/** Inline reused shapes before provider cleanup, especially files[].edits[]. */
+export function getToolInputJsonSchema(tool: Pick<ToolDefinition, 'name' | 'inputSchema'>): Record<string, any> {
+  const cached = inputSchemaCache.get(tool.inputSchema);
+  if (cached) return cached;
   try {
     const schema = zodToJsonSchema(tool.inputSchema as any, {
       $refStrategy: 'none',
       target: 'jsonSchema7',
     }) as Record<string, any>;
-    return sanitizeJsonSchema(schema);
+    const portable = sanitizeJsonSchema(schema);
+    inputSchemaCache.set(tool.inputSchema, portable);
+    return portable;
   } catch (error: any) {
     console.warn(`Failed to convert schema for tool ${tool.name}: ${error?.message || error}`);
-    return { type: 'object', properties: {} };
+    throw new Error(`Cannot expose ${tool.name}: its argument schema could not be converted.`);
   }
+}
+
+function toFunctionParameters(tool: ToolDefinition): Record<string, any> {
+  return getToolInputJsonSchema(tool);
+}
+
+/** Provider-unsupported constraints remain visible as compact field guidance. */
+export function schemaUsageDescription(schema: any): string {
+  const constraints = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
+    'minLength', 'maxLength', 'minItems', 'maxItems', 'pattern', 'format']
+    .filter(key => schema?.[key] !== undefined)
+    .map(key => `${key}=${JSON.stringify(schema[key])}`);
+  return [String(schema?.description || '').replace(/\s+/g, ' ').trim(),
+    constraints.length ? `Constraints: ${constraints.join(', ')}.` : ''].filter(Boolean).join(' ');
 }
 
 function sanitizeJsonSchema(value: any): any {
@@ -101,7 +122,8 @@ function sanitizeJsonSchema(value: any): any {
 
   const result: Record<string, any> = {};
   for (const [key, raw] of Object.entries(value)) {
-    if (key === '$schema' || key === 'definitions' || key === '$ref') continue;
+    if (key === '$ref') throw new Error(`Unresolved schema reference: ${String(raw)}`);
+    if (key === '$schema' || key === 'definitions' || key === '$defs') continue;
     result[key] = sanitizeJsonSchema(raw);
   }
   return result;

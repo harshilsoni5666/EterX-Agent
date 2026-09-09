@@ -954,7 +954,9 @@
 }
 
 .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-resize-handle {
-  right: 32px !important;
+  /* The shell includes a 32px outer buffer. Keep the resize target there so
+     it cannot cover the Recents scrollbar or the card's rounded right edge. */
+  right: 0 !important;
 }
 
 .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
@@ -3448,6 +3450,14 @@
   color: #6B6B6B !important;
 }
 
+:root[data-theme="light"] .eterx-context-compaction[data-phase="compacted"] .eterx-context-compaction-label {
+  color: #327A4B !important;
+}
+
+:root[data-theme="light"] .eterx-context-compaction[data-phase="failed"] .eterx-context-compaction-label {
+  color: #A14848 !important;
+}
+
 :root[data-theme="light"] .eterx-context-compaction-detail {
   color: #989898 !important;
 }
@@ -3533,7 +3543,7 @@
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea-wrap > .relative > span[aria-hidden="true"],
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea::placeholder {
-  color: #999999 !important;
+  color: var(--chat-placeholder-ink, #999999) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-chat-controls {
@@ -4634,36 +4644,70 @@
   color: #F8F4EE !important;
 }
 
-.eterx-thread-switcher-item:hover,
-.eterx-thread-switcher-item:focus-visible,
-.eterx-thread-switcher-item[data-active="true"] {
-  border: 0 !important;
-  border-radius: 999px !important;
+.eterx-thread-switcher-item {
+  border: 1px solid transparent !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  box-sizing: border-box !important;
   box-shadow: none !important;
   outline: none;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out !important;
+}
+
+/* Keep selectable rows clear of the native scrollbar gutter. */
+.eterx-thread-switcher-list {
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item {
+  color: #555555 !important;
 }
 
 :root[data-theme="light"] .eterx-thread-switcher-item:hover,
 :root[data-theme="light"] .eterx-thread-switcher-item:focus-visible {
-  background: rgba(31, 31, 29, 0.06) !important;
+  background: rgba(31, 31, 29, 0.055) !important;
+  border: 1px solid transparent !important;
+  border-radius: 8px !important;
+  color: #555555 !important;
+  box-shadow: none !important;
+  transform: none !important;
 }
 
 :root[data-theme="light"] .eterx-thread-switcher-item[data-active="true"] {
-  background: rgba(31, 31, 29, 0.085) !important;
+  background: rgba(31, 31, 29, 0.09) !important;
+  border: 1px solid rgba(31, 31, 29, 0.065) !important;
+  border-radius: 8px !important;
+  color: #111110 !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+:root[data-theme="dark"] .eterx-thread-switcher-item,
+.dark .eterx-thread-switcher-item {
+  color: #A3A19E !important;
 }
 
 :root[data-theme="dark"] .eterx-thread-switcher-item:hover,
 :root[data-theme="dark"] .eterx-thread-switcher-item:focus-visible,
 .dark .eterx-thread-switcher-item:hover,
 .dark .eterx-thread-switcher-item:focus-visible {
-  background: rgba(255, 255, 255, 0.105) !important;
-  color: #F8F4EE !important;
+  background: rgba(255, 255, 255, 0.055) !important;
+  border: 1px solid transparent !important;
+  border-radius: 8px !important;
+  color: #A3A19E !important;
+  box-shadow: none !important;
+  transform: none !important;
 }
 
 :root[data-theme="dark"] .eterx-thread-switcher-item[data-active="true"],
 .dark .eterx-thread-switcher-item[data-active="true"] {
-  background: rgba(255, 255, 255, 0.09) !important;
+  background: rgba(255, 255, 255, 0.095) !important;
+  border: 1px solid rgba(255, 255, 255, 0.045) !important;
+  border-radius: 8px !important;
   color: #FFFFFF !important;
+  box-shadow: none !important;
+  transform: none !important;
 }
 
 /* Keep the white composer and its overflow fades visually continuous. The
@@ -4713,46 +4757,6 @@
   }
 }
 
-/* A thread list should show one selected row, not a second hover highlight.
-   Keep row hover quiet so the active state remains unambiguous. */
-.eterx-thread-switcher-item:hover:not([data-active="true"]),
-.eterx-thread-switcher-item:focus-visible:not([data-active="true"]) {
-  background: transparent !important;
-  background-color: transparent !important;
-  border: 1px solid transparent !important;
-  border-radius: 0.375rem !important;
-  box-shadow: none !important;
-  outline: none;
-  opacity: 1 !important;
-  filter: none !important;
-  transform: none !important;
-  transition: none !important;
-}
-
-:root[data-theme="light"] .eterx-thread-switcher-item:hover:not([data-active="true"]),
-:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) {
-  color: var(--foreground) !important;
-}
-
-:root[data-theme="dark"] .eterx-thread-switcher-item:hover:not([data-active="true"]),
-:root[data-theme="dark"] .eterx-thread-switcher-item:focus-visible:not([data-active="true"]),
-.dark .eterx-thread-switcher-item:hover:not([data-active="true"]),
-.dark .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) {
-  color: #A3A19E !important;
-}
-
-:root[data-theme="light"] .eterx-thread-switcher-item:hover:not([data-active="true"]) svg,
-:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) svg {
-  color: var(--muted-foreground) !important;
-}
-
-:root[data-theme="dark"] .eterx-thread-switcher-item:hover:not([data-active="true"]) svg,
-:root[data-theme="dark"] .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) svg,
-.dark .eterx-thread-switcher-item:hover:not([data-active="true"]) svg,
-.dark .eterx-thread-switcher-item:focus-visible:not([data-active="true"]) svg {
-  color: rgba(255, 255, 255, 0.4) !important;
-}
-
 /* Stop is a state replacement for Send, not a secondary disabled control.
    Keep its resting, hover, focus, active, and stopping states visually
    identical so it never flashes through the generic pale/gray button rules. */
@@ -4763,8 +4767,8 @@
 :root[data-theme="light"] body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop:disabled,
 html.light body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls button.eterx-composer-stop-button.eterx-composer-action-stop {
   border-color: transparent !important;
-  background: #292929 !important;
-  background-color: #292929 !important;
+  background: var(--chat-primary-action, #000000) !important;
+  background-color: var(--chat-primary-action, #000000) !important;
   color: #FFFFFF !important;
   opacity: 1 !important;
   box-shadow: none !important;
@@ -4849,4 +4853,804 @@ html.light body .eterx-composer-shell .eterx-composer-main .eterx-chat-controls 
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-agent-popout .eterx-agent-menu-divider {
   background: rgba(31, 41, 55, 0.12) !important;
+}
+
+/* -------------------------------------------------------------------------
+   Modern light palette
+
+   Keep the existing layout and interaction geometry intact. This final
+   palette pass only changes the light-theme surfaces, text hierarchy, and
+   accents so the interface feels calmer than a pure white/black treatment.
+------------------------------------------------------------------------- */
+:root[data-theme="light"] {
+  --background: #F5F7FA;
+  --foreground: #243243;
+  --muted: #EDF1F5;
+  --muted-foreground: #687789;
+  --border: rgba(36, 50, 67, 0.12);
+  --primary: #2D4056;
+  --primary-foreground: #FFFFFF;
+  --secondary: #E7EDF3;
+  --secondary-foreground: #2D4056;
+  --accent: #4B6F93;
+  --accent-foreground: #FFFFFF;
+  --input-bg: #FFFFFF;
+  --sidebar-bg: #F0F3F7;
+  --sidebar-active-bg: #E3EBF2;
+  --sidebar-active-border: rgba(55, 86, 116, 0.12);
+  --sidebar-active-text: #263A4B;
+  --sidebar-active-fade: #E3EBF2;
+  --sidebar-hover-bg: #E9EFF4;
+  --sidebar-hover-border: rgba(55, 86, 116, 0.08);
+  --sidebar-hover-text: #263A4B;
+  --sidebar-text: #566678;
+  --sidebar-muted-text: #7B8795;
+  --sidebar-strong-text: #2D4051;
+  --sidebar-icon: #6D7D8D;
+  --sidebar-working-text: #3B5871;
+  --sidebar-focus-ring: rgba(75, 111, 147, 0.32);
+  --eterx-main-panel-border: rgba(55, 86, 116, 0.14);
+  --eterx-topbar-text: #687789;
+  --eterx-topbar-hover-bg: #E9EFF4;
+  --eterx-topbar-hover-text: #2D4051;
+  --eterx-theme-menu-bg: #FBFCFD;
+  --eterx-theme-menu-border: rgba(55, 86, 116, 0.12);
+  --eterx-theme-menu-text: #657487;
+  --eterx-theme-menu-strong: #2D4051;
+  --eterx-theme-menu-hover: #EDF2F6;
+  --eterx-theme-menu-active: #E5EDF4;
+  --info: #4B6F93;
+  --success: #287A57;
+  --destructive: #C5535A;
+}
+
+:root[data-theme="light"] body,
+:root[data-theme="light"] .eterx-app-shell {
+  background: #F5F7FA !important;
+  color: #243243 !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell[data-sidebar-open="false"] .eterx-workspace-shell,
+:root[data-theme="light"] .eterx-workspace-shell {
+  background: #F0F3F7 !important;
+}
+
+:root[data-theme="light"] .eterx-main-panel {
+  background: #FBFCFD !important;
+  border-color: rgba(55, 86, 116, 0.14) !important;
+}
+
+:root[data-theme="light"] .eterx-main-header {
+  background: #F8FAFC !important;
+  border-bottom-color: rgba(55, 86, 116, 0.10) !important;
+  color: #2D4051 !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-shell {
+  background: #F0F3F7 !important;
+  border-right-color: rgba(55, 86, 116, 0.10) !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-recents {
+  background: rgba(229, 236, 242, 0.48) !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-brand span,
+:root[data-theme="light"] .eterx-sidebar-profile-name,
+:root[data-theme="light"] .eterx-sidebar-settings-button,
+:root[data-theme="light"] .eterx-view-header-label {
+  color: #2D4051 !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-nav-item,
+:root[data-theme="light"] .eterx-sidebar-toggle,
+:root[data-theme="light"] .eterx-sidebar-chat-row {
+  color: #566678 !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-chat-row:hover,
+:root[data-theme="light"] .eterx-sidebar-nav-item:hover,
+:root[data-theme="light"] .eterx-sidebar-toggle:hover,
+:root[data-theme="light"] .eterx-sidebar-profile-card:hover {
+  background: #E9EFF4 !important;
+  border-color: rgba(55, 86, 116, 0.08) !important;
+  color: #2D4051 !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-chat-active,
+:root[data-theme="light"] .eterx-sidebar-nav-active,
+:root[data-theme="light"] .eterx-sidebar-chat-active.eterx-sidebar-chat-working {
+  background: #E3EBF2 !important;
+  border-color: rgba(55, 86, 116, 0.12) !important;
+  color: #263A4B !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed,
+:root[data-theme="light"] .eterx-chat-feed-scroll,
+:root[data-theme="light"] .eterx-chat-feed-content {
+  background: #FBFCFD !important;
+  color: #2D3C4D !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed-user-bubble,
+:root[data-theme="light"] .eterx-steering-bubble {
+  background: #E8F0F6 !important;
+  border-color: rgba(62, 100, 135, 0.14) !important;
+  color: #2B4053 !important;
+}
+
+:root[data-theme="light"] .eterx-assistant-answer-body,
+:root[data-theme="light"] .eterx-professional-thought,
+:root[data-theme="light"] .eterx-professional-answer,
+:root[data-theme="light"] .eterx-professional-note,
+:root[data-theme="light"] .eterx-answer-paragraph,
+:root[data-theme="light"] .eterx-answer-list-item {
+  color: #2D3C4D !important;
+}
+
+:root[data-theme="light"] .eterx-answer-heading,
+:root[data-theme="light"] .eterx-answer-strong,
+:root[data-theme="light"] .eterx-action-verb,
+:root[data-theme="light"] .eterx-file-change-title {
+  color: #203246 !important;
+}
+
+:root[data-theme="light"] .eterx-chat-message-time,
+:root[data-theme="light"] .eterx-worked-summary-label,
+:root[data-theme="light"] .eterx-chat-muted,
+:root[data-theme="light"] .eterx-chat-subtle {
+  color: #748294 !important;
+}
+
+:root[data-theme="light"] .eterx-thought-card,
+:root[data-theme="light"] .eterx-live-action-card,
+:root[data-theme="light"] .eterx-action-card,
+:root[data-theme="light"] .eterx-file-change-trace,
+:root[data-theme="light"] .eterx-agent-comm-card {
+  background: #F7F9FB !important;
+  border-color: rgba(55, 86, 116, 0.12) !important;
+  color: #3A4A5B !important;
+}
+
+:root[data-theme="light"] .eterx-action-file-link,
+:root[data-theme="light"] .eterx-file-change-filename,
+:root[data-theme="light"] .eterx-inline-code-filename {
+  color: #3E6F9D !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-panel,
+:root[data-theme="light"] .eterx-inline-diff-panel,
+:root[data-theme="light"] .eterx-terminal-console,
+:root[data-theme="light"] .eterx-trp-card,
+:root[data-theme="light"] .eterx-patch-summary-panel {
+  background: #F5F8FA !important;
+  border-color: rgba(55, 86, 116, 0.13) !important;
+  color: #2D3C4D !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-header,
+:root[data-theme="light"] .eterx-inline-diff-header,
+:root[data-theme="light"] .eterx-trp-card-header {
+  background: #EAF0F5 !important;
+  color: #3C536A !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-scroll,
+:root[data-theme="light"] .eterx-inline-diff-scroll {
+  background: #FBFCFD !important;
+  color: #2D3C4D !important;
+}
+
+:root[data-theme="light"] .eterx-composer-surface,
+:root[data-theme="light"] .eterx-composer-surface:hover,
+:root[data-theme="light"] .eterx-composer-surface:focus-within,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) {
+  background: #FFFFFF !important;
+  border-color: rgba(55, 86, 116, 0.14) !important;
+  color: #2D4051 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-textarea,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea {
+  color: #263A4B !important;
+  caret-color: #3E6F9D !important;
+}
+
+:root[data-theme="light"] .eterx-composer-textarea::placeholder,
+:root[data-theme="light"] .eterx-composer-shell .eterx-composer-textarea::placeholder {
+  color: #8A97A5 !important;
+}
+
+:root[data-theme="light"] .eterx-control-button,
+:root[data-theme="light"] .eterx-agent-button,
+:root[data-theme="light"] .eterx-model-button {
+  background: #EEF3F7 !important;
+  border-color: rgba(55, 86, 116, 0.10) !important;
+  color: #3C536A !important;
+}
+
+:root[data-theme="light"] .eterx-control-button:hover,
+:root[data-theme="light"] .eterx-agent-button:hover,
+:root[data-theme="light"] .eterx-model-button:hover {
+  background: #E5EDF4 !important;
+  border-color: rgba(55, 86, 116, 0.14) !important;
+  color: #2D4051 !important;
+}
+
+:root[data-theme="light"] .eterx-composer-send-button,
+:root[data-theme="light"] .eterx-composer-stop-button {
+  background: #365D80 !important;
+  border-color: rgba(42, 77, 108, 0.22) !important;
+  color: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-composer-send-button:hover,
+:root[data-theme="light"] .eterx-composer-stop-button:hover {
+  background: #2C506F !important;
+  color: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-thread-tab:hover,
+:root[data-theme="light"] .eterx-thread-tab[data-open="true"] {
+  background: #E8F0F6 !important;
+  color: #2D4051 !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher,
+:root[data-theme="light"] .eterx-chat-action-menu,
+:root[data-theme="light"] .eterx-composer-popout,
+:root[data-theme="light"] .eterx-model-menu-popout,
+:root[data-theme="light"] .eterx-agent-popout {
+  background: #FBFCFD !important;
+  border-color: rgba(55, 86, 116, 0.14) !important;
+  color: #2D4051 !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item:hover,
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible {
+  background: rgba(75, 111, 147, 0.065) !important;
+  border-color: transparent !important;
+  color: #3C536A !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item[data-active="true"] {
+  background: rgba(75, 111, 147, 0.12) !important;
+  border-color: rgba(75, 111, 147, 0.16) !important;
+  color: #26445E !important;
+}
+
+/* -------------------------------------------------------------------------
+   Neutral light-theme finish
+
+   Keep the current layout and composer treatment. The conversation surface,
+   thought sequence, and application chrome use a plain white/neutral scale;
+   no blue wash is introduced into the feed or sidebar.
+------------------------------------------------------------------------- */
+:root[data-theme="light"] {
+  --background: #FFFFFF;
+  --foreground: #2B2B2B;
+  --muted: #F2F2F2;
+  --muted-foreground: #777777;
+  --border: rgba(32, 32, 32, 0.10);
+  --primary: #2B2B2B;
+  --primary-foreground: #FFFFFF;
+  --secondary: #EBEBEB;
+  --secondary-foreground: #2B2B2B;
+  --accent: #5B6875;
+  --accent-foreground: #FFFFFF;
+  --sidebar-bg: #F3F3F3;
+  --sidebar-active-bg: #E7E7E7;
+  --sidebar-active-border: rgba(32, 32, 32, 0.10);
+  --sidebar-active-text: #2B2B2B;
+  --sidebar-active-fade: #E7E7E7;
+  --sidebar-hover-bg: #ECECEC;
+  --sidebar-hover-border: rgba(32, 32, 32, 0.07);
+  --sidebar-hover-text: #2B2B2B;
+  --sidebar-text: #555555;
+  --sidebar-muted-text: #858585;
+  --sidebar-strong-text: #2B2B2B;
+  --sidebar-icon: #707070;
+  --sidebar-working-text: #4A4A4A;
+  --sidebar-focus-ring: rgba(70, 70, 70, 0.28);
+  --eterx-main-panel-border: rgba(32, 32, 32, 0.10);
+  --eterx-topbar-text: #777777;
+  --eterx-topbar-hover-bg: #EAEAEA;
+  --eterx-topbar-hover-text: #2B2B2B;
+  --eterx-theme-menu-bg: #FFFFFF;
+  --eterx-theme-menu-border: rgba(32, 32, 32, 0.10);
+  --eterx-theme-menu-text: #707070;
+  --eterx-theme-menu-strong: #2B2B2B;
+  --eterx-theme-menu-hover: #F1F1F1;
+  --eterx-theme-menu-active: #E8E8E8;
+  --info: #5B6875;
+  --success: #2D7A53;
+  --destructive: #C14F54;
+}
+
+:root[data-theme="light"] body,
+:root[data-theme="light"] .eterx-app-shell,
+:root[data-theme="light"] .eterx-workspace-shell,
+:root[data-theme="light"] .eterx-app-shell[data-sidebar-open="false"] .eterx-workspace-shell,
+:root[data-theme="light"] .eterx-global-topbar,
+:root[data-theme="light"] .eterx-sidebar-shell {
+  background: #F3F3F3 !important;
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-global-topbar,
+:root[data-theme="light"] .eterx-sidebar-shell {
+  border-color: rgba(32, 32, 32, 0.08) !important;
+}
+
+:root[data-theme="light"] .eterx-main-panel,
+:root[data-theme="light"] .eterx-main-header,
+:root[data-theme="light"] .eterx-chat-feed,
+:root[data-theme="light"] .eterx-chat-feed-scroll,
+:root[data-theme="light"] .eterx-chat-feed-content {
+  background: #FFFFFF !important;
+  border-color: rgba(32, 32, 32, 0.09) !important;
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-recents,
+:root[data-theme="light"] .eterx-sidebar-profile {
+  background: #F3F3F3 !important;
+  border-color: transparent !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-brand span,
+:root[data-theme="light"] .eterx-sidebar-profile-name,
+:root[data-theme="light"] .eterx-sidebar-settings-button,
+:root[data-theme="light"] .eterx-view-header-label {
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-nav-item,
+:root[data-theme="light"] .eterx-sidebar-toggle,
+:root[data-theme="light"] .eterx-sidebar-chat-row {
+  color: #555555 !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-chat-row:hover,
+:root[data-theme="light"] .eterx-sidebar-nav-item:hover,
+:root[data-theme="light"] .eterx-sidebar-toggle:hover,
+:root[data-theme="light"] .eterx-sidebar-profile-card:hover {
+  background: #ECECEC !important;
+  border-color: rgba(32, 32, 32, 0.07) !important;
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-sidebar-chat-active,
+:root[data-theme="light"] .eterx-sidebar-nav-active,
+:root[data-theme="light"] .eterx-sidebar-chat-active.eterx-sidebar-chat-working {
+  background: #E7E7E7 !important;
+  border-color: rgba(32, 32, 32, 0.10) !important;
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-chat-feed-user-bubble,
+:root[data-theme="light"] .eterx-steering-bubble {
+  background: #F1F1F1 !important;
+  border-color: rgba(32, 32, 32, 0.08) !important;
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-assistant-answer-body,
+:root[data-theme="light"] .eterx-professional-thought,
+:root[data-theme="light"] .eterx-professional-answer,
+:root[data-theme="light"] .eterx-professional-note,
+:root[data-theme="light"] .eterx-answer-paragraph,
+:root[data-theme="light"] .eterx-answer-list-item {
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-answer-heading,
+:root[data-theme="light"] .eterx-answer-strong,
+:root[data-theme="light"] .eterx-action-verb,
+:root[data-theme="light"] .eterx-file-change-title {
+  color: #242424 !important;
+}
+
+:root[data-theme="light"] .eterx-chat-message-time,
+:root[data-theme="light"] .eterx-worked-summary-label,
+:root[data-theme="light"] .eterx-chat-muted,
+:root[data-theme="light"] .eterx-chat-subtle,
+:root[data-theme="light"] .eterx-action-diff-chip {
+  color: #777777 !important;
+}
+
+/* Thought-sequence surfaces stay plain white in the feed. */
+:root[data-theme="light"] .eterx-thought-card,
+:root[data-theme="light"] .eterx-live-action-card,
+:root[data-theme="light"] .eterx-action-card,
+:root[data-theme="light"] .eterx-action-group,
+:root[data-theme="light"] .eterx-file-change-trace,
+:root[data-theme="light"] .eterx-agent-comm-card,
+:root[data-theme="light"] .eterx-terminal-trace {
+  background: #FFFFFF !important;
+  border-color: transparent !important;
+  color: #3A3A3A !important;
+}
+
+:root[data-theme="light"] .eterx-action-chip,
+:root[data-theme="light"] .eterx-terminal-trace-row,
+:root[data-theme="light"] .eterx-file-change-row,
+:root[data-theme="light"] .eterx-action-chip:hover,
+:root[data-theme="light"] .eterx-terminal-trace-row:hover,
+:root[data-theme="light"] .eterx-file-change-row:hover,
+:root[data-theme="light"] .eterx-terminal-trace-row[aria-expanded="true"] {
+  background: #FFFFFF !important;
+}
+
+:root[data-theme="light"] .eterx-action-file-link,
+:root[data-theme="light"] .eterx-file-change-filename,
+:root[data-theme="light"] .eterx-inline-code-filename {
+  color: #52667A !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-panel,
+:root[data-theme="light"] .eterx-inline-diff-panel,
+:root[data-theme="light"] .eterx-terminal-console,
+:root[data-theme="light"] .eterx-trp-card,
+:root[data-theme="light"] .eterx-patch-summary-panel,
+:root[data-theme="light"] .eterx-inline-code-scroll,
+:root[data-theme="light"] .eterx-inline-diff-scroll {
+  background: #FFFFFF !important;
+  border-color: rgba(32, 32, 32, 0.10) !important;
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-inline-code-header,
+:root[data-theme="light"] .eterx-inline-diff-header,
+:root[data-theme="light"] .eterx-trp-card-header {
+  background: #F6F6F6 !important;
+  color: #555555 !important;
+}
+
+:root[data-theme="light"] .eterx-thread-tab:hover,
+:root[data-theme="light"] .eterx-thread-tab[data-open="true"] {
+  background: #EAEAEA !important;
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher,
+:root[data-theme="light"] .eterx-chat-action-menu,
+:root[data-theme="light"] .eterx-composer-popout,
+:root[data-theme="light"] .eterx-model-menu-popout,
+:root[data-theme="light"] .eterx-agent-popout {
+  background: #FFFFFF !important;
+  border-color: rgba(32, 32, 32, 0.12) !important;
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item:hover,
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible {
+  background: #F1F1F1 !important;
+  border-color: transparent !important;
+  color: #4A4A4A !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item[data-active="true"] {
+  background: #E7E7E7 !important;
+  border-color: rgba(32, 32, 32, 0.08) !important;
+  color: #2B2B2B !important;
+}
+
+/* Thought detail stays a distinct white container with a quiet neutral edge. */
+:root[data-theme="light"] .eterx-thought-card {
+  background: #FFFFFF !important;
+  border: 1px solid rgba(32, 32, 32, 0.11) !important;
+  color: #4A4A4A !important;
+}
+
+:root[data-theme="light"] .eterx-thought-card:hover {
+  background: #FFFFFF !important;
+  border-color: rgba(32, 32, 32, 0.14) !important;
+}
+
+:root[data-theme="light"] .eterx-thought-toggle,
+:root[data-theme="light"] .eterx-thought-toggle:hover,
+:root[data-theme="light"] .eterx-thought-toggle:focus-visible {
+  background: transparent !important;
+  color: #4A4A4A !important;
+}
+
+:root[data-theme="light"] .eterx-thought-toggle .eterx-thinking-shimmer,
+:root[data-theme="light"] .eterx-thought-expanded,
+:root[data-theme="light"] .eterx-thought-expanded p,
+:root[data-theme="light"] .eterx-thought-expanded li,
+:root[data-theme="light"] .eterx-thought-expanded ol,
+:root[data-theme="light"] .eterx-thought-expanded ul {
+  color: #5B5B5B !important;
+}
+
+:root[data-theme="light"] .eterx-thought-expanded {
+  background: #FFFFFF !important;
+  border-top-color: rgba(32, 32, 32, 0.08) !important;
+}
+
+/* Keep every thought/action surface outlined at rest; hover only changes the
+   tone of the existing border and never introduces a new edge. */
+:root[data-theme="light"] .eterx-action-card,
+:root[data-theme="light"] .eterx-action-group,
+:root[data-theme="light"] .eterx-browser-activity-group,
+:root[data-theme="light"] .eterx-terminal-trace,
+:root[data-theme="light"] .eterx-file-change-trace,
+:root[data-theme="light"] .eterx-agent-comm-card {
+  background: #FFFFFF !important;
+  border: 1px solid rgba(32, 32, 32, 0.11) !important;
+  border-color: rgba(32, 32, 32, 0.11) !important;
+}
+
+:root[data-theme="light"] .eterx-action-card:hover,
+:root[data-theme="light"] .eterx-action-group:hover,
+:root[data-theme="light"] .eterx-browser-activity-group:hover,
+:root[data-theme="light"] .eterx-terminal-trace:hover,
+:root[data-theme="light"] .eterx-file-change-trace:hover,
+:root[data-theme="light"] .eterx-agent-comm-card:hover {
+  border-color: rgba(32, 32, 32, 0.14) !important;
+}
+
+/* User queries use a soft neutral surface without a visible outline. */
+:root[data-theme="light"] .eterx-chat-feed-user-bubble,
+:root[data-theme="light"] .eterx-steering-bubble {
+  background: #F2F2F2 !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  color: #333333 !important;
+}
+
+/* Thread switcher states: a calm opener at rest, one neutral hover surface,
+   and one slightly stronger selected surface. */
+:root[data-theme="light"] .eterx-thread-tab {
+  background: transparent !important;
+  transition: none !important;
+}
+
+:root[data-theme="light"] .eterx-thread-tab[data-open="true"] {
+  background: #E7E7E7 !important;
+  color: #2B2B2B !important;
+}
+
+:root[data-theme="light"] .eterx-thread-tab:hover {
+  background: #F1F1F1 !important;
+  color: #2B2B2B !important;
+  transition: background-color 120ms ease-out, color 120ms ease-out !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item,
+:root[data-theme="light"] .eterx-thread-switcher-item:hover,
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible {
+  border-radius: 10px !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item:hover,
+:root[data-theme="light"] .eterx-thread-switcher-item:focus-visible {
+  background: #F1F1F1 !important;
+  border: 1px solid transparent !important;
+  color: #4A4A4A !important;
+}
+
+:root[data-theme="light"] .eterx-thread-switcher-item[data-active="true"] {
+  background: #F1F1F1 !important;
+  border: 1px solid transparent !important;
+  color: #4A4A4A !important;
+}
+
+/* Light sidebar balance: only the complete Recents panel is white; the
+   surrounding chrome stays on the same neutral background. */
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-topbar,
+:root[data-theme="light"] .eterx-app-shell .eterx-global-topbar,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-profile {
+  background: #F3F3F3 !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-recents {
+  background: #FFFFFF !important;
+  border-color: rgba(32, 32, 32, 0.07) !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-toggle,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-toggle svg,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-brand-text {
+  color: #5C5C5C !important;
+}
+
+/* Keep non-active navigation rows quiet on hover; the row should not become
+   a large gray region behind New chat or the other sidebar destinations. */
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:not(.eterx-sidebar-nav-active):hover,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:not(.eterx-sidebar-nav-active):hover {
+  background: transparent !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+  color: #555555 !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:not(.eterx-sidebar-nav-active):hover svg,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:not(.eterx-sidebar-nav-active):hover svg {
+  color: #626262 !important;
+}
+
+/* The toggle glyph uses currentColor; keep it legible against the neutral
+   light chrome even when the pointer is not over it. */
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-toggle svg,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-toggle svg * {
+  color: #5C5C5C !important;
+  stroke: currentColor !important;
+}
+
+/* Keep the global window chrome from painting over the sidebar header. The
+   sidebar owns the logo/toggle area, so this overlay must stay transparent. */
+:root[data-theme="light"] .eterx-app-shell .eterx-global-topbar {
+  background: transparent !important;
+}
+
+/* Active navigation keeps one calm state while the pointer moves over it;
+   hovering must not add a second fill, border, shadow, or geometry change. */
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-nav-active:hover,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-new-chat.eterx-sidebar-nav-active:hover {
+  background: #E7E7E7 !important;
+  border-color: rgba(32, 32, 32, 0.10) !important;
+  color: #2B2B2B !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* Use the same quiet selection surface for every sidebar destination on
+   hover, so the interaction is visible without changing its geometry. */
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:not(.eterx-sidebar-nav-active):hover,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:not(.eterx-sidebar-nav-active):hover {
+  background: #E7E7E7 !important;
+  background-color: #E7E7E7 !important;
+  border-color: rgba(32, 32, 32, 0.10) !important;
+  color: #2B2B2B !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:not(.eterx-sidebar-nav-active):hover svg,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:not(.eterx-sidebar-nav-active):hover svg {
+  color: #4B4B4B !important;
+}
+
+/* Keep sidebar hover soft: no visible outline around the hovered row. */
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:hover {
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  --tw-ring-offset-shadow: 0 0 transparent !important;
+  --tw-ring-shadow: 0 0 transparent !important;
+}
+
+/* Pointer focus should not leave a hard ring on the same row after clicking
+   or keyboard focus; retain the soft hover surface instead. */
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:focus,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:focus-visible,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:focus,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:focus-visible {
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  --tw-ring-offset-shadow: 0 0 transparent !important;
+  --tw-ring-shadow: 0 0 transparent !important;
+}
+
+/* Preserve the base one-pixel border footprint while making it invisible.
+   Keeping the footprint prevents the row from resizing when hovered. */
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:focus,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:focus-visible,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:hover,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:focus,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:focus-visible {
+  border: 1px solid transparent !important;
+  border-style: solid !important;
+  border-width: 1px !important;
+  border-color: transparent !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  background-clip: padding-box !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:hover::before,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-nav-item:hover::after,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:hover::before,
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-new-chat:hover::after {
+  content: none !important;
+  display: none !important;
+}
+
+/* Final light-sidebar normalization: active and hovered rows share the same
+   quiet surface and a stable, invisible border footprint. */
+:root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active,
+:root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
+:root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active:focus,
+:root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-active:focus-visible,
+:root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
+:root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:focus,
+:root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:focus-visible {
+  border: 1px solid transparent !important;
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  transform: none !important;
+  --tw-ring-offset-shadow: 0 0 transparent !important;
+  --tw-ring-shadow: 0 0 transparent !important;
+}
+
+/* Sidebar rows are deliberately quiet in every theme. Keep one stable
+   transparent footprint and allow only color/background to transition; this
+   prevents the hard edge and hover motion from returning in dark mode. */
+.eterx-sidebar-shell .eterx-sidebar-nav-item,
+.eterx-sidebar-shell .eterx-sidebar-new-chat,
+.eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
+.eterx-sidebar-shell .eterx-sidebar-new-chat:hover,
+.eterx-sidebar-shell .eterx-sidebar-nav-item:focus,
+.eterx-sidebar-shell .eterx-sidebar-new-chat:focus,
+.eterx-sidebar-shell .eterx-sidebar-nav-item:focus-visible,
+.eterx-sidebar-shell .eterx-sidebar-new-chat:focus-visible,
+.eterx-sidebar-shell .eterx-sidebar-nav-active,
+.eterx-sidebar-shell .eterx-sidebar-nav-active:hover,
+.eterx-sidebar-shell .eterx-sidebar-nav-active:focus,
+.eterx-sidebar-shell .eterx-sidebar-nav-active:focus-visible {
+  border: 1px solid transparent !important;
+  border-color: transparent !important;
+  outline: none !important;
+  box-shadow: none !important;
+  transform: none !important;
+  transition-property: background-color, color !important;
+  transition-duration: 120ms !important;
+  transition-timing-function: ease-out !important;
+  --tw-ring-offset-shadow: 0 0 transparent !important;
+  --tw-ring-shadow: 0 0 transparent !important;
+}
+
+.eterx-sidebar-shell .eterx-sidebar-nav-item::before,
+.eterx-sidebar-shell .eterx-sidebar-nav-item::after,
+.eterx-sidebar-shell .eterx-sidebar-new-chat::before,
+.eterx-sidebar-shell .eterx-sidebar-new-chat::after,
+.eterx-sidebar-shell .eterx-sidebar-nav-item:hover::before,
+.eterx-sidebar-shell .eterx-sidebar-nav-item:hover::after,
+.eterx-sidebar-shell .eterx-sidebar-new-chat:hover::before,
+.eterx-sidebar-shell .eterx-sidebar-new-chat:hover::after {
+  content: none !important;
+  display: none !important;
+}
+
+/* Use the same continuous shell geometry as the dark theme. The workspace's
+   transparent inset reveals this sidebar surface instead of adding a separate
+   overlapping color block. */
+:root[data-theme="light"] .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell {
+  z-index: 1 !important;
+  background: #F3F3F3 !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-shell > #eterx-sidebar-content {
+  background: #F3F3F3 !important;
+}
+
+/* Keep the inset lane clear: the sidebar and Recents surfaces remain visible
+   beneath it, while the gray shell buffer still supplies the curve backdrop. */
+:root[data-theme="light"] .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+  background: transparent !important;
+}
+
+:root[data-theme="light"] .eterx-app-shell[data-sidebar-open="true"] .eterx-main-panel {
+  border-top-left-radius: var(--eterx-main-panel-left-radius) !important;
+  border-bottom-left-radius: var(--eterx-main-panel-left-radius) !important;
+  background-clip: padding-box !important;
+  overflow: hidden !important;
+}
+
+/* The actions own the workspace side of the titlebar. Giving that wrapper the
+   titlebar surface fixes the API junction without painting over the sidebar's
+   independently layered toggle and EterX wordmark. */
+:root[data-theme="light"] .eterx-app-shell .eterx-global-topbar .eterx-topbar-actions {
+  align-self: stretch;
+  align-items: center;
+  background: #F3F3F3 !important;
 }

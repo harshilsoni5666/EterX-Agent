@@ -35,6 +35,29 @@ const nextConfig = {
       ...config.resolve.alias,
       'undici': false,
     };
+    // Desktop runtime data, generated bundles, browser profiles, fixtures,
+    // and logs live beside the source tree. They cannot affect the module
+    // graph, but watching them wakes an otherwise idle development server as
+    // the app writes state. Keep HMR focused on actual source inputs.
+    const existingWatchIgnores = config.watchOptions?.ignored;
+    const ignoreList = Array.isArray(existingWatchIgnores)
+      ? existingWatchIgnores
+      : existingWatchIgnores ? [existingWatchIgnores] : [];
+    config.watchOptions = {
+      ...config.watchOptions,
+      ignored: [
+        ...ignoreList.filter(item => typeof item === 'string' && item.length > 0),
+        '**/.git/**',
+        '**/.next/**',
+        '**/dist/**',
+        '**/build/**',
+        '**/desktop-runtime/**',
+        '**/logs/**',
+        '**/gaia/**',
+        '**/.temp/**',
+        '**/.workspaces/**'
+      ],
+    };
     if (isServer) {
       config.externals = config.externals || [];
       if (Array.isArray(config.externals)) {

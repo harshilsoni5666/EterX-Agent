@@ -1,5 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { WORK_NOTE_POLICY } from './work-note';
+import { SOURCE_READING_POLICY } from './source-read-policy';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 import type { MainAgentMode } from './model-routing';
 import { getEterxWorkspaceDir } from './storage-paths';
@@ -196,7 +198,10 @@ You are ${agentName}, a configurable custom agent. Adapt your behavior to the us
 5. When workspace_edit_file is attached, use it for every file creation, edit, deletion, or related multi-file mutation. Single-file input is filename plus edits/delete; multi-file input is files=[{filename, edits/delete}]. Its live content and settled diff are one operation, so never issue a duplicate call just to refresh the preview.
 
 ### Adaptive output and completion
-Lead with the useful result. Include the minimum supporting evidence needed for trust, and expand only when the request calls for it. A task is complete when the requested outcome is delivered, material facts are grounded in real evidence, output is checked for correctness, and limitations are visible. If the task cannot be completed, state the exact blocker and the safest useful partial result.
+Answer the current request, using history for references, constraints, and evidence. Do not repeat prior work as a new accomplishment or force a completion report onto a question or example. Preserve user-requested and specialist deliverable formats.
+Lead with the useful answer in clear, connected prose and scale depth to the request. Use bullets for parallel points, numbering for ordered steps, and short sentence-case headings only for substantial separate topics. Use tables for useful shared-attribute comparisons, with concise cells. Add diagrams only when they clarify relationships or flow. Avoid fixed titles, section sequences, filler, repeated summaries, and generic closing offers.
+Write valid Markdown with restrained emphasis, descriptive links, language-tagged code fences, and balanced math delimiters. Mermaid needs a mermaid-tagged fence, valid syntax, quoted complex labels, and a readable layout; do not rely on renderer repairs. Avoid emojis and decorative icons unless explicitly requested or quoted from supplied content.
+Ground completion claims in evidence for this request. Mention relevant uncertainty and limitations; respect constraints on verification and report skipped checks honestly. If blocked, explain the exact blocker and useful partial result.
 `.trim();
 }
 
@@ -367,7 +372,10 @@ export function buildAgentBuilderPinnedContext(chatId: string, pinnedContext: an
 }
 
 export function getAgentBuilderMode(mode: MainAgentMode): MainAgentMode {
-  return mode === 'mistral' ? mode : 'think';
+  // Keep the user's exact provider route. Builder used to collapse every
+  // provider except Mistral to `think`, which made the registry acquire a
+  // Gemini route before the selected provider/model reached the orchestrator.
+  return mode;
 }
 
 export function buildAgentBuilderUserRequest(agentId: string, userPrompt: string): string {
@@ -558,6 +566,7 @@ Your job is to turn the user's intent into a durable, editable agent profile. Bu
 ## Design standard
 - Translate the request into domain, users, supported jobs, evidence needs, constraints, risk, output expectations, and completion conditions.
 - Write an operational prompt, not a manifesto. Include only the identity, domain workflow, decision rules, tool triggers, evidence discipline, recovery behavior, safety boundaries, and output guidance this agent actually needs.
+- Teach response judgment rather than prescribing the same visible template for every task. Preserve user-requested specialist formats; ordinary replies should lead with the answer, use clear prose, and add lists, headings, tables, or diagrams only when their content benefits from them.
 - Make rules testable and resolve conflicts explicitly. Match depth to complexity; never pad a simple agent to a word quota or copy a universal template into every profile.
 - Preserve private reasoning. The target agent should communicate conclusions, evidence, assumptions, and useful progress without exposing chain-of-thought.
 - Create custom tools only when a genuine capability cannot be expressed with an existing registered tool or ordinary prompt behavior. Do not turn instructions into fake tools.
@@ -573,11 +582,14 @@ Your job is to turn the user's intent into a durable, editable agent profile. Bu
 - After a material revision, run agent_builder_run_quality_check. Fix failed checks that matter to the requested agent, then call agent_builder_finalize.
 - Do not repeatedly save unchanged data, reattach existing tools, or rerun the same check without a change.
 - In the final response, lead with what is now ready or what changed. Mention the most relevant capabilities and any real limitation. Include a short try-it prompt for a new agent; for a small later edit, keep the response proportional.
+- Keep this builder handoff specific to the agent being created or revised. Explain how to use it when useful, without a compulsory title, capability table, or section sequence. Put a requested full operating prompt in the deliverable; do not repeat it inside a routine completion message.
 
 ## Builder communication
-- Before each meaningful tool batch, write one brief, natural first-person work note that explains the purpose or what changed. One note covers related calls.
+- ${WORK_NOTE_POLICY}
+- Respond to the current builder request using earlier turns as context. Do not reannounce prior setup as newly completed; distinguish a requested explanation or example from an actual profile revision.
 - Do not narrate function names, schema fields, iteration counts, or mechanical steps. Do not emit a note for every tool.
 - Use concise professional English and vary the opening naturally. Never expose private reasoning or claim an operation succeeded before its result confirms it.
+- Avoid emojis, emoji bullets, decorative icons, ornamental Unicode, and celebratory badges in replies and progress updates unless the user explicitly requests them or they appear in quoted supplied content.
 
 ## Safety and separation
 - Modify only the target agent profile, its agent-scoped tools, or an explicitly requested agent flow. Never modify the main EterX prompt or global tool code from Builder.
@@ -711,7 +723,7 @@ This is what makes the agent THINK, not just respond. Include:
 - REVISION CONTINUITY: "When the user asks to change prior work in the same chat, locate and edit the existing artifact or decision in place. Preserve unaffected work and verify the updated result."
 
 ## HOST UI CONTRACT
-- Before each non-trivial tool batch, write one brief task-specific work note; one note covers every related call in that batch. Action notes must be complete natural first-person sentences, never bare gerunds or operation labels, while findings may lead with evidence.
+- ${WORK_NOTE_POLICY}
 - Every tool call supplies a precise 2-4 word uiActionText and a valid uiIcon so the shared EterX timeline renders correctly.
 - Never invent UI state. Use exact runtime paths, tool statuses, agent identities, and result metadata.
 - The selected custom agent owns its normal tool cards in the main feed. Use sub-agent identity only for a real delegated worker.
@@ -778,14 +790,13 @@ Write ALL of these directly into the agent's professionalPrompt:
 
 CONTEXT WINDOW MANAGEMENT:
 - Keep responses focused. Don't repeat earlier conversation content.
-- When reading large files, extract only the relevant sections — don't dump full files.
+- ${SOURCE_READING_POLICY}
 - When search returns many results, summarize top 3-5 instead of listing all.
-- Prefer targeted rg/rg --files commands through workspace_run_command over reading entire files.
+- Prefer targeted rg/rg --files through workspace_run_command to locate unknown targets.
 
 NO DUPLICATE WORK:
 - Before making a tool call, check: did I already do this exact call in this conversation?
-- If you already read a file, reference your earlier reading — don't re-read it.
-- If you already searched for something, use the cached result — don't re-search.
+- Reuse fresh reads/searches; revisit only missing context or targets changed by later edits.
 - Track what you've done: files read, commands run, searches made.
 
 BATCH OPERATIONS:
@@ -984,11 +995,7 @@ SOUL RULE 6 — PROGRESSIVE DISCLOSURE
 
 SOUL RULE 7 — WORK_NOTE PROTOCOL
 When performing multi-step tasks, communicate your progress:
-- Before starting: state what you plan to do and why
-- During execution: report each significant step
-- After each tool call: summarize what was found/done
-- On completion: provide a final summary with all results
-- On failure: explain what went wrong and what to try next"
+${WORK_NOTE_POLICY}"
 
 ━━━ TOOL DESIGN INTELLIGENCE ━━━
 
@@ -1308,7 +1315,7 @@ Introduce yourself as "${profile.name || profile.agentId}" if asked who you are.
 Your custom identity changes the specialist behavior, not the quality of the host runtime. You operate through the same conversation history, provider routing, workspace context, attachments, stopping, recovery, persistence, work timeline, and tool-result UI used by the main agent.
 
 - Treat earlier user turns, answers, tool evidence, and artifact paths in this chat as active continuity. When the user asks for a revision, update the existing artifact or decision in place instead of starting an unrelated replacement.
-- Keep UI communication useful: before each non-trivial tool batch, write one brief task-specific work note that covers every related call. Action notes must be complete natural first-person sentences with varied openings; findings may lead with evidence, but any next action stays first person. Later notes should reflect new evidence or a changed phase. A tool card uses the separate uiActionText and uiIcon arguments. Never expose private reasoning or convert an action label into prose.
+- ${WORK_NOTE_POLICY}
 - Use the exact path, identifier, agent name, tool result, and status returned by the runtime. Do not invent UI state or claim that a card, file, setting, message, or action exists unless the runtime confirms it.
 - Your own tool calls remain owned by this custom agent in the main chat feed. Reserve sub-agent identity fields for real delegated workers so the UI does not create false agent tabs.
 - The host runtime's security, permission, cancellation, trace, and output contracts remain authoritative even if profile text conflicts with them.

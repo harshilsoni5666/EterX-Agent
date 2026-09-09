@@ -14,7 +14,7 @@ function logToFile(msg) {
 
 const http = require('http');
 const https = require('https');
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, systemPreferences, Tray, clipboard, utilityProcess } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, systemPreferences, Tray, clipboard, utilityProcess, powerMonitor } = require('electron');
 
 // The gateway daemon is loaded by Electron's main process before the packaged
 // Next runtime is started. Its production dependencies live in the companion
@@ -47,7 +47,9 @@ if (IS_DESKTOP_DEVELOPMENT) app.commandLine.appendSwitch('disable-http-cache');
 // launch makes the installed app slower on Windows, macOS, and Linux. EterX
 // already owns a writable per-user cache directory, so the old development
 // workaround is no longer needed.
-app.setName(IS_DESKTOP_DEVELOPMENT ? 'EterX Dev' : 'EterX');
+// Keep the product name consistent in the dock, task switcher, and window
+// chrome during local development and in packaged releases.
+app.setName('EterX');
 // Keep Windows taskbar grouping, notifications, and jump-list entries tied to
 // the installed EterX identity.  This must be set before any BrowserWindow is
 // created so Windows does not register the Electron default app id first.
@@ -262,6 +264,7 @@ function queueRendererPreferencesUpdate(update) {
 Menu.setApplicationMenu(null);
 
 let mainWindow;
+require('./chat-terminal').registerChatTerminals({ ipcMain, app, getWindow: () => mainWindow });
 let petWindow;
 let petWindowReadyPromise = null;
 let backgroundTray;
@@ -348,21 +351,12 @@ let desktopUpdateState = {
 const launchInBackground = process.argv.includes('--background');
 
 app.on('second-instance', () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
+  if (!isQuitting) showMainWindow();
 });
 
 const APP_ICON_PNG = app.isPackaged
   ? path.join(process.resourcesPath, 'logo.png')
   : path.join(__dirname, '../public/logo.png');
-const APP_ICON_LIGHT = app.isPackaged
-  ? path.join(process.resourcesPath, 'logo-black.png')
-  : path.join(__dirname, '../public/logo-black.png');
-const APP_ICON_DARK = app.isPackaged
-  ? path.join(process.resourcesPath, 'logo-white.png')
-  : path.join(__dirname, '../public/logo-white.png');
 
 const APP_ICON_PATH = app.isPackaged
   ? path.join(process.resourcesPath, process.platform === 'win32' ? 'icon.ico' : 'logo.png')
@@ -370,23 +364,8 @@ const APP_ICON_PATH = app.isPackaged
     ? path.join(__dirname, '../public/icon.ico')
     : APP_ICON_PNG);
 
-// Native window/taskbar icons follow the operating system theme, not the
-// renderer's own theme preference. This keeps the native chrome responsive
-// when the device appearance changes while EterX is already open.
-function getSystemIconTheme() {
-  // Windows exposes a separate value for system-integrated surfaces such as
-  // the taskbar. Prefer it there so the icon contrasts with the actual bar;
-  // use the regular native theme signal on macOS/Linux.
-  const isDark = process.platform === 'win32'
-    && typeof nativeTheme.shouldUseDarkColorsForSystemIntegratedUI === 'boolean'
-    ? nativeTheme.shouldUseDarkColorsForSystemIntegratedUI
-    : nativeTheme.shouldUseDarkColors;
-  return isDark ? 'dark' : 'light';
-}
-
-function getSystemIconPath(theme = getSystemIconTheme()) {
-  const iconPath = theme === 'dark' ? APP_ICON_DARK : APP_ICON_LIGHT;
-  return fs.existsSync(iconPath) ? iconPath : APP_ICON_PATH;
+function getSystemIconPath() {
+  return APP_ICON_PATH;
 }
 
 const NATIVE_THEME_FILE = 'eterx-native-theme.json';
@@ -714,7 +693,7 @@ function restoreDesktopRuntimeAfterInstallerFailure(error) {
     .catch(recoveryError => logToFile(`[update] Could not restore the app runtime after installer failure: ${recoveryError?.message || recoveryError}`));
 }
 
-async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1) {
+async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1, options = {}) {
   // The main renderer owns chats, preferences, and scheduled-task persistence.
   // Auxiliary Settings and Live windows do not register that durability
   // contract and must never block a native update waiting for an ACK they
@@ -734,7 +713,7 @@ async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1) {
       }, timeoutMs);
       pendingRendererFlushes.set(requestId, { resolve, timer, sender: targetWindow.webContents });
       try {
-        targetWindow.webContents.send('desktop-prepare-for-quit', requestId);
+        targetWindow.webContents.send('desktop-prepare-for-quit', requestId, options);
       } catch (error) {
         clearTimeout(timer);
         pendingRendererFlushes.delete(requestId);
@@ -755,6 +734,80 @@ async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1) {
     }
   }
   return false;
+}
+
+function desktopBackgroundPolicy() {
+  // Settings are saved before daemon reconfiguration finishes. A close during
+  // that restart must use the saved choice, not the daemon's previous config.
+  const config = readGatewaySettings();
+  const keepRuntime = Boolean(config.enabled && config.keepRunningOnClose);
+  return {
+    keepRuntime,
+    keepActive: keepRuntime && config.keepActiveChatsOnClose !== false,
+    keepScheduled: keepRuntime && config.runScheduledTasksInBackground !== false,
+  };
+}
+
+async function stopDesktopRunsForClose({ keepScheduled = false, keepChannels = false, resume = false } = {}) {
+  try {
+    const target = new URL('/api/agent/stop', getAppTarget());
+    const payload = JSON.stringify({ all: true, confirm: 'STOP_ALL_AGENTS', desktopClose: !resume, desktopResume: resume, keepScheduled, keepChannels });
+    return await new Promise((resolve, reject) => {
+      const client = target.protocol === 'https:' ? https : http;
+      const request = client.request(target, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload), Origin: target.origin },
+      }, response => {
+        let body = '';
+        response.setEncoding('utf8');
+        response.on('data', chunk => { body += chunk; });
+        response.on('error', reject);
+        response.on('end', () => {
+          try {
+            const result = JSON.parse(body);
+            if (response.statusCode !== 200 || result.success !== true) throw new Error(result.error || 'Agent shutdown was not acknowledged.');
+            resolve(Array.isArray(result.chatIds) ? result.chatIds : []);
+          } catch (error) { reject(error); }
+        });
+      });
+      request.setTimeout(8000, () => request.destroy(new Error('Agent shutdown timed out.')));
+      request.on('error', reject);
+      request.end(payload);
+    });
+  } catch (error) {
+    logToFile(`[shutdown] Could not confirm the final agent snapshot: ${error?.message || error}`);
+    return [];
+  }
+}
+
+let desktopClosePending = null;
+async function prepareDesktopClose(background = false, timeoutMs = 8000) {
+  if (desktopClosePending) await desktopClosePending;
+  const policy = desktopBackgroundPolicy();
+  const operation = (async () => {
+    const stoppedChatIds = !background || !policy.keepActive
+      ? await stopDesktopRunsForClose({ keepScheduled: background && policy.keepScheduled, keepChannels: background && policy.keepRuntime })
+      : [];
+    return requestRendererDurableFlush(timeoutMs, 1, { stoppedChatIds });
+  })();
+  desktopClosePending = operation;
+  try { return await operation; }
+  finally { if (desktopClosePending === operation) desktopClosePending = null; }
+}
+
+let desktopResumePending = false;
+async function notifyDesktopResume() {
+  if (desktopResumePending) return;
+  desktopResumePending = true;
+  try {
+    if (desktopClosePending) await desktopClosePending;
+    // Clear the close admission fence before rearming renderer work. This is
+    // independent of whether an old live socket still appears connected.
+    if (!isQuitting && mainWindow?.isVisible()) await stopDesktopRunsForClose({ resume: true });
+    if (!isQuitting && mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('desktop-resume');
+    }
+  } finally { desktopResumePending = false; }
 }
 
 function getRunningMacApplicationBundle() {
@@ -1236,10 +1289,9 @@ function nativeThemePath() {
   return path.join(getEterxSettingsRoot(), NATIVE_THEME_FILE);
 }
 
-function getSplashIconUrl(theme = readNativeTheme()) {
+function getSplashIconUrl() {
   try {
-    const iconPath = normalizeNativeTheme(theme) === 'dark' ? APP_ICON_DARK : APP_ICON_LIGHT;
-    return fs.existsSync(iconPath) ? pathToFileURL(iconPath).href : '';
+    return fs.existsSync(APP_ICON_PNG) ? pathToFileURL(APP_ICON_PNG).href : '';
   } catch {
     return '';
   }
@@ -1571,7 +1623,7 @@ function showMainWindow() {
 }
 
 function ensureBackgroundTray() {
-  if (backgroundTray || !gatewayDaemon?.config?.enabled || !gatewayDaemon?.config?.keepRunningOnClose) return;
+  if (backgroundTray || !desktopBackgroundPolicy().keepRuntime) return;
   try {
     backgroundTray = new Tray(getSystemIconPath());
     backgroundTray.setToolTip('EterX background companion');
@@ -1579,7 +1631,7 @@ function ensureBackgroundTray() {
       { label: 'Open EterX', click: showMainWindow },
       { label: 'Gateway status', enabled: false },
       { type: 'separator' },
-      { label: 'Quit EterX', click: () => { isQuitting = true; app.quit(); } },
+      { label: 'Quit EterX', click: () => app.quit() },
     ]));
     backgroundTray.on('double-click', showMainWindow);
   } catch (error) {
@@ -2054,13 +2106,13 @@ function nativeThemeColors(theme) {
   if (safeTheme === 'dark') {
     return {
       background: '#0F0F0F',
-      titleBar: '#0F0F0F',
+      titleBar: '#00000000',
       titleSymbol: '#D0C8C0',
     };
   }
   return {
-    background: '#FFFFFF',
-    titleBar: '#FFFFFF',
+    background: '#FAFAF8',
+    titleBar: '#00000000',
     titleSymbol: '#1F1F1D',
   };
 }
@@ -2114,11 +2166,6 @@ function applySystemIconToAllWindows() {
     }
   }
 }
-
-// Electron emits this event when the OS appearance changes while the process
-// is alive. Do not set nativeTheme.themeSource here: the app must continue to
-// follow the device without changing the app's internal theme.
-nativeTheme.on('updated', applySystemIconToAllWindows);
 
 function registerNativeThemedWindow(targetWindow) {
   if (!targetWindow || targetWindow.isDestroyed()) return;
@@ -2925,7 +2972,7 @@ async function showSplashScreen() {
     // 60KB+ file:// URL, which Chromium may reject on Windows with ERR_FAILED.
     query: {
       theme,
-      icon: getSplashIconUrl(theme),
+      icon: getSplashIconUrl(),
       platform: process.platform === 'darwin'
         ? 'macos'
         : process.platform === 'win32'
@@ -2937,20 +2984,6 @@ async function showSplashScreen() {
   });
   if (!launchInBackground && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
     mainWindow.show();
-  }
-}
-
-async function playSplashExit() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-
-  const currentUrl = mainWindow.webContents.getURL();
-  if (!currentUrl.includes('splash.html')) return;
-
-  try {
-    await mainWindow.webContents.executeJavaScript("document.body.classList.add('is-leaving'); true;", true);
-    await delay(280);
-  } catch {
-    // Best-effort polish only. The app should still load if the splash page has already changed.
   }
 }
 
@@ -3153,7 +3186,7 @@ async function bootApp(options = {}) {
     }
 
     if (bootId === activeBootId && mainWindow && !mainWindow.isDestroyed()) {
-      await playSplashExit();
+      // Keep the splash visible until navigation paints the matching app loader.
       applyNativeWindowTheme(readNativeTheme());
       await mainWindow.loadURL(target);
       bootFailureCount = 0;
@@ -3195,18 +3228,17 @@ function createWindow() {
     minWidth: 400,
     minHeight: 400,
     backgroundColor: initialNativeColors.background,
-    // macOS keeps the native title in the hidden title bar. Windows/Linux
-    // render their own sidebar branding; a zero-width native title prevents
-    // Electron/Chromium from falling back to the app name beside the controls.
-    title: process.platform === 'darwin' ? 'EterX' : '\u200B',
+    // Keep the app identifiable in native task switchers and window previews.
+    title: 'EterX',
     icon: getSystemIconPath(),
     ...windowChrome,
     show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      // Gateway dispatch and agent polling must continue while the main
-      // window is hidden to the background tray.
+      // Scheduled-task admission and gateway delivery reconciliation must
+      // continue while the window is hidden. Individual visual components
+      // suspend their own paint loops without throttling these timers.
       backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.js')
     }
@@ -3222,12 +3254,10 @@ function createWindow() {
       event.preventDefault();
     }
   });
-  if (process.platform !== 'darwin') {
-    mainWindow.on('page-title-updated', (event) => {
-      event.preventDefault();
-      mainWindow.setTitle('\u200B');
-    });
-  }
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault();
+    mainWindow.setTitle('EterX');
+  });
   attachNativeContextMenu(mainWindow);
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
@@ -3357,9 +3387,9 @@ function createWindow() {
   let durableClosePending = false;
   mainWindow.on('close', (event) => {
     if (isQuitting || closeAfterDurableFlush) return;
-    if (!isQuitting && gatewayDaemon?.config?.enabled && gatewayDaemon?.config?.keepRunningOnClose) {
+    if (desktopBackgroundPolicy().keepRuntime) {
       event.preventDefault();
-      void requestRendererDurableFlush(4000, 1);
+      void prepareDesktopClose(true);
       mainWindow.hide();
       ensureBackgroundTray();
       return;
@@ -3373,7 +3403,7 @@ function createWindow() {
     if (durableClosePending) return;
     durableClosePending = true;
     const closingWindow = mainWindow;
-    void requestRendererDurableFlush(8000, 1).finally(() => {
+    void prepareDesktopClose(false).finally(() => {
       durableClosePending = false;
       if (!closingWindow || closingWindow.isDestroyed()) return;
       closeAfterDurableFlush = true;
@@ -3383,6 +3413,18 @@ function createWindow() {
 
   mainWindow.on('hide', stopAutomaticDesktopUpdateChecks);
   mainWindow.on('minimize', stopAutomaticDesktopUpdateChecks);
+  mainWindow.on('show', notifyDesktopResume);
+  mainWindow.on('restore', notifyDesktopResume);
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (mainWindow?.isVisible()) void notifyDesktopResume();
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (isQuitting || details.reason === 'clean-exit') return;
+    // The server still owns running agents. Restore only their view and
+    // scheduler; never restart an execution because its renderer crashed.
+    logToFile(`[renderer] Recovering the chat view after ${details.reason}.`);
+    scheduleBootRetry(500);
+  });
 
   mainWindow.on('closed', function () {
     stopAutomaticDesktopUpdateChecks();
@@ -3591,7 +3633,9 @@ function decodeNativeOpenPath(rawPath) {
   if (target === '~') target = app.getPath('home');
   else if (/^~[\\/]/.test(target)) target = path.join(app.getPath('home'), target.slice(2));
 
-  if (!path.isAbsolute(target)) return null;
+  if (target.includes('\0') || !path.isAbsolute(target)) return null;
+  if (process.platform === 'win32' && !/^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(target)) return null;
+  if (process.platform !== 'win32' && /^(?:[A-Za-z]:|\\\\)/.test(target)) return null;
   return path.normalize(target);
 }
 
@@ -3600,45 +3644,7 @@ function getExistingNativeOpenTarget(rawPath) {
   if (!targetPath) return null;
   if (fs.existsSync(targetPath)) return targetPath;
 
-  // A generated artifact may have been renamed between rendering and click.
-  // Preserve the previous helpful behavior of opening its existing parent.
-  const parentPath = path.dirname(targetPath);
-  return parentPath !== targetPath && fs.existsSync(parentPath) ? parentPath : null;
-}
-
-function launchPathWithSystem(targetPath) {
-  const candidates = process.platform === 'win32'
-    ? [['explorer.exe', [targetPath]]]
-    : process.platform === 'darwin'
-      ? [['/usr/bin/open', [targetPath]]]
-      : [
-          ['xdg-open', [targetPath]],
-          ['gio', ['open', targetPath]],
-        ];
-
-  const tryCandidate = (index) => new Promise((resolve) => {
-    const candidate = candidates[index];
-    if (!candidate) {
-      resolve(false);
-      return;
-    }
-
-    const [command, args] = candidate;
-    const child = spawn(command, args, {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-    child.once('error', () => {
-      void tryCandidate(index + 1).then(resolve);
-    });
-    child.once('spawn', () => {
-      child.unref();
-      resolve(true);
-    });
-  });
-
-  return tryCandidate(0);
+  return null;
 }
 
 // Open local file and folder links through the operating system. Packaged
@@ -3648,9 +3654,8 @@ ipcMain.handle('open-path', async (_event, rawPath) => {
     const target = getExistingNativeOpenTarget(rawPath);
     if (!target) return false;
 
-    // The explicit OS launchers match the reliable browser-development path.
-    // Electron remains a portable fallback for unusual desktop environments.
-    if (await launchPathWithSystem(target)) return true;
+    // Electron dispatches files and directories through the native association
+    // on Windows, macOS, and Linux and reports an actual open failure.
     const error = await shell.openPath(target);
     if (!error) return true;
     logToFile(`[open-path] Could not open ${target}: ${error}`);
@@ -3666,12 +3671,13 @@ ipcMain.handle('open-external', async (event, url) => {
 });
 
 ipcMain.handle('app-restart', async () => {
-  await requestRendererDurableFlush();
   if (IS_DESKTOP_DEVELOPMENT) {
+    await requestRendererDurableFlush();
     mainWindow?.webContents.reloadIgnoringCache();
     return true;
   }
   isQuitting = true;
+  await prepareDesktopClose(false);
   await stopPackagedServer();
   app.relaunch();
   app.exit(0);
@@ -3679,20 +3685,17 @@ ipcMain.handle('app-restart', async () => {
 });
 
 ipcMain.handle('app-close', async () => {
-  if (gatewayDaemon?.config?.enabled && gatewayDaemon?.config?.keepRunningOnClose) {
-    await requestRendererDurableFlush();
-    mainWindow?.hide();
-    ensureBackgroundTray();
-    return { hiddenToTray: true };
-  }
-  await requestRendererDurableFlush();
-  isQuitting = true;
-  await stopPackagedServer();
-  app.quit();
-  return { hiddenToTray: false };
+  const hiddenToTray = desktopBackgroundPolicy().keepRuntime;
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+  else app.quit();
+  return { hiddenToTray };
 });
 
 ipcMain.handle('native-theme-get', () => readNativeTheme());
+
+ipcMain.on('native-theme-bootstrap', (event) => {
+  event.returnValue = readNativeTheme();
+});
 
 ipcMain.on('native-theme-set', (_event, theme) => {
   applyNativeWindowTheme(theme);
@@ -3882,7 +3885,7 @@ ipcMain.handle('desktop-update-install', async () => {
       bytesPerSecond: 0,
       message: 'Preparing EterX to restart and apply the update...',
     });
-    const flushed = await requestRendererDurableFlush(15000, 1);
+    const flushed = await prepareDesktopClose(false, 15000);
     if (!flushed) {
       // AppData is written continuously during normal use. A missing renderer
       // acknowledgement can mean the UI was reloading, suspended, or already
@@ -3987,7 +3990,7 @@ ipcMain.on('pet-reply', (_event, message) => {
   }
 });
 
-ipcMain.handle('speech-dictation-start', async (event, requestedLanguage) => {
+ipcMain.handle('speech-dictation-start', async (event, requestedLanguage, sessionId) => {
   if (!isTrustedRenderer(event.sender)) {
     return { started: false, supported: false, error: 'Untrusted renderer origin.' };
   }
@@ -4003,8 +4006,8 @@ ipcMain.handle('speech-dictation-start', async (event, requestedLanguage) => {
     };
   }
   try {
-    const result = await desktopSpeechDictation.start(event.sender, requestedLanguage);
-    event.sender.once('destroyed', () => void desktopSpeechDictation.stop(event.sender, false));
+    const result = await desktopSpeechDictation.start(event.sender, requestedLanguage, sessionId);
+    event.sender.once('destroyed', () => void desktopSpeechDictation.stop(event.sender, false, sessionId, true));
     return { ...result, microphone };
   } catch (error) {
     logToFile(`[whisper.cpp] ${String(error?.stack || error?.message || error)}`);
@@ -4012,14 +4015,19 @@ ipcMain.handle('speech-dictation-start', async (event, requestedLanguage) => {
   }
 });
 
-ipcMain.handle('speech-dictation-stop', async (event) => {
+ipcMain.handle('speech-dictation-stop', async (event, sessionId, discard) => {
   if (!isTrustedRenderer(event.sender)) return false;
-  return desktopSpeechDictation.stop(event.sender);
+  return desktopSpeechDictation.stop(event.sender, true, sessionId, discard === true);
 });
 
-ipcMain.on('speech-dictation-audio', (event, samples) => {
+ipcMain.on('speech-dictation-audio', (event, samples, sessionId, revision) => {
   if (!isTrustedRenderer(event.sender)) return;
-  desktopSpeechDictation.push(event.sender, samples);
+  desktopSpeechDictation.push(event.sender, samples, sessionId, revision);
+});
+
+ipcMain.on('speech-dictation-reset', (event, sessionId, revision) => {
+  if (!isTrustedRenderer(event.sender)) return;
+  desktopSpeechDictation.reset(event.sender, sessionId, revision);
 });
 
 ipcMain.handle('live-media-permissions', async (event) => {
@@ -4094,6 +4102,7 @@ app.on('ready', async () => {
   }
   createWindow();
   initializeDesktopUpdates();
+  powerMonitor.on('resume', notifyDesktopResume);
   await gatewayInitialization;
 });
 
@@ -4111,7 +4120,7 @@ app.on('before-quit', (event) => {
   if (!isQuitting) {
     event.preventDefault();
     isQuitting = true;
-    void requestRendererDurableFlush().finally(() => {
+    void prepareDesktopClose(false).finally(() => {
       void stopPackagedServer().finally(() => app.quit());
     });
     return;
@@ -4122,7 +4131,5 @@ app.on('before-quit', (event) => {
 });
 
 app.on('activate', function () {
-  if (mainWindow === null) {
-    createWindow();
-  }
+  if (!isQuitting) showMainWindow();
 });

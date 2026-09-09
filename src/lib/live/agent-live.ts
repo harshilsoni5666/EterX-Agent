@@ -228,6 +228,9 @@ export class AgentLiveSession implements LiveSession {
   private outputTranscript = '';
   private inputTranscript = '';
   private turnOutputTranscript: string = '';
+  private turnModelText = '';
+  private turnSpokenText = '';
+  private turnOutputHistoryBase: string | null = null;
   private activeSources: AudioBufferSourceNode[] = [];
   private playbackAnalyser: AnalyserNode | null = null;
   private playbackGain: GainNode | null = null;
@@ -545,6 +548,9 @@ export class AgentLiveSession implements LiveSession {
     if (!wasInternal) this.checkVoiceEndRequest(completion.userText);
     this.turnInputTranscript = '';
     this.turnOutputTranscript = '';
+    this.turnModelText = '';
+    this.turnSpokenText = '';
+    this.turnOutputHistoryBase = null;
     this.playbackCharCount = 0;
     this.activeObjective = null;
     this.setState('listening');
@@ -796,6 +802,9 @@ export class AgentLiveSession implements LiveSession {
     this.activeSystemEvent = event;
     this.turnInputTranscript = '';
     this.turnOutputTranscript = '';
+    this.turnModelText = '';
+    this.turnSpokenText = '';
+    this.turnOutputHistoryBase = null;
     const statusInstruction = event.type === 'task_completed'
       ? 'The task completed successfully.'
       : event.type === 'task_failed'
@@ -1199,6 +1208,9 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       this.outputTranscript = '';
       this.inputTranscript = '';
       this.turnOutputTranscript = '';
+    this.turnModelText = '';
+    this.turnSpokenText = '';
+    this.turnOutputHistoryBase = null;
       this.turnInputTranscript = '';
       this.internalTextTurn = false;
     }
@@ -1838,6 +1850,17 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
   /**
    * Handle incoming WebSocket messages from Gemini Live API.
    */
+  private updateOutputTranscript(channel: 'text' | 'audio', text: string): void {
+    if (this.turnOutputHistoryBase === null) this.turnOutputHistoryBase = this.outputTranscript;
+    if (channel === 'audio') this.turnSpokenText += text;
+    else this.turnModelText += text;
+    // Text parts and audio transcription describe the same answer; they are
+    // separate streams and must never be appended into each other.
+    this.turnOutputTranscript = this.turnSpokenText || this.turnModelText;
+    this.outputTranscript = this.turnOutputHistoryBase + this.turnOutputTranscript;
+    this.callbacks.onOutputTranscription(sanitizeLiveAnswerText(this.turnOutputTranscript));
+  }
+
   private async handleMessage(event: MessageEvent, sourceSocket: WebSocket | null = this.ws) {
     try {
       let data: any;
@@ -1906,6 +1929,9 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
           this.flushPlayback();
           this.turnInputTranscript = '';
           this.turnOutputTranscript = '';
+    this.turnModelText = '';
+    this.turnSpokenText = '';
+    this.turnOutputHistoryBase = null;
           const interruptedSystemEvent = this.deferInterruptedSystemEvent();
           this.activeObjective = null;
           this.callbacks.onInterrupted(
@@ -1953,9 +1979,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
             }
             if (part.text) {
               this.finishThinking();
-              this.turnOutputTranscript = appendTranscriptChunk(this.turnOutputTranscript, part.text);
-              this.outputTranscript = appendTranscriptChunk(this.outputTranscript, part.text);
-              this.callbacks.onOutputTranscription(sanitizeLiveAnswerText(this.turnOutputTranscript));
+              this.updateOutputTranscript('text', part.text);
             }
           }
         }
@@ -1963,15 +1987,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         // Output transcription (model's spoken words as text)
         if (content.outputTranscription?.text) {
           this.finishThinking();
-          this.turnOutputTranscript = appendTranscriptChunk(
-            this.turnOutputTranscript,
-            content.outputTranscription.text,
-          );
-          this.outputTranscript = appendTranscriptChunk(
-            this.outputTranscript,
-            content.outputTranscription.text,
-          );
-          this.callbacks.onOutputTranscription(sanitizeLiveAnswerText(this.turnOutputTranscript));
+          this.updateOutputTranscript('audio', content.outputTranscription.text);
         }
 
         // Input transcription (user's spoken words as text)
@@ -1981,14 +1997,8 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
           // Internal control prompts must never become visible voice input or
           // a persisted user_action row.
           if (!this.internalTextTurn) {
-            this.turnInputTranscript = appendTranscriptChunk(
-              this.turnInputTranscript,
-              content.inputTranscription.text,
-            );
-            this.inputTranscript = appendTranscriptChunk(
-              this.inputTranscript,
-              content.inputTranscription.text,
-            );
+            this.turnInputTranscript += content.inputTranscription.text;
+            this.inputTranscript += content.inputTranscription.text;
             const objective = this.ensureObjective();
             objective.userText = this.turnInputTranscript.trim();
             this.callbacks.onInputTranscription(this.turnInputTranscript);
@@ -2821,6 +2831,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
             this.internalTextTurn = false;
             this.turnInputTranscript = '';
             this.turnOutputTranscript = '';
+    this.turnModelText = '';
+    this.turnSpokenText = '';
+    this.turnOutputHistoryBase = null;
             const interruptedSystemEvent = this.deferInterruptedSystemEvent();
             this.activeObjective = null;
             this.callbacks.onInterrupted(
@@ -2972,6 +2985,12 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
   private startModelVolumeLoop(): void {
     if (this.modelVolumeLoopId) cancelAnimationFrame(this.modelVolumeLoopId);
     let lastUpdateMs = 0;
+    let frequencyData = new Uint8Array(this.playbackAnalyser?.frequencyBinCount ?? 0);
+    const multipliers = [1.5, 1.3, 1.8, 2.5];
+    let lastBuckets: number[] | null = null;
+    let lastProgressSource = '';
+    let lastProgressChars = -1;
+    let lastProgressText: string | null = null;
     const checkVolume = () => {
       if (!this.playbackAnalyser || this.manualDisconnect || this.state === 'idle' || this.state === 'error') {
         this.modelVolumeLoopId = 0;
@@ -2979,29 +2998,26 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
         return;
       }
       if (this.playbackAnalyser && this.state === 'speaking') {
-        const dataArray = new Uint8Array(this.playbackAnalyser.frequencyBinCount);
-        this.playbackAnalyser.getByteFrequencyData(dataArray);
-
-        // True Multiband Equalizer: Map 128 frequency bins to 4 UI bars for deep organic syncing
-        const buckets = [0, 0, 0, 0];
-        const bucketSize = Math.floor(dataArray.length / 4);
-
-        // Human voice tuning multipliers for visually pleasing EQ (bass, low-mid, high-mid, treble)
-        const multipliers = [1.5, 1.3, 1.8, 2.5];
-
-        for (let i = 0; i < 4; i++) {
-          let sum = 0;
-          for (let j = 0; j < bucketSize; j++) {
-            sum += dataArray[(i * bucketSize) + j];
-          }
-          const avg = sum / bucketSize; // 0 to 255
-          buckets[i] = Math.min(100, Math.round((avg / 255) * 100 * multipliers[i]));
-        }
-
         const now = Date.now();
         if (now - lastUpdateMs > 60) { // Throttle to ~16 FPS to prevent React from freezing the main thread
-          if (this.callbacks.onModelVolume) {
-            this.callbacks.onModelVolume(buckets);
+          // Sample only when the existing UI cadence can publish it, and reuse
+          // the analyser buffer instead of allocating one on every frame.
+          if (frequencyData.length !== this.playbackAnalyser.frequencyBinCount) {
+            frequencyData = new Uint8Array(this.playbackAnalyser.frequencyBinCount);
+          }
+          this.playbackAnalyser.getByteFrequencyData(frequencyData);
+          const buckets = [0, 0, 0, 0];
+          const bucketSize = Math.max(1, Math.floor(frequencyData.length / 4));
+          for (let i = 0; i < 4; i++) {
+            let sum = 0;
+            for (let j = 0; j < bucketSize; j++) {
+              sum += frequencyData[(i * bucketSize) + j] || 0;
+            }
+            buckets[i] = Math.min(100, Math.round((sum / bucketSize / 255) * 100 * multipliers[i]));
+          }
+          if (!lastBuckets || buckets.some((value, index) => value !== lastBuckets![index])) {
+            this.callbacks.onModelVolume?.(buckets);
+            lastBuckets = buckets;
           }
           lastUpdateMs = now;
         }
@@ -3019,10 +3035,17 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
               Math.floor(progress * this.turnOutputTranscript.length),
             );
             this.playbackCharCount = spokenChars;
-            const spokenText = sanitizeLiveAnswerText(
-              this.turnOutputTranscript.substring(0, spokenChars),
-            );
-            this.callbacks.onOutputPlaybackProgress(spokenText);
+            if (spokenChars !== lastProgressChars || this.turnOutputTranscript !== lastProgressSource) {
+              lastProgressChars = spokenChars;
+              lastProgressSource = this.turnOutputTranscript;
+              const spokenText = sanitizeLiveAnswerText(
+                this.turnOutputTranscript.substring(0, spokenChars),
+              );
+              if (spokenText !== lastProgressText) {
+                this.callbacks.onOutputPlaybackProgress(spokenText);
+                lastProgressText = spokenText;
+              }
+            }
           }
         }
       }
@@ -3110,6 +3133,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
     this.internalTextTurn = isInternal;
     this.turnInputTranscript = isInternal ? '' : trimmed;
     this.turnOutputTranscript = '';
+    this.turnModelText = '';
+    this.turnSpokenText = '';
+    this.turnOutputHistoryBase = null;
     if (!isInternal) {
       this.activeObjective = null;
       const objective = this.ensureObjective();

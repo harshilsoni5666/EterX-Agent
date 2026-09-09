@@ -191,6 +191,10 @@ export class ProviderLiveSession implements LiveSession {
   private captureReady = false;
   private inputTranscript = '';
   private outputTranscript = '';
+  private realtimeOutputParts = new Map<string, { text: string; audio: string }>();
+  private realtimeEventIds = new Set<string>();
+  private ignoredRealtimeResponses = new Set<string>();
+  private realtimeResponseId: string | null = null;
   private internalTextTurn = false;
   private playbackSampleRate = 24000;
   private manualDisconnect = false;
@@ -1012,12 +1016,14 @@ export class ProviderLiveSession implements LiveSession {
   }
 
   private interruptCurrentTurn(): void {
+    if (this.realtimeResponseId) this.ignoreRealtimeResponse(this.realtimeResponseId);
     this.pendingTurnCompletion = null;
     this.flushPlayback();
     this.callbacks.onInterrupted();
     this.internalTextTurn = false;
     this.inputTranscript = '';
     this.outputTranscript = '';
+    this.realtimeOutputParts.clear();
     this.callbacks.onModelVolume?.(0);
     this.setState('listening');
   }
@@ -1034,6 +1040,7 @@ export class ProviderLiveSession implements LiveSession {
     this.internalTextTurn = false;
     this.inputTranscript = '';
     this.outputTranscript = '';
+    this.realtimeOutputParts.clear();
   }
 
   private beginElevenLabsInterruption(): void {
@@ -1072,6 +1079,7 @@ export class ProviderLiveSession implements LiveSession {
     if (internal) {
       this.inputTranscript = '';
       this.outputTranscript = '';
+    this.realtimeOutputParts.clear();
       this.callbacks.onModelVolume?.(0);
       queueMicrotask(() => this.flushPendingTextTurns());
       return;
@@ -1083,6 +1091,7 @@ export class ProviderLiveSession implements LiveSession {
     this.callbacks.onTurnComplete(input, output);
     this.inputTranscript = '';
     this.outputTranscript = '';
+    this.realtimeOutputParts.clear();
     this.callbacks.onModelVolume?.(0);
     queueMicrotask(() => this.flushPendingTextTurns());
   }
@@ -1318,12 +1327,46 @@ export class ProviderLiveSession implements LiveSession {
     }
   }
 
+  private ignoreRealtimeResponse(id: string): void {
+    this.ignoredRealtimeResponses.add(id);
+    if (this.ignoredRealtimeResponses.size > 256) {
+      const oldest = this.ignoredRealtimeResponses.values().next().value;
+      if (oldest) this.ignoredRealtimeResponses.delete(oldest);
+    }
+  }
+
+  private updateRealtimeOutput(message: any, done = false): void {
+    const key = String(message.item_id || message.response_id || 'current');
+    const part = this.realtimeOutputParts.get(key) || { text: '', audio: '' };
+    const channel = String(message.type).includes('audio_transcript') ? 'audio' : 'text';
+    const text = String(done ? message.transcript ?? message.text ?? '' : message.delta ?? '');
+    // Deltas are literal fragments, not cumulative hypotheses. Deduplicate
+    // event IDs rather than deleting legitimate repeated words or syllables.
+    part[channel] = done ? text : part[channel] + text;
+    this.realtimeOutputParts.set(key, part);
+    // Prefer the spoken transcript when an item has both audio and text.
+    this.outputTranscript = [...this.realtimeOutputParts.values()].map(value => value.audio || value.text).join('\n');
+    if (this.pendingTurnCompletion) this.pendingTurnCompletion.output = this.outputTranscript.trim();
+    this.callbacks.onOutputTranscription(this.outputTranscript);
+  }
+
   private handleProviderMessage(raw: unknown, attempt = this.lifecycleId): void {
     if (!this.isCurrentAttempt(attempt)) return;
     if (typeof raw !== 'string') return;
     let message: any;
     try { message = JSON.parse(raw); } catch { return; }
     const type = String(message?.type || '');
+    const eventId = typeof message?.event_id === 'string' ? message.event_id : '';
+    if (eventId) {
+      if (this.realtimeEventIds.has(eventId)) return;
+      this.realtimeEventIds.add(eventId);
+      if (this.realtimeEventIds.size > 2048) {
+        const oldest = this.realtimeEventIds.values().next().value;
+        if (oldest) this.realtimeEventIds.delete(oldest);
+      }
+    }
+    const responseId = String(message.response_id || message.response?.id || '');
+    if (responseId && this.ignoredRealtimeResponses.has(responseId)) return;
 
     const functionCall = type === 'response.function_call_arguments.done'
       ? {
@@ -1513,23 +1556,24 @@ export class ProviderLiveSession implements LiveSession {
       if (this.provider.transport === 'xai-native') this.truncateXaiAssistantHistory();
       this.interruptCurrentTurn();
     } else if (type === 'response.created') {
+      this.realtimeResponseId = responseId || null;
       if (this.provider.transport === 'xai-native') this.resetXaiAssistantPlaybackTracking();
       if (this.awaitingToolContinuation && this.activeToolCalls.size === 0) {
         this.awaitingToolContinuation = false;
       }
       this.setState('thinking');
     } else if (type === 'response.output_audio_transcript.delta' || type === 'response.audio_transcript.delta' || type === 'response.output_text.delta') {
-      const delta = String(message.delta || '');
-      this.outputTranscript = appendText(this.outputTranscript, delta);
-      this.callbacks.onOutputTranscription(this.outputTranscript);
+      this.updateRealtimeOutput(message);
       this.setState('speaking');
+    } else if (type === 'response.output_audio_transcript.done' || type === 'response.audio_transcript.done' || type === 'response.output_text.done') {
+      this.updateRealtimeOutput(message, true);
     } else if (type === 'conversation.item.input_audio_transcription.updated' || type === 'conversation.item.input_audio_transcription.completed') {
       const text = String(message.transcript || '').trim();
       if (text && !this.internalTextTurn) {
         this.inputTranscript = text;
         this.callbacks.onInputTranscription(text);
       }
-    } else if (type === 'response.output_audio.delta') {
+    } else if (type === 'response.output_audio.delta' || type === 'response.audio.delta') {
       const audio = String(message.delta || '');
       if (audio) {
         const audioBytes = base64ToBytes(audio);
@@ -1553,6 +1597,7 @@ export class ProviderLiveSession implements LiveSession {
         return;
       }
       this.setState('listening');
+      if (responseId) this.ignoreRealtimeResponse(responseId);
       this.completeCurrentTurn();
     } else if (type === 'error') {
       this.failProvider(attempt, String(message.error?.message || message.message || 'Realtime provider error.'));
@@ -1600,6 +1645,9 @@ export class ProviderLiveSession implements LiveSession {
 
   private startModelVolumeLoop(): void {
     if (this.modelVolumeLoopId) cancelAnimationFrame(this.modelVolumeLoopId);
+    let values = new Uint8Array(this.playbackAnalyser?.frequencyBinCount ?? 0);
+    let previousBuckets: number[] | null = null;
+    let mutedPublished = false;
     const tick = () => {
       if (!this.playbackAnalyser || this.manualDisconnect || this.state === 'idle' || this.state === 'error') {
         this.modelVolumeLoopId = 0;
@@ -1607,7 +1655,10 @@ export class ProviderLiveSession implements LiveSession {
         return;
       }
       if (this.playbackAnalyser && this.state === 'speaking' && !this.speakerMuted) {
-        const values = new Uint8Array(this.playbackAnalyser.frequencyBinCount);
+        mutedPublished = false;
+        if (values.length !== this.playbackAnalyser.frequencyBinCount) {
+          values = new Uint8Array(this.playbackAnalyser.frequencyBinCount);
+        }
         this.playbackAnalyser.getByteFrequencyData(values);
         const buckets = [0, 0, 0, 0];
         const size = Math.max(1, Math.floor(values.length / buckets.length));
@@ -1616,9 +1667,16 @@ export class ProviderLiveSession implements LiveSession {
           for (let index = bucket * size; index < Math.min(values.length, (bucket + 1) * size); index += 1) total += values[index];
           buckets[bucket] = Math.min(100, Math.round((total / size / 255) * 100));
         }
-        this.callbacks.onModelVolume?.(buckets);
-      } else if (this.speakerMuted) {
+        if (!previousBuckets || buckets.some((value, index) => value !== previousBuckets![index])) {
+          this.callbacks.onModelVolume?.(buckets);
+          previousBuckets = buckets;
+        }
+      } else if (this.speakerMuted && !mutedPublished) {
         this.callbacks.onModelVolume?.(0);
+        mutedPublished = true;
+        previousBuckets = null;
+      } else if (this.state !== 'speaking') {
+        previousBuckets = null;
       }
       this.modelVolumeLoopId = requestAnimationFrame(tick);
     };
@@ -1714,6 +1772,7 @@ export class ProviderLiveSession implements LiveSession {
     this.internalTextTurn = internal;
     this.inputTranscript = internal ? '' : trimmed;
     this.outputTranscript = '';
+    this.realtimeOutputParts.clear();
     if (!internal) this.callbacks.onInputTranscription(trimmed);
     return true;
   }
@@ -1749,6 +1808,9 @@ export class ProviderLiveSession implements LiveSession {
   }
 
   private cleanup(): void {
+    this.realtimeEventIds.clear();
+    this.ignoredRealtimeResponses.clear();
+    this.realtimeResponseId = null;
     if (this.connectionWaiter) {
       const waiter = this.connectionWaiter;
       clearTimeout(waiter.timer);
@@ -1798,6 +1860,7 @@ export class ProviderLiveSession implements LiveSession {
     }
     this.inputTranscript = '';
     this.outputTranscript = '';
+    this.realtimeOutputParts.clear();
     this.callbacks.onMicVolume?.(0);
     this.callbacks.onModelVolume?.(0);
     this.callbacks.onToolCallActive?.(null);

@@ -11,11 +11,16 @@ import {
 } from '../core/terminal_background';
 import { resolveTerminalShell } from '../core/shell_resolver';
 import { referencesDesktopHelperScript } from '../shared/desktop_guard';
+import { groupParallelToolCalls } from '../../parallel-tool-calls';
+import { isSourceReadShellCommand } from '../../shell-command-shape';
+import {
+  MIN_TERMINAL_OUTPUT_CHARS, MAX_TERMINAL_OUTPUT_CHARS, explicitOutputChars,
+  resolveTerminalOutputKind, type TerminalOutputKind,
+} from '../../source-read-policy';
 
 const DEFAULT_MODEL_OUTPUT_CHARS = 24_000;
-const DEFAULT_SOURCE_READ_OUTPUT_CHARS = 128_000;
-const MIN_MODEL_OUTPUT_CHARS = 4_000;
-const MAX_MODEL_OUTPUT_CHARS = 256_000;
+const MIN_MODEL_OUTPUT_CHARS = MIN_TERMINAL_OUTPUT_CHARS;
+const MAX_MODEL_OUTPUT_CHARS = MAX_TERMINAL_OUTPUT_CHARS;
 
 type TerminalCommandRequest = {
   command: string;
@@ -24,10 +29,12 @@ type TerminalCommandRequest = {
   timeoutMs?: number;
   background?: boolean;
   maxOutputChars?: number;
+  outputKind?: TerminalOutputKind;
 };
 
 type TerminalCommandResult = {
   command: string;
+  outputKind?: TerminalOutputKind;
   success: boolean;
   stdout: string;
   stderr: string;
@@ -62,7 +69,8 @@ const commandRequestSchema = z.object({
   cwd: z.string().optional().describe('Optional working directory override for this command.'),
   timeoutSeconds: z.number().optional().describe('Optional foreground check-in override for this command, up to 120 seconds.'),
   background: z.boolean().optional().describe('Start this command immediately as a managed background process.'),
-  maxOutputChars: z.number().int().min(MIN_MODEL_OUTPUT_CHARS).max(MAX_MODEL_OUTPUT_CHARS).optional().describe('Optional output allowance for this command.'),
+  maxOutputChars: z.number().int().min(MIN_MODEL_OUTPUT_CHARS).max(MAX_MODEL_OUTPUT_CHARS).optional().describe('Optional log-output allowance. File/content reads are not clipped.'),
+  outputKind: z.enum(['read', 'log']).optional().describe('Auto-detected for standard commands. read preserves file/code/content output exactly; log bounds noisy execution output. Overrides the shared outputKind, not execution safety.'),
 });
 
 /** Give known installs and builds a useful foreground check-in automatically. */
@@ -79,40 +87,22 @@ function detectInstallTimeout(command: string): number {
 }
 
 export function normalizeModelOutputChars(value: unknown): number {
-  const requested = Number(value);
-  if (!Number.isFinite(requested)) return DEFAULT_MODEL_OUTPUT_CHARS;
-  return Math.max(MIN_MODEL_OUTPUT_CHARS, Math.min(MAX_MODEL_OUTPUT_CHARS, Math.floor(requested)));
+  return explicitOutputChars(value) ?? DEFAULT_MODEL_OUTPUT_CHARS;
 }
 
 /**
- * Whole-file and source-range reads need their beginning (imports, types, and
- * declarations) just as much as their end. Build, test, and log commands are
- * deliberately excluded so their noisy output keeps the smaller recent-output
- * window.
+ * Recognize file/content reads regardless of file extension. Execution logs
+ * are deliberately separate; they retain their bounded recent-output window.
  */
 export function isSourceReadCommand(command: string): boolean {
-  const normalized = String(command || '')
-    .replace(/\r?\n/g, ' ')
-    .trim();
-  if (!normalized) return false;
-
-  return [
-    /\bget-content\b/i,
-    /(?:\[system\.)?\[?io\.file\]?::readalltext\b/i,
-    /(?:^|[;&|]\s*)gc\b/i,
-    /(?:^|[;&|]\s*)(?:cat|bat|head|tail|less|more|nl)\b/i,
-    /(?:^|[;&|]\s*)type\s+(?!nul\b)/i,
-    /(?:^|[;&|]\s*)sed\s+-n\b/i,
-    /(?:^|[;&|]\s*)awk\b/i,
-    /(?:^|[;&|]\s*)git\s+(?:show|diff)\b/i,
-  ].some(pattern => pattern.test(normalized));
+  return isSourceReadShellCommand(command);
 }
 
-export function resolveModelOutputChars(command: string, value: unknown): number {
-  if (Number.isFinite(Number(value))) return normalizeModelOutputChars(value);
-  return isSourceReadCommand(command)
-    ? DEFAULT_SOURCE_READ_OUTPUT_CHARS
-    : DEFAULT_MODEL_OUTPUT_CHARS;
+export function resolveModelOutputChars(command: string, value: unknown, outputKind?: TerminalOutputKind): number {
+  if (resolveTerminalOutputKind(command, outputKind) === 'read') return Number.POSITIVE_INFINITY;
+  const explicit = explicitOutputChars(value);
+  if (explicit !== undefined) return explicit;
+  return DEFAULT_MODEL_OUTPUT_CHARS;
 }
 
 function keepRecentOutput(value: string, maxChars: number): { text: string; dropped: number } {
@@ -146,6 +136,22 @@ export function keepHeadAndTailOutput(value: string, maxChars: number): { text: 
 function ownerChatId(context: any): string | undefined {
   const value = String(context?.chatId || context?.projectId || '').trim();
   return value || undefined;
+}
+
+/** File/content sections are exempt; only logs share the batch allowance. */
+function fitBatchOutput(sections: { text: string; preserve: boolean }[], maxChars: number): { text: string; dropped: number }[] {
+  const allocations = new Array(sections.length).fill(0);
+  const bounded = sections.map((section, index) => ({ ...section, index }))
+    .filter(section => !section.preserve && section.text.length > 0);
+  let remaining = Math.max(0, maxChars - Math.max(0, bounded.length - 1) * 2);
+  const bySize = bounded.sort((a, b) => a.text.length - b.text.length);
+  bySize.forEach((section, index) => {
+    const share = Math.floor(remaining / (bySize.length - index));
+    allocations[section.index] = Math.min(share, section.text.length);
+    remaining -= allocations[section.index];
+  });
+  return sections.map((section, index) => section.preserve
+    ? { text: section.text, dropped: 0 } : keepRecentOutput(section.text, allocations[index]));
 }
 
 function safeTaskId(value: unknown): string {
@@ -266,16 +272,29 @@ async function executeTerminalCommand(
       shell,
       checkInMs: input.background ? 1 : timeoutMs,
       hardTimeoutMs: undefined,
-      maxOutputChars: resolveModelOutputChars(input.command, input.maxOutputChars),
+      maxOutputChars: normalizeModelOutputChars(input.maxOutputChars),
+      outputKind: resolveTerminalOutputKind(input.command, input.outputKind),
       immediateHandoff: input.background === true,
       surviveRunSettlement: input.background === true,
     });
 
+    const outputKind = resolveTerminalOutputKind(input.command, input.outputKind);
+    const outputLimit = resolveModelOutputChars(input.command, input.maxOutputChars, outputKind);
+    const rawStdout = typeof result.stdout === 'string' ? result.stdout : String(result.output || '');
+    const rawStderr = String(result.stderr || '');
+    const stderrView = keepRecentOutput(rawStderr, Math.min(rawStderr.length,
+      Math.max(Math.floor(outputLimit * 0.4), outputLimit - Math.min(rawStdout.length, outputLimit))));
+    const bufferNotice = Number(result.droppedOutputChars || 0) > 0
+      ? '...[earlier terminal output omitted; this is not a complete source read]...\n' : '';
+    const stdoutAllowance = Math.max(0, outputLimit - stderrView.text.length - bufferNotice.length);
+    const stdoutView = outputKind === 'read'
+      ? { text: rawStdout, dropped: 0 } : keepRecentOutput(rawStdout, stdoutAllowance);
     return {
       command: input.command,
+      outputKind,
       success: Boolean(result.success),
-      stdout: result.stdout || result.output || '',
-      stderr: result.stderr || '',
+      stdout: bufferNotice + stdoutView.text,
+      stderr: stderrView.text,
       exitCode: result.stillRunning ? null : result.exitCode ?? (result.success ? 0 : 1),
       timedOut: Boolean(result.timedOut),
       timeoutMs: result.timeoutMs,
@@ -285,7 +304,7 @@ async function executeTerminalCommand(
       stillRunning: Boolean(result.stillRunning),
       backgroundTaskId: result.backgroundTaskId || result.taskId,
       totalOutputChars: result.totalOutputChars,
-      droppedOutputChars: result.droppedOutputChars,
+      droppedOutputChars: Number(result.droppedOutputChars || 0) + stdoutView.dropped + stderrView.dropped,
       message: result.message,
       cwd: result.cwd || runDir,
       shell: result.shell || shell,
@@ -317,22 +336,26 @@ async function executeTerminalCommand(
  */
 export const workspaceRunCommandTool: ToolDefinition = {
   name: 'workspace_run_command',
-  description: 'Cross-platform workspace terminal for inspection, search, execution, package commands, managed processes, and verification. mode=run executes command or a commands batch. background=true returns a managed task immediately. mode=check/list/kill reads or controls managed tasks. Source reads have a larger bounded output allowance than other commands. File mutations belong to workspace_edit_file.',
+  modelDescription: 'mode=run (default): provide command OR commands:[{command,...}], never both. Batch independent reads/searches; up to six safe reads run concurrently, mutations stay ordered; parallel=false preserves dependencies. File/code/content reads are not clipped or summarized. Auto-detection covers literal readers/searches; set outputKind=read for other readers, log for noisy execution. maxOutputChars limits logs only. Read complete relevant files/sections, not project dumps: model context is finite. background=true returns a task ID, not completion. mode=check/kill requires returned taskId; check reuses outputEnd as sinceOffset. mode=list needs no taskId. Edit with workspace_edit_file.',
+  description: 'Cross-platform workspace terminal for inspection, search, execution, package commands, managed processes, and verification. mode=run executes command or a commands batch. background=true returns a managed task immediately. mode=check/list/kill reads or controls managed tasks. File/code/content reads remain exact; output limits apply only to logs. File mutations belong to workspace_edit_file.',
   category: 'workspace',
   inputSchema: z.object({
     mode: z.enum(['run', 'check', 'list', 'kill']).optional().describe('Defaults to run. check and kill require a returned taskId.'),
-    command: z.string().min(1).optional().describe('Single-command mode. Exact command for the runtime OS and selected shell. Use for file discovery, targeted reads, text search, metadata, scripts, builds, linting, and tests.'),
+    command: z.string().min(1).optional().describe('One command. For multiple independent reads/searches, prefer commands instead. Read complete small files or relevant function/type ranges in large files; do not repeatedly request tiny slices.'),
     commands: z.array(commandRequestSchema).min(1).max(32).optional().describe('Batch mode for independent terminal operations, especially parallel file reads and searches. Do not also provide command.'),
     taskId: z.string().optional().describe('Managed terminal task ID required by mode=check or mode=kill.'),
     sinceOffset: z.number().int().min(0).optional().describe('For mode=check, return only output produced after this offset. Reuse outputEnd from the previous check.'),
     cwd: z.string().optional().describe('Shared working directory. Prefer an absolute path, or use a path relative to the active user workspace. With no selected workspace, the runtime scratch root is used.'),
     timeoutSeconds: z.number().optional().describe('Foreground check-in in seconds, up to 120. This does not kill the command.'),
     background: z.boolean().optional().describe('Return immediately with a managed taskId. The process continues until it exits, is cancelled, or is killed.'),
-    maxOutputChars: z.number().int().min(MIN_MODEL_OUTPUT_CHARS).max(MAX_MODEL_OUTPUT_CHARS).optional().describe('Explicit terminal output allowance. Defaults to 128000 for recognized source reads and 24000 for builds, tests, logs, and other commands. In batch mode this also bounds the combined response.'),
-    parallel: z.boolean().optional().describe('Batch mode only. Run commands concurrently by default; set false when one command depends on an earlier command.'),
+    maxOutputChars: z.number().int().min(MIN_MODEL_OUTPUT_CHARS).max(MAX_MODEL_OUTPUT_CHARS).optional().describe(`Log-output allowance in characters: default ${DEFAULT_MODEL_OUTPUT_CHARS}, maximum ${MAX_MODEL_OUTPUT_CHARS}; also bounds combined logs in a batch. Does not truncate file/code/content reads.`),
+    outputKind: z.enum(['read', 'log']).optional().describe('Optional retention hint: read returns file/code/content output intact; log bounds noisy execution output. Standard literal reads/searches are recognized automatically. Shared by batch entries unless overridden. Does not authorize actions or make scripts parallel-safe.'),
+    parallel: z.boolean().optional().describe('Independent literal reads/searches run concurrently by default. Mutations and unknown shell scripts remain ordered. Set false for dependencies; true never overrides safety.'),
   }),
   outputSchema: z.object({
     success: z.boolean().optional(),
+    command: z.string().optional(),
+    outputKind: z.enum(['read', 'log', 'mixed']).optional(),
     stdout: z.string(),
     stderr: z.string(),
     exitCode: z.number().nullable().optional(),
@@ -415,6 +438,8 @@ export const workspaceRunCommandTool: ToolDefinition = {
       const output = String(task.output ?? task.stdout ?? '');
       return {
         success: mode === 'kill' ? killed : running || task.success !== false,
+        command: task.command,
+        outputKind: task.outputKind ?? resolveTerminalOutputKind(String(task.command || '')),
         // `output` is the chronological combined stream. Returning stdout,
         // stderr, and output repeated the same terminal text up to three times.
         stdout: output,
@@ -465,40 +490,35 @@ export const workspaceRunCommandTool: ToolDefinition = {
       timeoutSeconds: item.timeoutSeconds ?? input.timeoutSeconds,
       background: item.background ?? input.background,
       maxOutputChars: item.maxOutputChars ?? input.maxOutputChars,
+      outputKind: item.outputKind ?? input.outputKind,
     }));
-    let results: TerminalCommandResult[];
-    if (input.parallel !== false) {
-      results = await Promise.all(requests.map(request => executeTerminalCommand(request, context)));
-    } else {
-      results = [];
-      for (const request of requests) results.push(await executeTerminalCommand(request, context));
+    const results: TerminalCommandResult[] = [];
+    const calls = requests.map(args => ({ name: 'workspace_run_command', args }));
+    const groups = input.parallel === false ? calls.map(call => [call]) : groupParallelToolCalls(calls);
+    for (const group of groups) {
+      const settled = await Promise.allSettled(group.map(call => executeTerminalCommand(call.args, context)));
+      for (let index = 0; index < settled.length; index++) {
+        const result = settled[index];
+        results.push(result.status === 'fulfilled' ? result.value : {
+          command: group[index].args.command,
+          cwd: group[index].args.cwd,
+          success: false,
+          stdout: '',
+          stderr: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          exitCode: 1,
+        });
+      }
     }
 
-    const stdoutRaw = results
-      .map((result, index) => result.stdout
-        ? `[command ${index + 1}] ${result.command}\n${result.stdout}`
-        : '')
-      .filter(Boolean)
-      .join('\n\n');
-    const stderrRaw = results
-      .map((result, index) => result.stderr
-        ? `[command ${index + 1}] ${result.command}\n${result.stderr}`
-        : '')
-      .filter(Boolean)
-      .join('\n\n');
-    const combinedLimit = Number.isFinite(Number(input.maxOutputChars))
-      ? normalizeModelOutputChars(input.maxOutputChars)
-      : Math.min(
-          MAX_MODEL_OUTPUT_CHARS,
-          requests.reduce((sum, request) => sum + resolveModelOutputChars(request.command, request.maxOutputChars), 0),
-        );
-    const includesSourceReads = requests.some(request => isSourceReadCommand(request.command));
-    const stderrAllowance = Math.min(stderrRaw.length, Math.floor(combinedLimit * 0.4));
-    const stderrView = keepRecentOutput(stderrRaw, stderrAllowance || combinedLimit);
-    const stdoutAllowance = Math.max(0, combinedLimit - stderrView.text.length);
-    const stdoutView = includesSourceReads
-      ? keepHeadAndTailOutput(stdoutRaw, stdoutAllowance)
-      : keepRecentOutput(stdoutRaw, stdoutAllowance);
+    const reads = requests.map(request => resolveTerminalOutputKind(request.command, request.outputKind) === 'read');
+    const sections = results.flatMap((result, index) => ['stdout', 'stderr'].map(field => ({
+      text: result[field as 'stdout' | 'stderr']
+        ? `[command ${index + 1}] ${result.command}\n${result[field as 'stdout' | 'stderr']}` : '',
+      preserve: reads[index],
+    })));
+    const views = fitBatchOutput(sections, normalizeModelOutputChars(input.maxOutputChars));
+    const stdout = views.filter((_, index) => index % 2 === 0).map(view => view.text).filter(Boolean).join('\n\n');
+    const stderr = views.filter((_, index) => index % 2 === 1).map(view => view.text).filter(Boolean).join('\n\n');
     const metadata = results.map(({ stdout: _stdout, stderr: _stderr, ...result }) => result);
     const runningTasks = results.filter(result => result.stillRunning);
     const cwdValues = [...new Set(results.map(result => result.cwd).filter(Boolean))];
@@ -506,8 +526,9 @@ export const workspaceRunCommandTool: ToolDefinition = {
 
     return {
       success: results.every(result => result.success),
-      stdout: stdoutView.text,
-      stderr: stderrView.text,
+      stdout,
+      stderr,
+      outputKind: reads.every(Boolean) ? 'read' : reads.some(Boolean) ? 'mixed' : 'log',
       exitCode: runningTasks.length > 0 ? null : results.every(result => result.success) ? 0 : 1,
       timedOut: results.some(result => result.timedOut),
       stillRunning: runningTasks.length > 0,
@@ -515,7 +536,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
         ? `${runningTasks.length} command(s) continue as managed background tasks; use their task IDs to inspect later output.`
         : undefined,
       totalOutputChars: results.reduce((sum, result) => sum + Number(result.totalOutputChars ?? result.stdout.length + result.stderr.length), 0),
-      droppedOutputChars: results.reduce((sum, result) => sum + Number(result.droppedOutputChars || 0), 0) + stdoutView.dropped + stderrView.dropped,
+      droppedOutputChars: results.reduce((sum, result) => sum + Number(result.droppedOutputChars || 0), 0) + views.reduce((sum, view) => sum + view.dropped, 0),
       cwd: cwdValues.length === 1 ? cwdValues[0] : undefined,
       shell: shellValues.length === 1 ? shellValues[0] : undefined,
       batch: true,

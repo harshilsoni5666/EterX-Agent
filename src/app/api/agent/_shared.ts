@@ -148,6 +148,10 @@ export function requireChatOwner(chatId: string, sessionId: string) {
   return null;
 }
 
+export function isChatOwnedBySession(chatId: string, sessionId: string): boolean {
+  return chatOwners.get(chatId)?.sessionId === sessionId;
+}
+
 export async function readJsonObject(req: NextRequest): Promise<Record<string, any>> {
   try {
     const body = await req.json();

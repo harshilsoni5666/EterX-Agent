@@ -14,6 +14,8 @@ assert.equal(isPrivateReasoningTrace({ type: 'work_note', text: 'I’m checking 
 assert.equal(isLiveUserVisibleTrace({ type: 'thought_stream', uiOnly: true, isStreaming: true }), true);
 assert.equal(isLiveUserVisibleTrace({ type: 'thought_stream', text: 'private scratch work' }), false);
 assert.equal(isLiveUserVisibleTrace({ type: 'analysis', uiOnly: true, text: 'private scratch work' }), false);
+assert.equal(isLiveUserVisibleTrace({ type: 'tool_call', toolName: 'attachment_view', text: 'Viewed an image' }), false);
+assert.equal(isLiveUserVisibleTrace({ type: 'tool_call', name: 'attachment_view', text: 'Viewed a video' }), false);
 
 assert.deepEqual(
   filterUserVisibleTraces([

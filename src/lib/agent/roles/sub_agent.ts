@@ -12,7 +12,7 @@ import { getSearchRouteBrief } from '../../search/search-runtime';
 import { getImageGenerationRouteBrief } from '../../image/image-generation-runtime';
 import { getVideoGenerationRouteBrief } from '../../video/video-generation-runtime';
 import { formatUnknownError } from '../error-format';
-import { resolveModelContextWindow } from '../model-context-window';
+import { rebaseContextCompactionWindow } from '../model-context-window';
 
 function boundedHandoffPayload(value: string, maxChars = 20_000): { body: string; truncated: boolean } {
   if (value.length <= maxChars) return { body: value, truncated: false };
@@ -1039,16 +1039,9 @@ export class SubAgentSpawner {
     if (modelOverride?.provider && modelOverride?.model) {
       subAgentContext.selectedModelProvider = modelOverride.provider;
       subAgentContext.selectedModelName = modelOverride.model;
-      const childModelMaximum = resolveModelContextWindow(modelOverride.provider, modelOverride.model);
-      const inheritedCompaction = (subAgentContext as any).contextCompaction || {};
-      const inheritedBudget = Number(inheritedCompaction.activeContextWindow || 0);
-      (subAgentContext as any).contextCompaction = {
-        ...inheritedCompaction,
-        activeContextWindow: Number.isFinite(inheritedBudget) && inheritedBudget >= 16_000
-          ? Math.min(Math.floor(inheritedBudget), childModelMaximum)
-          : childModelMaximum,
-        activeModelContextWindow: childModelMaximum,
-      };
+      (subAgentContext as any).contextCompaction = rebaseContextCompactionWindow(
+        (subAgentContext as any).contextCompaction, modelOverride.provider, modelOverride.model,
+      );
       if (modelOverride.provider !== 'gemini') {
         subAgentContext.selectedModelMode = modelOverride.provider;
       }

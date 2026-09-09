@@ -125,7 +125,9 @@ async function* streamPerplexityResponses(
       };
     } else if (type === 'response.incomplete' || type === 'response.failed' || type === 'error') {
       const detail = event?.response?.incomplete_details?.reason || event?.response?.error?.message || event?.error?.message || type;
-      throw new Error(`MODEL_STREAM_INCOMPLETE: Perplexity Agent API returned ${detail}.`);
+      throw Object.assign(new Error(`MODEL_STREAM_INCOMPLETE: Perplexity Agent API returned ${detail}.`), {
+        cause: event?.response?.error || event?.error,
+      });
     }
   }
 }

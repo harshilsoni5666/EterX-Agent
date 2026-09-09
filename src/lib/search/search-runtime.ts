@@ -1,3 +1,4 @@
+import { MODEL_REQUEST_TIMEOUT_MS } from '../agent/model-request-policy';
 import { tavily } from '@tavily/core';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenAI } from '@google/genai';
@@ -308,12 +309,12 @@ const executeNativeGeminiSearch = async (input: SearchExecutionInput, context: a
   const key = apiKey || nativeModelKey('gemini', context);
   if (!key) throw new Error('No Gemini API key is available for native model search.');
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
-  const ai = new GoogleGenAI({ apiKey: key });
+  const ai = new GoogleGenAI({ httpOptions: { timeout: MODEL_REQUEST_TIMEOUT_MS }, apiKey: key });
   const response: any = await withTimeout(ai.models.generateContent({
     model: capability.model,
     contents: input.query,
     config: { tools: [{ googleSearch: {} }] },
-  }), 30_000);
+  }), MODEL_REQUEST_TIMEOUT_MS);
   const metadata = response?.candidates?.[0]?.groundingMetadata || response?.groundingMetadata || {};
   const chunks = Array.isArray(metadata?.groundingChunks) ? metadata.groundingChunks : [];
   const items = chunks.map((chunk: any) => {
@@ -347,7 +348,7 @@ const executeNativeResponsesSearch = async (input: SearchExecutionInput, context
       input: [{ role: 'user', content: input.query }],
       tools: [{ type: 'web_search' }],
     }),
-  });
+  }, MODEL_REQUEST_TIMEOUT_MS);
   const citations = responseURLCitations(payload);
   return {
     provider: 'model',
@@ -364,7 +365,7 @@ const executeNativeAnthropicSearch = async (input: SearchExecutionInput, context
   const key = apiKey || nativeModelKey('anthropic', context);
   if (!key) throw new Error('No Anthropic API key is available for native model search.');
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
-  const client = new Anthropic({ apiKey: key, baseURL: getProviderBaseURL('anthropic'), maxRetries: 0 });
+  const client = new Anthropic({ timeout: MODEL_REQUEST_TIMEOUT_MS, apiKey: key, baseURL: getProviderBaseURL('anthropic'), maxRetries: 0 });
   const messages: any[] = [{ role: 'user', content: input.query }];
   let response: any;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -373,7 +374,7 @@ const executeNativeAnthropicSearch = async (input: SearchExecutionInput, context
       max_tokens: 1600,
       messages,
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
-    } as any), 30_000);
+    } as any), MODEL_REQUEST_TIMEOUT_MS);
     if (response?.stop_reason !== 'pause_turn') break;
     messages.push({ role: 'assistant', content: response.content });
   }
@@ -395,12 +396,12 @@ const executeNativePerplexitySearch = async (input: SearchExecutionInput, contex
   const key = apiKey || nativeModelKey('perplexity', context);
   if (!key) throw new Error('No Perplexity API key is available for native model search.');
   if (!input.query) throw new Error("Search action requires the 'query' parameter.");
-  const client = new OpenAI({ apiKey: key, baseURL: getProviderBaseURL('perplexity'), maxRetries: 0 });
+  const client = new OpenAI({ timeout: MODEL_REQUEST_TIMEOUT_MS, apiKey: key, baseURL: getProviderBaseURL('perplexity'), maxRetries: 0 });
   const response: any = await withTimeout(client.chat.completions.create({
     model: capability.model,
     messages: [{ role: 'user', content: input.query }],
     max_tokens: 1600,
-  }), 30_000);
+  }), MODEL_REQUEST_TIMEOUT_MS);
   const citations = Array.isArray(response?.citations)
     ? response.citations.map((url: string) => ({ title: url, url }))
     : responseURLCitations(response);

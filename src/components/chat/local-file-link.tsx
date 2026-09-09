@@ -1,8 +1,17 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink } from 'lucide-react';
 import { getFileIconPath } from '../../lib/utils/file-icon-utils';
+import { defaultUrlTransform } from 'react-markdown';
 
 export const LOCAL_FILE_HREF_PREFIX = '#eterx-local-file:';
+export const LocalFileWorkspaceContext = React.createContext<string | null>(null);
+
+const isAbsoluteLocalPath = (value: string) => /^(?:[A-Za-z]:[\\/]|\\\\|\/|~[\\/])/.test(value);
+const isRelativeArtifactPath = (value: string) => !/^(?:[a-z][\w+.-]*:|\/\/|#|\?)/i.test(value)
+  && !/[?#\r\n\0]/.test(value)
+  && (/^\.\.?[\\/]/.test(value)
+    || /[\\/][^\\/]+\.[a-z0-9]{1,16}$/i.test(value)
+    || /^[^\\/]+\.(?:html?|pdf|docx?|xlsx?|csv|tsv|pptx?|zip|png|jpe?g|svg|webp|txt|md|json|py|tsx?|jsx?)$/i.test(value));
 
 const CODE_FENCE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
 const INLINE_CODE_SPLIT = /(`[^`\n]*`)/g;
@@ -80,10 +89,28 @@ export const decodeLocalFileHref = (href?: string | null) => {
       }
     }
 
-    if (isLocalFilePath(candidate)) return candidate;
+    // Explicit links may point to extensionless files or directories anywhere
+    // on the host. Keep automatic prose detection more conservative.
+    if (/^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/]|\/(?!\/)|~[\\/])/.test(candidate)
+      && !/[\r\n\0]/.test(candidate)) {
+      try { return decodeURIComponent(candidate); } catch { return candidate; }
+    }
+    if (isRelativeArtifactPath(candidate)) {
+      try { return decodeURIComponent(candidate); } catch { return candidate; }
+    }
   }
 
   return null;
+};
+
+// Canonicalize native destinations before Markdown's protocol sanitizer. Image
+// sources still use its normal policy; only anchors become native file chips.
+export const localAwareUrlTransform = (url: string, key: string) => {
+  if (key === 'href') {
+    const localPath = decodeLocalFileHref(url);
+    if (localPath) return encodeLocalFileHref(localPath);
+  }
+  return defaultUrlTransform(url);
 };
 
 /**
@@ -103,11 +130,8 @@ export const normalizeEscapedLocalFileLinks = (value: string) => {
 const escapeMarkdownLinkText = (value: string) => value.replace(/([\\[\]])/g, '\\$1');
 
 const filePathMarkdownLink = (filePath: string) => {
-  // A trailing separator is useful for detecting a directory in plain model
-  // text, but it can escape the closing Markdown destination after some
-  // provider/remark decoding paths. The native opener accepts the canonical
-  // directory path without that separator.
-  const cleanedPath = filePath.trim().replace(/[\\/]+$/, '');
+  // The encoded destination preserves a trailing directory separator safely.
+  const cleanedPath = filePath.trim();
   if (!cleanedPath) return '';
   const fileName = escapeMarkdownLinkText(getLocalFileName(cleanedPath));
   return `[${ fileName }](${ encodeLocalFileHref(cleanedPath) })`;
@@ -155,7 +179,7 @@ export const openLocalFilePath = async (filePath: string) => {
   if (electronApi?.openPath) {
     try {
       const result = await electronApi.openPath(target);
-      if (result === true || result?.ok === true) return true;
+      return result === true || result?.ok === true;
     } catch {
       // A packaged renderer can outlive a restarting native bridge. Continue
       // through the bundled local server instead of leaving the chip inert.
@@ -177,7 +201,9 @@ export const openLocalFilePath = async (filePath: string) => {
 };
 
 export const LocalFileIcon = React.memo(({ fileName, size = 'md' }: { fileName: string; size?: 'sm' | 'md' }) => {
-  const iconPath = useMemo(() => getFileIconPath(fileName, { extensionless: 'folder' }), [fileName]);
+  const iconPath = useMemo(() => /[\\/]$/.test(fileName)
+    ? '/icons/files/folder.svg'
+    : getFileIconPath(fileName, { extensionless: 'folder' }), [fileName]);
   const isSmall = size === 'sm';
   const iconSize = isSmall ? 'h-4 w-4' : 'h-5 w-5';
 
@@ -201,59 +227,71 @@ export const LocalFileLinkChip = React.memo(({
   label?: string;
   compact?: boolean;
 }) => {
+  const workspace = React.useContext(LocalFileWorkspaceContext);
+  const target = isAbsoluteLocalPath(filePath) ? filePath
+    : workspace && isAbsoluteLocalPath(workspace)
+      ? `${workspace.replace(/[\\/]+$/, '')}/${filePath}` : null;
   const [copied, setCopied] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const name = label?.trim() || getLocalFileName(filePath);
+  const [message, setMessage] = useState('');
+  const [opening, setOpening] = useState(false);
+  const pending = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; if (timer.current) clearTimeout(timer.current); };
+  }, []);
+  const suppliedLabel = label?.trim();
+  const name = suppliedLabel && !decodeLocalFileHref(suppliedLabel) && suppliedLabel !== filePath
+    ? suppliedLabel : getLocalFileName(filePath);
 
   const copyPath = async (event: React.MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1000);
-    await copyTextToClipboard(filePath);
+    const ok = await copyTextToClipboard(target || filePath);
+    if (!mounted.current) return;
+    setCopied(ok);
+    setMessage(ok ? 'Path copied' : 'Could not copy path');
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => { setCopied(false); setMessage(''); }, 1800);
   };
 
-  const openPath = (event: React.SyntheticEvent) => {
+  const openPath = async (event: React.SyntheticEvent) => {
     event.preventDefault();
     event.stopPropagation();
 
-    openLocalFilePath(filePath)
-      .then((ok) => {
-        if (!ok) {
-          setFailed(true);
-          window.setTimeout(() => setFailed(false), 1800);
-        }
-      })
-      .catch(() => {
-        setFailed(true);
-        window.setTimeout(() => setFailed(false), 1800);
-    });
-  };
-
-  const handleKeyboardOpen = (event: React.KeyboardEvent<HTMLSpanElement>) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    openPath(event);
+    if (pending.current) return;
+    if (!target) { setMessage('Could not open — this relative path needs its workspace'); return; }
+    pending.current = true;
+    setOpening(true);
+    setMessage('');
+    if (timer.current) clearTimeout(timer.current);
+    const ok = await openLocalFilePath(target).catch(() => false);
+    pending.current = false;
+    if (!mounted.current) return;
+    setOpening(false);
+    setMessage(ok ? '' : 'Could not open — the path may be missing or have no associated app');
   };
 
   return (
     <span
-      onClick={openPath}
-      onKeyDown={handleKeyboardOpen}
       className={`eterx-local-file-chip inline-flex min-w-0 max-w-full items-center overflow-hidden align-middle text-left ${ compact ? 'my-0.5' : 'my-1' } rounded-[10px] border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`}
-      role="button"
-      tabIndex={0}
-      aria-label={`Open ${name}`}
-      aria-description={`Full path: ${filePath}`}
+      title={message ? `${message}\n${target || filePath}` : target || filePath}
     >
-      <span
-        className={`inline-flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-l-[10px] ${ compact ? 'px-2 py-1' : 'px-2.5 py-1.5' } text-left`}
+      <button
+        type="button"
+        onClick={openPath}
+        aria-label={`Open ${name}`}
+        aria-busy={opening}
+        aria-disabled={opening}
+        className={`eterx-local-file-chip-open inline-flex min-w-0 items-center gap-2 overflow-hidden rounded-l-[10px] ${ compact ? 'h-8 px-2' : 'h-9 px-2.5' } text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current`}
       >
-        <LocalFileIcon fileName={name} size={compact ? 'sm' : 'md'} />
+        <LocalFileIcon fileName={filePath} size={compact ? 'sm' : 'md'} />
         <span className="eterx-local-file-chip-name min-w-0 truncate text-[12.75px] font-semibold leading-tight tracking-normal text-[#E8E6E3]">
-          {failed ? 'Open failed' : name}
+          {name}
         </span>
         <ExternalLink className="eterx-local-file-chip-icon h-3.5 w-3.5 shrink-0 text-[#807A72] opacity-75" strokeWidth={2} />
-      </span>
+      </button>
       <span className="eterx-local-file-chip-divider h-6 w-px shrink-0 bg-white/[0.10]" aria-hidden="true" />
       <button
         type="button"
@@ -264,6 +302,7 @@ export const LocalFileLinkChip = React.memo(({
       >
         {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" strokeWidth={2.2} /> : <Copy className="h-3.5 w-3.5" strokeWidth={2.1} />}
       </button>
+      <span role="status" className={message.startsWith('Could not') ? 'eterx-local-file-chip-error' : 'sr-only'}>{message}</span>
     </span>
   );
 });

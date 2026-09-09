@@ -1,10 +1,9 @@
+import { requestJson } from '../../../../lib/request-json';
 import { NextRequest, NextResponse } from 'next/server';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  applyRuntimeApiKeys,
-  applyRuntimeModelOverrides,
-  getRuntimeApiKey,
   getRuntimeApiKeyStatus,
-  getRuntimeApiKeyValues,
+  getRuntimeApiKeyValues as savedApiKeyValues,
   type RuntimeApiKeyProvider,
 } from '../../../../lib/agent/runtime-api-keys';
 import {
@@ -17,8 +16,9 @@ import {
 } from '../../../../lib/agent/model-routing';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import {
-  applyRuntimeProviderBaseURLs,
-  getProviderBaseURL,
+  getProviderBaseURL as savedProviderBaseURL,
+  getRuntimeProviderBaseURLs,
+  normalizeProviderBaseURL,
   isLocalModelProvider,
 } from '../../../../lib/agent/provider-runtime';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
@@ -26,6 +26,17 @@ import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+// Discovery and per-key connection checks are read-only. Their credentials
+// must not replace a running chat's settings or leak into another request.
+const discoveryScope = new AsyncLocalStorage<{
+  keys: Record<string, string[]>;
+  baseURLs: Partial<Record<MainAgentProvider, string>>;
+}>();
+const getRuntimeApiKeyValues = (provider: RuntimeApiKeyProvider): string[] =>
+  discoveryScope.getStore()?.keys[provider] || (discoveryScope.getStore() ? [] : savedApiKeyValues(provider));
+const getProviderBaseURL = (provider: MainAgentProvider): string =>
+  savedProviderBaseURL(provider, discoveryScope.getStore()?.baseURLs);
 
 type ProviderModel = {
   id: string;
@@ -52,21 +63,7 @@ type ProviderModelResult = {
   error?: string;
 };
 
-const MODEL_FETCH_TIMEOUT_MS = 12_000;
-
-const withTimeout = async <T,>(promise: Promise<T>, ms = MODEL_FETCH_TIMEOUT_MS): Promise<T> => {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Timed out after ${ ms }ms`)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-};
+const MODEL_FETCH_TIMEOUT_MS = 60_000;
 
 const NON_AGENT_MODEL_ID = /(?:^|[/:._-])(?:audio|embed(?:ding)?s?|image|moderation|orpheus|realtime|speech|transcri(?:be|ption)|translate|tts|whisper|guard|rerank|search|video)(?:$|[/:._-])/i;
 const NON_CONCRETE_MODEL_ID = /^(?:auto|default|latest|recommended)(?:[\s_-]|$)/i;
@@ -218,10 +215,10 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
     // source of truth rather than silently dropping later model pages.
     for (let page = 0; page < 100; page++) {
       const token = pageToken ? `&pageToken=${ encodeURIComponent(pageToken) }` : '';
-      const res = await withTimeout(fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000${ token }`, {
+      const res = await requestJson(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000${ token }`, {
         cache: 'no-store',
         headers: { 'x-goog-api-key': apiKey },
-      }));
+      }, MODEL_FETCH_TIMEOUT_MS);
       if (!res.ok) throw new Error(`Gemini models request failed (${ res.status })`);
       const data = await res.json();
       rawModels.push(...(Array.isArray(data.models) ? data.models : []));
@@ -271,10 +268,10 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
 
   try {
     const baseUrl = getProviderBaseURL('openai');
-    const res = await withTimeout(fetch(`${baseUrl}/models`, {
+    const res = await requestJson(`${baseUrl}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${ apiKey }` },
-    }));
+    }, MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`OpenAI models request failed (${ res.status })`);
     const data = await res.json();
     const mappedModels = (data.data || [])
@@ -313,10 +310,10 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
   try {
     const headers: Record<string, string> = { Authorization: `Bearer ${ apiKey }` };
     const baseUrl = getProviderBaseURL('openrouter');
-    const res = await withTimeout(fetch(`${baseUrl}/models?output_modalities=all`, {
+    const res = await requestJson(`${baseUrl}/models?output_modalities=all`, {
       cache: 'no-store',
       headers,
-    }));
+    }, MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`OpenRouter models request failed (${ res.status })`);
     const data = await res.json();
     const mappedModels = (data.data || [])
@@ -365,13 +362,13 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
 
   try {
     const baseUrl = getProviderBaseURL('groq');
-    const res = await withTimeout(fetch(`${baseUrl}/models`, {
+    const res = await requestJson(`${baseUrl}/models`, {
       cache: 'no-store',
       headers: {
         Authorization: `Bearer ${ apiKey }`,
         'Content-Type': 'application/json',
       },
-    }));
+    }, MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`Groq models request failed (${ res.status })`);
     const data = await res.json();
     const mappedModels = (data.data || [])
@@ -404,10 +401,10 @@ async function fetchMistralModels(): Promise<ProviderModelResult> {
 
   try {
     const baseUrl = getProviderBaseURL('mistral');
-    const res = await withTimeout(fetch(`${baseUrl}/models`, {
+    const res = await requestJson(`${baseUrl}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${ apiKey }` },
-    }));
+    }, MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`Mistral models request failed (${ res.status })`);
     const data = await res.json();
     const mappedModels = (data.data || [])
@@ -446,13 +443,13 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
     for (let page = 0; page < 20; page++) {
       const query = new URLSearchParams({ limit: '100' });
       if (afterId) query.set('after_id', afterId);
-      const res = await withTimeout(fetch(`${baseUrl.replace(/\/+$/, '')}/v1/models?${query.toString()}`, {
+      const res = await requestJson(`${baseUrl.replace(/\/+$/, '')}/v1/models?${query.toString()}`, {
         cache: 'no-store',
         headers: {
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
         },
-      }));
+      }, MODEL_FETCH_TIMEOUT_MS);
       if (!res.ok) throw new Error(`Anthropic models request failed (${res.status})`);
       const data = await res.json();
       const pageModels = Array.isArray(data?.data) ? data.data : [];
@@ -508,10 +505,10 @@ async function fetchDeepSeekModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKeyValues('deepseek' as any)[0];
   if (!apiKey) return { provider: 'deepseek' as any, connected: false, source: 'unavailable', models: [], error: 'Missing DeepSeek API key' };
   try {
-    const res = await withTimeout(fetch(`${getProviderBaseURL('deepseek').replace(/\/+$/, '')}/models`, {
+    const res = await requestJson(`${getProviderBaseURL('deepseek').replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
-    }));
+    }, MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`DeepSeek models request failed (${res.status})`);
     const data = await res.json();
     const models = trimModels((data.data || []).map((model: any) => ({
@@ -529,10 +526,10 @@ async function fetchGrokModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKeyValues('grok' as any)[0];
   if (!apiKey) return { provider: 'grok' as any, connected: false, source: 'unavailable', models: [], error: 'Missing xAI Grok API key' };
   try {
-    const res = await withTimeout(fetch(`${getProviderBaseURL('grok').replace(/\/+$/, '')}/models`, {
+    const res = await requestJson(`${getProviderBaseURL('grok').replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
-    }));
+    }, MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`Grok models request failed (${res.status})`);
     const data = await res.json();
     const models = trimModels((data.data || []).map((model: any) => ({
@@ -550,10 +547,10 @@ async function fetchCerebrasModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKeyValues('cerebras' as any)[0];
   if (!apiKey) return { provider: 'cerebras' as any, connected: false, source: 'unavailable', models: [], error: 'Missing Cerebras API key' };
   try {
-    const res = await withTimeout(fetch(`${getProviderBaseURL('cerebras').replace(/\/+$/, '')}/models`, {
+    const res = await requestJson(`${getProviderBaseURL('cerebras').replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
-    }));
+    }, MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`Cerebras models request failed (${res.status})`);
     const data = await res.json();
     const models = trimModels((data.data || []).map((model: any) => ({
@@ -571,10 +568,10 @@ async function fetchTogetherModels(): Promise<ProviderModelResult> {
   const apiKey = getRuntimeApiKeyValues('together' as any)[0];
   if (!apiKey) return { provider: 'together' as any, connected: false, source: 'unavailable', models: [], error: 'Missing Together API key' };
   try {
-    const res = await withTimeout(fetch(`${getProviderBaseURL('together').replace(/\/+$/, '')}/models`, {
+    const res = await requestJson(`${getProviderBaseURL('together').replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
-    }));
+    }, MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`Together models request failed (${res.status})`);
     const data = await res.json();
     const raw = Array.isArray(data) ? data : data.data || [];
@@ -595,10 +592,10 @@ async function fetchElevenLabsVoices(): Promise<ProviderModelResult> {
   try {
     const headers: Record<string, string> = {};
     if (apiKey) headers['xi-api-key'] = apiKey;
-    const res = await withTimeout(fetch('https://api.elevenlabs.io/v1/voices', {
+    const res = await requestJson('https://api.elevenlabs.io/v1/voices', {
       cache: 'no-store',
       headers,
-    }));
+    }, MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`ElevenLabs voices request failed (${res.status})`);
     const data = await res.json();
     const raw = data.voices || [];
@@ -617,10 +614,10 @@ async function fetchOllamaModels(): Promise<ProviderModelResult> {
   try {
     const baseURL = getProviderBaseURL('ollama') || 'http://127.0.0.1:11434/v1';
     const apiKey = getRuntimeApiKeyValues('ollama' as any)[0] || 'ollama';
-    let res = await withTimeout(fetch(`${baseURL}/models`, {
+    let res = await requestJson(`${baseURL}/models`, {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
-    }), 4000);
+    }, 30_000);
 
     // Older Ollama releases may expose the native catalog before they expose
     // the OpenAI-compatible `/v1/models` route. Keep that route as a fallback
@@ -628,7 +625,7 @@ async function fetchOllamaModels(): Promise<ProviderModelResult> {
     // which always uses the documented `/v1` OpenAI-compatible API.
     if (!res.ok) {
       const host = baseURL.replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
-      res = await withTimeout(fetch(`${host}/api/tags`, { cache: 'no-store' }), 4000);
+      res = await requestJson(`${host}/api/tags`, { cache: 'no-store' }, 30_000);
     }
     if (!res.ok) throw new Error(`Ollama local request failed (${res.status})`);
     const data = await res.json();
@@ -650,16 +647,16 @@ async function fetchLMStudioModels(): Promise<ProviderModelResult> {
     const baseURL = getProviderBaseURL('lmstudio') || 'http://127.0.0.1:1234/v1';
     const apiKey = getRuntimeApiKeyValues('lmstudio' as any)[0];
     const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
-    let res = await withTimeout(fetch(`${baseURL}/models`, {
+    let res = await requestJson(`${baseURL}/models`, {
       cache: 'no-store',
       headers,
-    }), 4000);
+    }, 30_000);
     // LM Studio also exposes a native catalog at `/api/v1/models`. Prefer the
     // OpenAI-compatible path for consistency with chat, then support the
     // native path for installations where only the v1 REST server is enabled.
     if (!res.ok) {
       const host = baseURL.replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
-      res = await withTimeout(fetch(`${host}/api/v1/models`, { cache: 'no-store', headers }), 4000);
+      res = await requestJson(`${host}/api/v1/models`, { cache: 'no-store', headers }, 30_000);
     }
     if (!res.ok) throw new Error(`LM Studio local request failed (${res.status})`);
     const data = await res.json();
@@ -702,10 +699,10 @@ async function fetchCompatibleModels(provider: MainAgentProvider): Promise<Provi
   try {
     const headers: Record<string, string> = {};
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-    const res = await withTimeout(fetch(`${baseURL.replace(/\/+$/, '')}/models`, {
+    const res = await requestJson(`${baseURL.replace(/\/+$/, '')}/models`, {
       cache: 'no-store',
       headers,
-    }), isLocalModelProvider(provider) ? 4_000 : MODEL_FETCH_TIMEOUT_MS);
+    }, isLocalModelProvider(provider) ? 30_000 : MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`${provider} models request failed (${res.status})`);
     const payload = await res.json();
     const raw = Array.isArray(payload) ? payload : payload?.data || payload?.models || [];
@@ -753,27 +750,19 @@ export async function POST(req: NextRequest) {
   if (originError) return originError;
   hydrateServerRuntimeSettings();
   const body = await req.json().catch(() => ({}));
-  if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'apiKeys')) {
-    if (body.replaceRuntimeKeys === true) {
-      applyRuntimeApiKeys(body.apiKeys && typeof body.apiKeys === 'object' ? body.apiKeys : {});
-    } else {
-      const mergedKeys = Object.keys(getRuntimeApiKeyStatus()).reduce<Record<string, string[]>>((acc, provider) => {
-        acc[provider] = getRuntimeApiKeyValues(provider as RuntimeApiKeyProvider);
-        return acc;
-      }, {});
-      Object.entries(body.apiKeys && typeof body.apiKeys === 'object' ? body.apiKeys : {}).forEach(([provider, value]) => {
-        mergedKeys[provider] = Array.isArray(value) ? value.map(String) : [String(value || '')];
-      });
-      applyRuntimeApiKeys(mergedKeys);
-    }
+  const keys: Record<string, string[]> = body?.replaceRuntimeKeys === true ? {} : Object.fromEntries(
+    Object.keys(getRuntimeApiKeyStatus()).map(provider => [provider, savedApiKeyValues(provider as RuntimeApiKeyProvider)]),
+  );
+  for (const [provider, value] of Object.entries(body?.apiKeys && typeof body.apiKeys === 'object' ? body.apiKeys : {})) {
+    keys[provider] = (Array.isArray(value) ? value : [value]).flatMap(item => String(item || '').split(/[\n,;]+/))
+      .map(key => key.trim()).filter(Boolean);
   }
-  if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'modelOverrides')) {
-    applyRuntimeModelOverrides(body.modelOverrides);
-  }
-  if (body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'baseURLs')) {
-    applyRuntimeProviderBaseURLs(body.baseURLs);
-  }
+  const baseURLs = body?.baseURLs && typeof body.baseURLs === 'object'
+    ? Object.fromEntries(Object.entries(body.baseURLs).filter(([provider]) => isModelProvider(provider))
+      .map(([provider, value]) => [provider, normalizeProviderBaseURL(provider as MainAgentProvider, value)]))
+    : getRuntimeProviderBaseURLs();
 
+  return discoveryScope.run({ keys, baseURLs }, async () => {
   const requested = Array.isArray(body?.providers) && body.providers.length > 0
     ? new Set(body.providers.map((provider: unknown) => String(provider)))
     : null;
@@ -825,6 +814,7 @@ export async function POST(req: NextRequest) {
       acc[result.provider] = result;
       return acc;
     }, {}),
+  });
   });
 }
 

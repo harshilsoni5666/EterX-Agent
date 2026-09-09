@@ -1,9 +1,16 @@
 import type { Metadata } from 'next';
 import type { CSSProperties } from 'react';
 import './globals.css';
+import '@xterm/xterm/css/xterm.css';
+import './chat-terminal.css';
 import './light-theme.generated.css';
 import './light-theme.enterprise.css';
 import './scrollbars.css';
+import './composer-menus.css';
+import './light-theme.polish.css';
+import './composer-responsive.css';
+import './conversation-layout.css';
+import '../../electron/splash.css';
 import 'katex/dist/katex.min.css';
 import { ThemeBridge } from '../components/theme/theme-bridge';
 import { ClipboardPasteBridge } from '../components/ui/clipboard-paste-bridge';
@@ -25,20 +32,9 @@ export const metadata: Metadata = {
   title: 'EterX — Autonomous Agent OS',
   description: 'EterX is a next-generation autonomous agent workspace. Think deeper, build faster, work smarter.',
   icons: {
-    // Keep browser/OS surfaces readable in both themes. The primary mark is
-    // white for the dark shell, while the light theme needs the dark variant.
-    icon: [
-      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
-      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
-    ],
-    shortcut: [
-      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
-      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
-    ],
-    apple: [
-      { url: '/logo-whitetheme.png', media: '(prefers-color-scheme: light)' },
-      { url: '/logo-white.png', media: '(prefers-color-scheme: dark)' },
-    ],
+    icon: '/logo.png',
+    shortcut: '/logo.png',
+    apple: '/logo.png',
   },
 };
 
@@ -46,6 +42,8 @@ const createThemeInitScript = (initialPreference: string) => `
 (function () {
   try {
     var requested = ${JSON.stringify(initialPreference)};
+    var desktopTheme = window.electronAPI && window.electronAPI.initialTheme;
+    if (desktopTheme === 'dark' || desktopTheme === 'light') requested = desktopTheme;
     if (requested !== 'dark' && requested !== 'light' && requested !== 'system') requested = '${DEFAULT_THEME}';
     var resolved = requested === 'system'
       ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
@@ -75,8 +73,10 @@ export default function RootLayout({
   const initialTheme = resolveInitialTheme(initialPreference);
   return (
     <html lang="en" className={initialTheme} style={localFontVariables} data-theme={initialTheme} suppressHydrationWarning>
-      <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
+      <head>
         <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: createThemeInitScript(initialPreference) }} />
+      </head>
+      <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
         <ThemeBridge />
         <ClipboardPasteBridge />
         {children}

@@ -1,0 +1,77 @@
+.eterx-terminal-dock { --terminal-bg: #111111; --terminal-fg: #dedbd6; --terminal-muted: #979797; --terminal-tab: #232323; --terminal-hover: #ffffff0d; --terminal-error: #e78284; position: relative; flex-shrink: 0; min-height: 140px; max-height: 60%; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--terminal-bg); color: var(--terminal-fg); overflow: visible; }
+:root[data-theme="light"] .eterx-terminal-dock { --terminal-bg: #fafafa; --terminal-fg: #292d35; --terminal-muted: #737780; --terminal-tab: #eaecef; --terminal-hover: #20253009; --terminal-error: #be3548; color-scheme: light; }
+.eterx-terminal-resize { position: absolute; top: -7px; left: 0; right: 0; height: 14px; cursor: row-resize; z-index: 40; touch-action: none; user-select: none; outline: none; }
+.eterx-terminal-resize::after { content: ''; position: absolute; left: 0; right: 0; top: 6px; height: 2px; background: var(--terminal-muted); opacity: 0; transition: opacity 120ms; }
+.eterx-terminal-resize:hover::after, .eterx-terminal-resize:focus-visible::after, .eterx-terminal-dock[data-resizing] .eterx-terminal-resize::after { opacity: .55; }
+.eterx-terminal-dock[data-resizing] { user-select: none; }
+.eterx-terminal-toolbar { display: flex; align-items: center; gap: 6px; padding: 7px 12px; min-height: 44px; flex-shrink: 0; }
+.eterx-terminal-tabs { position: relative; display: flex; gap: 5px; overflow-x: auto; overflow-y: hidden; min-width: 0; max-width: 100%; scrollbar-width: none; overscroll-behavior-x: contain; }
+.eterx-terminal-tabs::-webkit-scrollbar { display: none; }
+.eterx-terminal-tabs[data-fade-left="true"][data-fade-right="false"] { mask-image: linear-gradient(to right, transparent, #000 18px); }
+.eterx-terminal-tabs[data-fade-left="false"][data-fade-right="true"] { mask-image: linear-gradient(to left, transparent, #000 18px); }
+.eterx-terminal-tabs[data-fade-left="true"][data-fade-right="true"] { mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent); }
+.eterx-terminal-tab { display: flex; align-items: center; border-radius: 9px; color: var(--terminal-muted); flex-shrink: 0; transition: background-color 120ms, color 120ms; }
+.eterx-terminal-tab.is-active { background: var(--terminal-tab); color: var(--terminal-fg); }
+.eterx-terminal-tab { padding: 2px 3px; gap: 0; }
+.eterx-terminal-tab:hover { background: var(--terminal-hover); }
+.eterx-terminal-tab.is-active:hover { background: var(--terminal-tab); }
+.eterx-terminal-tab > button[role="tab"] { background: transparent !important; border: 0; box-shadow: none; }
+.eterx-terminal-tab > button:last-child { flex-shrink: 0; width: 26px; height: 26px; padding: 6px; border-radius: 7px; }
+.eterx-terminal-tab button { display: flex; align-items: center; gap: 6px; padding: 6px 5px; border-radius: 8px; font-size: 12px; }
+.eterx-terminal-tab span { max-width: 130px; overflow: hidden; white-space: nowrap; padding-right: 4px; mask-image: linear-gradient(to right, #000 calc(100% - 4px), transparent); }
+.eterx-terminal-tab svg { flex-shrink: 0; }
+.eterx-terminal-tab button:hover, .eterx-terminal-action:hover { background: var(--terminal-hover); color: var(--terminal-fg); }
+.eterx-terminal-dock button:focus-visible { outline: 2px solid var(--terminal-muted); outline-offset: -2px; }
+.eterx-terminal-action { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 28px; height: 28px; border-radius: 8px; color: var(--terminal-muted); }
+.eterx-terminal-action:disabled { opacity: .4; }
+.eterx-terminal-folder { margin-left: auto; min-width: 0; max-width: 35%; font-size: 11px; color: var(--terminal-muted); overflow: hidden; white-space: nowrap; padding-left: 14px; direction: rtl; text-align: right; mask-image: linear-gradient(to right, transparent, #000 14px); }
+.eterx-terminal-host { flex: 1; min-height: 0; min-width: 0; padding: 5px 12px 10px; overflow: hidden; background: var(--terminal-bg); }
+.eterx-terminal-surface { height: 100%; width: 100%; min-width: 0; background: var(--terminal-bg); }
+.eterx-terminal-surface .xterm { height: 100%; overflow: hidden; background: var(--terminal-bg); }
+/* The viewport extends below the last complete terminal row. Match that area
+   to the terminal canvas instead of xterm's default black backdrop. */
+.eterx-terminal-dock .xterm .xterm-viewport { background-color: var(--terminal-bg) !important; overflow-x: hidden !important; }
+.eterx-terminal-dock .xterm .xterm-scrollable-element { background-color: var(--terminal-bg); }
+.eterx-terminal-dock .xterm .xterm-scrollable-element > .scrollbar.horizontal { display: none !important; }
+.eterx-terminal-dock .xterm .xterm-scrollable-element > .shadow { display: none !important; }
+.eterx-terminal-dock .xterm .xterm-helper-textarea { min-height: 0 !important; min-width: 0 !important; box-shadow: none !important; background: transparent !important; }
+.eterx-terminal-empty { position: absolute; inset: 65px 0 15px; display: grid; place-items: center; pointer-events: none; font-size: 13px; color: var(--terminal-muted); }
+.eterx-terminal-empty button { pointer-events: auto; padding: 8px 14px; border-radius: 8px; background: var(--terminal-tab); }
+.eterx-terminal-error { padding: 4px 14px; color: var(--terminal-error); font-size: 12px; }
+
+/* Reuse the live terminal surface when changing placement; only geometry
+   changes, so the shell, scrollback, tabs and current command stay intact. */
+.eterx-chat-column[data-terminal-placement="right"] { flex-direction: row; }
+.eterx-terminal-dock[data-placement="right"] {
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  min-width: 240px;
+  max-width: max(240px, calc(100% - 280px));
+  border-top: 0;
+  border-left: 1px solid var(--border);
+}
+.eterx-terminal-dock[data-placement="right"] .eterx-terminal-resize {
+  top: 0;
+  bottom: 0;
+  left: -7px;
+  right: auto;
+  width: 14px;
+  height: 100%;
+  cursor: col-resize;
+}
+.eterx-terminal-dock[data-placement="right"] .eterx-terminal-resize::after {
+  left: 6px;
+  right: auto;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  height: auto;
+}
+.eterx-terminal-dock[data-placement="right"] .eterx-terminal-resize:hover::after,
+.eterx-terminal-dock[data-placement="right"][data-resizing] .eterx-terminal-resize::after {
+  width: 2px;
+  height: auto;
+}
+.eterx-terminal-dock[data-placement="right"] .eterx-terminal-folder { display: none; }
+.eterx-terminal-toolbar > .eterx-terminal-action:last-child { margin-left: auto; }

@@ -314,13 +314,22 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   // Listen for background task updates
   useEffect(() => {
+    let disposed = false;
+    let inFlight = false;
+    const applyTasks = (tasks: ScheduledTaskItem[]) => {
+      if (disposed) return;
+      const serialized = JSON.stringify(tasks);
+      setScheduledTasks(previous => JSON.stringify(previous) === serialized ? previous : tasks);
+    };
     const handleSync = () => {
       try {
       const tasks = JSON.parse(appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
-        setScheduledTasks(Array.isArray(tasks) ? tasks.map(normalizeScheduledTask) : []);
+        applyTasks(Array.isArray(tasks) ? tasks.map(normalizeScheduledTask) : []);
       } catch { }
     };
     const syncDurableTasks = async () => {
+      if (disposed || inFlight || document.hidden) return;
+      inFlight = true;
       try {
       const pendingLocalWriteAt = Number(appStorage.getItem('eterx_scheduled_tasks_sync_pending') || 0);
         if (pendingLocalWriteAt && Date.now() - pendingLocalWriteAt < 15_000) return;
@@ -328,6 +337,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
         const response = await fetch('/api/scheduled-tasks', { cache: 'no-store' });
         if (!response.ok) return;
         const snapshot = await response.json();
+        if (disposed) return;
         const durable = Array.isArray(snapshot?.tasks) ? snapshot.tasks.map(normalizeScheduledTask) : [];
       const local = JSON.parse(appStorage.getItem(SCHEDULED_TASKS_STORAGE_KEY) || '[]');
         if (durable.length === 0 && Number(snapshot?.savedAt || 0) <= 0 && Array.isArray(local) && local.length > 0) {
@@ -335,16 +345,19 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
           return;
         }
       appStorage.setItem(SCHEDULED_TASKS_STORAGE_KEY, JSON.stringify(durable));
-        setScheduledTasks(durable);
-      } catch { }
+        applyTasks(durable);
+      } catch { } finally { inFlight = false; }
     };
     window.addEventListener(SCHEDULED_TASKS_UPDATED_EVENT, handleSync);
     window.addEventListener('focus', syncDurableTasks);
+    document.addEventListener('visibilitychange', syncDurableTasks);
     void syncDurableTasks();
     const interval = window.setInterval(syncDurableTasks, 4000);
     return () => {
+      disposed = true;
       window.removeEventListener(SCHEDULED_TASKS_UPDATED_EVENT, handleSync);
       window.removeEventListener('focus', syncDurableTasks);
+      document.removeEventListener('visibilitychange', syncDurableTasks);
       window.clearInterval(interval);
     };
   }, []);

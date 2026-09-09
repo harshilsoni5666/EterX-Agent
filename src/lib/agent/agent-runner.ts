@@ -1,3 +1,4 @@
+import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
 /**
  * Agent Runner — Runtime for executing custom-built agents
  * 
@@ -12,6 +13,10 @@
  * Uses the same apiKeyPool for API key management.
  */
 import path from 'path';
+import { WORK_NOTE_POLICY } from './work-note';
+import { SOURCE_READING_POLICY } from './source-read-policy';
+import { schemaUsageDescription } from './tools/registry';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { apiKeyPool } from './api-key-pool';
@@ -33,7 +38,7 @@ import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from '
 import { getPathResolverInfo, resolveWorkspacePathForContext } from './workspace/path_resolver';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
-import { normalizeProviderCacheUsage } from './provider-prompt-cache';
+import { normalizeProviderCacheUsage, resolveProviderPromptCacheMode } from './provider-prompt-cache';
 import { getOrCreateAgentCache, handleAgentCacheNotFound } from './agent-cache';
 import { sanitizeGeminiHistory } from './context-hot-path';
 import { toolResultCompactor } from './memory/tool-result-compactor';
@@ -49,16 +54,19 @@ import {
 import { mergeStreamingText } from '../streaming-lifecycle';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
-import { splitLeadingParallelToolCalls } from './parallel-tool-calls';
+import { groupParallelToolCalls } from './parallel-tool-calls';
 import { buildFilePreviewTraceId, buildLineDiffPreview, languageFromFilename } from './tool-trace';
 import { compactContextAtBoundary } from './resilience/context-compaction';
+import { openWorkingContextCheckpoint, resolveWorkingContextRequest } from './working-context-checkpoint';
 import { getSearchRouteBrief } from '../search/search-runtime';
 import { formatUnknownError } from './error-format';
 import { getImageGenerationRouteBrief } from '../image/image-generation-runtime';
 import { getVideoGenerationRouteBrief } from '../video/video-generation-runtime';
-import { getApiRetries, isProviderFailoverError, waitForApiRetry } from './api-retry';
+import { getApiRetries, isProviderContextLimitError, isProviderFailoverError, waitForApiRetry } from './api-retry';
 import { getContextFabricForChat } from './context-fabric';
 import { hydratePersistedConversationContext } from './conversation-context';
+import { detectChatBoundaryFromHistory } from './chat-boundary';
+import { CONTEXT_CONTINUITY_OPERATING_POLICY } from './context-operating-policy';
 
 // The standalone builder endpoint can import this runner without importing
 // AgentRegistry first, so ensure the complete builder tool surface is present.
@@ -235,6 +243,8 @@ export class AgentRunner {
         this.profile.name,
       )}
 
+${CONTEXT_CONTINUITY_OPERATING_POLICY}
+
 ## Current persisted target profile
 This snapshot is the latest authoritative configuration. Chat history explains user intent; this persisted state identifies what currently exists. A ready profile remains fully editable.
 ${persistedSnapshot}
@@ -257,6 +267,7 @@ ${persistedSnapshot}
     // Professional prompt (the core identity — written by the builder)
     parts.push(this.profile.professionalPrompt!);
     parts.push(`\n${buildRuntimePlatformPrompt('auto')}`);
+    parts.push(`\n${CONTEXT_CONTINUITY_OPERATING_POLICY}`);
 
     // Mission
     if (this.profile.mission) {
@@ -298,7 +309,8 @@ ${persistedSnapshot}
 
 Your tool calls are rendered in the same professional work timeline as the main EterX agent.
 
-Before each non-trivial tool batch, write one brief task-specific work note in the same response. One note covers all related calls; do not write one per call. State the purpose or a relevant finding and next move; later notes should reflect results, a changed approach, recovery, a milestone, or verification. An action note must be a complete natural first-person sentence, not a bare gerund or action-label fragment; vary the opening instead of defaulting to one phrase. A finding may lead with evidence, but connect any next action in first person. Never expose private reasoning or claim unverified results.
+${WORK_NOTE_POLICY}
+${SOURCE_READING_POLICY}
 
 Every tool call must include:
 - uiActionText: a precise 2-4 word action label for the timeline. No step numbers, no brackets, no punctuation-heavy text, no code dumps. Examples: "Reading fetch script", "Finding dataset URL", "Running CSV inspection", "Verifying generated file".
@@ -307,12 +319,19 @@ Every tool call must include:
 Use file_read for reading files, file_create for creating files, file_edit for editing files, terminal for commands, folder_read for directory listing, search for local/code searches, web_search for web lookup, and verification for checks/tests.`);
 
     parts.push(`
-## Final response format
+## Final response judgment
 
-- Lead with the outcome or key finding. Use concise prose and only the structure the result needs; no decorative titles, emojis, filler, automatic report sections, or generic closing offer.
-- Use tables only for short repeated fields and Mermaid only when relationships are materially clearer visually. Do not duplicate prose in either.
+- Adapt to the user's intent, audience, context, and requested depth. Preserve this agent's specialist deliverable requirements; these principles guide ordinary replies without imposing a template.
+- Answer the current request, using history to resolve references and retain constraints. Do not repeat earlier completed work as a new accomplishment or treat every question, example, or correction as a completion report.
+- Lead with the answer or useful result, then explain what the user needs to understand or use it. Prefer connected paragraphs in plain language; be brief for a simple result and thorough when the explanation requires it.
+- Use bullets for parallel points, numbering when order matters, and short sentence-case headings only when substantial separate topics need navigation. Do not repeat the request as a large title or force Summary, Changes, Verification, Next Steps, or Conclusion sections.
+- Use a table only when items share attributes that are easier to compare in rows and columns, or when requested. Keep cells concise and leave explanations, procedures, code, and derivations outside tables. A few facts or file changes do not need a table.
+- Use diagrams when they clarify relationships or flow, or when requested. Write Mermaid in a mermaid-tagged fence with valid syntax, quoted complex labels, and a readable layout. Do not rely on renderer repairs or duplicate the diagram in a table or prose.
+- Use bold sparingly, inline code for literal code or commands, and language-tagged fences for code blocks. Keep Markdown spacing valid. Avoid decorative formatting, filler, repeated summaries, and generic closing offers.
+- Keep ordinary replies professional: do not add emojis, emoji bullets, decorative icons, ornamental Unicode, or celebratory badges unless explicitly requested or faithfully quoting supplied content. Use plain words for status and emphasis.
+- Ground claims in evidence; distinguish findings from assumptions and preserve material uncertainty. Explain what changed and why, with verification or limitations only when relevant. Do not invent actions or results.
 - Link a known local deliverable once as [filename](#eterx-local-file:<URL-encoded-absolute-path>); never expose or repeat a raw path.
-- Mention verification, limits, and residual risk only when relevant.`);
+- End when the answer is complete. Include a next action only when it helps the user use the result or resolve an actual blocker.`);
 
     parts.push(`
 ## Parallel tool execution
@@ -368,22 +387,24 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       try {
         const decl: any = {
           name: tool.name,
-          description: (tool.description || '').substring(0, 420),
+          description: registryTool?.modelDescription || (tool.description || '').substring(0, 420),
         };
 
         // Priority 1: Registry tool with Zod inputSchema → convert via zodToJsonSchema
         if (registryTool?.inputSchema) {
           try {
-            const { zodToJsonSchema } = require('zod-to-json-schema');
-            const rawSchema = zodToJsonSchema(registryTool.inputSchema);
+            const { getToolInputJsonSchema } = require('./tools/registry');
+            const rawSchema = getToolInputJsonSchema(registryTool);
             if (rawSchema && typeof rawSchema === 'object') {
               const cleaned = cleanSchemaForGemini(rawSchema);
               if (cleaned && cleaned.properties && Object.keys(cleaned.properties).length > 0) {
                 decl.parameters = cleaned;
               }
             }
-          } catch {
-            // Schema conversion failed — tool works without params
+          } catch (error) {
+            // Never publish a parameterless version of an argument-taking tool.
+            console.warn(`[AgentRunner] Cannot expose ${tool.name}:`, error);
+            continue;
           }
         }
         // Priority 2: Custom tool declaration with parameters already set
@@ -422,7 +443,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
    *
    * Advanced features:
    * - Thinking/reasoning trace extraction
-   * - Per-tool execution timeout (30s)
+   * - Tool cancellation and explicitly requested execution deadlines
    * - Exponential backoff for transient errors
    * - Debug logging of function declarations
    * - Schema validation error reporting
@@ -431,6 +452,16 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     messages: Array<{ role: 'user' | 'model'; content: string }>,
     config: AgentRunnerConfig
   ): AsyncGenerator<AgentRunnerEvent> {
+    // A browser session spans many queries; it is never a dialogue identity.
+    // Give standalone callers a fresh run ID while retaining one explicit ID
+    // throughout provider retries, flow execution and terminal persistence.
+    config = {
+      ...config,
+      pinnedContext: {
+        ...config.pinnedContext,
+        runId: String(config.pinnedContext?.runId || '').trim() || `custom-run-${randomUUID()}`,
+      },
+    };
     const isBuilderRuntime = config.runtime === 'agent_builder';
     this.userInitiatedCommunication = isUserInitiatedCommunicationRequest(
       messages.filter(message => message.role === 'user').at(-1)?.content || '',
@@ -662,8 +693,9 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     const ownsLease = !config.apiKey;
 
     try {
-      let ai = new GoogleGenAI({ apiKey: effectiveApiKey });
-      const currentRequest = [...messages].reverse().find(item => item.role === 'user')?.content || '';
+      let ai = new GoogleGenAI({ apiKey: effectiveApiKey, httpOptions: { timeout: MODEL_REQUEST_TIMEOUT_MS } });
+      const runtimeCurrentRequest = [...messages].reverse().find(item => item.role === 'user')?.content || '';
+      const currentRequest = resolveWorkingContextRequest(config.pinnedContext, runtimeCurrentRequest);
       let systemInstruction = this.buildSystemInstruction(currentRequest);
       let funcDecls = this.buildFunctionDeclarations(currentRequest);
       let resolvedToolSurfaceSignature = this.resolvedTools.map(tool => tool.name).join('\0');
@@ -709,12 +741,24 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         String(config.chatId || continuityScopeId),
         currentRequest,
       );
-      const fabricContext = contextFabric.compileWorkingSet(currentRequest, 8_000);
-      if (fabricContext) dynamicRunContextParts.push(fabricContext);
+      const hasHistoricalObjective = contextFabric.hasFactKind('objective');
+      let requestMode: 'new' | 'continuation' = hasHistoricalObjective ? 'continuation' : 'new';
+      if (hasHistoricalObjective) {
+        const boundary = detectChatBoundaryFromHistory({
+          newMessage: currentRequest,
+          history: messages,
+          hasActiveTask: contextFabric.hasActiveFactKind('objective')
+            || contextFabric.hasActiveFactKind('next_action'),
+        });
+        if (boundary.decision === 'new_task' && boundary.shouldResetSession) {
+          contextFabric.beginTaskBoundary('Custom-agent runtime confidently detected a new objective.');
+          requestMode = 'new';
+        }
+      }
       contextFabric.observeUserRequest(
         currentRequest,
-        'continuation',
-        String(config.pinnedContext?.runId || config.agentSessionId || ''),
+        requestMode,
+        String(config.pinnedContext.runId),
       );
       const selfImprovementEnabled = this.runtimeKind !== 'agent_builder'
         && resolveSelfImprovementEnabled(config.pinnedContext?.selfImprovementEnabled);
@@ -744,13 +788,28 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         funcDecls,
       ).catch(() => null);
 
-      // Format conversation history
-      let contents = normalizeConversationTurns(messages.map(m => ({
+      // The last user entry owns this request; earlier turns remain the
+      // checkpoint's visible lineage, not a substitute for its tool records.
+      const currentMessageIndex = messages.map(item => item.role).lastIndexOf('user');
+      const priorMessages = currentMessageIndex >= 0 ? messages.slice(0, currentMessageIndex) : messages;
+      const checkpointWarnings: string[] = [];
+      const workingCheckpoint = await openWorkingContextCheckpoint({
+        chatId: compactionScopeId, provider: 'gemini', model: resolvedModel, kind: 'gemini',
+        history: priorMessages, currentRequest,
+        fabric: contextFabric,
+        runId: String(config.pinnedContext?.runId || ''),
+        enabled: config.pinnedContext?.disableSessionPersistence !== true || config.pinnedContext?.durableContextPersistence === true,
+        onWarning: text => checkpointWarnings.push(text),
+      });
+      let contents = normalizeConversationTurns([
+        ...workingCheckpoint.contents,
+        ...[...workingCheckpoint.remainingHistory, ...(!workingCheckpoint.currentRequestIncluded && currentMessageIndex >= 0 ? messages.slice(currentMessageIndex) : [])].map(m => ({
         role: m.role === 'user' ? 'user' as const : 'model' as const,
         parts: [{ text: m.content }],
-      })));
+        })),
+      ]);
       const currentUserTurnIndex = contents.map(turn => turn.role).lastIndexOf('user');
-      if (currentUserTurnIndex >= 0) {
+      if (currentUserTurnIndex >= 0 && !workingCheckpoint.currentRequestIncluded) {
         contents[currentUserTurnIndex] = {
           ...contents[currentUserTurnIndex],
           parts: [
@@ -774,13 +833,20 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       let cacheRecoveryAttempts = 0;
       let hadSuccessfulModelResponse = false;
       let completedNaturally = false;
+      let finalAnswerText = '';
+      let terminalFailureText = '';
       let iterationsStarted = 0;
       let modelRequestStarted = false;
       const configuredRetries = getApiRetries(config.runtimeSettings || {
         apiRetries: config.pinnedContext?.maxRetries,
       });
       const maxProviderAttempts = Math.max(1, geminiKeyPool.length) * (configuredRetries + 1);
-      let lastObservedContextInputTokens = 0;
+      let lastObservedContextInputTokens = workingCheckpoint.calibration?.inputTokens || 0;
+      let lastObservedContextLocalTokens = workingCheckpoint.calibration?.localTokens || 0;
+      let requestContextLocalTokens = 0;
+      let activeContextRequestId = '';
+      let forceContextCompaction = false;
+      let contextOverflowRecoveryAttempts = 0;
 
       // ReAct loop
       for (let iteration = 0; iteration < maxIter; iteration++) {
@@ -863,11 +929,22 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               ).catch(() => null);
             }
           }
+          // Refresh after every completed tool cycle, outside the reusable
+          // static prompt/tool cache and without adding synthetic user turns.
+          customAgentCachedContent = await getOrCreateAgentCache(
+            ai, effectiveApiKey, resolvedModel, systemInstruction, funcDecls,
+          ).catch(() => null);
+          const workingSet = contextFabric.compileWorkingSet(currentRequest, 8_000);
+          const iterationContextCue = workingSet
+            ? `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${workingSet}\n[END CURRENT RUNTIME CONTINUITY]`
+            : '';
+          const iterationSystemInstruction = [systemInstruction, iterationContextCue].filter(Boolean).join('\n');
           const contextEvents: any[] = [];
           let wakeContextEvent: (() => void) | null = null;
           let contextBoundarySettled = false;
           let contextBoundaryError: unknown = null;
           const publishContextEvent = (event: any) => {
+            activeContextRequestId = String(event.contextRequestId || activeContextRequestId);
             contextEvents.push(event);
             const wake = wakeContextEvent;
             wakeContextEvent = null;
@@ -877,13 +954,12 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             // The exact transcript archive is the compaction commit boundary.
             // A transient Context Fabric disk flush must not skip context
             // measurement and let the provider payload grow without control.
-            await contextFabric.flush().catch(() => undefined);
-            const continuityManifest = contextFabric.buildContinuityManifest();
+            await contextFabric.flushLedger().catch(() => undefined);
             const compacted = await compactContextAtBoundary({
               chatId: compactionScopeId,
               kind: 'gemini',
               contents,
-              systemInstruction,
+              systemInstruction: iterationSystemInstruction,
               tools: funcDecls,
               activeModel: { provider: 'gemini', modelId: resolvedModel },
               rawSettings: config.pinnedContext?.contextCompaction,
@@ -891,12 +967,14 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               modelContextWindowOverride: config.pinnedContext?.contextCompaction?.activeModelContextWindow,
               runtimeSettings: config.runtimeSettings,
               providerReportedInputTokens: lastObservedContextInputTokens,
+              providerReportedLocalEstimatedTokens: lastObservedContextLocalTokens,
               abortSignal: runAbortController.signal,
-              continuityManifest,
+              continuityManifestFactory: () => contextFabric.buildContinuityManifest(),
               semanticBoundary: 'safe',
+              forceCompaction: forceContextCompaction,
               onEvent: publishContextEvent,
             });
-            return { compacted, continuityManifest };
+            return compacted;
           })().catch((error: unknown) => {
             contextBoundaryError = error;
             return null;
@@ -927,6 +1005,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           }
 
           const contextBoundaryResult = await contextBoundary;
+          requestContextLocalTokens = Number(contextBoundaryResult?.usage.localEstimatedTokens || 0);
           if (
             runAbortController.signal.aborted
             || isToolCancellationError(contextBoundaryError)
@@ -934,11 +1013,14 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           ) {
             throw new Error('CANCELLED_BY_USER');
           }
-          if (contextBoundaryResult?.compacted.compacted) {
-            const { compacted, continuityManifest } = contextBoundaryResult;
+          if (contextBoundaryResult?.compacted) {
+            const compacted = contextBoundaryResult;
             contents = normalizeConversationTurns(compacted.contents);
-            lastObservedContextInputTokens = compacted.usage.usedTokens;
-            if (compacted.capsule) {
+            lastObservedContextInputTokens = 0;
+            lastObservedContextLocalTokens = 0;
+            if (compacted.capsule && compacted.continuityManifest) {
+              const continuityManifest = compacted.continuityManifest;
+              forceContextCompaction = false;
               const restoredFactIds = compacted.capsule.restoredContinuityFactIds || [];
               if (restoredFactIds.length > 0) contextFabric.recordCompactionFeedback({
                 coveredFactIds: continuityManifest.facts.map(fact => fact.id).filter(id => !restoredFactIds.includes(id)),
@@ -952,6 +1034,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               );
             }
           }
+          await workingCheckpoint.save(contents, resolvedModel, 'gemini', {
+            inputTokens: lastObservedContextInputTokens, localTokens: lastObservedContextLocalTokens,
+          });
+          for (const text of checkpointWarnings.splice(0)) yield { type: 'status', text, timestamp: Date.now() };
 
           // Final provider boundary: retain Gemini's original signed model
           // parts and remove only responses whose authentic call was compacted
@@ -963,8 +1049,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             contents,
             config: {
               ...(customAgentCachedContent
-                ? { cachedContent: customAgentCachedContent }
-                : { systemInstruction }),
+                ? { cachedContent: customAgentCachedContent, ...(iterationContextCue ? { systemInstruction: iterationContextCue } : {}) }
+                : { systemInstruction: iterationSystemInstruction }),
               temperature: config.temperature ?? 0.4,
               abortSignal: runAbortController.signal,
             },
@@ -998,7 +1084,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             runtime: this.runtimeKind,
             cacheActive: Boolean(customAgentCachedContent),
             ...estimateRequestTokenBudget({
-              system: systemInstruction,
+              system: iterationSystemInstruction,
               tools: funcDecls,
               messages: contents,
             }),
@@ -1061,16 +1147,22 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           };
           if (latestUsageMetadata) {
             const normalizedUsage = normalizeProviderCacheUsage('gemini', latestUsageMetadata);
-            lastObservedContextInputTokens = Number(
-              normalizedUsage.inputTokens || latestUsageMetadata.promptTokenCount || lastObservedContextInputTokens,
+            const reportedInputTokens = Number(
+              normalizedUsage.inputTokens || latestUsageMetadata.promptTokenCount || 0,
             );
+            if (Number.isFinite(reportedInputTokens) && reportedInputTokens > 0) {
+              lastObservedContextInputTokens = reportedInputTokens;
+              lastObservedContextLocalTokens = requestContextLocalTokens;
+            }
             if (Number(normalizedUsage.totalTokens || 0) > 0) {
               yield {
                 type: 'model_usage',
+                contextRequestId: activeContextRequestId,
                 usageId: `usage_gemini_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
                 source: 'provider',
                 provider: 'gemini',
                 model: resolvedModel,
+                cacheMode: resolveProviderPromptCacheMode('gemini', process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1', !!customAgentCachedContent),
                 ...normalizedUsage,
                 interaction: iteration + 1,
                 agentId: config.agentId,
@@ -1084,13 +1176,15 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             // Check for safety/blocking reasons
             const finishReason = candidate?.finishReason;
             if (finishReason === 'SAFETY') {
-              yield { type: 'error', text: 'Response was blocked by safety filters. Try rephrasing your request.', timestamp: Date.now() };
+              terminalFailureText = 'Response was blocked by safety filters. Try rephrasing your request.';
+              yield { type: 'error', text: terminalFailureText, timestamp: Date.now() };
             } else {
+              terminalFailureText = finishReason
+                ? `The model returned no content (finish reason: ${String(finishReason)}).`
+                : 'The model returned an empty response before Agent Builder could run a tool.';
               yield {
                 type: 'error',
-                text: finishReason
-                  ? `The model returned no content (finish reason: ${String(finishReason)}).`
-                  : 'The model returned an empty response before Agent Builder could run a tool.',
+                text: terminalFailureText,
                 timestamp: Date.now(),
               };
             }
@@ -1112,6 +1206,12 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           };
           const functionCalls: FunctionCallRecord[] = [];
           const responseHasToolCalls = candidate.content.parts.some((part: any) => !!part.functionCall);
+          if (!responseHasToolCalls) {
+            finalAnswerText = bufferedVisibleText || candidate.content.parts
+              .filter((part: any) => part?.text && !part?.thought)
+              .map((part: any) => String(part.text))
+              .join('');
+          }
           let visibleTextEmitted = false;
           if (bufferedVisibleText) {
             visibleTextEmitted = true;
@@ -1297,15 +1397,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               }
               for await (const event of runBatch([askUserCall])) yield event;
             } else {
-              const { parallel, ordered } = splitLeadingParallelToolCalls(functionCalls);
-              if (parallel.length > 1) {
-                console.log(`[AgentRunner] Executing ${parallel.length} independent tools in parallel: ${parallel.map(call => call.name).join(', ')}`);
-              }
-              if (parallel.length > 0) {
-                for await (const event of runBatch(parallel)) yield event;
-              }
-              for (const call of ordered) {
-                for await (const event of runBatch([call])) yield event;
+              for (const group of groupParallelToolCalls(functionCalls)) {
+                for await (const event of runBatch(group)) yield event;
               }
             }
 
@@ -1351,6 +1444,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           if (hasToolCalls && toolResultParts.length > 0) {
             contents.push({ role: 'model', parts: candidate.content.parts as any });
             contents.push({ role: 'user' as any, parts: toolResultParts as any });
+            await workingCheckpoint.save(contents, resolvedModel, 'gemini', {
+              inputTokens: lastObservedContextInputTokens, localTokens: lastObservedContextLocalTokens,
+            });
+            for (const text of checkpointWarnings.splice(0)) yield { type: 'status', text, timestamp: Date.now() };
 
             yield {
               type: 'status',
@@ -1362,6 +1459,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           }
 
           // No tool calls — agent is done
+          await workingCheckpoint.save(contents, resolvedModel, 'gemini', {
+            inputTokens: lastObservedContextInputTokens, localTokens: lastObservedContextLocalTokens,
+          });
+          for (const text of checkpointWarnings.splice(0)) yield { type: 'status', text, timestamp: Date.now() };
           completedNaturally = true;
           break;
 
@@ -1395,11 +1496,27 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             continue;
           }
 
+          if (
+            modelRequestStarted
+            && isProviderContextLimitError(err)
+            && contextOverflowRecoveryAttempts < 2
+          ) {
+            // The provider's real limit overrides catalog/local estimates.
+            // Repeat this exact iteration only after the normal durable
+            // compactor has had a chance to archive and reduce the transcript.
+            contextOverflowRecoveryAttempts += 1;
+            forceContextCompaction = true;
+            iteration -= 1;
+            iterationsStarted = Math.max(0, iterationsStarted - 1);
+            continue;
+          }
+
           // Detect schema/declaration errors specifically
           if (errMsg.includes('Invalid JSON payload') || errMsg.includes('function_declarations')) {
+            terminalFailureText = `Tool schema error: ${errMsg.substring(0, 300)}.`;
             yield {
               type: 'error',
-              text: `Tool schema error: ${errMsg.substring(0, 300)}. This usually means a tool parameter type is not supported by the Gemini API.`,
+              text: `${terminalFailureText} This usually means a tool parameter type is not supported by the Gemini API.`,
               timestamp: Date.now(),
             };
             console.error(`[AgentRunner] Schema error for ${agentName}:`, errMsg);
@@ -1414,15 +1531,17 @@ Current date/time and per-run evidence are supplied with the latest request.`);
 
           // Transient errors — exponential backoff
           if (!modelRequestStarted || !isProviderFailoverError(err)) {
-            yield { type: 'error', text: `Iteration ${iteration}: ${errMsg.substring(0, 300)}`, timestamp: Date.now() };
+            terminalFailureText = `Iteration ${iteration}: ${errMsg.substring(0, 300)}`;
+            yield { type: 'error', text: terminalFailureText, timestamp: Date.now() };
             break;
           }
 
           providerAttempts++;
           if (providerAttempts >= maxProviderAttempts) {
+            terminalFailureText = `All ${maxProviderAttempts} configured API route attempts failed. Last error: ${errMsg.substring(0, 240)}`;
             yield {
               type: 'error',
-              text: `All ${maxProviderAttempts} configured API route attempts failed. Last error: ${errMsg.substring(0, 240)}`,
+              text: terminalFailureText,
               timestamp: Date.now(),
             };
             break;
@@ -1433,7 +1552,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           const previousKey = effectiveApiKey;
           effectiveApiKey = geminiKeyPool[nextKeyIndex] || previousKey;
           if (effectiveApiKey !== previousKey) {
-            ai = new GoogleGenAI({ apiKey: effectiveApiKey });
+            ai = new GoogleGenAI({ apiKey: effectiveApiKey, httpOptions: { timeout: MODEL_REQUEST_TIMEOUT_MS } });
             customAgentCachedContent = null;
             cacheRecoveryAttempts = 0;
           }
@@ -1460,13 +1579,34 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         totalToolCalls > 0 &&
         !this.cancelled
       ) {
+        terminalFailureText = `${agentName} reached the ${maxIter}-iteration safety limit before producing a final response.`;
         yield {
           type: 'error',
-          text: `${agentName} reached the ${maxIter}-iteration safety limit before producing a final response.`,
+          text: terminalFailureText,
           agentName,
           timestamp: Date.now(),
         };
       }
+      if (completedNaturally && finalAnswerText.trim()) {
+        contextFabric.recordAssistantResponse(
+          finalAnswerText,
+          'completed',
+          String(config.pinnedContext.runId),
+        );
+      } else if (this.cancelled) {
+        contextFabric.recordAssistantResponse(
+          'The custom-agent run was stopped before it produced a final response.',
+          'stopped',
+          String(config.pinnedContext.runId),
+        );
+      } else if (terminalFailureText) {
+        contextFabric.recordAssistantResponse(
+          terminalFailureText,
+          'failed',
+          String(config.pinnedContext.runId),
+        );
+      }
+      await contextFabric.flush().catch(() => undefined);
       if (ownsLease && hadSuccessfulModelResponse) apiKeyPool.reportSuccess(sessionId);
       yield { type: 'done', agentName, agentId: config.agentId, timestamp: Date.now() };
 
@@ -1482,9 +1622,9 @@ Current date/time and per-run evidence are supplied with the latest request.`);
    * Catches all errors and returns structured results.
    */
   private resolveToolTimeoutMs(toolName: string, args: any): number | null {
-    const requestedValue = args?.toolTimeoutSeconds
-      ?? args?.timeoutSeconds
-      ?? (toolName === 'wait_timer' ? args?.seconds : undefined);
+    // A terminal foreground check-in or wait duration is not permission to
+    // abort the tool. Only an explicit outer tool deadline is enforced here.
+    const requestedValue = args?.toolTimeoutSeconds;
     if (requestedValue === undefined || requestedValue === null || requestedValue === '') return null;
     const requestedSeconds = Number(requestedValue);
     if (!Number.isFinite(requestedSeconds) || requestedSeconds <= 0) return null;
@@ -1808,13 +1948,18 @@ function cleanSchemaForGemini(schema: any, depth = 0): any {
   if (!schema || typeof schema !== 'object' || depth > 8) {
     return schema;
   }
+  if (Array.isArray(schema.type)) {
+    schema = { ...schema, type: schema.type.find((type: string) => type !== 'null') || 'string',
+      ...(schema.type.includes('null') ? { nullable: true } : {}) };
+  }
+  if (schema.const !== undefined) schema = { ...schema, enum: [schema.const] };
 
   // Handle array type → downgrade to STRING with hint
   if (schema.type === 'array') {
     return {
       type: 'ARRAY',
       items: cleanSchemaForGemini(schema.items || { type: 'string' }, depth + 1),
-      ...(schema.description ? { description: String(schema.description).substring(0, 400) } : {}),
+      ...(schemaUsageDescription(schema) ? { description: schemaUsageDescription(schema) } : {}),
       ...(schema.nullable ? { nullable: true } : {}),
     };
   }
@@ -1862,7 +2007,7 @@ function cleanSchemaForGemini(schema: any, depth = 0): any {
 
     // Keep description and enum as-is (primitives)
     if (key === 'description' && typeof value === 'string') {
-      cleaned.description = value.substring(0, 400);
+      cleaned.description = value.replace(/\s+/g, ' ').trim();
       continue;
     }
     if (key === 'enum' && Array.isArray(value)) {
@@ -1902,6 +2047,8 @@ function cleanSchemaForGemini(schema: any, depth = 0): any {
     if (cleaned.required.length === 0) delete cleaned.required;
   }
 
+  const usageDescription = schemaUsageDescription(schema);
+  if (usageDescription) cleaned.description = usageDescription;
   return cleaned;
 }
 

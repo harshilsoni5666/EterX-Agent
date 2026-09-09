@@ -2,10 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { getMainAgentModelConfig, normalizeMainAgentMode, isOpenAIReasoningModel, getModelThinkingOptions, getGeminiThinkingConfig, type MainAgentMode, type MainAgentProvider } from '../../../../lib/agent/model-routing';
+import { isOpenAIReasoningModel, getModelThinkingOptions, getGeminiThinkingConfig, type MainAgentProvider } from '../../../../lib/agent/model-routing';
 import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
 import { normalizeProviderCacheUsage } from '../../../../lib/agent/provider-prompt-cache';
-import { isModelProvider } from '../../../../lib/agent/model-selector-store';
+import { isConcreteModelId, isModelProvider } from '../../../../lib/agent/model-selector-store';
 import {
   buildScopedRuntimeSettings,
   getScopedRuntimeApiKeyValues,
@@ -14,7 +14,7 @@ import {
 } from '../../../../lib/agent/runtime-api-keys';
 import { withApiKeyRounds } from '../../../../lib/agent/api-retry';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
-import { buildTitlePrompt, cleanGeneratedTitle, TITLE_SYSTEM_PROMPT } from '../../../../lib/chat/title-generation';
+import { buildTitlePrompt, cleanGeneratedTitle, compactTitleHistory, TITLE_REQUEST_TIMEOUT_MS, TITLE_SYSTEM_PROMPT } from '../../../../lib/chat/title-generation';
 import { readJsonObject, rejectCrossOrigin } from '../../agent/_shared';
 
 export const runtime = 'nodejs';
@@ -27,7 +27,7 @@ type RequestedTitleModel = {
 };
 
 const STANDARD_TITLE_TOKENS = 256;
-const REASONING_TITLE_TOKENS = 1_536;
+const REASONING_TITLE_TOKENS = 4_096;
 
 const isTokenParameterCompatibilityError = (error: unknown) => {
   const status = Number((error as any)?.status || (error as any)?.statusCode || 0);
@@ -38,6 +38,7 @@ const isTokenParameterCompatibilityError = (error: unknown) => {
 
 const isLikelyReasoningModel = (provider: MainAgentProvider, modelName: string) =>
   (provider === 'openai' && isOpenAIReasoningModel(modelName)) ||
+  getModelThinkingOptions(provider, modelName).length > 0 ||
   /(?:^|[\/:_.-])(?:reasoner|reasoning|deepseek-r1|r1|magistral|qwq|qwen3|gpt-oss)(?:$|[\/:_.-])/i.test(modelName);
 
 const isDefaultChatTitle = (title: unknown) =>
@@ -48,7 +49,7 @@ const normalizeRequestedTitleModel = (value: unknown): RequestedTitleModel | nul
   const source = value as Record<string, unknown>;
   const provider = String(source.provider || '').trim().toLowerCase();
   const modelName = String(source.modelId || source.modelName || source.model || '').trim();
-  if (!isModelProvider(provider) || !modelName || modelName.length > 220 || /[\r\n\t]/.test(modelName)) {
+  if (!isModelProvider(provider) || !isConcreteModelId(modelName) || modelName.length > 220 || /[\r\n\t]/.test(modelName)) {
     return null;
   }
   return { provider, modelName };
@@ -102,7 +103,7 @@ async function generateTitleWithProviderOnce(
       },
     });
     const candidates = result.candidates || [];
-    const titleText = (result as any).text || candidates[0]?.content?.parts;
+    const titleText = candidates[0]?.content?.parts || (result as any).text;
     const title = cleanGeneratedTitle(titleText);
     if (!title) throw new Error('Model returned an invalid chat title');
     return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usageMetadata) };
@@ -126,7 +127,8 @@ async function generateTitleWithProviderOnce(
     messages: [{ role: 'user', content: prompt }],
   };
   if (provider === 'openai' && isOpenAIReasoningModel(modelName)) {
-    baseParams.reasoning_effort = 'low';
+    const effort = getModelThinkingOptions(provider, modelName).find(option => option.id !== 'off')?.id;
+    if (effort) baseParams.reasoning_effort = effort;
   }
 
   const tokenLimit = isReasoning ? REASONING_TITLE_TOKENS : STANDARD_TITLE_TOKENS;
@@ -138,26 +140,48 @@ async function generateTitleWithProviderOnce(
     : 'max_tokens';
 
   let result: any;
-  try {
-    result = await client.chat.completions.create({
-      ...baseParams,
-      [preferredTokenField]: tokenLimit,
-    }, { signal });
-  } catch (error) {
-    if (!isTokenParameterCompatibilityError(error)) throw error;
+  let tokenField: string | null = preferredTokenField;
+  let outputLimit = tokenLimit;
+  // Adapt only parameters explicitly rejected by the selected endpoint.
+  // Keep all compatibility attempts inside the same cancellation deadline.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       result = await client.chat.completions.create({
         ...baseParams,
-        [alternateTokenField]: tokenLimit,
+        ...(tokenField ? { [tokenField]: outputLimit } : {}),
       }, { signal });
-    } catch (alternateError) {
-      if (!isTokenParameterCompatibilityError(alternateError)) throw alternateError;
-      // A few local/OpenAI-compatible servers reject both optional token-limit
-      // fields. The outer abort deadline still bounds an uncapped title call.
-      result = await client.chat.completions.create(baseParams, { signal });
+      if (!cleanGeneratedTitle(result.choices?.[0]?.message) &&
+          result.choices?.[0]?.finish_reason === 'length' && outputLimit < 8_192 && tokenField) {
+        outputLimit = 8_192;
+        continue;
+      }
+      break;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      const message = String((error as any)?.message || error || '');
+      if (baseParams.reasoning_effort && /reasoning_effort/i.test(message) &&
+          /unsupported|invalid|not supported|unknown|not permitted/i.test(message)) {
+        delete baseParams.reasoning_effort;
+        continue;
+      }
+      if (isTokenParameterCompatibilityError(error) && tokenField) {
+        tokenField = tokenField === preferredTokenField ? alternateTokenField : null;
+        continue;
+      }
+      if (provider === 'openai' && /responses|not a chat model|not supported.*chat.*completions/i.test(message)) {
+        const response = await client.responses.create({
+          model: modelName,
+          input: prompt,
+          max_output_tokens: REASONING_TITLE_TOKENS,
+        }, { signal });
+        const title = cleanGeneratedTitle(response);
+        if (!title) throw new Error('Model returned an invalid chat title');
+        return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, response.usage) };
+      }
+      throw error;
     }
   }
-  const title = cleanGeneratedTitle(result.choices?.[0]?.message);
+  const title = cleanGeneratedTitle(result?.choices?.[0]?.message);
   if (!title) throw new Error('Model returned an invalid chat title');
   return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usage) };
 }
@@ -167,6 +191,7 @@ async function generateTitleWithProvider(
   modelName: string,
   prompt: string,
   runtimeSettings: ScopedRuntimeSettings,
+  requestSignal: AbortSignal,
 ): Promise<{ title: string; provider: MainAgentProvider; model: string; usage?: Record<string, number> }> {
   const configuredKeys = getScopedRuntimeApiKeyValues(runtimeSettings, provider as RuntimeApiKeyProvider);
   const keys = configuredKeys.length > 0
@@ -178,14 +203,22 @@ async function generateTitleWithProvider(
 
   // Naming is optional metadata and must never occupy a request indefinitely.
   // One deadline covers key rotation as well as the provider call.
-  const signal = AbortSignal.timeout(30_000);
-
-  return withApiKeyRounds(
-    keys,
-    runtimeSettings,
-    apiKey => generateTitleWithProviderOnce(provider, modelName, prompt, apiKey, signal),
-    signal,
-  );
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort();
+  const timeout = setTimeout(forwardAbort, TITLE_REQUEST_TIMEOUT_MS);
+  requestSignal.addEventListener('abort', forwardAbort, { once: true });
+  if (requestSignal.aborted) forwardAbort();
+  try {
+    return await withApiKeyRounds(
+      keys,
+      runtimeSettings,
+      apiKey => generateTitleWithProviderOnce(provider, modelName, prompt, apiKey, controller.signal),
+      controller.signal,
+    );
+  } finally {
+    clearTimeout(timeout);
+    requestSignal.removeEventListener('abort', forwardAbort);
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -193,14 +226,18 @@ export async function POST(req: NextRequest) {
   try {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
-    const { history, mode, selectedModel } = await readJsonObject(req);
+    const { history, selectedModel } = await readJsonObject(req);
     const runtimeSettings = buildScopedRuntimeSettings();
-    const safeHistory = Array.isArray(history) ? history : [];
-    const safeMode = normalizeMainAgentMode(mode);
-    const modelConfig = getMainAgentModelConfig(safeMode, runtimeSettings);
+    const safeHistory = compactTitleHistory(history);
+    if (!safeHistory.some(message => message.role === 'user')) {
+      return NextResponse.json({ error: 'A user request is required to generate a title.' }, { status: 400 });
+    }
     const requestedTitleModel = normalizeRequestedTitleModel(selectedModel);
-    const primaryProvider = requestedTitleModel?.provider || modelConfig.provider;
-    const primaryModelName = requestedTitleModel?.modelName || modelConfig.modelName;
+    if (!requestedTitleModel) {
+      return NextResponse.json({ error: 'The chat must supply its selected model for title generation.' }, { status: 400 });
+    }
+    const primaryProvider = requestedTitleModel.provider;
+    const primaryModelName = requestedTitleModel.modelName;
 
     const prompt = buildTitlePrompt(safeHistory);
 
@@ -212,6 +249,7 @@ export async function POST(req: NextRequest) {
         primaryModelName,
         prompt,
         runtimeSettings,
+        req.signal,
       );
       if (generated.title && !isDefaultChatTitle(generated.title)) {
         return NextResponse.json(generated);
@@ -220,8 +258,7 @@ export async function POST(req: NextRequest) {
       console.warn(`[Title] Selected provider ${primaryProvider} (${primaryModelName}) failed:`, e.message || e);
     }
 
-    // Keep the neutral placeholder when the selected AI model fails. A local
-    // string heuristic must never be presented as an AI-generated title.
+    // The client retains the query preview and its pending state for recovery.
     return NextResponse.json({ error: 'The selected model could not generate a valid title.' }, { status: 502 });
   } catch (error: any) {
     console.error('Title generation critical error:', error);

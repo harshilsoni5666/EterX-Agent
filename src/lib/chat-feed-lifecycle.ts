@@ -1,3 +1,7 @@
+import { contextUsageCursor, mergeContextCompactionSnapshot, mergeContextUsageSnapshot } from './context-usage-snapshot';
+import { sameUserAdmission, userAdmissionKey, reconcileQueuedTurnDelivery } from './steering-delivery';
+import { mergeUserAttachments, visibleUserRequest } from './chat-user-payload';
+
 const TERMINAL_WORK_STATUSES = new Set([
   'completed',
   'complete',
@@ -23,6 +27,8 @@ const ACTIVE_FEED_STATUSES = new Set([
   'streaming',
   'spawning',
   'started',
+  'compacting',
+  'retrying',
 ]);
 
 const SETTLED_FEED_STATUSES = new Set([
@@ -36,6 +42,7 @@ const SETTLED_FEED_STATUSES = new Set([
   'cancelled',
   'canceled',
   'closed',
+  'compacted',
 ]);
 
 /**
@@ -167,11 +174,15 @@ const getFeedActionInvocationIdentities = (log: any): Set<string> => new Set(
  * especially important for parallel identical commands.
  */
 export const haveConflictingFeedActionInvocations = (left: any, right: any): boolean => {
-  const leftInvocations = getFeedActionInvocationIdentities(left);
-  const rightInvocations = getFeedActionInvocationIdentities(right);
-  return leftInvocations.size > 0 &&
-    rightInvocations.size > 0 &&
-    ![...leftInvocations].some(identity => rightInvocations.has(identity));
+  // Comparable authoritative fields win over shared adapter/event aliases.
+  // Incomparable fields (e.g. one side has only an origin, the other a tool
+  // ID) are enrichment, not evidence that this is a different invocation.
+  for (const field of ['toolCallId', '_originTraceIdx', 'traceId', 'responseKey']) {
+    const a = String(left?.[field] ?? '').trim();
+    const b = String(right?.[field] ?? '').trim();
+    if (a && b) return a !== b;
+  }
+  return false;
 };
 
 /**
@@ -228,36 +239,30 @@ export const areLikelySameFeedActionLifecycle = (left: any, right: any): boolean
   const rightScope = feedActionLifecycleScope(right);
   if (!leftScope || !rightScope || leftScope !== rightScope) return false;
 
-  const leftOrigin = Number(left?._originTraceIdx);
-  const rightOrigin = Number(right?._originTraceIdx);
-  if (Number.isFinite(leftOrigin) && Number.isFinite(rightOrigin) && leftOrigin === rightOrigin) {
-    return true;
-  }
-
   const leftSingleton = getFeedActionSingletonIdentity(left);
   const rightSingleton = getFeedActionSingletonIdentity(right);
   if (leftSingleton && leftSingleton === rightSingleton) return true;
 
   if (haveConflictingFeedActionInvocations(left, right)) return false;
+  const leftOrigin = String(left?._originTraceIdx ?? '').trim();
+  const rightOrigin = String(right?._originTraceIdx ?? '').trim();
+  if (leftOrigin && rightOrigin && leftOrigin === rightOrigin) {
+    return true;
+  }
+  const leftInvocations = getFeedActionInvocationIdentities(left);
+  const rightInvocations = getFeedActionInvocationIdentities(right);
+  if ([...leftInvocations].some(identity => rightInvocations.has(identity))) return true;
 
   if (normalizedFeedActionContent(left) !== normalizedFeedActionContent(right)) return false;
   const leftStart = Number(left.startTime || 0);
   const rightStart = Number(right.startTime || 0);
-  if (leftStart > 0 && rightStart > 0 && leftStart === rightStart) return true;
-
-  const leftDuration = normalizedFeedActionDuration(left);
-  const rightDuration = normalizedFeedActionDuration(right);
-  if (!(leftDuration > 0 && rightDuration > 0 && Math.abs(leftDuration - rightDuration) <= 25)) return false;
-  if (normalizedFeedActionOutcome(left) !== normalizedFeedActionOutcome(right)) return false;
-  const leftExit = normalizedFeedActionExitCode(left);
-  const rightExit = normalizedFeedActionExitCode(right);
-  if (leftExit !== rightExit) return false;
-
-  // The runtime's per-query call-history guard already rejects an intentional
-  // second identical call. Equal settled content + duration + outcome inside
-  // that same query is therefore a transport/persistence replay, even when a
-  // reconnect delivered the duplicate more than one poll window later.
-  return true;
+  // Timing/outcome resemblance cannot identify an invocation: two genuine
+  // edits to one file can have the same duration and success label. Legacy
+  // snapshots need an exact start anchor and no conflicting event ID.
+  const leftId = String(left.id || '').trim();
+  const rightId = String(right.id || '').trim();
+  return leftStart > 0 && leftStart === rightStart &&
+    (!leftId || !rightId || leftId === rightId);
 };
 
 /** Explicit close markers always win over stale running/status snapshots. */
@@ -339,7 +344,7 @@ export const shouldRenderProgressTrace = (log: any): boolean => {
  * text, because the main agent can recover from those.
  */
 export const isTerminalWorkTrace = (log: any): boolean => {
-  if (!log) return false;
+  if (!log || log.mainTurnTerminal === false || isFeedTurnBoundary(log)) return false;
 
   const type = String(log.type || '').trim().toLowerCase();
   const agentName = String(log.agentName || '').trim().toLowerCase();
@@ -369,7 +374,85 @@ export const isTerminalWorkTrace = (log: any): boolean => {
   if (TERMINAL_WORK_TYPES.has(type) && isMainAgentTrace) return true;
 
   const text = String(log.text || log.message || '').trim();
-  return isMainAgentTrace && TERMINAL_WORK_TEXT.test(text);
+  return isMainAgentTrace &&
+    ['thought', 'progress', 'status', 'agent_status', 'run_status', 'error', 'done'].includes(type) &&
+    TERMINAL_WORK_TEXT.test(text);
+};
+
+/** Server cancellation, the stop response, and local cancellation share one event. */
+export const createStoppedRunTrace = (
+  scope: { ownerChatId?: string; runId?: string; turnId?: string },
+  at: number,
+) => ({
+  id: `run-terminal:${scope.runId || scope.ownerChatId || 'chat'}:${scope.turnId || scope.runId || at}:stopped`,
+  type: 'agent_status',
+  status: 'stopped',
+  title: 'Run stopped',
+  text: 'Stopped by you.',
+  detail: 'Stopped by you.',
+  mainTurnTerminal: true,
+  timestamp: at,
+  startTime: at,
+  endTime: at,
+  ...scope,
+});
+
+/** Reconcile notice representations, not independent API retries or tool errors. */
+export const reconcileTerminalRunNotices = (logs: any[]): any[] => {
+  const result: any[] = [];
+  const notices = new Map<string, number>();
+  let boundary: any = null;
+  for (const log of logs) {
+    if (isFeedTurnBoundary(log)) {
+      boundary = log;
+      // Even malformed legacy turns reusing IDs remain separate occurrences.
+      notices.clear();
+    }
+    const type = String(log?.type || '').toLowerCase();
+    const status = String(log?.status || '').toLowerCase();
+    const detail = String(log?.detail || log?.text || log?.message || '')
+      .replace(/^\s*[*_`]+|[*_`]+\s*$/g, '').replace(/\s+/g, ' ').trim();
+    const stopped = ['stopped', 'cancelled', 'canceled'].includes(status) ||
+      /^(?:generation stopped by user\.?|agent stopped\.?|stopped by (?:you|user)\.?)$/i.test(detail);
+    const isNotice = ['thought', 'agent_status', 'run_status', 'status', 'error', 'done'].includes(type) &&
+      isTerminalWorkTrace(log) && (Boolean(detail) || type === 'agent_status') &&
+      !['completed', 'complete', 'success'].includes(status);
+    const runId = String(log?.runId || boundary?.runId || '').trim();
+    const turnId = String(log?.turnId || boundary?.turnId || log?._feedBoundaryId || '').trim();
+    const outcome = stopped ? 'stopped' : `error:${detail.replace(/^agent (?:stopped|error)\s*:\s*/i, '').toLowerCase()}`;
+    const key = isNotice && (runId || turnId) ? JSON.stringify([
+      log?.ownerChatId || log?.chatId || boundary?.ownerChatId || boundary?.chatId || '',
+      runId, turnId, outcome,
+    ]) : '';
+    const existingIndex = key ? notices.get(key) : undefined;
+    if (existingIndex === undefined) {
+      if (key) notices.set(key, result.length);
+      result.push(log);
+      continue;
+    }
+    const previous = result[existingIndex];
+    const times = [previous.endTime, previous.timestamp, log.endTime, log.timestamp]
+      .map(value => timelineTimestamp({ timestamp: value }))
+      .filter((value): value is number => value !== null);
+    const at = times.length ? Math.min(...times) : undefined;
+    const cursors = [previous._pollIdx, previous._traceIdx, log._pollIdx, log._traceIdx]
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    result[existingIndex] = {
+      ...previous,
+      ...log,
+      ...(stopped ? { type: 'agent_status', status: 'stopped', title: 'Run stopped' } : {}),
+      id: previous.id || log.id,
+      _feedPresentationId: previous._feedPresentationId || log._feedPresentationId,
+      _feedBoundaryId: previous._feedBoundaryId || log._feedBoundaryId,
+      _feedBoundaryOrder: previous._feedBoundaryOrder ?? log._feedBoundaryOrder,
+      _feedEventOrder: previous._feedEventOrder ?? log._feedEventOrder,
+      _originTraceIdx: previous._originTraceIdx ?? log._originTraceIdx,
+      _traceIdx: previous._traceIdx ?? log._traceIdx,
+      ...(cursors.length ? { _pollIdx: Math.max(...cursors) } : {}),
+      ...(at !== undefined ? { timestamp: at, startTime: at, endTime: at } : {}),
+    };
+  }
+  return result;
 };
 
 /**
@@ -416,6 +499,7 @@ const STABLE_STATUS_TRACE_TYPES = new Set([
   'status',
   'run_status',
   'agent_status',
+  'context_compaction',
   'error',
   'done',
 ]);
@@ -475,6 +559,9 @@ export const ensureStableFeedPresentationIds = (
   logs: any[] = [],
   fallbackChatId?: string,
 ): any[] => ensureStableNarrativePresentationIds(logs, fallbackChatId).map((log: any) => {
+  if (log && fallbackChatId && !log.ownerChatId && !log.chatId) {
+    log = { ...log, ownerChatId: fallbackChatId };
+  }
   const type = String(log?.type || '').trim().toLowerCase();
   const isAction = STABLE_ACTION_TRACE_TYPES.has(type);
   const isResponse = type === 'answer';
@@ -514,6 +601,7 @@ export const ensureStableFeedPresentationIds = (
     ? `${ String(log.streamId) }|${ String(log.streamStartedAt ?? log.startTime ?? log.timestamp ?? '') }|${ actionStreamContent }`
     : '';
   const anchors: Array<[string, unknown]> = [
+    ['compaction', log.compactionId],
     ['origin', log._originTraceIdx],
     ['answer', log.answerId],
     ['tool', log.toolCallId],
@@ -537,9 +625,9 @@ export const ensureStableFeedPresentationIds = (
 });
 
 /**
- * Context compaction is a replace-in-place lifecycle. Internal start/retry
- * phases never enter the transcript; exactly one successful terminal phase is
- * renderable for each transaction.
+ * Render one chronological lifecycle row per compaction transaction. Retry and
+ * terminal events share a compactionId, so only the newest state is visible;
+ * this prevents a single transfer from leaving several permanent feed rows.
  */
 export const shouldRenderContextCompactionEvent = (
   log: any,
@@ -548,20 +636,12 @@ export const shouldRenderContextCompactionEvent = (
   _isThinkingTurn: boolean,
 ): boolean => {
   if (log?.type !== 'context_compaction') return true;
-  const compactionId = String(log.compactionId || '');
-  const latestIndex = logs.reduce(
-    (found, candidate, candidateIndex) =>
-      candidate?.type === 'context_compaction' &&
-      String(candidate.compactionId || '') === compactionId
-        ? candidateIndex
-        : found,
-    -1,
+  const compactionId = String(log?.compactionId || '').trim();
+  if (!compactionId) return true;
+  return !logs.slice(index + 1).some(candidate =>
+    candidate?.type === 'context_compaction'
+    && String(candidate?.compactionId || '').trim() === compactionId
   );
-  if (latestIndex !== index) return false;
-  // Compaction is internal maintenance, not a separate live work phase. The
-  // transcript records one durable outcome instead of rendering start/retry
-  // placeholders which later duplicate or split the active Worked sequence.
-  return log.phase === 'compacted';
 };
 
 type TimelineEntry = {
@@ -595,6 +675,8 @@ const timelineStableKeys = (log: any): string[] => {
   const chatScope = String(log?.ownerChatId || log?.chatId || 'chat').trim();
   const scopes = ownerScope ? [ownerScope] : [];
   if (!type) return [];
+  const admissionKey = userAdmissionKey(log);
+  if (admissionKey) return [`admission:${ admissionKey }`];
   if (type === 'user_action') {
     const turnScope = String(log?.turnId || '').trim();
     const runScope = String(log?.runId || '').trim();
@@ -701,19 +783,31 @@ const timelineStableKeys = (log: any): string[] => {
  * hiding a perfectly valid query. Keep the genuine boundary identity and make
  * visible text a monotonic property of the merged transcript row.
  */
+const mergedBoundaryAliases = (previous: any, incoming: any) => ({
+  _feedBoundaryAliases: [...new Set([
+    ...(previous?._feedBoundaryAliases || []), ...(incoming?._feedBoundaryAliases || []),
+    previous?._feedBoundaryId, incoming?._feedBoundaryId,
+  ].filter(Boolean))],
+  _feedTurnAliases: [...new Set([
+    ...(previous?._feedTurnAliases || []), ...(incoming?._feedTurnAliases || []),
+    previous?.turnId, incoming?.turnId,
+  ].filter(Boolean))],
+});
+
 export const mergeUserTurnBoundaries = (previous: any, incoming: any): any => {
   if (previous?.type !== 'user_action' || incoming?.type !== 'user_action') {
     return {
       ...previous,
       ...incoming,
+      ...mergedBoundaryAliases(previous, incoming),
       _feedBoundaryId: previous?._feedBoundaryId || incoming?._feedBoundaryId || undefined,
       _feedBoundaryOrder: previous?._feedBoundaryOrder ?? incoming?._feedBoundaryOrder,
       _feedEventOrder: previous?._feedEventOrder ?? incoming?._feedEventOrder,
     };
   }
 
-  const previousText = String(previous?.text || '');
-  const incomingText = String(incoming?.text || '');
+  const previousText = visibleUserRequest(previous?.text);
+  const incomingText = visibleUserRequest(incoming?.text);
   const previousVisible = Boolean(previousText.trim()) && previous?._hiddenRecoveredBoundary !== true;
   const incomingVisible = Boolean(incomingText.trim()) && incoming?._hiddenRecoveredBoundary !== true;
   const previousGenuine = previous?._recoveredBoundary !== true;
@@ -749,6 +843,7 @@ export const mergeUserTurnBoundaries = (previous: any, incoming: any): any => {
 
   return {
     ...merged,
+    ...mergedBoundaryAliases(previous, incoming),
     // Once a boundary is mounted, keep its first event ID as the presentation
     // identity. Recovery/durable enrichment may add trace/run metadata, but
     // swapping the ID would remount the user/assistant pair and recycle local
@@ -757,10 +852,11 @@ export const mergeUserTurnBoundaries = (previous: any, incoming: any): any => {
     _feedBoundaryId: previous?._feedBoundaryId || incoming?._feedBoundaryId || undefined,
     _feedBoundaryOrder: previous?._feedBoundaryOrder ?? incoming?._feedBoundaryOrder,
     text: visibleText,
+    _queuedFollowUp: previous?._queuedFollowUp === false || incoming?._queuedFollowUp === false ||
+      (incoming?._queuedFollowUp !== true && incoming?._recoveredBoundary !== true && incoming?._traceIdx != null)
+      ? false : merged?._queuedFollowUp,
     source: chosenTextLog?.source || merged?.source || 'human',
-    attachments: Array.isArray(incoming?.attachments) && incoming.attachments.length > 0
-      ? incoming.attachments
-      : previous?.attachments,
+    attachments: mergeUserAttachments(previous?.attachments, incoming?.attachments),
     _traceIdx: authoritativeTransport
       ? authoritativeTransport._traceIdx
       : previous?._traceIdx ?? incoming?._traceIdx,
@@ -770,7 +866,8 @@ export const mergeUserTurnBoundaries = (previous: any, incoming: any): any => {
     startTime: previousStart > 0 && incomingStart > 0
       ? Math.min(previousStart, incomingStart)
       : previousStart || incomingStart || undefined,
-    ...(hasVisibleText ? { _hiddenRecoveredBoundary: undefined } : {}),
+    ...(hasVisibleText || previous?.attachments?.length || incoming?.attachments?.length
+      ? { _hiddenRecoveredBoundary: undefined } : {}),
     ...(previousGenuine || incomingGenuine
       ? {
         _recoveredBoundary: undefined,
@@ -780,7 +877,30 @@ export const mergeUserTurnBoundaries = (previous: any, incoming: any): any => {
   };
 };
 
+/** A sparse transport snapshot must not erase a payload already delivered. */
+export const mergeFeedTracePayload = (previous: any, incoming: any): any => {
+  const merged = { ...previous };
+  for (const [key, value] of Object.entries(incoming || {})) {
+    if (value !== undefined) merged[key] = value;
+  }
+  for (const key of ['diffLines', 'content', 'contentPreview', 'preview', 'toolResult', 'toolArgs', 'fileOperationResult', 'result']) {
+    if (merged[key] == null && previous?.[key] != null) merged[key] = previous[key];
+  }
+  for (const key of ['text', 'output', 'content']) {
+    if (typeof previous?.[key] === 'string' && typeof merged[key] === 'string' && previous[key].length > merged[key].length) {
+      merged[key] = previous[key];
+    }
+  }
+  return merged;
+};
+
 const mergeTimelineTrace = (previous: any, incoming: any): any => {
+  if (previous?.type === 'context_compaction' && incoming?.type === 'context_compaction') {
+    return mergeContextCompactionSnapshot(previous, incoming);
+  }
+  if (previous?.type === 'context_usage' && incoming?.type === 'context_usage') {
+    return mergeContextUsageSnapshot(previous, incoming);
+  }
   if (previous?.type === 'user_action' && incoming?.type === 'user_action') {
     return mergeUserTurnBoundaries(previous, incoming);
   }
@@ -814,8 +934,7 @@ const mergeTimelineTrace = (previous: any, incoming: any): any => {
     : incoming?.status || settledStatus;
 
   return {
-    ...previous,
-    ...incoming,
+    ...mergeFeedTracePayload(previous, incoming),
     _feedPresentationId: previous?._feedPresentationId || incoming?._feedPresentationId || undefined,
     _feedBoundaryId: previous?._feedBoundaryId || incoming?._feedBoundaryId || undefined,
     _feedBoundaryOrder: previous?._feedBoundaryOrder ?? incoming?._feedBoundaryOrder,
@@ -959,14 +1078,28 @@ const reconcileProvisionalAnswerTransitions = (logs: any[]): any[] => {
     const answerId = String(answer?.answerId || '').trim();
     const resolvedNoteId = String(noteId || '').trim() ||
       (answerId ? `answer-transition-${ answerId }` : undefined);
+    const owner = (trace: any) => String(trace?.subAgentChatId || trace?.subAgentId || trace?.subAgent || 'main');
+    const replacementIndex = resolvedNoteId ? source.findIndex((candidate, candidateIndex) =>
+      candidateIndex > index && candidate?.type === 'work_note' &&
+      String(candidate.noteId || '').trim() === resolvedNoteId &&
+      feedTraceOwnershipMatches(answer, candidate) && owner(answer) === owner(candidate)
+    ) : -1;
+    const replacement = replacementIndex >= 0 ? source[replacementIndex] : undefined;
+    if (replacementIndex >= 0) superseded.add(replacementIndex);
     converted.set(index, {
       ...stableAnswer,
+      ...(replacement || {}),
       type: 'work_note',
       ...(resolvedNoteId ? { noteId: resolvedNoteId } : {}),
-      _answerTransitionPending: true,
-      _streamingCancelled: true,
-      _cancelTraceIdx: transition?._traceIdx,
-      _cancelledAt: transition?.timestamp || transition?.endTime || answer?.timestamp,
+      _feedPresentationId: stableAnswer._feedPresentationId,
+      text: replacement?.text || stableAnswer.text,
+      _answerTransitionPending: replacement ? undefined : true,
+      _streamingCancelled: undefined,
+      isStreaming: replacement ? isFeedTraceOpen(replacement) : false,
+      isLiveTyping: replacement ? isFeedTraceOpen(replacement) : false,
+      streamState: replacement && isFeedTraceOpen(replacement) ? 'open' : 'closed',
+      status: replacement?.status || 'completed',
+      endTime: replacement?.endTime || transition?.timestamp || transition?.endTime || answer?.timestamp,
     });
   };
 
@@ -1213,18 +1346,49 @@ export interface RecoveredUserRequest {
   runId?: string;
 }
 
-const normalizedRequestText = (value: unknown): string => String(value || '')
+const normalizedRequestText = (value: unknown): string => visibleUserRequest(value)
   .replace(/^\s*\[USER REQUEST\]\s*(?:\r?\n)?/i, '')
   .trim();
 
 const normalizedRequestTimestamp = (value: unknown): number | null =>
   timelineTimestamp({ timestamp: value });
 
+/** Remove only imported copies that can be tied back to an existing event. */
+const reconcileRecoveredDialogueCopies = (logs: any[]): any[] => {
+  const genuine = new Map<string, any[]>();
+  const key = (log: any) => JSON.stringify([
+    log.type,
+    String(log.subAgentChatId || log.subAgentId || log.subAgent || 'main'),
+    log.type === 'user_action' ? visibleUserRequest(log.text).trim() : String(log.text || '').trim(),
+  ]);
+  const recovered = (log: any) => log?._recoveredBoundary === true || log?._recoveredExactText === true;
+  for (const log of logs) {
+    if (!['user_action', 'answer'].includes(log?.type) || recovered(log)) continue;
+    const identity = key(log);
+    genuine.set(identity, [...(genuine.get(identity) || []), log]);
+  }
+  return logs.filter(log => {
+    if (!['user_action', 'answer'].includes(log?.type) || !recovered(log) || !String(log.text || '').trim()) return true;
+    return !(genuine.get(key(log)) || []).some(original => {
+      const chat = (item: any) => String(item.ownerChatId || item.chatId || '');
+      if (chat(original) && chat(log) && chat(original) !== chat(log)) return false;
+      if (original.runId && log.runId && original.runId !== log.runId) return false;
+      if (log.type === 'user_action') return sameUserAdmission(original, log) ||
+        Boolean(log.turnId && (log.turnId === original.id || log.turnId === original.turnId));
+      const sameTurn = original.turnId && log.turnId && original.turnId === log.turnId;
+      const originalAt = timelineTimestamp(original);
+      const recoveredAt = timelineTimestamp(log);
+      return sameTurn && !isFeedTraceOpen(original) && originalAt !== null && recoveredAt !== null &&
+        Math.abs(originalAt - recoveredAt) <= 1000;
+    });
+  });
+};
+
 export const recoverMissingUserTurnBoundaries = (
   logs: any[],
   recoveredRequests: RecoveredUserRequest[] = [],
 ): any[] => {
-  const source = Array.isArray(logs) ? logs : [];
+  const source = reconcileRecoveredDialogueCopies(reconcileQueuedTurnDelivery(Array.isArray(logs) ? logs : []));
   if (source.length === 0) return [];
 
   const requests = (Array.isArray(recoveredRequests) ? recoveredRequests : [])
@@ -1331,8 +1495,10 @@ export const recoverMissingUserTurnBoundaries = (
         : log;
     }
     if (log?.type !== 'user_action' || log?._recoveredBoundary !== true) return log;
-    if (log?._recoveredExactText === true && normalizedRequestText(log.text)) {
-      return { ...log, _hiddenRecoveredBoundary: undefined };
+    if (normalizedRequestText(log.text) && (log?._recoveredExactText === true || log?._hiddenRecoveredBoundary !== true)) {
+      // Presentation often has no context episodes. Their absence cannot
+      // erase an already recovered query on the next render.
+      return { ...log, text: visibleUserRequest(log.text), _recoveredExactText: true, _hiddenRecoveredBoundary: undefined };
     }
     const request = claimRequest(log);
     if (!request) {
@@ -1374,7 +1540,7 @@ export const recoverMissingUserTurnBoundaries = (
     const turnId = String(log?.turnId || '').trim();
     const eventId = String(log?.id || '').trim();
     const score = (turnId === runId ? 2 : 0) + (eventId === `user-turn-${runId}` ? 1 : 0);
-    const key = `${owner}:${runId}:${text}`;
+    const key = JSON.stringify([owner, String(log?.subAgentChatId || log?.subAgentId || log?.subAgent || 'main'), runId, turnId, text]);
     const current = preferredRecoveredOpenings.get(key);
     if (!current || score > current.score) preferredRecoveredOpenings.set(key, { log, score });
   });
@@ -1388,18 +1554,23 @@ export const recoverMissingUserTurnBoundaries = (
     const recoveredText = normalizedRequestText(log?.text).toLowerCase();
     if (recoveredRunId && recoveredText) {
       const owner = String(log?.ownerChatId || log?.chatId || '').trim();
-      const preferred = preferredRecoveredOpenings.get(`${owner}:${recoveredRunId}:${recoveredText}`);
+      const preferred = preferredRecoveredOpenings.get(JSON.stringify([
+        owner, String(log?.subAgentChatId || log?.subAgentId || log?.subAgent || 'main'),
+        recoveredRunId, recoveredTurnId, recoveredText,
+      ]));
       if (preferred && preferred.log !== log) return false;
     }
     return !genuineBoundaries.some(boundary => {
+      if (sameUserAdmission(boundary, log)) return true;
+      const owner = (entry: any) => String(entry?.ownerChatId || entry?.chatId || '');
+      const worker = (entry: any) => String(entry?.subAgentChatId || entry?.subAgentId || entry?.subAgent || 'main');
+      if (worker(boundary) !== worker(log) || (owner(boundary) && owner(log) && owner(boundary) !== owner(log))) return false;
       const boundaryTurnId = String(boundary?.turnId || '').trim();
       const boundaryRunId = String(boundary?.runId || '').trim();
       const sameTurn = Boolean(recoveredTurnId && boundaryTurnId === recoveredTurnId);
-      const sameRun = Boolean(recoveredRunId && boundaryRunId === recoveredRunId);
-      if (sameTurn) return true;
-      if (!sameRun) return false;
-      const genuineText = normalizedRequestText(boundary?.text).toLowerCase();
-      return !recoveredText || Boolean(genuineText && genuineText === recoveredText);
+      if (recoveredRunId && boundaryRunId && recoveredRunId !== boundaryRunId) return false;
+      // Repeated words within a long run are still distinct user turns.
+      return sameTurn;
     });
   });
 
@@ -1569,6 +1740,7 @@ export const mergeFeedTraceHistories = (
 };
 
 const timelineTraceIndex = (log: any): number | null => {
+  if (log?.type === 'context_usage') return contextUsageCursor(log);
   const raw = log?._originTraceIdx ?? log?._traceIdx;
   if (raw === undefined || raw === null || raw === '') return null;
   const value = Number(raw);
@@ -1703,7 +1875,7 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     }
     const chatScope = String(log?.ownerChatId || log?.chatId || 'chat').trim();
     const turnId = String(log?.turnId || '').trim();
-    const boundaryKey = turnId ? `${ chatScope }:${ turnId }` : '';
+    const boundaryKey = userAdmissionKey(log) || (turnId ? `${ chatScope }:${ turnId }` : '');
     const existingIndex = boundaryKey ? boundaryIndexes.get(boundaryKey) : undefined;
     if (existingIndex === undefined) {
       if (boundaryKey) boundaryIndexes.set(boundaryKey, source.length);
@@ -1716,7 +1888,7 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     const incomingText = normalizedRequestText(log?.text);
     // A malformed producer reusing one turn for different content is safer as
     // two visible rows than silently replacing either user request.
-    if (previousText && incomingText && previousText !== incomingText) {
+    if (!sameUserAdmission(previous, log) && previousText && incomingText && previousText !== incomingText) {
       source.push(log);
       return;
     }
@@ -1753,7 +1925,7 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     // later boundary is a new transcript occurrence even when its text and
     // transport ID are identical. Only an exact transport snapshot or the
     // explicit steering/recovery representation hand-off may collapse here.
-    if (!sameTracePosition && (
+    if (!sameTracePosition && !sameUserAdmission(previous, log) && (
       meaningfulWorkBetween ||
       (!isSteeringPromotion && !isRecoveredPromotion)
     )) {
@@ -1789,6 +1961,7 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
       ...previous,
       ...log,
       ...canonical,
+      ...mergedBoundaryAliases(previous, log),
       // Preserve the mounted boundary/card identity while enriching it with
       // the successor's authoritative run ownership.
       id: previous?.id || log?.id,
@@ -1917,15 +2090,15 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     const turnId = String(boundary.log?.turnId || '').trim();
     const runId = String(boundary.log?.runId || '').trim();
     const stableId = String(boundary.log?._feedBoundaryId || '').trim();
-    if (stableId) {
-      const stableEntries = boundariesByStableId.get(stableId) || [];
+    for (const alias of new Set<string>([stableId, ...(boundary.log?._feedBoundaryAliases || [])].filter(Boolean))) {
+      const stableEntries = boundariesByStableId.get(alias) || [];
       stableEntries.push(boundary);
-      boundariesByStableId.set(stableId, stableEntries);
+      boundariesByStableId.set(alias, stableEntries);
     }
-    if (turnId) {
-      const turnEntries = boundariesByTurnId.get(turnId) || [];
+    for (const alias of new Set<string>([turnId, ...(boundary.log?._feedTurnAliases || [])].filter(Boolean))) {
+      const turnEntries = boundariesByTurnId.get(alias) || [];
       turnEntries.push(boundary);
-      boundariesByTurnId.set(turnId, turnEntries);
+      boundariesByTurnId.set(alias, turnEntries);
     }
     if (runId) {
       const runEntries = boundariesByRunId.get(runId) || [];
@@ -2030,10 +2203,8 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     if (persistedMatches.length > 0) {
       return selectNearestPrecedingBoundary(persistedMatches, log, sourceIndex);
     }
-    // A persisted feed boundary is an immutable owner, not a hint. If its
-    // boundary row is absent from this partial/historical snapshot, keep the
-    // event outside visible query groups rather than guessing a new owner.
-    if (persistedBoundaryId) return -1;
+    // Older recovery versions renamed synthetic boundary IDs. An exact turn
+    // identity can repair that stale presentation pointer; a timestamp cannot.
 
     const turnId = String(log?.turnId || '').trim();
     const runId = String(log?.runId || '').trim();
@@ -2056,6 +2227,7 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     if (rootTurnMatches.length > 0) {
       return selectNearestPrecedingBoundary(rootTurnMatches, log, sourceIndex);
     }
+    if (persistedBoundaryId) return -1;
     // Likewise, a real turn ID that is not represented in this transcript
     // slice denotes an orphaned/trimmed turn. Timestamp proximity must never
     // migrate it into a different user request.
@@ -2181,5 +2353,5 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
       ...orderedEntries,
     );
   });
-  return ordered;
+  return reconcileTerminalRunNotices(ordered);
 };

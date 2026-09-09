@@ -1,3 +1,5 @@
+import { describeTimeout } from './timeout-error';
+
 export const DEFAULT_API_RETRIES = 0;
 export const MAX_API_RETRIES = 3;
 
@@ -13,6 +15,10 @@ export const getApiRetries = (settings?: { apiRetries?: unknown } | null): numbe
 
 export const isApiRequestCancelled = (error: unknown): boolean => {
   const message = String((error as any)?.message || error || '').toLowerCase();
+  if (/cancelled_by_user|canceled_by_user/.test(message)) return true;
+  // Transport errors can say "aborted" after their own deadline expires.
+  // Those are failures, not a user pressing Stop.
+  if (describeTimeout(error)) return false;
   return message.includes('cancelled') || message.includes('canceled') || message.includes('abort');
 };
 
@@ -20,7 +26,8 @@ export const isApiRequestCancelled = (error: unknown): boolean => {
 export const isRetryableApiError = (error: unknown): boolean => {
   if (isApiRequestCancelled(error)) return false;
   const status = Number((error as any)?.status || (error as any)?.statusCode || 0);
-  if ([400, 401, 403, 404, 405, 409, 422].includes(status)) return false;
+  if (status >= 400 && status < 500 && ![408, 425, 429].includes(status)) return false;
+  if (isProviderContextLimitError(error)) return false;
 
   const message = String((error as any)?.message || error || '').toLowerCase();
   if (/(invalid api key|api key not valid|authentication|unauthorized|forbidden|invalid argument|bad request|not found|unsupported parameter|model .* not found)/i.test(message)) {
@@ -32,6 +39,9 @@ export const isRetryableApiError = (error: unknown): boolean => {
 
 export const isProviderFailoverError = (error: unknown): boolean => {
   if (isApiRequestCancelled(error)) return false;
+  // An oversized payload is request-specific. Rotating credentials or replaying
+  // an API round cannot help and only delays the compaction recovery path.
+  if (isProviderContextLimitError(error)) return false;
   const message = String((error as any)?.message || error || '').toLowerCase();
   return !/(invalid argument|bad request|unsupported parameter|model .* not found|not found|token limit|context length)/i.test(message);
 };
@@ -60,6 +70,10 @@ export const isProviderContextLimitError = (error: unknown): boolean => {
     || message.includes('prompt is too long')
     || message.includes('input is too long')
     || message.includes('request too large for model')
+    || (
+      /(?:input|prompt|context).{0,80}(?:token count|tokens?)/.test(message)
+      && /(?:exceed|limit|maximum|max|too many|too long|reduce)/.test(message)
+    )
     || (
       /(?:prompt|input|context)\s+(?:has\s+)?(?:too many\s+)?tokens?/.test(message)
       && /(?:exceed|limit|maximum|max|too many|too long|reduce)/.test(message)

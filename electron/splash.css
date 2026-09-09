@@ -1,0 +1,28 @@
+.eterx-startup {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #0f0f0f;
+  color: #d4d4d4;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  user-select: none;
+  cursor: default;
+}
+.eterx-startup, .eterx-startup * { box-sizing: border-box; }
+.eterx-startup-drag { position: absolute; inset: 0 0 auto; height: 38px; -webkit-app-region: drag; }
+.eterx-startup-content { display: grid; justify-items: center; gap: 26px; padding: 32px; text-align: center; transform: translateY(-28px); }
+.eterx-startup-logo { display: block; width: 92px; height: 92px; object-fit: contain; -webkit-user-drag: none; }
+.eterx-startup-title { margin: 18px 0 0; color: inherit; font: 650 36px/1.12 "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif; }
+.eterx-startup-status { display: flex; align-items: center; justify-content: center; gap: 14px; min-height: 52px; padding: 14px 22px; border: 1px solid rgba(255,255,255,.025); border-radius: 10px; background: rgba(255,255,255,.03); font-size: 20px; font-weight: 600; line-height: 1.2; }
+.eterx-startup-spinner { width: 20px; height: 20px; flex: 0 0 20px; border: 2px solid rgba(255,255,255,.18); border-top-color: currentColor; border-radius: 50%; animation: eterx-startup-spin 950ms linear infinite; }
+.eterx-startup-caption { margin: -10px 0 0; color: #909090; font-size: 15px; line-height: 1.5; }
+:root[data-theme="light"] .eterx-startup { background: #fafaf8; color: #2b2b29; }
+:root[data-theme="light"] .eterx-startup-status { background: rgba(31,31,29,.035); border-color: rgba(31,31,29,.08); }
+:root[data-theme="light"] .eterx-startup-spinner { border-color: rgba(31,31,29,.18); border-top-color: currentColor; }
+:root[data-theme="light"] .eterx-startup-caption { color: #6f6f6c; }
+@keyframes eterx-startup-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .eterx-startup-spinner { animation: none; } }
+@media (max-width: 420px) { .eterx-startup-title { font-size: 28px; } .eterx-startup-status { font-size: 17px; } }

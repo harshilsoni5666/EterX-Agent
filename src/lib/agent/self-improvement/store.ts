@@ -594,13 +594,10 @@ export class AdaptiveExperienceStore {
 
   async select(input: ExperienceSelectionInput): Promise<ExperienceInsight[]> {
     await this.initialize();
-    const requestWords = words([
-      input.request,
-      input.projectId || '',
-      input.workspaceKey || '',
-      input.agentRuntime || '',
-      input.role || '',
-    ].join(' '));
+    // Relevance must come from the live request. Scope identity decides where
+    // a lesson is eligible; it must not manufacture a semantic match merely
+    // because project paths or the word "main" appear in both records.
+    const requestWords = words(input.request);
     const scopeMatches = (insight: ExperienceInsight): boolean => {
       if (insight.scope.level === 'global') {
         return Boolean(input.userId && stableKey(input.userId) === stableKey(insight.scope.key));
@@ -642,16 +639,21 @@ export class AdaptiveExperienceStore {
         ].join(' '));
         let overlap = 0;
         for (const word of triggerWords) if (requestWords.has(word)) overlap += 1;
-        const universalUserModel = item.scope.level === 'global'
-          && (item.kind === 'user_model' || item.kind === 'collaboration');
+        const universallyApplicable = item.scope.level === 'global'
+          && item.authority === 'explicit_user';
         const scopeWeight = item.scope.level === 'workspace' ? 7
           : item.scope.level === 'project' ? 6
             : item.scope.level === 'agent' ? 5
               : item.scope.level === 'tool' ? 5 : 3;
         const authorityWeight = item.authority === 'explicit_user' ? 6 : item.authority === 'verified_outcome' ? 3 : 0;
-        return { item, score: scopeWeight + authorityWeight + overlap * 2 + (universalUserModel ? 8 : 0) };
+        return {
+          item,
+          overlap,
+          universallyApplicable,
+          score: scopeWeight + authorityWeight + overlap * 2 + (universallyApplicable ? 8 : 0),
+        };
       })
-      .filter(entry => entry.score > 3)
+      .filter(entry => entry.score > 3 && (entry.universallyApplicable || entry.overlap > 0))
       .sort((a, b) => b.score - a.score || b.item.revision - a.item.revision || a.item.id.localeCompare(b.item.id));
 
     const selected: ExperienceInsight[] = [];

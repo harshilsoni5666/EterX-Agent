@@ -35,11 +35,12 @@ export async function GET(req: NextRequest) {
     }
     const ownerError = requireChatOwner(chatId, session.sessionId);
     if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
-    const items = agentRegistry.getQueuedFollowUps(chatId);
+    const { items, queueRevision } = agentRegistry.getQueuedFollowUpSnapshot(chatId);
     return attachAgentApiSessionCookie(NextResponse.json({
       success: true,
       chatId,
       count: items.length,
+      queueRevision,
       items,
     }), session);
   } catch (error: any) {
@@ -49,6 +50,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const desktopAdmissionEpoch = agentRegistry.getDesktopAdmissionEpoch();
   hydrateServerRuntimeSettings();
   let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
@@ -64,21 +66,23 @@ export async function POST(req: NextRequest) {
     const ownerError = requireChatOwner(chatId, session.sessionId);
     if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
 
-    if (action === 'remove' || action === 'prioritize') {
+    if (action === 'remove' || action === 'prioritize' || action === 'steer') {
       const id = cleanString(body.id, 160);
       if (!isSafeRunId(id)) {
         return attachAgentApiSessionCookie(jsonError('A valid queue item ID is required.', 400), session);
       }
       const changed = action === 'remove'
         ? agentRegistry.removeQueuedFollowUp(chatId, id)
+        : action === 'steer' ? agentRegistry.steerQueuedFollowUp(chatId, id)
         : agentRegistry.prioritizeQueuedFollowUp(chatId, id);
-      const items = agentRegistry.getQueuedFollowUps(chatId);
+      const { items, queueRevision } = agentRegistry.getQueuedFollowUpSnapshot(chatId);
       return attachAgentApiSessionCookie(NextResponse.json({
         success: changed,
         action,
         chatId,
         id,
         count: items.length,
+        queueRevision,
         items,
       }, { status: changed ? 200 : 404 }), session);
     }
@@ -137,15 +141,18 @@ export async function POST(req: NextRequest) {
         ? requestedCreatedAt
         : undefined,
       runtimeOverride,
+      undefined,
+      desktopAdmissionEpoch,
     );
     const status = result.accepted ? 202 : result.status === 'queue_full' ? 429 : 409;
+    const queueSnapshot = agentRegistry.getQueuedFollowUpSnapshot(chatId);
     return attachAgentApiSessionCookie(NextResponse.json({
       success: result.accepted,
       status: result.status,
       handoffPending: result.handoffPending === true,
       message: result.message,
       item: result.item,
-      items: agentRegistry.getQueuedFollowUps(chatId),
+      ...queueSnapshot,
     }, { status }), session);
   } catch (error: any) {
     const response = NextResponse.json({ success: false, error: formatUnknownError(error, 'Failed to queue guidance') }, { status: 500 });

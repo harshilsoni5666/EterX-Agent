@@ -31,6 +31,7 @@ import {
 import { isModelProvider } from '../../../lib/agent/model-selector-store';
 import { resolveChatMediaForRequest } from '../../../lib/chat-media-store';
 import { formatUnknownError } from '../../../lib/agent/error-format';
+import { getCodingMode } from '../../../lib/code/coding-modes';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -52,6 +53,7 @@ import '../../../lib/agent/tools/index';
  * This is the bridge between old SSE-based UI and new registry-based backend.
  */
 export async function POST(req: NextRequest) {
+  const desktopAdmissionEpoch = agentRegistry.getDesktopAdmissionEpoch();
   hydrateServerRuntimeSettings();
   let session: ReturnType<typeof getOrCreateAgentApiSession> | null = null;
   try {
@@ -137,7 +139,8 @@ export async function POST(req: NextRequest) {
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
     const selectedRuntimeId = typeof customAgentId === 'string' ? customAgentId.trim() : '';
-    const isCustomAgentRun = !isBuilderChat && selectedRuntimeId.length > 0;
+    const codingMode = !isBuilderChat && getCodingMode(selectedRuntimeId || safePinnedContext.agentProfile);
+    const isCustomAgentRun = !isBuilderChat && !codingMode && selectedRuntimeId.length > 0;
     let effectivePinnedContext: Record<string, any> = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
       thinkingLevel: safeThinkingLevel,
@@ -153,6 +156,15 @@ export async function POST(req: NextRequest) {
       agentSessionId: session.sessionId,
       runLocation: typeof runLocation === 'string' ? runLocation : 'local',
     };
+    if (codingMode) {
+      effectivePinnedContext.agentRuntime = 'main_coding_agent';
+      effectivePinnedContext.agentProfile = codingMode.profile;
+      effectivePinnedContext.agentId = codingMode.id;
+      effectivePinnedContext.agentName = codingMode.label;
+      delete effectivePinnedContext.customAgentId;
+      delete effectivePinnedContext.customAgentName;
+      delete effectivePinnedContext._customAgentProfile;
+    }
     // Apply custom agent context — this makes the orchestrator load the profile
     // and Agent.ts inject the custom agent's identity into the system prompt.
     if (isCustomAgentRun) {
@@ -205,6 +217,7 @@ export async function POST(req: NextRequest) {
       runtimeSettings.preferredGeminiApiKey,
       runtimeSettings,
       runId,
+      desktopAdmissionEpoch,
     );
 
     if (startResult.status === 'no_keys') {

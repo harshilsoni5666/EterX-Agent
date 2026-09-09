@@ -351,21 +351,31 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     mesh.rotation.set(0, 0, 0);
     scene.add(mesh);
 
-    let animationFrameId = 0;
+    let animationFrameId: number | null = null;
     let fallbackClearTimer: number | null = null;
     let clock = 0;
     let disposed = false;
     let firstFramePresented = false;
     let pageVisible = document.visibilityState !== 'hidden';
+    let surfaceVisible = typeof IntersectionObserver === 'undefined';
+    let contextAvailable = true;
     let lastFrameTime: number | null = null;
     let lastRenderedAt = 0;
     let appliedThemeId = orbTheme.id;
+    let renderedWidth = width;
+    let renderedHeight = height;
+    let renderedPixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
 
-    const animate = (timestamp: number) => {
+    const requestNextFrame = () => {
+      if (disposed || !pageVisible || !surfaceVisible || !contextAvailable || animationFrameId !== null) return;
+      animationFrameId = requestAnimationFrame(animate);
+    };
+
+    function animate(timestamp: number) {
+      animationFrameId = null;
       if (disposed) return;
-      if (!pageVisible) {
-        lastFrameTime = timestamp;
-        animationFrameId = requestAnimationFrame(animate);
+      if (!pageVisible || !surfaceVisible || !contextAvailable) {
+        lastFrameTime = null;
         return;
       }
       const p = propsRef.current;
@@ -377,7 +387,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       // idle shader work without reducing application or agent polling speed.
       const minimumFrameInterval = state === 'idle' ? 1000 / 30 : 0;
       if (minimumFrameInterval > 0 && timestamp - lastRenderedAt < minimumFrameInterval) {
-        animationFrameId = requestAnimationFrame(animate);
+        requestNextFrame();
         return;
       }
       lastRenderedAt = timestamp;
@@ -436,36 +446,61 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
           }, 190);
         });
       }
-      animationFrameId = requestAnimationFrame(animate);
-    };
+      requestNextFrame();
+    }
 
-    animationFrameId = requestAnimationFrame(animate);
+    requestNextFrame();
 
     const handleResize = () => {
       if (disposed) return;
       const w = Math.max(1, container.clientWidth || 115);
       const h = Math.max(1, container.clientHeight || 115);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+      if (w === renderedWidth && h === renderedHeight && pixelRatio === renderedPixelRatio) return;
+      renderedWidth = w;
+      renderedHeight = h;
+      renderedPixelRatio = pixelRatio;
+      renderer.setPixelRatio(pixelRatio);
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
     };
     const handleContextLost = (event: Event) => {
       event.preventDefault();
+      contextAvailable = false;
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+      animationFrameId = null;
+      lastFrameTime = null;
       if (fallbackClearTimer !== null) window.clearTimeout(fallbackClearTimer);
       container.style.background = liveOrbFallback(propsRef.current.orbTheme ?? DEFAULT_LIVE_ORB_THEME);
       renderer.domElement.style.opacity = '0';
     };
     const handleContextRestored = () => {
+      contextAvailable = true;
       firstFramePresented = false;
+      requestNextFrame();
     };
     const handleVisibilityChange = () => {
       pageVisible = document.visibilityState !== 'hidden';
+      if (!pageVisible || !surfaceVisible) {
+        if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+        lastFrameTime = null;
+        return;
+      }
+      requestNextFrame();
     };
     const resizeObserver = typeof ResizeObserver !== 'undefined'
       ? new ResizeObserver(handleResize)
       : null;
     resizeObserver?.observe(container);
+    const intersectionObserver = typeof IntersectionObserver !== 'undefined'
+      ? new IntersectionObserver(entries => {
+          surfaceVisible = entries[0]?.isIntersecting ?? false;
+          handleVisibilityChange();
+        })
+      : null;
+    intersectionObserver?.observe(container);
     window.addEventListener('resize', handleResize);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
@@ -474,11 +509,12 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     return () => {
       disposed = true;
       resizeObserver?.disconnect();
+      intersectionObserver?.disconnect();
       window.removeEventListener('resize', handleResize);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
       renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored);
-      cancelAnimationFrame(animationFrameId);
+      if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
       if (fallbackClearTimer !== null) window.clearTimeout(fallbackClearTimer);
       if (container && renderer.domElement && container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);

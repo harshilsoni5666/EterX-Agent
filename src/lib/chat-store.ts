@@ -5,6 +5,8 @@ import { createHash } from 'crypto';
 import { getContextFabricForChat } from './agent/context-fabric';
 import { getEterxDataDir } from './agent/storage-paths';
 import { filterUserVisibleTraces } from './agent/trace-visibility';
+import { buildTemporaryTitle, mergeChatTitleMetadata } from './chat/title-generation';
+import { visibleUserRequest } from './chat-user-payload';
 import {
   mergeFeedTraceHistories,
   isConclusiveSettledAnswerTrace,
@@ -31,6 +33,7 @@ export interface ChatSnapshotWriteResult extends PersistedChatSnapshot {
 
 let cachedSnapshot: PersistedChatSnapshot | null = null;
 let cachedSnapshotFileSignature: string | null = null;
+let pendingSnapshotRead: Promise<PersistedChatSnapshot> | null = null;
 let writeQueue: Promise<unknown> = Promise.resolve();
 const auditedDialogueChats = new Set<string>();
 
@@ -76,7 +79,8 @@ function normalizePersistedChat(chat: any): any | null {
         ? chat.messages
         : [];
   const traceLogs = settleFeedTraceLifecycles(recoverMissingUserTurnBoundaries(filterUserVisibleTraces(sourceLogs.map((message: any, index: number) => {
-    if (message && typeof message.type === 'string') return message;
+    if (message && typeof message.type === 'string') return ['user_action', 'steering_received', 'steering_queued'].includes(message.type)
+      ? { ...message, text: visibleUserRequest(message.text) } : message;
     const role = String(message?.role || message?.sender || message?.author || '').toLowerCase();
     return {
       ...(message && typeof message === 'object' ? message : {}),
@@ -87,10 +91,17 @@ function normalizePersistedChat(chat: any): any | null {
     };
   }))));
 
+  // Older snapshots persisted the preview without its pending marker. Recover
+  // only exact query previews with no recorded successful title generation.
+  const firstUser = traceLogs.find((log: any) => log.type === 'user_action');
+  const legacyPreview = !chat.titleState &&
+    !traceLogs.some((log: any) => log.type === 'model_usage' && log.phase === 'chat_title') &&
+    Boolean(firstUser?.text) && title === buildTemporaryTitle(firstUser.text);
   return {
     ...chat,
     id: String(chat.id),
     title,
+    ...(legacyPreview ? { titleState: 'temporary' } : {}),
     updatedAt: Number.isFinite(chat.updatedAt)
       ? chat.updatedAt
       : Number.isFinite(chat.updated_at)
@@ -103,7 +114,7 @@ function normalizePersistedChat(chat: any): any | null {
 }
 
 function normalizeRecoveredRequestText(value: unknown): string {
-  return String(value || '')
+  return visibleUserRequest(value)
     .replace(/^\s*\[USER REQUEST\]\s*(?:\r?\n)?/i, '')
     .trim();
 }
@@ -166,7 +177,7 @@ const hasExactImportedTrace = (
   const traceId = importedTraceIdentity(originId, role);
   if (!traceId) return false;
   return traceLogs.some((log: any) => {
-    if (role === 'user' && log?.type !== 'user_action') return false;
+    if (role === 'user' && !['user_action', 'steering_received'].includes(log?.type)) return false;
     if (role === 'assistant' && !isMainAnswer(log)) return false;
     return [log?.id, log?.answerId].some(value => String(value || '').trim() === traceId) &&
       Boolean(String(log?.text || '').trim());
@@ -207,7 +218,7 @@ async function loadRecoveredDialogue(chatId: string, traceLogs: any[]): Promise<
       // transcript text because previews are bounded presentation metadata.
       if (!payload || String(payload?.mode || '').toLowerCase() === 'retry') continue;
       const rawText = isImportedUser ? payload?.text : payload?.request;
-      const text = exactDialogueText(rawText).replace(/^\s*\[USER REQUEST\]\s*(?:\r?\n)?/i, '');
+      const text = visibleUserRequest(exactDialogueText(rawText)).replace(/^\s*\[USER REQUEST\]\s*(?:\r?\n)?/i, '');
       if (!text.trim()) continue;
       const identity = originId || episodeId;
       if (seenRequests.has(identity)) continue;
@@ -304,7 +315,7 @@ function recoveredDialogueTraces(
     const candidates = working
       .map((log: any, index: number) => ({ log, index }))
       .filter(({ log, index }) => {
-        if (claimedUserBoundaryIndexes.has(index) || log?.type !== 'user_action') return false;
+        if (claimedUserBoundaryIndexes.has(index) || !['user_action', 'steering_received'].includes(log?.type)) return false;
         const text = normalizeRecoveredRequestText(log?.text);
         if (!text) return false;
         const exactImportedIdentity = Boolean(
@@ -360,6 +371,7 @@ function recoveredDialogueTraces(
       ownerChatId: chatId,
       ...(request.runId ? { runId: request.runId } : {}),
       turnId,
+      ...(request.runId && turnId === request.runId ? { admissionId: request.runId } : {}),
       _recoveredBoundary: true,
       _recoveredExactText: true,
       _recoveredContextEpisodeId: request.episodeId,
@@ -380,7 +392,13 @@ function recoveredDialogueTraces(
         if (claimedResponseIndexes.has(index)) return false;
         if (!isMainAnswer(log) || exactDialogueText(log?.text) !== response.text) return false;
         if (response.runId && String(log?.runId || '').trim() !== response.runId) return false;
-        if (importedId && ![log?.id, log?.answerId].some(value => String(value || '').trim() === importedId)) return false;
+        if (importedId && ![log?.id, log?.answerId].some(value => String(value || '').trim() === importedId)) {
+          // A context import may assign a new ID to the same terminal answer.
+          // Exact text plus its immutable run and close time identifies that
+          // copy without conflating repeated answers from different turns.
+          if (!response.runId || !responseAt || !traceTimestamp(log) ||
+            Math.abs(traceTimestamp(log) - responseAt) > 1000) return false;
+        }
         return isConclusiveSettledAnswerTrace(log, index, combinedForOwnership);
       })
       .sort((left, right) => {
@@ -434,7 +452,7 @@ function recoveredDialogueTraces(
 }
 
 async function hydrateRecoveredDialogue(snapshot: PersistedChatSnapshot): Promise<PersistedChatSnapshot> {
-  const chats = await Promise.all((snapshot.chats as any[]).map(async chat => {
+  const hydrateChat = async (chat: any) => {
     const traceLogs = Array.isArray(chat?.traceLogs) ? chat.traceLogs : [];
     const chatId = String(chat?.id || '').trim();
     if (!chatId) return chat;
@@ -443,13 +461,31 @@ async function hydrateRecoveredDialogue(snapshot: PersistedChatSnapshot): Promis
     // interrupted snapshot write is still reconstructed. Subsequent normal
     // saves stay cheap unless the visible terminal lifecycle proves a gap.
     if (auditedDialogueChats.has(chatId) && !requiresRepair) return chat;
-    const dialogue = await loadRecoveredDialogue(chatId, traceLogs);
+    let dialogue: RecoveredDialogue;
+    try {
+      dialogue = await loadRecoveredDialogue(chatId, traceLogs);
+    } catch (error) {
+      // A damaged context episode is not a damaged chat snapshot. Preserve
+      // the valid conversation and leave it eligible for a later repair.
+      console.warn(`[ChatStore] Dialogue recovery unavailable for ${chatId}`, error);
+      return chat;
+    }
     auditedDialogueChats.add(chatId);
     if (dialogue.requests.length === 0 && dialogue.responses.length === 0) return chat;
     return {
       ...chat,
       traceLogs: settleFeedTraceLifecycles(recoveredDialogueTraces(chatId, traceLogs, dialogue)),
     };
+  };
+  // Large histories must not open every context store simultaneously on
+  // launch. A small worker pool keeps disk and memory pressure bounded.
+  const chats = new Array(snapshot.chats.length);
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: Math.min(4, snapshot.chats.length) }, async () => {
+    while (nextIndex < snapshot.chats.length) {
+      const index = nextIndex++;
+      chats[index] = await hydrateChat(snapshot.chats[index]);
+    }
   }));
   return { ...snapshot, chats };
 }
@@ -518,7 +554,16 @@ async function readLegacySnapshot(): Promise<PersistedChatSnapshot | null> {
   return null;
 }
 
-async function readFromDisk(): Promise<PersistedChatSnapshot> {
+function readFromDisk(): Promise<PersistedChatSnapshot> {
+  if (!pendingSnapshotRead) {
+    pendingSnapshotRead = readSnapshotFromDisk().finally(() => {
+      pendingSnapshotRead = null;
+    });
+  }
+  return pendingSnapshotRead;
+}
+
+async function readSnapshotFromDisk(): Promise<PersistedChatSnapshot> {
   try {
     const stat = await fs.stat(CHAT_STORE_PATH);
     const fileSignature = `${ stat.mtimeMs }:${ stat.size }`;
@@ -583,7 +628,7 @@ async function readFromDisk(): Promise<PersistedChatSnapshot> {
   return cachedSnapshot;
 }
 
-async function writeAtomic(snapshot: PersistedChatSnapshot): Promise<void> {
+async function writeAtomic(snapshot: PersistedChatSnapshot): Promise<string | null> {
   await fs.ensureDir(CHAT_STORE_DIR);
   const temporaryPath = path.join(CHAT_STORE_DIR, `.chats.${process.pid}.${Date.now()}.tmp`);
   await fs.writeFile(temporaryPath, `${JSON.stringify(snapshot)}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -593,11 +638,17 @@ async function writeAtomic(snapshot: PersistedChatSnapshot): Promise<void> {
     await fs.copyFile(CHAT_STORE_PATH, CHAT_STORE_BACKUP_PATH).catch(() => {});
   }
   await fs.move(temporaryPath, CHAT_STORE_PATH, { overwrite: true });
+  // Retain the normalized snapshot after a save instead of reading and
+  // rebuilding every conversation again on the very next request.
+  return fs.stat(CHAT_STORE_PATH)
+    .then(stat => `${stat.mtimeMs}:${stat.size}`)
+    .catch(() => null);
 }
 
 export async function loadChatSnapshot(): Promise<PersistedChatSnapshot> {
   await writeQueue.catch(() => {});
-  return { ...(await readFromDisk()), chats: [...(cachedSnapshot?.chats || [])] };
+  const snapshot = await readFromDisk();
+  return { ...snapshot, chats: [...snapshot.chats] };
 }
 
 export async function loadChatById(chatId: string): Promise<unknown | null> {
@@ -619,6 +670,7 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
       return {
         ...durable,
         ...chat,
+        ...mergeChatTitleMetadata(durable, chat),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
           chat.traceLogs || [],
@@ -631,9 +683,9 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
       savedAt: Math.max(requested.savedAt, current.savedAt + 1),
       lastMutationId: mutationId,
     }));
-    await writeAtomic(next);
+    const signature = await writeAtomic(next);
     cachedSnapshot = next;
-    cachedSnapshotFileSignature = null;
+    cachedSnapshotFileSignature = signature;
     return { ...next, applied: true };
   });
   const stored = await writeQueue as ChatSnapshotWriteResult;
@@ -664,6 +716,7 @@ export async function patchChatSnapshot(
       byId.set(chat.id, durable ? {
         ...durable,
         ...chat,
+        ...mergeChatTitleMetadata(durable, chat),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
           chat.traceLogs || [],
@@ -680,12 +733,12 @@ export async function patchChatSnapshot(
       // deletion IDs are allowed to remove existing records.
       chats: [
         ...safeIds.map(id => byId.get(id)).filter(Boolean),
-        ...(current.chats as any[]).filter(chat => !orderedIds.has(chat.id) && byId.has(chat.id)),
+        ...Array.from(byId.values()).filter(chat => !orderedIds.has(chat.id)),
       ],
     }));
-    await writeAtomic(next);
+    const signature = await writeAtomic(next);
     cachedSnapshot = next;
-    cachedSnapshotFileSignature = null;
+    cachedSnapshotFileSignature = signature;
     return { ...next, applied: true };
   });
   const stored = await writeQueue as ChatSnapshotWriteResult;

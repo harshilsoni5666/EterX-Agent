@@ -596,7 +596,9 @@ export class MultiStrategyRecovery {
   private strategies: RecoveryStrategy[] = [
     {
       name: 'fix_path',
-      condition: (tool, error) => error.includes('ENOENT') || error.includes('not found') || error.includes('no such file'),
+      condition: (tool, error) =>
+        tool !== 'workspace_edit_file'
+        && (error.includes('ENOENT') || error.includes('no such file') || /(?:file|directory|path) not found/i.test(error)),
       recover: (tool, args) => {
         // Try fixing common path issues
         if (args?.filename || args?.path || args?.target) {

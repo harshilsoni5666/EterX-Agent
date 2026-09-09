@@ -1,22 +1,27 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useLiveFeedFlow } from './use-live-feed-flow';
+import { getActionSummary } from './action-summary';
+import { getTextPlaybackId, usePacedText } from './use-paced-text';
 import { createPortal } from 'react-dom';
+import { InlineRunNotice } from './inline-run-notice';
 import { useFilePanelActions } from '../../contexts/FilePanelContext';
 // Only the Lucide icons actually rendered in JSX (not icon-map/TOOL_META)
 import {
   ChevronRight, ChevronDown, Monitor, ShieldHalf, Copy, CheckCircle, Maximize2, CornerDownLeft,
   RefreshCw, ExternalLink, Check, Globe, Smartphone, Tablet, Terminal, ArrowRight,
   Search, FileText, Hash, FolderOpen, Folder, AlertTriangle, MessageSquare,
-  Key, Clock, Timer
+  Clock, Timer
 } from 'lucide-react';
 // @ts-ignore
 import ReactMarkdown from 'react-markdown';
-import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins, WebsiteLink } from './markdown-renderer';
-import { LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath } from './local-file-link';
-import { AGENT_ICONS, resolveAgentIcon, AgentAssetIcon, SubAgentIdentityIcon, ConnectorIcon, getConnectorId, isConnectorTrace } from './agent-icons';
+import { markdownComponents, MarkdownStreamContext, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins, WebsiteLink } from './markdown-renderer';
+import { LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, localAwareUrlTransform } from './local-file-link';
+import { AGENT_ICONS, resolveAgentIcon, resolveToolTraceIcon, TerminalIcon as ToolTerminalIcon, AgentAssetIcon, SubAgentIdentityIcon, ConnectorIcon, getConnectorId, isConnectorTrace } from './agent-icons';
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { isThoughtStreamOpen, shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
+import { mergeFeedTracePayload } from '../../lib/chat-feed-lifecycle';
 import { areLikelySameFeedActionLifecycle, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen } from '../../lib/chat-feed-lifecycle';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../../lib/agent/tool-trace';
 import { isTerminalTraceStreaming } from '../../lib/terminal-lifecycle';
@@ -180,14 +185,9 @@ const stripTrailingFileName = (value: string, fileName: string) => {
   return stripped || value;
 };
 
-const TERMINAL_ACTION_PATTERN = /\b(?:shell|terminal|command|exec|run|process|server|watch|powershell|pwsh|cmd(?:\.exe)?|bash|zsh|sh|git|npm|npx|pnpm|yarn|bun|node|python|py|pip|pytest|tsx|tsc|eslint|prettier|docker|cargo|go\s+(?:test|build|run|vet)|mvn|gradle|java|dotnet|php|ruby|rails|uv|poetry|rg|grep|curl|wget)\b/i;
-
-const shouldUseTerminalIcon = (log: any, subtitle = '', preview?: any) => {
+const shouldUseTerminalIcon = (log: any, _subtitle = '', preview?: any) => {
   const text = String(log?.text || '');
-  const secondary = String(log?.secondary || subtitle || '');
-  const command = String(log?.command || preview?.command || '');
   const iconCategory = String(log?.iconCategory || '').toLowerCase();
-  const combined = `${ text } ${ secondary } ${ command }`;
 
   // Connector traces can contain words such as "run", "server", or
   // "request" in their action/arguments. They are external-service activity,
@@ -197,9 +197,11 @@ const shouldUseTerminalIcon = (log: any, subtitle = '', preview?: any) => {
   if (iconCategory === 'terminal') return true;
   if (preview?.type === 'console_output') return true;
   if (log?.type === 'console_output') return true;
-  const toolName = normalizeToolTraceName(log?.tool || log?.name);
-  if (['workspace_run_command', 'terminal_access'].includes(toolName)) return true;
-  return TERMINAL_ACTION_PATTERN.test(combined);
+  const toolName = normalizeToolTraceName(log?.toolName || log?.tool || log?.name).toLowerCase();
+  if (['workspace_run_command', 'terminal_access', 'exec_command', 'write_stdin'].includes(toolName)) return true;
+  // Legacy labels are exact; arbitrary arguments and filenames never decide
+  // whether a trace represents a shell invocation.
+  return ['Running command', 'Running project command', 'Ran command', 'Ran commands'].includes(text);
 };
 
 const displayedTextRegistry = new Map<string, number>();
@@ -236,42 +238,129 @@ const useThoughtElapsed = (isLive: boolean, startedAt?: number, updatedAt?: numb
   return Math.floor((elapsedMs ?? 0) / 1_000);
 };
 
-export const ProfessionalThought = React.memo((props: { text: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode, startedAt?: number, updatedAt?: number, reveal?: boolean }) => {
+const thoughtMarkdownComponents = {
+  ...markdownComponents,
+  p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 break-words leading-[1.54] text-[#D5D3CE]" {...props} />,
+  ol: ({ node, ...props }: any) => <ol className="my-2 list-decimal space-y-1.5 pl-5 text-[#D5D3CE]" {...props} />,
+  ul: ({ node, ...props }: any) => <ul className="my-2 list-disc space-y-1.5 pl-5 text-[#D5D3CE]" {...props} />,
+  li: ({ node, ...props }: any) => <li className="pl-1 leading-[1.52] marker:text-[#827C73]" {...props} />,
+  strong: ({ node, ...props }: any) => <strong className="font-bold text-[#F3F2EF]" {...props} />,
+  a: ({ node, href, children, ...props }: any) => {
+    const localPath = decodeLocalFileHref(href);
+    if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact />;
+    return <WebsiteLink href={href} {...props}>{children}</WebsiteLink>;
+  },
+};
+
+const MarkdownSlice = React.memo(({ text, streaming, components }: {
+  text: string; streaming: boolean; components: typeof markdownComponents;
+}) => {
+  // Prose already has one bounded frame scheduler. Deferring it again skipped
+  // intermediate reveals and exposed the whole block when the stream settled.
+  return useMemo(() => (
+    <MarkdownStreamContext.Provider value={streaming}>
+      <ReactMarkdown urlTransform={localAwareUrlTransform} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>
+        {text}
+      </ReactMarkdown>
+    </MarkdownStreamContext.Provider>
+  ), [text, streaming, components]);
+});
+// Plain prose paragraphs have no cross-block parse state. Keep completed
+// paragraphs memoized while typing the tail. Lists, fences, math, tables,
+// HTML and reference links stay in one parser so their semantics are intact.
+const LiveMarkdown = React.memo(({ text, streaming, components }: {
+  text: string; streaming: boolean; components: typeof markdownComponents;
+}) => {
+  const paragraphs = useMemo(() => {
+    if (!text.includes('\n\n') || /[`$|<]|^\s{0,3}(?:>|[-+*]\s|\d+[.)]\s|\[[^\]]+\]:)|^ {4}\S|^\t/m.test(text)) return null;
+    const parts = text.split(/(\n{2,})/);
+    let offset = 0;
+    return parts.map(part => {
+      const block = { text: part, offset };
+      offset += part.length;
+      return block;
+    }).filter(part => part.text.trim());
+  }, [text]);
+  if (!paragraphs) return <MarkdownSlice text={text} streaming={streaming} components={components} />;
+  return <>{paragraphs.map((part, index) => <MarkdownSlice
+    key={part.offset}
+    text={part.text}
+    streaming={streaming && index === paragraphs.length - 1}
+    components={components}
+  />)}</>;
+});
+LiveMarkdown.displayName = 'LiveMarkdown';
+
+// Use only explicit provider headings, never turn a reasoning paragraph or
+// code sample into a status. Incomplete streamed headings keep the prior one.
+const getThoughtHeading = (text: unknown): string => {
+  if (typeof text !== 'string') return '';
+  const lines = text.split('\n');
+  let fenced = false;
+  let heading = '';
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (/^(?:```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    if (fenced) continue;
+    const match = line.match(/^\*\*([^*\n]+)\*\*\s*:?:?$/)
+      || (index < lines.length - 1 ? line.match(/^#{1,6}\s+(.+?)(?:\s+#+)?$/) : null);
+    const candidate = match?.[1]?.trim();
+    if (candidate && candidate.length <= 120) heading = candidate;
+  }
+  return heading;
+};
+
+const getRecentThoughtHeading = (logs: any[]): string => {
+  const tools = new Set<string>();
+  let heading = '';
+  let headingKey = '';
+  for (let index = 0; index < logs.length; index += 1) {
+    const log = logs[index];
+    if (['user', 'user_message', 'final_answer', 'answer'].includes(log?.type)) {
+      heading = ''; headingKey = ''; tools.clear();
+      continue;
+    }
+    if (log?.type === 'thought_stream') {
+      const next = getThoughtEventHeading(log);
+      const key = next.toLowerCase().replace(/[\s\p{P}]+/gu, '');
+      if (next && key !== headingKey) {
+        heading = next; headingKey = key; tools.clear();
+      }
+    }
+    if (['command', 'tool_call', 'file_edit', 'exploration', 'browser', 'communication'].includes(log?.type)) {
+      tools.add(getActionIdentity(log, index));
+    }
+  }
+  return tools.size <= 3 ? heading : '';
+};
+
+const getThoughtEventHeading = (log: any): string => {
+  // Prefer the latest heading in the stream over an initial provider title.
+  const streamedHeading = getThoughtHeading(log?.text);
+  if (streamedHeading) return streamedHeading;
+  return [log?.thinkingTitle, log?.reasoningTitle, log?.heading, log?.title, log?.currentAction, log?.statusText, log?.label]
+    .find(value => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 120 && !value.includes('\n') && !/^(?:thinking|thought|working)$/i.test(value.trim()))?.trim() || '';
+};
+
+export const ProfessionalThought = React.memo((props: { text: string, playbackId?: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode, startedAt?: number, updatedAt?: number, reveal?: boolean }) => {
   const { text, isLatest, isThinking, variant = 'thought', suffix } = props;
   const requestedLive = isLatest && isThinking;
   const thoughtIsLive = variant === 'thought' && requestedLive;
-  // A live Thought should be open on its first paint. Waiting for an effect
-  // produced a collapsed/empty frame before the streamed text appeared.
-  const [open, setOpen] = useState(() => thoughtIsLive);
+  // Thought details are opt-in; live activity is presented in the group heading.
+  const [open, setOpen] = useState(false);
   const [thoughtCanScroll, setThoughtCanScroll] = useState(false);
   const thoughtScrollRef = useRef<HTMLDivElement>(null);
+  const thoughtContentRef = useRef<HTMLDivElement>(null);
   const thoughtAutoScrollRef = useRef(true);
-  const thoughtWasLiveRef = useRef(thoughtIsLive);
   const isLive = thoughtIsLive;
   const elapsed = useThoughtElapsed(isLive, props.startedAt, props.updatedAt);
 
-  // Native reasoning is useful only when it can actually be seen arriving.
-  // Open a live thought automatically, then close it exactly once when that
-  // stream settles. A user can still reopen the completed thought afterward.
-  useEffect(() => {
-    const wasLive = thoughtWasLiveRef.current;
-    thoughtWasLiveRef.current = isLive;
-    if (isLive) setOpen(true);
-    else if (wasLive) setOpen(false);
-  }, [isLive]);
 
   const renderText = useMemo(() => {
-    if (!text) return '';
-    let f = text.replace(/!\[.*?\]\(\/absolute.*?\.png\)/gi, '');
-    f = f.replace(/([^\n])(#{1,6}\s)/g, '$1\n\n$2').replace(/([.!?:])(\s*\n)(#{1,6}\s)/g, '$1\n\n$3');
-    return normalizeMarkdownForRendering(f.trim());
-  }, [text]);
-
-  const scrollThoughtToBottom = () => {
-    const el = thoughtScrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  };
+    if (variant === 'thought' && !open) return '';
+    return normalizeMarkdownForRendering(text);
+  }, [text, variant, open]);
+  const paced = usePacedText(renderText, requestedLive, variant !== 'thought', props.playbackId);
 
   const handleThoughtScroll = () => {
     const el = thoughtScrollRef.current;
@@ -279,55 +368,54 @@ export const ProfessionalThought = React.memo((props: { text: string, isLatest: 
     thoughtAutoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 28;
   };
 
-  const syncThoughtOverflow = () => {
-    const el = thoughtScrollRef.current;
-    if (!el) {
-      setThoughtCanScroll(false);
-      return;
-    }
-    setThoughtCanScroll(el.scrollHeight > el.clientHeight + 1);
-  };
-
-  useEffect(() => {
-    if (!open) {
+  React.useLayoutEffect(() => {
+    if (variant !== 'thought' || !open) {
       setThoughtCanScroll(false);
       return;
     }
     thoughtAutoScrollRef.current = isLive;
-    const frame = window.requestAnimationFrame(() => {
-      syncThoughtOverflow();
-      const el = thoughtScrollRef.current;
-      if (!el) return;
-      if (isLive) scrollThoughtToBottom();
-      else el.scrollTop = 0;
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const frame = window.requestAnimationFrame(() => {
-      syncThoughtOverflow();
-      if (thoughtAutoScrollRef.current) scrollThoughtToBottom();
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [open, renderText]);
+    const viewport = thoughtScrollRef.current;
+    const content = thoughtContentRef.current;
+    if (!viewport || !content) return;
+    let frame: number | null = null;
+    const syncGeometry = () => {
+      frame = null;
+      if (document.hidden || !viewport.isConnected) return;
+      const height = viewport.scrollHeight;
+      setThoughtCanScroll(height > viewport.clientHeight + 1);
+      if (thoughtAutoScrollRef.current) viewport.scrollTop = height;
+    };
+    // Measure actual committed Markdown, not the newest source text before
+    // its deferred parse has painted. Coalesce all content resizes per frame.
+    const schedule = () => {
+      if (frame === null) frame = window.requestAnimationFrame(syncGeometry);
+    };
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
+    observer?.observe(content);
+    observer?.observe(viewport);
+    document.addEventListener('visibilitychange', schedule);
+    syncGeometry();
+    return () => {
+      observer?.disconnect();
+      document.removeEventListener('visibilitychange', schedule);
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [variant, open, isLive, Boolean(renderText)]);
 
   const elapsedLabel = formatThoughtElapsed(elapsed);
-  const thinkLabel = `Thought${elapsedLabel ? ` · ${elapsedLabel}` : ''}`;
+
+  const thinkLabel = isLive ? 'Thinking' : `Thought${elapsedLabel ? ` · ${elapsedLabel}` : ''}`;
   const isNote = variant === 'note';
-  // The provider/registry already publishes cumulative live snapshots. A
-  // second client-side typewriter made the visible answer lag behind reality
-  // and could keep animating after the provider had settled. Render the exact
-  // received snapshot; subsequent snapshots still stream naturally.
-  const markdownText = renderText;
+  // Only the visible prose uses pacing. The event ledger and copy/export
+  // content retain the complete provider snapshot at every point.
+  const markdownText = paced.text;
   const professionalMarkdownComponents = useMemo(() => ({
     ...markdownComponents,
     p: ({ node, ...props }: any) => <p className="eterx-answer-paragraph mb-2 last:mb-0 break-words leading-[1.62] tracking-normal" {...props} />,
     ul: ({ node, ...props }: any) => <ul className="eterx-answer-list my-2.5 list-disc space-y-1.5 pl-5" {...props} />,
     ol: ({ node, ...props }: any) => <ol className="eterx-answer-list my-2.5 list-decimal space-y-1.5 pl-5" {...props} />,
     li: ({ node, ...props }: any) => <li className="eterx-answer-list-item pl-1 leading-[1.58]" {...props} />,
-    strong: ({ node, ...props }: any) => <strong className="eterx-answer-strong font-bold" {...props} />,
+    strong: ({ node, ...props }: any) => <strong className="eterx-answer-strong font-semibold" {...props} />,
     em: ({ node, ...props }: any) => <em className="eterx-answer-em italic" {...props} />,
     a: ({ node, href, children, ...props }: any) => {
       const localPath = decodeLocalFileHref(href);
@@ -337,25 +425,15 @@ export const ProfessionalThought = React.memo((props: { text: string, isLatest: 
       if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact />;
       return <WebsiteLink href={href} {...props}>{children}</WebsiteLink>;
     },
-  }), [isNote]);
+  }), []);
   const renderProfessionalMarkdown = (value: string) => (
-    <>
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
-        components={professionalMarkdownComponents}
-      >
-        {value}
-      </ReactMarkdown>
-    </>
+    <LiveMarkdown text={value} streaming={requestedLive || paced.revealing} components={professionalMarkdownComponents} />
   );
 
   if (variant === 'thought') {
     return (
       <motion.div
-        initial={{ opacity: 0, y: 2 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
+        initial={false}
         className="professional-thought eterx-thought-block w-full"
       >
         <div className={`eterx-thought-card overflow-hidden rounded-[8px] border bg-[#151514]/32 shadow-none transition-colors ${ open ? 'border-white/[0.10]' : 'border-white/[0.055] hover:border-white/[0.085]' }`}>
@@ -367,39 +445,23 @@ export const ProfessionalThought = React.memo((props: { text: string, isLatest: 
           >
             <Shimmer
               active={isLive}
-              className="eterx-thinking-shimmer flex-1 text-[12.5px] font-medium tracking-[-0.002em] text-[var(--eterx-ui-working-text)]"
+              className="eterx-thinking-shimmer min-w-0 flex-1 truncate text-[12.5px] font-medium tracking-[-0.002em] text-[var(--eterx-ui-working-text)]"
             >
               {thinkLabel}
             </Shimmer>
             <ChevronRight className={`h-3 w-3 text-[#625C54] group-hover:text-[#A8A198] transition-all ${ open ? 'rotate-90' : '' }`} />
           </button>
-          <AnimatePresence initial={false}>
             {open && renderText && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.18, ease: 'easeOut' }}
+              <div
                 className="overflow-hidden"
               >
                 <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' } px-2.5 pb-2 pt-1 text-[11.5px] leading-[1.48] text-[#C9C6C0]`} style={{ maxHeight: 'min(38vh, 340px)' }}>
-                  <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={{
-                    ...markdownComponents,
-                    p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 break-words leading-[1.54] text-[#D5D3CE]" {...props} />,
-                    ol: ({ node, ...props }: any) => <ol className="my-2 list-decimal space-y-1.5 pl-5 text-[#D5D3CE]" {...props} />,
-                    ul: ({ node, ...props }: any) => <ul className="my-2 list-disc space-y-1.5 pl-5 text-[#D5D3CE]" {...props} />,
-                    li: ({ node, ...props }: any) => <li className="pl-1 leading-[1.52] marker:text-[#827C73]" {...props} />,
-                    strong: ({ node, ...props }: any) => <strong className="font-bold text-[#F3F2EF]" {...props} />,
-                    a: ({ node, href, children, ...props }: any) => {
-                      const localPath = decodeLocalFileHref(href);
-                      if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact />;
-                      return <WebsiteLink href={href} {...props}>{children}</WebsiteLink>;
-                    },
-                  }}>{renderText}</ReactMarkdown>
+                  <div ref={thoughtContentRef}>
+                    <LiveMarkdown text={renderText} streaming={isLive} components={thoughtMarkdownComponents} />
+                  </div>
                 </div>
-              </motion.div>
+              </div>
             )}
-          </AnimatePresence>
         </div>
       </motion.div>
     );
@@ -407,10 +469,12 @@ export const ProfessionalThought = React.memo((props: { text: string, isLatest: 
 
   return (
     <div
+      ref={paced.rootRef}
+      data-live-text={requestedLive ? 'true' : undefined}
       className={`professional-thought eterx-professional-thought relative w-full max-w-full font-sans font-normal selection:bg-[#D98B6A]/20 select-text tracking-normal ${ isNote ? 'eterx-professional-note text-[13.5px] leading-[1.56] text-[#F2F0EC]' : 'eterx-professional-answer text-[13.5px] leading-[1.56] text-[#F2F0EC]' }`}
     >
       {renderProfessionalMarkdown(markdownText)}
-      {suffix}
+      {!paced.revealing && suffix}
     </div>
   );
 });
@@ -446,16 +510,17 @@ const ProxyStatusDivider = ({ text, isActive = false }: { text: string; isActive
   );
 };
 
-const WorkNoteBlock = ({ text, isActive = false, isProxyStatus = false }: { text: string; isActive?: boolean; isProxyStatus?: boolean }) => {
+const WorkNoteBlock = ({ text, playbackId, isActive = false, isProxyStatus = false }: { text: string; playbackId?: string; isActive?: boolean; isProxyStatus?: boolean }) => {
   const note = useMemo(() => String(text || '').trim(), [text]);
   if (!note) return null;
 
   if (isProxyStatus) return <ProxyStatusDivider text={note} isActive={isActive} />;
 
   return (
-    <div className={`eterx-work-note-block w-full px-0 py-0 ${ isActive ? 'eterx-live-feed-arrival' : '' }`}>
+    <div className="eterx-work-note-block w-full px-0 py-0">
       <ProfessionalThought
         text={note}
+        playbackId={playbackId}
         isLatest={isActive}
         isThinking={isActive}
         variant="note"
@@ -1035,6 +1100,7 @@ const TrpMarkdown = React.memo(({ content }: { content: string }) => (
     [&_td]:px-2.5 [&_td]:py-1.5 [&_td]:border [&_td]:border-white/[0.045] [&_td]:text-[#C0B8B0]
   ">
     <ReactMarkdown
+      urlTransform={localAwareUrlTransform}
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
       components={markdownComponents}
@@ -2210,6 +2276,31 @@ const collectFileTargetCandidates = (value: unknown, targets: FileTraceTarget[],
   appendFileTarget(targets, seen, text);
 };
 
+// Completed results take precedence over a tool's generic "Editing" label.
+// Any modification in the action keeps mixed creation/edit groups under Edited.
+const isCreationOnlyFileAction = (log: any, previews: any[]): boolean => {
+  let created = false;
+  for (const item of [...previews, log]) {
+    const raw = item?.fileOperationResult ?? item?.toolResult ?? item?.result ?? item;
+    let result = raw;
+    if (typeof raw === 'string') {
+      try { result = JSON.parse(raw); } catch { continue; }
+    }
+    if (!result || typeof result !== 'object') continue;
+    const changes = Array.isArray(result.changes) ? result.changes : [];
+    if (['edited', 'modified', 'deleted', 'mixed'].includes(result.operation)
+      || result.filesModified?.length || result.filesDeleted?.length
+      || changes.some((change: any) => ['modified', 'edited', 'deleted'].includes(change?.action))) return false;
+    if (result.operation === 'created' || result.filesCreated?.length
+      || changes.some((change: any) => change?.action === 'created')) created = true;
+  }
+  if (created) return true;
+  // Legacy previews can have no structured operation result.
+  if (previews.some(item => item?.isEdit === true || Number(item?.linesRemoved) > 0)) return false;
+  return /^(?:Created|Creating)\b/i.test(String(log?.text || '').trim())
+    || previews.some(item => item?.created === true || item?.isNewFile === true);
+};
+
 const collectFileTargets = (log: any, preview?: any): FileTraceTarget[] => {
   const targets: FileTraceTarget[] = [];
   const seen = new Set<string>();
@@ -2218,6 +2309,20 @@ const collectFileTargets = (log: any, preview?: any): FileTraceTarget[] => {
   collectFileTargetCandidates(log?.filename || log?.fileName || log?.file, targets, seen);
   collectFileTargetCandidates(log?.files, targets, seen);
   collectFileTargetCandidates(log?.targetPath || log?.path, targets, seen);
+  const args = log?.toolArgs || log?.args;
+  if (args && typeof args === 'object') {
+    collectFileTargetCandidates(args.filepath || args.filePath || args.file_path || args.path || args.targetPath || args.filename, targets, seen);
+    if (Array.isArray(args.files)) collectFileTargetCandidates(args.files.map((file: any) => typeof file === 'string' ? file : file?.path || file?.filepath || file?.filePath), targets, seen);
+    if (Array.isArray(args.edits)) collectFileTargetCandidates(args.edits.map((edit: any) => edit?.path || edit?.filepath || edit?.filePath || edit?.file_path), targets, seen);
+    for (const patch of [args.patch, args.input]) {
+      if (typeof patch === 'string') parsePatchFileTargets(patch).forEach(path => appendFileTarget(targets, seen, path));
+    }
+  }
+  if (typeof args === 'string') parsePatchFileTargets(args).forEach(path => appendFileTarget(targets, seen, path));
+  const result = preview?.result || log?.result;
+  if (result && typeof result === 'object') {
+    for (const key of ['filesCreated', 'filesModified', 'filesDeleted', 'files']) collectFileTargetCandidates(result[key], targets, seen);
+  }
   collectFileTargetCandidates(log?.secondary, targets, seen);
   return targets;
 };
@@ -2330,6 +2435,43 @@ const compactTraceOwnerIds = (values: unknown[]) => Array.from(new Set(
     .filter(Boolean),
 ));
 
+type TimelinePreviewIndex = {
+  positions: Map<any, number>;
+  byOwner: Map<string, any[]>;
+  legacy: any[];
+};
+const timelinePreviewIndexes = new WeakMap<any[], TimelinePreviewIndex>();
+
+const getTimelinePreviewIndex = (timeline: any[]): TimelinePreviewIndex => {
+  const cached = timelinePreviewIndexes.get(timeline);
+  if (cached) return cached;
+  const index: TimelinePreviewIndex = { positions: new Map(), byOwner: new Map(), legacy: [] };
+  timeline.forEach((log, position) => {
+    if (!index.positions.has(log)) index.positions.set(log, position);
+    if (!['console_output', 'file_preview', 'tool_result_preview'].includes(log?.type)) return;
+    const owners = compactTraceOwnerIds([log.ownerTraceId, log.ownerActionId, log.toolCallId, log.ownerPresentationId]);
+    if (!owners.length) index.legacy.push(log);
+    for (const owner of owners) {
+      const rows = index.byOwner.get(owner) || [];
+      rows.push(log);
+      index.byOwner.set(owner, rows);
+    }
+  });
+  timelinePreviewIndexes.set(timeline, index);
+  return index;
+};
+
+// Build once per immutable snapshot, then inspect only this action's results.
+// Legacy rows keep the existing ownership rules and chronological order.
+const getActionPreviewCandidates = (action: any, timeline: any[]): any[] => {
+  const index = getTimelinePreviewIndex(timeline);
+  const candidates = new Set(index.legacy);
+  for (const owner of compactTraceOwnerIds([action.traceId, action.id, action._traceIdx, action._originTraceIdx, action.toolCallId, action._feedPresentationId])) {
+    index.byOwner.get(owner)?.forEach(preview => candidates.add(preview));
+  }
+  return [...candidates].sort((left, right) => (index.positions.get(left) ?? 0) - (index.positions.get(right) ?? 0));
+};
+
 /**
  * Resolve a result/preview to one action without letting a run-wide stream or
  * task ID move that preview between consecutive actions. New traces carry an
@@ -2345,6 +2487,7 @@ const previewBelongsToAction = (preview: any, action: any, timeline: any[]): boo
     action.traceId,
     action.id,
     action._traceIdx,
+    action._originTraceIdx,
     action.toolCallId,
     action._feedPresentationId,
   ]);
@@ -2359,8 +2502,9 @@ const previewBelongsToAction = (preview: any, action: any, timeline: any[]): boo
   }
 
   const source = Array.isArray(timeline) ? timeline : [];
-  const actionIndex = source.indexOf(action);
-  const previewIndex = source.indexOf(preview);
+  const positions = getTimelinePreviewIndex(source).positions;
+  const actionIndex = positions.get(action) ?? -1;
+  const previewIndex = positions.get(preview) ?? -1;
   if (actionIndex < 0 || previewIndex < 0 || actionIndex >= previewIndex) return false;
 
   const previewTransportIds = compactTraceOwnerIds([
@@ -2509,6 +2653,7 @@ const getActionEventIdentityKeys = (log: any): string[] => {
 };
 
 const reconcileLiveActionLogs = (settledLogs: any[], liveLogs: any[]): any[] => {
+  if (liveLogs.length === 0) return settledLogs;
   const reconciled = [...settledLogs];
   const identityIndexes = new Map<string, number>();
   const lifecycleCandidateIndexes = new Map<string, Set<number>>();
@@ -2560,8 +2705,7 @@ const reconcileLiveActionLogs = (settledLogs: any[], liveLogs: any[]): any[] => 
     // both are still live, keep the newest payload in the same visible row.
     if (isExplicitlySettledAction(existing) && isLiveActionEvent(liveLog)) return;
     reconciled[existingIndex] = {
-      ...existing,
-      ...liveLog,
+      ...mergeFeedTracePayload(existing, liveLog),
       _feedPresentationId: existing?._feedPresentationId || liveLog?._feedPresentationId || undefined,
       _feedBoundaryId: existing?._feedBoundaryId || liveLog?._feedBoundaryId || undefined,
       _feedBoundaryOrder: existing?._feedBoundaryOrder ?? liveLog?._feedBoundaryOrder,
@@ -2651,6 +2795,7 @@ const getTerminalCommandText = (log: any, preview?: any, fallback = '') => {
     toolArgs.code,
     toolArgs.source,
     toolArgs.command,
+    toolArgs.cmd,
     resultObject?.commandUsed,
     preview?.command,
     log?.command,
@@ -2658,7 +2803,17 @@ const getTerminalCommandText = (log: any, preview?: any, fallback = '') => {
     log?.cmd,
     fallback,
   ].find(value => String(value || '').trim().length > 0);
-  const sourcePreview = formatTerminalSourcePreview(sourceCandidate);
+  let commandSource = sourceCandidate;
+  if (typeof commandSource === 'string' && /^[\[{]/.test(commandSource.trim())) {
+    try {
+      const parsed = JSON.parse(commandSource);
+      const commands = (Array.isArray(parsed) ? parsed : [parsed])
+        .map(item => typeof item === 'string' ? item : item?.command || item?.cmd || item?.script)
+        .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()));
+      if (commands.length) commandSource = commands.join(' ; ');
+    } catch { /* Ordinary shell syntax can also start with a bracket. */ }
+  }
+  const sourcePreview = formatTerminalSourcePreview(commandSource);
   if (sourcePreview) return sourcePreview;
 
   const language = String(toolArgs.language || '').trim();
@@ -2768,8 +2923,9 @@ const extractTimerDurationLabel = (log: any, durationMs?: number) => {
   return '';
 };
 
-function formatTerminalMetaDuration(durationMs?: number) {
+function formatTerminalMetaDuration(durationMs?: number, live = false) {
   if (durationMs === undefined || durationMs === null || !Number.isFinite(durationMs)) return '';
+  if (live && durationMs < 60_000) return `${ Math.floor(Math.max(0, durationMs) / 1_000) }s`;
   if (durationMs < 1_000) return `${ Math.round(durationMs) }ms`;
   if (durationMs < 60_000) return `${ (durationMs / 1_000).toFixed(1) }s`;
   const seconds = Math.floor(durationMs / 1_000);
@@ -2848,13 +3004,16 @@ const TerminalTraceCard = ({
   });
   const durationMs = useLifecycleElapsedMs({
     active: isStreaming,
-    startedAt: preview?.startTime ?? resultObject?.startTime ?? log?.startTime ?? log?.timestamp,
+    startedAt: normalizeLifecycleTimestamp(log?.startTime)
+      ?? normalizeLifecycleTimestamp(resultObject?.startTime)
+      ?? normalizeLifecycleTimestamp(preview?.startTime)
+      ?? normalizeLifecycleTimestamp(log?.timestamp),
     endedAt: preview?.endTime ?? resultObject?.endTime ?? log?.endTime,
     durationMs: recordedDurationMs,
   }) ?? undefined;
   const displayedExitCode = isStreaming ? undefined : exitCode ?? 0;
   const isFailed = !isStreaming && exitCode !== undefined && exitCode !== 0;
-  const durationLabel = formatTerminalMetaDuration(durationMs);
+  const durationLabel = formatTerminalMetaDuration(durationMs, isStreaming);
   
   const isTimer = isTimerAction(log, command);
   // Terminal output is always opt-in. Streaming output must never expand the
@@ -2875,7 +3034,7 @@ const TerminalTraceCard = ({
           <span className="eterx-action-icon eterx-terminal-icon flex h-[22px] w-[22px] shrink-0 items-center justify-center text-[#A39B91]">
             {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#67C58A]' : 'text-[#A39B91]' }`} strokeWidth={2.1} />}
           </span>
-          <Shimmer active={isStreaming} className="min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
+          <Shimmer active={isStreaming} className="eterx-trace-label min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
             {headerLabel}
           </Shimmer>
           {displayCollapsed && (
@@ -2888,15 +3047,14 @@ const TerminalTraceCard = ({
     );
   }
 
-  const title = inCard
-    ? (isStreaming ? 'Running' : isFailed ? 'Failed' : 'Ran')
-    : (isStreaming ? 'Running command' : isFailed ? 'Command failed' : 'Ran command');
+  // Joining a sequence must not change the first row's wording or text width.
+  const title = isStreaming ? 'Running command' : isFailed ? 'Command failed' : 'Ran command';
 
   const headerLabel = durationLabel ? `${ title } · ${ durationLabel }` : title;
 
   const rowGridClass = isExpanded
-    ? 'grid-cols-[26px_1fr_auto]'   // title fills space → chevron stays at far right
-    : 'grid-cols-[26px_auto_minmax(0,1fr)_auto]';
+    ? 'grid-cols-[20px_minmax(0,1fr)_14px]'
+    : 'grid-cols-[20px_auto_minmax(0,1fr)_14px]';
 
   return (
     <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
@@ -2910,9 +3068,9 @@ const TerminalTraceCard = ({
         className={`eterx-terminal-trace-row group grid w-full ${ rowGridClass } items-center gap-1.5 py-0.5 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'min-h-[29px] px-1 hover:bg-white/[0.024]' : 'min-h-[34px] px-2.5 hover:bg-white/[0.024]' }`}
       >
         <span className="eterx-action-icon eterx-terminal-icon flex h-[22px] w-[22px] shrink-0 items-center justify-center text-[#A39B91]">
-          {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Terminal className="h-[16.5px] w-[16.5px]" strokeWidth={2.1} />}
+          {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <ToolTerminalIcon size={17} color="currentColor" />}
         </span>
-        <Shimmer active={isStreaming} className="min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
+        <Shimmer active={isStreaming} className="eterx-trace-label min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {headerLabel}
         </Shimmer>
         {!isExpanded && (
@@ -2965,7 +3123,7 @@ const FileChangeTraceCard = ({
   // The row streams its real status/diff in place and its details remain a
   // deliberate user action. Auto-expansion made short edits look as though
   // they disappeared and also reordered adjacent parallel actions visually.
-  const effectiveIsLiveChip = isLiveChip || previewIsLive;
+  const effectiveIsLiveChip = !isExplicitlySettledAction(log) && (isLiveChip || previewIsLive);
   const displayFileTargets = useMemo(() => dedupeFileTraceTargetsForDisplay(fileTargets), [fileTargets]);
   const primaryTarget = displayFileTargets[0] || fileTargets[0];
   const explicitCount = numberFrom(log.fileCount, log.filesCount, log.count);
@@ -3086,7 +3244,7 @@ const FileChangeTraceCard = ({
   const effectiveStats = structuredStats || diffStats;
 
   const canExpand = hasFileOperationResult || canPreview || canFetchCreatedFile || canShowFileList;
-  const agentEntry = resolveAgentIcon(displayVerb, log.text, iconCategory || log.iconCategory);
+  const agentEntry = resolveToolTraceIcon(log);
   const { Icon: AI, color: ac } = agentEntry;
 
   const activate = (event: React.MouseEvent | React.KeyboardEvent) => {
@@ -3228,7 +3386,7 @@ const ActionChip = ({
   isNested?: boolean, inCard?: boolean
 }) => {
   const isLiveChip = isActiveGroup && isLastChip && !isFeedTraceExplicitlySettled(log);
-  const displayToolName = normalizeToolTraceName(log.tool || log.name);
+  const displayToolName = normalizeToolTraceName(log.toolName || log.tool || log.name);
   const isAgentBuilderAction = String(log.agentRuntime || '').trim().toLowerCase() === 'agent_builder'
     || displayToolName.startsWith('agent_builder_');
   const isEdit = log.type === 'file_edit' || displayToolName === 'workspace_edit_file';
@@ -3271,7 +3429,8 @@ const ActionChip = ({
       }
     }
 
-    const directIdx = allLogs.indexOf(log);
+    const previewIndex = getTimelinePreviewIndex(allLogs);
+    const directIdx = previewIndex.positions.get(log) ?? -1;
     const exactIdentity = log?._traceIdx ?? log?.traceId ?? log?.id ?? null;
     const lookupIdentity = getActionLookupIdentity(log);
     const myIdx = directIdx !== -1
@@ -3282,7 +3441,10 @@ const ActionChip = ({
         }
         return getActionLookupIdentity(candidate) === lookupIdentity;
       });
-    const searchLogs = myIdx !== -1 ? allLogs.slice(myIdx) : allLogs;
+    const actionPreviews = getActionPreviewCandidates(log, allLogs);
+    const searchLogs = myIdx !== -1
+      ? actionPreviews.filter(item => (previewIndex.positions.get(item) ?? -1) >= myIdx)
+      : actionPreviews;
     const findOwnerPreview = (items: any[]) => {
       const candidates = items.filter((item: any) => {
         if (item?.type !== 'file_preview' && item?.type !== 'tool_result_preview' && item?.type !== 'console_output') return false;
@@ -3300,7 +3462,7 @@ const ActionChip = ({
         relatedFilePreviews: candidates.filter((item: any) => item?.type === 'file_preview'),
       };
     };
-    const ownerPreview = findOwnerPreview(searchLogs) || findOwnerPreview(allLogs);
+    const ownerPreview = findOwnerPreview(searchLogs) || findOwnerPreview(actionPreviews);
     if (ownerPreview) return ownerPreview;
     if (log.type === 'command' && !isRead) {
       return null;
@@ -3319,7 +3481,7 @@ const ActionChip = ({
       const scopedPreview = chooseBestFilePreview(searchLogs);
       if (scopedPreview) return scopedPreview;
       return logFileTargets.length > 0
-        ? chooseBestFilePreview(allLogs)
+        ? chooseBestFilePreview(actionPreviews)
         : null;
     }
     if (isRead) {
@@ -3329,7 +3491,7 @@ const ActionChip = ({
       );
       if (scopedPreview) return scopedPreview;
       return logFileTargets.length > 0
-        ? allLogs.find((item: any) =>
+        ? actionPreviews.find((item: any) =>
           filePreviewMatchesTargets(item, logFileTargets) &&
           previewBelongsToAction(item, log, allLogs),
         ) || null
@@ -3339,7 +3501,7 @@ const ActionChip = ({
   }, [allLogs, displayToolName, isAgentBuilderAction, isEdit, isRead, log, logFileTargets]);
   const ownedConsolePreviews = useMemo(() => {
     if (!isTerminalActionLike(log)) return [];
-    const candidates = allLogs.filter((item: any) =>
+    const candidates = getActionPreviewCandidates(log, allLogs).filter((item: any) =>
       item?.type === 'console_output' && previewBelongsToAction(item, log, allLogs)
     );
     const streams = new Map<string, any>();
@@ -3525,18 +3687,7 @@ const ActionChip = ({
   if (log.type === 'progress') {
     const isKey = isApiKeyTrace(String(log.text || ''));
     return (
-      <div className="eterx-worked-summary my-1 flex w-full items-center gap-3 py-1">
-        <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.06]" />
-        <span className="eterx-worked-summary-label flex shrink-0 items-center gap-1.5 py-[1px] text-center text-[12px] font-medium leading-[1.35] tracking-normal text-[#8F8B85]">
-          {isKey ? (
-            <Key className="h-3.5 w-3.5 text-[#E2765A]" />
-          ) : (
-            <Terminal className="h-3.5 w-3.5 text-[#A9A196]" />
-          )}
-          {displayVerbLabel}
-        </span>
-        <div className="eterx-worked-summary-line h-px flex-1 bg-white/[0.06]" />
-      </div>
+      <InlineRunNotice kind={isKey ? 'error' : 'terminal'} compact>{displayVerbLabel}</InlineRunNotice>
     );
   }
 
@@ -3579,8 +3730,7 @@ const ActionChip = ({
       >
         {!isThinkChip && (() => {
           // Terminal-style traces can arrive with custom text and older computer categories.
-          const iconCategory = shouldUseTerminalIcon(log, subtitle, preview) ? 'terminal' : log.iconCategory;
-          const agentEntry = resolveAgentIcon(displayVerbLabel, log.text, iconCategory);
+          const agentEntry = resolveToolTraceIcon(log);
           const { Icon: AI, color: ac } = agentEntry;
           return (
             <span
@@ -3920,10 +4070,12 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
 const BrowserActivityGroup = ({
   items,
   isActive,
+  keepOpenWhileRunning,
   allLogs,
 }: {
   items: any[];
   isActive: boolean;
+  keepOpenWhileRunning: boolean;
   allLogs: any[];
 }) => {
   const actionLogs = items.flatMap(item => item.kind === 'browser_action_group' ? item.logs : []);
@@ -3934,25 +4086,23 @@ const BrowserActivityGroup = ({
     if (tail?.kind === 'browser_action_group') return tail.logs?.[tail.logs.length - 1];
     return latestAction;
   })();
-  const latestActivitySettled = isExplicitlySettledAction(latestActivityLog);
-  const activityIsActive = isActive && (
-    isFeedTraceOpen(latestActivityLog) || !latestActivitySettled
-  );
-  const [open, setOpen] = useState(activityIsActive);
-  const wasActivityActiveRef = useRef(activityIsActive);
+  // A browser phase stays open between its individual tool calls. Completing
+  // one click/navigation must not close and immediately reopen the parent.
+  const activityIsActive = isActive;
+  const [open, setOpen] = useState(activityIsActive || keepOpenWhileRunning);
+  const browserManuallyToggledRef = useRef(false);
   useEffect(() => {
-    const wasActivityActive = wasActivityActiveRef.current;
-    wasActivityActiveRef.current = activityIsActive;
+    if (browserManuallyToggledRef.current) return;
 
     // Browser narration and actions share one lifecycle: reveal the group while
     // its own activity is live, then collapse that same group when it settles.
     // A manual toggle after settlement remains untouched.
     if (activityIsActive) {
       setOpen(true);
-    } else if (wasActivityActive) {
+    } else if (!keepOpenWhileRunning) {
       setOpen(false);
     }
-  }, [activityIsActive]);
+  }, [activityIsActive, keepOpenWhileRunning]);
 
   const explicitLiveIndex = actionLogs.findLastIndex(isFeedTraceOpen);
   const currentActionIndex = activityIsActive
@@ -3966,7 +4116,10 @@ const BrowserActivityGroup = ({
       <button
         type="button"
         aria-expanded={open}
-        onClick={() => setOpen(value => !value)}
+        onClick={() => {
+          browserManuallyToggledRef.current = true;
+          setOpen(value => !value);
+        }}
         className="eterx-browser-activity-header flex min-h-[38px] w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.028] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/25"
       >
         <span className="flex h-5 w-5 shrink-0 items-center justify-center" aria-hidden="true">
@@ -4008,6 +4161,7 @@ const BrowserActivityGroup = ({
                   >
                     <WorkNoteBlock
                       text={item.log.text}
+                      playbackId={getTextPlaybackId(item.log)}
                       // Browser narration is commonly emitted as a one-shot
                       // settled note. It is still a real live arrival when it
                       // becomes the newest item in an active browser phase.
@@ -4044,7 +4198,170 @@ const BrowserActivityGroup = ({
   );
 };
 
-const JoinedActionGroup = ({
+// Closed sequences do not retain hidden output trees or live subscriptions.
+const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, children }: {
+  logs: any[];
+  allLogs: any[];
+  isActive: boolean;
+  keepOpenWhileRunning: boolean;
+  children: React.ReactNode;
+}) => {
+  const [open, setOpen] = useState(isActive || keepOpenWhileRunning);
+  const manualDisclosureRef = useRef(false);
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
+  const sequenceRef = useRef<HTMLDivElement>(null);
+  const contentId = React.useId();
+  const hasGroup = logs.reduce((count, log) => count + (log.type === 'thought_stream' ? 0 : Math.max(1, Number(log.occurrenceCount) || 1)), 0) > 1;
+  React.useLayoutEffect(() => {
+    if (manualDisclosureRef.current) return;
+    if (isActive || keepOpenWhileRunning) {
+      setOpen(true);
+      return;
+    }
+    if (!open || keepOpenWhileRunning) return;
+    // Commit the handoff before paint, without a delayed second layout. Keep
+    // the reader's explicit interaction/selection in control of disclosure.
+    const root = sequenceRef.current;
+    const scroll = root?.closest<HTMLElement>('.eterx-chat-feed-scroll');
+    const selection = window.getSelection();
+    const selecting = Boolean(selection && !selection.isCollapsed && (
+      root?.contains(selection.anchorNode) || root?.contains(selection.focusNode)
+    ));
+    const focused = Boolean(root?.contains(document.activeElement));
+    const readingHistory = scroll && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight > 72;
+    if (selecting || focused || readingHistory) {
+      manualDisclosureRef.current = true;
+      return;
+    }
+    setOpen(false);
+  }, [isActive, keepOpenWhileRunning, open]);
+  const categories = new Map<string, { count: number; summary?: ReturnType<typeof getActionSummary> }>();
+  const editedPaths = new Set<string>();
+  let creationOnly = true;
+  for (const log of logs) {
+    if (log.type === 'thought_stream') continue;
+    const fileEdit = log.type === 'file_edit';
+    const command = !fileEdit && shouldUseTerminalIcon(log);
+    const actionText = String(log.text || '');
+    const summary = !fileEdit && !command ? getActionSummary(log) : undefined;
+    const category = fileEdit ? 'edit' : command ? 'command' : summary!.key;
+    const entry = categories.get(category) || { count: 0, summary };
+    if (fileEdit) {
+      const ownedPreviews = getActionPreviewCandidates(log, allLogs).filter(preview => previewBelongsToAction(preview, log, allLogs));
+      creationOnly = creationOnly && isCreationOnlyFileAction(log, ownedPreviews);
+      const targets = dedupeFileTraceTargetsForDisplay([
+        ...collectFileTargets(log),
+        ...ownedPreviews.flatMap(preview => collectFileTargets(log, preview)),
+      ]);
+      for (const target of targets) {
+        const path = target.filepath.replace(/\\/g, '/');
+        if (!editedPaths.has(path)) entry.count += 1;
+        editedPaths.add(path);
+      }
+      const explicitCount = Number(log.fileCount || log.filesCount || log.count) || 0;
+      entry.count += Math.max(0, explicitCount - targets.length);
+      if (!targets.length && !explicitCount) entry.count += /\bfiles\b/i.test(String(log.text || '')) ? 2 : 1;
+    } else if (category === 'read') {
+      entry.count += Math.max(1, collectFileTargets(log).length, Number(log.fileCount || log.filesCount || log.count) || 0, /\bfiles\b/i.test(actionText) ? 2 : 1);
+    } else {
+      entry.count += Math.max(1, Number(log.occurrenceCount) || 1);
+    }
+    categories.set(category, entry);
+  }
+  const label = [...categories].sort(([a], [b]) => Number(b === 'edit') - Number(a === 'edit')).map(([category, entry]) => {
+    if (entry.summary) return entry.count > 1 ? entry.summary.plural : entry.summary.singular;
+    const noun = category === 'edit' ? 'file' : 'command';
+    const verb = category === 'edit' ? creationOnly ? 'Created' : 'Edited' : 'Ran';
+    return `${ verb } ${ entry.count > 1 ? `${ noun }s` : `a ${ noun }` }`;
+  }).join(', ');
+  const currentAction = useMemo(() => isActive ? logs.findLast((log, index) => {
+    if (!isLiveActionEvent(log)) return false;
+    if (log.type === 'thought_stream') return index === logs.length - 1;
+    // The result can settle before its parent action's next poll. The heading
+    // must follow that same completion boundary as the detailed tool row.
+    return !getActionPreviewCandidates(log, allLogs).some(result =>
+      ['console_output', 'file_preview', 'tool_result_preview'].includes(result?.type) &&
+      isExplicitlySettledAction(result) && previewBelongsToAction(result, log, allLogs)
+    );
+  }) : undefined, [isActive, logs, allLogs]);
+  // The outer Worked label owns turn liveness. This header represents actual
+  // actions, including fast calls received already complete on the first poll.
+  const activityLabel = [currentAction?.currentAction, currentAction?.statusText, currentAction?.label]
+    .map(value => String(value || '').trim())
+    .find(value => value && value.length <= 96);
+  const thinking = currentAction?.type === 'thought_stream';
+  const runningCommand = Boolean(currentAction && shouldUseTerminalIcon(currentAction));
+  const liveCommand = runningCommand ? getTerminalCommandText(currentAction).replace(/\s+/g, ' ').trim() : '';
+  const liveFileTargets = useMemo(() => currentAction ? dedupeFileTraceTargetsForDisplay(collectFileTargets(currentAction)) : [], [currentAction]);
+  const liveFileLabel = liveFileTargets.length
+    ? liveFileTargets.slice(0, 2).map(target => target.filename).join(', ') + (liveFileTargets.length > 2 ? ` +${liveFileTargets.length - 2} more` : '')
+    : '';
+  const recentThoughtHeading = useMemo(() => isActive ? getRecentThoughtHeading(allLogs) : '', [isActive, allLogs]);
+  const thoughtHeading = thinking ? recentThoughtHeading : '';
+  const liveSummary = currentAction && !thinking && !runningCommand ? getActionSummary(currentAction) : null;
+  const skillName = liveSummary?.key === 'skill'
+    ? String(currentAction?.toolArgs?.skill_name || currentAction?.args?.skill_name || currentAction?.secondary || '').trim()
+    : '';
+  const liveLabel = thinking ? thoughtHeading || 'Thinking' : currentAction
+    ? currentAction.type === 'file_edit'
+      ? liveFileLabel ? `Editing ${liveFileTargets.length > 1 ? 'files: ' : ''}${liveFileLabel}` : Math.max(Number(currentAction.fileCount) || 0, Number(currentAction.filesCount) || 0, Number(currentAction.count) || 0) > 1 ? 'Editing files' : 'Editing file'
+      : currentAction.iconCategory === 'file_read' && liveFileLabel ? `Reading ${liveFileLabel}`
+      : runningCommand ? liveCommand ? `Running ${liveCommand}` : 'Running command'
+      : liveSummary?.key === 'skill' ? `Loading skill${skillName && skillName.length <= 80 ? `: ${skillName}` : ''}`
+      : liveSummary?.live || 'Working'
+    : 'Working';
+  const hasLiveHeading = Boolean(currentAction);
+  const idleHeading = recentThoughtHeading || 'Working';
+  const rawHeading = isActive
+    ? hasLiveHeading ? currentAction?.type === 'file_edit' || runningCommand || thinking || liveSummary?.key === 'skill' ? liveLabel : activityLabel || liveLabel : idleHeading
+    : label || 'Thought';
+  const heading = rawHeading.charAt(0).toUpperCase() + rawHeading.slice(1);
+  const iconLog = isActive ? currentAction : logs.find(log => log.type === 'file_edit') || logs.find(log => log.type !== 'thought_stream');
+  const showIcon = Boolean(iconLog && iconLog.type !== 'thought_stream' && !/^(?:working|thinking)(?:\s|$)/i.test(heading));
+  const { Icon: SummaryIcon } = resolveToolTraceIcon(iconLog);
+
+  return (
+    <div ref={sequenceRef} className="eterx-action-sequence w-full" data-live={isActive ? 'true' : undefined}>
+      <button
+        type="button"
+        hidden={!hasGroup}
+        aria-expanded={open}
+        aria-controls={contentId}
+        onPointerDown={event => { pointerStartRef.current = { x: event.clientX, y: event.clientY }; }}
+        onPointerCancel={() => { pointerStartRef.current = null; }}
+        onClick={event => {
+          const start = pointerStartRef.current;
+          pointerStartRef.current = null;
+          const selection = window.getSelection();
+          const selectedHeaderText = selection && !selection.isCollapsed && (
+            event.currentTarget.contains(selection.anchorNode) || event.currentTarget.contains(selection.focusNode)
+          );
+          if (event.detail > 0 && (selectedHeaderText || (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 5))) return;
+          manualDisclosureRef.current = true;
+          setOpen(value => !value);
+        }}
+        className="eterx-action-sequence-header flex min-h-[34px] w-full items-center gap-2 rounded-md px-1 py-1 text-left text-[13px] font-medium text-[#96938E] transition-colors hover:text-[#D5CFC7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/25"
+      >
+        <span className="eterx-sequence-icon flex h-5 w-5 shrink-0 items-center justify-center" data-visible={showIcon ? 'true' : 'false'} aria-hidden="true">
+          {showIcon && (isConnectorTrace(iconLog)
+            ? <ConnectorIcon connectorId={getConnectorId(iconLog)} size={17} />
+            : <SummaryIcon size={17} color="currentColor" />)}
+        </span>
+        <span className="eterx-sequence-heading min-w-0 truncate select-text" title={heading}>
+          <Shimmer active={isActive} className="block">{heading}</Shimmer>
+        </span>
+        <span className="eterx-sequence-caret" aria-hidden="true">
+          <ChevronDown className={`h-3.5 w-3.5 ${ open ? '' : '-rotate-90' }`} />
+        </span>
+      </button>
+      <div id={contentId} hidden={hasGroup && !open}>
+        {(!hasGroup || open) && <div className={`eterx-sequence-reveal${hasGroup ? ' pt-1' : ''}`}>{children}</div>}
+      </div>
+    </div>
+  );
+};
+
+const ActionGroupRows = ({
   logs, isActiveGroup, allLogs
 }: {
   logs: any[], isActiveGroup: boolean, allLogs: any[]
@@ -4067,16 +4384,15 @@ const JoinedActionGroup = ({
     ? (explicitLiveProgressIndex >= 0 ? explicitLiveProgressIndex : progressLogs.length - 1)
     : -1;
 
-  return (
-    <div className="w-full">
-      {cardLogs.length > 0 && (
+  const cards = cardLogs.length > 0 ? (
         <div
           className={useStandaloneRows ? 'w-full' : `${ ACTION_CARD_CLASS } eterx-action-group`}
         >
           {cardLogs.map((log, i) => (
             <div
               key={getActionIdentity(log, i)}
-              className={`${ i > 0 ? ACTION_ROW_DIVIDER_CLASS : '' } ${ isActiveGroup && i === currentCardIndex && log?.type !== 'file_edit' ? 'eterx-live-feed-arrival' : '' }`}
+              data-feed-action-id={getActionIdentity(log, i)}
+              className={i > 0 ? ACTION_ROW_DIVIDER_CLASS : ''}
             >
               <ActionChip
                 log={log}
@@ -4089,8 +4405,10 @@ const JoinedActionGroup = ({
             </div>
           ))}
         </div>
-      )}
-
+  ) : null;
+  return (
+    <div className="w-full">
+      {cards}
       {progressLogs.map((log, i) => (
         <div
           key={getActionIdentity(log, i)}
@@ -4110,37 +4428,71 @@ const JoinedActionGroup = ({
   );
 };
 
+const JoinedActionGroup = React.memo(({ logs, isActiveGroup, keepOpenWhileRunning, allLogs }: {
+  logs: any[]; isActiveGroup: boolean; keepOpenWhileRunning: boolean; allLogs: any[];
+}) => {
+  if (!logs.length) return null;
+  if (logs.every(log => ['progress', 'task_plan'].includes(log.type))) {
+    return <ActionGroupRows logs={logs} isActiveGroup={isActiveGroup} allLogs={allLogs} />;
+  }
+  const parts: { kind: 'actions' | 'thought'; logs: any[]; index: number }[] = [];
+  logs.forEach((log, index) => {
+    if (log.type === 'thought_stream') {
+      parts.push({ kind: 'thought', logs: [log], index });
+    } else {
+      const tail = parts[parts.length - 1];
+      if (tail?.kind === 'actions') tail.logs.push(log);
+      else parts.push({ kind: 'actions', logs: [log], index });
+    }
+  });
+  return (
+    <ActionSequenceSummary logs={logs} allLogs={allLogs} isActive={isActiveGroup} keepOpenWhileRunning={keepOpenWhileRunning}>
+      <div className="eterx-action-sequence-content flex flex-col gap-1.5">
+        {parts.map((part, index) => {
+          const log = part.logs[0];
+          if (part.kind === 'thought') {
+            const live = isActiveGroup && isThoughtStreamOpen(log);
+            return <ProfessionalThought key={`t-${ getStreamRowIdentity(log, part.index) }`} text={log.text} isLatest={live} isThinking={live} startedAt={log.startTime} updatedAt={log.endTime} />;
+          }
+          return <ActionGroupRows key={`a-${ getActionIdentity(log, part.index) }`} logs={part.logs} isActiveGroup={isActiveGroup && index === parts.length - 1} allLogs={allLogs} />;
+        })}
+      </div>
+    </ActionSequenceSummary>
+  );
+}, (previous, next) => {
+  if (previous.isActiveGroup !== next.isActiveGroup || previous.keepOpenWhileRunning !== next.keepOpenWhileRunning) return false;
+  if (previous.logs.length !== next.logs.length || previous.logs.some((log, index) => log !== next.logs[index])) return false;
+  if (previous.allLogs === next.allLogs) return true;
+  // Standard rows depend only on their own payload and owned result previews.
+  // A new note or another tool's output must not rerender every settled card.
+  for (const log of next.logs) {
+    if (log.type === 'thought_stream') continue;
+    if (!['command', 'file_edit', 'exploration'].includes(log.type)) return false;
+    const before = getActionPreviewCandidates(log, previous.allLogs).filter(preview => previewBelongsToAction(preview, log, previous.allLogs));
+    const after = getActionPreviewCandidates(log, next.allLogs).filter(preview => previewBelongsToAction(preview, log, next.allLogs));
+    if (before.length !== after.length || before.some((preview, index) => preview !== after[index])) return false;
+  }
+  return true;
+});
+
 // Live working indicator — real-time log-state-connected
 // 3 modes: thinking (visible note last), acting (real action last), idle (between)
-
-const THINKING_PHRASES = [{ text: 'Thinking', dur: 0 }];
-const IDLE_PHRASES = [{ text: 'Working', dur: 0 }];
-const DEFAULT_LIVE_PHRASE = { text: 'Working', dur: 0 };
-
-function makeShuffledQueue<T>(arr: T[], exclude?: T): T[] {
-  const source = arr.length > 0 ? arr : [DEFAULT_LIVE_PHRASE as T];
-  const filtered = exclude !== undefined ? source.filter(x => x !== exclude) : [...source];
-  const pool = filtered.length > 0 ? filtered : [...source];
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
-  }
-  return pool;
-}
 
 const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
   // Derive real-time state from the last log
   const getLogState = (ls: any[]): { mode: 'thinking' | 'acting' | 'idle'; label: string | null } => {
     if (ls.length === 0) return { mode: 'thinking', label: 'Working' };
     const last = ls[ls.length - 1];
+    const retainedHeading = getRecentThoughtHeading(ls);
+    if (!isLiveActionEvent(last)) return { mode: 'idle', label: retainedHeading || 'Working' };
     const customLabel = [last.currentAction, last.statusText, last.label]
       .map(value => String(value || '').trim())
       .find(value => value && value.length <= 72);
     if (customLabel) return { mode: 'acting', label: customLabel };
     if (last.type === 'thought_stream' || last.type === 'work_note') {
       return isLiveThoughtFresh(last)
-        ? { mode: 'thinking', label: 'Thinking' }
-        : { mode: 'idle', label: 'Working' };
+        ? { mode: 'thinking', label: getThoughtEventHeading(last) || retainedHeading || 'Thinking' }
+        : { mode: 'idle', label: retainedHeading || 'Working' };
     }
     if (['command', 'tool_call', 'exploration', 'file_edit', 'communication', 'browser'].includes(last.type)) {
       const meta = getToolMeta(last.text, last.type, last.icon);
@@ -4164,91 +4516,8 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
     return { mode: 'idle', label: 'Working' };
   };
 
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const modeRef = useRef<'thinking' | 'acting' | 'idle'>('idle');
-  const queueRef = useRef<{ text: string; dur: number }[]>([]);
-  const lastLabelRef = useRef<string>('');
-  const logSignature = useMemo(() => {
-    const last = logs[logs.length - 1];
-    if (!last) return 'empty';
-    return [
-      logs.length,
-      last.type,
-      last._traceIdx ?? '',
-      last.text ? String(last.text).length : 0,
-      last.endTime ?? '',
-      last.startTime ?? '',
-      last.filename ?? '',
-      last.secondary ?? '',
-    ].join(':');
-  }, [logs]);
-
-  const [label, setLabel] = useState<string>(() => {
-    const s = getLogState(logs);
-    return s.label || (s.mode === 'thinking' ? THINKING_PHRASES[0].text : IDLE_PHRASES[0].text);
-  });
-  const doTransition = (nextText: string, nextDur: number) => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    setLabel(nextText);
-    lastLabelRef.current = nextText;
-    if (nextDur > 0) timerRef.current = setTimeout(() => advancePhrase(modeRef.current), nextDur);
-  };
-
-  const advancePhrase = (mode: 'thinking' | 'acting' | 'idle') => {
-    const pool = mode === 'thinking' ? THINKING_PHRASES : IDLE_PHRASES;
-    if (queueRef.current.length === 0) {
-      queueRef.current = makeShuffledQueue(pool, pool.find(p => p.text === lastLabelRef.current));
-    }
-    const next = queueRef.current.shift() || pool[0] || DEFAULT_LIVE_PHRASE;
-    doTransition(next.text, next.dur);
-  };
-
-  // Mount: start with current state
-  useEffect(() => {
-    const { mode, label: ctxLabel } = getLogState(logs);
-    modeRef.current = mode;
-    if (mode === 'acting' && ctxLabel) {
-      doTransition(ctxLabel, 4000);
-    } else {
-      const pool = mode === 'thinking' ? THINKING_PHRASES : IDLE_PHRASES;
-      queueRef.current = makeShuffledQueue(pool);
-      const first = queueRef.current.shift() || pool[0] || DEFAULT_LIVE_PHRASE;
-      doTransition(first.text, first.dur);
-    }
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
-  // React to log changes — immediately reflect mode/action
-  const prevSignatureRef = useRef(logSignature);
-  useEffect(() => {
-    const signatureChanged = logSignature !== prevSignatureRef.current;
-    if (!signatureChanged) return;
-    prevSignatureRef.current = logSignature;
-    const { mode, label: ctxLabel } = getLogState(logs);
-    const prevMode = modeRef.current;
-    modeRef.current = mode;
-
-    if (ctxLabel && ctxLabel !== lastLabelRef.current) {
-      // New real action — show it immediately
-      queueRef.current = [];
-      doTransition(ctxLabel, 0);
-    } else if (mode === 'thinking' && prevMode !== 'thinking') {
-      // Just entered thinking mode
-      queueRef.current = makeShuffledQueue(THINKING_PHRASES);
-      const next = queueRef.current.shift() || THINKING_PHRASES[0] || DEFAULT_LIVE_PHRASE;
-      doTransition(next.text, next.dur);
-    } else if (mode === 'idle' && prevMode !== 'idle') {
-      // Just entered idle mode
-      queueRef.current = makeShuffledQueue(IDLE_PHRASES);
-      const next = queueRef.current.shift() || IDLE_PHRASES[0] || DEFAULT_LIVE_PHRASE;
-      doTransition(next.text, next.dur);
-    }
-    // Same mode: let the current timer naturally advance
-  }, [logSignature, logs]);
-
-  const displayLabel = label || 'Working';
+  // Derive the label from the current snapshot, with no delayed effect or phrase timer.
+  const displayLabel = getLogState(logs).label || 'Working';
 
   return (
     <div className="eterx-live-working-indicator flex h-6 w-fit max-w-full items-center pl-[22px]" role="status" aria-live="polite">
@@ -4572,9 +4841,10 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes, renderContextCompaction }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes, renderContextCompaction?: (log: any) => React.ReactNode }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes, renderContextCompaction }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes, renderContextCompaction?: (log: any) => React.ReactNode }) => {
+  const containerRef = useLiveFeedFlow(isThinking && isLast);
   const isFlowLog = (l: any) => {
+    if (l?.type === 'progress' && String(l?.text || '').startsWith('This chat history differs from its saved working context.')) return false;
     const agentName = String(l?.agentName || l?.subAgent || '').trim().toLowerCase();
     const explicitlyMain = agentName === 'main';
     const subAgentOwned = !explicitlyMain && Boolean(
@@ -4597,9 +4867,11 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     // provider bootstrap telemetry is removed before it reaches this layer.
     return l.type !== 'thought_stream' || shouldRenderThoughtStream(l);
   };
-  const flowLogs = ensureStableFeedPresentationIds(logs).filter(isFlowLog);
-  const liveFlowLogs = ensureStableFeedPresentationIds(liveLogs).filter(isFlowLog);
-  const timelineLogs = reconcileLiveActionLogs(flowLogs, liveFlowLogs);
+  const timelineLogs = useMemo(() => {
+    const flowLogs = ensureStableFeedPresentationIds(logs).filter(isFlowLog);
+    const liveFlowLogs = ensureStableFeedPresentationIds(liveLogs).filter(isFlowLog);
+    return reconcileLiveActionLogs(flowLogs, liveFlowLogs);
+  }, [logs, liveLogs, isSubAgentTab]);
   const statusLogs = timelineLogs;
   const segs: any[] = [];
   let aBuf: any[] = [];
@@ -4632,8 +4904,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         if (existingIndex !== undefined) {
           const previous = unique[existingIndex];
           unique[existingIndex] = {
-            ...previous,
-            ...log,
+            ...mergeFeedTracePayload(previous, log),
             _feedPresentationId: previous?._feedPresentationId || log?._feedPresentationId || undefined,
             occurrenceCount: Math.max(1, Number(previous.occurrenceCount || 1), Number(log.occurrenceCount || 1)),
           };
@@ -4647,7 +4918,9 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
         }
         const nextIndex = unique.length;
         identities.forEach(identity => identityIndexes.set(identity, nextIndex));
-        unique.push({ ...log, occurrenceCount: Math.max(1, Number(log.occurrenceCount || 1)) });
+        // Single occurrences already have an immutable payload. Preserve it
+        // so existing cards and their preview ownership survive later events.
+        unique.push(log);
         getFeedActionLifecycleCandidateKeys(log).forEach(key => {
           const indexes = lifecycleCandidateIndexes.get(key) || new Set<number>();
           indexes.add(nextIndex);
@@ -4733,8 +5006,13 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
   timelineLogs.forEach((log, idx) => {
     if (log.type === 'thought_stream') {
       if (shouldRenderThoughtSegment(log, timelineLogs, idx)) {
-        flush(idx - 1);
-        segs.push({ kind: 'thought', log, idx });
+        // Reasoning during a standard action sequence belongs inside that
+        // sequence. Work notes still settle it and start the next phase.
+        if (aBuf.length > 0 && aBufKind === 'standard') pushActionLog(log, idx);
+        else {
+          flush(idx - 1);
+          segs.push({ kind: 'thought', log, idx });
+        }
       }
     }
     else if (log.type === 'work_note' || log.type === 'autonomy_proxy_status') {
@@ -4814,15 +5092,9 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       segs.push({ kind: 'context_compaction', log, idx });
     }
     else if (log.type === 'console_output') {
-      const commandSnippet = String(log.command || '').trim().substring(0, 20);
       const hasCommandOwner = timelineLogs
-        .slice(0, idx)
         .some((candidate: any) =>
-          candidate?.type === 'command' &&
-          (
-            (log.ownerTraceId && [candidate.traceId, candidate.id, candidate._traceIdx].map(String).includes(String(log.ownerTraceId))) ||
-            (Boolean(commandSnippet) && getTerminalCommandText(candidate, undefined, String(candidate.secondary || '')).includes(commandSnippet))
-          )
+          isTerminalActionLike(candidate) && previewBelongsToAction(log, candidate, timelineLogs)
         );
       if (!hasCommandOwner) {
         flush(idx - 1);
@@ -4833,12 +5105,14 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
       const hasActionOwner = timelineLogs.some((candidate: any, candidateIndex: number) =>
         candidateIndex !== idx && previewBelongsToAction(log, candidate, timelineLogs),
       );
-      flush(idx - 1);
       // Exact children remain inside their owning expandable action. An
       // orphan preview becomes its own action row instead of disappearing.
       const orphanPlannerPreview = log.type === 'tool_result_preview' &&
         ['task_decomposer', 'task_checkpoint'].includes(normalizeToolTraceName(log.toolName || log.tool || log.name));
-      if (!hasActionOwner && !orphanPlannerPreview) segs.push({ kind: 'orphan_preview', log, idx });
+      if (!hasActionOwner && !orphanPlannerPreview) {
+        flush(idx - 1);
+        segs.push({ kind: 'orphan_preview', log, idx });
+      }
     }
     else if (SPEC.has(log.type)) { flush(idx - 1); }
     else { pushActionLog(log, idx); }
@@ -4896,6 +5170,8 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
     latestDisplaySegment?.kind === 'browser_phase' &&
     (isFeedTraceOpen(latestBrowserActivityLog) || !isExplicitlySettledAction(latestBrowserActivityLog))
   );
+  const actionSequenceOwnsLiveIndicator = latestDisplaySegment?.kind === 'action_group' &&
+    latestDisplaySegment.logs?.some((log: any) => !['progress', 'task_plan'].includes(log.type));
   return (
     <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-3 py-0">
       {displaySegs.map((seg, i) => {
@@ -4917,6 +5193,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
             >
               <WorkNoteBlock
                 text={seg.log.text}
+                playbackId={getTextPlaybackId(seg.log)}
                 // A Work note commonly arrives as one already-settled event,
                 // not an open/close stream. It is still a live arrival when it
                 // becomes the newest phase of the active turn, so give it the
@@ -4967,6 +5244,7 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
               key={`preview-${ getTimelineRowIdentity(seg.log, seg.idx) }`}
               logs={[surrogate]}
               isActiveGroup={phaseIsActive}
+              keepOpenWhileRunning={isThinking && isLast}
               allLogs={[surrogate, seg.log]}
             />
           );
@@ -4981,15 +5259,16 @@ export const ThinkingProcess = ({ logs, liveLogs = [], isThinking, isLast, showL
               key={phaseKey}
               items={seg.items}
               isActive={phaseIsActive}
+              keepOpenWhileRunning={isThinking && isLast}
               allLogs={timelineLogs}
             />
           );
         }
         const firstIdx = seg.firstIdx ?? seg.lastIdx ?? i;
         const groupKey = `g-${ getActionIdentity(seg.logs[0], firstIdx) }`;
-        return <JoinedActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === displaySegs.length - 1} allLogs={timelineLogs} />;
+        return <JoinedActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === displaySegs.length - 1} keepOpenWhileRunning={isThinking && isLast} allLogs={timelineLogs} />;
       })}
-      {showLiveIndicator && isThinking && isLast && !browserPhaseOwnsLiveIndicator && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
+      {showLiveIndicator && isThinking && isLast && !browserPhaseOwnsLiveIndicator && !actionSequenceOwnsLiveIndicator && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
     </div>
   );
-};
+});

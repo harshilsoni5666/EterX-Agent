@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/auth/slack
  * Initiates the Slack OAuth 2.0 flow — redirects user to Slack's login page.
  */
 export async function GET(req: NextRequest) {
   const clientId = process.env.SLACK_CLIENT_ID;
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL || req.nextUrl.origin).replace(/\/+$/, '');
   const redirectUri = `${appUrl}/api/auth/callback/slack`;
 
   if (!clientId) {
@@ -31,7 +33,17 @@ export async function GET(req: NextRequest) {
   slackAuthUrl.searchParams.set('client_id', clientId);
   slackAuthUrl.searchParams.set('user_scope', userScopes);
   slackAuthUrl.searchParams.set('redirect_uri', redirectUri);
-  slackAuthUrl.searchParams.set('state', crypto.randomUUID());
+  const state = crypto.randomUUID();
+  slackAuthUrl.searchParams.set('state', state);
 
-  return NextResponse.redirect(slackAuthUrl.toString());
+  const response = NextResponse.redirect(slackAuthUrl.toString());
+  response.cookies.set('eterx_slack_oauth_state', state, {
+    httpOnly: true,
+    secure: appUrl.startsWith('https://'),
+    sameSite: 'lax',
+    path: '/api/auth/callback/slack',
+    maxAge: 600,
+  });
+  response.headers.set('Cache-Control', 'no-store');
+  return response;
 }

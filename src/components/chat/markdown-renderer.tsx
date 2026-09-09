@@ -16,7 +16,11 @@ import { Check, ChevronDown, Copy, Download, Globe2, Maximize2, Minimize2, MoreH
 import { CopyButton, safeCopyTextToClipboard, safeCopyPngToClipboard } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
-import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, linkifyLocalFilePaths, normalizeEscapedLocalFileLinks } from './local-file-link';
+import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath } from './local-file-link';
+
+// Text paints immediately. Expensive code/diagram work is settled once its
+// stream closes instead of retokenizing a growing block on every word.
+export const MarkdownStreamContext = React.createContext(false);
 
 /** Re-export remark/rehype plugins for use in other components */
 export const remarkPlugins: any[] = [
@@ -38,39 +42,8 @@ export const rehypePlugins: any[] = [[rehypeKatex, {
 }]];
 
 const MERMAID_LANGUAGE_ALIASES = new Set(['mermaid', 'mmd']);
-const PLAIN_TEXT_LANGUAGE_ALIASES = new Set(['', 'text', 'txt', 'plain', 'plaintext']);
-const MERMAID_START_PATTERN = /^\s*(?:graph|flowchart|sequenceDiagram|classDiagram|classDiagram-v2|stateDiagram|stateDiagram-v2|erDiagram|journey|gantt|pie|timeline|mindmap|quadrantChart|xychart-beta|block-beta|sankey-beta|gitGraph|C4Context|C4Container|C4Component|C4Dynamic)\b/i;
-const CODE_FENCE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~)/g;
 const MERMAID_FONT_FAMILY = '"Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif';
-const ACCIDENTAL_MARKDOWN_FENCE_LANGUAGES = new Set(['', 'md', 'markdown', 'text', 'txt', 'plain', 'plaintext', 'answer', 'response']);
-const TABLE_SEPARATOR_PATTERN = /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/;
 const PROTECTED_MARKDOWN_CODE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`\n]*?`+)/g;
-const PROTECTED_MARKDOWN_MATH_AND_CODE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`\n]*?`+|\$\$[\s\S]*?\$\$|\$(?:\\.|[^$\n])+\$)/g;
-const DISPLAY_MATH_ENVIRONMENTS = [
-  'equation',
-  'align',
-  'alignat',
-  'gather',
-  'multline',
-  'flalign',
-  'split',
-  'aligned',
-  'gathered',
-  'cases',
-  'matrix',
-  'pmatrix',
-  'bmatrix',
-  'Bmatrix',
-  'vmatrix',
-  'Vmatrix',
-  'array',
-  'smallmatrix',
-].join('|');
-const DISPLAY_MATH_ENVIRONMENT_PATTERN = new RegExp(
-  `\\\\begin\\{(${DISPLAY_MATH_ENVIRONMENTS})\\*?\\}([\\s\\S]*?)\\\\end\\{\\1\\*?\\}`,
-  'g',
-);
-const CURRENCY_AMOUNT_PATTERN = /(?:\\)?\$((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?)\$/g;
 
 const slugify = (value: string) =>
   value
@@ -208,337 +181,19 @@ const ResponsiveMath = React.memo(({
 });
 ResponsiveMath.displayName = 'ResponsiveMath';
 
-const normalizeLatexOutsideCode = (value: string) => {
-  const normalizedDelimiters = value.split(PROTECTED_MARKDOWN_CODE_SPLIT).map((chunk) => {
-    if (/^(```|~~~|`)/.test(chunk)) return chunk;
-    return chunk
-      .replace(
-        /^([ \t]*)\$\$[ \t]*([^\n]+?)[ \t]*\$\$[ \t]*$/gm,
-        (_match, indentation, inner) => `${indentation}$$\n${String(inner).trim()}\n${indentation}$$`,
-      )
-      .replace(/\\\[([\s\S]*?)\\\]/g, (_match, inner) => `\n\n$$\n${String(inner).trim()}\n$$\n\n`)
-      .replace(/\\\(([\s\S]*?)\\\)/g, (_match, inner) => `$${String(inner).trim()}$`);
-  }).join('');
-
-  return normalizedDelimiters.split(PROTECTED_MARKDOWN_MATH_AND_CODE_SPLIT).map((chunk) => {
-    if (/^(```|~~~|`|\$)/.test(chunk)) return chunk;
-    return chunk.replace(DISPLAY_MATH_ENVIRONMENT_PATTERN, (match, environment, body) => {
-      const normalizedEnvironment = match.match(/^\\begin\{([^}]+)\}/)?.[1] || environment;
-      return `\n\n$$\n\\begin{${normalizedEnvironment}}\n${String(body).trim()}\n\\end{${normalizedEnvironment}}\n$$\n\n`;
-    });
-  }).join('');
-};
-
-const splitMarkdownTableCells = (line: string) => {
-  const trimmed = line.trim();
-  let body = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed;
-  if (body.endsWith('|') && !body.endsWith('\\|')) body = body.slice(0, -1);
-  const cells: string[] = [];
-  let cell = '';
-  let escaped = false;
-  let codeFenceLength = 0;
-  let mathDelimiterLength = 0;
-
-  for (let index = 0; index < body.length; index += 1) {
-    const character = body[index];
-
-    if (escaped) {
-      cell += character;
-      escaped = false;
-      continue;
-    }
-
-    if (character === '\\') {
-      cell += character;
-      escaped = true;
-      continue;
-    }
-
-    if (character === '`' && mathDelimiterLength === 0) {
-      let runLength = 1;
-      while (body[index + runLength] === '`') runLength += 1;
-      const marker = '`'.repeat(runLength);
-      cell += marker;
-      index += runLength - 1;
-      if (codeFenceLength === 0) codeFenceLength = runLength;
-      else if (codeFenceLength === runLength) codeFenceLength = 0;
-      continue;
-    }
-
-    if (character === '$' && codeFenceLength === 0) {
-      const runLength = body[index + 1] === '$' ? 2 : 1;
-      const marker = '$'.repeat(runLength);
-      cell += marker;
-      index += runLength - 1;
-      if (mathDelimiterLength === 0) mathDelimiterLength = runLength;
-      else if (mathDelimiterLength === runLength) mathDelimiterLength = 0;
-      continue;
-    }
-
-    if (character === '|' && codeFenceLength === 0 && mathDelimiterLength === 0) {
-      cells.push(cell.trim());
-      cell = '';
-      continue;
-    }
-
-    cell += character;
-  }
-
-  cells.push(cell.trim());
-  return cells;
-};
-
-const isMarkdownTableSeparator = (line: string) => TABLE_SEPARATOR_PATTERN.test(line.trim());
-
-const isPotentialMarkdownTableRow = (line: string) => {
-  const trimmed = line.trim();
-  if (!trimmed || !trimmed.includes('|') || isMarkdownTableSeparator(trimmed)) return false;
-  const cells = splitMarkdownTableCells(trimmed);
-  if (cells.length < 2) return false;
-  return cells.some(Boolean);
-};
-
-const makeMarkdownTableSeparator = (line: string) => {
-  const cells = splitMarkdownTableCells(line);
-  if (line.trim().startsWith('|') || line.trim().endsWith('|')) {
-    return `| ${ cells.map(() => '---').join(' | ') } |`;
-  }
-  return cells.map(() => '---').join(' | ');
-};
-
-const repairMarkdownTablesOutsideCode = (value: string) =>
-  value.split(CODE_FENCE_SPLIT).map((chunk) => {
-    if (/^(```|~~~)/.test(chunk)) return chunk;
-
-    const lines = chunk.split('\n');
-    const repaired: string[] = [];
-    let inTable = false;
-
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-      const isSeparator = isMarkdownTableSeparator(line);
-      const isRow = isPotentialMarkdownTableRow(line);
-      const nextLine = lines[i + 1] || '';
-      const secondNextLine = lines[i + 2] || '';
-      const nextIsSeparator = isMarkdownTableSeparator(nextLine);
-      const nextIsRow = isPotentialMarkdownTableRow(nextLine);
-      const separatorAfterBlankLine = !nextLine.trim() && isMarkdownTableSeparator(secondNextLine);
-
-      if (!line.trim() && inTable && nextIsRow) {
-        continue;
-      }
-
-      repaired.push(line);
-
-      if (isRow && separatorAfterBlankLine) {
-        inTable = true;
-        i += 1;
-        continue;
-      }
-
-      if (isSeparator) {
-        inTable = true;
-        continue;
-      }
-
-      if (isRow) {
-        if (!inTable && !nextIsSeparator && nextIsRow) {
-          repaired.push(makeMarkdownTableSeparator(line));
-          inTable = true;
-        }
-        continue;
-      }
-
-      if (line.trim()) inTable = false;
-    }
-
-    return repaired.join('\n');
-  }).join('');
-
-const looksLikeCodePayload = (value: string, language: string) => {
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  if (language === 'md' || language === 'markdown' || language === 'answer' || language === 'response') return false;
-
-  const hasMarkdownStructure = /(^|\n)\s*(#{1,6}\s+\S|[-+*]\s+\S|\d{1,2}[.)]\s+\S|>\s+\S|\|.+\|)/.test(trimmed);
-  if (hasMarkdownStructure) return false;
-
-  const proseWords = trimmed.match(/[A-Za-z]{2,}/g)?.length || 0;
-  const proseSentences = /[.!?]\s+[A-Z0-9]/.test(trimmed);
-  const codeSignals = [
-    /^\s*(?:import|export|const|let|var|function|class|interface|type|enum|def|from|package|using|namespace|public|private|protected)\b/m,
-    /^\s*(?:if|for|while|switch|try|catch)\s*\(/m,
-    /^\s*[<{][\s\S]*[>}]\s*$/m,
-    /;\s*(?:\/\/.*)?$/m,
-  ].some(pattern => pattern.test(trimmed));
-
-  return codeSignals && !(proseWords > 18 && proseSentences);
-};
-
-const unwrapAccidentalMarkdownFence = (value: string) => {
-  const trimmed = value.trim();
-  const match = trimmed.match(/^(```|~~~)([^\n]*)\n([\s\S]*?)\n?\1\s*$/);
-  if (!match) return value;
-
-  const language = match[2].trim().toLowerCase();
-  if (!ACCIDENTAL_MARKDOWN_FENCE_LANGUAGES.has(language)) return value;
-
-  const inner = match[3].trim();
-  if (!inner || looksLikeCodePayload(inner, language)) return value;
-  return inner;
-};
-
-// Models occasionally start a Markdown fence and then continue writing prose
-// without closing it. Letting remark parse that entire tail as code makes a
-// normal answer appear as a red monospace wall. Preserve real code fences,
-// but unwrap an unfinished fence when its body is clearly prose/Markdown.
-const normalizeUnclosedMarkdownFence = (value: string) => {
-  const lines = value.split('\n');
-  let openerIndex = -1;
-  let openerChar = '';
-  let openerLength = 0;
-  let openerInfo = '';
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const opener = line.match(/^\s*(`{3,}|~{3,})([^\n]*)$/);
-    if (!opener) continue;
-
-    const marker = opener[1];
-    const info = opener[2].trim().split(/\s+/)[0].toLowerCase();
-    if (openerIndex < 0) {
-      openerIndex = index;
-      openerChar = marker[0];
-      openerLength = marker.length;
-      openerInfo = info;
-      continue;
-    }
-
-    if (marker[0] === openerChar && marker.length >= openerLength) {
-      openerIndex = -1;
-      openerChar = '';
-      openerLength = 0;
-      openerInfo = '';
-    }
-  }
-
-  if (openerIndex < 0) return value;
-
-  const body = lines.slice(openerIndex + 1).join('\n').trim();
-  const isAccidentalLanguage = ACCIDENTAL_MARKDOWN_FENCE_LANGUAGES.has(openerInfo);
-  const shouldUnwrap = isAccidentalLanguage || !looksLikeCodePayload(body, openerInfo);
-  if (shouldUnwrap) {
-    lines.splice(openerIndex, 1);
-  } else {
-    lines.push(`${ openerChar.repeat(openerLength) }`);
-  }
-  return lines.join('\n');
-};
-
-const looksLikeStandaloneLatex = (line: string) => {
-  const trimmed = line.trim();
-  if (
-    !trimmed ||
-    trimmed.includes('$') ||
-    trimmed.includes('`') ||
-    /\[[^\]]+\]\([^)]+\)/.test(trimmed) ||
-    trimmed.startsWith('```') ||
-    trimmed.startsWith('~~~')
-  ) return false;
-  if (/^(?:[-+*]|\d{1,2}[.)]|#{1,6})\s/.test(trimmed)) return false;
-  const hasLatexCommand = /\\[A-Za-z]+/.test(trimmed);
-  const hasMathOperator = /(?:=|\^|_|\\(?:frac|int|sum|cdot|times|approx|infty|sqrt|left|right)\b)/.test(trimmed);
-  const wordCount = trimmed.match(/[A-Za-z]{2,}/g)?.length || 0;
-  return hasLatexCommand && hasMathOperator && trimmed.length <= 320 && wordCount <= 28;
-};
-
-const normalizeStandaloneLatexOutsideCode = (value: string) =>
-  value.split(CODE_FENCE_SPLIT).map((chunk) => {
-    if (/^(```|~~~)/.test(chunk)) return chunk;
-    return chunk
-      .split('\n')
-      .map(line => looksLikeStandaloneLatex(line) ? `$$\n${ line.trim() }\n$$` : line)
-      .join('\n');
-  }).join('');
-
-// Single-dollar math is useful, but currency amounts such as `$2,339.12$`
-// are much more common in answers and are not equations. Treat both escaped
-// and unescaped currency forms as literal text before remark-math sees them;
-// otherwise KaTeX can expose a red parser error or a stray backslash.
-const normalizeCurrencyAmountsOutsideCode = (value: string) =>
-  value.split(CODE_FENCE_SPLIT).map((chunk) => {
-    if (/^(```|~~~)/.test(chunk)) return chunk;
-    return chunk.replace(CURRENCY_AMOUNT_PATTERN, (_match, amount) => `\\$${ amount }\\$`);
-  }).join('');
-
-const SYSTEM_TAGS = [
-  'thought',
-  'deep_work_action',
-  'plan',
-  'work_note',
-  'workspace_note',
-  'search',
-  'execute',
-  'thinking',
-  'reflection',
-  'analysis',
-  'boltAction',
-  'boltArtifact',
-  'artifact',
-  'task_tracker',
-  'status',
-  'read_file',
-  'write_file',
-  'run_command'
-];
-
-// Only strip COMPLETE tag pairs — never use `$` as a closing alternative.
-// Using `$` would silently eat everything from an unclosed tag to end-of-string,
-// truncating real answer content mid-stream.
-const SYSTEM_TAGS_PATTERN = new RegExp(
-  `<(${ SYSTEM_TAGS.join('|') })(?:\\s[^>]*)?(?:\\/>|>[\\s\\S]*?<\\/\\1>)`,
-  'gi'
-);
-
-const stripSystemTagsOutsideCode = (value: string) =>
-  value.split(CODE_FENCE_SPLIT).map((chunk) => {
-    // Preserve code blocks completely
-    if (/^(```|~~~|`)/.test(chunk)) return chunk;
-
-    // Strip fully formed or streaming system tags and their contents
-    let processed = chunk.replace(SYSTEM_TAGS_PATTERN, '');
-
-    // Anti-Flicker: Strip incomplete tag token at the very end of the stream.
-    // Only matches when `<` is followed directly by a letter/slash+letter (genuine tag start),
-    // so `< 5` or `<= 10` comparisons are NOT stripped.
-    processed = processed.replace(/<\/?[A-Za-z_][^>]*$/, '');
-
-    return processed;
-  }).join('');
-
+// Preserve the model's Markdown. Presentation rules belong in prompts;
+// the renderer must not invent tables, unwrap fences, guess math, or rewrite
+// paths. Private reasoning in provider text remains outside the answer.
 export const normalizeMarkdownForRendering = (value: string) => {
   if (!value) return '';
-  // Provider streams can contain CRLF, a BOM, or a stray NUL character. None
-  // of those are meaningful Markdown and they can make the parser disagree
-  // about fence/table boundaries across platforms.
-  const normalizedInput = String(value)
+  const text = String(value)
     .replace(/^\uFEFF/, '')
     .replace(/\r\n?/g, '\n')
     .replace(/\u0000/g, '');
-  const normalized = normalizeStandaloneLatexOutsideCode(
-    normalizeCurrencyAmountsOutsideCode(
-      normalizeLatexOutsideCode(
-        stripSystemTagsOutsideCode(
-          normalizeUnclosedMarkdownFence(
-            unwrapAccidentalMarkdownFence(normalizeEscapedLocalFileLinks(normalizedInput)),
-          ),
-        ),
-      ),
-    ),
-  );
-  return linkifyLocalFilePaths(repairMarkdownTablesOutsideCode(normalized)
-    .replace(/\n{3,}(\$\$)/g, '\n\n$1')
-    .replace(/(\$\$)\n{3,}/g, '$1\n\n'));
+  return text.split(PROTECTED_MARKDOWN_CODE_SPLIT).map(chunk => {
+    if (/^(```|~~~|`)/.test(chunk)) return chunk;
+    return chunk.replace(/<(analysis|thinking|reasoning|thought|scratchpad|reflection)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
+  }).join('');
 };
 
 const getCurrentTheme = () => {
@@ -624,21 +279,6 @@ const CopyToolbarButton = ({ text, label = 'Copy' }: { text: string; label?: str
     </ToolbarButton>
   );
 };
-
-const looksLikeMermaid = (content: string) => MERMAID_START_PATTERN.test(content);
-
-const isCompactPlainTextBlock = (language: string, content: string) => {
-  const lang = (language || '').toLowerCase();
-  const trimmed = content.trim();
-  if (!PLAIN_TEXT_LANGUAGE_ALIASES.has(lang)) return false;
-  if (!trimmed || trimmed.includes('\n')) return false;
-  if (looksLikeMermaid(trimmed)) return false;
-  return trimmed.length <= 80;
-};
-
-const CompactPlainTextBlock = ({ content }: { content: string }) => (
-  <span className="eterx-markdown-plain-snippet">{content.trim()}</span>
-);
 
 const downloadTextFile = (content: string, filename: string, type: string) => {
   const blob = new Blob([content], { type });
@@ -733,76 +373,6 @@ const getSvgViewBoxSize = (svg: string) => {
   };
 };
 
-const escapeMermaidLabel = (label: string) =>
-  label
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const shouldQuoteMermaidLabel = (label: string) =>
-  /[:()[\]{}<>{}|,;/\\#%&=+*'"`]/.test(label) || /\s{2,}/.test(label);
-
-const quoteFlowNodeLabels = (line: string) =>
-  line
-    .replace(/([A-Za-z][\w-]*)\[([^\]\n"]+)\]/g, (match, id, label) => (
-      shouldQuoteMermaidLabel(label) ? `${ id }["${ escapeMermaidLabel(label) }"]` : match
-    ))
-    .replace(/([A-Za-z][\w-]*)\{([^}\n"]+)\}/g, (match, id, label) => (
-      shouldQuoteMermaidLabel(label) ? `${ id }{"${ escapeMermaidLabel(label) }"}` : match
-    ));
-
-const normalizeSubgraphLine = (line: string, index: number) => {
-  const match = line.match(/^(\s*)subgraph\s+(.+?)\s*$/i);
-  if (!match) return line;
-  const [, indent, body] = match;
-  const trimmed = body.trim();
-  if (!trimmed || /^end$/i.test(trimmed) || /\[["']?.+["']?\]$/.test(trimmed)) return line;
-
-  const idTitleMatch = trimmed.match(/^([A-Za-z][\w-]*)\s+(.+)$/);
-  if (idTitleMatch && shouldQuoteMermaidLabel(idTitleMatch[2])) {
-    return `${ indent }subgraph ${ idTitleMatch[1] }["${ escapeMermaidLabel(idTitleMatch[2]) }"]`;
-  }
-
-  if (shouldQuoteMermaidLabel(trimmed)) {
-    return `${ indent }subgraph sg_${ index }["${ escapeMermaidLabel(trimmed) }"]`;
-  }
-
-  return line;
-};
-
-const repairMermaidChart = (chart: string) => {
-  const stripped = chart
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/^\s*```(?:mermaid|mmd)?\s*/i, '')
-    .replace(/\s*```\s*$/i, '')
-    .replace(/\r\n?/g, '\n')
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
-    .replace(/\u00A0/g, ' ')
-    .trim();
-
-  if (!stripped) return '';
-
-  return stripped
-    .split('\n')
-    .map((line, index) => {
-      const withoutBullets = line.replace(/^(\s*)[-*]\s+(?=(?:graph|flowchart|subgraph|end|[A-Za-z][\w-]*\b))/i, '$1');
-      const subgraphSafe = normalizeSubgraphLine(withoutBullets, index + 1);
-      return quoteFlowNodeLabels(subgraphSafe);
-    })
-    .join('\n')
-    .replace(/[ \t]+$/gm, '')
-    .trim();
-};
-
-const getMermaidCandidates = (chart: string) => {
-  const normalized = chart.replace(/\r\n?/g, '\n').trim();
-  const repaired = repairMermaidChart(chart);
-  return Array.from(new Set([normalized, repaired].filter(Boolean)));
-};
-
 const getMermaidDisplayWidth = ({ width, height }: { width: number; height: number }) => {
   const safeWidth = Math.max(1, width || 720);
   const safeHeight = Math.max(1, height || 460);
@@ -866,121 +436,13 @@ const MERMAID_PALETTES: Record<MermaidThemeName, MermaidPalette> = {
   },
 };
 
-const nodeShapeSelector = (prefix: string) => [
-  `${ prefix } rect`,
-  `${ prefix } circle`,
-  `${ prefix } ellipse`,
-  `${ prefix } polygon`,
-  `${ prefix } path`,
-].join(',\n');
-
-const getMermaidThemeCss = (theme: MermaidThemeName) => {
-  const palette = MERMAID_PALETTES[theme];
-  const variantRules = palette.nodeFillVariants.map((fill, index) => {
-    const stroke = palette.nodeStrokeVariants[index] || palette.nodeStroke;
-    const selector = nodeShapeSelector(`.nodes .node:nth-child(${ palette.nodeFillVariants.length }n + ${ index + 1 })`);
-    return `${ selector } {
-  fill: ${ fill } !important;
-  stroke: ${ stroke } !important;
-}`;
-  }).join('\n\n');
-
-  return `
-svg {
-  background: transparent !important;
-  font-family: ${ MERMAID_FONT_FAMILY } !important;
-}
-
-text,
-.label,
-.nodeLabel,
-.node text,
-.label text,
-.cluster-label text,
-.sectionTitle,
-.messageText,
-.loopText,
-.noteText {
-  fill: ${ palette.text } !important;
-  color: ${ palette.text } !important;
-  font-family: ${ MERMAID_FONT_FAMILY } !important;
-  letter-spacing: 0 !important;
-}
-
-${ nodeShapeSelector('.node') } {
-  fill: ${ palette.nodeFill } !important;
-  stroke: ${ palette.nodeStroke } !important;
-  stroke-width: 1.45px !important;
-  filter: none !important;
-}
-
-${ variantRules }
-
-.cluster rect,
-.cluster polygon,
-.cluster path {
-  fill: ${ palette.clusterFill } !important;
-  stroke: ${ palette.clusterStroke } !important;
-  stroke-width: 1.25px !important;
-}
-
-.flowchart-link,
-.edgePath .path,
-.messageLine0,
-.messageLine1,
-.transition {
-  stroke: ${ palette.edge } !important;
-}
-
-.arrowheadPath,
-marker path {
-  fill: ${ palette.edge } !important;
-  stroke: ${ palette.edge } !important;
-}
-
-.edgeLabel,
-.edgeLabel p,
-.edgeLabel span,
-.edgeLabel text {
-  color: ${ palette.mutedText } !important;
-  fill: ${ palette.mutedText } !important;
-  background: ${ palette.labelBackground } !important;
-}
-
-.edgeLabel rect,
-.labelBkg {
-  fill: ${ palette.labelBackground } !important;
-  opacity: 0.94 !important;
-}
-
-.note,
-.noteBox {
-  fill: ${ palette.noteFill } !important;
-  stroke: ${ palette.noteStroke } !important;
-}
-
-.actorBox {
-  fill: ${ palette.nodeFill } !important;
-  stroke: ${ palette.nodeStroke } !important;
-}
-`.trim();
-};
-
-const injectMermaidThemeCss = (svg: string, theme: MermaidThemeName) => {
-  const style = `<style data-eterx-mermaid-theme="${ theme }">\n${ getMermaidThemeCss(theme) }\n</style>`;
-  if (/<\/svg>\s*$/i.test(svg)) {
-    return svg.replace(/<\/svg>\s*$/i, `${ style }</svg>`);
-  }
-  return `${ svg }${ style }`;
-};
-
 const MermaidDiagram = ({ chart }: { chart: string }) => {
   const theme = useResolvedTheme();
   const reactId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const chartId = useMemo(() => `eterx-mermaid-${ reactId || Math.random().toString(36).slice(2) }`, [reactId]);
   const [svg, setSvg] = useState('');
   const [error, setError] = useState('');
-  const [renderedChart, setRenderedChart] = useState(chart);
+  const renderedChart = chart;
   const [showSource, setShowSource] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1030,7 +492,6 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
             diagramMarginX: 16,
             diagramMarginY: 16,
           },
-          themeCSS: getMermaidThemeCss(theme),
           themeVariables: {
             background: palette.background,
             primaryColor: palette.nodeFill,
@@ -1062,30 +523,17 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
           },
         });
 
-        const candidates = getMermaidCandidates(chart);
-        let lastError: any = null;
-
-        for (const candidate of candidates) {
-          try {
-            await mermaid.parse(candidate);
-            const result = await mermaid.render(`${ chartId }-${ theme }-${ token }-${ candidates.indexOf(candidate) }`, candidate);
-            if (!cancelled && renderTokenRef.current === token) {
-              const themedSvg = injectMermaidThemeCss(result.svg, theme);
-              setRenderedChart(candidate);
-              setSvg(themedSvg);
-              setSvgSize(getSvgViewBoxSize(themedSvg));
-            }
-            return;
-          } catch (candidateError) {
-            lastError = candidateError;
-          }
+        // Render exactly the authored source. Invalid or unfinished syntax
+        // falls back to that same source instead of a guessed repair.
+        await mermaid.parse(chart);
+        const result = await mermaid.render(`${ chartId }-${ theme }-${ token }`, chart);
+        if (!cancelled && renderTokenRef.current === token) {
+          setSvg(result.svg);
+          setSvgSize(getSvgViewBoxSize(result.svg));
         }
-
-        throw lastError || new Error('Unable to render Mermaid diagram');
       } catch (err: any) {
         if (!cancelled && renderTokenRef.current === token) {
           setSvg('');
-          setRenderedChart(repairMermaidChart(chart) || chart);
           const message = String(err?.message || err || 'Unable to render Mermaid diagram');
           errorTimerRef.current = window.setTimeout(() => {
             if (!cancelled && renderTokenRef.current === token) setError(message);
@@ -1405,6 +853,7 @@ const customLightTheme = {
 };
 
 const CodeBlock = React.memo(({ language, content, forceSource = false, ...props }: { language: string; content: string; forceSource?: boolean;[key: string]: any }) => {
+  const streaming = React.useContext(MarkdownStreamContext);
   const [wrapLines, setWrapLines] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const theme = useResolvedTheme();
@@ -1412,16 +861,8 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
   const isLong = lineCount > 32 || content.length > 3200;
   const displayLanguage = language || 'text';
 
-  if (!forceSource && MERMAID_LANGUAGE_ALIASES.has(displayLanguage.toLowerCase())) {
+  if (!streaming && !forceSource && MERMAID_LANGUAGE_ALIASES.has(displayLanguage.toLowerCase())) {
     return <MermaidDiagram chart={content} />;
-  }
-
-  if (!forceSource && !language && looksLikeMermaid(content)) {
-    return <MermaidDiagram chart={content} />;
-  }
-
-  if (!forceSource && isCompactPlainTextBlock(displayLanguage, content)) {
-    return <CompactPlainTextBlock content={content} />;
   }
 
   const highlightStyle = theme === 'light' ? customLightTheme : vscDarkPlus;
@@ -1442,7 +883,12 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
         />
       </div>
       <div className={`eterx-markdown-code-scroll overflow-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${ isLong && !expanded ? 'max-h-[520px]' : '' }`}>
-        <SyntaxHighlighter
+        {streaming ? (
+          <div className="eterx-markdown-code-content code-span min-w-full text-[12.5px] leading-relaxed font-mono"
+            style={{ margin: 0, background: 'var(--eterx-md-code-bg)', padding: '0.85rem 4rem 0.9rem 0.9rem', minWidth: '100%' }}>
+            <code style={{ fontFamily: 'var(--font-mono)', whiteSpace: wrapLines ? 'pre-wrap' : 'pre', overflowWrap: wrapLines ? 'anywhere' : 'normal' }}>{content}</code>
+          </div>
+        ) : <SyntaxHighlighter
           style={highlightStyle as any}
           language={displayLanguage}
           PreTag="div"
@@ -1465,7 +911,7 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
           {...props}
         >
           {content}
-        </SyntaxHighlighter>
+        </SyntaxHighlighter>}
       </div>
     </div>
   );
@@ -1474,10 +920,6 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
 export const makeMarkdownHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
   const Heading = ({ node, children, ...props }: any) => {
     const text = getNodeText(children);
-    // Keep old/provider-authored decorative emoji from dominating heading
-    // typography. Emoji used naturally in ordinary prose remain untouched.
-    const cleanText = text.replace(/^[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D\s]+/u, '').trimStart();
-    const renderedChildren = cleanText && cleanText !== text ? cleanText : children;
     const sourceLine = Number(node?.position?.start?.line || 0);
     const stableSuffix = sourceLine > 0 ? `-${ sourceLine }` : '';
     const id = props.id || `${ slugify(text) }${ stableSuffix }`;
@@ -1486,9 +928,9 @@ export const makeMarkdownHeading = (Tag: keyof JSX.IntrinsicElements, className:
       {
         ...props,
         id,
-        className: `${ className } eterx-md-heading scroll-mt-28`,
+        className: `${ className } eterx-answer-heading eterx-md-heading scroll-mt-28`,
       },
-      renderedChildren,
+      children,
     );
   };
   return Heading;
@@ -1507,7 +949,8 @@ export const markdownComponents = {
       ? <ResponsiveMath className={className} {...props}>{children}</ResponsiveMath>
       : <span className={className} {...props}>{children}</span>;
   },
-  code({ inline, className, children, node, ...props }: any) {
+  code: function MarkdownCode({ inline, className, children, node, ...props }: any) {
+    const streaming = React.useContext(MarkdownStreamContext);
     const match = /language-([^\s]+)/.exec(className || '');
     const language = match ? match[1].toLowerCase() : '';
     const content = String(children).replace(/\n$/, '');
@@ -1516,6 +959,10 @@ export const markdownComponents = {
       !language &&
       node?.position?.start?.line === node?.position?.end?.line
     );
+
+    if (!isInlineCode && streaming) {
+      return <CodeBlock language={language} content={content} forceSource {...props} />;
+    }
 
     if (!isInlineCode && language === 'js-preview') {
       return <LiveArtifact js={content} title="JS Logic Preview" />;
@@ -1547,7 +994,7 @@ export const markdownComponents = {
   // otherwise adds a <pre> around it, producing invalid <pre><div> nesting
   // and browser-dependent layout/scroll behaviour.
   pre: ({ children }: any) => <>{children}</>,
-  p: ({ ...props }: any) => <p className="eterx-markdown-paragraph mb-3 break-words text-[13.5px] leading-[1.65] last:mb-0" {...props} />,
+  p: ({ node, ...props }: any) => <p className="eterx-markdown-paragraph mb-3 break-words text-[13.5px] leading-[1.65] last:mb-0" {...props} />,
   a: ({ node, href, children, ...props }: any) => {
     const localPath = decodeLocalFileHref(href);
     if (localPath) {
@@ -1555,18 +1002,18 @@ export const markdownComponents = {
     }
     return <WebsiteLink href={href} {...props}>{children}</WebsiteLink>;
   },
-  ul: ({ ...props }: any) => <ul className="eterx-markdown-list mb-3 list-disc space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
-  ol: ({ ...props }: any) => <ol className="eterx-markdown-list mb-3 list-decimal space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
-  li: ({ ...props }: any) => <li className="eterx-markdown-list-item leading-[1.6] pl-0.5" {...props} />,
+  ul: ({ node, ...props }: any) => <ul className="eterx-markdown-list mb-3 list-disc space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
+  ol: ({ node, ...props }: any) => <ol className="eterx-markdown-list mb-3 list-decimal space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
+  li: ({ node, ...props }: any) => <li className="eterx-markdown-list-item leading-[1.6] pl-0.5" {...props} />,
   input: ({ type, ...props }: any) => type === 'checkbox'
     ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-3.5 w-3.5 translate-y-[2px] rounded border-white/20 accent-[#E2765A] cursor-pointer" {...props} />
     : <input type={type} {...props} />,
-  h1: makeMarkdownHeading('h1', 'eterx-answer-heading-1 mt-5 mb-2.5 font-semibold tracking-tight leading-[1.25]'),
-  h2: makeMarkdownHeading('h2', 'eterx-answer-heading-2 mt-4.5 mb-2 font-semibold tracking-tight leading-[1.3]'),
-  h3: makeMarkdownHeading('h3', 'eterx-answer-heading-3 mt-3.5 mb-1.5 font-semibold tracking-tight leading-[1.35]'),
-  h4: makeMarkdownHeading('h4', 'eterx-answer-heading-4 mt-3 mb-1 font-semibold leading-[1.4]'),
-  h5: makeMarkdownHeading('h5', 'eterx-answer-heading-5 mt-2.5 mb-1 font-semibold leading-snug'),
-  h6: makeMarkdownHeading('h6', 'eterx-answer-heading-6 mt-2 mb-1 font-semibold leading-snug'),
+  h1: makeMarkdownHeading('h1', 'eterx-answer-heading-1'),
+  h2: makeMarkdownHeading('h2', 'eterx-answer-heading-2'),
+  h3: makeMarkdownHeading('h3', 'eterx-answer-heading-3'),
+  h4: makeMarkdownHeading('h4', 'eterx-answer-heading-4'),
+  h5: makeMarkdownHeading('h5', 'eterx-answer-heading-5'),
+  h6: makeMarkdownHeading('h6', 'eterx-answer-heading-6'),
   strong: ({ ...props }: any) => <strong className="font-semibold tracking-normal" {...props} />,
   em: ({ ...props }: any) => <em className="italic" {...props} />,
   blockquote: ({ node, ...props }: any) => {
@@ -1590,6 +1037,7 @@ export const markdownComponents = {
       className="eterx-markdown-table-wrap my-4 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-lg border border-white/[0.10] bg-[#1A1918]/90 shadow-none"
       role="region"
       aria-label="Data table"
+      tabIndex={0}
     >
       <table className="eterx-markdown-table w-full min-w-full border-collapse text-left text-[12.5px]" {...props} />
     </div>
