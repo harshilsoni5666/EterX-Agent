@@ -1,0 +1,5 @@
+# Default owner for every project file.
+* @harshilsoni5666
+
+# Keep ownership of this file explicit so it cannot be changed silently.
+/.github/CODEOWNERS @harshilsoni5666
