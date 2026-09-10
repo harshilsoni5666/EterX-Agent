@@ -633,11 +633,13 @@ export const shouldRenderContextCompactionEvent = (
   log: any,
   index: number,
   logs: any[],
-  _isThinkingTurn: boolean,
+  isThinkingTurn: boolean,
 ): boolean => {
   if (log?.type !== 'context_compaction') return true;
   const compactionId = String(log?.compactionId || '').trim();
   if (!compactionId) return true;
+  const phase = String(log?.phase || '').trim().toLowerCase();
+  if ((phase === 'compacting' || phase === 'retrying') && !isThinkingTurn) return false;
   return !logs.slice(index + 1).some(candidate =>
     candidate?.type === 'context_compaction'
     && String(candidate?.compactionId || '').trim() === compactionId
@@ -1888,7 +1890,7 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     const incomingText = normalizedRequestText(log?.text);
     // A malformed producer reusing one turn for different content is safer as
     // two visible rows than silently replacing either user request.
-    if (!sameUserAdmission(previous, log) && previousText && incomingText && previousText !== incomingText) {
+    if (previousText && incomingText && previousText !== incomingText) {
       source.push(log);
       return;
     }
@@ -2011,8 +2013,14 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
       .map((entry, index) => ({ ...entry.log, _feedEventOrder: index }));
   }
 
+  const boundaryIdCounts = new Map<string, number>();
   const boundaryEntries: TimelineEntry[] = boundaries.map((entry, boundaryIndex) => {
-    const boundaryId = stableBoundaryId(entry.log, entry.sourceIndex);
+    const baseBoundaryId = stableBoundaryId(entry.log, entry.sourceIndex);
+    const occurrence = boundaryIdCounts.get(baseBoundaryId) || 0;
+    boundaryIdCounts.set(baseBoundaryId, occurrence + 1);
+    const boundaryId = occurrence === 0
+      ? baseBoundaryId
+      : `${baseBoundaryId}:occurrence:${entry.sourceIndex}`;
     return {
       log: String(entry.log?._feedBoundaryId || '').trim() === boundaryId
         ? entry.log
@@ -2330,6 +2338,39 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     return left.sourceIndex - right.sourceIndex;
   };
 
+  const lifecycleSnapshotIdentity = (log: any): string => {
+    const type = normalizedTimelineType(log);
+    const identityField = [
+      'toolCallId', 'noteId', 'thoughtId', 'answerId', 'responseKey', 'steeringId', 'id',
+    ].find(field => String(log?.[field] ?? '').trim());
+    if (identityField) return `${type}:${identityField}:${String(log[identityField]).trim()}`;
+    const traceIndex = timelineTraceIndex(log);
+    return traceIndex === null ? '' : `${type}:trace:${traceIndex}`;
+  };
+
+  const deduplicateBoundaryEntries = (entries: TimelineEntry[]): TimelineEntry[] => {
+    const deduplicated: TimelineEntry[] = [];
+    const identityIndexes = new Map<string, number>();
+    entries.forEach(entry => {
+      const identity = lifecycleSnapshotIdentity(entry.log);
+      if (!identity) {
+        deduplicated.push(entry);
+        return;
+      }
+      const existingIndex = identityIndexes.get(identity);
+      if (existingIndex === undefined) {
+        identityIndexes.set(identity, deduplicated.length);
+        deduplicated.push(entry);
+        return;
+      }
+      // The later snapshot is authoritative for the same lifecycle event.
+      // Keep entries from separate boundaries independent by applying this
+      // reconciliation only after ownership has already been resolved.
+      deduplicated[existingIndex] = entry;
+    });
+    return deduplicated;
+  };
+
   const orderedBoundaryEntries = boundaryEntries
     .slice()
     .sort(compareBoundaryEntries)
@@ -2343,7 +2384,7 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     .sort((left, right) => compareTimelineEntries(left, right) || left.sourceIndex - right.sourceIndex)
     .map((entry, index) => ({ ...entry.log, _feedEventOrder: index }));
   orderedBoundaryEntries.forEach(boundaryEntry => {
-    const entries = entriesByBoundary[boundaryEntry.boundaryIndex];
+    const entries = deduplicateBoundaryEntries(entriesByBoundary[boundaryEntry.boundaryIndex]);
     const orderedEntries = entries
       .slice(1)
       .sort((left, right) => compareTimelineEntries(left, right) || left.sourceIndex - right.sourceIndex)

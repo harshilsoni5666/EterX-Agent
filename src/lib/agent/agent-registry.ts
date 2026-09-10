@@ -4,7 +4,7 @@ import { AgentOrchestrator } from './orchestrator';
 import { apiKeyPool, type KeyLease } from './api-key-pool';
 import { taskStore } from './task-store';
 import { writeRuntimeTrace } from './runtime-trace';
-import { getMainAgentModelConfig, type MainAgentMode } from './model-routing';
+import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider } from './model-routing';
 import { MODEL_PROVIDER_MODE, isModelProvider } from './model-selector-store';
 import { buildScopedRuntimeSettings, getScopedRuntimeApiKey, type ScopedRuntimeSettings } from './runtime-api-keys';
 import { flushLedgerForChat } from './memory/conversation-ledger';
@@ -1892,7 +1892,7 @@ class AgentRegistry {
           objective: prompt,
           mode: proxyRuntimeMode,
           apiKey: proxyModelEntry ? selectedProxyApiKey : (isExternalProvider
-            ? getScopedRuntimeApiKey(proxyRuntimeSettings || buildScopedRuntimeSettings(), proxyModelEntry?.provider || modelConfig.provider)
+            ? getScopedRuntimeApiKey(proxyRuntimeSettings || buildScopedRuntimeSettings(), modelConfig.provider)
             : proxyLease?.apiKey || lease?.apiKey || ''),
           runtimeSettings: proxyRuntimeSettings,
           history,
@@ -2599,7 +2599,7 @@ class AgentRegistry {
           const runtimeSettings = execution.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
           const configured = getMainAgentModelConfig(execution.mode, runtimeSettings);
           const [selectedProvider, ...selectedModel] = control.modelSelection.split(':');
-          const provider = isModelProvider(selectedProvider) ? selectedProvider
+          const provider: MainAgentProvider = isModelProvider(selectedProvider) ? selectedProvider
             : isModelProvider(pinned.selectedModelProvider) ? pinned.selectedModelProvider : configured.provider;
           const modelId = isModelProvider(selectedProvider) ? selectedModel.join(':') : pinned.selectedModelName || configured.modelName;
           const settings = { ...runtimeSettings, modelOverrides: { ...runtimeSettings.modelOverrides, [provider]: modelId } };

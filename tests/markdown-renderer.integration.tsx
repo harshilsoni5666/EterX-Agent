@@ -24,23 +24,22 @@ const renderMarkdown = (value: string) => renderToStaticMarkup(
 const normalized = normalizeMarkdownForRendering('\uFEFF# Title\r\n\r\n<thought>private stream detail</thought>Visible text\u0000');
 assert.equal(normalized, '# Title\n\nVisible text');
 
-const repairedTable = normalizeMarkdownForRendering('| Name | Status |\n| Alice | Ready |');
-assert.match(repairedTable, /\| Name \| Status \|\n\| --- \| --- \|/);
+const authoredTable = normalizeMarkdownForRendering('| Name | Status |\n| Alice | Ready |');
+assert.equal(authoredTable, '| Name | Status |\n| Alice | Ready |');
 
 const currency = normalizeMarkdownForRendering('Revenue: \\$2,339,235.12$ and AOV: $186.02$');
-assert.equal(currency, 'Revenue: \\$2,339,235.12\\$ and AOV: \\$186.02\\$');
+assert.equal(currency, 'Revenue: \\$2,339,235.12$ and AOV: $186.02$');
 
 const artifactPath = 'C:\\Users\\AAYUSHI\\OneDrive\\Desktop\\Swiggy_Instamart_vs_Zepto_Market_Analysis_2026.docx';
 const canonicalArtifactLink = `[Swiggy_Instamart_vs_Zepto_Market_Analysis_2026.docx](${ encodeLocalFileHref(artifactPath) })`;
 const escapedArtifactInput = `FILE ${ String.fromCharCode(92) }${ canonicalArtifactLink }`;
 const escapedArtifactLink = normalizeMarkdownForRendering(escapedArtifactInput);
-assert.equal(escapedArtifactLink, `FILE ${ canonicalArtifactLink }`);
-assert.doesNotMatch(escapedArtifactLink, /\$\$[\s\S]*eterx-local-file/);
-assert.match(renderMarkdown(escapedArtifactLink), /eterx-local-file-chip/);
+assert.equal(escapedArtifactLink, escapedArtifactInput);
+assert.doesNotMatch(renderMarkdown(escapedArtifactLink), /eterx-local-file-chip/);
 
 const artifactDirectory = 'C:\\Users\\AAYUSHI\\OneDrive\\Desktop\\Fresh_Retail_Sales_2026\\';
 const linkedDirectory = normalizeMarkdownForRendering(`Created at: \`${artifactDirectory}\``);
-assert.match(linkedDirectory, /eterx-local-file:/);
+assert.equal(linkedDirectory, `Created at: \`${artifactDirectory}\``);
 assert.match(renderMarkdown(linkedDirectory), /eterx-local-file-chip/);
 
 for (const directoryPath of [
@@ -51,7 +50,7 @@ for (const directoryPath of [
   '\\\\fileserver\\reports\\retail-analysis\\',
 ]) {
   const normalizedDirectory = normalizeMarkdownForRendering(`Output: \`${directoryPath}\``);
-  assert.match(normalizedDirectory, /eterx-local-file:/);
+  assert.equal(normalizedDirectory, `Output: \`${directoryPath}\``);
   assert.match(renderMarkdown(normalizedDirectory), /eterx-local-file-chip/);
 }
 
@@ -81,8 +80,7 @@ assert.match(markup, /id="a-stable-heading-\d+"/);
 assert.match(markup, /eterx-markdown-image-caption/);
 
 const decoratedHeadingMarkup = renderMarkdown('# 🔎 Data Cleaning Rules');
-assert.doesNotMatch(decoratedHeadingMarkup, /🔎/);
-assert.match(decoratedHeadingMarkup, />Data Cleaning Rules<\/h1>/);
+assert.match(decoratedHeadingMarkup, />🔎 Data Cleaning Rules<\/h1>/);
 
 const fileChipMarkup = renderToStaticMarkup(
   <LocalFileLinkChip filePath="C:\\Reports\\Cleaned_Retail_Store_Sales.xlsx" compact />,

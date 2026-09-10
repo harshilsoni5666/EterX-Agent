@@ -853,13 +853,14 @@ function targetSnapshotsStillMatch(
 ): boolean {
   for (const snapshot of snapshots) {
     const identity = normalizeTargetIdentity(snapshot.target);
-    let current = identity && currentStatCache?.has(identity)
-      ? currentStatCache.get(identity)!
+    let current: CurrentTargetSnapshot | undefined = identity && currentStatCache?.has(identity)
+      ? currentStatCache.get(identity)
       : undefined;
     if (current === undefined) {
+      let observed: CurrentTargetSnapshot;
       try {
         const stat = fs.statSync(snapshot.target);
-        current = stat.isFile() || stat.isDirectory()
+        observed = stat.isFile() || stat.isDirectory()
           ? {
               size: Math.max(0, Number(stat.size || 0)),
               modifiedAtMs: Math.max(0, Number(stat.mtimeMs || 0)),
@@ -867,9 +868,10 @@ function targetSnapshotsStillMatch(
             }
           : null;
       } catch {
-        current = null;
+        observed = null;
       }
-      if (identity && currentStatCache) currentStatCache.set(identity, current);
+      current = observed;
+      if (identity && currentStatCache) currentStatCache.set(identity, observed);
     }
     if (
       !current
@@ -3437,7 +3439,7 @@ export class ContextFabric {
     }
     const queryMatchedFacts = Array.from(matchedFactIds)
       .map(id => this.facts.get(id))
-      .filter((fact): fact is ContextFact => Boolean(fact) && !isCurrentRequestEcho(fact));
+      .filter((fact): fact is ContextFact => fact !== undefined && !isCurrentRequestEcho(fact));
     const recentHistoricalFacts: ContextFact[] = [];
     const recentFactIds = Array.from(this.recentFactIds.keys());
     for (let index = recentFactIds.length - 1; index >= 0; index -= 1) {
@@ -3538,10 +3540,11 @@ export class ContextFabric {
       for (const node of frontier) {
         if (node.depth >= 2) continue;
         for (const [neighbor, edgeWeight] of this.linkAdjacency.get(node.id) || []) {
-          if (!neighbor || visited.has(neighbor) || !this.facts.has(neighbor)) continue;
-          visited.add(neighbor);
+          if (!neighbor || !this.facts.has(neighbor)) continue;
           const strength = node.strength * edgeWeight * 0.72;
           graphScores.set(neighbor, Math.max(graphScores.get(neighbor) || 0, strength));
+          if (visited.has(neighbor)) continue;
+          visited.add(neighbor);
           next.push({ id: neighbor, strength, depth: node.depth + 1 });
         }
       }

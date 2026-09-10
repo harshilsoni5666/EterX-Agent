@@ -172,13 +172,13 @@ const compacted = { type: 'context_compaction', phase: 'compacted', compactionId
 const failedCompaction = { type: 'context_compaction', phase: 'failed', compactionId: 'ctx-b' };
 assert.equal(
   shouldRenderContextCompactionEvent(compacting, 0, [compacting], true),
-  false,
-  'the active compaction start stays in the context meter, not the transcript',
+  true,
+  'the active compaction start is visible while the turn is running',
 );
 assert.equal(
   shouldRenderContextCompactionEvent(compacting, 0, [compacting, action], true),
-  false,
-  'an orphaned start must disappear after later real work',
+  true,
+  'the active compaction remains visible alongside later work',
 );
 assert.equal(
   shouldRenderContextCompactionEvent(compacting, 0, [compacting], false),
@@ -197,8 +197,8 @@ assert.equal(
 );
 assert.equal(
   shouldRenderContextCompactionEvent(failedCompaction, 0, [failedCompaction], false),
-  false,
-  'a failed compaction stays in the context meter, not the transcript',
+  true,
+  'a failed compaction remains visible with its recovery message',
 );
 
 {

@@ -27,7 +27,7 @@ async function main(): Promise<void> {
       edits: [{ search: 'alpha', replace: 'beta' }],
     }, context);
     assert.equal(ambiguous.success, false);
-    assert.match(String(ambiguous.error), /matched 2 times/);
+    assert.match(String(ambiguous.error), /search matched more than once/i);
 
     const replaced: any = await workspaceEditFileTool.execute({
       filename: file,

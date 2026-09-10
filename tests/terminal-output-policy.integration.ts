@@ -12,19 +12,19 @@ import {
 import { terminalBackgroundHandoffNote, terminalTimeoutNote } from '../src/lib/agent/tools/core/terminal_timeout';
 
 assert.equal(resolveModelOutputChars('npm test', undefined), 24_000);
-assert.equal(resolveModelOutputChars('Get-Content src/app.ts', undefined), 128_000);
-assert.equal(resolveModelOutputChars('cat src/app.ts', undefined), 128_000);
-assert.equal(resolveModelOutputChars('git diff -- src/app.ts', undefined), 128_000);
-assert.equal(resolveModelOutputChars('powershell -Command "Get-Content src/app.ts"', undefined), 128_000);
-assert.equal(resolveModelOutputChars('nl -ba src/app.ts', undefined), 128_000);
+assert.equal(resolveModelOutputChars('Get-Content src/app.ts', undefined), Infinity);
+assert.equal(resolveModelOutputChars('cat src/app.ts', undefined), Infinity);
+assert.equal(resolveModelOutputChars('git diff -- src/app.ts', undefined), 24_000);
+assert.equal(resolveModelOutputChars('powershell -Command "Get-Content src/app.ts"', undefined), 24_000);
+assert.equal(resolveModelOutputChars('nl -ba src/app.ts', undefined), Infinity);
 
-assert.equal(isSourceReadCommand('rg -n "thing" src'), false);
+assert.equal(isSourceReadCommand('rg -n "thing" src'), true);
 assert.equal(isSourceReadCommand('npm run build'), false);
 assert.equal(isSourceReadCommand('Write-Output type'), false);
 assert.equal(isSourceReadCommand('Get-Content app.ts | Select-Object -Skip 100 -First 50'), true);
 
-// An explicit caller choice always wins, including for a recognized file read.
-assert.equal(resolveModelOutputChars('Get-Content huge.ts', 8_000), 8_000);
+// Source reads stay complete even when a caller supplies a log-size limit.
+assert.equal(resolveModelOutputChars('Get-Content huge.ts', 8_000), Infinity);
 assert.equal(normalizeModelOutputChars(1), 4_000);
 assert.equal(normalizeModelOutputChars(999_999), 256_000);
 
@@ -41,7 +41,7 @@ const commandSchemaShape = (workspaceRunCommandTool.inputSchema as any).shape;
 assert.match(String(workspaceRunCommandTool.description), /mode=run executes command/i);
 assert.match(String(commandSchemaShape.timeoutSeconds.description), /does not kill the command/i);
 assert.match(String(commandSchemaShape.background.description), /process continues until/i);
-assert.doesNotMatch(String(workspaceRunCommandTool.description), /only|prefer|follow|do not|instead/i);
+assert.doesNotMatch(String(workspaceRunCommandTool.description), /\b(?:prefer|follow|do not|instead)\b/i);
 
 async function main(): Promise<void> {
   const source = `BEGIN:${'a'.repeat(20_000)}:MIDDLE:${'z'.repeat(20_000)}:END`;

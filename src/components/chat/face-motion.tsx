@@ -83,17 +83,16 @@ function useFaceAnimation(animate: FaceTarget, transition: FaceTransition = {}) 
         ...(offsets ? { offset: offsets[index] } : {}),
         easing,
       }));
-      const options: KeyframeEffectOptions = {
-        duration: animated ? (timing.duration ?? 0.3) * 1000 : 0,
-        delay: animated ? (timing.delay ?? 0) * 1000 : 0,
-        iterations: animated ? (timing.repeat === Infinity ? Infinity : (timing.repeat ?? 0) + 1) : 1,
-        fill: 'both',
-        composite: isTransform(property) ? 'add' : 'replace',
-      };
+      const duration = animated ? (timing.duration ?? 0.3) * 1000 : 0;
+      const delay = animated ? (timing.delay ?? 0) * 1000 : 0;
+      const iterations = animated ? (timing.repeat === Infinity ? Infinity : (timing.repeat ?? 0) + 1) : 1;
+      const fill: FillMode = 'both';
+      const composite: CompositeOperationOrAuto = isTransform(property) ? 'add' : 'replace';
+      const options: KeyframeEffectOptions = { duration, delay, iterations, fill, composite };
       if (existing) {
         const effect = existing.animation.effect as KeyframeEffect;
         effect.setKeyframes(keyframes);
-        effect.updateTiming(options);
+        effect.updateTiming({ duration, delay, iterations, fill });
         existing.animation.currentTime = 0;
         existing.animation.play();
         existing.signature = signature;

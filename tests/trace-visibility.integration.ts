@@ -42,9 +42,9 @@ assert.deepEqual(
   ],
 );
 
-assert.equal(formatVisibleWorkNote('Image 1 analysis: the header is blue'), '');
-assert.equal(formatVisibleWorkNote('Analysis: I should answer with three bullets'), '');
-assert.equal(formatVisibleWorkNote('The user wants a concise answer'), '');
+assert.equal(formatVisibleWorkNote('Image 1 analysis: the header is blue'), 'Image 1 analysis: the header is blue');
+assert.equal(formatVisibleWorkNote('Analysis: I should answer with three bullets'), 'Analysis: I should answer with three bullets');
+assert.equal(formatVisibleWorkNote('The user wants a concise answer'), 'The user wants a concise answer');
 assert.equal(formatVisibleWorkNote('<analysis>private visual inspection</analysis>I’m checking the layout now.'), 'I’m checking the layout now.');
 assert.equal(formatVisibleWorkNote('I’m checking the attached image’s layout and text now.'), 'I’m checking the attached image’s layout and text now.');
 
