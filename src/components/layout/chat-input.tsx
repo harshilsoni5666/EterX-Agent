@@ -1,17 +1,22 @@
+import { readChatPlanMode, writeChatPlanMode, type summarizeChatUsage } from '../../lib/chat-command-state';
 import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
+import { PASTED_TEXT_MIME, shouldAttachPaste } from '../../lib/pasted-text';
+import { AttachmentTextPreviewHost } from '../chat/attachment-text-preview';
+import { QueuedMessageAttachments, type QueuedMessageAttachment } from '../chat/queued-message-attachments';
+import type { ChatMediaItem } from '../chat/chat-media';
 import { requestJson } from '../../lib/request-json';
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Info } from 'lucide-react';
+import { Info, ChevronLeft, BookText, BarChart3, Route, FolderCog } from 'lucide-react';
 import { CODING_MODES, getCodingMode, type CodingAgentId } from '../../lib/code/coding-modes';
 import { CodingModeDetails } from './coding-mode-details';
 import { motion, AnimatePresence } from 'framer-motion';
-import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
+import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, FolderClosed, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, Minus, RotateCcw, Download, Copy, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { Shimmer } from '../ui/shimmer';
 import { AdaptiveMenu } from '../ui/adaptive-menu';
-import { safeReadImageFromClipboard, safeReadTextFromClipboard } from '../ui/copy-button';
+import { safeCopyPngToClipboard, safeCopyTextToClipboard, safeReadImageFromClipboard, safeReadTextFromClipboard } from '../ui/copy-button';
 import { ConnectorsModal } from './connectors-modal';
 import { AgentFace } from '../chat/agent-face';
 import { notifyAgentFaceFiles, notifyAgentFaceInputChange, notifyAgentFaceSend } from '../chat/agent-face-controller';
@@ -339,12 +344,15 @@ interface QueuedFollowUpItem {
   id: string;
   chatId?: string;
   text: string;
-  attachments?: Array<{ id?: string; name?: string; file?: { name?: string } }>;
+  attachments?: QueuedMessageAttachment[];
   attachmentCount?: number;
+  rendererOwned?: boolean;
+  serverBacked?: boolean;
   deliveryState?: 'pending' | 'uncertain' | 'rejected';
 }
 
 interface ChatInputProps {
+  showVoiceControls?: boolean;
   inputValue: string;
   inputValueRevision?: number;
   setInputValue: React.Dispatch<React.SetStateAction<string>>;
@@ -410,6 +418,10 @@ interface ChatInputProps {
   chatModelSelection?: string;
   onModelSelectionChange?: (selection: string) => void;
   onOpenSettingsTab?: (tab: 'api' | 'models') => void;
+  chatTitle?: string;
+  chatUsage?: ReturnType<typeof summarizeChatUsage>;
+  onCompact?: () => Promise<void>;
+  onPlanModeChange?: (enabled: boolean) => Promise<void>;
   contextUsage?: {
     usedTokens: number;
     contextWindow: number;
@@ -450,8 +462,9 @@ interface ChatInputProps {
     awaitingSelectedModelMeasurement?: boolean;
   } | null;
   queuedFollowUps?: QueuedFollowUpItem[];
+  chatMedia?: ChatMediaItem[];
   onSendQueuedFollowUp?: (item: QueuedFollowUpItem) => Promise<boolean> | boolean;
-  onRemoveQueuedFollowUp?: (id: string) => void | Promise<boolean>;
+  onRemoveQueuedFollowUp?: (id: string, chatId?: string) => boolean | void | Promise<boolean>;
   showScrollBottom?: boolean;
   onScrollToBottom?: () => void;
 }
@@ -461,7 +474,7 @@ type ComposerTextareaProps = Omit<
   'value' | 'defaultValue' | 'onChange'
 > & {
   ownerKey: string;
-  revision: number;
+  revision: number | string;
   value: string;
   onValueChange: (value: string, selectionStart: number | null) => void;
   onValueCommitted?: (textarea: HTMLTextAreaElement) => void;
@@ -679,10 +692,10 @@ type SlashCommand = {
   description: string;
   prompt: string;
   iconSrc: string;
-  action?: 'agents' | 'goal' | 'plan' | 'pet';
+  action?: 'agents' | 'goal' | 'plan' | 'pet' | 'compact' | 'usage' | 'workspace';
 };
 
-type SlashPanel = 'agents' | 'goal' | null;
+type SlashPanel = 'agents' | 'goal' | 'usage' | 'workspace' | null;
 type StatusRailMenu = 'project' | 'run' | 'branch' | null;
 
 type SavedAgentSummary = {
@@ -765,66 +778,10 @@ const writeStoredGoal = (chatId: string | null | undefined, goal: string) => {
 };
 
 const SLASH_COMMANDS: SlashCommand[] = [
-  {
-    id: 'my-agents',
-    label: 'Agents',
-    description: 'Open agent room and custom agents',
-    prompt: '',
-    iconSrc: '/icons/agent-ui/agent.svg',
-    action: 'agents',
-  },
-  {
-    id: 'goal',
-    label: 'Goal',
-    description: 'Set a goal for the agent to work toward',
-    prompt: '',
-    iconSrc: '/icons/agent-ui/commands/goal.svg',
-    action: 'goal',
-  },
-  {
-    id: 'mcp',
-    label: 'MCP',
-    description: 'Show MCP server status and available tools',
-    prompt: 'Show MCP server status and available tools.',
-    iconSrc: '/icons/agent-ui/commands/mcp.svg',
-  },
-  {
-    id: 'memories',
-    label: 'Memories',
-    description: 'Save useful context for future chats',
-    prompt: 'Remember this for future chats: ',
-    iconSrc: '/icons/agent-ui/commands/memories.svg',
-  },
-  {
-    id: 'model',
-    label: 'Model',
-    description: 'Choose or explain the best model for this task',
-    prompt: 'Help me choose the best model for this task.',
-    iconSrc: '/icons/agent-ui/commands/model.svg',
-  },
-  {
-    id: 'personality',
-    label: 'Personality',
-    description: 'Adjust how EterX responds',
-    prompt: 'Adjust how you respond: ',
-    iconSrc: '/icons/agent-ui/commands/personality.svg',
-  },
-  {
-    id: 'pet',
-    label: 'Pet',
-    description: 'Wake or tuck away the desktop pet',
-    prompt: '',
-    iconSrc: '/icons/agent-ui/commands/pet.svg',
-    action: 'pet',
-  },
-  {
-    id: 'plan-mode',
-    label: 'Plan mode',
-    description: 'Create a brief plan before making changes',
-    prompt: '',
-    iconSrc: '/icons/agent-ui/commands/plan-mode.svg',
-    action: 'plan',
-  },
+  { id: 'compact', label: 'Compact', description: "Compact this chat’s context", prompt: '', iconSrc: '', action: 'compact' },
+  { id: 'plan-mode', label: 'Plan mode', description: 'Require a plan for each request', prompt: '', iconSrc: '/icons/agent-ui/commands/plan-mode.svg', action: 'plan' },
+  { id: 'chat-usage', label: 'Chat usage', description: 'View tokens, cache hits, and current context', prompt: '', iconSrc: '', action: 'usage' },
+  { id: 'workspace', label: 'Workspace', description: 'View or change this chat’s workspace', prompt: '', iconSrc: '', action: 'workspace' },
 ];
 
 const PinFolderIcon = React.memo(({ className = "" }: { className?: string }) => (
@@ -930,7 +887,7 @@ const PinFileIcon = React.memo(({ className = "" }: { className?: string }) => (
   </svg>
 ));
 
-const ProgressLoader = React.memo(({ className = 'h-[18px] w-[18px]' }: { className?: string }) => (
+const ProgressLoader = React.memo(({ className = 'h-4 w-4' }: { className?: string }) => (
   <span className={`eterx-task-progress-loader relative flex shrink-0 items-center justify-center ${ className }`} aria-hidden="true">
     <span className="absolute inset-0 rounded-full border-[2px] border-white/[0.16]" />
     <span className="absolute inset-0 rounded-full border-[2px] border-transparent border-r-white/45 border-t-white/90 animate-[spin_1.15s_linear_infinite] shadow-none" />
@@ -945,7 +902,7 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
         initial={{ opacity: 0, scale: 0.82 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
-        className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#A9A9A9] text-[#1F1F1F] shadow-none"
+        className="flex h-4 w-4 items-center justify-center rounded-full bg-[#A9A9A9] text-[#1F1F1F] shadow-none"
       >
         <Check className="h-[11px] w-[11px]" strokeWidth={3.2} />
       </motion.span>
@@ -954,7 +911,7 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
 
   if (status === 'skipped') {
     return (
-      <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full border border-white/25 text-white/45">
+      <span className="flex h-4 w-4 items-center justify-center rounded-full border border-white/25 text-white/45">
         <CircleSlash className="h-[11px] w-[11px]" strokeWidth={2.2} />
       </span>
     );
@@ -962,7 +919,7 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
 
   if (status === 'failed') {
     return (
-      <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full border border-red-400/45 text-red-300/85">
+      <span className="flex h-4 w-4 items-center justify-center rounded-full border border-red-400/45 text-red-300/85">
         <X className="h-[11px] w-[11px]" strokeWidth={2.5} />
       </span>
     );
@@ -972,7 +929,7 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
     return <ProgressLoader />;
   }
 
-  return <span className="block h-[18px] w-[18px] rounded-full border-[2px] border-[#A9A9A9]/62" />;
+  return <span className="block h-4 w-4 rounded-full border-[2px] border-[#A9A9A9]/62" />;
 });
 
 const GeneratingDots = React.memo(({ className = '' }: { className?: string }) => (
@@ -1093,6 +1050,7 @@ const TaskTrackerDock = React.memo(({
 })
 
 export const ChatInput: React.FC<ChatInputProps> = ({
+  showVoiceControls = true,
   inputValue, inputValueRevision = 0, setInputValue, onInputValueChange, isThinking, canStop = false, isRecording, handleSend, handleStop, handleSteer = () => { },
   toggleSpeech, attachments, setAttachments, greeting, traceLogsLength,
   agentMode = 'think', onModeChange = () => { },
@@ -1132,8 +1090,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   chatModelSelection: propChatModelSelection,
   onModelSelectionChange,
   onOpenSettingsTab,
+  chatTitle = 'New chat',
+  chatUsage,
+  onCompact,
+  onPlanModeChange,
   contextUsage = null,
   queuedFollowUps = [],
+  chatMedia = [],
   onSendQueuedFollowUp,
   onRemoveQueuedFollowUp,
   showScrollBottom = false,
@@ -1203,17 +1166,96 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, MainAgentThinkingLevel>>(readModelThinkingLevels);
   const thinkingTimeoutRef = useRef<any>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewImages, setPreviewImages] = useState<string[]>([]);
+  const [failedPreviewImage, setFailedPreviewImage] = useState<string | null>(null);
+  const navigatePreviewImage = (direction: number) => {
+    const index = previewImages.indexOf(previewImage || '');
+    const next = index + direction;
+    if (next < 0 || next >= previewImages.length) return;
+    setPreviewImage(previewImages[next]);
+    setFailedPreviewImage(null);
+    setZoomScale(1);
+    setPanPos({ x: 0, y: 0 });
+    setIsDragging(false);
+  };
   const [previewVideo, setPreviewVideo] = useState<{ url: string; name?: string } | null>(null);
   const [zoomScale, setZoomScale] = useState(1);
   const [panPos, setPanPos] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [copiedImage, setCopiedImage] = useState(false);
+
+  const handleZoomIn = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setZoomScale(s => Math.min(parseFloat((s + 0.25).toFixed(2)), 5));
+  };
+  const handleZoomOut = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setZoomScale(s => {
+      const next = Math.max(parseFloat((s - 0.25).toFixed(2)), 0.25);
+      if (next <= 1) setPanPos({ x: 0, y: 0 });
+      return next;
+    });
+  };
+  const handleResetZoom = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setZoomScale(1);
+    setPanPos({ x: 0, y: 0 });
+  };
+  const handleToggleZoom = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (zoomScale === 1) {
+      setZoomScale(2);
+    } else {
+      setZoomScale(1);
+      setPanPos({ x: 0, y: 0 });
+    }
+  };
+  const handleDownloadImage = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!previewImage) return;
+    const link = document.createElement('a');
+    link.href = previewImage;
+    link.download = `eterx-image-${Date.now()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+  const handleCopyImage = async (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!previewImage) return;
+    try {
+      if (previewImage.startsWith('data:image')) {
+        const res = await fetch(previewImage);
+        const blob = await res.blob();
+        if (!blob.type.startsWith('image/') || !await safeCopyPngToClipboard(blob)) return;
+      } else {
+        if (!await safeCopyTextToClipboard(previewImage)) return;
+      }
+      setCopiedImage(true);
+      setTimeout(() => setCopiedImage(false), 2000);
+    } catch {
+      setCopiedImage(false);
+    }
+  };
 
   useEffect(() => {
+    setPreviewImage(null);
+    setPreviewImages([]);
+    setPreviewVideo(null);
+    setZoomScale(1);
+    setPanPos({ x: 0, y: 0 });
+    setIsDragging(false);
+  }, [activeComposerChatKey]);
+
+  // Buffered callers publish explicit revisions; controlled callers publish
+  // the value itself (including clears, dictation, and failed-send restores).
+  const composerDraftRevision = onInputValueChange ? inputValueRevision : inputValue;
+  React.useLayoutEffect(() => {
     latestInputValueRef.current = inputValue;
     const nextHasPromptText = Boolean(inputValue.trim());
     setHasPromptText(previous => previous === nextHasPromptText ? previous : nextHasPromptText);
-  }, [activeComposerChatKey, inputValueRevision]);
+  }, [activeComposerChatKey, composerDraftRevision]);
 
   const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
   const [isConvertingDoc, setIsConvertingDoc] = useState(false);
@@ -1267,6 +1309,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const handlePreviewImage = (e: Event) => {
       const detail = (e as CustomEvent).detail;
       if (!detail || !detail.previewUrl) return;
+      setPreviewImages(Array.from(new Set<string>([...(Array.isArray(detail.images) ? detail.images.filter((url: unknown): url is string => typeof url === 'string' && Boolean(url)) : []), detail.previewUrl])));
+      setFailedPreviewImage(null);
       setZoomScale(1);
       setPanPos({ x: 0, y: 0 });
       setPreviewImage(detail.previewUrl);
@@ -1340,7 +1384,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [storedAgents, setStoredAgents] = useState<SavedAgentSummary[]>([]);
   const [goalDraft, setGoalDraft] = useState('');
   const [slashPanelOffset, setSlashPanelOffset] = useState({ x: 0, y: 0 });
-  const [planModeActive, setPlanModeActive] = useState(false);
+  const [planModeActive, setPlanModeState] = useState(false);
+  const [compacting, setCompacting] = useState(false);
+  const setPlanModeActive = useCallback((enabled: boolean) => {
+    writeChatPlanMode(activeChatId, enabled);
+    setPlanModeState(enabled);
+    if (onPlanModeChange) void onPlanModeChange(enabled).catch(() => {
+      writeChatPlanMode(activeChatId, !enabled);
+      setPlanModeState(!enabled);
+    });
+  }, [activeChatId, onPlanModeChange]);
+  useEffect(() => {
+    setPlanModeState(readChatPlanMode(activeChatId));
+    setSlashPanel(null);
+    setSlashTrigger(null);
+  }, [activeChatId]);
   const [storedModelSettings, setStoredModelSettings] = useState<StoredModelSettings>(() => ({
     apiKeys: {},
     modelOverrides: {},
@@ -1395,7 +1453,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [onWorkspacePathChange]);
 
   const workspaceName = useMemo(() => {
-    if (!activeWorkspacePath) return "Don't work in project";
+    if (!activeWorkspacePath) return "Chat workspace";
     return activeWorkspacePath.split(/[/\\]/).filter(Boolean).pop() || activeWorkspacePath;
   }, [activeWorkspacePath]);
 
@@ -1994,7 +2052,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const selectSlashCommand = useCallback((command: SlashCommand) => {
     if (!slashTrigger) return;
     const currentInputValue = latestInputValueRef.current;
-    if (command.action === 'agents' || command.action === 'goal' || command.action === 'plan' || command.action === 'pet') {
+    if (command.action) {
       const nextValue = `${ currentInputValue.slice(0, slashTrigger.start) }${ currentInputValue.slice(slashTrigger.end) }`;
       latestInputValueRef.current = nextValue;
       setHasPromptText(Boolean(nextValue.trim()));
@@ -2002,12 +2060,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       setInputValue(nextValue);
       setSlashTrigger(null);
       if (command.action === 'plan') {
-        setPlanModeActive(true);
+        setPlanModeActive(!planModeActive);
         window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
         return;
       }
       if (command.action === 'pet') {
         onOpenPet();
+        return;
+      }
+      if (command.action === 'compact') {
+        if (!onCompact || compacting) return;
+        setCompacting(true);
+        void onCompact().catch((error: unknown) => {
+          showComposerNotice('Could not compact context', error instanceof Error ? error.message : 'Please try again.');
+        }).finally(() => setCompacting(false));
         return;
       }
       openSlashPanel(command.action);
@@ -2029,7 +2095,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       textarea.focus({ preventScroll: true });
       textarea.setSelectionRange(nextCaret, nextCaret);
     });
-  }, [onOpenPet, openSlashPanel, setInputValue, slashTrigger]);
+  }, [onOpenPet, openSlashPanel, setInputValue, slashTrigger, onCompact, compacting, planModeActive, setPlanModeActive, showComposerNotice]);
 
   const openAgentRoomFromPanel = useCallback(() => {
     closeSlashPanel();
@@ -2263,8 +2329,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (onInputValueChange) onInputValueChange(nextValue);
     else setInputValue(nextValue);
     syncSlashTrigger(nextValue, selectionStart);
-    scheduleTextareaOverflowSync();
-  }, [onInputValueChange, scheduleTextareaOverflowSync, setInputValue, syncSlashTrigger]);
+  }, [onInputValueChange, setInputValue, syncSlashTrigger]);
 
   useEffect(() => () => {
     if (textareaResizeFrameRef.current !== null) {
@@ -2413,6 +2478,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     const pastedText = eventText || await safeReadTextFromClipboard();
     if (!pastedText) return;
+    if (shouldAttachPaste(pastedText)) {
+      addFilesAndUpload([new File([pastedText], `Pasted text ${Date.now()}.txt`, { type: PASTED_TEXT_MIME })]);
+      return;
+    }
 
     const nextValue = `${currentValue.slice(0, start)}${pastedText}${currentValue.slice(end)}`;
     const previousValue = latestInputValueRef.current;
@@ -2522,6 +2591,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isNetworkPaused, isThinking, showComposerNotice]);
 
   const submitPrompt = useCallback(() => {
+    const hasCurrentPayload = Boolean(latestInputValueRef.current.trim()) || attachments.length > 0;
     if (isNetworkPaused) {
       onNetworkPausedAction();
       return;
@@ -2553,7 +2623,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
 
     if (isThinking) {
-      if (hasComposerPayload) {
+      if (hasCurrentPayload) {
         handleSteer();
       }
       return;
@@ -2564,7 +2634,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     // Never invoke the send handler for an empty composer. This can happen
     // when Enter is pressed while the UI is transitioning between states.
-    if (!hasComposerPayload) return;
+    if (!hasCurrentPayload) return;
     notifyAgentFaceSend();
     handleSend();
   }, [activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
@@ -2611,7 +2681,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // New chats can already have a reserved/persisted ID while still showing
   // the centered empty composer. Anchor direction follows layout, not ID.
   const isNewChatHome = isEmptyHome;
-  const resolvedComposerPlaceholder = composerPlaceholder || (isLiveActive ? "Type..." : isThinking ? "Send guidance to the running agent" : isNewChatHome ? "What should EterX work on?" : "Message EterX");
+  const resolvedComposerPlaceholder = composerPlaceholder || (isLiveActive ? "Type..." : isThinking ? "Send a message while EterX works" : isNewChatHome ? "What should EterX work on?" : "Message EterX");
   const [branchName, setBranchName] = useState('main');
   const [branchesList, setBranchesList] = useState<string[]>([]);
   const [isCreatingBranch, setIsCreatingBranch] = useState(false);
@@ -3035,7 +3105,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const thinkingMenuOption = allModelOptions.find(option => option.optionKey === thinkingMenuModelKey) || null;
   const thinkingMenuOptions = getThinkingLevelOptions(thinkingMenuOption);
   const thinkingMenuSelectedId = getEffectiveThinkingLevel(thinkingMenuOption);
-  const contextUsageBreakdown = contextUsage?.breakdownSource === 'serialized_payload' && contextUsage.breakdown
+  const contextUsageBreakdown = (contextUsage?.breakdownSource === 'serialized_payload' || contextUsage?.breakdown) && contextUsage?.breakdown
     ? normalizeContextUsageBreakdown(contextUsage.breakdown, contextUsage.usedTokens)
     : null;
   const contextUsageRows = contextUsageBreakdown
@@ -3066,7 +3136,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       data-compressed={isCompressed ? 'true' : 'false'}
       onDragStart={handleComposerDragStart}
     >
-        {showScrollBottom && traceLogsLength > 0 && !isEmptyHome && !showModelMenu && !showAgentMenu && (
+        {showScrollBottom && traceLogsLength > 0 && !isEmptyHome && !showModelMenu && !showAgentMenu && !slashMenuVisible && !slashPanel && (
           <button
             type="button"
             aria-label="Jump to latest message"
@@ -3136,23 +3206,25 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               {queuedFollowUps.map(message => {
                 const attachmentCount = message.attachments?.length || message.attachmentCount || 0;
                 const fallbackLabel = `${ attachmentCount } attachment${ attachmentCount === 1 ? '' : 's' }`;
-                const queueActionKey = `${activeComposerChatKey}:${message.id}`;
+                const queueActionKey = `${message.chatId || activeComposerChatKey}:${message.id}`;
                 const isSending = sendingQueuedFollowUpIds.has(queueActionKey);
+                const isPending = message.deliveryState === 'pending';
+                const actionLabel = message.deliveryState === 'rejected' || message.deliveryState === 'uncertain'
+                  ? 'Retry' : isThinking ? message.rendererOwned ? 'Send next' : 'Steer' : 'Send now';
                 return (
                   <div key={message.id} className="group/pending flex max-w-[90%] min-w-0 shrink-0 items-center gap-2 rounded-[20px] bg-[#202020] px-3.5 py-2.5 text-[13px] leading-5 text-[var(--foreground)]">
-                    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words" title={message.deliveryState === 'rejected' ? 'Not queued. Use the send button to retry.' : message.text || fallbackLabel}>
-                      {message.text || fallbackLabel}
-                      {attachmentCount > 0 && message.text && (
-                        <span className="mt-1 flex flex-wrap gap-x-2 text-[12px] text-[var(--muted-foreground)]">
-                          {message.attachments?.length ? message.attachments.map((attachment, index) => (
-                            <span key={attachment.id || index}>{attachment.name || attachment.file?.name || 'Attachment'}</span>
-                          )) : fallbackLabel}
-                        </span>
-                      )}
-                    </span>
+                    <div className="min-w-0 flex-1">
+                      {message.text && <div className="whitespace-pre-wrap break-words">{message.text}</div>}
+                      {message.attachments?.length
+                        ? <QueuedMessageAttachments attachments={message.attachments} media={chatMedia} />
+                        : attachmentCount > 0 && <span className="text-xs text-[var(--muted-foreground)]">{fallbackLabel}</span>}
+                      {message.deliveryState && <div role="status" className="mt-1 text-[11px] text-[var(--muted-foreground)]">
+                        {isPending ? 'Queuing…' : message.deliveryState === 'uncertain' ? 'Waiting for confirmation…' : 'Not sent. Retry when ready.'}
+                      </div>}
+                    </div>
                     <button
                       type="button"
-                      disabled={!onSendQueuedFollowUp || isSending || message.deliveryState === 'pending'}
+                      disabled={!onSendQueuedFollowUp || isSending || isPending}
                       onClick={async () => {
                         if (!onSendQueuedFollowUp || isSending) return;
                         if (!beginQueueAction(queueActionKey)) return;
@@ -3165,28 +3237,31 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           finishQueueAction(queueActionKey);
                         }
                       }}
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white/42 transition-colors hover:bg-white/[0.08] hover:text-white/90 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
-                      aria-label={message.deliveryState ? 'Retry sending this follow-up' : 'Send this queued message to the active agent, or run next if idle'}
-                      title={message.deliveryState ? 'Retry sending' : 'Send now'}
+                      className="flex h-8 shrink-0 items-center justify-center gap-1 rounded-full px-2 text-[11px] text-white/65 transition-colors hover:bg-white/[0.08] hover:text-white/90 disabled:cursor-default disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                      aria-label={`${actionLabel} queued message`}
+                      aria-busy={isSending || isPending}
+                      title={actionLabel === 'Steer' ? 'Send this message to the active agent' : actionLabel}
                     >
-                      <ArrowUpRight className="h-3.5 w-3.5" strokeWidth={2.05} />
+                      {isSending || isPending ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/25 border-t-white/80" /> : <ArrowUpRight className="h-3.5 w-3.5" strokeWidth={2.05} />}
+                      <span>{actionLabel}</span>
                     </button>
                     <button
                       type="button"
-                      disabled={isSending}
+                      disabled={!onRemoveQueuedFollowUp}
                       onClick={async () => {
-                        if (!onRemoveQueuedFollowUp || isSending) return;
-                        if (!beginQueueAction(queueActionKey)) return;
+                        if (!onRemoveQueuedFollowUp) return;
+                        const removalKey = `${queueActionKey}:remove`;
+                        if (!beginQueueAction(removalKey)) return;
                         try {
-                          const removed = await onRemoveQueuedFollowUp(message.id);
+                          const removed = await onRemoveQueuedFollowUp(message.id, message.chatId);
                           if (removed === false) showComposerNotice('Could not remove queued message', 'The removal was not confirmed. Please try again.');
                         } catch {
                           showComposerNotice('Could not remove queued message', 'Please try again.');
                         } finally {
-                          finishQueueAction(queueActionKey);
+                          finishQueueAction(removalKey);
                         }
                       }}
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-white/32 transition-colors hover:bg-white/[0.08] hover:text-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white/50 transition-colors hover:bg-white/[0.08] hover:text-white/80 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
                       aria-label="Remove queued follow-up"
                       title="Remove"
                     >
@@ -3243,7 +3318,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: 6, scale: 0.99 }}
                 transition={{ duration: 0.16, ease: [0.2, 0.8, 0.2, 1] }}
-                className="eterx-context-usage-panel absolute bottom-[calc(100%+10px)] left-0 z-[85] w-full rounded-[16px] border px-3.5 pb-3 pt-2 shadow-2xl"
+                className="eterx-context-usage-panel absolute bottom-[calc(100%+10px)] left-0 z-[85] w-full max-h-[min(520px,calc(100vh-170px))] overflow-y-auto eterx-scrollbar rounded-[16px] border px-3.5 pb-3 pt-2 shadow-2xl"
                 onClick={event => event.stopPropagation()}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -3306,7 +3381,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 {contextUsageRows.length > 0 && (
                   <>
                     <h3 className="eterx-context-panel-title mt-3 text-[11px] font-semibold">Request composition</h3>
-                    <div className="eterx-context-panel-rows mt-1 grid grid-cols-1 gap-x-6 gap-y-0.5 sm:grid-cols-2">
+                    <div className={`eterx-context-panel-rows mt-1 grid ${isCompressed ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'} gap-x-6 gap-y-0.5`}>
                       {contextUsageRows.map(row => (
                         <div key={row.key} className="eterx-context-panel-row flex h-7 items-center gap-2.5 rounded-[8px] px-1.5">
                           <span className="h-3 w-3 shrink-0 rounded-[3px]" style={{ backgroundColor: row.color }} aria-hidden="true" />
@@ -3424,7 +3499,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               onPointerDown={startSlashPanelDrag}
             >
               <span className="flex min-w-0 items-center gap-2.5">
-                <img src="/icons/agent-ui/commands/goal.svg" alt="" aria-hidden="true" className="eterx-agent-ui-icon h-[18px] w-[18px] shrink-0 object-contain" />
+                <img src="/icons/agent-ui/commands/goal.svg" alt="" aria-hidden="true" className="eterx-agent-ui-icon h-4 w-4 shrink-0 object-contain" />
                 <span className="truncate text-[14px] font-semibold tracking-normal text-white">Goal</span>
               </span>
               <span className="flex shrink-0 items-center gap-1.5">
@@ -3458,9 +3533,41 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           </div>
         )}
 
+        {(slashPanel === 'usage' || slashPanel === 'workspace') && (
+          <div className={`eterx-context-usage-panel absolute bottom-[calc(100%+8px)] left-1/2 z-[85] -translate-x-1/2 w-[calc(100%-32px)] ${isCompressed ? 'max-w-[488px]' : 'max-w-[752px]'} overflow-y-auto rounded-[20px] border p-4`} role="dialog" aria-label={slashPanel === 'usage' ? 'Chat usage' : 'Workspace'} onKeyDown={event => { if (event.key === 'Escape') closeSlashPanel(); }}>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="eterx-context-panel-title text-sm font-semibold">{slashPanel === 'usage' ? 'Chat usage' : 'Workspace'}</h2>
+              <button type="button" autoFocus onClick={closeSlashPanel} aria-label="Close panel" className="grid h-7 w-7 place-items-center rounded-lg opacity-70 hover:bg-white/10 hover:opacity-100"><X className="h-4 w-4" /></button>
+            </div>
+            {slashPanel === 'usage' ? <>
+              <p className="text-xs opacity-75">Total token use in <span className="font-medium text-[var(--context-panel-title,inherit)]">{chatTitle}</span></p>
+              <div className="my-2 text-3xl font-semibold tabular-nums tracking-tight">{(chatUsage?.total ?? 0).toLocaleString()}</div>
+              <dl className="mt-4 space-y-3 text-[12.5px]">
+                {[
+                  ['Total input tokens', (chatUsage?.input ?? 0).toLocaleString()],
+                  ['Total output tokens', (chatUsage?.output ?? 0).toLocaleString()],
+                  ['Cache hit rate', chatUsage?.cacheHitRate == null ? 'Not reported' : `${(chatUsage.cacheHitRate * 100).toFixed(1)}%`],
+                  ['Current context', contextUsage ? `${contextUsage.isEstimated ? '≈ ' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
+                ].map(([label, value]) => <div key={label} className="flex items-center justify-between gap-4"><dt className="opacity-65">{label}</dt><dd className="text-right font-medium tabular-nums">{value}</dd></div>)}
+              </dl>
+            </> : <>
+              <div className="flex items-center gap-3 rounded-xl bg-white/[0.04] p-3">
+                <Folder className="h-5 w-5 shrink-0 opacity-65" />
+                <div className="min-w-0 flex-1"><p className="text-[13px] font-medium">{activeWorkspacePath ? workspaceName : 'No workspace selected'}</p><p className="mt-1 break-all text-xs opacity-60">{activeWorkspacePath || 'Choose a folder for this chat.'}</p></div>
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <button type="button" disabled={executionContextLocked} onClick={() => { closeSlashPanel(); setOpenStatusMenu('project'); }} className="rounded-lg bg-white/[0.06] px-3 py-2 text-xs font-medium text-[var(--context-panel-title,inherit)] hover:bg-white/10 disabled:opacity-40">{activeWorkspacePath ? 'Change workspace' : 'Select workspace'}</button>
+                <button type="button" disabled={executionContextLocked} onClick={() => { void handleSelectFolderDialog(); }} className="rounded-lg px-3 py-2 text-xs font-medium hover:bg-white/10 disabled:opacity-40">Browse folders</button>
+                {activeWorkspacePath && <button type="button" disabled={executionContextLocked} onClick={() => handleWorkspacePathChange(null)} className="ml-auto rounded-lg px-3 py-2 text-xs opacity-60 hover:bg-white/10 disabled:opacity-40">Remove</button>}
+              </div>
+              {executionContextLocked && <p className="mt-3 text-xs opacity-60">Workspace changes are available when this run finishes.</p>}
+            </>}
+          </div>
+        )}
+
         {slashMenuVisible && (
           <div
-            className={`eterx-composer-popout relative z-20 mx-auto -mb-px w-[calc(100%-32px)] ${ isCompressed ? 'max-w-[488px]' : 'max-w-[752px]' } select-none overflow-hidden rounded-b-none rounded-t-[20px] border border-b-0 border-white/[0.10] bg-[#242424] p-1.5 text-[#F2F0EC] shadow-none`}
+            className={`eterx-composer-popout eterx-slash-menu absolute bottom-[calc(100%+8px)] left-1/2 z-[85] -translate-x-1/2 w-[calc(100%-32px)] ${ isCompressed ? 'max-w-[488px]' : 'max-w-[752px]' } select-none overflow-hidden rounded-[20px] border border-white/[0.10] bg-[#242424] p-1.5 text-[#F2F0EC] shadow-none`}
             role="listbox"
             aria-label="Slash commands"
           >
@@ -3474,28 +3581,22 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       type="button"
                       role="option"
                       aria-selected={active}
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                        selectSlashCommand(command);
-                      }}
-                      className={`flex min-h-[33px] w-full items-center gap-2.5 rounded-[9px] px-2.5 py-1 text-left transition-colors duration-75 ${ active ? 'bg-white/[0.07] text-white' : 'text-[#D7D4CE] hover:bg-white/[0.045] hover:text-white' }`}
+                      onMouseEnter={() => setSlashActiveIndex(index)}
+                      onMouseDown={event => event.preventDefault()}
+                      onClick={() => selectSlashCommand(command)}
+                      className={`flex min-h-[32px] w-full items-center gap-2 rounded-[9px] px-2.5 py-1 text-left transition-colors duration-75 ${ active ? 'bg-white/[0.07] text-white' : 'text-[#D7D4CE] hover:bg-white/[0.045] hover:text-white' }`}
                     >
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center">
-                        <img
-                          src={command.iconSrc}
-                          alt=""
-                          aria-hidden="true"
-                          loading="eager"
-                          decoding="sync"
-                          className={`eterx-agent-ui-icon h-[17px] w-[17px] object-contain ${ active ? 'opacity-100' : 'opacity-80' }`}
-                        />
+                        {command.action === 'compact' ? <BookText className={`h-4 w-4 ${compacting ? 'animate-pulse' : ''}`} />
+                          : command.action === 'usage' ? <BarChart3 className="h-4 w-4" />
+                          : command.action === 'workspace' ? <FolderCog className="h-4 w-4" /> : <Route className="h-4 w-4" />}
                       </span>
                       <span className="flex min-w-0 flex-1 items-baseline gap-2">
-                        <span className="shrink-0 text-[13.5px] font-semibold tracking-normal">
+                        <span className="shrink-0 text-[12px] font-medium tracking-normal">
                           {command.label}
                         </span>
-                        <span className="min-w-0 truncate text-[12.5px] font-medium text-[#8C8984]">
-                          {command.description}
+                        <span className="min-w-0 truncate text-[11.5px] font-normal text-[#8C8984]">
+                          {command.action === 'compact' && compacting ? 'Compacting context…' : command.action === 'plan' && planModeActive ? 'Enabled · click to turn off' : command.description}
                         </span>
                       </span>
                     </button>
@@ -3566,7 +3667,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               ) : (
                 <ComposerTextarea
                   ownerKey={`${ activeComposerChatKey }:live`}
-                  revision={inputValueRevision}
+                  revision={composerDraftRevision}
                   onValueCommitted={syncLiveTextareaHeight}
                   value={inputValue}
                   onValueChange={handleComposerValueChange}
@@ -3746,29 +3847,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               ) : (
                 <div className="eterx-composer-textarea-wrap relative w-full">
                   {planModeActive && (
-                    <div className="eterx-plan-mode-banner group mb-2 flex min-h-[36px] select-none items-center justify-between gap-3 rounded-[14px] border border-white/[0.08] bg-white/[0.035] px-3 py-2 text-[#F2F0EC] shadow-none">
-                      <span className="flex min-w-0 items-center gap-2.5">
-                        <img
-                          src="/icons/agent-ui/commands/plan-mode.svg"
-                          alt=""
-                          aria-hidden="true"
-                          className="eterx-agent-ui-icon h-[16px] w-[16px] shrink-0 object-contain opacity-90"
-                        />
-                        <span className="truncate text-[13px] font-semibold tracking-normal text-white">
-                          Plan mode
-                        </span>
-                        <span className="hidden truncate text-[12px] font-medium text-[#8C8984] sm:inline">
-                          Ask for a brief plan before changes
-                        </span>
+                    <div className="mb-2 flex items-center">
+                      <span className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-current/10 bg-white/[0.05] pl-2 pr-1 text-[11.5px] font-medium text-[var(--context-panel-title,inherit)]">
+                        <Route className="h-3.5 w-3.5" /> Plan mode
+                        <button type="button" aria-label="Turn off Plan mode" onClick={() => setPlanModeActive(false)} className="ml-1 grid h-5 w-5 place-items-center rounded hover:bg-white/10"><X className="h-3 w-3" /></button>
                       </span>
-                      <button
-                        type="button"
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => setPlanModeActive(false)}
-                        className="shrink-0 rounded-full px-2.5 py-1 text-[12px] font-semibold text-[#A7A39E] opacity-0 transition-all duration-100 hover:bg-white/[0.065] hover:text-white group-hover:opacity-100 focus:opacity-100"
-                      >
-                        Cancel
-                      </button>
                     </div>
                   )}
 
@@ -3880,7 +3963,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                   setZoomScale(1);
                                   setPanPos({ x: 0, y: 0 });
                                   if (isVideo) setPreviewVideo({ url: att.preview, name: displayName });
-                                  else setPreviewImage(att.preview);
+                                  else { setPreviewImages([att.preview]); setPreviewImage(att.preview); setZoomScale(1); setPanPos({ x: 0, y: 0 }); }
                                 }
                               }}
                             >
@@ -3919,7 +4002,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                         // For non-image files, render the card layout
                         const iconSrc = getFileIconPath(displayName);
-                        const isDocPreviewable = (extension === 'PDF' || extension === 'DOCX') && !isPreparing && !isErrored;
+                        const isTextPreviewable = att.mimeType === PASTED_TEXT_MIME || ['TXT', 'MD', 'CSV', 'TSV', 'JSON', 'LOG'].includes(extension);
+                        const isDocPreviewable = (extension === 'PDF' || extension === 'DOCX' || isTextPreviewable) && !isPreparing && !isErrored;
 
                         return (
                           <div
@@ -3927,10 +4011,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             onClick={() => {
                               if (isDocPreviewable) {
                                 const targetPath = att.localPath || att.name;
-                                window.dispatchEvent(new CustomEvent('eterx-preview-document', { detail: { filePath: targetPath } }));
+                                window.dispatchEvent(new CustomEvent(isTextPreviewable ? 'eterx-preview-text' : 'eterx-preview-document', { detail: { filePath: targetPath, file: att.file, name: displayName } }));
                               }
                             }}
-                            className={`relative flex items-center bg-[#1E1E1E]/92 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.08]' } rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[200px] shadow-none select-none h-[42px] shrink-0 ${ isDocPreviewable ? 'cursor-pointer' : 'cursor-default' }`}
+                            role="button"
+                            tabIndex={isDocPreviewable ? 0 : -1}
+                            aria-label={`Preview ${displayName}`}
+                            aria-disabled={!isDocPreviewable}
+                            onKeyDown={event => {
+                              if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+                                event.preventDefault(); event.currentTarget.click();
+                              }
+                            }}
+                            className={`relative flex items-center bg-[var(--muted)] text-[var(--foreground)] border ${ isErrored ? 'border-[#E2765A]/45' : 'border-[var(--border)]' } rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[260px] shadow-none select-none h-[42px] shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current ${ isDocPreviewable ? 'cursor-pointer' : 'cursor-default' }`}
                           >
                             {/* Left Icon Square Box */}
                             <div className="w-[30px] h-[30px] rounded-[8px] bg-black/40 border border-white/[0.05] flex items-center justify-center shrink-0 overflow-hidden relative">
@@ -3954,10 +4047,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             {/* Title and Subtitle */}
                             <div className="flex flex-col ml-2 overflow-hidden justify-center min-w-0">
                               <span className="text-[11.5px] font-semibold text-white/90 truncate leading-snug">
-                                {displayName}
+                                {att.mimeType === PASTED_TEXT_MIME ? 'Pasted text' : displayName}
                               </span>
                               <span className={`text-[9px] font-bold tracking-wider leading-none mt-0.5 ${ isErrored ? 'text-[#F0B6A7]' : 'text-neutral-400' }`}>
-                                {isErrored ? 'Failed' : isPreparing ? <Shimmer>Preparing</Shimmer> : extension}
+                                {isErrored ? 'Failed' : isPreparing ? <Shimmer>Preparing</Shimmer> : att.mimeType === PASTED_TEXT_MIME ? `${formatAttachmentSize(att.size || att.file?.size || 0)} · Read on demand` : extension}
                               </span>
                             </div>
 
@@ -3982,10 +4075,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     )}
                     <ComposerTextarea
                       ref={textareaRef}
-                      onValueCommitted={syncTextareaOverflow}
+                      onValueCommitted={scheduleTextareaOverflowSync}
                       key="textarea"
                       ownerKey={activeComposerChatKey}
-                      revision={inputValueRevision}
+                      revision={composerDraftRevision}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
@@ -4133,7 +4226,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     data-phase={contextUsage!.compaction?.phase}
                     aria-busy={contextUsage!.compaction?.phase === 'compacting' || contextUsage!.compaction?.phase === 'retrying'}
                   >
-                    <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] -rotate-90" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" className="h-4 w-4 -rotate-90" aria-hidden="true">
                       <circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" strokeWidth="2.4" opacity="0.22" />
                       <circle
                         cx="12"
@@ -4177,7 +4270,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           strokeWidth="2"
                           strokeLinecap="round"
                           strokeLinejoin="round"
-                          className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 opacity-90 transition-opacity duration-200 text-[#F4F4F4]"
+                          className="eterx-agent-ui-icon eterx-selector-icon h-4 w-4 shrink-0 opacity-90 transition-opacity duration-200 text-[#F4F4F4]"
                         >
                           <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-4.16Z" />
                           <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-4.16Z" />
@@ -4186,13 +4279,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           {activeAgentDisplay.label}
                         </span>
                     </span>
-                    <span className="eterx-selector-chevron-wrapper flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[#BDB8B0] transition-colors duration-100 ease-out">
+                    <span className="eterx-selector-chevron-wrapper flex h-4 w-4 shrink-0 items-center justify-center text-[#BDB8B0] transition-colors duration-100 ease-out">
                       <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 shrink-0 transition-transform duration-150 text-[#F0F0F0] group-hover:text-white ${ showAgentMenu ? 'rotate-180' : '' }`} strokeWidth={2.1} />
                     </span>
                   </button>
 
+                  <AnimatePresence initial={false}>
                   {showAgentMenu && !executionContextLocked && (
-                    <AdaptiveMenu preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome} heightLimit={380}
+                    <AdaptiveMenu key="agent-selector-menu" motionProps={{
+                      initial: { opacity: 0, clipPath: 'inset(5px 0px 5px 0px)', filter: 'blur(1px)' },
+                      animate: { opacity: 1, clipPath: 'inset(0px)', filter: 'blur(0px)' },
+                      exit: { opacity: 0, clipPath: 'inset(3px 0px 3px 0px)', filter: 'blur(1px)' },
+                      transition: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
+                    }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome} heightLimit={380}
                       style={{ transform: `translateX(${ agentMenuX })`, width: codingDetails ? 320 : 224, maxHeight: agentMenuMaxHeight }}
                       className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex overflow-hidden max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-none`}
                       role="dialog"
@@ -4339,6 +4438,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       </div>
                     </AdaptiveMenu>
                   )}
+                  </AnimatePresence>
                 </div>
               )}
 
@@ -4380,7 +4480,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         strokeWidth="2"
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        className="eterx-agent-ui-icon eterx-selector-icon h-[18px] w-[18px] shrink-0 opacity-90 transition-opacity duration-200 text-[#F4F4F4]"
+                        className="eterx-agent-ui-icon eterx-selector-icon h-4 w-4 shrink-0 opacity-90 transition-opacity duration-200 text-[#F4F4F4]"
                       >
                         <path d="m12 3-10 5 10 5 10-5-10-5Z" />
                         <path d="m2 17 10 5 10-5" />
@@ -4395,13 +4495,19 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         </span>
                       )}
                   </div>
-                  <span className="eterx-selector-chevron-wrapper flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[#BDB8B0] transition-colors duration-100 ease-out">
+                  <span className="eterx-selector-chevron-wrapper flex h-4 w-4 shrink-0 items-center justify-center text-[#BDB8B0] transition-colors duration-100 ease-out">
                     <ChevronDown className={`eterx-selector-chevron h-3.5 w-3.5 text-[#F0F0F0] transition-transform duration-150 group-hover:text-white ${ showModelMenu ? 'rotate-180' : '' }`} strokeWidth={2.1} />
                   </span>
                 </button>
 
+                <AnimatePresence initial={false}>
                 {showModelMenu && (
-                  <AdaptiveMenu preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome}
+                  <AdaptiveMenu key="model-selector-menu" motionProps={{
+                    initial: { opacity: 0, clipPath: 'inset(5px 0px 5px 0px)', filter: 'blur(1px)' },
+                    animate: { opacity: 1, clipPath: 'inset(0px)', filter: 'blur(0px)' },
+                    exit: { opacity: 0, clipPath: 'inset(3px 0px 3px 0px)', filter: 'blur(1px)' },
+                    transition: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
+                  }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome}
                     style={{ transform: `translateX(${ modelMenuX })` }}
                     className={`eterx-composer-popout eterx-model-menu-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-[20px] border border-white/[0.10] bg-[#202020] p-1.5 text-[#F4F1EA] shadow-none`}
                     role="dialog"
@@ -4474,7 +4580,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                   className={`group flex h-full w-full items-center gap-2 rounded-[9px] border px-2 py-1 text-left transition-colors duration-150 ${ selected ? 'border-white/[0.08] bg-white/[0.10] text-white font-medium shadow-none' : 'border-transparent text-[#E8E6E3] hover:bg-white/[0.055] active:bg-white/[0.10] font-normal' }`}
                                   aria-pressed={selected}
                                 >
-                                  <span className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full ${ selected ? 'bg-white/[0.10] text-white' : 'text-white/30' }`}>
+                                  <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${ selected ? 'bg-white/[0.10] text-white' : 'text-white/30' }`}>
                                     {selected && <Check className="h-3 w-3" strokeWidth={2.05} />}
                                   </span>
                                   <span className="flex min-w-0 flex-1 items-center gap-2">
@@ -4491,7 +4597,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                     <span
                                       role="button"
                                       tabIndex={0}
-                                      className={`eterx-model-thinking-trigger flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded text-white/45 transition-colors duration-100 hover:text-white focus-visible:text-white focus-visible:outline-none ${ thinkingMenuOpen ? 'text-white' : '' }`}
+                                      className={`eterx-model-thinking-trigger flex h-4 w-4 shrink-0 items-center justify-center rounded text-white/45 transition-colors duration-100 hover:text-white focus-visible:text-white focus-visible:outline-none ${ thinkingMenuOpen ? 'text-white' : '' }`}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         const row = (event.currentTarget as HTMLElement).closest('.eterx-model-option-row') as HTMLElement | null;
@@ -4534,6 +4640,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
                   </AdaptiveMenu>
                 )}
+                </AnimatePresence>
               </div>
 
               {showModelMenu && showThinkingLevels && thinkingMenuOption && thinkingMenuOptions.length > 0 && thinkingMenuPosition && typeof window !== 'undefined' && createPortal(
@@ -4573,12 +4680,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 document.body,
               )}
 
-               <Tooltip text={isRecording ? "Stop voice dictation" : "Voice dictation"} side="top">
+               {showVoiceControls && <Tooltip text={isRecording ? "Stop voice dictation" : "Voice dictation"} side="top">
                 <button type="button" onClick={toggleSpeech} aria-pressed={isRecording} aria-label={isRecording ? "Stop voice dictation" : "Start voice dictation"} data-active={isRecording ? 'true' : undefined} className="eterx-control-button eterx-composer-dictation-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group">
                   <PremiumMic className={`eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out ${ isRecording ? 'scale-[1.04]' : '' }`} strokeWidth={1.85} />
                 </button>
               </Tooltip>
 
+              }
               {false && <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : isThinking ? "Wait for this run to finish" : "Start Live Conversation"} side="top">
                 <button
                   onClick={isLiveActive ? onLiveStop : onLiveStart}
@@ -4595,6 +4703,24 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 null /* Cancel/Stop is already rendered in the live overlay above */
               ) : (
                 <>
+                  {(isStopping || isThinking || canStop) && (hasComposerPayload || isNetworkPaused) && (
+                    <Tooltip text={isStopping ? 'Stopping agent' : 'Stop agent'} side="top">
+                      <button
+                        type="button"
+                        disabled={isStopping}
+                        onClick={handleStopClick}
+                        aria-label={isStopping ? 'Stopping agent' : 'Stop agent'}
+                        aria-busy={isStopping}
+                        className="eterx-control-button eterx-composer-stop-button eterx-composer-action-stop w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full bg-[#292929] text-white disabled:cursor-wait"
+                      >
+                        {isStopping ? (
+                          <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-hidden="true" />
+                        ) : (
+                          <span className="eterx-composer-stop-icon block h-3 w-3 rounded-[2.5px] bg-current" aria-hidden="true" />
+                        )}
+                      </button>
+                    </Tooltip>
+                  )}
                   <div className="eterx-composer-action-slot">
                     <>
                     {isNetworkPaused ? (
@@ -4633,13 +4759,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         </button>
                       </Tooltip>
                     </div>
-                  ) : hasComposerPayload ? (
+                  ) : hasComposerPayload || !showVoiceControls ? (
                     /* ── SEND button ── */
                     <div key="send">
-                      <Tooltip text={hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : isThinking ? "Queue or steer follow-up" : "Send message"} side="top">
+                      <Tooltip text={!hasComposerPayload ? "Type a message to send" : hasErroredAttachments ? "Remove failed attachment" : hasPreparingAttachments ? "Preparing media" : isThinking ? "Queue or steer follow-up" : "Send message"} side="top">
                         <button
                           type="button"
                           onClick={submitPrompt}
+                          disabled={!hasComposerPayload}
                           aria-label={isThinking ? 'Send follow-up' : 'Send message'}
                           className={`eterx-control-button eterx-composer-send-button eterx-composer-action-send w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-none bg-[#292929] text-white shadow-none active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
                         >
@@ -4649,7 +4776,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       </Tooltip>
                     </div>
                   ) : (
-                    /* Empty composer: live replaces send until text is entered. */
+                    /* Empty composer: live replaces send on voice-enabled surfaces. */
                     <div key="live">
                       <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : "Start Live Conversation"} side="top">
                         <button
@@ -4688,7 +4815,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   aria-expanded={openStatusMenu === 'project'}
                   onClick={(event) => toggleStatusMenu(event, 'project')}
                 >
-                  <Folder className="eterx-new-chat-status-icon" strokeWidth={1.9} />
+                  <FolderClosed className="eterx-new-chat-status-icon" strokeWidth={1.9} />
                   <span>{workspaceName}</span>
                   <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
                 </button>
@@ -4779,7 +4906,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                               }}
                             >
                               <span className="eterx-project-menu-leading">
-                                <Folder className="eterx-status-menu-icon eterx-project-menu-folder" strokeWidth={1.95} />
+                                <FolderClosed className="eterx-status-menu-icon eterx-project-menu-folder" strokeWidth={1.95} />
                                 <button
                                   type="button"
                                   className="eterx-project-remove-button"
@@ -4823,7 +4950,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <button
                   type="button"
                   className={`eterx-new-chat-status-item ${ openStatusMenu === 'run' ? 'is-open' : '' }`}
-                  aria-label={runLocation === 'local' ? "Work locally" : "Sandbox"}
+                  aria-label={runLocation === 'local' ? "Work locally" : "Scratch workspace"}
                   aria-haspopup="dialog"
                   aria-expanded={openStatusMenu === 'run'}
                   onClick={(event) => toggleStatusMenu(event, 'run')}
@@ -4833,7 +4960,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   ) : (
                     <Terminal className="eterx-new-chat-status-icon" strokeWidth={1.9} />
                   )}
-                  <span>{runLocation === 'local' ? "Work locally" : "Sandbox"}</span>
+                  <span>{runLocation === 'local' ? "Work locally" : "Scratch workspace"}</span>
                   <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
                 </button>
                 {openStatusMenu === 'run' && (
@@ -4864,7 +4991,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         disabled
                       >
                         <Terminal className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Sandbox</span>
+                        <span className="min-w-0 flex-1 truncate">Scratch workspace</span>
                         <small className="shrink-0 text-[10px] font-normal">Coming soon</small>
                       </button>
                     </AdaptiveMenu>
@@ -4966,6 +5093,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         )}
       </div>
 
+      <AttachmentTextPreviewHost />
       <ConnectorsModal
         open={connectors.open}
         onClose={() => connectors.setOpen(false)}
@@ -4973,7 +5101,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         onConnect={connectors.handleConnect}
         onDisconnect={connectors.handleDisconnect}
       />
-
       {/* Lightbox Preview Modal */}
       {composerNotice && typeof window !== 'undefined' && createPortal(
         <motion.div
@@ -5011,25 +5138,123 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             setPanPos({ x: 0, y: 0 });
             setIsDragging(false);
           }}
-          className="fixed inset-0 z-[9999] bg-black/90 backdrop-blur-md flex items-center justify-center select-none cursor-zoom-out"
+          onWheel={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (failedPreviewImage === previewImage) return;
+            const delta = e.deltaY < 0 ? 0.2 : -0.2;
+            setZoomScale(s => {
+              const next = Math.min(5, Math.max(0.25, parseFloat((s + delta).toFixed(2))));
+              if (next <= 1) setPanPos({ x: 0, y: 0 });
+              return next;
+            });
+          }}
+          className="eterx-image-viewer fixed inset-0 z-[100000] flex items-center justify-center overflow-hidden select-none cursor-zoom-out pointer-events-auto"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image preview"
+          onKeyDown={event => {
+            event.stopPropagation();
+            if (event.key === 'Tab') {
+              const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+              const first = buttons[0];
+              const last = buttons[buttons.length - 1];
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+              }
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              setPreviewImage(null);
+              setZoomScale(1);
+              setPanPos({ x: 0, y: 0 });
+            }
+            if (failedPreviewImage !== previewImage && (event.key === '+' || event.key === '=')) {
+              event.preventDefault();
+              handleZoomIn();
+            }
+            if (failedPreviewImage !== previewImage && (event.key === '-' || event.key === '_')) {
+              event.preventDefault();
+              handleZoomOut();
+            }
+            if (event.key === '0' || event.key === 'r' || event.key === 'R') {
+              event.preventDefault();
+              handleResetZoom();
+            }
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+              event.preventDefault();
+              navigatePreviewImage(event.key === 'ArrowLeft' ? -1 : 1);
+            }
+          }}
         >
+          {/* Top-Right Modern Close Button */}
+          <span className="absolute left-5 top-16 text-xs font-medium tabular-nums opacity-70" aria-live="polite">
+            {previewImages.length > 1 ? `${previewImages.indexOf(previewImage) + 1} / ${previewImages.length}` : 'Image preview'}
+          </span>
+            <button
+              type="button"
+              autoFocus
+              title="Close (Esc)"
+              aria-label="Close image preview"
+              onClick={(event) => {
+                event.stopPropagation();
+                setPreviewImage(null);
+                setZoomScale(1);
+                setPanPos({ x: 0, y: 0 });
+              }}
+              className="eterx-image-viewer-close absolute z-[100005] grid h-11 w-11 place-items-center rounded-xl cursor-pointer pointer-events-auto transition-all active:scale-95"
+            >
+              <X className="h-5 w-5" strokeWidth={2} />
+            </button>
+
+          {/* Previous / Next Navigation Arrows for multi-images */}
+          {previewImages.length > 1 && (
+            <div className="absolute inset-x-5 top-1/2 z-[100005] flex justify-between pointer-events-none -translate-y-1/2">
+              {[-1, 1].map(direction => {
+                const isDisabled = direction < 0
+                  ? previewImages.indexOf(previewImage) <= 0
+                  : previewImages.indexOf(previewImage) >= previewImages.length - 1;
+                return (
+                  <button
+                    key={direction}
+                    type="button"
+                    aria-label={direction < 0 ? 'Previous image' : 'Next image'}
+                    disabled={isDisabled}
+                    className="eterx-image-viewer-nav-btn pointer-events-auto grid h-10 w-10 place-items-center rounded-full text-base disabled:opacity-20 disabled:pointer-events-none cursor-pointer"
+                    onClick={event => { event.stopPropagation(); navigatePreviewImage(direction); }}
+                  >
+                    {direction < 0 ? <ChevronLeft className="h-5 w-5" strokeWidth={2} /> : <ChevronRight className="h-5 w-5" strokeWidth={2} />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Inner relative container that defines the viewing viewport of the image */}
           <div
             onClick={(e) => e.stopPropagation()}
-            className="relative max-w-[90vw] max-h-[85vh] flex items-center justify-center overflow-visible"
+            className="relative max-w-[90vw] max-h-[82vh] flex items-center justify-center overflow-visible"
           >
             <img
+              key={previewImage}
+              hidden={failedPreviewImage === previewImage}
               src={previewImage}
               alt="Preview"
+              onError={() => setFailedPreviewImage(previewImage)}
+              onLoad={() => setFailedPreviewImage(null)}
               style={{
                 transform: `translate(${ panPos.x }px, ${ panPos.y }px) scale(${ zoomScale })`,
                 cursor: zoomScale > 1 ? (isDragging ? 'grabbing' : 'grab') : 'zoom-in',
-                transition: isDragging ? 'none' : 'transform 0.15s ease-out',
+                transition: isDragging ? 'none' : 'transform 0.15s cubic-bezier(0.2, 0, 0, 1)',
                 transformOrigin: 'center center'
               }}
               onMouseDown={(e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 if (zoomScale > 1) {
                   setIsDragging(true);
                   setDragStart({ x: e.clientX - panPos.x, y: e.clientY - panPos.y });
@@ -5045,58 +5270,109 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               }}
               onMouseUp={() => setIsDragging(false)}
               onMouseLeave={() => setIsDragging(false)}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (zoomScale === 1) {
-                  setZoomScale(2);
-                } else {
-                  setZoomScale(1);
-                  setPanPos({ x: 0, y: 0 });
-                }
-              }}
-              className="max-w-[90vw] max-h-[85vh] object-contain rounded-[14px] shadow-none border border-white/10 select-none cursor-pointer block"
+              onDoubleClick={handleToggleZoom}
+              className={`${failedPreviewImage === previewImage ? 'hidden' : 'block'} max-w-[calc(100vw-112px)] max-h-[calc(100dvh-180px)] object-contain rounded-[14px] shadow-[0_20px_60px_rgba(0,0,0,0.5)] border border-white/10 select-none`}
             />
+            {failedPreviewImage === previewImage && (
+              <div role="status" className="eterx-image-viewer-toolbar flex w-[360px] max-w-[calc(100vw-112px)] flex-col items-center gap-3 rounded-2xl border px-6 py-7 text-center text-sm">
+                <ImageIcon className="h-8 w-8 opacity-50" aria-hidden="true" />
+                <span className="font-semibold">Image unavailable</span>
+                <span className="text-xs leading-5 opacity-70">The source may have been moved or removed.</span>
+                <button type="button" className="eterx-image-viewer-btn rounded-lg border border-current/20 px-4 py-2" onClick={() => setPreviewImage(null)}>Close preview</button>
+              </div>
+            )}
           </div>
 
-          {/* Zoom Control Bar at bottom of overlay */}
-          <div
-            className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1.5 p-1 bg-[#1A1A1A]/85 backdrop-blur-md border border-white/10 rounded-full shadow-none z-[10001]"
+          {/* Modern Floating Toolbar Island at bottom */}
+          {failedPreviewImage !== previewImage && <div
+            onClick={e => e.stopPropagation()}
+            className="eterx-image-viewer-toolbar pointer-events-auto absolute bottom-7 left-1/2 -translate-x-1/2 flex items-center gap-1 px-3 py-1.5 rounded-full shadow-[0_12px_40px_rgba(0,0,0,0.5)] z-[100005] select-none"
           >
-            <button
-              onClick={() => {
-                const nextScale = Math.max(zoomScale - 0.5, 1);
-                setZoomScale(nextScale);
-                if (nextScale <= 1) setPanPos({ x: 0, y: 0 });
-              }}
-              className="w-8 h-8 flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors active:scale-95 cursor-pointer text-lg font-semibold"
-              title="Zoom Out"
-            >
-              -
-            </button>
-            <span className="text-[11px] font-semibold text-white/70 min-w-[45px] text-center select-none">
-              {Math.round(zoomScale * 100)}%
-            </span>
-            <button
-              onClick={() => {
-                setZoomScale(s => Math.min(s + 0.5, 4));
-              }}
-              className="w-8 h-8 flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors active:scale-95 cursor-pointer text-lg font-semibold"
-              title="Zoom In"
-            >
-              +
-            </button>
-            <div className="w-px h-4 bg-white/10 mx-0.5" />
-            <button
-              onClick={() => {
-                setZoomScale(1);
-                setPanPos({ x: 0, y: 0 });
-              }}
-              className="px-2.5 h-8 flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 rounded-full transition-colors active:scale-95 cursor-pointer text-[11px] font-semibold"
-              title="Reset Zoom"
-            >
-              Reset
-            </button>
-          </div>
+            {previewImages.length > 1 && (
+              <>
+                <span className="px-2 text-[11.5px] font-medium opacity-75 tabular-nums">
+                  {previewImages.indexOf(previewImage) + 1} <span className="opacity-40">/</span> {previewImages.length}
+                </span>
+                <div className="eterx-image-viewer-divider h-4 w-px my-auto" />
+              </>
+            )}
+
+            {/* Zoom Out Button */}
+            <Tooltip text="Zoom out (-)" side="top">
+              <button
+                type="button"
+                onClick={handleZoomOut}
+                disabled={zoomScale <= 0.25}
+                aria-label="Zoom out"
+                className="eterx-image-viewer-btn flex h-8 w-8 items-center justify-center rounded-full transition-all active:scale-95 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+              >
+                <Minus className="h-4 w-4" strokeWidth={2} />
+              </button>
+            </Tooltip>
+
+            {/* Zoom Level Indicator / Fit Toggle */}
+            <Tooltip text="Click to reset (0)" side="top">
+              <button
+                type="button"
+                onClick={handleResetZoom}
+                aria-label="Reset zoom to 100%"
+                className="eterx-image-viewer-pct flex h-8 min-w-[54px] items-center justify-center rounded-full px-2 text-[12px] font-semibold tabular-nums transition-all hover:bg-white/[0.08] active:scale-95 cursor-pointer"
+              >
+                {Math.round(zoomScale * 100)}%
+              </button>
+            </Tooltip>
+
+            {/* Zoom In Button */}
+            <Tooltip text="Zoom in (+)" side="top">
+              <button
+                type="button"
+                onClick={handleZoomIn}
+                disabled={zoomScale >= 5}
+                aria-label="Zoom in"
+                className="eterx-image-viewer-btn flex h-8 w-8 items-center justify-center rounded-full transition-all active:scale-95 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+              >
+                <Plus className="h-4 w-4" strokeWidth={2} />
+              </button>
+            </Tooltip>
+
+            <div className="eterx-image-viewer-divider h-4 w-px mx-0.5 my-auto" />
+
+            {/* Reset / Fit to Screen Button */}
+            <Tooltip text="Fit to screen (R)" side="top">
+              <button
+                type="button"
+                onClick={handleResetZoom}
+                aria-label="Fit to screen"
+                className="eterx-image-viewer-btn flex h-8 w-8 items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5" strokeWidth={2} />
+              </button>
+            </Tooltip>
+
+            {/* Copy Image Button */}
+            <Tooltip text={copiedImage ? "Copied!" : "Copy image"} side="top">
+              <button
+                type="button"
+                onClick={handleCopyImage}
+                aria-label="Copy image"
+                className="eterx-image-viewer-btn flex h-8 w-8 items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer"
+              >
+                {copiedImage ? <Check className="h-4 w-4 text-emerald-400" strokeWidth={2.2} /> : <Copy className="h-3.5 w-3.5" strokeWidth={2} />}
+              </button>
+            </Tooltip>
+
+            {/* Download Image Button */}
+            <Tooltip text="Download image" side="top">
+              <button
+                type="button"
+                onClick={handleDownloadImage}
+                aria-label="Download image"
+                className="eterx-image-viewer-btn flex h-8 w-8 items-center justify-center rounded-full transition-all active:scale-95 cursor-pointer"
+              >
+                <Download className="h-3.5 w-3.5" strokeWidth={2} />
+              </button>
+            </Tooltip>
+          </div>}
         </div>,
         document.body
       )}

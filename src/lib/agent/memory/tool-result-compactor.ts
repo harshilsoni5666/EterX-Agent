@@ -34,6 +34,7 @@ function outcomeEnvelope(result: any): Record<string, any> {
     for (const key of [
       'error', 'exitCode', 'exit_code', 'timedOut', 'cancelled', 'isError',
       'taskId', 'backgroundTaskId', 'streamId', 'outputEnd', 'hasNewOutput',
+      'cwd', 'shell', 'nextActionNote', 'message', 'mode', '_consoleTraceEmitted',
       'operation', 'editsApplied', 'stateChanged', 'rollbackIncomplete', 'rolledBack',
     ]) {
       const value = result[key];

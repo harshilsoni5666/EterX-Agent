@@ -15,7 +15,11 @@ Spreadsheets are working models, datasets, dashboards, or templates. They must r
 - Preserve formulas, charts, validations, filters, formatting, protected ranges, and macros unless the user asks to change them.
 - Use workbook structure appropriate to the task. Do not force every workbook into Inputs, Model, Dashboard, Charts.
 - Use real data or clearly labeled user-editable inputs. Never invent financial, company, market, or operational numbers.
-- Keep final workbooks outside `.workspaces/sandbox` unless explicitly requested.
+- Save to the explicit user path when supplied; otherwise use the current chat workspace from runtime context. Do not move outputs to Desktop automatically.
+
+## Runtime and dependencies
+
+Use the runtime-provided OS, selected shell, workspace and executable paths. Pick one suitable generation method and create the deliverable; do not inventory unrelated converters or repeat successful import/version checks. Use `workspace_run_command` with `program` and an `args` array for Python or Node, so source strings and paths do not pass through shell quoting. If an import fails, resolve that specific dependency for the same interpreter, preferably in a workspace virtual environment. Libraries mentioned below are options, not promises that they are installed. Respect an explicit user request to skip checks or tests and report that limitation.
 
 ## Choose The Right Path
 
@@ -79,9 +83,7 @@ Charts must point to the intended ranges, have readable labels, and not cover so
 
 ## Practical Commands And Libraries
 
-```bash
-pip install pandas openpyxl
-```
+Choose tools for the requested workbook operation and the available environment. These libraries are options, not a required stack or an installation checklist. Add only a dependency that the chosen approach actually needs, in its selected runtime.
 
 Common Python stack:
 

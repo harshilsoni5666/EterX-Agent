@@ -32,6 +32,9 @@ export interface TerminalCommandRunOptions {
   authorization?: { cwd: string; env: NodeJS.ProcessEnv };
   description?: string;
   shell?: boolean | string;
+  /** Direct executable invocation; args are passed unchanged, never as shell text. */
+  program?: string;
+  args?: string[];
   env?: NodeJS.ProcessEnv;
   checkInMs?: number;
   hardTimeoutMs?: number;
@@ -45,6 +48,8 @@ export interface TerminalCommandRunOptions {
 export interface TerminalBackgroundTask {
   id: string;
   command: string;
+  program?: string;
+  args?: string[];
   description: string;
   source: string;
   /** Chat/project owner. Terminal task IDs must not cross chat boundaries. */
@@ -72,10 +77,12 @@ export interface TerminalBackgroundTask {
   checkInMs: number;
   hardTimeoutMs?: number;
   handedOff: boolean;
+  background?: boolean;
   hardTimedOut?: boolean;
   outputFile: string;
   statusFile: string;
   streamId: string;
+  consoleTraceEmitted?: boolean;
   process?: ChildProcess;
   traceContext?: {
     _onTrace?: (trace: any) => void;
@@ -91,6 +98,9 @@ export interface TerminalBackgroundTask {
   pendingFileOutput: string;
   outputWrite?: Promise<void>;
   statusWrite?: Promise<void>;
+  stop?: (exitCode?: number) => Promise<void>;
+  stopping?: Promise<void>;
+  stopExitCode?: number;
 }
 
 const TASKS_DIR = getEterxWorkspaceDir('terminal_tasks');
@@ -132,37 +142,6 @@ const terminalTasks: Map<string, TerminalBackgroundTask> =
   globalForTerminalTasks.__eterxTerminalBackgroundTasks ||
   (globalForTerminalTasks.__eterxTerminalBackgroundTasks = new Map());
 
-/**
- * A command that terminates the runtime serving its own request can never
- * return a final trace. Protect the current PID and active EterX port while
- * leaving project processes on every other port fully controllable.
- */
-export function getRuntimeProtectionReason(command: string): string | null {
-  const normalized = String(command || '').toLowerCase();
-  const destructiveProcessAction = /\b(stop-process|taskkill|kill|killall|pkill|fuser)\b/.test(normalized);
-  if (!destructiveProcessAction) return null;
-
-  const directPidPattern = new RegExp(
-    `(?:-id|/pid|\\bkill(?:\\s+-\\w+)*|\\btaskkill(?:\\.exe)?)\\s+${process.pid}\\b`,
-    'i',
-  );
-  if (directPidPattern.test(command)) {
-    return `Blocked termination of the EterX runtime process (PID ${process.pid}). Stop the project process by its managed task ID instead.`;
-  }
-
-  const activePort = Number(process.env.ETERX_PORT || process.env.PORT);
-  if (!Number.isInteger(activePort) || activePort <= 0) return null;
-  const referencesActivePort = [
-    new RegExp(`(?:-localport\\s+|[:=]\\s*|\\bport\\s+|\\b)${activePort}\\b`, 'i'),
-    new RegExp(`\\b${activePort}/tcp\\b`, 'i'),
-  ].some(pattern => pattern.test(command));
-  if (!referencesActivePort) return null;
-
-  const resolvesPortToPid = /get-nettcpconnection|lsof|fuser|netstat|ss\s/.test(normalized);
-  if (!resolvesPortToPid) return null;
-  return `Blocked termination of port ${activePort} because it is serving EterX. Use a different port for the project server, or stop it through its managed task ID.`;
-}
-
 export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunOptions): Promise<any> {
   await fs.ensureDir(TASKS_DIR);
 
@@ -187,27 +166,6 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   const hardTimeoutMs = options.hardTimeoutMs === undefined
     ? undefined
     : normalizeHardTimeoutMs(options.hardTimeoutMs, checkInMs);
-  const runtimeProtectionReason = getRuntimeProtectionReason(options.command);
-  if (runtimeProtectionReason) {
-    return {
-      success: false,
-      stdout: '',
-      stderr: runtimeProtectionReason,
-      output: runtimeProtectionReason,
-      exitCode: 126,
-      executionTimeMs: 0,
-      timedOut: false,
-      stillRunning: false,
-      status: 'failed',
-    };
-  }
-  // Terminal tools are explicit user-directed execution surfaces. Keep the
-  // broker's historical default (network allowed) unless the caller opted
-  // into a deny policy; this prevents npm/pip/git commands from being blocked
-  // only after the first authorization pass.
-  const networkPolicy = options.context?.networkPolicy === 'deny' && options.context?.allowNetwork !== true
-    ? 'deny'
-    : 'allow';
   const authorization: { allowed: boolean; cwd: string; env: NodeJS.ProcessEnv; reason?: string } = options.authorization
     ? { allowed: true, cwd: options.authorization.cwd, env: options.authorization.env }
     : await authorizeToolCommand({
@@ -216,7 +174,6 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       context: options.context,
       env: options.env,
       timeoutMs: hardTimeoutMs,
-      network: networkPolicy,
     });
   if (!authorization.allowed) {
     const reason = authorization.reason || 'Terminal command blocked by command policy';
@@ -255,9 +212,11 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   const task: TerminalBackgroundTask = {
     id,
     command: options.command,
+    program: options.program,
+    args: options.program ? [...(options.args || [])] : undefined,
     description: options.description || options.command,
     source: options.source,
-    ownerChatId: String(options.context?.chatId || options.context?.projectId || '').trim() || undefined,
+    ownerChatId: String(options.context?.ownerChatId || options.context?.chatId || options.context?.projectId || '').trim() || undefined,
     cwd: authorization.cwd,
     status: 'running',
     startedAt,
@@ -275,6 +234,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     checkInMs,
     hardTimeoutMs,
     handedOff: false,
+    background: options.immediateHandoff === true,
     outputFile: resolveUnder(TASKS_DIR, `${id}_output.txt`),
     statusFile: resolveUnder(TASKS_DIR, `${id}_status.json`),
     streamId,
@@ -287,7 +247,9 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
 
   let invocation: ReturnType<typeof buildTerminalShellInvocation>;
   try {
-    invocation = buildTerminalShellInvocation(options.command, options.shell);
+    invocation = options.program
+      ? { file: options.program, args: options.args || [], shell: false }
+      : buildTerminalShellInvocation(options.command, options.shell, authorization.cwd);
     task.shell = invocation.file;
   } catch (error: any) {
     task.status = 'failed';
@@ -306,7 +268,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       shell: invocation.shell,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      env: authorization.env,
+      env: { PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', ...authorization.env },
       detached: process.platform !== 'win32',
     });
   } catch (error: any) {
@@ -379,14 +341,13 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     onAbort = () => {
       if (task.status !== 'running') return;
       const reason = String((abortSignal as any)?.reason?.message || (abortSignal as any)?.reason || '');
-      if (options.surviveRunSettlement && task.handedOff && reason.includes('MAIN_RUN_SETTLED')) {
+      if (task.background && reason.includes('MAIN_RUN_SETTLED')) {
         abortSignal?.removeEventListener('abort', onAbort);
         return;
       }
-      appendTaskOutput(task, 'stderr', '\nCancelled by user.\n');
-      killProcessTree(task.pid, task.process);
-      finishTask('killed', 130, 'SIGTERM').catch(() => {
-        resolveOnce(buildTerminalResult(task));
+      void task.stop?.(130).catch(error => {
+        appendTaskOutput(task, 'stderr', `\nCould not stop process: ${error.message}\n`);
+        flushTaskOutput(task);
       });
     };
 
@@ -406,13 +367,32 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       appendTaskOutput(task, 'stderr', stderrDecoder.end());
     };
 
+    task.stop = (exitCode = 143) => {
+      if (task.stopping) return task.stopping;
+      task.stopping = (async () => {
+        if (task.status !== 'running') return;
+        task.stopExitCode = exitCode;
+        try {
+          await killProcessTree(task.pid, task.process);
+          flushDecoders();
+          await finishTask('killed', exitCode, 'SIGTERM');
+          await waitForTaskOutputWrites(task);
+          await persistTaskStatus(task);
+        } catch (error) {
+          task.stopExitCode = undefined;
+          throw error;
+        }
+      })().finally(() => { task.stopping = undefined; });
+      return task.stopping;
+    };
+
     child.stdout?.on('data', (chunk: Buffer) => onData('stdout', chunk));
     child.stderr?.on('data', (chunk: Buffer) => onData('stderr', chunk));
 
     child.on('close', (code: number | null, signal: string | null) => {
       flushDecoders();
-      const status = code === 0 && !task.hardTimedOut ? 'completed' : 'failed';
-      finishTask(status, task.hardTimedOut ? 124 : code, signal).catch(() => {
+      const status = task.stopExitCode !== undefined ? 'killed' : code === 0 && !task.hardTimedOut ? 'completed' : 'failed';
+      finishTask(status, task.stopExitCode ?? (task.hardTimedOut ? 124 : code), signal).catch(() => {
         resolveOnce(buildTerminalResult(task));
       });
     });
@@ -424,6 +404,9 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
         resolveOnce(buildTerminalResult(task));
       });
     });
+
+    // Publish task identity even when the program has not written anything yet.
+    flushTaskOutput(task, false, undefined, true);
 
     if (abortSignal?.aborted || options.context?.isCancelled?.()) {
       onAbort();
@@ -451,12 +434,13 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
         taskId: task.id,
         iconCategory: 'terminal'
       });
-      scheduleAutomatedCheckIns(task);
-      persistTaskStatus(task).catch(() => undefined);
-      // Implicit handoffs remain owned by the main run: stopping or settling
-      // that run cancels the process. Explicit background launches detach
-      // from the run and remain controllable through workspace_run_command.
-      resolveOnce(buildRunningResult(task, note), options.surviveRunSettlement !== true);
+      // The agent owns its wait/check loop; do not inject recurring timer traces.
+      const published = persistTaskStatus(task);
+      // Continue observing explicit user cancellation. Normal response settlement
+      // is handled separately above and must not kill handed-off work.
+      void published.then(() => resolveOnce(task.status === 'running' ? buildRunningResult(task, note) : buildTerminalResult(task), true)).catch(() => {
+        resolveOnce(buildRunningResult(task, note), true);
+      });
     }, options.immediateHandoff ? 0 : checkInMs);
     handoffTimer.unref?.();
 
@@ -465,16 +449,13 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
         if (task.status !== 'running') return;
         task.hardTimedOut = true;
         appendTaskOutput(task, 'stderr', `\n${terminalTimeoutNote(task.command, hardTimeoutMs)}\n`);
-        killProcessTree(task.pid, task.process);
-        // A few shells never deliver `close` after a forced tree kill. Settle
-        // after a grace period so the persisted trace and UI cannot stay live.
-        const settleTimer = setTimeout(() => {
-          if (task.status !== 'running') return;
-          finishTask('failed', 124, 'SIGKILL').catch(() => {
-            resolveOnce(buildTerminalResult(task));
-          });
-        }, 3_000);
-        settleTimer.unref?.();
+        void killProcessTree(task.pid, task.process).then(async () => {
+          flushDecoders();
+          await finishTask('failed', 124, 'SIGKILL');
+        }).catch(error => {
+          appendTaskOutput(task, 'stderr', `\nCould not terminate timed-out process: ${error.message}\n`);
+          flushTaskOutput(task);
+        });
       }, hardTimeoutMs);
       task.statusTimer.unref?.();
     }
@@ -485,6 +466,7 @@ export async function getTerminalBackgroundTaskStatus(
   taskId: string,
   ownerChatId?: string,
   sinceOffset?: number,
+  maxOutputChars?: number,
 ): Promise<any | null> {
   taskId = safeTaskId(taskId);
   if (!taskId) return null;
@@ -492,7 +474,9 @@ export async function getTerminalBackgroundTaskStatus(
   const inMemory = terminalTasks.get(taskId);
   if (inMemory) {
     if (requestedOwner && inMemory.ownerChatId !== requestedOwner) return null;
-    return buildStatusResult(inMemory, sinceOffset);
+    return buildStatusResult(maxOutputChars && inMemory.output.length > maxOutputChars
+      ? { ...inMemory, output: inMemory.output.slice(-maxOutputChars) }
+      : inMemory, sinceOffset);
   }
 
   const statusFile = resolveUnder(TASKS_DIR, `${taskId}_status.json`);
@@ -505,18 +489,10 @@ export async function getTerminalBackgroundTaskStatus(
     : resolveUnder(TASKS_DIR, `${taskId}_output.txt`);
   const persistedOutputLimit = Math.max(4_000, Math.min(256_000, Number(status.maxOutputChars) || 24_000));
   const outputKind = resolveTerminalOutputKind(String(status.command || ''), status.outputKind);
-  const output = await readOutputTail(outputFile, outputKind === 'read' ? Number.POSITIVE_INFINITY : persistedOutputLimit);
-  let persistedStatus = status.status || 'unknown';
-  if (persistedStatus === 'running' && (!status.pid || !isProcessAlive(status.pid))) {
-    // A status file can outlive the Node process that launched it. Persist the
-    // terminal failure once so every later poll sees a settled task instead of
-    // repeatedly treating a dead PID as live.
-    persistedStatus = 'failed';
-    status.status = 'failed';
-    status.exitCode = status.exitCode ?? 1;
-    status.completedAt = status.completedAt || Date.now();
-    await writeJsonAtomic(statusFile, status).catch(() => undefined);
-  }
+  const output = await readOutputTail(outputFile, maxOutputChars || (outputKind === 'read' ? Number.POSITIVE_INFINITY : persistedOutputLimit));
+  // Saved output survives a restart; an active execution handle does not.
+  // PID existence alone cannot establish identity or recover an exit status.
+  const persistedStatus = status.status === 'running' ? 'unknown' : status.status || 'unknown';
   const outputWindow = buildOutputWindow(
     output,
     Number(status.totalOutputChars) || output.length,
@@ -532,12 +508,15 @@ export async function getTerminalBackgroundTaskStatus(
     turnId: status.turnId || status.runId,
     status: persistedStatus,
     running: persistedStatus === 'running',
+    background: status.background === true,
     command: status.command,
+    program: status.program,
+    args: status.args,
     outputKind,
     cwd: status.cwd,
     shell: status.shell,
     pid: status.pid,
-    exitCode: status.exitCode ?? null,
+    exitCode: persistedStatus === 'unknown' ? null : status.exitCode ?? null,
     startedAt: status.startedAt,
     completedAt: status.completedAt,
     elapsedMs: (status.completedAt || Date.now()) - status.startedAt,
@@ -549,61 +528,117 @@ export async function getTerminalBackgroundTaskStatus(
     hasNewOutput: outputWindow.hasNewOutput,
     totalOutputChars: status.totalOutputChars ?? output.length,
     droppedOutputChars: status.droppedOutputChars ?? 0,
-    message: `Terminal task ${taskId}: ${persistedStatus} | "${status.description || status.command}"`,
-    nextActionNote: persistedStatus === 'running'
-      ? `Use wait_timer, then workspace_run_command mode="check" with taskId="${taskId}" and sinceOffset=${outputWindow.end}. The process was restored from disk, so control may be limited after server restart.`
+    message: persistedStatus === 'unknown'
+      ? `Saved terminal task ${taskId}: its final outcome is unavailable in this app session. Retained output is shown below.`
+      : `Terminal task ${taskId}: ${persistedStatus} | "${status.description || status.command}"`,
+    nextActionNote: persistedStatus === 'unknown'
+      ? 'The original execution handle is unavailable. Read the retained output and current task state before deciding what remains; do not infer success, failure, or automatically replay a mutation.'
       : 'Read the final output and continue from the result.'
   };
 }
 
-export async function listTerminalBackgroundTasks(ownerChatId?: string): Promise<any[]> {
-  await fs.ensureDir(TASKS_DIR);
-  const requestedOwner = String(ownerChatId || '').trim();
-  const tasks = new Map<string, any>();
+// Share history across route bundles and hot reloads. A menu refresh never waits
+// for a scan of every chat's saved tasks.
+const historyGlobal = globalThis as typeof globalThis & {
+  __eterxTerminalHistory?: { tasks: Map<string, any>; pending?: Promise<void>; refreshedAt: number };
+};
+const terminalHistory = historyGlobal.__eterxTerminalHistory ||= { tasks: new Map(), refreshedAt: 0 };
 
-  for (const task of Array.from(terminalTasks.values())) {
+function refreshTerminalHistory(): void {
+  if (terminalHistory.pending || Date.now() - terminalHistory.refreshedAt < 30_000) return;
+  terminalHistory.pending = (async () => {
+    const files = (await fs.readdir(TASKS_DIR)).filter(file => file.endsWith('_status.json'));
+    let cursor = 0;
+    // Bounded concurrency avoids a serial filesystem crawl without flooding disk I/O.
+    await Promise.all(Array.from({ length: 4 }, async () => {
+      while (cursor < files.length) {
+        const file = files[cursor++];
+        const id = file.slice(0, -'_status.json'.length);
+        if (terminalTasks.has(id)) continue;
+        const cached = terminalHistory.tasks.get(id);
+        if (cached && cached.status !== 'running') continue;
+        try {
+          const status = await fs.readJson(resolveUnder(TASKS_DIR, file));
+          if (status?.terminalTask === false || !status?.ownerChatId) continue;
+          terminalHistory.tasks.set(id, {
+            id, terminalTask: true, ownerChatId: status.ownerChatId,
+            status: status.status, description: status.description || status.command,
+            command: status.command, program: status.program, args: status.args, pid: status.pid, cwd: status.cwd,
+            exitCode: status.exitCode ?? null, startedAt: status.startedAt,
+            completedAt: status.completedAt, background: status.background === true,
+          });
+        } catch { /* Ignore incomplete or removed records. */ }
+      }
+    }));
+  })().catch(() => undefined).finally(() => {
+    terminalHistory.refreshedAt = Date.now();
+    terminalHistory.pending = undefined;
+  });
+}
+
+export async function listTerminalBackgroundTasks(ownerChatId?: string, backgroundOnly = false): Promise<any[]> {
+  refreshTerminalHistory();
+  const requestedOwner = String(ownerChatId || '').trim();
+  // On the first discovery, include persisted tasks before reporting an empty
+  // list. Otherwise a resumed agent can launch work that is already running.
+  if (terminalHistory.tasks.size === 0 && terminalHistory.pending) await terminalHistory.pending;
+  const tasks = new Map<string, any>();
+  for (const [id, saved] of terminalHistory.tasks) {
+    if (requestedOwner && saved.ownerChatId !== requestedOwner) continue;
+    if (backgroundOnly && saved.background !== true) continue;
+    if (terminalTasks.has(id)) continue;
+    const status = saved.status === 'running' ? 'unknown' : saved.status;
+    tasks.set(id, { ...saved, status, exitCode: status === 'unknown' ? null : saved.exitCode });
+  }
+  // Live records are authoritative and available without any filesystem awaits.
+  for (const task of terminalTasks.values()) {
     if (requestedOwner && task.ownerChatId !== requestedOwner) continue;
+    if (backgroundOnly && task.background !== true) continue;
     tasks.set(task.id, compactTask(task));
   }
-
-  const files = await fs.readdir(TASKS_DIR).catch(() => []);
-  for (const file of files) {
-    if (!file.endsWith('_status.json')) continue;
-    const taskId = file.replace('_status.json', '');
-    if (tasks.has(taskId)) continue;
-    try {
-      const status = await fs.readJson(resolveUnder(TASKS_DIR, file));
-      if (status?.terminalTask === false) continue;
-      if (requestedOwner && String(status.ownerChatId || '') !== requestedOwner) continue;
-      let persistedStatus = status.status;
-      if (persistedStatus === 'running' && (!status.pid || !isProcessAlive(status.pid))) {
-        persistedStatus = 'failed';
-        status.status = 'failed';
-        status.exitCode = status.exitCode ?? 1;
-        status.completedAt = status.completedAt || Date.now();
-        await writeJsonAtomic(resolveUnder(TASKS_DIR, file), status).catch(() => undefined);
-      }
-      tasks.set(taskId, {
-        id: taskId,
-        terminalTask: true,
-        status: persistedStatus,
-        description: status.description || status.command,
-        command: status.command,
-        ownerTraceId: status.ownerTraceId,
-        runId: status.runId,
-        pid: status.pid,
-        cwd: status.cwd,
-        exitCode: status.exitCode ?? null,
-        startedAt: status.startedAt,
-        completedAt: status.completedAt,
-        duration: status.completedAt ? `${((status.completedAt - status.startedAt) / 1000).toFixed(1)}s` : (persistedStatus === 'running' ? 'running' : 'unknown')
-      });
-    } catch {
-      // Ignore malformed status files.
-    }
-  }
-
   return Array.from(tasks.values());
+}
+
+/** Cheap automatic context for this chat; no filesystem scan or process probe. */
+export function getLiveTerminalTaskContext(ownerChatId: string): any[] {
+  if (!ownerChatId) return [];
+  return [...terminalTasks.values()]
+    .filter(task => task.ownerChatId === ownerChatId)
+    .sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running') || b.startedAt - a.startedAt)
+    .slice(0, 12)
+    .map(task => ({
+      taskId: task.id, command: task.command, cwd: task.cwd, shell: task.shell,
+      status: task.status, exitCode: task.exitCode, outputEnd: task.totalOutputChars,
+      background: task.background === true,
+    }));
+}
+
+export async function waitTerminalTask(taskId: string, ownerChatId: string, timeoutMs: number, sinceOffset?: number, signal?: AbortSignal): Promise<any | null> {
+  const deadline = Date.now() + Math.max(1000, Math.min(120_000, timeoutMs));
+  let result = await getTerminalBackgroundTaskStatus(taskId, ownerChatId, sinceOffset);
+  while (result?.running && !result.hasNewOutput && !signal?.aborted && Date.now() < deadline) {
+    await new Promise<void>(resolve => {
+      const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
+      const timer = setTimeout(done, Math.min(500, Math.max(0, deadline - Date.now())));
+      signal?.addEventListener('abort', done, { once: true });
+      if (signal?.aborted) done();
+    });
+    result = await getTerminalBackgroundTaskStatus(taskId, ownerChatId, sinceOffset);
+  }
+  return result;
+}
+
+export async function backgroundTerminalTask(taskId: string, ownerChatId: string): Promise<any | null> {
+  const task = terminalTasks.get(safeTaskId(taskId));
+  if (!task) {
+    return getTerminalBackgroundTaskStatus(taskId, ownerChatId);
+  }
+  if (task.ownerChatId !== ownerChatId) return null;
+  if (task.status === 'running') {
+    task.background = true;
+    await persistTaskStatus(task);
+  }
+  return buildStatusResult(task);
 }
 
 export async function killTerminalBackgroundTask(taskId: string, ownerChatId?: string): Promise<any | null> {
@@ -614,15 +649,8 @@ export async function killTerminalBackgroundTask(taskId: string, ownerChatId?: s
   if (task) {
     if (requestedOwner && task.ownerChatId !== requestedOwner) return null;
     if (task.status === 'running') {
-      killProcessTree(task.pid, task.process);
-      task.status = 'killed';
-      task.exitCode = 143;
-      task.completedAt = Date.now();
-      appendTaskOutput(task, 'stderr', '\nKilled by agent.\n');
-      clearTaskTimers(task);
-      flushTaskOutput(task, true, 143);
-      await waitForTaskOutputWrites(task);
-      await persistTaskStatus(task);
+      if (!task.stop) throw new Error('The terminal process is still starting. Retry Stop in a moment.');
+      await task.stop();
     }
     return buildStatusResult(task);
   }
@@ -631,13 +659,8 @@ export async function killTerminalBackgroundTask(taskId: string, ownerChatId?: s
   if (!await fs.pathExists(statusFile)) return null;
   const status = await fs.readJson(statusFile);
   if (requestedOwner && String(status.ownerChatId || '') !== requestedOwner) return null;
-  if (status?.pid && status?.status === 'running') {
-    killProcessTree(status.pid);
-    status.status = 'killed';
-    status.exitCode = 143;
-    status.completedAt = Date.now();
-    await writeJsonAtomic(statusFile, status);
-  }
+  // Do not signal an unrelated process after the OS reuses a saved PID.
+  // The returned unknown state explains that there is no active handle here.
   return getTerminalBackgroundTaskStatus(taskId, requestedOwner);
 }
 
@@ -706,7 +729,7 @@ function scheduleTaskFlush(task: TerminalBackgroundTask, throttleMs: number) {
   if (task.flushTimer) return;
   task.flushTimer = setTimeout(() => {
     task.flushTimer = undefined;
-    flushTaskOutput(task);
+    flushTaskOutput(task, task.status !== 'running', task.exitCode);
   }, Math.max(16, throttleMs));
   task.flushTimer.unref?.();
 }
@@ -720,20 +743,22 @@ function scheduleTaskStatusPersist(task: TerminalBackgroundTask) {
   task.persistTimer.unref?.();
 }
 
-function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?: number | null) {
+function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?: number | null, force = false) {
   const outputChunk = task.pendingTraceOutput;
   const outputStart = task.traceOutputOffset;
   const outputEnd = task.totalOutputChars;
-  if (!outputChunk && !final) return;
+  if (!outputChunk && !final && !force) return;
   const emittedAt = Date.now();
   const settledAt = final ? task.completedAt || emittedAt : undefined;
 
   task.pendingTraceOutput = '';
   task.traceOutputOffset = outputEnd;
   const output = final ? terminalTraceSnapshotOutput(task) : outputChunk;
-  emitTrace(task.traceContext, {
+  const emitted = emitTrace(task.traceContext, {
     type: 'console_output',
     command: task.command,
+    program: task.program,
+    args: task.args,
     output,
     source: task.source,
     cwd: task.cwd,
@@ -751,9 +776,7 @@ function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?:
     isStreaming: !final,
     isDelta: !final,
     streamState: final ? 'closed' : 'open',
-    status: final
-      ? (exitCode ?? task.exitCode ?? 0) === 0 ? 'completed' : 'failed'
-      : 'running',
+    status: final ? task.status : 'running',
     outputStart: final ? Math.max(0, task.totalOutputChars - task.output.length) : outputStart,
     outputEnd,
     totalOutputChars: task.totalOutputChars,
@@ -763,34 +786,14 @@ function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?:
       durationMs: Math.max(0, Number(settledAt) - task.startedAt),
     } : {})
   });
-}
-
-function scheduleAutomatedCheckIns(task: TerminalBackgroundTask) {
-  if (task.checkTimer) return;
-  task.checkTimer = setInterval(() => {
-    if (task.status !== 'running') {
-      clearTaskTimers(task);
-      return;
-    }
-
-    const seconds = secondsFromTimeoutMs(task.checkInMs);
-    emitRuntimeTrace(task.traceContext, {
-      type: 'timer_expired',
-      text: 'Terminal background check-in',
-      title: 'Terminal command',
-      note: `Task ${task.id} is still running. Use workspace_run_command mode="check" with this taskId, or wait another ${seconds} seconds if there is no new output.`,
-      durationMs: task.checkInMs,
-      command: task.command,
-      taskId: task.id,
-      iconCategory: 'terminal'
-    });
-    persistTaskStatus(task).catch(() => undefined);
-  }, task.checkInMs);
-  task.checkTimer.unref?.();
+  task.consoleTraceEmitted = task.consoleTraceEmitted || emitted;
 }
 
 function buildRunningResult(task: TerminalBackgroundTask, note: string): any {
   return {
+    command: task.command,
+    program: task.program,
+    args: task.args,
     success: true,
     outputKind: resolveTerminalOutputKind(task.command, task.outputKind),
     stdout: task.stdout,
@@ -800,7 +803,7 @@ function buildRunningResult(task: TerminalBackgroundTask, note: string): any {
     executionTimeMs: Date.now() - task.startedAt,
     timedOut: false,
     stillRunning: true,
-    backgroundTaskId: task.id,
+    backgroundTaskId: task.background ? task.id : undefined,
     taskId: task.id,
     streamId: task.streamId,
     ownerTraceId: task.traceContext?.ownerTraceId,
@@ -814,7 +817,7 @@ function buildRunningResult(task: TerminalBackgroundTask, note: string): any {
     status: task.status,
     checkInMs: task.checkInMs,
     hardTimeoutMs: task.hardTimeoutMs,
-    _consoleTraceEmitted: true,
+    _consoleTraceEmitted: task.consoleTraceEmitted === true,
     nextActionNote: note
   };
 }
@@ -824,6 +827,9 @@ function buildTerminalResult(task: TerminalBackgroundTask): any {
     ? terminalTimeoutNote(task.command, task.hardTimeoutMs)
     : '';
   return {
+    command: task.command,
+    program: task.program,
+    args: task.args,
     success: task.status === 'completed',
     outputKind: resolveTerminalOutputKind(task.command, task.outputKind),
     stdout: task.stdout,
@@ -833,7 +839,7 @@ function buildTerminalResult(task: TerminalBackgroundTask): any {
     executionTimeMs: (task.completedAt || Date.now()) - task.startedAt,
     timedOut: Boolean(task.hardTimedOut),
     stillRunning: task.status === 'running',
-    backgroundTaskId: task.handedOff ? task.id : undefined,
+    backgroundTaskId: task.background ? task.id : undefined,
     taskId: task.id,
     streamId: task.streamId,
     ownerTraceId: task.traceContext?.ownerTraceId,
@@ -850,7 +856,7 @@ function buildTerminalResult(task: TerminalBackgroundTask): any {
       : undefined,
     timeoutMs: task.checkInMs,
     hardTimeoutMs: task.hardTimeoutMs,
-    _consoleTraceEmitted: true,
+    _consoleTraceEmitted: task.consoleTraceEmitted === true,
     nextActionNote: task.status === 'running'
       ? terminalBackgroundHandoffNote(task.command, task.id, task.checkInMs)
       : undefined
@@ -869,7 +875,10 @@ function buildStatusResult(task: TerminalBackgroundTask, sinceOffset?: number): 
     turnId: task.traceContext?.turnId,
     status: task.status,
     running: task.status === 'running',
+    background: task.background === true,
     command: task.command,
+    program: task.program,
+    args: task.args,
     outputKind: resolveTerminalOutputKind(task.command, task.outputKind),
     cwd: task.cwd,
     shell: task.shell,
@@ -888,7 +897,7 @@ function buildStatusResult(task: TerminalBackgroundTask, sinceOffset?: number): 
     droppedOutputChars: task.droppedOutputChars,
     // The in-memory process is already publishing cumulative console traces.
     // A manual mode="check" observes it; it must not create another UI row.
-    _consoleTraceEmitted: true,
+    _consoleTraceEmitted: task.consoleTraceEmitted === true,
     message: `Terminal task ${task.id}: ${task.status} | "${task.description}" | Duration: ${(((task.completedAt || Date.now()) - task.startedAt) / 1000).toFixed(1)}s`,
     nextActionNote: task.status === 'running'
       ? `Use wait_timer for ${secondsFromTimeoutMs(task.checkInMs)} seconds, then workspace_run_command mode="check" with taskId="${task.id}" and sinceOffset=${outputWindow.end}.`
@@ -900,9 +909,12 @@ function compactTask(task: TerminalBackgroundTask): any {
   return {
     id: task.id,
     terminalTask: true,
+    background: task.background === true,
     status: task.status,
     description: task.description,
-    command: task.command.substring(0, 120),
+    command: task.command,
+    program: task.program,
+    args: task.args,
     pid: task.pid,
     cwd: task.cwd,
     exitCode: task.exitCode ?? null,
@@ -961,6 +973,7 @@ function clearTaskTimers(task: TerminalBackgroundTask) {
 }
 
 async function persistTaskStatus(task: TerminalBackgroundTask) {
+  terminalHistory.tasks.set(task.id, { ...compactTask(task), ownerChatId: task.ownerChatId });
   task.statusWrite = (task.statusWrite || Promise.resolve())
     .catch(() => undefined)
     .then(async () => {
@@ -975,6 +988,8 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
     terminalTask: true,
     id: task.id,
     command: task.command,
+    program: task.program,
+    args: task.args,
     description: task.description,
     source: task.source,
     ownerChatId: task.ownerChatId,
@@ -1002,17 +1017,29 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
     checkInMs: task.checkInMs,
     hardTimeoutMs: task.hardTimeoutMs,
     handedOff: task.handedOff,
+    background: task.background === true,
     hardTimedOut: task.hardTimedOut || false
   };
 }
 
 async function readOutputTail(filePath: string, maxChars = 24_000): Promise<string> {
+  if (!Number.isFinite(maxChars)) return fs.readFile(filePath, 'utf8').catch(() => '');
+  let handle: number | undefined;
   try {
-    const content = await fs.readFile(filePath, 'utf8');
-    return content.length > maxChars ? content.slice(-maxChars) : content;
-  } catch {
-    return '';
+    handle = await fs.open(filePath, 'r');
+    const stats = await fs.fstat(handle);
+    const byteCount = Math.min(stats.size, Math.max(4, maxChars * 4));
+    const buffer = Buffer.allocUnsafe(byteCount);
+    const { bytesRead } = await fs.read(handle, buffer, 0, byteCount, Math.max(0, stats.size - byteCount));
+    let start = 0;
+    // Never decode from the middle of a UTF-8 code point.
+    while (start < bytesRead && (buffer[start] & 0xC0) === 0x80) start++;
+    return buffer.subarray(start, bytesRead).toString('utf8').slice(-maxChars);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return '';
+    throw error;
   }
+  finally { if (handle !== undefined) await fs.close(handle).catch(() => undefined); }
 }
 
 function createTraceContext(context: any): {
@@ -1037,7 +1064,7 @@ function emitTrace(context: {
   ownerTraceId?: string;
   runId?: string;
   turnId?: string;
-} | undefined, event: any) {
+} | undefined, event: any): boolean {
   const ownedEvent = {
     ...(context?.ownerTraceId && !event?.ownerTraceId ? { ownerTraceId: context.ownerTraceId } : {}),
     ...(context?.runId && !event?.runId ? { runId: context.runId } : {}),
@@ -1045,37 +1072,52 @@ function emitTrace(context: {
     ...event,
   };
   if (typeof context?._onTrace === 'function') {
-    context._onTrace(ownedEvent);
-    return;
+    try {
+      context._onTrace(ownedEvent);
+      return true;
+    } catch {
+      // A disconnected chat stream must not interrupt process output handling.
+    }
   }
 
   if (context?.chatId) {
     try {
       const { taskStore } = require('../../task-store');
       taskStore.addTrace(context.chatId, ownedEvent, context.runId);
+      return true;
     } catch {
       // Trace persistence is best-effort.
     }
   }
+  return false;
 }
 
-function killProcessTree(pid?: number, child?: ChildProcess) {
-  if (!pid) return;
-
+async function killProcessTree(pid?: number, child?: ChildProcess): Promise<void> {
+  if (!pid) throw new Error('The process has no PID yet.');
   if (process.platform === 'win32') {
-    execFile('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => undefined);
+    await new Promise<void>((resolve, reject) => {
+      const taskkill = path.join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'taskkill.exe');
+      execFile(taskkill, ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 10_000 }, (error, _stdout, stderr) => {
+        if (error && isProcessAlive(pid)) reject(new Error(stderr?.trim() || error.message));
+        else resolve();
+      });
+    });
     return;
   }
-
+  // Detached commands own a process group; terminate pipelines and descendants too.
+  const alive = () => {
+    try { process.kill(-pid, 0); return true; }
+    catch (error: any) { if (error?.code === 'EPERM') return true; }
+    return !(child && (child.exitCode !== null || child.signalCode !== null)) && isProcessAlive(pid);
+  };
   signalProcessGroup(pid, 'SIGTERM');
-
-  const timer = setTimeout(() => {
-    // Avoid signalling an unrelated process if the OS recycled this PID
-    // during the grace period. In-memory tasks retain the ChildProcess identity.
-    if (child && (child.exitCode !== null || child.signalCode !== null)) return;
-    signalProcessGroup(pid, 'SIGKILL');
-  }, 2_000);
-  timer.unref?.();
+  const deadline = Date.now() + 2_000;
+  while (alive() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  if (!alive()) return;
+  signalProcessGroup(pid, 'SIGKILL');
+  const killDeadline = Date.now() + 2_000;
+  while (alive() && Date.now() < killDeadline) await new Promise(resolve => setTimeout(resolve, 50));
+  if (alive()) throw new Error('The process could not be stopped. It may require different OS permissions.');
 }
 
 function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {

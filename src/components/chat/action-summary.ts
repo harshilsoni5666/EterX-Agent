@@ -5,6 +5,9 @@ type ActionSummary = { key: string; singular: string; plural: string; live: stri
 const summaries: Record<string, Omit<ActionSummary, 'key'>> = {
   skill: { singular: 'Loaded a skill', plural: 'Loaded skills', live: 'Loading skill' },
   read: { singular: 'Read a file', plural: 'Read files', live: 'Reading file' },
+  browser: { singular: 'Used browser', plural: 'Used browser', live: 'Using browser' },
+  browser_launch: { singular: 'Launched browser', plural: 'Launched browser', live: 'Launching browser' },
+  click: { singular: 'Clicked', plural: 'Clicked', live: 'Clicking' },
   search: { singular: 'Searched the web', plural: 'Searched the web', live: 'Searching the web' },
   code_search: { singular: 'Searched the codebase', plural: 'Searched the codebase', live: 'Searching the codebase' },
   source: { singular: 'Read a source', plural: 'Read sources', live: 'Reading source' },
@@ -27,6 +30,7 @@ const summaries: Record<string, Omit<ActionSummary, 'key'>> = {
 const byTool: Record<string, string> = {
   get_skill_guidelines: 'skill', load_skill: 'skill',
   read_file: 'read', workspace_read_file: 'read',
+  browser_control: 'browser', browser: 'browser', browser_use: 'browser',
   web_search: 'search', web_fetch: 'source',
   image_generator: 'image', context_memory: 'memory',
   wait_timer: 'wait', scheduled_tasks: 'schedule',
@@ -35,6 +39,15 @@ const byTool: Record<string, string> = {
 const byLabel: Record<string, string> = {
   'loading skill': 'skill', 'loaded skill': 'skill', 'loaded a skill': 'skill',
   'reading file': 'read', 'reading files': 'read', 'read file': 'read', 'read files': 'read',
+  'using browser': 'browser', 'used browser': 'browser', 'browser use': 'browser',
+  'launching browser': 'browser_launch', 'launch browser': 'browser_launch', 'launched browser': 'browser_launch',
+  'opening chrome': 'browser_launch', 'opened chrome': 'browser_launch',
+  'starting browser session': 'browser_launch', 'started browser session': 'browser_launch',
+  'connecting to chrome': 'browser_launch', 'connected to chrome': 'browser_launch',
+  'clicking': 'click', 'clicked': 'click',
+  'right clicking': 'click', 'right clicked': 'click',
+  'left clicking': 'click', 'left clicked': 'click',
+  'double clicking': 'click', 'double clicked': 'click',
   'researching': 'search', 'searching the web': 'search', 'web searched': 'search',
   'searching codebase': 'code_search', 'reading source': 'source',
   'scanning directory': 'directory', 'listing directory': 'directory',
@@ -53,6 +66,7 @@ const completedVerbs: Record<string, string> = {
   managing: 'Managed', recalling: 'Recalled', comparing: 'Compared',
   verifying: 'Verified', connecting: 'Connected', inspecting: 'Inspected',
   fetching: 'Fetched', calculating: 'Calculated', sending: 'Sent',
+  launching: 'Launched', opening: 'Opened', clicking: 'Clicked', using: 'Used',
 };
 
 /** Summary labels use tool identity and published UI text, never arguments,

@@ -106,6 +106,9 @@ function main() {
     'workspace_edit_file fails',
     'ui_live_preview',
     'work-note-kernel',
+    'Continue work only after final output/exitCode arrives',
+    'Use background=true only for a process intentionally meant to remain live',
+    'a live server does not need to exit before the task can continue',
   ]) {
     assert.ok(!combinedText.includes(forbidden), `stale prompt/reference phrase found: ${forbidden}`);
   }

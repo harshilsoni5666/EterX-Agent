@@ -1,4 +1,4 @@
-import { requestJson } from '../../../../lib/request-json';
+import { requestModelCatalog } from '../../../../lib/model-discovery-request';
 import { NextRequest, NextResponse } from 'next/server';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
@@ -30,9 +30,21 @@ export const runtime = 'nodejs';
 // Discovery and per-key connection checks are read-only. Their credentials
 // must not replace a running chat's settings or leak into another request.
 const discoveryScope = new AsyncLocalStorage<{
+  deadlineAt: number;
   keys: Record<string, string[]>;
   baseURLs: Partial<Record<MainAgentProvider, string>>;
 }>();
+const requestJson = async (input: string, init: RequestInit = {}, timeoutMs = 12_000) => {
+  const remaining = (discoveryScope.getStore()?.deadlineAt ?? Date.now() + 35_000) - Date.now();
+  if (remaining <= 0) throw new Error('Model discovery timed out. Please retry.');
+  const response = await requestModelCatalog(input, init, Math.min(timeoutMs, remaining));
+  if (!response.ok) return response;
+  const payload = await response.json();
+  if (!Array.isArray(payload) && !['data', 'models', 'voices'].some(key => Array.isArray(payload?.[key]))) {
+    throw new Error('Provider returned an invalid model catalog. Saved models have been kept.');
+  }
+  return response;
+};
 const getRuntimeApiKeyValues = (provider: RuntimeApiKeyProvider): string[] =>
   discoveryScope.getStore()?.keys[provider] || (discoveryScope.getStore() ? [] : savedApiKeyValues(provider));
 const getProviderBaseURL = (provider: MainAgentProvider): string =>
@@ -63,7 +75,7 @@ type ProviderModelResult = {
   error?: string;
 };
 
-const MODEL_FETCH_TIMEOUT_MS = 60_000;
+const MODEL_FETCH_TIMEOUT_MS = 12_000;
 
 const NON_AGENT_MODEL_ID = /(?:^|[/:._-])(?:audio|embed(?:ding)?s?|image|moderation|orpheus|realtime|speech|transcri(?:be|ption)|translate|tts|whisper|guard|rerank|search|video)(?:$|[/:._-])/i;
 const NON_CONCRETE_MODEL_ID = /^(?:auto|default|latest|recommended)(?:[\s_-]|$)/i;
@@ -76,16 +88,23 @@ const isExpired = (value: unknown) => {
   return Number.isFinite(timestamp) && timestamp <= Date.now();
 };
 
+const readModelAvailability = (model: any) => ({
+  lifecycle: model?.active === false || model?.enabled === false || model?.deprecated === true
+    ? 'disabled' : String(model?.lifecycle || model?.status || ''),
+  deprecationDate: model?.deprecationDate || model?.expiration_date || model?.shutdown_at || model?.end_of_life,
+});
+
 const isAgentCompatibleModel = (model: ProviderModel) => {
   const id = String(model.id || '').trim();
   if (!id || id.toLowerCase() === 'openrouter/auto' || id.toLowerCase().startsWith('kilo-auto/') || NON_CONCRETE_MODEL_ID.test(id) || NON_AGENT_MODEL_ID.test(id) || isExpired(model.deprecationDate)) return false;
+  if (model.capabilities?.includes('tool-calling:false')) return false;
   const lifecycle = String(model.lifecycle || '').toLowerCase();
   return !['deprecated', 'retired', 'disabled', 'expired', 'unavailable'].some(status => lifecycle.includes(status));
 };
 
 const trimModels = (models: ProviderModel[]) => {
   const seen = new Set<string>();
-  return models.filter(model => {
+  return models.map(model => ({ ...model, ...readModelAvailability(model), id: String(model.id || '').trim() })).filter(model => {
     if (!isAgentCompatibleModel(model) || seen.has(model.id)) return false;
     seen.add(model.id);
     return true;
@@ -224,18 +243,20 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
       rawModels.push(...(Array.isArray(data.models) ? data.models : []));
       pageToken = String(data.nextPageToken || '');
       if (!pageToken) break;
+      if (pageTokens.has(pageToken) || page === 99) throw new Error('Provider returned an incomplete model catalog. Please retry.');
+      pageTokens.add(pageToken);
     }
 
     const mappedModels = rawModels
       .filter((model: any) => Array.isArray(model.supportedGenerationMethods) && model.supportedGenerationMethods.includes('generateContent'))
       .map((model: any) => ({
-        id: String(model.baseModelId || model.name || '').replace(/^models\//, ''),
+        ...readModelAvailability(model),
+        id: String(model.name || model.baseModelId || '').replace(/^models\//, ''),
         name: model.displayName || String(model.name || '').replace(/^models\//, ''),
         description: model.description,
         baseModelId: model.baseModelId,
         version: model.version,
-        lifecycle: model.lifecycle,
-        deprecationDate: model.deprecationDate,
+        ...readModelAvailability(model),
         inputTokenLimit: model.inputTokenLimit,
         outputTokenLimit: model.outputTokenLimit,
         capabilities: [
@@ -277,6 +298,7 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
     const mappedModels = (data.data || [])
       .filter((model: any) => /^(?:ft:)?(?:gpt-|o[1-9](?:-|$)|chatgpt-)/i.test(String(model.id || '')))
       .map((model: any) => ({
+        ...readModelAvailability(model),
         id: String(model.id || ''),
         name: String(model.id || ''),
         description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
@@ -331,6 +353,7 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
           ? (inferredThinking.length > 0 ? inferredThinking : ['off', 'low', 'medium', 'high'])
           : [];
         return {
+          ...readModelAvailability(model),
           id: String(model.id || ''),
           name: model.name || model.id,
           description: model.description,
@@ -373,9 +396,11 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
     const data = await res.json();
     const mappedModels = (data.data || [])
       .map((model: any) => ({
+        ...readModelAvailability(model),
         id: String(model.id || ''),
         name: String(model.id || ''),
         description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
+        ...readModelAvailability(model),
         contextLength: model.context_window,
         thinking: readThinkingCapabilities(model, 'reasoning_effort') || (() => {
           const levels = getModelThinkingOptions('groq', String(model.id || '')).map(option => option.id);
@@ -413,6 +438,7 @@ async function fetchMistralModels(): Promise<ProviderModelResult> {
         return capabilities.completion_chat !== false && capabilities.function_calling !== false;
       })
       .map((model: any) => ({
+      ...readModelAvailability(model),
       id: String(model.id || ''),
       name: model.name || model.id,
       description: model.description,
@@ -455,6 +481,7 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
       const pageModels = Array.isArray(data?.data) ? data.data : [];
       discoveredModels.push(...pageModels);
       if (!data?.has_more || !data?.last_id || pageModels.length === 0) break;
+      if (afterId === String(data.last_id) || page === 19) throw new Error('Provider returned an incomplete model catalog. Please retry.');
       afterId = String(data.last_id);
     }
     const mappedModels = discoveredModels.map((model: any) => {
@@ -464,6 +491,7 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
           .map(([key]) => key)
         : undefined;
       return {
+        ...readModelAvailability(model),
         id: String(model.id || ''),
         name: model.display_name || model.id,
         description: [
@@ -512,6 +540,7 @@ async function fetchDeepSeekModels(): Promise<ProviderModelResult> {
     if (!res.ok) throw new Error(`DeepSeek models request failed (${res.status})`);
     const data = await res.json();
     const models = trimModels((data.data || []).map((model: any) => ({
+      ...readModelAvailability(model),
       id: String(model.id || ''),
       name: String(model.id || ''),
       description: model.owned_by ? `Owned by ${model.owned_by}` : undefined,
@@ -533,6 +562,7 @@ async function fetchGrokModels(): Promise<ProviderModelResult> {
     if (!res.ok) throw new Error(`Grok models request failed (${res.status})`);
     const data = await res.json();
     const models = trimModels((data.data || []).map((model: any) => ({
+      ...readModelAvailability(model),
       id: String(model.id || ''),
       name: String(model.id || ''),
       description: 'xAI Grok Model',
@@ -554,6 +584,7 @@ async function fetchCerebrasModels(): Promise<ProviderModelResult> {
     if (!res.ok) throw new Error(`Cerebras models request failed (${res.status})`);
     const data = await res.json();
     const models = trimModels((data.data || []).map((model: any) => ({
+      ...readModelAvailability(model),
       id: String(model.id || ''),
       name: String(model.id || ''),
       description: 'Cerebras Wafer Engine Model',
@@ -576,6 +607,7 @@ async function fetchTogetherModels(): Promise<ProviderModelResult> {
     const data = await res.json();
     const raw = Array.isArray(data) ? data : data.data || [];
     const models = trimModels(raw.map((model: any) => ({
+      ...readModelAvailability(model),
       id: String(model.id || model.name || ''),
       name: model.display_name || model.id || model.name,
       description: model.description || 'Together AI Model',
@@ -631,6 +663,7 @@ async function fetchOllamaModels(): Promise<ProviderModelResult> {
     const data = await res.json();
     const rawModels = Array.isArray(data?.data) ? data.data : (data?.models || []);
     const models = trimModels(rawModels.map((model: any) => ({
+      ...readModelAvailability(model),
       id: String(model.id || model.name || model.model || ''),
       name: String(model.name || model.model || model.id || ''),
       description: model.details?.parameter_size ? `Local (${model.details.parameter_size})` : 'Local Ollama Model',
@@ -662,6 +695,7 @@ async function fetchLMStudioModels(): Promise<ProviderModelResult> {
     const data = await res.json();
     const rawModels = Array.isArray(data?.data) ? data.data : (data?.models || []);
     const models = trimModels(rawModels.map((model: any) => ({
+      ...readModelAvailability(model),
       id: String(model.id || model.key || model.model_id || ''),
       name: String(model.id || model.key || model.model_id || ''),
       description: 'LM Studio Desktop Local Server',
@@ -728,6 +762,9 @@ async function fetchCompatibleModels(provider: MainAgentProvider): Promise<Provi
           : []),
       ];
       return {
+      lifecycle: model?.active === false || model?.enabled === false ? 'disabled' : model?.lifecycle || model?.status,
+      deprecationDate: model?.expiration_date || model?.deprecationDate,
+      ...readModelAvailability(model),
       id: String(model?.id || model?.name || model?.model || ''),
       name: String(model?.display_name || model?.name || model?.id || model?.model || ''),
       description: model?.description || model?.owned_by || undefined,
@@ -758,53 +795,63 @@ export async function POST(req: NextRequest) {
       .map(key => key.trim()).filter(Boolean);
   }
   const baseURLs = body?.baseURLs && typeof body.baseURLs === 'object'
-    ? Object.fromEntries(Object.entries(body.baseURLs).filter(([provider]) => isModelProvider(provider))
-      .map(([provider, value]) => [provider, normalizeProviderBaseURL(provider as MainAgentProvider, value)]))
+    ? { ...getRuntimeProviderBaseURLs(), ...Object.fromEntries(Object.entries(body.baseURLs).filter(([provider]) => isModelProvider(provider))
+      .map(([provider, value]) => [provider, normalizeProviderBaseURL(provider as MainAgentProvider, value)])) }
     : getRuntimeProviderBaseURLs();
 
-  return discoveryScope.run({ keys, baseURLs }, async () => {
+  return discoveryScope.run({ keys, baseURLs, deadlineAt: Date.now() + 35_000 }, async () => {
   const requested = Array.isArray(body?.providers) && body.providers.length > 0
     ? new Set(body.providers.map((provider: unknown) => String(provider)))
     : null;
 
   const jobs: Array<Promise<ProviderModelResult>> = [];
-  if (!requested || requested.has('gemini')) jobs.push(fetchGeminiModels());
-  if (!requested || requested.has('mistral')) jobs.push(fetchMistralModels());
-  if (!requested || requested.has('openai')) jobs.push(fetchOpenAIModels());
-  if (!requested || requested.has('openrouter')) jobs.push(fetchOpenRouterModels());
-  if (!requested || requested.has('groq')) jobs.push(fetchGroqModels());
-  if (!requested || requested.has('anthropic')) jobs.push(fetchAnthropicModels());
-  if (!requested || requested.has('deepseek')) jobs.push(fetchDeepSeekModels());
-  if (!requested || requested.has('grok')) jobs.push(fetchGrokModels());
-  if (!requested || requested.has('cerebras')) jobs.push(fetchCerebrasModels());
-  if (!requested || requested.has('together')) jobs.push(fetchTogetherModels());
+  const discover = async (provider: RuntimeApiKeyProvider, fetchModels: () => Promise<ProviderModelResult>) => {
+    const scope = discoveryScope.getStore()!;
+    const pool = Array.from(new Set(scope.keys[provider] || []));
+    let result = await fetchModels();
+    for (const key of pool.slice(1, 3)) {
+      if (result.connected || !/\b(?:401|403)\b/.test(result.error || '')) break;
+      result = await discoveryScope.run({ ...scope, keys: { ...scope.keys, [provider]: [key] } }, fetchModels);
+    }
+    return result;
+  };
+  if (!requested || requested.has('gemini')) jobs.push(discover('gemini' as RuntimeApiKeyProvider, fetchGeminiModels));
+  if (!requested || requested.has('mistral')) jobs.push(discover('mistral' as RuntimeApiKeyProvider, fetchMistralModels));
+  if (!requested || requested.has('openai')) jobs.push(discover('openai' as RuntimeApiKeyProvider, fetchOpenAIModels));
+  if (!requested || requested.has('openrouter')) jobs.push(discover('openrouter' as RuntimeApiKeyProvider, fetchOpenRouterModels));
+  if (!requested || requested.has('groq')) jobs.push(discover('groq' as RuntimeApiKeyProvider, fetchGroqModels));
+  if (!requested || requested.has('anthropic')) jobs.push(discover('anthropic' as RuntimeApiKeyProvider, fetchAnthropicModels));
+  if (!requested || requested.has('deepseek')) jobs.push(discover('deepseek' as RuntimeApiKeyProvider, fetchDeepSeekModels));
+  if (!requested || requested.has('grok')) jobs.push(discover('grok' as RuntimeApiKeyProvider, fetchGrokModels));
+  if (!requested || requested.has('cerebras')) jobs.push(discover('cerebras' as RuntimeApiKeyProvider, fetchCerebrasModels));
+  if (!requested || requested.has('together')) jobs.push(discover('together' as RuntimeApiKeyProvider, fetchTogetherModels));
   if (!requested || requested.has('elevenlabs')) jobs.push(fetchElevenLabsVoices());
-  if (!requested || requested.has('ollama')) jobs.push(fetchOllamaModels());
-  if (!requested || requested.has('lmstudio')) jobs.push(fetchLMStudioModels());
-  if (!requested || requested.has('fireworks')) jobs.push(fetchCompatibleModels('fireworks'));
-  if (!requested || requested.has('sambanova')) jobs.push(fetchCompatibleModels('sambanova'));
-  if (!requested || requested.has('perplexity')) jobs.push(fetchCompatibleModels('perplexity'));
-  if (!requested || requested.has('deepinfra')) jobs.push(fetchCompatibleModels('deepinfra'));
-  if (!requested || requested.has('huggingface')) jobs.push(fetchCompatibleModels('huggingface'));
-  if (!requested || requested.has('nvidia')) jobs.push(fetchCompatibleModels('nvidia'));
-  if (!requested || requested.has('cloudflare')) jobs.push(fetchCompatibleModels('cloudflare'));
-  if (!requested || requested.has('vllm')) jobs.push(fetchCompatibleModels('vllm'));
-  if (!requested || requested.has('llamacpp')) jobs.push(fetchCompatibleModels('llamacpp'));
-  if (!requested || requested.has('novita')) jobs.push(fetchCompatibleModels('novita'));
-  if (!requested || requested.has('qwen')) jobs.push(fetchCompatibleModels('qwen'));
-  if (!requested || requested.has('mimo')) jobs.push(fetchCompatibleModels('mimo'));
-  if (!requested || requested.has('tokenhub')) jobs.push(fetchCompatibleModels('tokenhub'));
-  if (!requested || requested.has('zai')) jobs.push(fetchCompatibleModels('zai'));
-  if (!requested || requested.has('kimi')) jobs.push(fetchCompatibleModels('kimi'));
-  if (!requested || requested.has('stepfun')) jobs.push(fetchCompatibleModels('stepfun'));
-  if (!requested || requested.has('minimax')) jobs.push(fetchCompatibleModels('minimax'));
-  if (!requested || requested.has('ollamacloud')) jobs.push(fetchCompatibleModels('ollamacloud'));
-  if (!requested || requested.has('arcee')) jobs.push(fetchCompatibleModels('arcee'));
-  if (!requested || requested.has('gmi')) jobs.push(fetchCompatibleModels('gmi'));
-  if (!requested || requested.has('kilo')) jobs.push(fetchCompatibleModels('kilo'));
-  if (!requested || requested.has('opencode')) jobs.push(fetchCompatibleModels('opencode'));
-  if (!requested || requested.has('upstage')) jobs.push(fetchCompatibleModels('upstage'));
-  if (!requested || requested.has('custom')) jobs.push(fetchCompatibleModels('custom'));
+  if (!requested || requested.has('ollama')) jobs.push(discover('ollama' as RuntimeApiKeyProvider, fetchOllamaModels));
+  if (!requested || requested.has('lmstudio')) jobs.push(discover('lmstudio' as RuntimeApiKeyProvider, fetchLMStudioModels));
+  if (!requested || requested.has('fireworks')) jobs.push(discover('fireworks' as RuntimeApiKeyProvider, () => fetchCompatibleModels('fireworks')));
+  if (!requested || requested.has('sambanova')) jobs.push(discover('sambanova' as RuntimeApiKeyProvider, () => fetchCompatibleModels('sambanova')));
+  if (!requested || requested.has('perplexity')) jobs.push(discover('perplexity' as RuntimeApiKeyProvider, () => fetchCompatibleModels('perplexity')));
+  if (!requested || requested.has('deepinfra')) jobs.push(discover('deepinfra' as RuntimeApiKeyProvider, () => fetchCompatibleModels('deepinfra')));
+  if (!requested || requested.has('huggingface')) jobs.push(discover('huggingface' as RuntimeApiKeyProvider, () => fetchCompatibleModels('huggingface')));
+  if (!requested || requested.has('nvidia')) jobs.push(discover('nvidia' as RuntimeApiKeyProvider, () => fetchCompatibleModels('nvidia')));
+  if (!requested || requested.has('cloudflare')) jobs.push(discover('cloudflare' as RuntimeApiKeyProvider, () => fetchCompatibleModels('cloudflare')));
+  if (!requested || requested.has('vllm')) jobs.push(discover('vllm' as RuntimeApiKeyProvider, () => fetchCompatibleModels('vllm')));
+  if (!requested || requested.has('llamacpp')) jobs.push(discover('llamacpp' as RuntimeApiKeyProvider, () => fetchCompatibleModels('llamacpp')));
+  if (!requested || requested.has('novita')) jobs.push(discover('novita' as RuntimeApiKeyProvider, () => fetchCompatibleModels('novita')));
+  if (!requested || requested.has('qwen')) jobs.push(discover('qwen' as RuntimeApiKeyProvider, () => fetchCompatibleModels('qwen')));
+  if (!requested || requested.has('mimo')) jobs.push(discover('mimo' as RuntimeApiKeyProvider, () => fetchCompatibleModels('mimo')));
+  if (!requested || requested.has('tokenhub')) jobs.push(discover('tokenhub' as RuntimeApiKeyProvider, () => fetchCompatibleModels('tokenhub')));
+  if (!requested || requested.has('zai')) jobs.push(discover('zai' as RuntimeApiKeyProvider, () => fetchCompatibleModels('zai')));
+  if (!requested || requested.has('kimi')) jobs.push(discover('kimi' as RuntimeApiKeyProvider, () => fetchCompatibleModels('kimi')));
+  if (!requested || requested.has('stepfun')) jobs.push(discover('stepfun' as RuntimeApiKeyProvider, () => fetchCompatibleModels('stepfun')));
+  if (!requested || requested.has('minimax')) jobs.push(discover('minimax' as RuntimeApiKeyProvider, () => fetchCompatibleModels('minimax')));
+  if (!requested || requested.has('ollamacloud')) jobs.push(discover('ollamacloud' as RuntimeApiKeyProvider, () => fetchCompatibleModels('ollamacloud')));
+  if (!requested || requested.has('arcee')) jobs.push(discover('arcee' as RuntimeApiKeyProvider, () => fetchCompatibleModels('arcee')));
+  if (!requested || requested.has('gmi')) jobs.push(discover('gmi' as RuntimeApiKeyProvider, () => fetchCompatibleModels('gmi')));
+  if (!requested || requested.has('kilo')) jobs.push(discover('kilo' as RuntimeApiKeyProvider, () => fetchCompatibleModels('kilo')));
+  if (!requested || requested.has('opencode')) jobs.push(discover('opencode' as RuntimeApiKeyProvider, () => fetchCompatibleModels('opencode')));
+  if (!requested || requested.has('upstage')) jobs.push(discover('upstage' as RuntimeApiKeyProvider, () => fetchCompatibleModels('upstage')));
+  if (!requested || requested.has('custom')) jobs.push(discover('custom' as RuntimeApiKeyProvider, () => fetchCompatibleModels('custom')));
 
   const results = await Promise.all(jobs);
   return NextResponse.json({
@@ -819,60 +866,10 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  hydrateServerRuntimeSettings();
   const url = new URL(req.url);
-  const providersParam = url.searchParams.get('providers');
-  const requested = providersParam
-    ? new Set(providersParam.split(','))
-    : null;
-
-  const jobs: Array<Promise<ProviderModelResult>> = [];
-  if (!requested || requested.has('gemini')) jobs.push(fetchGeminiModels());
-  if (!requested || requested.has('mistral')) jobs.push(fetchMistralModels());
-  if (!requested || requested.has('openai')) jobs.push(fetchOpenAIModels());
-  if (!requested || requested.has('openrouter')) jobs.push(fetchOpenRouterModels());
-  if (!requested || requested.has('groq')) jobs.push(fetchGroqModels());
-  if (!requested || requested.has('anthropic')) jobs.push(fetchAnthropicModels());
-  if (!requested || requested.has('deepseek')) jobs.push(fetchDeepSeekModels());
-  if (!requested || requested.has('grok')) jobs.push(fetchGrokModels());
-  if (!requested || requested.has('cerebras')) jobs.push(fetchCerebrasModels());
-  if (!requested || requested.has('together')) jobs.push(fetchTogetherModels());
-  if (!requested || requested.has('elevenlabs')) jobs.push(fetchElevenLabsVoices());
-  if (!requested || requested.has('ollama')) jobs.push(fetchOllamaModels());
-  if (!requested || requested.has('lmstudio')) jobs.push(fetchLMStudioModels());
-  if (!requested || requested.has('fireworks')) jobs.push(fetchCompatibleModels('fireworks'));
-  if (!requested || requested.has('sambanova')) jobs.push(fetchCompatibleModels('sambanova'));
-  if (!requested || requested.has('perplexity')) jobs.push(fetchCompatibleModels('perplexity'));
-  if (!requested || requested.has('deepinfra')) jobs.push(fetchCompatibleModels('deepinfra'));
-  if (!requested || requested.has('huggingface')) jobs.push(fetchCompatibleModels('huggingface'));
-  if (!requested || requested.has('nvidia')) jobs.push(fetchCompatibleModels('nvidia'));
-  if (!requested || requested.has('cloudflare')) jobs.push(fetchCompatibleModels('cloudflare'));
-  if (!requested || requested.has('vllm')) jobs.push(fetchCompatibleModels('vllm'));
-  if (!requested || requested.has('llamacpp')) jobs.push(fetchCompatibleModels('llamacpp'));
-  if (!requested || requested.has('novita')) jobs.push(fetchCompatibleModels('novita'));
-  if (!requested || requested.has('qwen')) jobs.push(fetchCompatibleModels('qwen'));
-  if (!requested || requested.has('mimo')) jobs.push(fetchCompatibleModels('mimo'));
-  if (!requested || requested.has('tokenhub')) jobs.push(fetchCompatibleModels('tokenhub'));
-  if (!requested || requested.has('zai')) jobs.push(fetchCompatibleModels('zai'));
-  if (!requested || requested.has('kimi')) jobs.push(fetchCompatibleModels('kimi'));
-  if (!requested || requested.has('stepfun')) jobs.push(fetchCompatibleModels('stepfun'));
-  if (!requested || requested.has('minimax')) jobs.push(fetchCompatibleModels('minimax'));
-  if (!requested || requested.has('ollamacloud')) jobs.push(fetchCompatibleModels('ollamacloud'));
-  if (!requested || requested.has('arcee')) jobs.push(fetchCompatibleModels('arcee'));
-  if (!requested || requested.has('gmi')) jobs.push(fetchCompatibleModels('gmi'));
-  if (!requested || requested.has('kilo')) jobs.push(fetchCompatibleModels('kilo'));
-  if (!requested || requested.has('opencode')) jobs.push(fetchCompatibleModels('opencode'));
-  if (!requested || requested.has('upstage')) jobs.push(fetchCompatibleModels('upstage'));
-  if (!requested || requested.has('custom')) jobs.push(fetchCompatibleModels('custom'));
-
-  const results = await Promise.all(jobs);
-  return NextResponse.json({
-    ok: true,
-    updatedAt: Date.now(),
-    providers: results.reduce<Record<string, ProviderModelResult>>((acc, result) => {
-      acc[result.provider] = result;
-      return acc;
-    }, {}),
-  });
+  return POST(new NextRequest(req.url, {
+    method: 'POST',
+    headers: req.headers,
+    body: JSON.stringify({ providers: url.searchParams.get('providers')?.split(',').map(value => value.trim()).filter(Boolean) }),
+  }));
 }
-

@@ -4,10 +4,20 @@ import { promisify } from 'util';
 import { gzip, gunzip } from 'zlib';
 import fs from 'fs-extra';
 import { open as openFile } from 'fs/promises';
-import { visibleUserRequest } from '../chat-user-payload';
+import { visibleUserRequest, unwrapCurrentUserRequest, neutralizeCurrentUserRequestCarriers } from '../chat-user-payload';
 import { stableScopeSegment } from './context-scope';
 import { getEterxWorkspaceDir } from './storage-paths';
 import type { ContextFabric } from './context-fabric';
+import { sanitizeGeminiHistory } from './context-hot-path';
+import {
+  extendWorkingDialogue,
+  reconcileWorkingDialogue,
+  sameWorkingDialogueEntry,
+  validWorkingDialogueEntry,
+  withoutWorkingDialogueMetadata,
+  workingDialogueEntry,
+  type WorkingDialogueEntry,
+} from './working-context-lineage';
 
 type WireKind = 'gemini' | 'anthropic' | 'compatible';
 type Checkpoint = {
@@ -17,10 +27,13 @@ type Checkpoint = {
   model: string;
   kind: WireKind;
   /** Canonical admission identity and legacy working-record recovery completed. */
-  lineageVersion?: 2;
+  lineageVersion?: 2 | 3;
   runId?: string;
   /** Visible dialogue covered by this working transcript, including its root request. */
   dialogue: string[];
+  /** Stable admission identities survive trimmed/repaired feed projections. */
+  lineage?: WorkingDialogueEntry[];
+  requestIdentity?: WorkingDialogueEntry;
   contents: any[];
   calibration?: { inputTokens: number; localTokens: number };
   fabricRevision?: number;
@@ -55,14 +68,12 @@ const capsuleOf = (message: any): string => {
 };
 
 const legacyRootMatches = (checkpoint: Checkpoint, message: any, identity: string): boolean => {
-  if (checkpoint.lineageVersion === 2 || message?.role !== 'user') return false;
+  if (Number(checkpoint.lineageVersion) >= 2 || message?.role !== 'user') return false;
   if (identity === dialogueIdentity({ role: 'user', content: `[USER REQUEST]\n${textOf(message)}` })) return true;
   // Pinned-path envelopes also surrounded the registry wrapper. Recover the
   // exact admitted root from a sealed native part, and prove its old hash
   // before removing only our known envelope. Never search arbitrary user prose
   // for a request marker and treat its suffix as a new conversation identity.
-  const start = '[CURRENT USER REQUEST - EXECUTE ONLY THIS]\n';
-  const end = '\n[END CURRENT USER REQUEST]';
   const pinnedPrefix = /^\[CRITICAL PINNED CONTEXT\]\nPinned workspace paths: [^\n]*\nKeep file, code, and terminal operations inside these paths unless the user explicitly provides another target path\. External web\/API lookups are allowed only when the current request asks for current factual information\.\n\nMy Request:\n/;
   for (const turn of checkpoint.contents) {
     if (turn?.role !== 'user') continue;
@@ -70,10 +81,8 @@ const legacyRootMatches = (checkpoint: Checkpoint, message: any, identity: strin
     const texts = typeof blocks === 'string' ? [blocks]
       : Array.isArray(blocks) ? blocks.filter((part: any) => typeof part?.text === 'string').map((part: any) => part.text) : [];
     for (const text of texts) {
-      if (!text.startsWith(start)) continue;
-      const endIndex = text.lastIndexOf(end);
-      if (endIndex < start.length) continue;
-      const root = text.slice(start.length, endIndex);
+      const root = unwrapCurrentUserRequest(text);
+      if (root === null) continue;
       if (dialogueIdentity({ role: 'user', content: root }) !== identity) continue;
       const unpinned = root.replace(pinnedPrefix, '');
       const visible = visibleUserRequest(unpinned.startsWith('[USER REQUEST]\n')
@@ -102,6 +111,8 @@ const readCheckpoint = async (sourcePath: string, scope: string): Promise<Checkp
   if (!checkpoint || checkpoint.version !== 1 || checkpoint.scope !== scope
     || !Array.isArray(checkpoint.contents) || !Array.isArray(checkpoint.dialogue)
     || !checkpoint.dialogue.every(identity => typeof identity === 'string')
+    || (checkpoint.lineage !== undefined && (!Array.isArray(checkpoint.lineage) || !checkpoint.lineage.every(validWorkingDialogueEntry)))
+    || (checkpoint.requestIdentity !== undefined && !validWorkingDialogueEntry(checkpoint.requestIdentity))
     || envelope.hash !== hash(JSON.stringify(checkpoint))) {
     throw new Error('Saved working context failed its integrity check. It has not been replaced.');
   }
@@ -214,7 +225,7 @@ const recoverMissingLegacyRecords = async (input: {
   directory: string; names: string[]; checkpoint: Checkpoint; dialogue: any[];
   contents: any[]; kind: WireKind; fabric?: ContextFabric | null;
 }): Promise<any[]> => {
-  if (input.checkpoint.lineageVersion === 2) return [];
+  if (Number(input.checkpoint.lineageVersion) >= 2) return [];
   // Never undo a committed compaction. Its capsule/archive, not an old working
   // file, owns which historical observations are still in the active window.
   if (input.contents.some(capsuleOf) || input.fabric?.getLatestCompactionCheckpoint()) return [];
@@ -235,7 +246,7 @@ const recoverMissingLegacyRecords = async (input: {
     // ancestor with one must not resurrect observations from before it.
     if (checkpoint.contents.some(capsuleOf)) return [];
     ancestors.push(checkpoint);
-    if (checkpoint.lineageVersion === 2) break;
+    if (Number(checkpoint.lineageVersion) >= 2) break;
   }
   const recovered: any[] = [];
   let bytes = Buffer.byteLength(JSON.stringify(input.contents));
@@ -335,13 +346,36 @@ const translateCheckpoint = (checkpoint: Checkpoint, kind: WireKind): any[] =>
     return [...(visibleTurn ? [visibleTurn] : []), observationTurn(kind, text)];
   });
 
-/** Model switches inside a live adapter obey the same protocol boundary as restart. */
+/**
+ * Switching models inside one provider keeps its native conversation wire.
+ * Only model-specific reasoning/signatures are retired; tool exchanges and
+ * attachments must not become JSON prose merely because the model changed.
+ */
 export function rebaseWorkingTranscriptForModel(contents: any[], kind: WireKind): any[] {
   const systems = contents.filter(message => message?.role === 'system' && !capsuleOf(message));
-  return [...systems, ...translateCheckpoint({
+  const conversation = contents.filter(message => message?.role !== 'system' || capsuleOf(message));
+  // Responses items can carry model-owned protocol that is not represented
+  // in the compatible chat fields. Keep that complete exchange as exact
+  // reference data rather than leave native results with missing calls.
+  if (conversation.some(message => Array.isArray(message?.responses_output))) return [...systems, ...translateCheckpoint({
     version: 1, scope: '', provider: '', model: '', kind, dialogue: [],
-    contents: contents.filter(message => message?.role !== 'system' || capsuleOf(message)),
+    contents: conversation,
   }, kind)];
+  const rebased = conversation.flatMap(message => {
+    if (!message || typeof message !== 'object' || capsuleOf(message)) return [message];
+    const clean = { ...message };
+    for (const key of ['reasoning', 'reasoning_content', 'reasoning_details', 'thinking_content', 'analysis']) delete clean[key];
+    for (const key of ['parts', 'content']) {
+      if (Array.isArray(clean[key])) {
+        clean[key] = clean[key].map(cleanModelBlock).filter((part: any) => part !== null);
+        if (clean[key].length === 0 && !clean.tool_calls?.length) return [];
+      }
+    }
+    return [clean];
+  });
+  // Use the adapter's existing unsigned-history policy for the new Gemini
+  // model. Calls, results, media, and their ordering are otherwise retained.
+  return [...systems, ...(kind === 'gemini' ? sanitizeGeminiHistory(rebased) : rebased)];
 }
 
 /**
@@ -350,6 +384,32 @@ export function rebaseWorkingTranscriptForModel(contents: any[], kind: WireKind)
  * Each run owns a separate atomic file: a delayed old writer cannot replace
  * a newer run, and an edited chat cannot destroy its prior checkpoint.
  */
+/** Transform the exact idle transcript while preserving its admission lineage. */
+export async function compactSavedWorkingContext(chatId: string, transform: (checkpoint: Checkpoint) => Promise<any[]>) {
+  const directory = getEterxWorkspaceDir('.context', 'working', stableScopeSegment(chatId));
+  const names = await fs.readdir(directory).catch((error: any) => {
+    if (error?.code === 'ENOENT') return [] as string[];
+    throw error;
+  });
+  const latest = names.filter(name => /^\d{16}-[a-f0-9-]+\.json\.gz$/.test(name)).sort().reverse()[0];
+  if (!latest) throw new Error('This chat has no saved context to compact yet.');
+  const checkpoint = await readCheckpoint(path.join(directory, latest), chatId);
+  const contents = await transform(checkpoint);
+  const next = { ...checkpoint, contents, calibration: undefined };
+  const serialized = JSON.stringify(next);
+  if (Buffer.byteLength(serialized) > MAX_BYTES - 1024) throw new Error('Compacted context exceeds the safe checkpoint size.');
+  const destination = path.join(directory, `${String(Math.max(Date.now(), Number(latest.slice(0, 16)) + 1)).padStart(16, '0')}-${randomUUID()}.json.gz`);
+  const temporary = `${destination}.tmp`;
+  try {
+    const file = await openFile(temporary, 'wx', 0o600);
+    try {
+      await file.writeFile(await zip(JSON.stringify({ checkpoint: next, hash: hash(serialized) })));
+      await file.sync();
+    } finally { await file.close(); }
+    await fs.rename(temporary, destination);
+  } finally { await fs.remove(temporary).catch(() => undefined); }
+}
+
 export async function openWorkingContextCheckpoint(input: {
   chatId: string;
   provider: string;
@@ -368,11 +428,21 @@ export async function openWorkingContextCheckpoint(input: {
 }) {
   const directory = getEterxWorkspaceDir('.context', 'working', stableScopeSegment(input.chatId));
   let admissionTime = Date.now();
-  const incoming = input.history.map(dialogueIdentity);
-  const dialogue = [...incoming, dialogueIdentity({ role: 'user', content: input.currentRequest })];
+  const requestIdentity = workingDialogueEntry({ role: 'user', content: input.currentRequest },
+    input.runId ? `user-turn-${input.runId}` : undefined);
+  // A reconnect can carry its optimistic bubble in history. Exclude only the
+  // same stable admission, never a previous request with identical wording.
+  const history = input.history.filter(message => {
+    const entry = workingDialogueEntry(message);
+    return !requestIdentity.turnId || entry.turnId !== requestIdentity.turnId
+      || !sameWorkingDialogueEntry(entry, requestIdentity);
+  });
+  const dialogue = [...history.map(message => workingDialogueEntry(message).identity), requestIdentity.identity];
+  let reconciledHistory = reconcileWorkingDialogue([], history);
+  let workingLineage = reconciledHistory.lineage;
+  let remainingHistory = reconciledHistory.remainingHistory;
   let restored: any[] = [];
   let calibration: Checkpoint['calibration'];
-  let covered = 0;
   let currentRequestIncluded = false;
   if (input.enabled) {
     let names: string[] = [];
@@ -386,76 +456,99 @@ export async function openWorkingContextCheckpoint(input: {
     }
     if (names.length === 0 && !input.hasSurvivorState) restored = await recoverLegacyToolContext(input);
     if (names.length > 0 && !input.hasSurvivorState) {
-      // Only the newest admitted run is authoritative. Never resurrect an old
-      // branch by scanning backwards for a coincidentally matching sentence.
+      // The newest sealed checkpoint owns execution state for this chat. The
+      // feed can omit old turns or repair rendered answers; neither operation
+      // authorizes replacing that transcript or blocking a new admission.
       const checkpoint = await readCheckpoint(path.join(directory, names[0]), input.chatId);
-      const suppliedDialogue = [...input.history, { role: 'user', content: input.currentRequest }];
+      const suppliedDialogue = [...history, { role: 'user', content: input.currentRequest }];
+      const savedLineage = extendWorkingDialogue(checkpoint.lineage
+        || checkpoint.dialogue.map(identity => ({ identity })), checkpoint.contents);
+      const savedRequest = checkpoint.requestIdentity || savedLineage[checkpoint.dialogue.length - 1];
+      if (savedRequest && !checkpoint.lineageVersion) {
+        for (const message of suppliedDialogue) {
+          // Native envelope aliases were indexed above. The old standalone
+          // wrapper needs only a hash comparison, not a transcript scan for
+          // every historical turn in a long reopened chat.
+          if (message?.role !== 'user' || savedRequest.identity !== dialogueIdentity({
+            role: 'user', content: `[USER REQUEST]\n${textOf(message)}`,
+          })) continue;
+          const entry = workingDialogueEntry(message);
+          savedRequest.aliases = [...new Set([...(savedRequest.aliases || []), entry.identity])].slice(0, 12);
+        }
+      }
       const resumesSameRun = Boolean(input.runId && input.runId === checkpoint.runId
-        && checkpoint.dialogue.length === dialogue.length
-        && checkpointMatchesDialogue(checkpoint, suppliedDialogue));
-      const continuesHistory = checkpointMatchesDialogue(checkpoint, input.history);
-      if (resumesSameRun || continuesHistory) {
-        covered = checkpoint.dialogue.length;
-        currentRequestIncluded = resumesSameRun;
-        restored = !input.referenceOnly && checkpoint.kind === input.kind && checkpoint.provider === input.provider && checkpoint.model === input.model
-          ? checkpoint.contents : translateCheckpoint(checkpoint, input.kind);
-        if (!input.referenceOnly && checkpoint.kind === input.kind && checkpoint.provider === input.provider && checkpoint.model === input.model
-          && Number.isFinite(checkpoint.calibration?.inputTokens) && Number.isFinite(checkpoint.calibration?.localTokens)
-          && checkpoint.calibration!.inputTokens > 0 && checkpoint.calibration!.localTokens > 0) {
-          calibration = checkpoint.calibration;
+        && savedRequest && (sameWorkingDialogueEntry(savedRequest, requestIdentity)
+          || legacyRootMatches(checkpoint, { role: 'user', content: input.currentRequest }, savedRequest.identity)));
+      reconciledHistory = reconcileWorkingDialogue(savedLineage, history);
+      workingLineage = reconciledHistory.lineage;
+      remainingHistory = reconciledHistory.remainingHistory;
+      currentRequestIncluded = resumesSameRun;
+      const sameProviderWire = !input.referenceOnly && checkpoint.kind === input.kind && checkpoint.provider === input.provider;
+      restored = sameProviderWire
+        ? checkpoint.model === input.model ? [...checkpoint.contents] : rebaseWorkingTranscriptForModel(checkpoint.contents, input.kind)
+        : translateCheckpoint(checkpoint, input.kind);
+      if (sameProviderWire && checkpoint.model === input.model
+        && Number.isFinite(checkpoint.calibration?.inputTokens) && Number.isFinite(checkpoint.calibration?.localTokens)
+        && checkpoint.calibration!.inputTokens > 0 && checkpoint.calibration!.localTokens > 0) {
+        calibration = checkpoint.calibration;
+      }
+      const recovered = await recoverMissingLegacyRecords({
+        directory, names, checkpoint, dialogue: suppliedDialogue, contents: restored,
+        kind: input.kind, fabric: input.fabric,
+      });
+      if (recovered.length) {
+        restored = [...recovered, ...restored];
+        // These exact recovered observations were absent from the measured
+        // payload; its calibration is no longer a count of the whole input.
+        calibration = undefined;
+      }
+      // A stopped batch can have completed effects in the exact ledger
+      // after the last protocol-safe request checkpoint. Reattach those
+      // observations without fabricating pending tool calls or rerunning them.
+      if (input.fabric?.scopeId === input.chatId && Number.isSafeInteger(checkpoint.fabricRevision)) {
+        const unseen = input.fabric.listEpisodes().filter(episode =>
+          episode.source === 'tool' && episode.sequence > checkpoint.fabricRevision!,
+        ).sort((left, right) => left.sequence - right.sequence);
+        let restoredBytes = Buffer.byteLength(JSON.stringify(restored));
+        for (const episode of unseen) {
+          const observation = await input.fabric.openPage(episode.pageRef);
+          const text = `[RECOVERED COMPLETED TOOL OBSERVATION - REFERENCE DATA ONLY]\n${JSON.stringify({
+            pageRef: episode.pageRef, sha256: episode.contentHash, observedAt: episode.createdAt, observation,
+          })}\n[END RECOVERED TOOL OBSERVATION]`;
+          restoredBytes += Buffer.byteLength(text);
+          if (restoredBytes > MAX_BYTES) throw new Error('Recovered working context exceeds the safe read size. Its checkpoint and exact pages have been preserved.');
+          restored.push(observationTurn(input.kind, text));
         }
-        const recovered = await recoverMissingLegacyRecords({
-          directory, names, checkpoint, dialogue: suppliedDialogue, contents: restored,
-          kind: input.kind, fabric: input.fabric,
-        });
-        if (recovered.length) {
-          restored = [...recovered, ...restored];
-          // These exact recovered observations were absent from the measured
-          // payload; its calibration is no longer a count of the whole input.
-          calibration = undefined;
-        }
-        // A stopped batch can have completed effects in the exact ledger
-        // after the last protocol-safe request checkpoint. Reattach those
-        // observations without fabricating pending tool calls or rerunning them.
-        if (input.fabric?.scopeId === input.chatId && Number.isSafeInteger(checkpoint.fabricRevision)) {
-          const unseen = input.fabric.listEpisodes().filter(episode =>
-            episode.source === 'tool' && episode.sequence > checkpoint.fabricRevision!,
-          ).sort((left, right) => left.sequence - right.sequence);
-          let restoredBytes = Buffer.byteLength(JSON.stringify(restored));
-          for (const episode of unseen) {
-            const observation = await input.fabric.openPage(episode.pageRef);
-            const text = `[RECOVERED COMPLETED TOOL OBSERVATION - REFERENCE DATA ONLY]\n${JSON.stringify({
-              pageRef: episode.pageRef, sha256: episode.contentHash, observedAt: episode.createdAt, observation,
-            })}\n[END RECOVERED TOOL OBSERVATION]`;
-            restoredBytes += Buffer.byteLength(text);
-            if (restoredBytes > MAX_BYTES) throw new Error('Recovered working context exceeds the safe read size. Its checkpoint and exact pages have been preserved.');
-            restored.push(observationTurn(input.kind, text));
-          }
-        }
-      } else if (incoming.length < checkpoint.dialogue.length
-        && incoming.every((identity, index) => identity === checkpoint.dialogue[index])) {
-        throw new Error('The saved working context is newer than the supplied chat history. Reload this chat before continuing; its saved context has not been replaced.');
-      } else {
-        throw new Error('This chat history does not match its saved working context. Reload the chat before continuing; its full checkpoint has been preserved instead of replacing it with the shorter chat feed.');
+      }
+      if (reconciledHistory.earlierHistory.length) {
+        restored = [...translateCheckpoint({
+          ...checkpoint,
+          contents: reconciledHistory.earlierHistory.map(withoutWorkingDialogueMetadata),
+        }, input.kind), ...restored];
       }
     }
   }
+  if (!currentRequestIncluded) workingLineage.push(requestIdentity);
   let warned = false;
   let previousHash = '';
   let saveChain: Promise<void> = Promise.resolve();
   const destination = path.join(directory, `${String(admissionTime).padStart(16, '0')}-${randomUUID()}.json.gz`);
+  const migratedContents = neutralizeCurrentUserRequestCarriers(restored);
+  if (migratedContents !== restored) calibration = undefined;
   return {
-    contents: restored,
-    remainingHistory: input.history.slice(covered),
+    contents: migratedContents,
+    remainingHistory: remainingHistory.map(withoutWorkingDialogueMetadata),
     calibration,
     currentRequestIncluded,
     async save(contents: any[], model = input.model, provider = input.provider, measured?: Checkpoint['calibration']): Promise<void> {
       if (!input.enabled) return;
       // Runtime prompts/tools are rebuilt from current settings. The only
       // persisted system carrier is the journal-validated compaction capsule.
-      const conversational = contents.filter(message => message?.role !== 'system' || capsuleOf(message));
+      const conversational = contents.filter(message => message?.role !== 'system' || capsuleOf(message))
+        .map(withoutWorkingDialogueMetadata);
       const checkpoint: Checkpoint = { version: 1, scope: input.chatId, provider, model,
-        kind: input.kind, lineageVersion: 2, runId: input.runId, dialogue, contents: conversational, calibration: measured,
+        kind: input.kind, lineageVersion: 3, runId: input.runId, dialogue, requestIdentity,
+        lineage: extendWorkingDialogue(workingLineage, conversational), contents: conversational, calibration: measured,
         fabricRevision: input.fabric?.scopeId === input.chatId ? input.fabric.getRevision() : undefined };
       const temporary = `${destination}.${randomUUID()}.tmp`;
       // Capture before the first await, then serialize commits in call order.

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef } from 'react';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
 export const InteractiveGrid = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -17,7 +18,9 @@ export const InteractiveGrid = () => {
     let my = 9999;
     let cols = 0;
     let rows = 0;
-    let isVisible = document.visibilityState !== 'hidden';
+    let appVisible = isAppVisible();
+    let surfaceVisible = typeof IntersectionObserver === 'undefined';
+    let isVisible = appVisible && surfaceVisible;
     const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
     // Strict void configuration matching the screenshot exactly
@@ -160,7 +163,8 @@ export const InteractiveGrid = () => {
     };
 
     const onVisibilityChange = () => {
-      isVisible = document.visibilityState !== 'hidden';
+      appVisible = isAppVisible();
+      isVisible = appVisible && surfaceVisible;
       if (isVisible) requestDraw();
       else if (animationFrameId !== null) {
         cancelAnimationFrame(animationFrameId);
@@ -168,11 +172,24 @@ export const InteractiveGrid = () => {
       }
     };
 
+    const intersectionObserver = typeof IntersectionObserver === 'undefined'
+      ? null
+      : new IntersectionObserver(entries => {
+          surfaceVisible = entries[0]?.isIntersecting ?? false;
+          isVisible = appVisible && surfaceVisible;
+          if (isVisible) requestDraw();
+          else if (animationFrameId !== null) {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+          }
+        });
+    intersectionObserver?.observe(canvas);
+
     window.addEventListener('resize', onResize, { passive: true });
     window.addEventListener('scroll', onScroll, { capture: true, passive: true });
     window.addEventListener('mousemove', onMouseMove, { passive: true });
     window.addEventListener('mouseleave', onMouseLeave, { passive: true });
-    document.addEventListener('visibilitychange', onVisibilityChange);
+    const unsubscribeVisibility = subscribeAppVisibility(onVisibilityChange);
 
     return () => {
       if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
@@ -180,7 +197,8 @@ export const InteractiveGrid = () => {
       window.removeEventListener('scroll', onScroll, { capture: true });
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseleave', onMouseLeave);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
+      unsubscribeVisibility();
+      intersectionObserver?.disconnect();
     };
   }, []);
 

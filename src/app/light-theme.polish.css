@@ -1001,3 +1001,46 @@
 :root[data-theme="light"] .eterx-chat-feed :is(.eterx-action-file-link, .eterx-file-change-filename, .eterx-inline-code-filename) {
   color: #767676 !important;
 }
+
+/* The thought disclosure follows the compact, text-first chat treatment.
+   Keep markdown/code typography separate from the Segoe UI reading text. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card,
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card:hover {
+  box-sizing: border-box !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-card-border) 88%, transparent) !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card:is(:hover, [data-open="true"]) {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 5%, var(--chat-card-border)) !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle,
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle:is(:hover, :focus-visible, [aria-expanded="true"]) {
+  box-sizing: border-box !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  padding: 1px 9px !important;
+  background: transparent !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-expanded {
+  border-top: 1px solid color-mix(in srgb, var(--chat-card-border) 82%, transparent) !important;
+  padding: 8px 10px 12px 30px !important;
+  background: transparent !important;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
+  font-size: 14px !important;
+  line-height: 1.68 !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-reading-content :is(code, pre, kbd, samp, .eterx-markdown-code-content, .eterx-markdown-inline-code) {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+
+@media (max-width: 640px) {
+  :root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-expanded {
+    padding-inline-start: 16px !important;
+    font-size: 13.5px !important;
+  }
+}

@@ -203,7 +203,9 @@
   }
 
   .eterx-app-shell[data-platform="macos"] {
-    --eterx-native-controls-left: 78px;
+    /* Keep this gutter even while native controls are temporarily hidden.
+       Revealing them must never move or cover the sidebar button. */
+    --eterx-native-controls-left: 84px;
   }
 
   /* Native title-bar labels and controls should behave like window chrome,
@@ -214,17 +216,6 @@
     -webkit-user-select: none;
   }
 
-  /* Show the name beside the sidebar icon when open, and in the global
-     header when closed, consistently across desktop platforms. */
-  .eterx-global-brand {
-    display: none !important;
-    color: var(--eterx-topbar-text);
-  }
-
-  .eterx-app-shell[data-sidebar-open="false"] .eterx-global-brand {
-    display: flex !important;
-  }
-
   .eterx-app-shell[data-platform="linux"] {
     --eterx-native-controls-right: 138px;
   }
@@ -233,6 +224,14 @@
   .eterx-global-topbar {
     left: 0;
     right: var(--eterx-native-controls-right);
+  }
+
+  .eterx-app-shell[data-platform="macos"] .eterx-window-drag-layer {
+    left: calc(var(--eterx-native-controls-left) + var(--eterx-sidebar-control-width));
+  }
+
+  .eterx-mac-topbar-sidebar-spacer {
+    width: max(0px, calc(var(--eterx-shell-sidebar-width) - var(--eterx-native-controls-left) - var(--eterx-sidebar-control-width)));
   }
 
   .eterx-global-topbar {
@@ -1016,21 +1015,21 @@
 }
 
 .eterx-work-menu {
-  width: 276px !important;
+  width: 320px !important;
   max-width: calc(100vw - 24px);
   height: auto !important;
   max-height: calc(100vh - 120px);
-  --shimmer-surface: #1C1C1A;
+  --shimmer-surface: #18181B;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  background: #1C1C1A;
-  color: rgba(242, 240, 236, 0.74);
-  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  border-radius: 14px;
+  background: rgba(24, 24, 27, 0.96);
+  color: rgba(242, 240, 236, 0.85);
+  box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
   font-size: 13px;
   overflow: hidden;
   transform-origin: top right;
-  -webkit-backdrop-filter: blur(20px);
-  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
 }
 
 .eterx-work-menu-header {
@@ -1038,18 +1037,18 @@
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  padding: 12px 12px 10px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012));
-  border-radius: 16px 16px 0 0;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+  border-radius: 14px 14px 0 0;
 }
 
 .eterx-work-menu-eyebrow {
-  color: rgba(255, 255, 255, 0.38);
+  color: rgba(255, 255, 255, 0.4);
   font-size: 10.5px;
-  font-weight: 750;
-  letter-spacing: 0;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   line-height: 1.1;
   text-transform: uppercase;
 }
@@ -1057,152 +1056,177 @@
 .eterx-work-menu-title {
   display: flex;
   min-width: 0;
-  max-width: 260px;
+  max-width: 280px;
   align-items: center;
   gap: 6px;
-  margin-top: 4px;
-  color: rgba(255, 255, 255, 0.88);
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.9);
   font-size: 12.5px;
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.2;
 }
 
 .eterx-work-menu-state {
   display: inline-flex;
-  min-height: 24px;
+  min-height: 22px;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.30);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 999px;
-  background: #1C1C1C;
-  color: rgba(255, 255, 255, 0.68);
-  padding: 0 9px;
-  font-size: 11px;
-  font-weight: 750;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+  padding: 0 8px;
+  font-size: 10.5px;
+  font-weight: 600;
   line-height: 1;
-  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.30);
   transition: all 150ms ease;
 }
 
 .eterx-work-menu-state:hover {
-  background: #262626;
+  background: rgba(255, 255, 255, 0.1);
   border-color: rgba(255, 255, 255, 0.2);
-  box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.68);
-  color: #E8E6E3;
+  color: #fff;
 }
 
 .eterx-work-menu-state-live {
-  border-color: rgba(52, 211, 153, 0.18);
-  background: rgba(16, 185, 129, 0.11);
-  color: #78e8b9;
-  box-shadow: inset 0 -1px 0 rgba(52, 211, 153, 0.18);
+  border-color: rgba(52, 211, 153, 0.25);
+  background: rgba(16, 185, 129, 0.12);
+  color: #6ee7b7;
 }
 
 .eterx-work-menu-state-live:hover {
   background: rgba(16, 185, 129, 0.2);
-  border-color: rgba(52, 211, 153, 0.3);
-  box-shadow: inset 0 -2px 0 rgba(52, 211, 153, 0.68);
-  color: #9bf3cc;
+  border-color: rgba(52, 211, 153, 0.4);
+  color: #a7f3d0;
 }
 
 .eterx-work-menu-content {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px;
+  padding: 6px;
+  scrollbar-gutter: auto !important;
+  scrollbar-width: thin;
+}
+
+.eterx-work-menu-content::-webkit-scrollbar,
+.eterx-work-menu-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.eterx-work-menu-content::-webkit-scrollbar-track,
+.eterx-work-menu-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.eterx-work-menu-content::-webkit-scrollbar-thumb,
+.eterx-work-menu-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
 }
 
 .eterx-work-menu-section-button {
   display: flex;
-  min-height: 34px;
+  min-height: 32px;
   width: 100%;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
-  color: rgba(255, 255, 255, 0.9);
-  padding: 0 10px;
+  color: rgba(255, 255, 255, 0.88);
+  padding: 0 8px;
   text-align: left;
-  font-size: 13px;
-  font-weight: 720;
+  font-size: 12.5px;
+  font-weight: 600;
   line-height: 1;
-  transition: background 150ms ease, color 150ms ease;
+  transition: all 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .eterx-work-menu-section-button:hover,
 .eterx-work-menu-section-button:focus-visible {
-  background: rgba(255, 255, 255, 0.042);
+  background: rgba(255, 255, 255, 0.06);
   color: #fff;
   outline: none;
 }
 
+.eterx-work-menu-section-button:active {
+  background: rgba(255, 255, 255, 0.09);
+}
+
 .eterx-work-menu-section-badge {
   display: inline-flex;
-  min-width: 22px;
-  height: 20px;
+  min-width: 18px;
+  height: 18px;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.30);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 999px;
-  background: #1C1C1C;
-  color: rgba(255, 255, 255, 0.54);
-  padding: 0 7px;
-  font-size: 10.5px;
-  font-weight: 750;
-  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.30);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+  padding: 0 5.5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
   transition: all 150ms ease;
 }
 
 .eterx-work-menu-section-button:hover .eterx-work-menu-section-badge {
-  background: #262626;
-  border-color: rgba(255, 255, 255, 0.2);
-  box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.68);
-  color: #E8E6E3;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #fff;
 }
 
 .eterx-work-menu-list {
   display: flex;
-  max-height: 112px;
+  max-height: min(240px, 34vh);
   flex-direction: column;
   gap: 2px;
   overflow-y: auto;
-  padding: 2px 2px 4px;
+  overscroll-behavior: contain;
+  padding: 2px 0 3px;
+  scrollbar-gutter: auto !important;
+  scrollbar-width: thin;
 }
 
 .eterx-work-menu-list-tall {
-  max-height: 210px;
+  max-height: 220px;
 }
 
 .eterx-work-menu-task-row {
   display: flex;
-  min-height: 28px;
+  min-height: 30px;
   align-items: center;
-  gap: 10px;
-  border-radius: 10px;
+  gap: 8px;
+  border-radius: 8px;
   padding: 4px 8px;
   font-size: 12px;
-  line-height: 1.2;
+  line-height: 1.3;
+  transition: background 150ms ease;
+}
+
+.eterx-work-menu-task-row:hover {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .eterx-work-menu-row {
   display: flex;
-  min-height: 36px;
+  min-height: 40px;
   width: 100%;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
-  color: rgba(255, 255, 255, 0.76);
-  padding: 7px 9px;
+  color: rgba(255, 255, 255, 0.8);
+  padding: 6px 8px;
   text-align: left;
-  font-size: 12.5px;
-  line-height: 1.2;
+  font-size: 12px;
+  line-height: 1.25;
   cursor: pointer;
-  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+  transition: all 150ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .eterx-work-menu-row.items-start {
@@ -1211,15 +1235,19 @@
 
 .eterx-work-menu-row:hover,
 .eterx-work-menu-row:focus-visible {
-  border-color: rgba(255, 255, 255, 0.075);
-  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.06);
   color: #fff;
   outline: none;
 }
 
+.eterx-work-menu-row:active {
+  background: rgba(255, 255, 255, 0.09);
+}
+
 .eterx-work-menu-row-active {
-  border-color: rgba(255, 255, 255, 0.095);
-  background: rgba(255, 255, 255, 0.066);
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.075);
   color: #fff;
 }
 
@@ -1227,32 +1255,32 @@
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-  color: rgba(255, 255, 255, 0.34);
+  color: rgba(255, 255, 255, 0.4);
   transition: color 150ms ease;
 }
 
 .eterx-work-menu-row:hover .eterx-work-menu-row-icon,
 .eterx-work-menu-row-active .eterx-work-menu-row-icon {
-  color: rgba(255, 255, 255, 0.82);
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .eterx-work-menu-divider {
   height: 1px;
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.06);
-  margin: 6px 4px;
+  margin: 4px 6px;
 }
 
 .eterx-work-menu-empty {
   display: flex;
   min-height: 28px;
   align-items: center;
-  gap: 9px;
-  border-radius: 10px;
-  color: #A39B91;
-  padding: 4px 10px 8px;
-  font-size: 12.5px;
-  line-height: 1.2;
+  gap: 8px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.45);
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.25;
 }
 
 .eterx-work-menu-flyout {
@@ -1478,6 +1506,54 @@
   --shimmer-base: #858585;
   --shimmer-color: #bdbdbd;
   --_highlight: var(--shimmer-color);
+}
+
+.eterx-work-menu-totals {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px 6px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.eterx-work-menu-totals > :first-child { flex: 1; }
+.eterx-work-menu-detail { color: var(--muted-foreground); font-size: 10.5px; line-height: 1.4; }
+.eterx-work-menu-added {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0.5px 5px;
+  border-radius: 999px;
+  color: #059669;
+  background: rgba(5, 150, 105, 0.08);
+  border: 1px solid rgba(5, 150, 105, 0.2);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.eterx-work-menu-removed {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0.5px 5px;
+  border-radius: 999px;
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.2);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+:root[data-theme="dark"] .eterx-work-menu-added {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.12);
+  border-color: rgba(52, 211, 153, 0.25);
+}
+:root[data-theme="dark"] .eterx-work-menu-removed {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.25);
 }
 
 .eterx-proxy-chat-window {
@@ -2429,17 +2505,6 @@
   z-index: 2;
 }
 
-.eterx-user-message-actions::after {
-  content: '';
-  position: absolute;
-  top: -10px;
-  bottom: -10px;
-  left: 100%;
-  width: 16px;
-  background: transparent;
-  pointer-events: auto;
-}
-
 .eterx-user-message-action-button {
   background: transparent;
   transition: background-color 140ms ease, color 140ms ease, opacity 140ms ease;
@@ -2500,34 +2565,6 @@
 }
 
 @media (max-width: 520px) {
-  .eterx-user-message-actions {
-    bottom: calc(100% + 6px);
-    right: 4px;
-    top: auto;
-    margin-right: 0;
-    transform: none;
-  }
-
-  .eterx-user-message-actions::after {
-    display: none !important;
-  }
-
-  .eterx-user-message-actions::before {
-    content: '';
-    position: absolute;
-    top: 100%;
-    left: -10px;
-    right: -10px;
-    height: 12px;
-    background: transparent;
-    pointer-events: auto;
-  }
-
-  .eterx-user-message-action-button {
-    background: rgba(32, 32, 31, 0.92);
-    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
-  }
-
   .eterx-user-message-controls {
     right: 12px;
     bottom: 10px;
@@ -3967,15 +4004,15 @@
 .eterx-markdown-inline-code {
   display: inline;
   margin-inline: 0.06em;
-  padding: 0.08em 0.36em !important;
-  border: 1px solid var(--eterx-md-border-strong) !important;
-  border-radius: 0.38em !important;
-  background: var(--eterx-md-inline-code-bg) !important;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--eterx-md-strong) 6%, transparent) !important;
+  padding: 0.06em 0.28em !important;
+  border: 0 !important;
+  border-radius: 0.25em !important;
+  background: color-mix(in srgb, var(--eterx-md-strong) 6%, transparent) !important;
+  box-shadow: none !important;
   color: color-mix(in srgb, var(--eterx-md-strong) 90%, var(--eterx-md-text)) !important;
   font-family: var(--font-mono), "Cascadia Code", "SFMono-Regular", Consolas, monospace !important;
   font-size: 0.88em !important;
-  font-weight: 500 !important;
+  font-weight: 400 !important;
   line-height: 1.45;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
@@ -3999,6 +4036,10 @@
 
 /* Theme-aware Local File Link Chip styling */
 .eterx-local-file-chip {
+  display: inline-grid;
+  grid-template-columns: minmax(0, auto) 1px auto;
+  column-gap: 0;
+  justify-content: start;
   width: fit-content;
   flex: 0 1 auto;
   background-color: var(--eterx-md-card-soft) !important;
@@ -4039,7 +4080,10 @@
 .eterx-professional-thought .eterx-local-file-chip {
   width: fit-content;
   flex: 0 1 auto;
-  display: inline-flex;
+  display: inline-grid;
+  grid-template-columns: minmax(0, auto) 1px auto;
+  column-gap: 0;
+  justify-content: start;
   max-width: 100%;
   min-width: 0;
   vertical-align: middle;
@@ -4544,8 +4588,7 @@
 .eterx-markdown-td .eterx-local-file-chip {
   width: fit-content;
   flex: 0 1 auto;
-  display: flex;
-  width: 100%;
+  display: inline-grid;
 }
 
 .eterx-markdown-th > :first-child,
@@ -4635,6 +4678,12 @@
 }
 
 .eterx-markdown-image {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: min(560px, 70vh);
+  object-fit: contain;
   border-color: var(--eterx-md-border) !important;
 }
 
@@ -10687,7 +10736,7 @@ body.eterx-gateway-view section.mt-8 > main {
   letter-spacing: -0.022em !important;
 }
 
-:root .eterx-app-shell :is(.eterx-sidebar-brand-text, .eterx-global-brand) {
+:root .eterx-app-shell .eterx-sidebar-brand-text {
   /* A broad, bold wordmark, distinct from the surrounding interface text. */
   font-family: Arial, "Helvetica Neue", Helvetica, sans-serif !important;
   font-size: 20px !important;
@@ -10701,7 +10750,7 @@ body.eterx-gateway-view section.mt-8 > main {
   text-shadow: none;
 }
 
-:root[data-theme="light"] .eterx-app-shell :is(.eterx-sidebar-brand-text, .eterx-global-brand) {
+:root[data-theme="light"] .eterx-app-shell .eterx-sidebar-brand-text {
   color: #505050 !important;
 }
 
@@ -11427,6 +11476,32 @@ body.eterx-gateway-view section.mt-8 > main {
   margin-bottom: 1.25rem !important;
 }
 
+/* Visible entries own transcript spacing. Pending and delivered messages use
+   the same structure; helper-only groups return null, so they cannot break
+   adjacency or leave a blank spacer. Padding avoids collapsing margins at
+   final-answer handoffs. Keep the user action rail inside the message. */
+.eterx-chat-feed-content > .eterx-feed-entry {
+  display: flow-root;
+  padding-top: 20px;
+}
+
+.eterx-chat-feed-content > .eterx-feed-entry:first-child {
+  padding-top: 0;
+}
+
+.eterx-chat-feed-content > .eterx-feed-entry[data-message-role="user"] + .eterx-feed-entry[data-message-role="user"]:not([data-date-divider="true"]) {
+  padding-top: 8px;
+}
+
+.eterx-chat-feed-content > .eterx-feed-entry[data-message-role="user"] + .eterx-feed-entry[data-message-role="assistant"]:not([data-date-divider="true"]) {
+  padding-top: 12px;
+}
+
+/* Override the older theme and narrow-column group margins in one place. */
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-feed .eterx-chat-feed-content > .eterx-feed-entry > .eterx-chat-message-group[data-chat-group-index] {
+  margin-block: 0 !important;
+}
+
 /* Terminal notices remain outside Work without inheriting answer-sized gaps. */
 .eterx-chat-message-group > .eterx-work-sequence + .eterx-agent-run-notice,
 .eterx-chat-message-group > .eterx-agent-run-notice + .eterx-agent-run-notice {
@@ -11443,38 +11518,38 @@ body.eterx-gateway-view section.mt-8 > main {
 }
 
 /* Compact universal reasoning surface shared by every runtime mode. */
-.eterx-chat-column .eterx-thought-card {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card {
   border-radius: 8px !important;
 }
 
-.eterx-chat-column .eterx-thought-toggle {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle {
   min-height: 26px !important;
   padding: 1px 8px !important;
 }
 
-.eterx-chat-column .eterx-thought-toggle .eterx-thinking-shimmer {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle .eterx-thinking-shimmer {
   font-size: 12.5px !important;
   font-weight: 500 !important;
   line-height: 1.25 !important;
   letter-spacing: -0.002em !important;
 }
 
-:root[data-theme="light"] .eterx-chat-column .eterx-thinking-shimmer {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thinking-shimmer {
   --shimmer-base: var(--chat-detail-ink, #939393);
   --shimmer-color: #606060;
   --shimmer-surface: #FFFFFF;
   color: var(--chat-activity-ink, #808080) !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-column .eterx-thinking-shimmer,
-.dark .eterx-chat-column .eterx-thinking-shimmer {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thinking-shimmer,
+.dark :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thinking-shimmer {
   --shimmer-base: #9A9A9A;
   --shimmer-color: #F2F2F2;
   --shimmer-surface: #0F0F0F;
   color: #9A9A9A !important;
 }
 
-.eterx-chat-column .eterx-thought-expanded {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-expanded {
   padding: 4px 10px 8px !important;
   font-size: 11.5px !important;
   line-height: 1.48 !important;
@@ -11484,34 +11559,34 @@ body.eterx-gateway-view section.mt-8 > main {
    surface and prose must be theme-owned. The component historically carried
    dark-only inline colors, which made an expanded Thought washed out in the
    light theme even though the collapsed row appeared correct. */
-:root[data-theme="light"] .eterx-chat-column .eterx-thought-card {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card {
   background: var(--chat-card-surface, #FCFCFC) !important;
   border-color: var(--chat-card-border, #E7E7E7) !important;
   box-shadow: none !important;
 }
 
-:root[data-theme="light"] .eterx-chat-column .eterx-thought-toggle:hover {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle:hover {
   background: rgba(23, 23, 23, 0.025) !important;
 }
 
-:root[data-theme="light"] .eterx-chat-column .eterx-thought-toggle > svg {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle > svg {
   color: var(--chat-activity-ink, #808080) !important;
 }
 
-:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded,
-:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded p,
-:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded ol,
-:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded ul,
-:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded li {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-expanded,
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-expanded p,
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-expanded ol,
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-expanded ul,
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-expanded li {
   color: #737373 !important;
 }
 
-:root[data-theme="light"] .eterx-chat-column .eterx-thought-expanded strong {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-expanded strong {
   color: #1F1F1D !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-column .eterx-thought-card,
-.dark .eterx-chat-column .eterx-thought-card {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card,
+.dark :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card {
   background: rgba(21, 21, 20, 0.34) !important;
   border-color: rgba(255, 255, 255, 0.075) !important;
   box-shadow: none !important;
@@ -11658,28 +11733,28 @@ body.eterx-gateway-view section.mt-8 > main {
    viewport-width breakpoint.  This keeps the transcript, activity rows and
    composer on one rail while the window or either adjacent panel is resized.
 ------------------------------------------------------------------------- */
-.eterx-chat-column {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) {
   container-name: eterx-conversation;
   container-type: inline-size;
   min-width: min(100%, var(--eterx-chat-panel-min, 360px));
   --eterx-conversation-gutter: clamp(16px, 3.2cqw, 48px);
-  --eterx-conversation-user-max: min(77%, calc(var(--eterx-reference-composer-max) * 0.77));
+  --eterx-conversation-user-max: min(86%, calc(var(--eterx-reference-composer-max) * 0.86));
   --eterx-conversation-reading-size: 14.5px;
   --eterx-conversation-reading-leading: 1.54;
-  --eterx-worked-summary-size: 13px;
+  --eterx-worked-summary-size: 13.75px;
 }
 
 /* Feed and composer must be a single visual column.  The max-width token is
    still density-aware, while the container gutter reacts to the actual main
    panel width (including a freely resized sidebar). */
-.eterx-chat-column .eterx-chat-feed-scroll,
-.eterx-chat-column .eterx-chat-input-dock {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-feed-scroll,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-input-dock {
   padding-inline: var(--eterx-conversation-gutter) !important;
 }
 
-.eterx-chat-column .eterx-chat-feed-content,
-.eterx-chat-column .eterx-composer-shell:not([data-compressed="true"]),
-.eterx-chat-column .eterx-queued-followup-rail {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-feed-content,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-composer-shell:not([data-compressed="true"]),
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-queued-followup-rail {
   width: 100% !important;
   max-width: var(--eterx-reference-composer-max) !important;
   min-width: 0;
@@ -11688,19 +11763,30 @@ body.eterx-gateway-view section.mt-8 > main {
 
 /* Long user requests should use the same proportional bubble width at every
    density instead of a fixed 520px cap that becomes visually inconsistent. */
-.eterx-chat-column .eterx-chat-feed-user-bubble,
-.eterx-chat-column .eterx-steering-bubble {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-user-message-content,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-steering-bubble {
   max-width: var(--eterx-conversation-user-max) !important;
   overflow-wrap: anywhere;
   text-wrap: pretty;
 }
 
+/* The outer wrapper owns the responsive cap. A percentage on the inner
+   bubble applies it twice and even squeezes a one-word message. */
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-feed-user-bubble {
+  width: fit-content;
+  max-width: 100% !important;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  text-wrap: wrap;
+}
+
 /* A stable professional reading rhythm.  These values are slightly tighter
    than the old stacked overrides, which prevents narrow windows from turning
    ordinary replies into unnecessarily deep transcript blocks. */
-.eterx-chat-column .eterx-assistant-answer-body,
-.eterx-chat-column .eterx-work-note-block,
-.eterx-chat-column .eterx-work-note-block .eterx-professional-note {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-assistant-answer-body,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-work-note-block,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-work-note-block .eterx-professional-note {
   min-width: 0;
   max-width: 100%;
   font-size: var(--eterx-conversation-reading-size) !important;
@@ -11709,44 +11795,44 @@ body.eterx-gateway-view section.mt-8 > main {
   text-wrap: pretty;
 }
 
-.eterx-chat-column .eterx-answer-paragraph {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-answer-paragraph {
   margin-bottom: 0.66rem !important;
 }
 
-.eterx-chat-column .eterx-answer-list {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-answer-list {
   margin-block: 0.6rem !important;
 }
 
-.eterx-chat-column .eterx-answer-list-item {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-answer-list-item {
   line-height: 1.5 !important;
 }
 
 /* Streaming command names, paths and provider messages can be arbitrarily
    long.  Zero flex minimums keep them inside the rail without changing the
    sidebar width or pushing controls off-screen. */
-.eterx-chat-column .eterx-thinking-process-stack,
-.eterx-chat-column .eterx-phase-block,
-.eterx-chat-column .eterx-action-group,
-.eterx-chat-column .eterx-action-group-header,
-.eterx-chat-column .eterx-action-card,
-.eterx-chat-column .eterx-action-chip,
-.eterx-chat-column .eterx-terminal-trace,
-.eterx-chat-column .eterx-terminal-trace-row,
-.eterx-chat-column .eterx-file-change-trace,
-.eterx-chat-column .eterx-file-change-row,
-.eterx-chat-column .eterx-agent-comm-card,
-.eterx-chat-column .eterx-worked-summary,
-.eterx-chat-column .eterx-worked-summary-line {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thinking-process-stack,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-phase-block,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-group,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-group-header,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-card,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-chip,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-terminal-trace,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-terminal-trace-row,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-file-change-trace,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-file-change-row,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-agent-comm-card,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-worked-summary,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-worked-summary-line {
   min-width: 0;
   max-width: 100%;
   box-sizing: border-box;
 }
 
-.eterx-chat-column .eterx-action-verb,
-.eterx-chat-column .eterx-file-change-title,
-.eterx-chat-column .eterx-terminal-console-command,
-.eterx-chat-column .eterx-file-change-detail,
-.eterx-chat-column .eterx-action-file-link {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-verb,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-file-change-title,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-terminal-console-command,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-file-change-detail,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-file-link {
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -11755,7 +11841,7 @@ body.eterx-gateway-view section.mt-8 > main {
 /* Keep the composer compact as the window gets shorter.  Width contraction
    may cause wrapping, but it must not also allow the editor to consume most
    of the available vertical workspace. */
-.eterx-chat-column .eterx-composer-textarea {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-composer-textarea {
   max-height: min(var(--eterx-composer-textarea-max, 320px), 28dvh) !important;
 }
 
@@ -11778,66 +11864,66 @@ body.eterx-gateway-view section.mt-8 > main {
 /* Main-column breakpoints, not viewport breakpoints.  These continue to work
    when a user resizes the sidebar or opens the file/agent panel. */
 @container eterx-conversation (max-width: 760px) {
-  .eterx-chat-column .eterx-chat-feed,
-  .eterx-chat-column .eterx-chat-input-dock {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-feed,
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-input-dock {
     --eterx-conversation-gutter: clamp(14px, 3cqw, 22px);
     --eterx-conversation-user-max: min(88%, calc(var(--eterx-reference-composer-max) * 0.86));
     --eterx-conversation-reading-size: 14px;
     --eterx-conversation-reading-leading: 1.5;
   }
 
-  .eterx-chat-column .eterx-chat-message-group {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-message-group {
     margin-bottom: 1rem !important;
   }
 
-  .eterx-chat-column .eterx-chat-message-group.group\/user {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-message-group.group\/user {
     margin-top: 1.5rem !important;
   }
 
-  .eterx-chat-column .eterx-thinking-process-stack {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thinking-process-stack {
     gap: 0.32rem !important;
   }
 
-  .eterx-chat-column .eterx-worked-summary {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-worked-summary {
     gap: 9px !important;
   }
 
-  .eterx-chat-column .eterx-action-group-header,
-  .eterx-chat-column .eterx-action-chip,
-  .eterx-chat-column .eterx-terminal-trace-row,
-  .eterx-chat-column .eterx-file-change-row {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-group-header,
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-chip,
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-terminal-trace-row,
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-file-change-row {
     line-height: 1.32 !important;
   }
 
-  .eterx-chat-column .eterx-composer-input-row {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-composer-input-row {
     min-height: 34px !important;
   }
 
-  .eterx-chat-column .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls {
     margin-top: 5px !important;
   }
 }
 
 @container eterx-conversation (max-width: 520px) {
-  .eterx-chat-column .eterx-chat-feed,
-  .eterx-chat-column .eterx-chat-input-dock {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-feed,
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-input-dock {
     --eterx-conversation-gutter: 12px;
     --eterx-conversation-user-max: 92%;
     --eterx-conversation-reading-size: 13.75px;
     --eterx-conversation-reading-leading: 1.48;
-    --eterx-worked-summary-size: 11.5px;
+    --eterx-worked-summary-size: 13px;
   }
 
-  .eterx-chat-column .eterx-chat-feed-content {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-feed-content {
     padding-top: 30px !important;
   }
 
-  .eterx-chat-column .eterx-chat-input-dock-active {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-chat-input-dock-active {
     padding-top: 16px !important;
     padding-bottom: max(10px, env(safe-area-inset-bottom, 0px)) !important;
   }
 
-  .eterx-chat-column .eterx-user-message-bubble {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-user-message-bubble {
     padding: 9px 13px !important;
     border-radius: 16px !important;
   }
@@ -11997,15 +12083,15 @@ body.eterx-gateway-view section.mt-8 > main {
 }
 
 .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-left > *:first-child .eterx-control-button {
-  width: 30px !important;
-  min-width: 30px !important;
-  height: 30px !important;
-  min-height: 30px !important;
+  width: var(--eterx-composer-action-size) !important;
+  min-width: var(--eterx-composer-action-size) !important;
+  height: var(--eterx-composer-action-size) !important;
+  min-height: var(--eterx-composer-action-size) !important;
 }
 
 .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-chat-controls-left > *:first-child .eterx-composer-control-icon {
-  width: 16px !important;
-  height: 16px !important;
+  width: 20px !important;
+  height: 20px !important;
 }
 
 /* Attachment and plan rows stay in normal flow so an uploaded image or a
@@ -12311,18 +12397,18 @@ body.eterx-gateway-view section.mt-8 > main {
 /* Canonical action geometry. Every collapsed action uses the compact skill
    row as its baseline, including rows inside terminal/browser/action groups.
    Expanded previews remain outside the fixed header and can grow normally. */
-.eterx-chat-column .eterx-action-chip,
-.eterx-chat-column .eterx-terminal-trace-row,
-.eterx-chat-column .eterx-file-change-row,
-.eterx-chat-column .eterx-thought-toggle,
-.eterx-chat-column .eterx-browser-activity-header,
-.eterx-chat-column .eterx-action-group-header,
-.eterx-chat-column .eterx-action-group .eterx-action-chip,
-.eterx-chat-column .eterx-action-group .eterx-terminal-trace-row,
-.eterx-chat-column .eterx-action-group .eterx-file-change-row,
-.eterx-chat-column .eterx-browser-activity-group .eterx-action-chip,
-.eterx-chat-column .eterx-browser-activity-group .eterx-terminal-trace-row,
-.eterx-chat-column .eterx-browser-activity-group .eterx-file-change-row {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-chip,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-terminal-trace-row,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-file-change-row,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-browser-activity-header,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-group-header,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-group .eterx-action-chip,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-group .eterx-terminal-trace-row,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-group .eterx-file-change-row,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-browser-activity-group .eterx-action-chip,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-browser-activity-group .eterx-terminal-trace-row,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-browser-activity-group .eterx-file-change-row {
   box-sizing: border-box !important;
   height: 30px !important;
   min-height: 30px !important;
@@ -12333,32 +12419,32 @@ body.eterx-gateway-view section.mt-8 > main {
   line-height: 1.3 !important;
 }
 
-.eterx-chat-column .eterx-action-card,
-.eterx-chat-column .eterx-thought-card,
-.eterx-chat-column .eterx-terminal-trace,
-.eterx-chat-column .eterx-file-change-trace,
-.eterx-chat-column .eterx-action-group,
-.eterx-chat-column .eterx-browser-activity-group {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-card,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-terminal-trace,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-file-change-trace,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-group,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-browser-activity-group {
   border-radius: 6px !important;
 }
 
 /* Narration stays brighter than activity metadata without bleaching links,
    syntax highlighting, or the quieter thought and tool surfaces. */
-:root[data-theme="dark"] .eterx-chat-column :is(.eterx-professional-note, .eterx-professional-answer) {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-professional-note, .eterx-professional-answer) {
   color: #e5e3df !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-column :is(.eterx-professional-note, .eterx-professional-answer) :is(.eterx-answer-paragraph, .eterx-answer-list, .eterx-answer-list-item, .eterx-answer-em) {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-professional-note, .eterx-professional-answer) :is(.eterx-answer-paragraph, .eterx-answer-list, .eterx-answer-list-item, .eterx-answer-em) {
   color: #e5e3df !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-column :is(.eterx-professional-note, .eterx-professional-answer) :is(.eterx-answer-strong, .eterx-answer-heading) {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-professional-note, .eterx-professional-answer) :is(.eterx-answer-strong, .eterx-answer-heading) {
   color: #f0eeea !important;
 }
 
 /* A quiet, consistent rhythm for action sequences. Only collapsed headers
    have a fixed height; terminal output and file previews retain their space. */
-.eterx-chat-column .eterx-action-sequence-header {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header {
   min-height: 34px;
   padding: 6px 0;
   gap: 8px;
@@ -12370,13 +12456,13 @@ body.eterx-gateway-view section.mt-8 > main {
   touch-action: manipulation;
 }
 
-.eterx-chat-column .eterx-action-sequence {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence {
   margin-inline: 0;
   padding-inline: 0;
   min-width: 0;
 }
 
-.eterx-chat-column .eterx-action-sequence-header > .eterx-sequence-icon {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header > .eterx-sequence-icon {
   width: 18px;
   height: 20px;
   flex: 0 0 18px;
@@ -12387,18 +12473,18 @@ body.eterx-gateway-view section.mt-8 > main {
   transition: none;
 }
 
-.eterx-chat-column .eterx-action-sequence-header {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header {
   gap: 0;
 }
 
-.eterx-chat-column .eterx-action-sequence-header > .eterx-sequence-icon[data-visible="false"] {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header > .eterx-sequence-icon[data-visible="false"] {
   width: 0;
   flex-basis: 0;
   margin-right: 0;
   opacity: 0;
 }
 
-.eterx-chat-column .eterx-action-sequence-header > .eterx-sequence-caret {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header > .eterx-sequence-caret {
   margin-left: 7px;
   width: 14px;
   height: 20px;
@@ -12409,180 +12495,190 @@ body.eterx-gateway-view section.mt-8 > main {
   justify-content: center;
 }
 
-.eterx-chat-column .eterx-sequence-caret > svg {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-sequence-caret > svg {
   display: block;
   transition: transform 100ms ease-out;
 }
 
-.eterx-chat-column .eterx-action-sequence-header[hidden] {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header[hidden] {
   display: none;
 }
 
-.eterx-chat-column .eterx-action-sequence-header .eterx-sequence-heading {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header .eterx-sequence-heading {
   display: flex;
   align-items: center;
   height: 20px;
   line-height: 20px;
 }
 
-.eterx-chat-column .eterx-sequence-heading > span {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-sequence-heading > span {
   display: block;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
   line-height: inherit;
 }
 
-.eterx-chat-column .eterx-action-sequence-header .eterx-sequence-icon :is(svg, img) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header .eterx-sequence-icon :is(svg, img) {
   display: block;
   position: relative;
   top: 1px;
 }
 
-.eterx-chat-column .eterx-action-sequence[data-live="true"] .eterx-sequence-heading {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence[data-live="true"] .eterx-sequence-heading {
   max-width: calc(100% - 21px);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .eterx-chat-column .eterx-action-sequence-header > .eterx-sequence-icon,
-  .eterx-chat-column .eterx-sequence-caret > svg {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header > .eterx-sequence-icon,
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-sequence-caret > svg {
     transition: none;
   }
 }
 
-.eterx-chat-column .eterx-action-icon {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-icon {
   width: 20px;
   height: 20px;
   justify-content: center;
 }
 
-.eterx-chat-column :is(.eterx-trace-label, .eterx-file-change-title, .eterx-file-change-added, .eterx-file-change-removed) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-trace-label, .eterx-file-change-title, .eterx-file-change-added, .eterx-file-change-removed) {
   font-variant-numeric: tabular-nums;
 }
 
-.eterx-chat-column :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb) {
   display: block;
   align-self: center;
   line-height: 20px !important;
 }
 
-.eterx-chat-column .eterx-action-icon :is(svg, img) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-icon :is(svg, img) {
   display: block;
   position: relative;
   top: 1px;
 }
 
-.eterx-chat-column .eterx-work-sequence + .eterx-assistant-answer {
-  margin-top: 12px;
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-work-sequence + .eterx-assistant-answer {
+  margin-top: 8px;
 }
 
-.eterx-chat-column .eterx-action-sequence-header .shimmer {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header .shimmer {
   --shimmer-duration: 2.4s;
 }
 
-.eterx-chat-column :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb, .eterx-sequence-heading > span).shimmer {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb, .eterx-sequence-heading > span).shimmer {
   --shimmer-duration: 2.4s;
   --shimmer-base: currentColor;
 }
 
-:root[data-theme="dark"] .eterx-chat-column .shimmer {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .shimmer {
   --shimmer-color: #f2f2f2;
 }
 
-:root[data-theme="light"] .eterx-chat-column .shimmer {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .shimmer {
   --shimmer-color: #353535;
 }
 
-.eterx-chat-column .eterx-action-sequence-header:hover {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header:hover {
   color: #ded9d2;
   background: rgba(255, 255, 255, 0.035);
 }
 
-.eterx-chat-column .eterx-action-sequence-header:active {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header:active {
   background: rgba(255, 255, 255, 0.06);
 }
 
-.eterx-chat-column .eterx-action-sequence-content {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-content {
   gap: 4px;
 }
 
-.eterx-chat-column .eterx-action-sequence-content :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence * {
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
+}
+
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence .eterx-terminal-console,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence .eterx-terminal-console * {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+}
+
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-content :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
   height: 30px !important;
   min-height: 30px !important;
   padding-inline: 9px !important;
 }
 
-.eterx-chat-column .eterx-thought-toggle {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle {
   height: 27px !important;
   min-height: 27px !important;
   padding-inline: 9px !important;
 }
 
-.eterx-chat-column :is(.eterx-action-card, .eterx-thought-card, .eterx-action-group) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-action-card, .eterx-thought-card, .eterx-action-group) {
   border-radius: 6px !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-column :is(.eterx-action-card, .eterx-action-group, .eterx-thought-card) {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-action-card, .eterx-action-group, .eterx-thought-card) {
   background: rgba(24, 24, 23, 0.22) !important;
   border-color: rgba(255, 255, 255, 0.04) !important;
   box-shadow: none !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-column .eterx-thought-card {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card {
   background: rgba(24, 24, 23, 0.12) !important;
   border-color: rgba(255, 255, 255, 0.028) !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-column :is(.eterx-action-card, .eterx-thought-card):hover {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-action-card, .eterx-thought-card):hover {
   border-color: rgba(255, 255, 255, 0.1) !important;
 }
 
-:root[data-theme="light"] .eterx-chat-column .eterx-action-sequence-header {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header {
   color: var(--chat-activity-ink, #66615b);
 }
 
-:root[data-theme="light"] .eterx-chat-column .eterx-action-sequence-header:hover {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-header:hover {
   color: var(--light-ink, #292724);
   background: var(--chat-row-hover, rgba(0, 0, 0, 0.035));
 }
 
 /* Prose has one reveal owner. Markdown may regroup nodes at paragraph or
    stream boundaries; those commits must not start another entrance effect. */
-.eterx-chat-column :is(.eterx-professional-note, .eterx-professional-answer)[data-live-text="true"] > :is(.eterx-answer-paragraph, .eterx-answer-list, .eterx-answer-heading) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-professional-note, .eterx-professional-answer)[data-live-text="true"] > :is(.eterx-answer-paragraph, .eterx-answer-list, .eterx-answer-heading) {
   animation: none;
 }
 
-.eterx-chat-column .eterx-action-sequence-content :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb, .eterx-file-change-filename) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-content :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb, .eterx-file-change-filename) {
   font-size: 12.5px !important;
   font-weight: 500 !important;
   letter-spacing: -0.01em;
 }
 
-:root[data-theme="dark"] .eterx-chat-column .eterx-action-sequence-content :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb) {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-content :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb) {
   color: #aaa7a2 !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-column .eterx-action-sequence-content .eterx-file-change-filename {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-content .eterx-file-change-filename {
   color: #c6c3bd !important;
 }
 
-.eterx-chat-column .eterx-action-sequence-content :is(.eterx-terminal-trace-row, .eterx-file-change-row, .eterx-action-chip, .eterx-thought-toggle) > svg:last-child {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-content :is(.eterx-terminal-trace-row, .eterx-file-change-row, .eterx-action-chip, .eterx-thought-toggle) > svg:last-child {
   opacity: 0.45;
   transition: opacity 120ms ease, transform 120ms ease;
 }
 
-.eterx-chat-column .eterx-action-sequence-content :is(.eterx-terminal-trace-row, .eterx-file-change-row, .eterx-action-chip, .eterx-thought-toggle):is(:hover, :focus-visible, [aria-expanded="true"]) > svg:last-child {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-content :is(.eterx-terminal-trace-row, .eterx-file-change-row, .eterx-action-chip, .eterx-thought-toggle):is(:hover, :focus-visible, [aria-expanded="true"]) > svg:last-child {
   opacity: 1;
 }
 
-.eterx-chat-column .eterx-action-sequence-content :is(.eterx-terminal-trace-row, .eterx-file-change-row, .eterx-action-chip):focus-visible {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-content :is(.eterx-terminal-trace-row, .eterx-file-change-row, .eterx-action-chip):focus-visible {
   outline: 1px solid #918b82 !important;
   outline-offset: -2px;
   border-radius: 5px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .eterx-chat-column .eterx-action-sequence-content svg {
+  :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence-content svg {
     transition: none !important;
   }
 }
@@ -12616,16 +12712,16 @@ body.eterx-gateway-view section.mt-8 > main {
 }
 
 /* Feed polish changes surfaces, never the availability of incoming text. */
-.eterx-chat-column :is(.eterx-action-chip, .eterx-file-change-row) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-action-chip, .eterx-file-change-row) {
   grid-template-columns: 20px auto minmax(0, 1fr) 14px;
 }
 
-.eterx-chat-column :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row, .eterx-browser-activity-header, .eterx-action-group-header, .eterx-thought-toggle) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row, .eterx-browser-activity-header, .eterx-action-group-header, .eterx-thought-toggle) {
   align-items: center;
   column-gap: 7px;
 }
 
-.eterx-chat-column :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) > .eterx-action-icon {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) > .eterx-action-icon {
   display: flex;
   width: 20px;
   height: 20px;
@@ -12635,18 +12731,18 @@ body.eterx-gateway-view section.mt-8 > main {
   margin: 0;
 }
 
-.eterx-chat-column .eterx-action-icon :is(svg, img) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-icon :is(svg, img) {
   /* Center the actual asset, without the previous extra vertical offset. */
   top: 0;
   vertical-align: middle;
 }
 
-.eterx-chat-column :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) > span:not(.eterx-action-icon) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) > span:not(.eterx-action-icon) {
   line-height: 20px !important;
   align-self: center;
 }
 
-.eterx-chat-column :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row, .eterx-thought-toggle, .eterx-browser-activity-header, .eterx-action-group-header) > svg:last-child {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row, .eterx-thought-toggle, .eterx-browser-activity-header, .eterx-action-group-header) > svg:last-child {
   display: block;
   width: 14px;
   height: 14px;
@@ -12656,7 +12752,7 @@ body.eterx-gateway-view section.mt-8 > main {
   flex-shrink: 0;
 }
 
-.eterx-chat-column :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb, .eterx-file-change-filename) {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-trace-label, .eterx-file-change-title, .eterx-action-verb, .eterx-file-change-filename) {
   font-size: 12.5px !important;
   font-weight: 500 !important;
   line-height: 20px !important;
@@ -12697,27 +12793,145 @@ body.eterx-gateway-view section.mt-8 > main {
   align-self: center;
 }
 
-.eterx-chat-column .eterx-thought-toggle .eterx-thinking-shimmer {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle .eterx-thinking-shimmer {
   display: block;
   line-height: 20px;
   --shimmer-duration: 2.4s;
 }
 
+/* Thought streams keep the live row quiet and put elapsed time in the
+   completed label, with a short fade between the two states. */
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card {
+  box-sizing: border-box !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 88%, transparent) !important;
+  transition: box-shadow 160ms ease, background-color 160ms ease;
+}
+
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card:hover,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card[data-open="true"] {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 5%, var(--border)) !important;
+}
+
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle {
+  box-sizing: border-box !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  gap: 6px !important;
+  padding: 1px 9px !important;
+  background: transparent !important;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
+}
+
+.eterx-thought-state-label {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  overflow: hidden;
+}
+
+.eterx-thought-state-label .eterx-thinking-shimmer {
+  min-width: 0;
+  max-width: 100%;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
+  font-size: 15px !important;
+  line-height: 1.45 !important;
+}
+
+.eterx-thought-chevron {
+  flex: 0 0 14px;
+  opacity: 0.58;
+}
+
+.eterx-thought-toggle:is(:hover, :focus-visible, [aria-expanded="true"]) .eterx-thought-chevron {
+  opacity: 1;
+}
+
+.eterx-thought-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--foreground) 38%, transparent) !important;
+  outline-offset: -2px;
+}
+
+.eterx-thought-expanded {
+  border-top: 1px solid color-mix(in srgb, var(--border) 76%, transparent) !important;
+  padding: 8px 10px 12px 30px !important;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
+  font-size: 14px !important;
+  line-height: 1.68 !important;
+  overflow-wrap: anywhere;
+}
+
+.eterx-thought-scroll-frame {
+  min-width: 0;
+}
+
+.eterx-thought-scroll-fade {
+  position: absolute;
+  z-index: 2;
+  right: 8px;
+  left: 30px;
+  height: 10px;
+  pointer-events: none;
+}
+
+.eterx-thought-scroll-fade-top {
+  top: 0;
+  background: linear-gradient(to bottom, var(--background) 0%, color-mix(in srgb, var(--background) 72%, transparent) 54%, transparent 100%);
+}
+
+.eterx-thought-scroll-fade-bottom {
+  bottom: 0;
+  background: linear-gradient(to top, var(--background) 0%, color-mix(in srgb, var(--background) 72%, transparent) 54%, transparent 100%);
+}
+
+.eterx-thought-reading-content {
+  width: min(100%, 78ch);
+  color: inherit;
+}
+
+.eterx-thought-reading-content > :first-child {
+  margin-top: 0 !important;
+}
+
+.eterx-thought-reading-content > :last-child {
+  margin-bottom: 0 !important;
+}
+
+.eterx-thought-reading-content .eterx-thought-list {
+  padding-inline-start: 1.35rem;
+}
+
+.eterx-thought-reading-content .eterx-thought-list-item::marker {
+  color: color-mix(in srgb, currentColor 62%, transparent);
+}
+
+.eterx-thought-reading-content :is(code, pre, kbd, samp, .eterx-markdown-code-content, .eterx-markdown-inline-code) {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+
+@media (max-width: 640px) {
+  .eterx-thought-expanded { padding-inline-start: 16px !important; font-size: 13.5px !important; }
+  .eterx-thought-scroll-fade { left: 16px; }
+}
+
 /* One live-text treatment, including legacy call sites with inline overrides.
    Keep the animation on the same span as its text changes; never fade it out. */
-.eterx-chat-column .shimmer {
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .shimmer {
   --shimmer-duration: 2.4s !important;
   --shimmer-angle: 12deg !important;
   --shimmer-spread: clamp(18px, 12%, 120px) !important;
   --shimmer-base: currentColor !important;
 }
 
-:root[data-theme="dark"] .eterx-chat-column .shimmer {
+:root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .shimmer {
   --shimmer-color: #eaeaea !important;
   --shimmer-base: currentColor !important;
 }
 
-:root[data-theme="light"] .eterx-chat-column .shimmer {
+:root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .shimmer {
   --shimmer-base: #858585 !important;
   --shimmer-color: #bdbdbd !important;
   color: #858585 !important;
@@ -12770,16 +12984,239 @@ body.eterx-gateway-view section.mt-8 > main {
 
 
 
+.eterx-work-menu .eterx-work-menu-row {
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.eterx-work-menu .eterx-work-menu-section-button,
+.eterx-work-menu .eterx-work-menu-section-button * {
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease !important;
+}
+.eterx-work-menu .eterx-work-menu-row:hover,
+.eterx-work-menu .eterx-work-menu-section-button:hover {
+  background: color-mix(in srgb, var(--foreground) 6%, transparent) !important;
+  border-color: color-mix(in srgb, var(--foreground) 9%, transparent) !important;
+  color: var(--foreground) !important;
+}
+.eterx-work-menu .eterx-work-menu-row:active,
+.eterx-work-menu .eterx-work-menu-section-button:active {
+  background: color-mix(in srgb, var(--foreground) 10%, transparent) !important;
+}
+.eterx-work-menu .eterx-work-menu-row:hover .eterx-work-menu-row-icon {
+  opacity: 0.9;
+}
+.eterx-work-menu .eterx-work-menu-row,
+.eterx-work-menu .eterx-work-menu-section-button {
+  color: var(--foreground);
+}
+.eterx-work-menu .eterx-work-menu-row:focus-visible,
+.eterx-work-menu .eterx-work-menu-section-button:focus-visible {
+  outline: 2px solid var(--muted-foreground);
+  outline-offset: -2px;
+}
+.eterx-work-menu .eterx-work-menu-section-badge,
+.eterx-work-menu .eterx-work-menu-section-button:hover .eterx-work-menu-section-badge {
+  background: transparent !important;
+  border-color: var(--border) !important;
+  color: var(--muted-foreground) !important;
+  box-shadow: none !important;
+}
+.eterx-work-menu .eterx-work-menu-section-button svg,
+.eterx-work-menu .eterx-work-menu-section-button:hover svg {
+  color: var(--muted-foreground) !important;
+}
+
+.eterx-image-viewer {
+  --viewer-panel: rgba(26, 26, 28, 0.88);
+  --viewer-text: #f3f3f2;
+  --viewer-border: rgba(255, 255, 255, 0.12);
+  --viewer-hover: rgba(255, 255, 255, 0.09);
+  --viewer-close-bg: rgba(34, 34, 37, 0.94);
+  --viewer-close-hover: rgba(52, 52, 56, 0.98);
+  --viewer-close-hover-border: rgba(255, 255, 255, 0.24);
+  --viewer-backdrop: rgba(0, 0, 0, 0.48);
+  --viewer-blur: 10px;
+  background: var(--viewer-backdrop) !important;
+  backdrop-filter: blur(var(--viewer-blur));
+  -webkit-backdrop-filter: blur(var(--viewer-blur));
+  color: var(--viewer-text);
+  pointer-events: auto !important;
+  -webkit-app-region: no-drag !important;
+}
+
+:root[data-theme="light"] .eterx-image-viewer {
+  --viewer-panel: rgba(255, 255, 255, 0.90);
+  --viewer-text: #1c1c1e;
+  --viewer-border: rgba(0, 0, 0, 0.10);
+  --viewer-hover: rgba(0, 0, 0, 0.06);
+  --viewer-close-bg: rgba(255, 255, 255, 0.95);
+  --viewer-close-hover: #f2f2f0;
+  --viewer-close-hover-border: rgba(0, 0, 0, 0.18);
+  --viewer-backdrop: rgba(255, 255, 255, 0.52);
+  --viewer-blur: 10px;
+  background: var(--viewer-backdrop) !important;
+  backdrop-filter: blur(var(--viewer-blur));
+  -webkit-backdrop-filter: blur(var(--viewer-blur));
+}
+
+.eterx-image-viewer,
+.eterx-image-viewer * {
+  -webkit-app-region: no-drag !important;
+}
+
+.eterx-image-viewer .eterx-image-viewer-toolbar {
+  background: var(--viewer-panel) !important;
+  color: var(--viewer-text) !important;
+  border: 1px solid var(--viewer-border) !important;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-theme="light"] .eterx-image-viewer .eterx-image-viewer-toolbar {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.10);
+}
+
+.eterx-image-viewer .eterx-image-viewer-btn {
+  color: var(--viewer-text) !important;
+  transition: background-color 0.15s ease, transform 0.12s ease, color 0.15s ease;
+}
+
+.eterx-image-viewer .eterx-image-viewer-btn:hover:not(:disabled) {
+  background: var(--viewer-hover) !important;
+}
+
+.eterx-image-viewer .eterx-image-viewer-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.eterx-image-viewer .eterx-image-viewer-pct {
+  color: var(--viewer-text) !important;
+}
+
+.eterx-image-viewer .eterx-image-viewer-divider {
+  background: var(--viewer-border) !important;
+}
+
+.eterx-image-viewer .eterx-image-viewer-close {
+  background: var(--viewer-close-bg) !important;
+  color: var(--viewer-text) !important;
+  border: 1px solid var(--viewer-border) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.32);
+  top: max(56px, calc(env(safe-area-inset-top, 0px) + 16px));
+  right: max(20px, env(safe-area-inset-right, 0px));
+  padding: 0;
+  line-height: 1;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease, color 0.15s ease;
+}
+
+.eterx-image-viewer .eterx-image-viewer-close svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  color: inherit;
+  stroke: currentColor;
+}
+
+.eterx-image-viewer .eterx-image-viewer-close:hover {
+  background: var(--viewer-close-hover) !important;
+  border-color: var(--viewer-close-hover-border) !important;
+  transform: scale(1.06);
+}
+
+.eterx-image-viewer .eterx-image-viewer-close:active {
+  transform: scale(0.95);
+}
+
+.eterx-image-viewer .eterx-image-viewer-nav-btn {
+  background: var(--viewer-close-bg) !important;
+  color: var(--viewer-text) !important;
+  border: 1px solid var(--viewer-border) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.eterx-image-viewer .eterx-image-viewer-nav-btn:hover:not(:disabled) {
+  background: var(--viewer-close-hover) !important;
+  transform: scale(1.08);
+}
+
+.eterx-image-viewer .eterx-image-viewer-nav-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.eterx-image-viewer button:focus-visible {
+  outline: 2px solid var(--viewer-text);
+  outline-offset: 2px;
+}
+
+.eterx-text-preview {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  width: min(820px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100dvh - 48px);
+  background: var(--background);
+  color: var(--foreground);
+  box-shadow: 0 20px 80px #0004;
+}
+.eterx-text-preview::backdrop { background: #0007; }
+.eterx-text-preview-panel { display: flex; flex-direction: column; height: min(720px, calc(100dvh - 50px)); }
+.eterx-user-message-content {
+  width: max-content;
+  max-width: 86%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-assistant-answer,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-assistant-answer-body,
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-professional-answer {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-professional-answer > :first-child {
+  margin-top: 0 !important;
+}
+.eterx-user-attachments img { margin: 0; }
+
 .eterx-local-file-chip-open {
   flex: 0 1 auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  justify-content: start;
+  column-gap: 0.5rem;
+  margin: 0;
   background: transparent;
   color: inherit;
   font: inherit;
 }
 .eterx-local-file-chip-error {
+  grid-column: 1 / -1;
   max-width: 24ch;
   padding-inline: 0.5rem;
   color: var(--eterx-md-muted);
   font-size: 0.75rem;
   line-height: 1.3;
 }
+
+/* Process history uses the same native scrollbar surface as chat and sidebar. */
+.eterx-background-process-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(240px, 34vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 2px 0 3px;
+}
+.eterx-background-process-list > .eterx-work-menu-row { flex-shrink: 0; }
+.eterx-terminal-connecting { position: absolute; right: 16px; top: 49px; color: var(--terminal-muted); pointer-events: none; }

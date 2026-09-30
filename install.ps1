@@ -273,14 +273,10 @@ try {
   Show-Stage 84 'Opening the EterX installer' 'Choose the application location and shortcut options'
   $process = Start-Process -FilePath $installerPath -Wait -PassThru
   if ($process.ExitCode -ne 0) {
-    $installedExecutable = Find-InstalledEterxExecutable
-    if ($installedExecutable) {
-      Write-Log "Native installer returned $($process.ExitCode), but EterX is installed at $installedExecutable."
-      Write-Host "  The installer reported code $($process.ExitCode), but EterX is installed successfully." -ForegroundColor Yellow
-      Write-Host "  Launch it from the Desktop or Start Menu shortcut." -ForegroundColor Yellow
-    } else {
-      throw "The native installer exited with code $($process.ExitCode). No installed EterX executable was found."
-    }
+    throw "The native installer exited with code $($process.ExitCode). An existing installation does not confirm this update succeeded."
+  }
+  if (-not (Find-InstalledEterxExecutable)) {
+    throw 'The installer closed, but no registered EterX executable was found. Installation may have been cancelled.'
   }
 
   Show-Stage 100 'EterX is installed' 'Future updates are downloaded safely inside the app'
@@ -295,7 +291,7 @@ try {
   Write-Host ''
   Write-Host '  EterX installation did not complete.' -ForegroundColor Red
   Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
-  Write-Host "  No existing EterX user data was changed. Log: $script:LogFile" -ForegroundColor Yellow
+  Write-Host "  Existing user data was not deleted by this bootstrap. Log: $script:LogFile" -ForegroundColor Yellow
   exit 1
 } finally {
   Release-InstallerLock

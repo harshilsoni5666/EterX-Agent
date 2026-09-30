@@ -1,7 +1,6 @@
 import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
 import { GoogleGenAI } from '@google/genai';
-import Anthropic from '@anthropic-ai/sdk';
-import OpenAI from 'openai';
+import { Anthropic, OpenAI } from './model-clients';
 import { getMainAgentModelConfig, normalizeMainAgentMode, type MainAgentMode, type MainAgentProvider } from './model-routing';
 import { getProviderBaseURL, isLocalModelProvider } from './provider-runtime';
 import { getRuntimeApiKey, type RuntimeApiKeyProvider } from './runtime-api-keys';
@@ -683,6 +682,7 @@ export class TaskPlannerClient {
   }
 
   private async withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    if (ms <= 0) return promise;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([promise, new Promise<T>((_, reject) => {

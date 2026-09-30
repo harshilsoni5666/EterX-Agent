@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
+import {
+  AGENT_SESSION_COOKIE,
+  AGENT_SESSION_MAX_AGE,
+  isSafeAgentSessionId as isSafeSessionId,
+  serializeAgentSessionCookie,
+} from '../../../lib/agent-api-session-cookie';
 import { normalizeAttachmentMime } from '../../../lib/agent/attachment-pipeline';
 
 export const MAX_AGENT_ID_LENGTH = 96;
@@ -9,10 +15,7 @@ export const MAX_RUN_ID_LENGTH = 160;
 const AGENT_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const CHAT_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
 const RESPONSE_KEY_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
-const SESSION_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
 const RUN_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
-const AGENT_SESSION_COOKIE = 'eterx_agent_session';
-const AGENT_SESSION_MAX_AGE = 60 * 60 * 24 * 30;
 const OWNER_RECORD_TTL_MS = AGENT_SESSION_MAX_AGE * 1000;
 const OWNER_PRUNE_INTERVAL_MS = 60_000;
 
@@ -70,24 +73,6 @@ export function rejectCrossOrigin(req: NextRequest) {
 
 function makeSessionId() {
   return randomUUID();
-}
-
-function isSafeSessionId(value: unknown): value is string {
-  return typeof value === 'string' &&
-    value.length > 0 &&
-    value.length <= 160 &&
-    SESSION_ID_PATTERN.test(value);
-}
-
-function serializeAgentSessionCookie(sessionId: string, secure: boolean) {
-  return [
-    `${AGENT_SESSION_COOKIE}=${encodeURIComponent(sessionId)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${AGENT_SESSION_MAX_AGE}`,
-    secure ? 'Secure' : '',
-  ].filter(Boolean).join('; ');
 }
 
 export function getOrCreateAgentApiSession(req: NextRequest): AgentApiSession {
@@ -206,7 +191,7 @@ export function parseInteger(value: unknown, fallback: number): number {
   return Math.trunc(parsed);
 }
 
-export type RunnerMessage = { role: 'user' | 'model'; content: string };
+export type RunnerMessage = { role: 'user' | 'model'; content: string; contextTurnId?: string };
 
 export function normalizeRunnerMessages(raw: unknown): { messages?: RunnerMessage[]; error?: string } {
   if (!Array.isArray(raw) || raw.length === 0) {
@@ -224,15 +209,16 @@ export function normalizeRunnerMessages(raw: unknown): { messages?: RunnerMessag
     if (!role) return { error: 'Each message role must be user, model, or assistant.' };
     if (!content.trim()) return { error: 'Each message must include non-empty content.' };
 
-    messages.push({ role, content });
+    const contextTurnId = cleanString(item?.contextTurnId, 512);
+    messages.push({ role, content, ...(contextTurnId ? { contextTurnId } : {}) });
   }
 
   return { messages };
 }
 
-export function normalizeHistory(raw: unknown): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+export function normalizeHistory(raw: unknown): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }>; contextTurnId?: string }> {
   if (!Array.isArray(raw)) return [];
-  const history: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  const history: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }>; contextTurnId?: string }> = [];
 
   for (const item of raw) {
     const role = item?.role === 'model' || item?.role === 'assistant'
@@ -253,7 +239,8 @@ export function normalizeHistory(raw: unknown): Array<{ role: 'user' | 'model'; 
       if (text.trim()) parts.push({ text });
     }
 
-    if (parts.length > 0) history.push({ role, parts });
+    const contextTurnId = cleanString(item?.contextTurnId, 512);
+    if (parts.length > 0) history.push({ role, parts, ...(contextTurnId ? { contextTurnId } : {}) });
   }
 
   return history;
@@ -274,7 +261,7 @@ export function normalizeMediaAttachments(raw: unknown): any[] {
         name,
         cleanString(item?.mimeType || item?.file?.type, 120) || 'application/octet-stream',
       );
-      const path = cleanPathLike(item?.path, 1200);
+      const path = cleanPathLike(item?.localPath || item?.path, 1200);
       const data = cleanString(item?.data, 12_000_000);
       const inlineDataValue = typeof item?.inlineData === 'string'
         ? { data: cleanString(item.inlineData, 12_000_000), mimeType }
@@ -286,7 +273,7 @@ export function normalizeMediaAttachments(raw: unknown): any[] {
           : null;
 
       const normalized: any = {
-        id: cleanString(item?.id, 120) || `attachment_${index + 1}`,
+        id: cleanString(item?.id, 120) || randomUUID(),
         name,
         mimeType,
       };

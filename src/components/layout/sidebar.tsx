@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { X, ChevronRight, ChevronDown, Check, Folder, Search } from 'lucide-react';
+import { X, ChevronRight, ChevronDown, Check, FolderClosed, Search, AlarmClockCheck, Link as LinkIcon, Users } from 'lucide-react';
 import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import { appStorage, appStorageReady } from '../../lib/client-storage';
@@ -932,11 +932,13 @@ const projectNameFromPath = (value: string) => {
 
 interface SidebarProps {
   isOpen: boolean;
+  titlebarToggleExternal?: boolean;
   setIsOpen: (open: boolean) => void;
   createNewChat: () => void;
   chats: ChatSession[];
   isLoadingChats?: boolean;
   activeChatId: string | null;
+  additionalActiveChatIds?: Set<string> | string[];
   loadChat: (id: string) => void;
   deleteChat: (id: string) => void;
   deleteChats?: (ids: string[]) => void;
@@ -953,7 +955,7 @@ interface SidebarProps {
 
 export const Sidebar = React.memo<SidebarProps>(
   ({
-    isOpen, setIsOpen, createNewChat, chats, isLoadingChats = false, activeChatId, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
+    isOpen, titlebarToggleExternal = false, setIsOpen, createNewChat, chats, isLoadingChats = false, activeChatId, additionalActiveChatIds, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
 }) => {
   const reduceMotion = useReducedMotion();
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean } | null>(null);
@@ -1595,6 +1597,9 @@ export const Sidebar = React.memo<SidebarProps>(
         <div id="eterx-sidebar-content" className="relative z-10 flex flex-col h-full w-full overflow-hidden">
           {/* Header containing Branding + Toggle */}
           <div className="eterx-sidebar-topbar h-[var(--eterx-shell-topbar-height)] px-3 tracking-tight flex items-center justify-start [-webkit-app-region:drag]">
+            {titlebarToggleExternal ? (
+              <span aria-hidden="true" className="h-8 w-8 shrink-0" />
+            ) : (
             <Tooltip text={isOpen ? "Close sidebar" : "Open sidebar"} side="right">
               <button
                 type="button"
@@ -1613,6 +1618,7 @@ export const Sidebar = React.memo<SidebarProps>(
                 <SidebarToggleIcon isOpen={isOpen} isHovered={toggleHovered} sizeClass="w-[18px] h-[18px]" />
               </button>
             </Tooltip>
+            )}
             {isOpen && (
               <span className="eterx-sidebar-brand-text text-[var(--sidebar-text)] font-bold text-[19px] ml-3.5 select-none tracking-[0.01em] [-webkit-app-region:no-drag] leading-none flex items-center h-8 translate-y-[0.5px]">
                 EterX
@@ -1637,7 +1643,7 @@ export const Sidebar = React.memo<SidebarProps>(
                     }`}
                 >
                   <div className="flex items-center gap-3 relative z-10">
-                    <PremiumEdit className={`w-[17px] h-[17px] transition-colors duration-150 ease-out ${ isNewChatActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]' }`} strokeWidth={2.15} />
+                    <PremiumEdit className={`w-[16px] h-[16px] transition-colors duration-150 ease-out ${ isNewChatActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]' }`} strokeWidth={2.0} />
                     New chat
                   </div>
                 </button>
@@ -1656,7 +1662,7 @@ export const Sidebar = React.memo<SidebarProps>(
                       : 'text-[var(--sidebar-text)] bg-transparent rounded-full'
                     }`}
                 >
-                  <PremiumEdit className={`w-[17px] h-[17px] transition-colors duration-150 relative z-10 ${ isNewChatActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]' }`} strokeWidth={2.15} />
+                  <PremiumEdit className={`w-[16px] h-[16px] transition-colors duration-150 relative z-10 ${ isNewChatActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]' }`} strokeWidth={2.0} />
                 </button>
               </Tooltip>
             )}
@@ -1666,9 +1672,9 @@ export const Sidebar = React.memo<SidebarProps>(
             {/* Menu Items */}
             <div className={isOpen ? "space-y-0.5 mt-0" : "space-y-1.5 mt-0"}>
               {[
-                { id: 'tasks', label: 'Tasks', icon: PremiumCheckSquare, tooltip: 'Manage tasks', onClick: () => setActiveView('projects'), active: activeView === 'projects' },
-                { id: 'agents', label: 'Agents', icon: PremiumAgent, tooltip: 'Manage agents', onClick: () => setActiveView('agents'), active: activeView === 'agents' },
-                { id: 'channels', label: 'Channels', icon: PremiumChannels, tooltip: 'Deploy agents to channels', onClick: () => setActiveView('channels'), active: activeView === 'channels' },
+                { id: 'tasks', label: 'Tasks', icon: AlarmClockCheck, tooltip: 'Manage tasks', onClick: () => setActiveView('projects'), active: activeView === 'projects' },
+                { id: 'agents', label: 'Agents', icon: Users, tooltip: 'Manage agents', onClick: () => setActiveView('agents'), active: activeView === 'agents' },
+                { id: 'channels', label: 'Channels', icon: LinkIcon, tooltip: 'Deploy agents to channels', onClick: () => setActiveView('channels'), active: activeView === 'channels' },
               ].map(item => {
                 const Icon = item.icon;
                 const isActive = item.active;
@@ -1688,9 +1694,9 @@ export const Sidebar = React.memo<SidebarProps>(
                           }`}
                       >
                         <Icon
-                          className={`w-[18px] h-[18px] transition-colors duration-150 ease-out relative z-10 ${ isActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]'
+                          className={`w-[16px] h-[16px] transition-colors duration-150 ease-out relative z-10 ${ isActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]'
                             }`}
-                          strokeWidth={2.15}
+                          strokeWidth={2.0}
                         />
                         <span className="relative z-10 whitespace-nowrap">{item.label}</span>
                       </button>
@@ -1712,9 +1718,9 @@ export const Sidebar = React.memo<SidebarProps>(
                           }`}
                       >
                         <Icon
-                          className={`w-[18px] h-[18px] transition-colors duration-150 ease-out relative z-10 ${ isActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]'
+                          className={`w-[16px] h-[16px] transition-colors duration-150 ease-out relative z-10 ${ isActive ? 'text-[var(--sidebar-active-text)]' : 'text-[var(--sidebar-icon)]'
                             }`}
-                          strokeWidth={2.15}
+                          strokeWidth={2.0}
                         />
                       </button>
                     </Tooltip>
@@ -1802,7 +1808,7 @@ export const Sidebar = React.memo<SidebarProps>(
                           onClick={() => handleProjectSelect(project.path)}
                           className="eterx-sidebar-project-menu-item group/menu-item"
                         >
-                          <Folder className="h-3.5 w-3.5 shrink-0" strokeWidth={1.95} />
+                          <FolderClosed className="h-3.5 w-3.5 shrink-0" strokeWidth={1.95} />
                           <span className="min-w-0 flex-1 truncate text-left">{project.name}</span>
                           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--sidebar-muted-text)] transition-transform duration-150 group-hover/menu-item:translate-x-0.5 group-hover/menu-item:text-[var(--sidebar-hover-text)]" strokeWidth={2} />
                         </button>
@@ -1908,7 +1914,7 @@ export const Sidebar = React.memo<SidebarProps>(
                   </div>
                 ) : (
                   visibleChats.map((chat) => {
-                    const isActive = activeChatId === chat.id && activeView === 'chat';
+                    const isActive = (activeChatId === chat.id || (additionalActiveChatIds instanceof Set ? additionalActiveChatIds.has(chat.id) : Array.isArray(additionalActiveChatIds) ? additionalActiveChatIds.includes(chat.id) : false)) && activeView === 'chat';
                     const isWorking = runningChats?.has(chat.id) ?? false;
                     const hasUnread = !isActive && !isWorking && (unreadChats?.has(chat.id) ?? false);
                     const isMenuOpen = menuState?.id === chat.id;
@@ -2202,7 +2208,7 @@ export const Sidebar = React.memo<SidebarProps>(
               </button>
               <button type="button" role="menuitem" disabled aria-disabled="true" className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left justify-between group/btn cursor-not-allowed opacity-60 disabled:hover:bg-transparent disabled:hover:text-[var(--sidebar-muted-text)]" title="Coming soon">
                 <div className="flex items-center gap-3">
-                  <PremiumFolder className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" /> Move to Project
+                  <FolderClosed className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" strokeWidth={2.0} /> Move to Project
                 </div>
                 <ChevronRight className="eterx-sidebar-menu-chevron w-4 h-4 text-[var(--sidebar-muted-text)] transition-colors duration-150" />
               </button>

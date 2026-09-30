@@ -16,16 +16,69 @@ import { Check, ChevronDown, Copy, Download, Globe2, Maximize2, Minimize2, MoreH
 import { CopyButton, safeCopyTextToClipboard, safeCopyPngToClipboard } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
-import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath } from './local-file-link';
+import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, normalizeLocalImageMarkdown } from './local-file-link';
+import { ReplyImage } from './image-gallery';
 
 // Text paints immediately. Expensive code/diagram work is settled once its
 // stream closes instead of retokenizing a growing block on every word.
 export const MarkdownStreamContext = React.createContext(false);
 
+// Two currency amounts can be parsed as one $...$ equation. Restore the
+// original dollars before KaTeX runs, while keeping actual equations intact.
+function remarkCurrencyText() {
+  return (tree: any, file: any) => {
+    const source = String(file.value || '');
+    const visit = (parent: any) => {
+      if (!Array.isArray(parent.children)) return;
+      parent.children.forEach((node: any, index: number) => {
+        if (node.type === 'inlineMath') {
+          const value = String(node.value || '');
+          const next = parent.children[index + 1];
+          const nextStartsAmount = next?.type === 'text' && /^\d/.test(String(next.value || ''));
+          const startsAmount = /^\d[\d,.]*(?:\s|[),;:])/.test(value);
+          const hasProse = /\b[A-Za-z]{2,}\b/.test(value);
+          const hasMathSyntax = /[\\^_=+<>]/.test(value);
+          if (nextStartsAmount && startsAmount && !hasMathSyntax
+            && (hasProse || /^[\d,.\s()\-;:]+$/.test(value))) {
+            const start = node.position?.start?.offset;
+            const end = node.position?.end?.offset;
+            parent.children[index] = {
+              type: 'text',
+              value: typeof start === 'number' && typeof end === 'number'
+                ? source.slice(start, end) : `$${value}$`,
+              position: node.position,
+            };
+          }
+        } else if (node.type !== 'code' && node.type !== 'inlineCode') visit(node);
+      });
+    };
+    visit(tree);
+  };
+}
+
+// A provider may pause or stop midway through a native link. Keep its label
+// readable until the destination is complete; never invent a clickable path.
+function remarkIncompleteLocalLinks() {
+  return (tree: any) => {
+    const visit = (node: any) => {
+      if (node.type === 'text') {
+        node.value = String(node.value || '').replace(
+          /\[([^\]\n]+)\]\(\s*#?eterx-local-file:[^\n)]*$/i, '$1',
+        );
+      } else if (node.type !== 'code' && node.type !== 'inlineCode' && Array.isArray(node.children)) {
+        node.children.forEach(visit);
+      }
+    };
+    visit(tree);
+  };
+}
+
 /** Re-export remark/rehype plugins for use in other components */
 export const remarkPlugins: any[] = [
   remarkGfm,
   [remarkMath, { singleDollarTextMath: true }],
+  remarkCurrencyText,
+  remarkIncompleteLocalLinks,
 ];
 export const rehypePlugins: any[] = [[rehypeKatex, {
   throwOnError: false,
@@ -183,7 +236,8 @@ ResponsiveMath.displayName = 'ResponsiveMath';
 
 // Preserve the model's Markdown. Presentation rules belong in prompts;
 // the renderer must not invent tables, unwrap fences, guess math, or rewrite
-// paths. Private reasoning in provider text remains outside the answer.
+// paths except to encode explicitly authored image destinations for Markdown.
+// Private reasoning in provider text remains outside the answer.
 export const normalizeMarkdownForRendering = (value: string) => {
   if (!value) return '';
   const text = String(value)
@@ -192,7 +246,7 @@ export const normalizeMarkdownForRendering = (value: string) => {
     .replace(/\u0000/g, '');
   return text.split(PROTECTED_MARKDOWN_CODE_SPLIT).map(chunk => {
     if (/^(```|~~~|`)/.test(chunk)) return chunk;
-    return chunk.replace(/<(analysis|thinking|reasoning|thought|scratchpad|reflection)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
+    return normalizeLocalImageMarkdown(chunk.replace(/<(analysis|thinking|reasoning|thought|scratchpad|reflection)\b[^>]*>[\s\S]*?<\/\1>/gi, ''));
   }).join('');
 };
 
@@ -275,7 +329,7 @@ const CopyToolbarButton = ({ text, label = 'Copy' }: { text: string; label?: str
   const { copied, copy } = useClipboard(text);
   return (
     <ToolbarButton label={label} activeLabel="Copied" active={copied} onClick={copy}>
-      {copied ? <Check className="h-4 w-4 text-emerald-500" /> : <Copy className="h-4 w-4" />}
+      {copied ? <Check className="h-4 w-4 text-white" /> : <Copy className="h-4 w-4" />}
     </ToolbarButton>
   );
 };
@@ -943,7 +997,8 @@ export const markdownComponents = {
     // default error span exposes a red parser message and a browser tooltip;
     // keep the source readable as ordinary answer text instead.
     if (classes.includes('katex-error')) {
-      return <span className="eterx-katex-fallback" {...props}>{children}</span>;
+      const { style: _errorStyle, ...fallbackProps } = props;
+      return <span className="eterx-katex-fallback" {...fallbackProps}>{children}</span>;
     }
     return classes.includes('katex-display')
       ? <ResponsiveMath className={className} {...props}>{children}</ResponsiveMath>
@@ -1047,14 +1102,5 @@ export const markdownComponents = {
   th: ({ node, ...props }: any) => <th className="eterx-markdown-th border-b border-r border-white/[0.06] last:border-r-0 px-3 py-2 text-left font-semibold text-[#F4F3EF] bg-white/[0.03]" {...props} />,
   td: ({ node, ...props }: any) => <td className="eterx-markdown-td border-b border-r border-white/[0.04] last:border-r-0 px-3 py-2 align-top text-[#E0DDD7] font-normal" {...props} />,
   tr: ({ node, ...props }: any) => <tr className="eterx-markdown-tr transition-colors hover:bg-white/[0.035] even:bg-white/[0.015]" {...props} />,
-  img: ({ alt, ...props }: any) => (
-    // Images normally arrive as children of a Markdown paragraph. A block
-    // <figure> there creates invalid HTML and causes the browser to reparent
-    // surrounding text. Keep the captioned image inline-safe with a block
-    // span wrapper instead.
-    <span className="eterx-markdown-figure my-5" role="figure">
-      <img className="eterx-markdown-image max-w-full rounded-xl border border-white/[0.08] shadow-none" alt={alt || ''} loading="lazy" {...props} />
-      {alt && <span className="eterx-markdown-image-caption mt-2 text-center text-[12px]">{alt}</span>}
-    </span>
-  ),
+  img: ({ alt, src }: any) => <ReplyImage alt={alt} src={src} />,
 };

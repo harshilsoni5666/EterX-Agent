@@ -19,7 +19,8 @@ export function isAbsolutePathLike(value: unknown): value is string {
 }
 
 /** Return the native absolute path exposed by Electron, if one is available. */
-export function getNativeFilePath(file: File): string | undefined {
+export function getNativeFilePath(file?: File | null): string | undefined {
+  if (!file) return undefined;
   const candidate = (file as File & { path?: unknown }).path;
   return isAbsolutePathLike(candidate) ? candidate.trim() : undefined;
 }

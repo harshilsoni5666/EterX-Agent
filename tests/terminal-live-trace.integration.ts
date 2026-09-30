@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { getRuntimeProtectionReason, killTerminalBackgroundTask, runTerminalCommandWithCheckIn } from '../src/lib/agent/tools/core/terminal_background';
+import { killTerminalBackgroundTask, runTerminalCommandWithCheckIn } from '../src/lib/agent/tools/core/terminal_background';
 
 const shell = process.platform === 'win32' ? 'powershell' : 'bash';
 const cwd = process.cwd();
@@ -66,29 +66,9 @@ async function testHandoffAndKillPreserveLiveLifecycle(): Promise<void> {
   assert.equal(settledTrace.runId, 'terminal-live-kill-run');
 }
 
-function testRuntimeSelfTerminationProtection(): void {
-  const previousPort = process.env.ETERX_PORT;
-  process.env.ETERX_PORT = '43127';
-  try {
-    assert.match(
-      String(getRuntimeProtectionReason('Get-NetTCPConnection -LocalPort 43127 | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }')),
-      /serving EterX/,
-    );
-    assert.match(String(getRuntimeProtectionReason(`taskkill /PID ${process.pid} /T /F`)), /runtime process/);
-    assert.match(String(getRuntimeProtectionReason(`kill -9 ${process.pid}`)), /runtime process/);
-    assert.match(String(getRuntimeProtectionReason('lsof -ti :43127 | xargs kill -9')), /serving EterX/);
-    assert.match(String(getRuntimeProtectionReason('fuser -k 43127/tcp')), /serving EterX/);
-    assert.equal(getRuntimeProtectionReason('lsof -ti :43128 | xargs kill -9'), null, 'project ports must remain controllable');
-  } finally {
-    if (previousPort === undefined) delete process.env.ETERX_PORT;
-    else process.env.ETERX_PORT = previousPort;
-  }
-}
-
 async function run(): Promise<void> {
   await testCompletedCommandKeepsOwnership();
   await testHandoffAndKillPreserveLiveLifecycle();
-  testRuntimeSelfTerminationProtection();
   console.log('Terminal/live trace integration checks passed.');
 }
 

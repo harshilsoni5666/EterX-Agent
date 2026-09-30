@@ -204,7 +204,7 @@ function buildCorrectionPrompt(violations: Violation[]): string {
       parts.push(`  ❌ ${v.type}: ${v.detail}`);
     }
     parts.push('You MUST correct your response. Do NOT claim actions that did not happen.');
-    parts.push('If a tool failed, acknowledge the failure and either retry with different args or ask the user for help.');
+    parts.push('Correct any misleading user-visible claim once, then recover from the actual error. Follow WORK NOTES for useful updates; ask for help only when progress requires missing user input or authority.');
   }
 
   if (warnings.length > 0) {
@@ -293,7 +293,7 @@ class AntiHallucinationGuard {
     }
 
     const correctionPrompt = violations.length > 0
-      ? `[SYSTEM - TOOL VERIFICATION FAILED] The tool ${opts.toolName} FAILED with error: "${extractErrorFromResult(opts.result) || 'unknown'}". You CANNOT claim this action succeeded. Acknowledge the failure and either retry with different args or ask the user for help.`
+      ? `[SYSTEM - TOOL VERIFICATION FAILED] The tool ${opts.toolName} FAILED with error: "${extractErrorFromResult(opts.result) || 'unknown'}". You CANNOT claim this action succeeded. Correct any misleading user-visible claim once, then recover from the actual error. Follow WORK NOTES for useful updates; ask for help only when progress requires missing user input or authority.`
       : null;
 
     return {
@@ -459,7 +459,7 @@ class AntiHallucinationGuard {
       `Tool ${toolName} has failed ${retryCount} times with error: "${error.substring(0, 200)}".`,
       `Do not call ask_user just because this tool failed. Do not repeat the same approach.`,
       `Change strategy autonomously: inspect current state, use the connector or Gateway discovery/status tool when relevant, try a safe alternate route, and verify the result.`,
-      `Keep the user-facing timeline moving with a concise work note. Ask only if a secret, irreversible consent, or genuinely irreducible decision is required after safe alternatives are exhausted.`,
+      `Follow WORK NOTES and the user's communication preferences: explain a consequential obstacle or changed approach once when useful, without narrating each retry or repeating an unchanged update. A recovery notice alone does not require a work note. Ask only if a secret, irreversible consent, or genuinely irreducible decision is required after safe alternatives are exhausted.`,
       `[END AUTONOMOUS RECOVERY]`,
     ].join('\n');
   }

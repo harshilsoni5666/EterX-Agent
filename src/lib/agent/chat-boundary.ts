@@ -104,7 +104,7 @@ export function extractKeywords(text: string): Set<string> {
 
     const words = text
       .toLowerCase()
-      .replace(/[^a-z0-9\s_.-]/g, ' ')   // Strip punctuation
+      .replace(/[^\p{L}\p{M}\p{N}\s_.-]/gu, ' ') // Retain mixed-language context
       .split(/\s+/)
       .filter(w => w.length > 3)           // Only words > 3 chars
       .filter(w => !STOP_WORDS.has(w))     // Remove stop words
@@ -199,7 +199,7 @@ function referencesRecentContext(
 
 function hasPendingSteps(plan: Array<{ name: string; status: string }> | null): boolean {
   if (!plan || plan.length === 0) return false;
-  return plan.some(s => ['pending', 'in_progress', 'blocked', 'failed'].includes(s.status));
+  return plan.some(s => ['pending', 'in_progress', 'active', 'ready', 'blocked', 'failed'].includes(s.status));
 }
 
 function isAllComplete(plan: Array<{ name: string; status: string }> | null): boolean {
@@ -223,6 +223,12 @@ export function detectChatBoundary(ctx: BoundaryContext): BoundaryResult {
     // ── Empty / trivially short ──────────────────────────────────────────
     if (!msg || words === 0) {
       return result('continue_task', 0.5, 'Empty message — defaulting to continue');
+    }
+
+    // Explicit replacement wins even while a prior question is pending.
+    // Matching is intentionally anchored; quoted examples are not control events.
+    if (/^(?:(?:please|actually|now)[,\s]+)?(?:new (?:unrelated )?task\b|(?:forget|drop|abandon|cancel) (?:the )?(?:previous|current|earlier) task\b|switch (?:to a different|tasks)\b)/i.test(msg)) {
+      return result('new_task', 0.99, 'User explicitly replaced the active task');
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -255,10 +261,6 @@ export function detectChatBoundary(ctx: BoundaryContext): BoundaryResult {
     // PASS 2: EXPLICIT REPLACEMENT — user abandons the active task
     // ═══════════════════════════════════════════════════════════════════════
 
-    if (/^(?:new unrelated task\b|(?:forget|drop|abandon) (?:the )?(?:previous|current|earlier) task\b|switch (?:to a different|tasks)\b)/i.test(msg)) {
-      return result('new_task', 0.99, 'User explicitly replaced the active task');
-    }
-
     // ═══════════════════════════════════════════════════════════════════════
     // PASS 3: RELATED FOLLOWUP — modifying/tweaking the agent's prior work
     // ═══════════════════════════════════════════════════════════════════════
@@ -277,10 +279,7 @@ export function detectChatBoundary(ctx: BoundaryContext): BoundaryResult {
         return result('related_followup', 0.85, `Modification keyword + context overlap (agent: ${overlapWithAgent.toFixed(2)}, user: ${overlapWithUser.toFixed(2)})`);
       }
 
-      // Modification keywords alone with a short message are still likely followup
-      if (words < 20) {
-        return result('related_followup', 0.75, 'Short message with modification keyword');
-      }
+      // A verb such as "fix" alone cannot establish which task is referenced.
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -325,9 +324,13 @@ export function detectChatBoundary(ctx: BoundaryContext): BoundaryResult {
     // A completed prior task plus a distinct task-starter is a new objective,
     // even when the user states it concisely. Requiring a long prompt caused
     // ordinary second turns to inherit stale plans and memory.
-    if (TASK_STARTERS.test(msg) && combinedOverlap < 0.05 && isAllComplete(ctx.activeTaskPlan)) {
+    const refersBack = /\b(?:it|this|that|these|those|same|previous|earlier|instead|continue|resume)\b/i.test(msg);
+    const taskSettled = isAllComplete(ctx.activeTaskPlan)
+      || (!ctx.activeTaskPlan?.length && Boolean(ctx.lastAgentOutput?.trim()) && !ctx.pendingAskUser);
+    const startsIndependentWork = TASK_STARTERS.test(msg) || /^(?:build|create|write|search|find|install|deploy|develop|design|configure|analyze|download|export|fix)\b/i.test(msg);
+    if (startsIndependentWork && !refersBack && combinedOverlap < 0.05 && taskSettled) {
       if (words >= 3) {
-        return result('new_task', 0.85, `Distinct request after recorded plan completion (${words} words)`);
+        return result('new_task', 0.85, `Distinct request after a settled reply or completed plan (${words} words); preserve historical evidence and scoped constraints`);
       }
     }
 
@@ -403,7 +406,9 @@ export function detectChatBoundaryFromHistory(input: HistoryBoundaryInput): Boun
         : null,
       recentToolNames: input.recentToolNames || [],
       recentFileNames: input.recentFileNames || [],
-      pendingAskUser: input.pendingAskUser ?? /\?\s*$/.test(lastAgentOutput),
+      // A question mark can belong to quoted prose or a rhetorical question.
+      // Only the runtime's actual pending ask-user state establishes a gate.
+      pendingAskUser: input.pendingAskUser === true,
     });
   } catch {
     return result('continue_task', 0.50, 'History classification failed; preserving continuity');

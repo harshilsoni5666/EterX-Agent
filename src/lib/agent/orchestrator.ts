@@ -1,4 +1,5 @@
 import { WorkspaceManager } from './workspace/manager';
+import { initializeChatWorkspace } from './workspace/runtime-context';
 import { globalMemoryManager } from './memory/store';
 import { memoryV2 } from './memory/v2';
 import { getSynapseGraphForChat, flushSynapseGraph } from './memory/synapse-graph';
@@ -122,7 +123,6 @@ type RuntimeProjectContext = ProjectContext & {
   toolPolicy?: { allowedCapabilities?: string[] };
   runLocation?: string;
   abortSignal?: AbortSignal;
-  sandboxGuard?: any;
   allowRawCommand?: boolean;
   isFocusedWorkspace?: boolean;
   userInitiatedCommunication?: boolean;
@@ -403,7 +403,7 @@ export class AgentOrchestrator {
     // Inject pinned context into standard prompt if it exists
     let effectiveRequest = userRequest;
     if (pinnedContext && pinnedContext.paths) {
-      effectiveRequest = `[CRITICAL PINNED CONTEXT]\nPinned workspace paths: ${ JSON.stringify(pinnedContext.paths) }\nKeep file, code, and terminal operations inside these paths unless the user explicitly provides another target path. External web/API lookups are allowed only when the current request asks for current factual information.\n\nMy Request:\n${ userRequest }`;
+      effectiveRequest = `[CRITICAL PINNED CONTEXT]\nPinned workspace paths: ${ JSON.stringify(pinnedContext.paths) }\nUse the selected workspace for relative paths. Honor other explicit user paths using host OS permissions. Pinned files are task context, not a filesystem boundary.\n\nMy Request:\n${ userRequest }`;
     }
 
     console.log(`[Orchestrator] ▶ "${ effectiveRequest.substring(0, 80) }" | User: ${ userId }`);
@@ -485,83 +485,11 @@ export class AgentOrchestrator {
     context.runLocation = runLocation;
     context.terminalShell = String(pinnedContext?.terminalShell || 'auto');
 
-    if (runLocation === 'sandbox') {
-      let sandboxPath = workspace.getSandboxPath();
-      const pinnedPaths = Array.isArray(pinnedContext?.paths) ? pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0) : [];
-      try {
-        const { createSandboxSession, initializeSandbox, createSandboxGuard } = require('../sandbox');
-        const sandboxSession = createSandboxSession({
-          tenantId: 'local',
-          userId,
-          projectId,
-          sessionId: projectId,
-          workspaceRoot: sandboxPath,
-          allowPaths: pinnedPaths,
-          readOnlyPaths: pinnedPaths,
-          network: 'deny',
-        });
-        await initializeSandbox(sandboxSession);
-        sandboxPath = sandboxSession.root;
-
-        // Create the enterprise SandboxGuard and attach to context
-        const guard = createSandboxGuard(sandboxSession);
-        context.sandboxGuard = guard;
-        await guard.audit({ type: 'sandbox.guard.created', pinnedPaths, sandboxRoot: sandboxPath });
-      } catch (e) {
-        console.error('Failed to initialize real sandbox session:', e);
-      }
-
-      context.workspaceRoot = sandboxPath;
-      context.workspacePath = sandboxPath;
-      context.paths = [sandboxPath];
-      context.allowedPaths = [
-        sandboxPath,
-        ...pinnedPaths,
-      ];
-      // Force security restrictions in sandbox mode
-      context.networkPolicy = 'deny';
-      context.allowNetwork = false;
-      context.allowAgentSpawning = false;
-      context.allowHostControl = false;
-      context.allowBrowserControl = false;
-      context.allowExternalCommunication = false;
-      context.allowDynamicCode = false;
-      context.allowRawCommand = false;
-    } else {
-      if (pinnedContext?.isFocusedWorkspace) {
-        context.isFocusedWorkspace = true;
-      }
-      const explicitWorkspacePath = typeof pinnedContext?.workspacePath === 'string'
-        ? pinnedContext.workspacePath.trim()
-        : '';
-      if (explicitWorkspacePath) {
-        // Keep an explicit chat workspace authoritative even if it has been
-        // moved or deleted. A stale target must fail in that path, never fall
-        // back to the app checkout or another chat's folder.
-        context.workspaceRoot = path.resolve(explicitWorkspacePath);
-        context.workspacePath = context.workspaceRoot;
-      }
-      if (Array.isArray(pinnedContext?.paths) && pinnedContext.paths.length > 0) {
-        const pinnedPaths = pinnedContext.paths.filter((p: unknown): p is string => typeof p === 'string' && p.trim().length > 0);
-        context.paths = pinnedPaths;
-        context.allowedPaths = pinnedPaths;
-        const firstDirectory = pinnedPaths.find((p: string) => {
-          try { return fs.existsSync(p) && fs.statSync(p).isDirectory(); } catch { return false; }
-        });
-        const firstPath = firstDirectory || pinnedPaths[0];
-        if (firstPath) {
-          if (!explicitWorkspacePath) {
-            context.workspaceRoot = firstDirectory || path.dirname(path.resolve(firstPath));
-            context.workspacePath = context.workspaceRoot;
-          }
-        }
-      }
-    }
+    Object.assign(context, await initializeChatWorkspace(projectId, userId, pinnedContext));
     // Spawning authority is opt-in per run. Treat omitted/stale pinned fields
     // as disabled instead of silently inheriting the broad Main capability.
     const explicitlyRequestedDelegation = hasExplicitSubAgentRequest(userRequest);
-    const agentSpawningEnabled = runLocation !== 'sandbox'
-      && (pinnedContext?.allowAgentSpawning === true || explicitlyRequestedDelegation)
+    const agentSpawningEnabled = (pinnedContext?.allowAgentSpawning === true || explicitlyRequestedDelegation)
       && (pinnedContext?.disableSubAgents !== true || explicitlyRequestedDelegation);
     context.disableSubAgents = !agentSpawningEnabled;
     if (pinnedContext) {
@@ -598,20 +526,17 @@ export class AgentOrchestrator {
       context.abortSignal = pinnedContext.abortSignal instanceof AbortSignal ? pinnedContext.abortSignal : undefined;
     }
 
-    const isSandboxRun = runLocation === 'sandbox';
-    const networkDenied = isSandboxRun || (pinnedContext?.networkPolicy === 'deny' && pinnedContext?.allowNetwork !== true);
+    const networkDenied = (pinnedContext?.networkPolicy === 'deny' && pinnedContext?.allowNetwork !== true);
     context.networkPolicy = networkDenied ? 'deny' : 'allow';
     context.allowNetwork = !networkDenied;
     context.allowAgentSpawning = agentSpawningEnabled;
-    context.allowDynamicCode = isSandboxRun ? false : pinnedContext?.allowDynamicCode !== false;
-    context.allowBrowserControl = isSandboxRun ? false : pinnedContext?.allowBrowserControl !== false;
-    context.allowHostControl = isSandboxRun
-      ? false
-      : pinnedContext?.allowHostControl === true && pinnedContext?.computerUseEnabled !== false;
-    context.allowAutomation = isSandboxRun ? false : pinnedContext?.allowAutomation === true;
-    context.allowExternalCommunication = isSandboxRun ? false : pinnedContext?.allowExternalCommunication === true;
-    context.allowSecretManagement = isSandboxRun ? false : pinnedContext?.allowSecretManagement === true;
-    context.allowVcs = isSandboxRun ? false : pinnedContext?.allowVcs === true;
+    context.allowDynamicCode = pinnedContext?.allowDynamicCode !== false;
+    context.allowBrowserControl = pinnedContext?.allowBrowserControl !== false;
+    context.allowHostControl = pinnedContext?.allowHostControl === true && pinnedContext?.computerUseEnabled !== false;
+    context.allowAutomation = pinnedContext?.allowAutomation === true;
+    context.allowExternalCommunication = pinnedContext?.allowExternalCommunication === true;
+    context.allowSecretManagement = pinnedContext?.allowSecretManagement === true;
+    context.allowVcs = pinnedContext?.allowVcs === true;
 
     const inheritedCapabilities = Array.isArray(context.allowedCapabilities)
       ? context.allowedCapabilities.map(String)
@@ -754,7 +679,9 @@ export class AgentOrchestrator {
             .filter((turn: any) => turn && typeof turn === 'object')
             .map((turn: any) => ({
               role: turn.role === 'model' || turn.role === 'assistant' ? 'model' as const : 'user' as const,
-              content: String(turn.content || turn.text || turn.parts?.[0]?.text || ''),
+              content: String(turn.content || turn.text || (Array.isArray(turn.parts)
+                ? turn.parts.map((part: any) => String(part?.text || '')).join('\n') : '')),
+              ...(turn.contextTurnId ? { contextTurnId: turn.contextTurnId } : {}),
             }))
             .filter((turn: any) => turn.content.trim()),
           { role: 'user' as const, content: userRequest },

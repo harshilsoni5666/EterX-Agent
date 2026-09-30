@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useLiveFeedFlow } from './use-live-feed-flow';
 import { getActionSummary } from './action-summary';
 import { getTextPlaybackId, usePacedText } from './use-paced-text';
@@ -17,7 +17,8 @@ import {
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, MarkdownStreamContext, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins, WebsiteLink } from './markdown-renderer';
 import { LocalFileIcon, LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, localAwareUrlTransform } from './local-file-link';
-import { AGENT_ICONS, resolveAgentIcon, resolveToolTraceIcon, TerminalIcon as ToolTerminalIcon, AgentAssetIcon, SubAgentIdentityIcon, ConnectorIcon, getConnectorId, isConnectorTrace } from './agent-icons';
+import { ReplyImage } from './image-gallery';
+import { AGENT_ICONS, resolveAgentIcon, resolveToolTraceIcon, TerminalIcon as ToolTerminalIcon, AgentAssetIcon, SubAgentIdentityIcon, ConnectorIcon, getConnectorId, isConnectorTrace, FileAddIcon, FileEditIcon, FileDeleteIcon, SkillIcon, MonitorPlayIcon, MouseIcon, MousePointerClickIcon, W } from './agent-icons';
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { isThoughtStreamOpen, shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
@@ -25,8 +26,11 @@ import { mergeFeedTracePayload } from '../../lib/chat-feed-lifecycle';
 import { areLikelySameFeedActionLifecycle, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen } from '../../lib/chat-feed-lifecycle';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../../lib/agent/tool-trace';
 import { isTerminalTraceStreaming } from '../../lib/terminal-lifecycle';
+import { terminalInvocationText, terminalResultText } from '../../lib/agent/terminal-result-trace';
+import { formatTerminalProgram } from '../../lib/agent/terminal-invocation';
 import { normalizeLifecycleTimestamp, useLifecycleElapsedMs } from './lifecycle-clock';
 import { formatUnknownError } from '../../lib/agent/error-format';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
 type SubAgentAssetIndexes = Record<string, number>;
 
@@ -86,6 +90,20 @@ const VERB_MAP: Record<string, string> = {
   'Analyzing files': 'Analyzed',
   'Verifying code': 'Verified',
   'Verifying output': 'Verified',
+  'Using browser': 'Used browser',
+  'Browser use': 'Used browser',
+  'Launching browser': 'Launched browser',
+  'Launch browser': 'Launched browser',
+  'Opening Chrome': 'Opened Chrome',
+  'Starting browser session': 'Started browser session',
+  'Connecting to Chrome': 'Connected to Chrome',
+  'Right clicking': 'Right clicked',
+  'Right click': 'Right clicked',
+  'Left clicking': 'Left clicked',
+  'Left click': 'Left clicked',
+  'Clicking': 'Clicked',
+  'Click': 'Clicked',
+  'Double clicking': 'Double clicked',
   'Scaffolding project': 'Scaffolded',
   'Git operation': 'Git',
   'Spawning sub-agents': 'Spawned',
@@ -224,9 +242,12 @@ const isLiveThoughtFresh = (log: any) => {
 
 const formatThoughtElapsed = (seconds: number) => {
   const visibleSeconds = Math.max(1, Math.floor(Number.isFinite(seconds) ? seconds : 0));
-  const minutes = Math.floor(visibleSeconds / 60);
+  const hours = Math.floor(visibleSeconds / 3_600);
+  const minutes = Math.floor((visibleSeconds % 3_600) / 60);
   const rest = visibleSeconds % 60;
-  return minutes > 0 ? `${ minutes }m ${ rest }s` : `${ rest }s`;
+  if (hours > 0) return `${ hours }h${ minutes ? ` ${ minutes }m` : '' }${ rest ? ` ${ rest }s` : '' }`;
+  if (minutes > 0) return `${ minutes }m${ rest ? ` ${ rest }s` : '' }`;
+  return `${ visibleSeconds }s`;
 };
 
 const useThoughtElapsed = (isLive: boolean, startedAt?: number, updatedAt?: number) => {
@@ -235,16 +256,26 @@ const useThoughtElapsed = (isLive: boolean, startedAt?: number, updatedAt?: numb
     startedAt,
     endedAt: updatedAt,
   });
-  return Math.floor((elapsedMs ?? 0) / 1_000);
+  return Math.round((elapsedMs ?? 0) / 1_000);
+};
+
+const getThoughtScrollEdges = (element: HTMLDivElement) => {
+  const maximumScroll = Math.max(0, element.scrollHeight - element.clientHeight);
+  const canScroll = maximumScroll > 2;
+  return {
+    canScroll,
+    top: canScroll && element.scrollTop > 2,
+    bottom: canScroll && maximumScroll - element.scrollTop > 2,
+  };
 };
 
 const thoughtMarkdownComponents = {
   ...markdownComponents,
-  p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0 break-words leading-[1.54] text-[#D5D3CE]" {...props} />,
-  ol: ({ node, ...props }: any) => <ol className="my-2 list-decimal space-y-1.5 pl-5 text-[#D5D3CE]" {...props} />,
-  ul: ({ node, ...props }: any) => <ul className="my-2 list-disc space-y-1.5 pl-5 text-[#D5D3CE]" {...props} />,
-  li: ({ node, ...props }: any) => <li className="pl-1 leading-[1.52] marker:text-[#827C73]" {...props} />,
-  strong: ({ node, ...props }: any) => <strong className="font-bold text-[#F3F2EF]" {...props} />,
+  p: ({ node, ...props }: any) => <p className="eterx-thought-paragraph mb-2 last:mb-0 break-words leading-[1.62]" {...props} />,
+  ol: ({ node, ...props }: any) => <ol className="eterx-thought-list my-2 list-decimal space-y-1.5 pl-5" {...props} />,
+  ul: ({ node, ...props }: any) => <ul className="eterx-thought-list my-2 list-disc space-y-1.5 pl-5" {...props} />,
+  li: ({ node, ...props }: any) => <li className="eterx-thought-list-item pl-1 leading-[1.58]" {...props} />,
+  strong: ({ node, ...props }: any) => <strong className="eterx-thought-strong font-semibold" {...props} />,
   a: ({ node, href, children, ...props }: any) => {
     const localPath = decodeLocalFileHref(href);
     if (localPath) return <LocalFileLinkChip filePath={localPath} label={getReactNodeText(children)} compact />;
@@ -346,14 +377,23 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
   const { text, isLatest, isThinking, variant = 'thought', suffix } = props;
   const requestedLive = isLatest && isThinking;
   const thoughtIsLive = variant === 'thought' && requestedLive;
+  const prefersReducedMotion = useReducedMotion();
   // Thought details are opt-in; live activity is presented in the group heading.
   const [open, setOpen] = useState(false);
   const [thoughtCanScroll, setThoughtCanScroll] = useState(false);
+  const [thoughtScrollFades, setThoughtScrollFades] = useState({ top: false, bottom: false });
   const thoughtScrollRef = useRef<HTMLDivElement>(null);
   const thoughtContentRef = useRef<HTMLDivElement>(null);
   const thoughtAutoScrollRef = useRef(true);
   const isLive = thoughtIsLive;
   const elapsed = useThoughtElapsed(isLive, props.startedAt, props.updatedAt);
+
+  const syncThoughtScrollEdges = React.useCallback((element = thoughtScrollRef.current) => {
+    if (!element) return;
+    const edges = getThoughtScrollEdges(element);
+    setThoughtCanScroll(edges.canScroll);
+    setThoughtScrollFades({ top: edges.top, bottom: edges.bottom });
+  }, []);
 
 
   const renderText = useMemo(() => {
@@ -366,11 +406,13 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
     const el = thoughtScrollRef.current;
     if (!el) return;
     thoughtAutoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 28;
+    syncThoughtScrollEdges(el);
   };
 
   React.useLayoutEffect(() => {
     if (variant !== 'thought' || !open) {
       setThoughtCanScroll(false);
+      setThoughtScrollFades({ top: false, bottom: false });
       return;
     }
     thoughtAutoScrollRef.current = isLive;
@@ -380,10 +422,9 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
     let frame: number | null = null;
     const syncGeometry = () => {
       frame = null;
-      if (document.hidden || !viewport.isConnected) return;
-      const height = viewport.scrollHeight;
-      setThoughtCanScroll(height > viewport.clientHeight + 1);
-      if (thoughtAutoScrollRef.current) viewport.scrollTop = height;
+      if (!isAppVisible() || !viewport.isConnected) return;
+      if (thoughtAutoScrollRef.current) viewport.scrollTop = viewport.scrollHeight;
+      syncThoughtScrollEdges(viewport);
     };
     // Measure actual committed Markdown, not the newest source text before
     // its deferred parse has painted. Coalesce all content resizes per frame.
@@ -393,18 +434,17 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
     observer?.observe(content);
     observer?.observe(viewport);
-    document.addEventListener('visibilitychange', schedule);
+    const unsubscribeVisibility = subscribeAppVisibility(schedule);
     syncGeometry();
     return () => {
       observer?.disconnect();
-      document.removeEventListener('visibilitychange', schedule);
+      unsubscribeVisibility();
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [variant, open, isLive, Boolean(renderText)]);
+  }, [variant, open, isLive, Boolean(renderText), syncThoughtScrollEdges]);
 
   const elapsedLabel = formatThoughtElapsed(elapsed);
-
-  const thinkLabel = isLive ? 'Thinking' : `Thought${elapsedLabel ? ` · ${elapsedLabel}` : ''}`;
+  const thoughtLabel = isLive ? 'Thinking' : `Thought for ${ elapsedLabel }`;
   const isNote = variant === 'note';
   // Only the visible prose uses pacing. The event ledger and copy/export
   // content retain the complete provider snapshot at every point.
@@ -436,32 +476,57 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
         initial={false}
         className="professional-thought eterx-thought-block w-full"
       >
-        <div className={`eterx-thought-card overflow-hidden rounded-[8px] border bg-[#151514]/32 shadow-none transition-colors ${ open ? 'border-white/[0.10]' : 'border-white/[0.055] hover:border-white/[0.085]' }`}>
+        <div data-open={open ? 'true' : 'false'} className="eterx-thought-card overflow-hidden">
           <button
             type="button"
             onClick={() => setOpen(value => !value)}
             aria-expanded={open}
-            className="eterx-thought-toggle flex min-h-[26px] w-full items-center gap-1.5 px-2 py-0 text-left transition-colors hover:bg-white/[0.02] group"
+            aria-label={`${ thoughtLabel }. ${ open ? 'Hide' : 'Show' } thought details`}
+            className="eterx-thought-toggle group flex h-[30px] min-h-[30px] w-full items-center gap-1.5 px-0 py-0 text-left transition-colors focus-visible:outline-none"
           >
-            <Shimmer
-              active={isLive}
-              className="eterx-thinking-shimmer min-w-0 flex-1 truncate text-[12.5px] font-medium tracking-[-0.002em] text-[var(--eterx-ui-working-text)]"
-            >
-              {thinkLabel}
-            </Shimmer>
-            <ChevronRight className={`h-3 w-3 text-[#625C54] group-hover:text-[#A8A198] transition-all ${ open ? 'rotate-90' : '' }`} />
-          </button>
-            {open && renderText && (
-              <div
-                className="overflow-hidden"
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.span
+                key={isLive ? 'thinking' : 'thought'}
+                className="eterx-thought-state-label"
+                initial={prefersReducedMotion ? false : { opacity: 0, y: 2 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={prefersReducedMotion ? undefined : { opacity: 0, y: -2 }}
+                transition={{ duration: prefersReducedMotion ? 0 : 0.14, ease: 'easeOut' }}
               >
-                <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' } px-2.5 pb-2 pt-1 text-[11.5px] leading-[1.48] text-[#C9C6C0]`} style={{ maxHeight: 'min(38vh, 340px)' }}>
-                  <div ref={thoughtContentRef}>
-                    <LiveMarkdown text={renderText} streaming={isLive} components={thoughtMarkdownComponents} />
+                <Shimmer
+                  active={isLive}
+                  className="eterx-thinking-shimmer min-w-0 truncate text-[15px] font-medium tracking-[-0.01em] text-[var(--eterx-ui-working-text)]"
+                >
+                  {thoughtLabel}
+                </Shimmer>
+              </motion.span>
+            </AnimatePresence>
+            <ChevronRight aria-hidden="true" className={`eterx-thought-chevron h-3.5 w-3.5 shrink-0 text-[#77736C] group-hover:text-[#A8A198] transition-all ${ open ? 'rotate-90' : '' }`} />
+          </button>
+          <AnimatePresence initial={false}>
+            {open && renderText && (
+              <motion.div
+                key="thought-details"
+                className="eterx-thought-details overflow-hidden"
+                initial={prefersReducedMotion ? false : { height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={prefersReducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                transition={prefersReducedMotion
+                  ? { duration: 0 }
+                  : { height: { duration: 0.18, ease: [0.22, 1, 0.36, 1] }, opacity: { duration: 0.13, ease: 'easeOut' } }}
+              >
+                <div className="eterx-thought-scroll-frame relative">
+                  <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' }`} style={{ maxHeight: 'min(44vh, 380px)' }}>
+                    <div ref={thoughtContentRef} className="eterx-thought-reading-content">
+                      <LiveMarkdown text={renderText} streaming={isLive} components={thoughtMarkdownComponents} />
+                    </div>
                   </div>
+                  {thoughtScrollFades.top && <div className="eterx-thought-scroll-fade eterx-thought-scroll-fade-top" aria-hidden="true" />}
+                  {thoughtScrollFades.bottom && <div className="eterx-thought-scroll-fade eterx-thought-scroll-fade-bottom" aria-hidden="true" />}
                 </div>
-              </div>
+              </motion.div>
             )}
+          </AnimatePresence>
         </div>
       </motion.div>
     );
@@ -610,7 +675,7 @@ const IconCopyButton = ({ content, label = 'Copy content' }: { content: string, 
       aria-label={copied ? 'Copied' : label}
       className="eterx-action-icon-button flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-white/[0.06] bg-white/[0.028] text-[#9A9389] transition-colors hover:border-white/[0.10] hover:bg-white/[0.05] hover:text-[#DAD4CA]"
     >
-      {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+      {copied ? <Check className="h-3.5 w-3.5 text-white" /> : <Copy className="h-3.5 w-3.5" />}
     </button>
   );
 };
@@ -698,9 +763,11 @@ const normalizeTerminalOutputForDisplay = (value: unknown): string => {
   return output;
 };
 
-const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid, flush = false }: { command: string, content: string, exitCode?: number, durationMs?: number, cwd?: string, shell?: string, pid?: number, flush?: boolean }) => {
+const InlineConsole = ({ command, program, args, content, exitCode, status, durationMs, cwd, shell, pid, flush = false }: { command: string, program?: string, args?: string[], content: string, exitCode?: number, status?: 'running' | 'completed' | 'failed' | 'stopped' | 'unknown', durationMs?: number, cwd?: string, shell?: string, pid?: number, flush?: boolean }) => {
+  const isRunning = status ? status === 'running' : exitCode === undefined;
+  const isUnknown = status === 'unknown';
   const scrollRef = useRef<HTMLDivElement>(null);
-  const shouldFollowOutputRef = useRef(exitCode === undefined);
+  const shouldFollowOutputRef = useRef(isRunning);
   const previousContentLengthRef = useRef(0);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -712,7 +779,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
     previousContentLengthRef.current = nextLength;
     if (!el) return;
     const frameId = window.requestAnimationFrame(() => {
-      if (exitCode === undefined && grew && shouldFollowOutputRef.current) {
+      if (isRunning && grew && shouldFollowOutputRef.current) {
         el.scrollTop = el.scrollHeight;
       }
       const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
@@ -722,7 +789,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
       }
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [content, exitCode]);
+  }, [content, isRunning]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
@@ -742,26 +809,21 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
     }
     return newlineCount >= 8;
   }, [displayContent]);
-  const isRunning = exitCode === undefined;
-  const success = exitCode === 0 || isRunning;
+  const success = !isUnknown && status !== 'stopped' && (exitCode === 0 || status === 'completed');
   const shellLabel = String(shell || '').split(/[\\/]/).pop()?.replace(/\.exe$/i, '') || '';
   const executionLabel = [shellLabel, cwd, isRunning && pid ? `PID ${ pid }` : ''].filter(Boolean).join(' · ');
   const durationLabel = formatTerminalMetaDuration(durationMs);
 
   const consolePanel = (
     <div className={`eterx-terminal-console flex flex-col font-mono text-[#D8D1C8] ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'overflow-hidden rounded-[10px] border border-white/[0.07] bg-[#141413]/80 shadow-none' }`}>
-      {/* Liquid Glass Command Container with Floating Overlapping Copy Button */}
-      <div className="eterx-terminal-console-command-card relative mx-2 mt-1.5 mb-1 overflow-hidden rounded-[8px] border border-white/[0.065] bg-white/[0.022] shadow-none p-2">
-        {/* Floating Overlapping Copy Button */}
-        <div className="absolute right-1.5 top-1.5 z-10">
-          <IconCopyButton content={command} label="Copy command" />
+      {/* Keep the command inline with the console; copying never toggles the
+          parent disclosure row. */}
+      <div className="eterx-terminal-console-command-card relative mx-2 mt-2 mb-1 min-w-0 px-1.5 py-1">
+        <div className="eterx-terminal-console-command whitespace-pre-wrap break-words pr-9 font-mono text-[11.5px] font-medium leading-[1.55] text-[#E5E7EB] select-text">
+          {command}
         </div>
-        {/* Expanded commands must reveal the complete script. An invisible
-            nested scrollbar made multi-line commands look randomly clipped. */}
-        <div className="w-full pr-8">
-          <div className="eterx-terminal-console-command flex items-start gap-1.5 text-[#E4DDD3]">
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11.5px] font-medium leading-[1.4] text-[#F0EAE0] select-text">{command}</span>
-          </div>
+        <div className="absolute right-0 top-0">
+          <IconCopyButton content={program ? JSON.stringify({ program, args: args || [] }, null, 2) : command} label={program ? 'Copy invocation' : 'Copy command'} />
         </div>
       </div>
 
@@ -776,7 +838,7 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
             <div className="eterx-terminal-console-body whitespace-pre-wrap break-words text-[#CDC5BB]">
               {displayContent
                 ? <span dangerouslySetInnerHTML={{ __html: renderedOutput }} />
-                : <span className="text-[#8D867C] italic">{isRunning ? 'Waiting for output...' : 'Completed with no output.'}</span>
+                : <span className="text-[#8D867C] italic">{isRunning ? 'Waiting for output...' : isUnknown ? 'No terminal result was recorded.' : status === 'stopped' ? 'Process stopped without output.' : success ? 'Process exited successfully without printing output.' : 'Process failed without printing output.'}</span>
               }
             </div>
           </div>
@@ -798,12 +860,14 @@ const InlineConsole = ({ command, content, exitCode, durationMs, cwd, shell, pid
           <span className={`inline-flex items-center gap-1.5 ${ success ? 'text-[#BDB8AF]' : 'text-red-300' }`}>
             {isRunning ? (
               <Terminal className="h-3.5 w-3.5 text-[#67C58A]" />
+            ) : isUnknown ? (
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />
             ) : success ? (
               <CheckCircle className="h-3.5 w-3.5 text-emerald-400" />
             ) : (
               <CornerDownLeft className="h-3.5 w-3.5 text-red-300" />
             )}
-            {isRunning ? 'Running' : success ? 'Success' : `Exit ${ exitCode }`}
+            {isRunning ? 'Running' : isUnknown ? 'Result unavailable' : status === 'stopped' ? 'Stopped' : success ? 'Success' : exitCode !== undefined ? `Exit ${ exitCode }` : 'Failed'}
           </span>
         </div>
       </div>
@@ -1337,11 +1401,8 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
           <div className="mt-3 pt-2.5 border-t border-white/[0.05]">
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">Images</div>
             <div className="flex gap-2 overflow-x-auto pb-1 eterx-scrollbar">
-              {images.slice(0, 8).map((img: any, i: number) => (
-                <a key={i} href={img.url} target="_blank" rel="noopener noreferrer"
-                  className="shrink-0 w-18 h-18 rounded-[7px] overflow-hidden border border-white/[0.06] hover:border-white/[0.14] transition-colors">
-                  <img src={img.url} alt="" className="w-full h-full object-cover" />
-                </a>
+              {images.map((img: any, i: number) => (
+                <span key={i} className="shrink-0 w-28"><ReplyImage src={img.url} alt={img.title || ''} /></span>
               ))}
             </div>
           </div>
@@ -1460,7 +1521,9 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
   };
   const getImgSrc = (item: any): string => {
     if (typeof item === 'string') return item;
-    return item.url || item.src || item.publicPath || item.thumbnail || item.imageUrl || item.localPath || item.filepath || item.path || '';
+    return item.displayUrl || (String(item.src || '').startsWith('/api/chat/media?') ? item.src : '')
+      || item.localPath || item.filePath || item.filepath || item.path
+      || item.url || item.src || item.publicPath || item.thumbnail || item.imageUrl || '';
   };
   const getItemLabel = (item: any): string => {
     if (typeof item === 'string') return item.split(/[\\/]/).pop() || item;
@@ -1525,31 +1588,15 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
                 </div>
               )}
               <div className="grid grid-cols-3 gap-1.5">
-                {imgAssets.slice(0, 12).map((item: any, i: number) => {
+                {imgAssets.map((item: any, i: number) => {
                   const src = getImgSrc(item);
                   const label = getItemLabel(item);
                   const role = typeof item === 'object' ? (item.visualRole || item.role || item.category || '') : '';
                   return (
-                    <div key={i} className="relative group overflow-hidden rounded-[7px] border border-white/[0.06] bg-white/[0.02] aspect-square">
-                      <img
-                        src={src}
-                        alt={label}
-                        className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
-                        onError={e => { (e.target as HTMLImageElement).parentElement!.innerHTML = `<div class="w-full h-full flex items-center justify-center text-[#3E3A36] text-[9px] font-mono px-1 text-center break-all">${ label || src.split('/').pop() || '?' }</div>`; }}
-                      />
-                      {(label || role) && (
-                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent pt-4 pb-1.5 px-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {label && <div className="text-[9.5px] font-medium text-white/85 truncate leading-tight">{label}</div>}
-                          {role && <div className="text-[8.5px] text-white/45 capitalize">{role}</div>}
-                        </div>
-                      )}
-                    </div>
+                    <ReplyImage key={i} src={src} alt={label || role} />
                   );
                 })}
               </div>
-              {imgAssets.length > 12 && (
-                <div className="mt-1.5 text-center text-[10px] text-[#4E4A46]">+{imgAssets.length - 12} more</div>
-              )}
             </div>
           );
         }
@@ -2038,7 +2085,7 @@ const getPreviewContent = (preview: any) => {
   return '';
 };
 
-const getDiffStats = (preview: any, log: any) => {
+export const getDiffStats = (preview: any, log: any) => {
   let added = 0;
   let removed = 0;
   if (preview?.diffLines?.length) {
@@ -2463,7 +2510,7 @@ const getTimelinePreviewIndex = (timeline: any[]): TimelinePreviewIndex => {
 
 // Build once per immutable snapshot, then inspect only this action's results.
 // Legacy rows keep the existing ownership rules and chronological order.
-const getActionPreviewCandidates = (action: any, timeline: any[]): any[] => {
+export const getActionPreviewCandidates = (action: any, timeline: any[]): any[] => {
   const index = getTimelinePreviewIndex(timeline);
   const candidates = new Set(index.legacy);
   for (const owner of compactTraceOwnerIds([action.traceId, action.id, action._traceIdx, action._originTraceIdx, action.toolCallId, action._feedPresentationId])) {
@@ -2480,7 +2527,7 @@ const getActionPreviewCandidates = (action: any, timeline: any[]): any[] => {
  * mutation. An explicit owner is authoritative: if it does not match, weaker
  * aliases must not override it.
  */
-const previewBelongsToAction = (preview: any, action: any, timeline: any[]): boolean => {
+export const previewBelongsToAction = (preview: any, action: any, timeline: any[]): boolean => {
   if (!preview || !action || !ACTION_EVENT_TYPES.has(String(action?.type || ''))) return false;
 
   const actionStrongIds = compactTraceOwnerIds([
@@ -2775,6 +2822,8 @@ const getTerminalSourceValue = (log: any, preview?: any) => {
 };
 
 const getCollapsedTerminalCode = (log: any, preview: any, fallback: string) => {
+  const invocation = getTerminalInvocation(log, preview);
+  if (invocation) return formatTerminalProgram(invocation.program, invocation.args, true);
   const source = String(getTerminalSourceValue(log, preview) || '').trim();
   if (!source) return fallback;
   const lines = source.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
@@ -2787,7 +2836,17 @@ const getCollapsedTerminalCode = (log: any, preview: any, fallback: string) => {
   return actualCode || fallback;
 };
 
+const getTerminalInvocation = (log: any, preview?: any) => {
+  // Live/result metadata describes the executable actually launched. Tool
+  // arguments are only a fallback while the invocation is still starting.
+  const values = [preview, preview?.result, log, log?.toolResult, log?.toolArgs, log?.args, preview?.toolArgs];
+  const value = values.find(item => typeof item?.program === 'string' && item.program);
+  return value ? { program: value.program, args: Array.isArray(value.args) ? value.args : [] } : undefined;
+};
+
 const getTerminalCommandText = (log: any, preview?: any, fallback = '') => {
+  const invocation = getTerminalInvocation(log, preview);
+  if (invocation) return formatTerminalProgram(invocation.program, invocation.args);
   const toolArgs = log?.toolArgs || log?.args || preview?.toolArgs || {};
   const resultObject = preview?.result && typeof preview.result === 'object' ? preview.result : null;
   const sourceCandidate = [
@@ -2796,6 +2855,7 @@ const getTerminalCommandText = (log: any, preview?: any, fallback = '') => {
     toolArgs.source,
     toolArgs.command,
     toolArgs.cmd,
+    toolArgs.program ? terminalInvocationText(toolArgs) : undefined,
     resultObject?.commandUsed,
     preview?.command,
     log?.command,
@@ -2955,9 +3015,9 @@ const TerminalTraceCard = ({
   const collapsedCommand = getCollapsedTerminalCode(log, preview, command);
   const rawResult = preview?.result ?? log?.toolResult;
   const resultObject = rawResult && typeof rawResult === 'object' ? rawResult : null;
-  const stdout = resultObject ? formatDisplayValue(resultObject.stdout ?? resultObject.output ?? resultObject.content, '') : '';
-  const stderr = resultObject ? formatDisplayValue(resultObject.stderr ?? resultObject.error, '') : '';
-  const resultText = typeof rawResult === 'string' ? rawResult : [stdout, stderr].filter(Boolean).join('\n');
+  const mode = String(preview?.toolArgs?.mode || log?.toolArgs?.mode || log?.args?.mode || resultObject?.mode || 'run');
+  const isProcessControl = ['list', 'check', 'wait', 'background', 'kill'].includes(mode);
+  const resultText = terminalResultText(rawResult, mode);
   const outputCandidates = [
     preview?.output,
     preview?.content,
@@ -2972,15 +3032,15 @@ const TerminalTraceCard = ({
     value !== undefined && value !== null && formatDisplayValue(value, '').length > 0
   ) ?? outputCandidates.find(value => value !== undefined && value !== null);
   const output = formatDisplayValue(selectedOutput, '');
-  const exitCode = typeof preview?.exitCode === 'number'
+  const exitCode = String(preview?.status || resultObject?.status || log?.status || '') === 'unknown' ? undefined : typeof preview?.exitCode === 'number'
     ? preview.exitCode
     : typeof resultObject?.exitCode === 'number'
       ? resultObject.exitCode
       : typeof resultObject?.code === 'number'
         ? resultObject.code
-        : resultObject?.passed === false || resultObject?.success === false
+        : resultObject?.error || resultObject?.passed === false || resultObject?.success === false
           ? 1
-          : resultObject && resultObject.running !== true && resultObject.stillRunning !== true && resultObject.status !== 'running'
+          : resultObject?.success === true && resultObject.running !== true && resultObject.stillRunning !== true && resultObject.status !== 'running'
             ? 0
             : typeof log?.exitCode === 'number'
               ? log.exitCode
@@ -3011,7 +3071,9 @@ const TerminalTraceCard = ({
     endedAt: preview?.endTime ?? resultObject?.endTime ?? log?.endTime,
     durationMs: recordedDurationMs,
   }) ?? undefined;
-  const displayedExitCode = isStreaming ? undefined : exitCode ?? 0;
+  const displayedExitCode = isStreaming ? undefined : exitCode;
+  const isStopped = !isStreaming && Boolean(resultObject?.cancelled || ['killed', 'stopped', 'cancelled', 'canceled'].includes(String(preview?.status || log?.status || resultObject?.status)));
+  const resultStatus = isStreaming ? 'running' : isStopped ? 'stopped' : exitCode === undefined ? 'unknown' : exitCode === 0 ? 'completed' : 'failed';
   const isFailed = !isStreaming && exitCode !== undefined && exitCode !== 0;
   const durationLabel = formatTerminalMetaDuration(durationMs, isStreaming);
   
@@ -3031,8 +3093,8 @@ const TerminalTraceCard = ({
     return (
       <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
         <div className={`eterx-terminal-trace-row flex w-full items-center gap-1.5 py-0.5 text-left ${ inCard ? 'min-h-[29px] px-1' : 'min-h-[34px] px-2.5' }`}>
-          <span className="eterx-action-icon eterx-terminal-icon flex h-[22px] w-[22px] shrink-0 items-center justify-center text-[#A39B91]">
-            {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <Clock className={`h-[16.5px] w-[16.5px] ${ isStreaming ? 'text-[#67C58A]' : 'text-[#A39B91]' }`} strokeWidth={2.1} />}
+          <span className="eterx-action-icon eterx-terminal-icon flex h-5 w-5 shrink-0 items-center justify-center text-[#A39B91]">
+            {connectorAction ? <ConnectorIcon connectorId={connectorId} size={15} title={`${ connectorId || 'connected service' } connector`} /> : <Clock className={`h-[15px] w-[15px] ${ isStreaming ? 'text-[#67C58A]' : 'text-[#A39B91]' }`} strokeWidth={2} />}
           </span>
           <Shimmer active={isStreaming} className="eterx-trace-label min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
             {headerLabel}
@@ -3048,7 +3110,10 @@ const TerminalTraceCard = ({
   }
 
   // Joining a sequence must not change the first row's wording or text width.
-  const title = isStreaming ? 'Running command' : isFailed ? 'Command failed' : 'Ran command';
+  const controlLabels: Record<string, string> = { list: 'Listed processes', check: 'Read process status', wait: 'Waited for process', background: 'Backgrounded process', kill: 'Stopped process' };
+  const title = isProcessControl
+    ? isStreaming ? 'Managing process' : isFailed ? 'Process request failed' : controlLabels[mode]
+    : isStreaming ? 'Running command' : isStopped ? 'Command stopped' : isFailed ? 'Command failed' : resultStatus === 'unknown' ? 'Command result unavailable' : 'Ran command';
 
   const headerLabel = durationLabel ? `${ title } · ${ durationLabel }` : title;
 
@@ -3067,8 +3132,8 @@ const TerminalTraceCard = ({
         aria-expanded={isExpanded}
         className={`eterx-terminal-trace-row group grid w-full ${ rowGridClass } items-center gap-1.5 py-0.5 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'min-h-[29px] px-1 hover:bg-white/[0.024]' : 'min-h-[34px] px-2.5 hover:bg-white/[0.024]' }`}
       >
-        <span className="eterx-action-icon eterx-terminal-icon flex h-[22px] w-[22px] shrink-0 items-center justify-center text-[#A39B91]">
-          {connectorAction ? <ConnectorIcon connectorId={connectorId} size={17} title={`${ connectorId || 'connected service' } connector`} /> : <ToolTerminalIcon size={17} color="currentColor" />}
+        <span className="eterx-action-icon eterx-terminal-icon flex h-5 w-5 shrink-0 items-center justify-center text-[#A39B91]">
+          {connectorAction ? <ConnectorIcon connectorId={connectorId} size={15} title={`${ connectorId || 'connected service' } connector`} /> : <ToolTerminalIcon size={15} color="currentColor" />}
         </span>
         <Shimmer active={isStreaming} className="eterx-trace-label min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {headerLabel}
@@ -3083,8 +3148,11 @@ const TerminalTraceCard = ({
       {isExpanded && (
         <InlineConsole
           command={command}
+          program={getTerminalInvocation(log, preview)?.program}
+          args={getTerminalInvocation(log, preview)?.args}
           content={output}
           exitCode={displayedExitCode}
+          status={resultStatus}
           durationMs={durationMs}
           cwd={cwd}
           shell={shell}
@@ -3223,7 +3291,7 @@ const FileChangeTraceCard = ({
     ?? log.endLine;
   const hasDiffPreview = Array.isArray(preview?.diffLines) && preview.diffLines.length > 0;
   const isEditPreview = resultSaysEdit;
-  const isCreateAction = resultOperation === 'created' || (!resultOperation && /^(?:creat|generat|scaffold|writ)/i.test(displayVerb));
+  const isCreateAction = normalizedVerb === 'Created' || resultOperation === 'created' || /^(?:creat|generat|scaffold|writ)/i.test(displayVerb) || /^(?:creat|generat|scaffold|writ)/i.test(title);
   const canPreview = preview?.type === 'file_preview' && (
     (isEditPreview && (hasDiffPreview || previewContent.length > 0 || Boolean(previewFilePath))) ||
     (!isEditPreview && (previewContent.length > 0 || Boolean(previewFilePath)))
@@ -3244,7 +3312,12 @@ const FileChangeTraceCard = ({
   const effectiveStats = structuredStats || diffStats;
 
   const canExpand = hasFileOperationResult || canPreview || canFetchCreatedFile || canShowFileList;
-  const agentEntry = resolveToolTraceIcon(log);
+  const isDeleteAction = resultOperation === 'deleted' || (!resultOperation && /^(?:delet|remov)/i.test(displayVerb));
+  const agentEntry = isDeleteAction
+    ? { Icon: FileDeleteIcon, color: W }
+    : isCreateAction
+      ? { Icon: FileAddIcon, color: W }
+      : { Icon: FileEditIcon, color: W };
   const { Icon: AI, color: ac } = agentEntry;
 
   const activate = (event: React.MouseEvent | React.KeyboardEvent) => {
@@ -3314,8 +3387,8 @@ const FileChangeTraceCard = ({
   );
 
   const collapsedRowClass = inCard
-    ? `eterx-file-change-row eterx-file-change-row--embedded group grid min-h-[29px] w-full grid-cols-[22px_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-1 py-0.5 text-left transition-colors hover:bg-white/[0.024] ${ canExpand ? 'cursor-pointer' : 'cursor-default' }`
-    : `eterx-file-change-row eterx-file-change-row--standalone group grid min-h-[34px] w-full grid-cols-[22px_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-2.5 py-0.5 text-left transition-colors ${ canExpand ? 'cursor-pointer hover:bg-white/[0.025]' : 'cursor-default' }`;
+    ? `eterx-file-change-row eterx-file-change-row--embedded group grid min-h-[29px] w-full grid-cols-[20px_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-1 py-0.5 text-left transition-colors hover:bg-white/[0.024] ${ canExpand ? 'cursor-pointer' : 'cursor-default' }`
+    : `eterx-file-change-row eterx-file-change-row--standalone group grid min-h-[34px] w-full grid-cols-[20px_auto_minmax(0,1fr)_auto] items-center gap-1.5 px-2.5 py-0.5 text-left transition-colors ${ canExpand ? 'cursor-pointer hover:bg-white/[0.025]' : 'cursor-default' }`;
 
   return (
     <div className={`eterx-file-change-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
@@ -3332,8 +3405,8 @@ const FileChangeTraceCard = ({
         }}
         className={collapsedRowClass}
       >
-        <span className="eterx-action-icon eterx-file-change-icon flex h-[22px] w-[22px] shrink-0 items-center justify-center">
-          <AI isLive={effectiveIsLiveChip} size={16.5} color={effectiveIsLiveChip ? ac : '#DAD6CF'} />
+        <span className="eterx-action-icon eterx-file-change-icon flex h-5 w-5 shrink-0 items-center justify-center">
+          <AI isLive={effectiveIsLiveChip} size={15} color={effectiveIsLiveChip ? ac : '#DAD6CF'} />
         </span>
           <Shimmer active={effectiveIsLiveChip} className="eterx-file-change-title min-w-max whitespace-nowrap text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {title}
@@ -3607,6 +3680,14 @@ const ActionChip = ({
     const base = getToolMeta(actionText, log.type, log.icon);
     // Map past-tense verbs → live present-tense
     const LIVE_VERBS: Record<string, string> = {
+      'Launched browser': 'Launching browser',
+      'Opened Chrome': 'Opening Chrome',
+      'Started browser session': 'Starting browser session',
+      'Connected to Chrome': 'Connecting to Chrome',
+      'Right clicked': 'Right clicking',
+      'Left clicked': 'Left clicking',
+      'Clicked': 'Clicking',
+      'Double clicked': 'Double clicking',
       'Ran': 'Running', 'Read': 'Reading', 'Listed': 'Listing',
       'Edited': 'Editing', 'Created': 'Creating', 'Searched': 'Searching',
       'Web searched': 'Web searching', 'Scraped': 'Scraping',
@@ -3726,15 +3807,31 @@ const ActionChip = ({
           e.preventDefault();
           handleTogglePreview(e);
         }}
-        className={`eterx-action-chip grid w-full grid-cols-[22px_auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5 transition-colors group ${ inCard ? 'min-h-[29px] rounded-none border-0 bg-transparent px-1 hover:bg-white/[0.026]' : preview ? `min-h-[34px] px-2.5 ${ ACTION_CARD_CLASS } cursor-pointer hover:border-white/[0.12] hover:bg-[#181817]/70` : `min-h-[34px] px-2.5 ${ ACTION_CARD_CLASS } cursor-default hover:bg-[#171716]/60` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
+        className={`eterx-action-chip grid w-full grid-cols-[20px_auto_minmax(0,1fr)_auto] items-center gap-1.5 py-0.5 transition-colors group ${ inCard ? 'min-h-[29px] rounded-none border-0 bg-transparent px-1 hover:bg-white/[0.026]' : preview ? `min-h-[34px] px-2.5 ${ ACTION_CARD_CLASS } cursor-pointer hover:border-white/[0.12] hover:bg-[#181817]/70` : `min-h-[34px] px-2.5 ${ ACTION_CARD_CLASS } cursor-default hover:bg-[#171716]/60` } ${ preview ? 'cursor-pointer' : 'cursor-default' }`}
       >
         {!isThinkChip && (() => {
           // Terminal-style traces can arrive with custom text and older computer categories.
-          const agentEntry = resolveToolTraceIcon(log);
+          const isCreateChip = isEdit && (
+            meta.verbDone === 'Created' ||
+            meta.verbLive === 'Creating' ||
+            /^(?:creat|generat|scaffold|writ)/i.test(displayVerbLabel)
+          );
+          const isDeleteChip = isEdit && (
+            meta.verbDone === 'Deleted' ||
+            meta.verbLive === 'Deleting' ||
+            /^(?:delet|remov)/i.test(displayVerbLabel)
+          );
+          const agentEntry = isDeleteChip
+            ? { Icon: FileDeleteIcon, color: W }
+            : isCreateChip
+              ? { Icon: FileAddIcon, color: W }
+              : isEdit
+                ? { Icon: FileEditIcon, color: W }
+                : resolveToolTraceIcon(log);
           const { Icon: AI, color: ac } = agentEntry;
           return (
             <span
-              className={`eterx-action-icon flex h-[22px] w-[22px] items-center justify-center shrink-0 ${ connectorAction ? 'rounded-[6px] border border-white/[0.08] bg-white/[0.035] shadow-none' : '' }`}
+              className={`eterx-action-icon flex h-5 w-5 items-center justify-center shrink-0 ${ connectorAction ? 'rounded-[6px] border border-white/[0.08] bg-white/[0.035] shadow-none' : '' }`}
               title={connectorAction ? `${ (connectorId || 'connected service').replace(/_/g, ' ') } connector` : undefined}
               data-connector={connectorId || (connectorAction ? 'connected-service' : undefined)}
             >
@@ -3744,7 +3841,7 @@ const ActionChip = ({
             </span>
           );
         })()}
-        {isThinkChip && <span className="h-[22px] w-[22px] shrink-0" />}
+        {isThinkChip && <span className="h-5 w-5 shrink-0" />}
         <Shimmer active={isLiveChip} className="eterx-action-verb shrink-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">{displayVerbLabel}</Shimmer>
         {hasFile && (
           <span className="flex min-w-0 items-center gap-2">
@@ -4108,7 +4205,7 @@ const BrowserActivityGroup = ({
   const currentActionIndex = activityIsActive
     ? (explicitLiveIndex >= 0 ? explicitLiveIndex : actionLogs.length - 1)
     : -1;
-  const { Icon: BrowserIcon } = resolveAgentIcon('Browser use', 'Using browser', 'browser');
+  const BrowserIcon = MonitorPlayIcon;
   let actionIndex = 0;
 
   return (
@@ -4126,7 +4223,7 @@ const BrowserActivityGroup = ({
           {activityIsActive ? (
             <span className="eterx-trace-spinner" />
           ) : (
-            <BrowserIcon size={16.5} color="#DAD6CF" />
+            <BrowserIcon size={15} color="#DAD6CF" />
           )}
         </span>
         <Shimmer
@@ -4318,7 +4415,27 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
   const heading = rawHeading.charAt(0).toUpperCase() + rawHeading.slice(1);
   const iconLog = isActive ? currentAction : logs.find(log => log.type === 'file_edit') || logs.find(log => log.type !== 'thought_stream');
   const showIcon = Boolean(iconLog && iconLog.type !== 'thought_stream' && !/^(?:working|thinking)(?:\s|$)/i.test(heading));
-  const { Icon: SummaryIcon } = resolveToolTraceIcon(iconLog);
+  const isSkillAction = liveSummary?.key === 'skill' || /skill/i.test(heading) || iconLog?.toolName === 'get_skill_guidelines';
+  const isCreateGroup = (creationOnly && iconLog?.type === 'file_edit') || /^(?:created|creating)\b/i.test(heading);
+  const isEditGroup = iconLog?.type === 'file_edit' && !isCreateGroup;
+  const isBrowserGroup = /browser|opened chrome|opening chrome|started browser|chrome/i.test(heading);
+  const isRightOrLeftClick = /right[\s_-]*click|left[\s_-]*click/i.test(heading);
+  const isClickGroup = /\b(?:click|clicked|clicking|double[\s_-]*click)\b/i.test(heading);
+
+  const resolvedHeaderEntry = isSkillAction
+    ? { Icon: SkillIcon, color: 'currentColor' }
+    : isRightOrLeftClick
+      ? { Icon: MouseIcon, color: 'currentColor' }
+      : isClickGroup
+        ? { Icon: MousePointerClickIcon, color: 'currentColor' }
+        : isBrowserGroup
+          ? { Icon: MonitorPlayIcon, color: 'currentColor' }
+          : isCreateGroup
+            ? { Icon: FileAddIcon, color: 'currentColor' }
+            : isEditGroup
+              ? { Icon: FileEditIcon, color: 'currentColor' }
+              : resolveToolTraceIcon(iconLog);
+  const { Icon: SummaryIcon } = resolvedHeaderEntry;
 
   return (
     <div ref={sequenceRef} className="eterx-action-sequence w-full" data-live={isActive ? 'true' : undefined}>
@@ -4344,8 +4461,8 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
       >
         <span className="eterx-sequence-icon flex h-5 w-5 shrink-0 items-center justify-center" data-visible={showIcon ? 'true' : 'false'} aria-hidden="true">
           {showIcon && (isConnectorTrace(iconLog)
-            ? <ConnectorIcon connectorId={getConnectorId(iconLog)} size={17} />
-            : <SummaryIcon size={17} color="currentColor" />)}
+            ? <ConnectorIcon connectorId={getConnectorId(iconLog)} size={15} />
+            : <SummaryIcon size={15} color="currentColor" />)}
         </span>
         <span className="eterx-sequence-heading min-w-0 truncate select-text" title={heading}>
           <Shimmer active={isActive} className="block">{heading}</Shimmer>
@@ -4508,6 +4625,12 @@ const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
         Refactored: 'Refactoring',
         Verified: 'Verifying',
         Generated: 'Generating',
+        'Used browser': 'Using browser',
+        'Launched browser': 'Launching browser',
+        'Right clicked': 'Right clicking',
+        'Left clicked': 'Left clicking',
+        'Clicked': 'Clicking',
+        'Double clicked': 'Double clicking',
       };
       const verb = LIVE_VERBS[meta.verb] || meta.verb || 'Working';
       const label = fileName ? `${ verb } ${ fileName }` : verb;
@@ -4709,7 +4832,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
             type="button"
             onClick={handleCopy}
             aria-label={copied ? 'HTML copied' : 'Copy HTML'}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-[7px] text-[10.5px] font-semibold transition-colors ${ copied ? 'text-emerald-300 bg-emerald-500/10' : 'text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04]' }`}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-[7px] text-[10.5px] font-semibold transition-colors ${ copied ? 'text-white bg-emerald-500/10' : 'text-[#928B81] hover:text-[#E8E1D7] hover:bg-white/[0.04]' }`}
             title="Copy HTML"
           >
             {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}

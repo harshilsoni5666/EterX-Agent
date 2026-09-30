@@ -1,17 +1,22 @@
 import { z } from 'zod';
 import fs from 'fs-extra';
+import path from 'path';
 import { ToolDefinition } from '../../schemas';
 import { resolveWorkspaceDirectoryForContext } from '../../workspace/path_resolver';
 import { normalizeTimeoutMs } from '../core/terminal_timeout';
 import {
+  backgroundTerminalTask,
+  waitTerminalTask,
   getTerminalBackgroundTaskStatus,
   killTerminalBackgroundTask,
   listTerminalBackgroundTasks,
   runTerminalCommandWithCheckIn,
 } from '../core/terminal_background';
-import { resolveTerminalShell } from '../core/shell_resolver';
-import { referencesDesktopHelperScript } from '../shared/desktop_guard';
-import { groupParallelToolCalls } from '../../parallel-tool-calls';
+import { findExecutable, resolveTerminalShell } from '../core/shell_resolver';
+import { authorizeToolCommand } from '../security/command_broker';
+import { environmentForExplicitProgram } from '../../runtime/python-runtime';
+import { formatTerminalProgram } from '../../terminal-invocation';
+import { executeParallelToolCalls } from '../../parallel-tool-calls';
 import { isSourceReadShellCommand } from '../../shell-command-shape';
 import {
   MIN_TERMINAL_OUTPUT_CHARS, MAX_TERMINAL_OUTPUT_CHARS, explicitOutputChars,
@@ -22,8 +27,21 @@ const DEFAULT_MODEL_OUTPUT_CHARS = 24_000;
 const MIN_MODEL_OUTPUT_CHARS = MIN_TERMINAL_OUTPUT_CHARS;
 const MAX_MODEL_OUTPUT_CHARS = MAX_TERMINAL_OUTPUT_CHARS;
 
+const describeProgram = formatTerminalProgram;
+
+function terminalFailureAdvice(output: string, shell: string): string {
+  if (/ModuleNotFoundError|No module named/i.test(output)) return 'The interpreter ran. Resolve only the named missing dependency for that interpreter (prefer a workspace virtual environment), then rerun the actual task. Do not repeat shell/version discovery.';
+  if (/ParserError|Unexpected token|SyntaxError|terminator|not recognized|command not found/i.test(output)) return `Read the specific error before retrying. Current executor: ${shell}. For Python/Node use program + args to avoid shell quoting. Use the executable paths already supplied in runtime context; inspect only the specific missing executable if necessary.`;
+  if (/EACCES|EPERM|Access.*denied|Permission denied|Operation not permitted/i.test(output)) return 'The host OS denied this operation. Use the exact path and permission error to explain the blocker; retry only after changing the relevant path or permission. On macOS protected folders may require OS privacy access.';
+  return 'Use the actual stderr to correct the failing operation. Reuse known paths and dependencies; repeat only after a relevant change, or choose another viable approach.';
+}
+
 type TerminalCommandRequest = {
   command: string;
+  program?: string;
+  args?: string[];
+  shell?: string;
+  env?: Record<string, string>;
   cwd?: string;
   timeoutSeconds?: number;
   timeoutMs?: number;
@@ -34,6 +52,8 @@ type TerminalCommandRequest = {
 
 type TerminalCommandResult = {
   command: string;
+  program?: string;
+  args?: string[];
   outputKind?: TerminalOutputKind;
   success: boolean;
   stdout: string;
@@ -42,6 +62,8 @@ type TerminalCommandResult = {
   timedOut?: boolean;
   timeoutMs?: number;
   processId?: string;
+  taskId?: string;
+  outputEnd?: number;
   streamId?: string;
   nextActionNote?: string;
   stillRunning?: boolean;
@@ -56,7 +78,7 @@ type TerminalCommandResult = {
 };
 
 type WorkspaceTerminalInput = Omit<TerminalCommandRequest, 'command'> & {
-  mode?: 'run' | 'check' | 'list' | 'kill';
+  mode?: 'run' | 'check' | 'wait' | 'background' | 'list' | 'kill';
   command?: string;
   commands?: TerminalCommandRequest[];
   taskId?: string;
@@ -65,7 +87,11 @@ type WorkspaceTerminalInput = Omit<TerminalCommandRequest, 'command'> & {
 };
 
 const commandRequestSchema = z.object({
-  command: z.string().min(1).describe('Exact command for the runtime OS and selected shell.'),
+  command: z.string().min(1).optional().describe('Shell script. Supply command OR program, never both.'),
+  program: z.string().min(1).optional().describe('Executable name or absolute path. python/python3 use this chat’s selected Python environment; explicit paths are honored. Executes directly without shell quoting.'),
+  args: z.array(z.string()).optional().describe('Exact program arguments, e.g. ["-c", "print(123)"]. No shell expansion.'),
+  shell: z.string().optional().describe('Shell preference for command only. Defaults to this chat setting.'),
+  env: z.record(z.string()).optional().describe('Environment overrides for this invocation. Do not pass secrets unless required.'),
   cwd: z.string().optional().describe('Optional working directory override for this command.'),
   timeoutSeconds: z.number().optional().describe('Optional foreground check-in override for this command, up to 120 seconds.'),
   background: z.boolean().optional().describe('Start this command immediately as a managed background process.'),
@@ -134,7 +160,7 @@ export function keepHeadAndTailOutput(value: string, maxChars: number): { text: 
 }
 
 function ownerChatId(context: any): string | undefined {
-  const value = String(context?.chatId || context?.projectId || '').trim();
+  const value = String(context?.ownerChatId || context?.chatId || context?.projectId || '').trim();
   return value || undefined;
 }
 
@@ -215,26 +241,14 @@ async function executeTerminalCommand(
 ): Promise<TerminalCommandResult> {
   const runDir = resolveWorkspaceDirectoryForContext(input.cwd, context);
   const autoTimeout = detectInstallTimeout(input.command);
-  const explicitTimeout = input.timeoutSeconds ?? input.timeoutMs;
+  const explicitTimeout = input.timeoutSeconds == null ? input.timeoutMs : Math.max(1000, input.timeoutSeconds * 1000);
   const timeoutMs = autoTimeout > 0 && !explicitTimeout
-    ? normalizeTimeoutMs(autoTimeout)
+    ? normalizeTimeoutMs(autoTimeout * 1000)
     : normalizeTimeoutMs(explicitTimeout);
 
-  if (!await fs.pathExists(runDir)) {
-    const stderr = `Working directory not found: ${runDir}`;
-    return {
-      command: input.command,
-      success: false,
-      stdout: '',
-      stderr,
-      exitCode: 1,
-      cwd: runDir,
-      _consoleTraceEmitted: emitImmediateTerminalFailure(context, input.command, stderr, runDir, 1),
-    };
-  }
-
-  if (referencesDesktopHelperScript(input.command, runDir)) {
-    const stderr = 'This command references a helper script directly on the Desktop root. Use the computer tool for UI automation, or move an intentional project script into the project directory.';
+  const directory = await fs.stat(runDir).catch(() => null);
+  if (!directory?.isDirectory()) {
+    const stderr = `Working directory is unavailable or is not a folder: ${runDir}. Reconnect the drive or choose the intended folder; this command has not run elsewhere.`;
     return {
       command: input.command,
       success: false,
@@ -248,7 +262,7 @@ async function executeTerminalCommand(
 
   let shell: string;
   try {
-    shell = resolveTerminalShell(context?.terminalShell);
+    shell = input.program ? 'direct' : resolveTerminalShell(input.shell || context?.terminalShell);
   } catch (error: any) {
     const stderr = String(error?.message || error);
     return {
@@ -264,8 +278,24 @@ async function executeTerminalCommand(
   }
 
   try {
+    const authorization = await authorizeToolCommand({ command: input.command, cwd: runDir, env: input.env, context });
+    const requestedProgram = input.program && /[\\/]/.test(input.program) ? path.resolve(runDir, input.program) : input.program;
+    const useChatPython = /^(?:python|python3)(?:\.exe)?$/i.test(input.program || '');
+    if (useChatPython && authorization.pythonRuntime?.issue) throw new Error(authorization.pythonRuntime.issue);
+    const program = useChatPython ? authorization.pythonRuntime?.program
+      : requestedProgram ? findExecutable([requestedProgram], authorization.env) : undefined;
+    if (input.program && !program) throw new Error(`Executable not found: ${input.program}. Use the host executable paths supplied in runtime context or provide its installed absolute path.`);
+    if (program && !useChatPython && /^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$/i.test(path.basename(program))) {
+      authorization.env = environmentForExplicitProgram(program, context, runDir, input.env);
+    }
+    if (program && process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(program)) {
+      throw new Error('Windows batch files require shell=cmd and command. program + args is for native executables; use node with the package CLI script when appropriate.');
+    }
     const result = await runTerminalCommandWithCheckIn({
-      command: input.command,
+      command: program ? describeProgram(program, input.args) : input.command,
+      program: program || undefined,
+      args: input.args,
+      authorization,
       cwd: runDir,
       source: 'workspace_run_command',
       context,
@@ -290,7 +320,9 @@ async function executeTerminalCommand(
     const stdoutView = outputKind === 'read'
       ? { text: rawStdout, dropped: 0 } : keepRecentOutput(rawStdout, stdoutAllowance);
     return {
-      command: input.command,
+      command: result.command || input.command,
+      program: result.program,
+      args: result.args,
       outputKind,
       success: Boolean(result.success),
       stdout: bufferNotice + stdoutView.text,
@@ -299,10 +331,13 @@ async function executeTerminalCommand(
       timedOut: Boolean(result.timedOut),
       timeoutMs: result.timeoutMs,
       processId: result.taskId,
+      taskId: result.taskId,
+      outputEnd: result.totalOutputChars,
       streamId: result.streamId,
-      nextActionNote: result.nextActionNote,
+      nextActionNote: result.nextActionNote || (!result.success && !result.stillRunning
+        ? terminalFailureAdvice(rawStderr || rawStdout, shell) : undefined),
       stillRunning: Boolean(result.stillRunning),
-      backgroundTaskId: result.backgroundTaskId || result.taskId,
+      backgroundTaskId: result.backgroundTaskId,
       totalOutputChars: result.totalOutputChars,
       droppedOutputChars: Number(result.droppedOutputChars || 0) + stdoutView.dropped + stderrView.dropped,
       message: result.message,
@@ -336,16 +371,20 @@ async function executeTerminalCommand(
  */
 export const workspaceRunCommandTool: ToolDefinition = {
   name: 'workspace_run_command',
-  modelDescription: 'mode=run (default): provide command OR commands:[{command,...}], never both. Batch independent reads/searches; up to six safe reads run concurrently, mutations stay ordered; parallel=false preserves dependencies. File/code/content reads are not clipped or summarized. Auto-detection covers literal readers/searches; set outputKind=read for other readers, log for noisy execution. maxOutputChars limits logs only. Read complete relevant files/sections, not project dumps: model context is finite. background=true returns a task ID, not completion. mode=check/kill requires returned taskId; check reuses outputEnd as sinceOffset. mode=list needs no taskId. Edit with workspace_edit_file.',
-  description: 'Cross-platform workspace terminal for inspection, search, execution, package commands, managed processes, and verification. mode=run executes command or a commands batch. background=true returns a managed task immediately. mode=check/list/kill reads or controls managed tasks. File/code/content reads remain exact; output limits apply only to logs. File mutations belong to workspace_edit_file.',
+  modelDescription: 'Use program + args for native executables and Python/Node scripts without shell quoting; command is for shell syntax. Host and chat paths are supplied automatically in runtime context. Reuse successful discoveries. Foreground is the default. A check-in returns control to the agent without making the command a background task. Use mode=wait with taskId and sinceOffset to wait efficiently, or the wait_timer tool followed by mode=check. Only background=true on launch or mode=background on an existing task explicitly backgrounds it. Never execute list, check, or task IDs as shell commands. For a running command, use the returned taskId in mode=check or mode=kill. Use mode=list to recover task IDs from earlier turns in this chat. An empty output delta means no new output, not completion; inspect status and stillRunning. mode=run (default): provide exactly one of command, program (+ args), or commands:[{command or program,...}]. Batch independent reads/searches; up to six safe reads run concurrently, mutations stay ordered; parallel=false preserves dependencies. File/code/content reads are not clipped or summarized. Auto-detection covers literal readers/searches; set outputKind=read for other readers, log for noisy execution. maxOutputChars limits logs only. Read complete relevant files/sections, not project dumps: model context is finite. background=true returns a task ID, not completion. mode=check/wait/background/kill requires returned taskId; check reuses outputEnd as sinceOffset. mode=list needs no taskId. Edit with workspace_edit_file.',
+  description: 'Cross-platform workspace terminal for inspection, search, execution, package commands, managed processes, and verification. mode=run executes command or a commands batch. background=true returns a managed task immediately. mode=check/list/kill reads or controls managed tasks. File/code/content reads remain exact; output limits apply only to logs. Author source and text with workspace_edit_file; run generators, converters, builds and package tools here when the task requires them.',
   category: 'workspace',
   inputSchema: z.object({
-    mode: z.enum(['run', 'check', 'list', 'kill']).optional().describe('Defaults to run. check and kill require a returned taskId.'),
+    mode: z.enum(['run', 'check', 'wait', 'background', 'list', 'kill']).optional().describe('Defaults to run. check/wait/background/kill use a taskId. Host environment and workspace paths are already supplied in runtime context.'),
     command: z.string().min(1).optional().describe('One command. For multiple independent reads/searches, prefer commands instead. Read complete small files or relevant function/type ranges in large files; do not repeatedly request tiny slices.'),
+    program: z.string().min(1).optional().describe('Native executable name or absolute path. python/python3 select this chat’s runtime; explicit paths are honored. Use program + args to bypass shell quoting. Provide exactly one of command, program, or commands.'),
+    args: z.array(z.string()).optional().describe('Arguments passed unchanged to program. Do not shell-quote individual arguments.'),
+    shell: z.string().optional().describe('Shell preference for shell commands only; defaults to the chat setting.'),
+    env: z.record(z.string()).optional().describe('Environment overrides scoped to this invocation.'),
     commands: z.array(commandRequestSchema).min(1).max(32).optional().describe('Batch mode for independent terminal operations, especially parallel file reads and searches. Do not also provide command.'),
     taskId: z.string().optional().describe('Managed terminal task ID required by mode=check or mode=kill.'),
     sinceOffset: z.number().int().min(0).optional().describe('For mode=check, return only output produced after this offset. Reuse outputEnd from the previous check.'),
-    cwd: z.string().optional().describe('Shared working directory. Prefer an absolute path, or use a path relative to the active user workspace. With no selected workspace, the runtime scratch root is used.'),
+    cwd: z.string().optional().describe('Defaults to this chat selected project or dedicated working folder. Relative paths are literal. Use absolute OS folder paths from runtime context for Desktop/Documents/Downloads, or ~ for the home directory.'),
     timeoutSeconds: z.number().optional().describe('Foreground check-in in seconds, up to 120. This does not kill the command.'),
     background: z.boolean().optional().describe('Return immediately with a managed taskId. The process continues until it exits, is cancelled, or is killed.'),
     maxOutputChars: z.number().int().min(MIN_MODEL_OUTPUT_CHARS).max(MAX_MODEL_OUTPUT_CHARS).optional().describe(`Log-output allowance in characters: default ${DEFAULT_MODEL_OUTPUT_CHARS}, maximum ${MAX_MODEL_OUTPUT_CHARS}; also bounds combined logs in a batch. Does not truncate file/code/content reads.`),
@@ -355,6 +394,8 @@ export const workspaceRunCommandTool: ToolDefinition = {
   outputSchema: z.object({
     success: z.boolean().optional(),
     command: z.string().optional(),
+    program: z.string().optional(),
+    args: z.array(z.string()).optional(),
     outputKind: z.enum(['read', 'log', 'mixed']).optional(),
     stdout: z.string(),
     stderr: z.string(),
@@ -396,6 +437,12 @@ export const workspaceRunCommandTool: ToolDefinition = {
   }),
   execute: async (input: WorkspaceTerminalInput, context: any) => {
     const mode = input.mode || 'run';
+    if (!['run', 'check', 'wait', 'background', 'list', 'kill'].includes(mode)) {
+      return { success: false, stdout: '', stderr: `Unsupported terminal mode: ${mode}. Host paths and shell details are already supplied in runtime context. Use run for a real command or list/check/wait/background/kill for managed processes.`, exitCode: 1, mode };
+    }
+    if (mode !== 'run' && !ownerChatId(context)) {
+      return { success: false, stdout: '', stderr: 'A chat context is required to list, check, or stop terminal tasks.', exitCode: 1, mode };
+    }
     if (mode === 'list') {
       const tasks = await listTerminalBackgroundTasks(ownerChatId(context));
       return {
@@ -408,7 +455,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
         message: `${tasks.length} managed terminal task(s).`,
       };
     }
-    if (mode === 'check' || mode === 'kill') {
+    if (mode === 'check' || mode === 'wait' || mode === 'background' || mode === 'kill') {
       const taskId = safeTaskId(input.taskId);
       if (!taskId) {
         return {
@@ -419,9 +466,18 @@ export const workspaceRunCommandTool: ToolDefinition = {
           mode,
         };
       }
-      const task = mode === 'check'
-        ? await getTerminalBackgroundTaskStatus(taskId, ownerChatId(context), input.sinceOffset)
-        : await killTerminalBackgroundTask(taskId, ownerChatId(context));
+      let task: any;
+      try {
+        task = mode === 'check'
+          ? await getTerminalBackgroundTaskStatus(taskId, ownerChatId(context), input.sinceOffset)
+          : mode === 'wait'
+            ? await waitTerminalTask(taskId, ownerChatId(context)!, normalizeTimeoutMs(input.timeoutSeconds == null ? undefined : Math.max(1000, input.timeoutSeconds * 1000)), input.sinceOffset, context?.abortSignal)
+            : mode === 'background'
+              ? await backgroundTerminalTask(taskId, ownerChatId(context)!)
+              : await killTerminalBackgroundTask(taskId, ownerChatId(context));
+      } catch (error) {
+        return { success: false, stdout: '', stderr: error instanceof Error ? error.message : String(error), exitCode: 1, mode, taskId };
+      }
       if (!task?.terminalTask) {
         return {
           success: false,
@@ -439,15 +495,17 @@ export const workspaceRunCommandTool: ToolDefinition = {
       return {
         success: mode === 'kill' ? killed : running || task.success !== false,
         command: task.command,
+        program: task.program,
+        args: task.args,
         outputKind: task.outputKind ?? resolveTerminalOutputKind(String(task.command || '')),
         // `output` is the chronological combined stream. Returning stdout,
         // stderr, and output repeated the same terminal text up to three times.
         stdout: output,
         stderr: '',
-        exitCode: running ? null : task.exitCode ?? (task.success === false ? 1 : 0),
+        exitCode: running || status === 'unknown' ? null : task.exitCode ?? (task.success === false ? 1 : 0),
         timedOut: Boolean(task.timedOut),
         stillRunning: running,
-        backgroundTaskId: taskId,
+        backgroundTaskId: task.background ? taskId : undefined,
         taskId,
         streamId: task.streamId,
         nextActionNote: task.nextActionNote,
@@ -470,45 +528,62 @@ export const workspaceRunCommandTool: ToolDefinition = {
     }
 
     const hasSingle = typeof input.command === 'string' && input.command.trim().length > 0;
+    const hasProgram = typeof input.program === 'string' && input.program.trim().length > 0;
     const hasBatch = Array.isArray(input.commands) && input.commands.length > 0;
-    if (hasSingle === hasBatch) {
+    if (Number(hasSingle) + Number(hasProgram) + Number(hasBatch) !== 1 || (input.args && !hasProgram)) {
       return {
         success: false,
         stdout: '',
-        stderr: 'Provide exactly one of command or commands.',
+        stderr: 'Provide exactly one of command, program, or commands. args requires program.',
         exitCode: 1,
       };
     }
 
-    if (hasSingle) {
-      return executeTerminalCommand({ ...input, command: input.command! }, context);
+    if (hasSingle || hasProgram) {
+      try { return await executeTerminalCommand({ ...input, command: input.command || describeProgram(input.program!, input.args) }, context); }
+      catch (error) { return { success: false, stdout: '', stderr: String((error as Error).message || error), exitCode: 1 }; }
     }
 
+    if (input.commands!.some(item => Boolean(item.command) === Boolean(item.program) || (item.args && !item.program))) {
+      return { success: false, stdout: '', stderr: 'Each batch entry requires exactly one of command or program; args requires program.', exitCode: 1 };
+    }
     const requests = input.commands!.map(item => ({
       ...item,
+      command: item.command || describeProgram(item.program!, item.args),
+      shell: item.shell ?? input.shell,
+      env: { ...input.env, ...item.env },
       cwd: item.cwd ?? input.cwd,
       timeoutSeconds: item.timeoutSeconds ?? input.timeoutSeconds,
       background: item.background ?? input.background,
       maxOutputChars: item.maxOutputChars ?? input.maxOutputChars,
       outputKind: item.outputKind ?? input.outputKind,
     }));
-    const results: TerminalCommandResult[] = [];
     const calls = requests.map(args => ({ name: 'workspace_run_command', args }));
-    const groups = input.parallel === false ? calls.map(call => [call]) : groupParallelToolCalls(calls);
-    for (const group of groups) {
-      const settled = await Promise.allSettled(group.map(call => executeTerminalCommand(call.args, context)));
-      for (let index = 0; index < settled.length; index++) {
-        const result = settled[index];
-        results.push(result.status === 'fulfilled' ? result.value : {
-          command: group[index].args.command,
-          cwd: group[index].args.cwd,
+    const skippedCommand = (call: typeof calls[number]): TerminalCommandResult => ({
+      command: call.args.command,
+      cwd: call.args.cwd,
+      success: false,
+      stdout: '',
+      stderr: 'CANCELLED_BY_USER: command was not started.',
+      exitCode: 1,
+    });
+    const results = await executeParallelToolCalls(calls, async (call): Promise<TerminalCommandResult> => {
+      try { return await executeTerminalCommand(call.args, context); }
+      catch (error) {
+        return {
+          command: call.args.command,
+          cwd: call.args.cwd,
           success: false,
           stdout: '',
-          stderr: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          stderr: error instanceof Error ? error.message : String(error),
           exitCode: 1,
-        });
+        };
       }
-    }
+    }, {
+      maxParallel: input.parallel === false ? 1 : 6,
+      shouldStop: () => context?.abortSignal?.aborted === true,
+      onSkipped: skippedCommand,
+    });
 
     const reads = requests.map(request => resolveTerminalOutputKind(request.command, request.outputKind) === 'read');
     const sections = results.flatMap((result, index) => ['stdout', 'stderr'].map(field => ({
@@ -533,7 +608,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
       timedOut: results.some(result => result.timedOut),
       stillRunning: runningTasks.length > 0,
       nextActionNote: runningTasks.length > 0
-        ? `${runningTasks.length} command(s) continue as managed background tasks; use their task IDs to inspect later output.`
+        ? `${runningTasks.length} command(s) continue as managed background tasks; use their task IDs with mode=wait or mode=check to inspect later output; they are background tasks only when explicitly requested.`
         : undefined,
       totalOutputChars: results.reduce((sum, result) => sum + Number(result.totalOutputChars ?? result.stdout.length + result.stderr.length), 0),
       droppedOutputChars: results.reduce((sum, result) => sum + Number(result.droppedOutputChars || 0), 0) + views.reduce((sum, view) => sum + view.dropped, 0),

@@ -14,6 +14,7 @@
  */
 
 import { classifyToolSemantics, getToolResultOutcome, toolResultChangedState, toolResultMadeProgress, toolResultSucceeded } from './tool-semantics';
+import { ObservationProgressTracker, stampObservation, type ObservationStamp } from './observation-progress';
 
 export type ExecutionGovernorDecision = {
   allowed: boolean;
@@ -50,6 +51,7 @@ export type ExecutionGovernorAttempt = {
   mutationEpoch: number;
   success: boolean;
   materialProgress: boolean;
+  observation?: ObservationStamp;
 };
 
 export type ExecutionGovernorState = {
@@ -141,6 +143,7 @@ function isSemanticallyDuplicateSignature(sigA: string, sigB: string): boolean {
  */
 export class ExecutionGovernor {
   private readonly attempts: ExecutionGovernorAttempt[] = [];
+  private readonly observations: ObservationProgressTracker;
   private mutationEpoch = 0;
   private consecutiveFailures = 0;
   private consecutiveNoProgress = 0;
@@ -154,6 +157,7 @@ export class ExecutionGovernor {
   private hardTimeoutFired = false;
 
   constructor(options: ExecutionGovernorOptions = {}) {
+    this.observations = new ObservationProgressTracker(options.state?.attempts);
     this.maxToolCalls = Number.isFinite(options.maxToolCalls) && Number(options.maxToolCalls) > 0
       ? Math.floor(Number(options.maxToolCalls))
       : null;
@@ -228,7 +232,10 @@ export class ExecutionGovernor {
     const semantics = classifyToolSemantics(normalizedName, args);
     const isMutation = toolResultChangedState(output, semantics);
     const isVerification = semantics.isVerification;
-    const materialProgress = toolResultMadeProgress(output, semantics);
+    const observation = semantics.effect === 'observation' && getToolResultOutcome(output) === 'completed'
+      ? stampObservation(normalizedName, args, output) : undefined;
+    const novelObservation = this.observations.record(observation, this.mutationEpoch);
+    const materialProgress = toolResultMadeProgress(output, semantics) && novelObservation;
 
     this.attempts.push({
       signature: this.signature(normalizedName, args),
@@ -236,12 +243,18 @@ export class ExecutionGovernor {
       mutationEpoch: this.mutationEpoch,
       success,
       materialProgress,
+      ...(observation ? { observation } : {}),
     });
 
     if (isMutation) {
       this.hasMutation = true;
       this.mutationEpoch++;
       this.hasVerification = false;
+    } else if (success && semantics.effect === 'command' && getToolResultOutcome(output) === 'completed') {
+      // A script or native program can repair dependencies without producing
+      // an editor diff. Its completion invalidates an unchanged-state retry
+      // assumption, but does not prove that it modified or verified files.
+      this.mutationEpoch++;
     }
 
     if (!success) {
@@ -274,22 +287,26 @@ export class ExecutionGovernor {
 
     // Escalating no-progress guidance: 3 → 5 → 8
     if (this.consecutiveNoProgress >= 8) {
-      notices.push(`URGENT: ${this.consecutiveNoProgress} consecutive tool calls without material progress. You MUST either use a different tool, produce a concrete artifact, or state the exact blocker in your final answer. Do not continue exploratory calls.`);
+      notices.push(`${this.consecutiveNoProgress} calls have not advanced the task. Stop repeating unchanged discovery. If a process is pending, wait on its task ID; otherwise use the existing evidence to correct the specific cause or report a real blocker. This counter is not a deadline or a reason to invent an artifact.`);
     } else if (this.consecutiveNoProgress >= 5) {
       notices.push(`No material progress in ${this.consecutiveNoProgress} consecutive calls. State what is blocking you or change your approach. Do not repeat similar exploratory actions.`);
     } else if (this.consecutiveNoProgress >= 3) {
-      notices.push(`Recent actions have not produced artifacts or verification results. Focus on the next concrete step that creates a file, runs a check, or directly advances the task.`);
+      notices.push('Recent actions have not advanced the task. Reuse established paths and results, read the actual blocker, and take the next useful step toward the requested outcome. Do not restart setup or add checks that the user declined.');
+    }
+    const repeatedReads = this.attempts.slice(-6).filter(attempt => attempt.observation && !attempt.materialProgress).length;
+    if (repeatedReads >= 2) {
+      notices.push(`${repeatedReads} recent reads returned unchanged evidence. Reuse the existing result, narrow the next read to an unanswered question, or act on what is already known. Fresh reads remain available when state may have changed; repeating a read is not itself progress.`);
     }
 
     // Verification gap
     if (this.hasMutation && !this.hasVerification) {
-      notices.push('Workspace changes exist without recorded verification. Before claiming the task works or tests pass, run an appropriate focused check or state that verification was not run.');
+      notices.push('Workspace changes are recorded, but runtime verification is not. Do not claim tests passed or behavior is proven. Verify only when relevant and permitted; when the user declined checks, report that limitation and continue the requested work.');
     }
 
     // Soft timeout warning
     if (elapsed >= this.softTimeoutMs && !this.softTimeoutFired) {
       this.softTimeoutFired = true;
-      notices.push(`Execution has been running for ${Math.round(elapsed / 60_000)} minutes. Prioritize completing the most important remaining work. Wrap up soon.`);
+      notices.push(`Execution has been running for ${Math.round(elapsed / 60_000)} minutes. Follow WORK NOTES and the user's communication preferences: if the user needs an update and a recent note has not already covered it, briefly describe actual progress or a consequential wait and remaining work. Do not repeat an unchanged update solely because this reminder appeared. Continue the authorized task; elapsed time alone is not a completion criterion.`);
     }
 
     // Budget approaching warning (at 80%)

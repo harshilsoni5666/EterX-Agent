@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useSyncExternalStore } from 'react';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
 const MIN_LIFECYCLE_EPOCH_MS = Date.UTC(2020, 0, 1);
 const MAX_FUTURE_SKEW_MS = 60_000;
@@ -8,6 +9,7 @@ const CLOCK_TICK_MS = 1_000;
 
 let clockSnapshot = Date.now();
 let clockTimer: ReturnType<typeof setInterval> | null = null;
+let stopAppVisibility: (() => void) | null = null;
 const clockSubscribers = new Set<() => void>();
 
 const publishClockTick = () => {
@@ -16,7 +18,7 @@ const publishClockTick = () => {
 };
 
 const syncClockVisibility = () => {
-  if (document.visibilityState === 'hidden') {
+  if (!isAppVisible()) {
     if (clockTimer !== null) clearInterval(clockTimer);
     clockTimer = null;
   } else if (clockSubscribers.size > 0 && clockTimer === null) {
@@ -32,7 +34,7 @@ const subscribeClock = (listener: () => void) => {
     // module can remain mounted for hours with no active rows, so its cached
     // snapshot must not make the first painted elapsed value stale.
     clockSnapshot = Date.now();
-    document.addEventListener('visibilitychange', syncClockVisibility);
+    stopAppVisibility = subscribeAppVisibility(syncClockVisibility);
     syncClockVisibility();
   }
   return () => {
@@ -40,7 +42,8 @@ const subscribeClock = (listener: () => void) => {
     if (clockSubscribers.size === 0) {
       if (clockTimer !== null) clearInterval(clockTimer);
       clockTimer = null;
-      document.removeEventListener('visibilitychange', syncClockVisibility);
+      stopAppVisibility?.();
+      stopAppVisibility = null;
     }
   };
 };

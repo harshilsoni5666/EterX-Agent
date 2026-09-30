@@ -8,7 +8,7 @@
  * progress and completion.
  */
 
-import { isLiteralReadCommand, isLiteralVerificationCommand, isReadOnlyShellCommand, literalShellCommands } from './shell-command-shape';
+import { isLiteralReadCommand, isLiteralVerificationCommand, literalTerminalCommands } from './shell-command-shape';
 import { isParallelSafeToolCall } from './parallel-tool-calls';
 
 export type ToolEffect =
@@ -113,23 +113,21 @@ function normalizeAction(args: Record<string, any>): string {
   return String(args?.action || args?.mode || args?.operation || '').trim().toLowerCase();
 }
 
-function terminalCommandText(args: Record<string, any>): string {
+function terminalCommandTexts(args: Record<string, any>): string[] {
   const commands = Array.isArray(args?.commands)
     ? args.commands.map((entry: any) => String(entry?.command || entry?.cmd || '')).filter(Boolean)
     : [];
-  return commands.length > 0 ? commands.join('\n') : String(args?.command || args?.script || args?.cmd || '');
+  if (commands.length > 0) return commands;
+  const command = String(args?.command || args?.script || args?.cmd || '');
+  return command ? [command] : [];
 }
 
-function terminalCommandTexts(args: Record<string, any>): string[] {
-  const commands = Array.isArray(args?.commands)
-    ? args.commands.map((entry: any) => String(entry?.command || entry?.cmd || '').trim()).filter(Boolean)
-    : [];
-  const single = String(args?.command || args?.script || args?.cmd || '').trim();
-  return commands.length > 0 ? commands : single ? [single] : [];
+function terminalCommandText(args: Record<string, any>): string {
+  return terminalCommandTexts(args).join('\n');
 }
 
 export function commandLooksLikeVerification(args: Record<string, any>): boolean {
-  const commands = literalShellCommands(terminalCommandText(args));
+  const commands = literalTerminalCommands(args);
   return Boolean(commands?.some(isLiteralVerificationCommand)
     && commands.every(tokens => isLiteralVerificationCommand(tokens) || isLiteralReadCommand(tokens)));
 }
@@ -147,9 +145,8 @@ export function commandLooksLikeMutation(args: Record<string, any>): boolean {
  * Mutation and verification classification runs before this predicate.
  */
 export function commandLooksLikeObservation(args: Record<string, any>): boolean {
-  const commands = terminalCommandTexts(args);
-  if (commands.length === 0) return false;
-  return commands.every(isReadOnlyShellCommand);
+  const commands = literalTerminalCommands(args);
+  return Boolean(commands?.length && commands.every(isLiteralReadCommand));
 }
 
 export type ToolResultOutcome = 'completed' | 'pending' | 'noop' | 'failed';
@@ -236,7 +233,7 @@ export function classifyToolSemantics(toolName: string, args: Record<string, any
 
   if (name === 'workspace_run_command') {
     const mode = normalizeAction(args);
-    if (name === 'workspace_run_command' && (mode === 'check' || mode === 'list')) {
+    if (mode === 'check' || mode === 'wait' || mode === 'list') {
       return {
         effect: 'observation',
         isMutation: false,

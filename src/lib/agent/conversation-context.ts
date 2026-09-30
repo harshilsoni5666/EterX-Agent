@@ -22,9 +22,8 @@ const normalizedText = (value: unknown, max = Number.POSITIVE_INFINITY): string 
 };
 
 const isProxyOnlyBoundary = (log: any): boolean =>
-  log?.type === 'user_action' &&
-  (log?.source === 'user_proxy' || log?.source === 'proxy_manager') &&
-  Boolean(log?.steeringId || (Array.isArray(log?.steeringIds) && log.steeringIds.length > 0));
+  (log?.type === 'user_action' || log?.type === 'steering_received') &&
+  (log?._autonomyProxy === true || log?.source === 'user_proxy' || log?.source === 'proxy_manager');
 
 const traceIdentity = (log: any, index: number): string => hash([
   index,
@@ -51,6 +50,23 @@ const extractPersistedDialogueTurnsFromLogs = (
     if (!role) return [];
     const text = normalizedText(log?.text);
     if (!text) return [];
+    if (log?.type === 'steering_received' && Array.isArray(log.steeringMessages)) {
+      // A transport receipt can contain opposite choices in successive human
+      // messages. Preserve their identities and order instead of importing
+      // the batch as one contradictory user utterance.
+      const timestamp = Number(log.timestamp || 0);
+      const updates: PersistedDialogueTurn[] = log.steeringMessages.flatMap((item: any) => {
+        const id = normalizedText(item?.id, 500);
+        const updateText = normalizedText(item?.text);
+        return id && updateText ? [{
+          originId: `chat-steering:${id}`,
+          role: 'user' as const,
+          text: updateText,
+          ...(Number.isFinite(timestamp) && timestamp > 0 ? { createdAt: timestamp } : {}),
+        }] : [];
+      });
+      if (updates.length === log.steeringMessages.length && updates.length > 0) return updates;
+    }
     const rawId = normalizedText(log?.id || log?.answerId || log?.turnId || log?.runId, 500);
     const runId = normalizedText(log?.runId, 220);
     // The optimistic and server root bubble use user-turn-${runId}, whereas

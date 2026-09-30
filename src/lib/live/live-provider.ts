@@ -126,7 +126,7 @@ export const DEFAULT_DEEPGRAM_THINK_MODEL = 'gpt-5-mini';
 export const DEEPGRAM_MAX_RECONNECT_ATTEMPTS = 3;
 
 export const isDeepgramLiveModel = (value: unknown): value is string =>
-  /^(?:flux-general-(?:en|multi)|nova-(?:3|2))$/.test(String(value ?? '').trim());
+  /^(?:flux-general-(?:en|multi)|nova-(?:3|2)(?:-[a-z0-9-]+)?)$/.test(String(value ?? '').trim());
 
 export const isDeepgramLiveVoice = (value: unknown): value is string =>
   /^(?:aura(?:-2)?|flux)-[a-z0-9]+-[a-z]{2,3}$/.test(String(value ?? '').trim());
@@ -201,6 +201,7 @@ export const isLiveModelForProvider = (providerValue: unknown, modelValue: unkno
   if (provider.provider === 'deepgram') return isDeepgramLiveModel(model);
   if (provider.provider === 'gemini') return isGeminiLiveModel(model);
   if (provider.provider === 'openai') return isOpenAIRealtimeModel(model);
+  if (provider.provider === 'grok') return /^grok-voice(?:-[a-z0-9.-]+)?$/i.test(model);
   return getLiveModelOptions(provider.value).some(option => option.value === model);
 };
 
@@ -221,6 +222,6 @@ export const isGeminiLiveModel = (value: unknown): boolean => {
  * provider IDs instead of silently resetting a discovered selection to auto. */
 export const isOpenAIRealtimeModel = (value: unknown): boolean => {
   const model = String(value || '').trim().toLowerCase();
-  if (model === 'gpt-realtime-whisper') return false;
+  if (/(?:^|-)(?:whisper|transcribe|translate)(?:-|$)/.test(model)) return false;
   return /^gpt-(?:realtime(?:[-.][a-z0-9.-]+)?|4o-realtime(?:[-.][a-z0-9.-]+)?)$/.test(model);
 };

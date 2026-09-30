@@ -1,15 +1,11 @@
 import type { ToolDefinition } from '../../schemas';
-import { SANDBOX_BLOCKED_TOOLS, SANDBOX_ALLOWED_CAPABILITIES } from '../../../sandbox/sandbox-guard';
-import { getCodingMode } from '../../../code/coding-modes';
+import { isConfiguredToolAllowed } from '../../builtin-agent-tool-policy';
 
 export type ToolCapabilityDecision = {
   allowed: boolean;
   reason?: string;
   capability?: string;
 };
-
-const QUARANTINED_TOOLS = new Set<string>([
-]);
 
 export const DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES = [
   'command.workspace',
@@ -83,42 +79,13 @@ export function enforceToolCapability(
   _args: any,
   context?: any,
 ): ToolCapabilityDecision {
-  const codingMode = !context?.isUserProxy && getCodingMode(context?.agentProfile);
-  if (codingMode && !(codingMode.tools as readonly string[]).includes(toolName)) {
+  if (!isConfiguredToolAllowed(toolName, context)) {
     return {
       allowed: false,
-      reason: `${toolName} is not available in ${codingMode.label}. Use this run's declared tools; a different agent selection takes effect on a later turn.`,
+      reason: `${toolName} is disabled for this agent in Settings > Agents. Use the currently enabled tools.`,
     };
   }
-  // ── Sandbox enforcement (ONLY when sandbox mode is active) ──
-  if (context?.runLocation === 'sandbox') {
-    if (SANDBOX_BLOCKED_TOOLS.has(toolName)) {
-      return {
-        allowed: false,
-        capability: 'sandbox.blocked',
-        reason: `🔒 Sandbox: Tool "${toolName}" is disabled in sandbox mode. Use workspace_run_command for shell operations.`,
-      };
-    }
-
-    const capability = CAPABILITY_BY_TOOL[toolName] || inferCapability(toolName);
-    if (!SANDBOX_ALLOWED_CAPABILITIES.has(capability)) {
-      return {
-        allowed: false,
-        capability,
-          reason: `🔒 Sandbox: Capability "${capability}" required by "${toolName}" is not available in sandbox mode.`,
-      };
-    }
-  }
-
   const capability = CAPABILITY_BY_TOOL[toolName] || inferCapability(toolName);
-
-  if (QUARANTINED_TOOLS.has(toolName) && !isQuarantineOverrideEnabled(context)) {
-    return {
-      allowed: false,
-      capability,
-      reason: `Tool ${toolName} is quarantined pending security review`,
-    };
-  }
 
   if (isCapabilityAllowed(capability, context)) {
     return { allowed: true, capability };
@@ -168,10 +135,6 @@ function isCapabilityAllowed(capability: string, context?: any): boolean {
   if (capability === 'vcs.local' && context?.allowVcs === true) return true;
 
   return false;
-}
-
-function isQuarantineOverrideEnabled(context?: any): boolean {
-  return context?.allowQuarantinedTools === true || process.env.ETERX_ALLOW_QUARANTINED_TOOLS === '1';
 }
 
 function readStringList(value: unknown): string[] {

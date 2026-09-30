@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef } from 'react';
+import { isAppVisible } from '../../lib/app-visibility';
 
 /** Arrival polish only: never stage, buffer, fade out, or reorder content. */
 export function useLiveFeedFlow(active: boolean) {
@@ -25,7 +26,7 @@ export function useLiveFeedFlow(active: boolean) {
       if (id) seenActionIdsRef.current.add(id);
     });
     const observer = new MutationObserver(records => {
-      if (!activeRef.current || document.hidden || reducedMotion.matches) return;
+      if (!activeRef.current || !isAppVisible() || reducedMotion.matches) return;
       const arrivals = new Set<Element>();
       for (const record of records) {
         for (const node of Array.from(record.addedNodes)) {
@@ -41,7 +42,7 @@ export function useLiveFeedFlow(active: boolean) {
         if (id && seenActionIdsRef.current.has(id)) continue;
         if (id) seenActionIdsRef.current.add(id);
         if (row.closest('.eterx-live-feed-arrival')) continue;
-        if (!activeRef.current || document.hidden || reducedMotion.matches || !row.isConnected) continue;
+        if (!activeRef.current || !isAppVisible() || reducedMotion.matches || !row.isConnected) continue;
         // Do not compound motion when both a group and its children arrive.
         let parent = row.parentElement;
         let parentArrived = false;

@@ -6,13 +6,13 @@ import fs from 'fs/promises';
 import path from 'path';
 import { imageSize } from 'image-size';
 import {
-  checkEterXProtection,
+  resolveWorkspacePathForContext,
   getRuntimeWorkspaceRoot,
   hasRuntimeWorkspaceContext,
   resolveWorkspaceDirectoryForContext,
 } from '../../workspace/path_resolver';
 import { safeAxiosRequest } from '../shared/url_safety';
-import { getEterxWorkspaceDir } from '../../storage-paths';
+
 
 type RawImageCandidate = {
   url: string;
@@ -188,15 +188,12 @@ function resolveOutputDir(outputDir?: string, context?: any): string {
     const publicDir = path.join(getRuntimeWorkspaceRoot(context), 'public');
     targetDir = fse.existsSync(publicDir)
       ? path.join(publicDir, 'eterx-assets')
-      : getEterxWorkspaceDir('temp', 'image-assets');
+      : path.join(getRuntimeWorkspaceRoot(context), 'image-assets');
   } else {
-    targetDir = getEterxWorkspaceDir('temp', 'image-assets');
+    targetDir = path.join(getRuntimeWorkspaceRoot(context), 'image-assets');
   }
 
-  const protection = checkEterXProtection(targetDir);
-  if (protection.blocked) throw new Error(protection.reason);
-
-  return targetDir;
+  return resolveWorkspacePathForContext(targetDir, context);
 }
 
 function makePublicPath(filePath: string, outputDir: string, publicPath?: string): string {
@@ -355,7 +352,7 @@ For website projects, pass outputDir as the project's absolute public asset fold
     visualRole: z.enum(['hero', 'background', 'product', 'card', 'gallery', 'avatar', 'logo']).optional().default('card')
       .describe('How the image will be used in the design. This controls query hints and minimum dimensions.'),
     count: z.number().optional().default(3).describe('Number of final validated images to download.'),
-    outputDir: z.string().optional().describe('Directory to save images. For Next/Vite apps, use the project public asset folder. Defaults to .workspaces/temp/image-assets.'),
+    outputDir: z.string().optional().describe('Directory to save images. For Next/Vite apps, use the project public asset folder. Defaults to this chat workspace image-assets directory (or the project public/eterx-assets folder when present).'),
     publicPath: z.string().optional().describe('Browser src base path for outputDir, e.g. /eterx-assets or assets/images.'),
     minWidth: z.number().optional().describe('Minimum accepted image width in pixels. Defaults by visualRole.'),
     minHeight: z.number().optional().describe('Minimum accepted image height in pixels. Defaults by visualRole.'),

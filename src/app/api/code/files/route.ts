@@ -283,7 +283,7 @@ export async function POST(req: NextRequest) {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
 
-    const { filePath, offset, limit } = await req.json();
+    const { filePath, offset, limit, knownVersion } = await req.json();
 
     if (typeof filePath !== 'string' || !filePath.trim()) {
       return NextResponse.json({ error: 'filePath is required' }, { status: 400 });
@@ -310,6 +310,12 @@ export async function POST(req: NextRequest) {
       }, { status: 413 });
     }
 
+    // Reconcile a retained preview with a cheap stat before reading/tokenizing
+    // it again. Pagination deliberately omits knownVersion to request new lines.
+    const version = `${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.ino}`;
+    if (typeof knownVersion === 'string' && knownVersion === version) {
+      return NextResponse.json({ unchanged: true, version });
+    }
     const content = await fs.readFile(normalizedPath, 'utf-8');
     const lines = splitLines(content);
     const totalLines = lines.length;
@@ -325,6 +331,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       filePath: normalizedPath,
+      version,
       content: slicedContent,
       totalLines,
       loadedLines: Math.max(0, endIndex - startIndex),

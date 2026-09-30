@@ -1,11 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
-import { getEterxWorkspaceDir } from '../storage-paths';
-
-function safeSegment(value: string, fallback: string): string {
-  const cleaned = String(value || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
-  return cleaned || fallback;
-}
+import { getChatWorkspacePaths } from '../storage-paths';
 
 function resolveUnder(rootPath: string, ...segments: string[]): string {
   const root = path.resolve(rootPath);
@@ -25,16 +20,8 @@ async function writeFileAtomic(filePath: string, content: Buffer | string, encod
   await fs.move(tmpPath, filePath, { overwrite: true });
 }
 
-/**
- * WorkspaceManager v2
- * 
- * Layer 3: Workspace isolation, sandbox support, and memory integration.
- * 
- * IMPROVEMENTS:
- * - Virtual Sandbox: Agent drafts intermediate files in sandbox/ before writing to user's real workspace
- * - Sandbox Promotion: When work is final, files are "promoted" from sandbox to real workspace
- * - Draft Workflow: Long documents are written page-by-page in sandbox, then compiled
- */
+/** Per-chat storage. Legacy sandbox helpers are optional scratch utilities,
+ * not a mandatory staging workflow or a boundary on authorized host paths. */
 export class WorkspaceManager {
   private baseDir: string;
   private inputDir: string;
@@ -44,9 +31,7 @@ export class WorkspaceManager {
   private sandboxDir: string;
 
   constructor(userId: string, projectId: string) {
-    const safeUserId = safeSegment(userId, 'user');
-    const safeProjectId = safeSegment(projectId, 'project');
-    this.baseDir = getEterxWorkspaceDir(safeUserId, 'projects', safeProjectId);
+    this.baseDir = getChatWorkspacePaths(projectId, userId).base;
     
     this.inputDir = path.join(this.baseDir, 'input');
     this.workingDir = path.join(this.baseDir, 'working');
@@ -59,11 +44,7 @@ export class WorkspaceManager {
    * Initialize local workspace directories + sandbox.
    */
   public async initialize(): Promise<void> {
-    await fs.ensureDir(this.inputDir);
-    await fs.ensureDir(this.workingDir);
-    await fs.ensureDir(this.outputDir);
-    await fs.ensureDir(this.logsDir);
-    await fs.ensureDir(this.sandboxDir);
+    await Promise.all([this.inputDir, this.workingDir, this.outputDir, this.logsDir, this.sandboxDir].map(directory => fs.ensureDir(directory)));
     
     await fs.writeFile(
       path.join(this.logsDir, 'system.log'),
@@ -77,6 +58,10 @@ export class WorkspaceManager {
    */
   public getWorkingFilePath(filename: string): string {
     return resolveUnder(this.workingDir, filename);
+  }
+
+  public getWorkspacePath(): string {
+    return this.workingDir;
   }
 
   /**

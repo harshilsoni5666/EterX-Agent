@@ -1,6 +1,7 @@
 'use client';
 import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
 import { requestJson } from '../../lib/request-json';
+import { AgentToolsSettings } from './agent-tools-settings';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -35,9 +36,32 @@ import {
   removeModelSelectorEntry,
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
+import {
+  type LucideIcon,
+  SlidersHorizontal,
+  CircleUserRound,
+  Palette,
+  ShieldCheck,
+  Wand2,
+  Plug,
+  Coins,
+  BookText,
+  Brain,
+  Key,
+  Mic,
+  Cable,
+  SquareTerminal,
+  Globe,
+  LaptopMinimal,
+  RefreshCw,
+  SquareCheck,
+  Sparkle,
+  Users,
+} from 'lucide-react';
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
 import { appStorage, appStorageReady, registerDurableFlush, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { resolveModelContextWindow } from '../../lib/agent/model-context-window';
 import { readContextUsageMeter } from '../../lib/context-usage-meter';
 import {
@@ -147,13 +171,6 @@ const SettingsGlyph = ({
   </svg>
 );;
 
-const Key = (props: SettingsGlyphProps) => (
-  <SettingsGlyph {...props}>
-    <circle cx="8.2" cy="12" r="3.2" />
-    <path d="M11.4 12h7.4M15.6 12v2.2M18.8 12v-2.2" />
-  </SettingsGlyph>
-);
-
 const Shield = (props: SettingsGlyphProps) => (
   <SettingsGlyph {...props}>
     <path d="M12 3.2c2.25 1.65 4.45 2.42 6.6 2.32v5.7c0 4.25-2.2 7.18-6.6 8.78-4.4-1.6-6.6-4.53-6.6-8.78v-5.7c2.15.1 4.35-.67 6.6-2.32Z" />
@@ -208,12 +225,6 @@ const Check = (props: SettingsGlyphProps) => (
   </SettingsGlyph>
 );
 
-const Globe = (props: SettingsGlyphProps) => (
-  <SettingsGlyph {...props}>
-    <circle cx="12" cy="12" r="8.4" />
-    <path d="M3.8 12h16.4M12 3.6c2.2 2.25 3.3 5.05 3.3 8.4s-1.1 6.15-3.3 8.4M12 3.6C9.8 5.85 8.7 8.65 8.7 12s1.1 6.15 3.3 8.4" />
-  </SettingsGlyph>
-);
 
 const Lock = (props: SettingsGlyphProps) => (
   <SettingsGlyph {...props}>
@@ -525,6 +536,7 @@ const getTerminalShellOptions = (platform: 'unknown' | 'windows' | 'mac' | 'linu
 };
 
 type Tab =
+  | 'agents'
   | 'general'
   | 'profile'
   | 'appearance'
@@ -1064,6 +1076,7 @@ const dayKey = (value: number) => {
 
 const normalizeSettingsTab = (tab: any): Tab => {
   const validTabs: Tab[] = [
+    'agents',
     'general',
     'profile',
     'appearance',
@@ -1394,19 +1407,19 @@ const ApiKeyPoolEditor: React.FC<{
     const revision = keyRowsRevision.current;
     setTestingStatus(prev => ({ ...prev, [index]: 'testing' }));
     try {
-      const res = await fetch(testEndpoint || '/api/settings/models', {
+      const res = await requestJson(testEndpoint || '/api/settings/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...(testEndpoint
             ? (testBody ? testBody(key.trim()) : { provider, key: key.trim(), baseURL: testBaseURL || '' })
-            : { apiKeys: { [provider]: key.trim() }, providers: [provider] })
+            : { apiKeys: { [provider]: key.trim() }, providers: [provider], replaceRuntimeKeys: true, ...(testBaseURL ? { baseURLs: { [provider]: testBaseURL } } : {}) })
         }),
       });
       const data = await res.json();
       if (revision !== keyRowsRevision.current) return;
       if (res.ok && data?.ok && (testEndpoint
-        ? data?.provider === provider || data?.provider === testProvider
+        ? data?.connected !== false && (data?.provider === provider || data?.provider === testProvider)
         : data?.providers?.[provider]?.connected)) {
         setTestingStatus(prev => ({ ...prev, [index]: 'success' }));
       } else {
@@ -1684,27 +1697,6 @@ const ApiKeyPoolEditor: React.FC<{
         )}
       </div>
     </div>
-  );
-};
-
-const SETTINGS_PNG_ICONS = new Set([
-  'api', 'browser', 'computer', 'configuration', 'connections', 'context',
-  'live-convo', 'mcp', 'models', 'personalization', 'profile'
-]);
-
-const SettingsIconAsset: React.FC<{ name: string; className?: string }> = ({ name, className = 'h-4 w-4' }) => {
-  const isTokenIcon = name === 'tokens';
-  const ext = isTokenIcon || SETTINGS_PNG_ICONS.has(name) ? 'png' : 'svg';
-  const iconUrl = isTokenIcon ? '/tokens.png' : `/icons/settings/${name}.${ext}`;
-  return (
-    <span
-      aria-hidden="true"
-      className={`inline-block shrink-0 bg-current ${className}`}
-      style={{
-        WebkitMask: `url(${iconUrl}) center / contain no-repeat`,
-        mask: `url(${iconUrl}) center / contain no-repeat`,
-      }}
-    />
   );
 };
 
@@ -2145,7 +2137,7 @@ const ApiKeyRow: React.FC<{
             {visible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
           <button type="button" onClick={handleCopy} className="p-1.5 rounded-md hover:bg-white/5 text-[#555] hover:text-[#E8E6E3] transition-colors" title="Copy">
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            {copied ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
           </button>
         </div>
       </div>
@@ -2273,7 +2265,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const runtimeSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runtimeSyncPendingRef = useRef<RuntimeSettingsSnapshot | null>(null);
   const runtimeSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
-  const modelDirectoryRequestChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const modelDirectoryRequestsRef = useRef(new Map<string, Promise<void>>());
+  const modelDirectoryGenerationRef = useRef<Record<string, number>>({});
+  const reconcileModelDirectoryRef = useRef<(directory: ModelDirectory) => void>(() => {});
+  const [modelAvailabilityNotice, setModelAvailabilityNotice] = useState('');
   const providerBaseURLSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const providerBaseURLSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const providerBaseURLDirtyRef = useRef(false);
@@ -2369,16 +2364,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!isOpen || (activeTab !== 'browser' && activeTab !== 'computer')) return;
     let inFlight = false;
     const refreshVisibleStatus = async () => {
-      if (document.hidden || inFlight) return;
+      if (!isAppVisible() || inFlight) return;
       inFlight = true;
       try { await refreshBrowserRuntimeStatus(); } finally { inFlight = false; }
     };
     void refreshVisibleStatus();
     const timer = window.setInterval(refreshVisibleStatus, 8000);
-    document.addEventListener('visibilitychange', refreshVisibleStatus);
+    const unsubscribeVisibility = subscribeAppVisibility(refreshVisibleStatus);
     return () => {
       window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', refreshVisibleStatus);
+      unsubscribeVisibility();
     };
   }, [activeTab, isOpen, refreshBrowserRuntimeStatus]);
 
@@ -2681,7 +2676,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     }
 
     const refreshTokenStats = () => {
-      if (cancelled || document.hidden) return;
+      if (cancelled || !isAppVisible()) return;
       if (refreshInFlight) return refreshInFlight;
       refreshInFlight = (async () => {
        if (lastSnapshotText === null) setTokenStatsLoading(true);
@@ -2836,13 +2831,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const interval = window.setInterval(refreshTokenStats, 5000);
     window.addEventListener('eterx_chats_updated', refreshTokenStats);
     window.addEventListener('eterx-settings-updated', refreshTokenStats);
-    document.addEventListener('visibilitychange', refreshTokenStats);
+    const unsubscribeVisibility = subscribeAppVisibility(refreshTokenStats);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
       window.removeEventListener('eterx_chats_updated', refreshTokenStats);
       window.removeEventListener('eterx-settings-updated', refreshTokenStats);
-      document.removeEventListener('visibilitychange', refreshTokenStats);
+      unsubscribeVisibility();
     };
   }, [activeTab, isOpen]);
 
@@ -2864,7 +2859,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     appStorage.setItem(MODEL_API_KEY_PRESENCE_STORAGE_KEY, JSON.stringify(modelApiKeyPresence));
   }, []);
 
-  const refreshModelDirectory = useCallback(async (
+  const refreshModelDirectory = useCallback(async function refreshModelDirectory(
     keys: Record<string, string> = composeApiKeysForSelections(
       apiKeys,
       modelApiKeys,
@@ -2873,7 +2868,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     ),
     overrides: ModelOverrides = modelOverrides,
     requestedProviders?: MainAgentProvider[],
-  ) => {
+  ): Promise<void> {
     const discoveryRevision = settingsRevisionRef.current;
     const providers = Array.from(new Set(
       (requestedProviders?.length
@@ -2884,6 +2879,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           ))
         .filter(isModelProvider),
     ));
+    if (providers.length > 1) {
+      await Promise.all(providers.map(provider => refreshModelDirectory(keys, overrides, [provider])));
+      return;
+    }
+    if (!providers.length) return;
+    const provider = providers[0];
     const runDiscovery = async () => {
       if (discoveryRevision !== settingsRevisionRef.current) return;
       setModelDirectoryStatus('loading');
@@ -2898,12 +2899,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           replaceRuntimeKeys: true,
           providers,
         }),
-      }, 180_000);
+      }, 45_000);
       const payload = await res.json();
       if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
-      if (discoveryRevision !== settingsRevisionRef.current) return;
+      if (discoveryRevision !== settingsRevisionRef.current || modelDirectoryGenerationRef.current[provider] !== generation) return;
       const nextDirectory = payload.providers || {};
       setModelDirectory(previous => ({ ...previous, ...nextDirectory }));
+      reconcileModelDirectoryRef.current(nextDirectory);
+      const withoutRefreshedProviders = <T,>(values: Record<string, T>): Record<string, T> =>
+        Object.fromEntries(Object.entries(values).filter(([key]) => {
+          const entry = parseModelEntryKey(key);
+          return !entry || !nextDirectory[entry.provider]?.connected;
+        }));
       const discoveredThinkingCapabilities: Record<string, ModelThinkingCapabilities> = {};
       const discoveredWireCapabilities: Record<string, string[]> = {};
       Object.values(nextDirectory).forEach((providerValue: any) => {
@@ -2929,7 +2936,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         ...discoveredWireCapabilities,
       }));
       setModelThinkingCapabilities(previous => {
-        const next = { ...previous, ...discoveredThinkingCapabilities };
+        const next = { ...withoutRefreshedProviders(previous), ...discoveredThinkingCapabilities };
         appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
         broadcastEterxSettingsUpdate({
           type: 'model-thinking-capabilities-updated',
@@ -2937,9 +2944,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         });
         return next;
       });
-      // Discovery is read-only with respect to the user's chat selector.
-      // A live catalog must never insert a provider default, remove an exact
-      // manually-added model, or change the active chat model by itself.
+      // Preserve exact IDs and never choose a replacement automatically.
       const discoveredContextWindows: Record<string, number> = {};
       Object.values(payload.providers || {}).forEach((providerValue: any) => {
         const provider = String(providerValue?.provider || '');
@@ -2962,7 +2967,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             : [];
         }),
       );
-      const nextContextWindows = { ...validStoredContextWindows, ...discoveredContextWindows };
+      const nextContextWindows = { ...withoutRefreshedProviders(validStoredContextWindows), ...discoveredContextWindows };
       appStorage.setItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY, JSON.stringify(nextContextWindows));
       broadcastEterxSettingsUpdate({
         type: 'model-context-windows-updated',
@@ -2974,9 +2979,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         if (discoveryRevision === settingsRevisionRef.current) setModelDirectoryStatus('error');
       }
     };
-    const queued = modelDirectoryRequestChainRef.current.then(runDiscovery, runDiscovery);
-    modelDirectoryRequestChainRef.current = queued;
-    await queued;
+    const requestKey = JSON.stringify([providers, keys, providerBaseURLsRef.current, discoveryRevision]);
+    const existing = modelDirectoryRequestsRef.current.get(requestKey);
+    if (existing) return existing;
+    const generation = (modelDirectoryGenerationRef.current[provider] || 0) + 1;
+    modelDirectoryGenerationRef.current[provider] = generation;
+    const request = runDiscovery().finally(() => modelDirectoryRequestsRef.current.delete(requestKey));
+    modelDirectoryRequestsRef.current.set(requestKey, request);
+    await request;
   }, [apiKeys, modelApiKeys, modelEntries, modelOverrides, persistDesktopRuntimeSettings, selectedConnectionProvider]);
 
   const syncApiKeys = useCallback(async (keys: Record<string, string>, silent = false, overrides: ModelOverrides = {}) => {
@@ -3995,98 +4005,94 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const activeLiveProvider = getLiveProvider(settings.liveConvoProvider);
   const activeLiveProviderValue = activeLiveProvider.value;
   const activeLiveProviderLabel = activeLiveProvider.label;
-  const activeLiveProviderKey = activeLiveProvider.provider;
   const liveApiKeyProvider = activeLiveProvider.keyProvider;
-  const liveApiKeyLabel = `${activeLiveProvider.label}`;
+  const liveApiKeyLabel = activeLiveProvider.label;
   const activeLiveApiKey = liveApiKeys[liveApiKeyProvider] || '';
-  const discoveredLiveModels = (modelDirectory[activeLiveProviderKey]?.models || [])
-    .filter(m => /live|native-audio/i.test(m.id));
+  const [liveCatalogRefresh, setLiveCatalogRefresh] = useState(0);
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'live-convo') return;
-    let cancelled = false;
+    const controller = new AbortController();
     const providerValue = activeLiveProviderValue;
+    let cancelled = false;
     const timer = window.setTimeout(async () => {
       setLiveCatalogStatus('loading');
-      setLiveCatalogMessage(`Loading ${activeLiveProviderLabel} models and voices…`);
-      try {
-        const [modelResponse, voiceResponse] = await Promise.all([
-          fetch('/api/live/models', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: providerValue }),
-          }),
-          fetch('/api/settings/live-voices', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: providerValue, modelId: settings.liveConvoModel || 'auto' }),
-          }),
-        ]);
-        const modelPayload = await modelResponse.json().catch(() => null);
-        const voicePayload = await voiceResponse.json().catch(() => null);
-        if (cancelled) return;
+      setLiveCatalogMessage('Loading ' + activeLiveProviderLabel + ' models and voices…');
+      // An earlier key or agent must never supply choices for a new connection.
+      setLiveModelOptionsFromApi(previous => ({ ...previous, [providerValue]: [] }));
+      setLiveVoiceOptionsFromApi(previous => ({ ...previous, [providerValue]: [] }));
+      const load = async (endpoint: string) => {
+        const response = await requestJson(endpoint, {
+          signal: controller.signal, method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: providerValue, key: activeLiveApiKey,
+            agentId: settings.liveConvoAgentId || '', modelId: settings.liveConvoModel || 'auto' }),
+        }, 40_000);
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok) throw new Error(payload?.error || 'Catalog request failed.');
+        return payload;
+      };
+      const [modelResult, voiceResult] = await Promise.allSettled([
+        load('/api/live/models').then(payload => {
+          if (!cancelled) setLiveModelOptionsFromApi(previous => ({ ...previous,
+            [providerValue]: (Array.isArray(payload.models) ? payload.models : []).map((model: any) => ({
+              value: String(model.id || '').trim(), label: String(model.name || model.id || '').trim(),
+              tag: model.tag || (payload.source === 'live' ? 'LIVE API' : 'CATALOG'),
+              description: String(model.description || model.id || ''),
+            })).filter((model: LiveModelOption) => model.value),
+          }));
+          return payload;
+        }),
+        load('/api/settings/live-voices').then(payload => {
+          if (!cancelled) setLiveVoiceOptionsFromApi(previous => ({ ...previous,
+            [providerValue]: Array.isArray(payload.voices) ? payload.voices : [],
+          }));
+          return payload;
+        }),
+      ]);
+      if (cancelled) return;
+      const failures = [modelResult, voiceResult].flatMap(result => result.status === 'rejected'
+        ? [result.reason instanceof Error ? result.reason.message : 'Catalog request failed.'] : []);
+      setLiveCatalogStatus(failures.length ? 'error' : 'ready');
+      setLiveCatalogMessage(failures.length ? Array.from(new Set(failures)).join(' ')
+        : 'Models and voices loaded. Realtime access is confirmed when you start a session.');
+    }, 350);
+    return () => { cancelled = true; controller.abort(); window.clearTimeout(timer); };
+  }, [activeLiveApiKey, activeLiveProviderLabel, activeLiveProviderValue, activeTab, isOpen,
+    settings.liveConvoModel, settings.liveConvoAgentId, liveCatalogRefresh]);
 
-        const models = Array.isArray(modelPayload?.models) ? modelPayload.models : [];
-        const normalizedModels = models.map((model: any) => ({
-          value: String(model?.id || '').trim(),
-          label: String(model?.name || model?.id || '').trim(),
-          tag: String(model?.tag || 'LIVE API'),
-          description: String(model?.description || `Returned by ${activeLiveProviderLabel}`),
-        })).filter((model: LiveModelOption) => model.value);
-        const voices = Array.isArray(voicePayload?.voices) ? voicePayload.voices : [];
-        setLiveModelOptionsFromApi(previous => ({ ...previous, [providerValue]: normalizedModels }));
-        setLiveVoiceOptionsFromApi(previous => ({ ...previous, [providerValue]: voices }));
-        const catalogReady = modelResponse.ok && Boolean(modelPayload?.ok) && voiceResponse.ok && Boolean(voicePayload?.ok);
-        setLiveCatalogStatus(catalogReady ? 'ready' : 'error');
-        const keyState = activeLiveApiKey ? 'key configured' : 'add an API key to connect';
-        const catalogError = String(modelPayload?.error || voicePayload?.error || '').trim();
-        setLiveCatalogMessage(catalogReady
-          ? `${normalizedModels.length} model${normalizedModels.length === 1 ? '' : 's'} and ${voices.length} voice${voices.length === 1 ? '' : 's'} available · ${keyState}`
-          : catalogError || `${normalizedModels.length} model${normalizedModels.length === 1 ? '' : 's'} and ${voices.length} voice${voices.length === 1 ? '' : 's'} available · ${keyState}`);
-      } catch {
-        if (!cancelled) {
-          setLiveCatalogStatus('error');
-          setLiveCatalogMessage(`Could not load the ${activeLiveProviderLabel} catalog.`);
-        }
-      }
-    }, activeLiveApiKey ? 180 : 0);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [activeLiveApiKey, activeLiveProviderLabel, activeLiveProviderValue, activeTab, isOpen, settings.liveConvoModel]);
+  const liveCatalogOptions = liveModelOptionsFromApi[activeLiveProvider.value] || [];
+  const selectedLiveModel = settings.liveConvoModel || 'auto';
+  // Saved choices remain preferences, but never become available catalog entries.
+  const activeLiveModelOptions = liveCatalogOptions.length ? liveCatalogOptions
+    : [{ value: 'auto', label: 'Auto (Available provider model)' }];
+  const selectedLiveModelUnavailable = selectedLiveModel !== 'auto' && liveCatalogOptions.length > 0
+    && !liveCatalogOptions.some(option => option.value === selectedLiveModel);
+  const liveVoiceOptions = liveVoiceOptionsFromApi[activeLiveProvider.value] || [];
+  const selectedLiveVoice = settings.liveConvoVoice || 'auto';
+  const activeLiveVoiceOptions = liveVoiceOptions.length ? liveVoiceOptions
+    : [{ value: 'auto', label: 'Auto (Provider default)' }];
+  const selectedLiveVoiceUnavailable = selectedLiveVoice !== 'auto' && liveVoiceOptions.length > 0
+    && !liveVoiceOptions.some(option => option.value === selectedLiveVoice);
 
-  const activeLiveModelOptions = Array.from(new Map([
-    ...getLiveModelOptions(activeLiveProvider.value),
-    ...(liveModelOptionsFromApi[activeLiveProvider.value] || []),
-    ...discoveredLiveModels.map(m => ({
-      value: m.id,
-      label: m.name || m.id,
-      tag: 'LIVE API',
-      description: m.description || 'Returned by the Agent Live API',
-    })),
-  ].map(option => [option.value, option] as const)).values());
-  const activeLiveVoiceOptions = liveVoiceOptionsFromApi[activeLiveProvider.value]?.length
-    ? liveVoiceOptionsFromApi[activeLiveProvider.value]
-    : getLiveVoiceOptions(activeLiveProvider.value);
-
-  const tabs: { id: Tab; label: string; icon: string }[] = [
-    { id: 'general', label: 'General', icon: 'general' },
-    { id: 'profile', label: 'Profile', icon: 'profile' },
-    { id: 'appearance', label: 'Appearance', icon: 'appearance' },
-    { id: 'configuration', label: 'Configuration', icon: 'configuration' },
-    { id: 'personalization', label: 'Personalization', icon: 'personalization' },
-    { id: 'mcp', label: 'MCP servers', icon: 'mcp' },
-    { id: 'tokens', label: 'Tokens', icon: 'tokens' },
-    { id: 'context', label: 'Context', icon: 'context' },
-    { id: 'models', label: 'Models', icon: 'models' },
-    { id: 'api', label: 'API', icon: 'api' },
-    { id: 'live-convo', label: 'Live Convo', icon: 'live-convo' },
-    { id: 'git', label: 'Git', icon: 'git' },
-    { id: 'environments', label: 'Environments', icon: 'environments' },
-    { id: 'browser', label: 'External service', icon: 'browser' },
-    { id: 'computer', label: 'Computer use', icon: 'computer' },
-    { id: 'updates', label: 'Updates', icon: 'updates' },
+  const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
+    { id: 'general', label: 'General', icon: SlidersHorizontal },
+    { id: 'profile', label: 'Profile', icon: CircleUserRound },
+    { id: 'appearance', label: 'Appearance', icon: Palette },
+    { id: 'configuration', label: 'Configuration', icon: ShieldCheck },
+    { id: 'agents', label: 'Agents', icon: Users },
+    { id: 'personalization', label: 'Personalization', icon: Wand2 },
+    { id: 'mcp', label: 'MCP servers', icon: Plug },
+    { id: 'tokens', label: 'Tokens', icon: Coins },
+    { id: 'context', label: 'Context', icon: BookText },
+    { id: 'models', label: 'Models', icon: Brain },
+    { id: 'api', label: 'API', icon: Key },
+    { id: 'live-convo', label: 'Live Convo', icon: Mic },
+    { id: 'git', label: 'Git', icon: Cable },
+    { id: 'environments', label: 'Environments', icon: SquareTerminal },
+    { id: 'browser', label: 'External service', icon: Globe },
+    { id: 'computer', label: 'Computer use', icon: LaptopMinimal },
+    { id: 'updates', label: 'Updates', icon: RefreshCw },
   ];
 
   const providerKeyCount = (provider: string) => {
@@ -4115,16 +4121,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       seen.add(modelId);
       options.push({
         id: modelId,
-        label: formatModelName(modelId),
+        label: String(label || '').trim() || formatModelName(modelId),
         source,
       });
     };
 
-    push(modelOverrides[provider], modelOverrides[provider], 'selected');
-    modelCatalog[provider]?.forEach(modelId => push(modelId, modelId, 'saved'));
-    modelDirectory[provider]?.models?.forEach(model => {
-      push(model.id, model.name || model.id, 'live');
-    });
+    modelDirectory[provider]?.models?.forEach(model => push(model.id, model.name || model.id, 'live'));
+    if (modelDirectory[provider]?.connected) return options;
+    const savedLabel = (id: string) => formatModelName(id) + ' (saved · unverified)';
+    if (modelOverrides[provider]) push(modelOverrides[provider], savedLabel(modelOverrides[provider]), 'selected');
+    modelCatalog[provider]?.forEach(modelId => push(modelId, savedLabel(modelId), 'saved'));
 
     return options;
   }, [modelCatalog, modelDirectory, modelOverrides]);
@@ -4266,7 +4272,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       if (timer) clearTimeout(timer);
       window.removeEventListener('focus', onFocus);
     };
-  }, [activeTab, isOpen, selectedConnectionProvider, selectedApiProvider, apiKeys, modelApiKeys]);
+  }, [activeTab, isOpen, selectedConnectionProvider, selectedApiProvider, apiKeys, modelApiKeys, providerBaseURLs]);
 
   const saveModelEntries = useCallback((nextEntries: ModelSelectorEntry[]) => {
     const normalizedEntries = normalizeModelSelectorEntries(nextEntries, {});
@@ -4368,13 +4374,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const cleanModelId = String(modelId || '').trim();
     if (!isModelProvider(cleanProvider) || !cleanModelId) return;
 
+    const directory = modelDirectory[cleanProvider];
+    if (directory?.connected && !directory.models.some(model => model.id === cleanModelId)) {
+      setModelAvailabilityNotice('This model is not listed as available by the provider. Choose an available model.');
+      return;
+    }
     const existingEntries = modelEntriesRef.current;
     const nextEntries = saveModelEntries(ensureModelSelectorEntry(existingEntries, cleanProvider, cleanModelId));
     saveModelThinkingCapability(cleanProvider, cleanModelId);
     if (activate) selectCatalogModel(cleanProvider, cleanModelId, nextEntries);
     setHasChanges(true);
     keysChangedRef.current = true;
-  }, [saveModelEntries, saveModelThinkingCapability, selectCatalogModel]);
+  }, [modelDirectory, saveModelEntries, saveModelThinkingCapability, selectCatalogModel]);
 
   const removeModelFromSelector = useCallback((provider: string, modelId: string) => {
     const cleanProvider = String(provider || '').trim();
@@ -4433,6 +4444,37 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     keysChangedRef.current = true;
   }, [persistApiKeyPresence, persistDesktopRuntimeSettings, queueRuntimeSync, saveModelEntries, selectCatalogModel]);
 
+  reconcileModelDirectoryRef.current = (directory) => {
+    const available = new Map(Object.entries(directory)
+      .filter(([, result]) => result.connected && result.source === 'live' && Array.isArray(result.models))
+      .map(([provider, result]) => [provider, new Set(result.models.map(model => model.id))] as const));
+    const unavailable = (provider: string, id: string) => available.has(provider) && !available.get(provider)!.has(id);
+    const removed = modelEntriesRef.current.filter(entry => unavailable(entry.provider, entry.modelId));
+    const nextOverrides = Object.fromEntries(Object.entries(modelOverridesRef.current)
+      .filter(([provider, id]) => !unavailable(provider, id)));
+    const currentSelection = appStorage.getItem(CHAT_MODEL_SELECTION_STORAGE_KEY) || AUTO_MODEL_SELECTION;
+    const selected = parseModelEntryKey(currentSelection);
+    const selectionRemoved = Boolean(selected && unavailable(selected.provider, selected.modelId));
+    if (!removed.length && Object.keys(nextOverrides).length === Object.keys(modelOverridesRef.current).length && !selectionRemoved) return;
+    const nextEntries = saveModelEntries(modelEntriesRef.current.filter(entry => !unavailable(entry.provider, entry.modelId)));
+    modelOverridesRef.current = nextOverrides;
+    setModelOverrides(nextOverrides);
+    const nextSelection = selectionRemoved ? AUTO_MODEL_SELECTION : currentSelection;
+    setChatModelSelection(nextSelection);
+    appStorage.setItems({
+      [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(nextOverrides),
+      [CHAT_MODEL_SELECTION_STORAGE_KEY]: nextSelection,
+    });
+    // Keep credentials and chat history; only remove unavailable selector entries.
+    void persistDesktopRuntimeSettings(apiKeysRef.current, modelApiKeysRef.current, nextOverrides);
+    queueRuntimeSync({ apiKeys: apiKeysRef.current, modelApiKeys: modelApiKeysRef.current,
+      modelOverrides: nextOverrides, modelEntries: nextEntries }, true);
+    broadcastEterxSettingsUpdate({ type: 'model-selector-updated', modelEntries: nextEntries,
+      modelCatalog: entriesToModelCatalog(nextEntries), modelOverrides: nextOverrides, chatModelSelection: nextSelection });
+    setModelAvailabilityNotice('Removed models no longer listed as available by the provider.'
+      + (selectionRemoved ? ' Choose an available model to continue.' : ''));
+  };
+
   if ((!isOpen && !showBatmanEgg) || typeof document === 'undefined') return null;
 
   return createPortal(
@@ -4485,7 +4527,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         }`}
                     >
                       <span className="grid h-5 w-5 shrink-0 place-items-center text-current">
-                        <SettingsIconAsset name={tab.icon} className="h-4 w-4" />
+                        <tab.icon className="h-4 w-4" strokeWidth={1.9} />
                       </span>
                       <span className="min-w-0 truncate leading-5">{tab.label}</span>
                     </button>
@@ -4500,7 +4542,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                 {/* Scrollable Body */}
                 <div className={`flex-1 eterx-scrollbar px-6 ${activeTab === 'tokens' ? 'overflow-hidden py-4' : `overflow-y-auto ${activeTab === 'profile' ? 'py-4' : 'py-8'}`}`}>
-                  <div className={`mx-auto w-full ${manualOpen || activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : 'max-w-[560px]'} pb-8`}>
+                  <div className={`mx-auto w-full ${manualOpen || activeTab === 'profile' || activeTab === 'tokens' ? 'max-w-[980px]' : activeTab === 'agents' ? 'max-w-[860px]' : 'max-w-[560px]'} pb-8`}>
                       <div className="mb-6 flex items-center justify-between gap-4">
                         <h3 className="text-[22px] font-semibold leading-tight tracking-[-0.01em] text-[#F4F4F4]">
                           {manualOpen ? 'User manual' : tabs.find(t => t.id === activeTab)?.label}
@@ -4571,8 +4613,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <p className="-mt-2 mb-5 text-[14px] text-[#A5A5A5]">Choose how EterX-Agent should shape responses for your work.</p>
                           <div className="mb-12 grid gap-4 md:grid-cols-2">
                             {[
-                              { id: 'everyday' as const, title: 'General', description: 'Direct user-to-agent workflows for planning, writing, and routine tasks.', icon: 'everyday' },
-                              { id: 'specialist' as const, title: 'Autonomous', description: 'Proxy-agent takes responsibility and collaborates with the main agent to complete goals autonomously on your behalf.', icon: 'specialist' },
+                              { id: 'everyday' as const, title: 'General', description: 'Direct user-to-agent workflows for planning, writing, and routine tasks.', icon: SquareCheck },
+                              { id: 'specialist' as const, title: 'Autonomous', description: 'Proxy-agent takes responsibility and collaborates with the main agent to complete goals autonomously on your behalf.', icon: Sparkle },
                             ].map(mode => {
                               const selected = settings.workMode === mode.id;
                               return (
@@ -4586,7 +4628,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 >
                                   <div className="flex min-w-0 items-center gap-5">
                                     <span className="grid h-6 w-6 shrink-0 place-items-center text-[#D7D7D7]">
-                                      <SettingsIconAsset name={mode.icon} className="h-5 w-5" />
+                                      <mode.icon className="h-5 w-5" strokeWidth={1.9} />
                                     </span>
                                     <div className="min-w-0">
                                       <div className="text-[14.5px] font-semibold text-[#F1F1F1]">{mode.title}</div>
@@ -4741,6 +4783,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </SettingsStack>
                         </div>
                       )}
+
+                      {activeTab === 'agents' && <AgentToolsSettings />}
 
                       {activeTab === 'appearance' && (
                         <div>
@@ -5083,8 +5127,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 onChange={(value) => {
                                   if (!isModelProvider(value)) return;
                                   setSelectedConnectionProvider(value);
-                                  const nextMode = PROVIDER_MODE[value];
-                                  if (nextMode) updateSetting('agentMode', nextMode);
                                 }}
                                 className="w-[240px]"
                                 providers={MODEL_PROVIDER_ORDER}
@@ -5117,11 +5159,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   ...selectedProviderModelOptions.map(option => ({
                                     value: option.id,
                                     label: option.label,
-                                    description: getModelThinkingOptions(
+                                    description: option.id + ' · ' + (getModelThinkingOptions(
                                       selectedConnectionProvider,
                                       option.id,
                                       selectedProviderDirectory?.models.find(model => model.id === option.id)?.thinking,
-                                    ).map(level => level.label).join(' / ') || 'Standard',
+                                    ).map(level => level.label).join(' / ') || 'Standard'),
 
                                   })),
                                 ]}
@@ -5191,7 +5233,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             </SettingsStackRow>
                             <SettingsStackRow
                               title="Chat model list"
-                              description="Models in your chat selector, grouped by provider."
+                              description={modelAvailabilityNotice || "Models in your chat selector, grouped by provider."}
                               info="The selected chat model is sent with that exact model ID."
                               tall
                             >
@@ -5284,6 +5326,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               <ApiKeyPoolEditor
                                 key={`${selectedApiProvider}-${selectedApiPoolEntry.value}`}
                                 provider={selectedApiProvider}
+                                testBaseURL={providerBaseURLs[selectedApiProvider] || ''}
                                 providerLabel={selectedApiPoolEntry.isProviderPool ? `${selectedApiProviderLabel} provider pool` : selectedApiPoolEntry.label}
                                 value={selectedApiPoolValue}
                                 sync={selectedApiPoolEntry.isProviderPool ? selectedApiProviderSync : undefined}
@@ -5344,6 +5387,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           {apiSyncStatus === 'error' && <p className="mt-2 text-[12px] text-red-300" role="status">{apiSyncMessage}</p>}
 
+                          {modelAvailabilityNotice && <p role="status" className="my-3 text-[12px] text-amber-300">{modelAvailabilityNotice}</p>}
                           <SectionHeader title="Service APIs" />
                           <SettingsStack>
                             <SettingsStackRow
@@ -5414,26 +5458,28 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                             <SettingsStackRow
                               title="Live Model"
-                              description="Specific model engine active for current provider stream."
+                              description={selectedLiveModelUnavailable ? 'The saved model is no longer available. Choose another model.' : 'Specific model engine active for current provider stream.'}
                               info={`Models are loaded for ${activeLiveProvider.label} and never fall back to another provider.`}
                             >
                               <ModernSelect
                                 value={settings.liveConvoModel || 'auto'}
                                 onChange={(val) => updateSetting('liveConvoModel', val)}
                                 className="w-[340px]"
+                                placeholder={selectedLiveModelUnavailable ? 'Model unavailable — choose another' : 'Load available models'}
                                 options={activeLiveModelOptions}
                               />
                             </SettingsStackRow>
 
                             <SettingsStackRow
                               title="Voice Persona"
-                              description="Choose the synthesized output voice for live responses."
+                              description={selectedLiveVoiceUnavailable ? 'The saved voice is no longer available for this connection.' : 'Choose the synthesized output voice for live responses.'}
                               info={`Voices are loaded for the selected ${activeLiveProvider.label} model.`}
                             >
                               <ModernSelect
                                 value={settings.liveConvoVoice || 'auto'}
                                 onChange={(val) => updateSetting('liveConvoVoice', val)}
                                 className="w-[340px]"
+                                placeholder={selectedLiveVoiceUnavailable ? 'Voice unavailable — choose another' : 'Load available voices'}
                                 options={activeLiveVoiceOptions}
                               />
                             </SettingsStackRow>
@@ -5466,6 +5512,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               }`}>
                                 {liveCatalogStatus === 'loading' && <Spinner className="h-3.5 w-3.5" />}
                                 <span>{liveCatalogMessage}</span>
+                                <SoftButton onClick={() => setLiveCatalogRefresh(value => value + 1)}>Refresh</SoftButton>
                               </div>
                             </SettingsStackRow>
 
@@ -5535,7 +5582,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 minRows={2}
                                 testEndpoint="/api/live/models"
                                 testProvider={activeLiveProvider.value}
-                                testBody={(key) => ({ provider: activeLiveProvider.value, key, testOnly: true })}
+                                testBody={(key) => ({ provider: activeLiveProvider.value, key, agentId: settings.liveConvoAgentId || '', testOnly: true })}
                                 onChange={(nextValue) => updateLiveApiKey(liveApiKeyProvider, nextValue)}
                               />
                             </SettingsStackRow>

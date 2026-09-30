@@ -1,5 +1,12 @@
 #!/usr/bin/env sh
 set -eu
+umask 077
+
+# XDG paths must be absolute; a relative value must never redirect installation
+# or launcher registration into the caller's working directory.
+case "${XDG_DATA_HOME:-}" in /*) ;; *) XDG_DATA_HOME="$HOME/.local/share" ;; esac
+case "${XDG_STATE_HOME:-}" in /*) ;; *) XDG_STATE_HOME="$HOME/.local/state" ;; esac
+case "${XDG_CACHE_HOME:-}" in /*) ;; *) XDG_CACHE_HOME="$HOME/.cache" ;; esac
 
 REPOSITORY="harshilsoni5666/EterX-Agent"
 API_URL="https://api.github.com/repos/$REPOSITORY/releases/latest"

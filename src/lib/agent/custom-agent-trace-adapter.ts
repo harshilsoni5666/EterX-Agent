@@ -4,6 +4,7 @@ import {
   normalizeToolTraceText,
   summarizeTraceValue,
 } from './tool-trace';
+import { buildTerminalResultTrace } from './terminal-result-trace';
 
 type CustomToolLogType = 'command' | 'exploration' | 'file_edit' | 'communication' | 'browser';
 
@@ -96,7 +97,7 @@ const getCustomToolUi = (toolName: string): CustomToolUi => {
     plan_organization: { text: 'Planning organization', type: 'exploration', iconCategory: 'search', argKeys: ['goal', 'request', 'target'] },
     web_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKeys: ['query'] },
     browser_search: { text: 'Researching', type: 'exploration', iconCategory: 'web_search', argKeys: ['query'] },
-    browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'computer', argKeys: ['action', 'url'] },
+    browser_control: { text: 'Using browser', type: 'browser', iconCategory: 'browser', argKeys: ['action', 'url'] },
     image_generator: { text: 'Generating image', type: 'file_edit', iconCategory: 'image', argKeys: ['prompt', 'filename'] },
     video_generator: { text: 'Generating video', type: 'file_edit', iconCategory: 'image', argKeys: ['prompt', 'filename'] },
     screenshot_capture: { text: 'Capturing screen', type: 'exploration', iconCategory: 'computer', argKeys: ['target', 'filename'] },
@@ -320,6 +321,11 @@ export const createCustomToolResultLogs = (
   const durationMs = Number.isFinite(explicitDuration) && explicitDuration >= 0
     ? explicitDuration
     : Math.max(0, at - active.startedAt);
+
+  if (active.toolName === 'workspace_run_command') {
+    const preview = buildTerminalResultTrace(active.toolArgs, result, active.id, active.startedAt, at);
+    return preview ? [{ ...preview, id: `custom_result_${at}_${randomSuffix()}` }] : [];
+  }
 
   // terminal_background already streams the command's output and emits its
   // final event. Do not manufacture a second console card from tool_result.

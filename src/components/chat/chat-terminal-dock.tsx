@@ -1,11 +1,12 @@
 'use client';
 
 import { memo, useEffect, useRef } from 'react';
-import { Plus, TerminalSquare, X } from 'lucide-react';
-import { closeTerminal, createTerminal, resizeTerminalDock, resizeTerminalWidth, selectTerminal, setTerminalOpen, useChatTerminals } from '../../lib/chat-terminal-store';
+import { Loader2, Plus, TerminalSquare, X } from 'lucide-react';
+import { closeTerminal, createTerminal, resizeTerminalDock, resizeTerminalWidth, selectTerminal, setTerminalOpen, streamManagedTerminal, useChatTerminals } from '../../lib/chat-terminal-store';
 import { chatTerminalTheme, terminalTitle } from '../../lib/chat-terminal-theme';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
-function ChatTerminalDockView({ chatId, cwd }: { chatId: string; cwd?: string | null }) {
+function ChatTerminalDockView({ chatId, cwd, embedded = false }: { chatId: string; cwd?: string | null; embedded?: boolean }) {
   const state = useChatTerminals(chatId);
   const isSide = state.placement === 'right';
   const resizeDock = (size: number) => isSide ? resizeTerminalWidth(chatId, size) : resizeTerminalDock(chatId, size);
@@ -19,6 +20,7 @@ function ChatTerminalDockView({ chatId, cwd }: { chatId: string; cwd?: string | 
       const right = String(strip.scrollWidth - strip.clientWidth - strip.scrollLeft > 1);
       if (strip.dataset.fadeLeft !== left) strip.dataset.fadeLeft = left;
       if (strip.dataset.fadeRight !== right) strip.dataset.fadeRight = right;
+      for (const label of strip.querySelectorAll<HTMLElement>('[role="tab"] > span')) label.dataset.overflow = String(label.scrollWidth > label.clientWidth + 1);
     };
     updateEdges();
     const observer = new ResizeObserver(updateEdges);
@@ -70,6 +72,9 @@ function ChatTerminalDockView({ chatId, cwd }: { chatId: string; cwd?: string | 
   };
   const tab = state.tabs.find(item => item.id === state.activeId);
   useEffect(() => {
+    if (state.open && tab?.managedTaskId) return streamManagedTerminal(chatId, tab);
+  }, [chatId, tab, state.open]);
+  useEffect(() => {
     if (!state.open || !tab || !host.current) return;
     const container = host.current;
     container.appendChild(tab.element);
@@ -78,7 +83,7 @@ function ChatTerminalDockView({ chatId, cwd }: { chatId: string; cwd?: string | 
     tab.terminal.options.cursorInactiveStyle = 'outline';
     let typingTimer: ReturnType<typeof setTimeout> | undefined;
     const revealCaret = () => {
-      if (tab.exitCode !== undefined || tab.terminal.buffer.active.type !== 'normal') return;
+      if (tab.managedTaskId || tab.exitCode !== undefined || tab.terminal.buffer.active.type !== 'normal') return;
       if (!tab.element.dataset.typing) tab.element.dataset.typing = 'true';
       if (typingTimer) clearTimeout(typingTimer);
       typingTimer = setTimeout(() => { delete tab.element.dataset.typing; }, 500);
@@ -86,14 +91,14 @@ function ChatTerminalDockView({ chatId, cwd }: { chatId: string; cwd?: string | 
     const typingListener = tab.terminal.onData(revealCaret);
     const activateTerminal = () => {
       tab.terminal.focus();
-      if (tab.exitCode === undefined && tab.terminal.buffer.active.type === 'normal') tab.terminal.write('\x1b[?25h');
+      if (!tab.managedTaskId && tab.exitCode === undefined && tab.terminal.buffer.active.type === 'normal') tab.terminal.write('\x1b[?25h');
       revealCaret();
     };
     container.addEventListener('pointerup', activateTerminal);
     // Keep the chosen typing caret when a shell resets its default cursor style.
     const cursorStyleHandler = tab.terminal.parser.registerCsiHandler({ intermediates: ' ', final: 'q' }, () => {
       tab.terminal.options.cursorStyle = 'bar';
-      tab.terminal.options.cursorBlink = !document.hidden && tab.exitCode === undefined;
+      tab.terminal.options.cursorBlink = !tab.managedTaskId && isAppVisible() && tab.exitCode === undefined;
       return true;
     });
     let appliedTheme = '';
@@ -104,15 +109,16 @@ function ChatTerminalDockView({ chatId, cwd }: { chatId: string; cwd?: string | 
       tab.terminal.options.theme = chatTerminalTheme();
     };
     const syncCursor = () => {
-      tab.terminal.options.cursorBlink = !document.hidden && tab.exitCode === undefined;
-      tab.element.dataset.documentVisible = String(!document.hidden);
-      (window as any).electronAPI?.terminalVisible?.(tab.id, !document.hidden);
+      const visible = isAppVisible();
+      tab.terminal.options.cursorBlink = !tab.managedTaskId && visible && tab.exitCode === undefined;
+      tab.element.dataset.documentVisible = String(visible);
+      if (!tab.managedTaskId) (window as any).electronAPI?.terminalVisible?.(tab.id, visible);
     };
     syncTheme();
     syncCursor();
     const themeObserver = new MutationObserver(syncTheme);
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    document.addEventListener('visibilitychange', syncCursor);
+    const unsubscribeVisibility = subscribeAppVisibility(syncCursor);
     let frame = 0;
     let fitTimer: ReturnType<typeof setTimeout> | undefined;
     let fittedWidth = -1;
@@ -131,19 +137,19 @@ function ChatTerminalDockView({ chatId, cwd }: { chatId: string; cwd?: string | 
           tab.fit.fit();
         }
       }); };
-      if (drag.current) fitTimer = setTimeout(schedule, 90);
+      if (drag.current || container.closest('[data-workspace-resizing="true"]')) fitTimer = setTimeout(schedule, 90);
       else schedule();
     };
     const observer = new ResizeObserver(fit);
     observer.observe(container);
     fit();
     activateTerminal();
-    return () => { observer.disconnect(); themeObserver.disconnect(); cursorStyleHandler.dispose(); typingListener.dispose(); container.removeEventListener('pointerup', activateTerminal); if (typingTimer) clearTimeout(typingTimer); delete tab.element.dataset.typing; document.removeEventListener('visibilitychange', syncCursor); cancelAnimationFrame(frame); if (fitTimer) clearTimeout(fitTimer); (window as any).electronAPI?.terminalVisible?.(tab.id, false); tab.terminal.options.cursorBlink = false; tab.element.remove(); };
+    return () => { observer.disconnect(); themeObserver.disconnect(); cursorStyleHandler.dispose(); typingListener.dispose(); container.removeEventListener('pointerup', activateTerminal); if (typingTimer) clearTimeout(typingTimer); delete tab.element.dataset.typing; unsubscribeVisibility(); cancelAnimationFrame(frame); if (fitTimer) clearTimeout(fitTimer); if (!tab.managedTaskId) (window as any).electronAPI?.terminalVisible?.(tab.id, false); tab.terminal.options.cursorBlink = false; tab.element.remove(); };
   }, [tab, tab?.exitCode, state.open]);
   if (!state.open) return null;
   return (
-    <section ref={dock} className="eterx-terminal-dock" data-placement={state.placement} style={isSide ? { width: state.width } : { height: state.height }} aria-label="Chat terminal">
-      <div className="eterx-terminal-resize" role="separator" tabIndex={0} aria-label="Resize terminal" aria-orientation={isSide ? 'vertical' : 'horizontal'} aria-valuenow={isSide ? state.width : state.height} aria-valuemin={isSide ? 240 : 140} aria-valuemax={isSide ? 1200 : 650}
+    <section ref={dock} className="eterx-terminal-dock" data-embedded={embedded} data-placement={state.placement} style={embedded ? undefined : isSide ? { width: state.width } : { height: state.height }} aria-label="Chat terminal">
+      {!embedded && <div className="eterx-terminal-resize" role="separator" tabIndex={0} aria-label="Resize terminal" aria-orientation={isSide ? 'vertical' : 'horizontal'} aria-valuenow={isSide ? state.width : state.height} aria-valuemin={isSide ? 240 : 140} aria-valuemax={isSide ? 1200 : 650}
         onKeyDown={event => { if (event.key === (isSide ? 'ArrowLeft' : 'ArrowUp') || event.key === (isSide ? 'ArrowRight' : 'ArrowDown')) { event.preventDefault(); resizeDock((isSide ? state.width : state.height) + (event.key === (isSide ? 'ArrowLeft' : 'ArrowUp') ? 20 : -20)); } }}
         title={isSide ? 'Drag to resize. Drag to the right edge to hide. Double-click to reset.' : 'Drag to resize. Drag to the bottom edge to hide. Double-click to reset.'}
         onDoubleClick={() => resizeDock(isSide ? 480 : 280)}
@@ -171,22 +177,24 @@ function ChatTerminalDockView({ chatId, cwd }: { chatId: string; cwd?: string | 
         }}
         onPointerUp={event => { finishResize(); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
         onPointerCancel={() => finishResize(true)}
-        onLostPointerCapture={() => finishResize(true)} />
+        onLostPointerCapture={() => finishResize(true)} />}
       <div className="eterx-terminal-toolbar">
         <div ref={tabsRef} className="eterx-terminal-tabs" role="tablist" aria-label="Terminal sessions" aria-orientation="horizontal">
           {state.tabs.map((item, index) => (
             <div key={item.id} className={`eterx-terminal-tab ${item.id === state.activeId ? 'is-active' : ''}`}>
-              <button type="button" role="tab" aria-selected={item.id === state.activeId} title={`${item.label} — ${item.cwd}`} onClick={() => selectTerminal(chatId, item.id)}><TerminalSquare size={15} /><span>{terminalTitle(item.label, 'Terminal')} {item.number || index + 1}{item.exitCode !== undefined ? ' (exited)' : ''}</span></button>
-              <button aria-label={`Close ${item.label}`} title="Close terminal session" onClick={() => void closeTerminal(chatId, item.id)}><X size={14} /></button>
+              <button type="button" role="tab" aria-selected={item.id === state.activeId} aria-label={`${item.label} — ${item.cwd}`} onClick={() => selectTerminal(chatId, item.id)}><TerminalSquare size={15} /><span>{item.managedTaskId ? item.label : `${terminalTitle(item.label, 'Terminal')} ${item.number || index + 1}`}{item.managedTaskId ? (item.managedSettled ? ` (${item.managedStatus})` : '') : item.exitCode !== undefined ? ' (exited)' : ''}</span></button>
+              <button aria-label={`Close ${item.label}`} onClick={() => void closeTerminal(chatId, item.id)}><X size={14} /></button>
             </div>
           ))}
         </div>
-        <button className="eterx-terminal-action" disabled={state.creating} title="New terminal in project folder" aria-label="New terminal" onClick={() => void createTerminal(chatId, cwd)}><Plus size={18} /></button>
-        <button className="eterx-terminal-action" title="Hide terminal (sessions keep running)" aria-label="Hide terminal" onClick={() => setTerminalOpen(chatId, false)}><X size={17} /></button>
+        <button className="eterx-terminal-action" disabled={state.creating} aria-label="New terminal" onClick={() => void createTerminal(chatId, cwd || tab?.cwd)}><Plus size={18} /></button>
+        <button className="eterx-terminal-action" aria-label="Hide terminal" onClick={() => setTerminalOpen(chatId, false)}><X size={17} /></button>
       </div>
+      {tab?.managedError && <div className="eterx-terminal-error" role="status">{tab.managedError} Reconnecting…</div>}
+      {tab?.managedLoading && <div className="eterx-terminal-connecting" role="status" aria-label="Connecting terminal output"><Loader2 size={15} className="animate-spin" /></div>}
       {state.error && <div className="eterx-terminal-error" role="alert">{state.error}</div>}
       <div ref={host} className="eterx-terminal-host" />
-      {!tab && <div className="eterx-terminal-empty"><button disabled={state.creating} onClick={() => void createTerminal(chatId, cwd)}>{state.creating ? 'Starting shell…' : 'Open terminal'}</button></div>}
+      {!tab && <div className="eterx-terminal-empty"><button disabled={state.creating} onClick={() => void createTerminal(chatId, cwd)}>{state.creating ? <Loader2 size={18} className="animate-spin" aria-label="Opening terminal" /> : 'Open terminal'}</button></div>}
     </section>
   );
 }

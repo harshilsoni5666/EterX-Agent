@@ -1,5 +1,11 @@
 import path from 'path';
-import os from 'os';
+const storageLayout = require('../../../electron/storage-layout') as {
+  dataRoot: () => string;
+  workspaceRoot: () => string;
+};
+const { chatWorkspacePaths } = require('../../../electron/workspace-layout') as {
+  chatWorkspacePaths: (root: string, userId: string, chatId: string) => { base: string; workspace: string; scratch: string; output: string };
+};
 
 /**
  * Root for durable application data.
@@ -9,28 +15,15 @@ import os from 'os';
  * durable user state never depends on the source checkout or current folder.
  */
 export function getEterxDataDir(): string {
-  const configured = String(process.env.ETERX_DATA_DIR || '').trim();
-  if (configured) return path.resolve(configured);
-
-  if (process.platform === 'win32') {
-    const appDataRoot = String(process.env.LOCALAPPDATA || process.env.APPDATA || '').trim();
-    if (appDataRoot) return path.resolve(appDataRoot, 'EterX', 'data');
-  }
-
-  if (process.platform === 'darwin') {
-    return path.resolve(os.homedir(), 'Library', 'Application Support', 'EterX', 'data');
-  }
-
-  const xdgDataHome = String(process.env.XDG_DATA_HOME || '').trim();
-  return path.resolve(xdgDataHome || path.join(os.homedir(), '.local', 'share'), 'EterX', 'data');
+  return storageLayout.dataRoot();
 }
 
 export function getEterxWorkspaceDir(...segments: string[]): string {
-  const configuredWorkspaceRoot = String(process.env.ETERX_WORKSPACE_ROOT || '').trim();
-  const workspaceRoot = configuredWorkspaceRoot
-    ? path.resolve(configuredWorkspaceRoot)
-    : path.join(getEterxDataDir(), '.workspaces');
-  return path.resolve(workspaceRoot, ...segments);
+  return path.resolve(storageLayout.workspaceRoot(), ...segments);
+}
+
+export function getChatWorkspacePaths(chatId: string, userId = 'default') {
+  return chatWorkspacePaths(getEterxWorkspaceDir(), userId, chatId);
 }
 
 export function getEterxAppRoot(): string {

@@ -573,97 +573,6 @@ export class KnowledgeEngine {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 4. MULTI-STRATEGY RECOVERY PROTOCOL
-// ═══════════════════════════════════════════════════════════════
-
-/**
- * When the primary execution strategy fails, automatically tries
- * alternative approaches before giving up.
- * 
- * STRATEGIES:
- * 1. Retry with modified args (fix common mistakes)
- * 2. Retry the same unified tool with a narrower or more suitable action
- * 3. Break into smaller sub-tasks
- * 4. Ask the agent to reason about the failure
- */
-interface RecoveryStrategy {
-  name: string;
-  condition: (toolName: string, error: string) => boolean;
-  recover: (toolName: string, args: any, error: string) => { newTool: string, newArgs: any } | null;
-}
-
-export class MultiStrategyRecovery {
-  private strategies: RecoveryStrategy[] = [
-    {
-      name: 'fix_path',
-      condition: (tool, error) =>
-        tool !== 'workspace_edit_file'
-        && (error.includes('ENOENT') || error.includes('no such file') || /(?:file|directory|path) not found/i.test(error)),
-      recover: (tool, args) => {
-        // Try fixing common path issues
-        if (args?.filename || args?.path || args?.target) {
-          const origPath = args.filename || args.path || args.target;
-          // Try with ./ prefix
-          if (!origPath.startsWith('./') && !origPath.startsWith('/') && !origPath.includes(':')) {
-            const newArgs = { ...args };
-            const key = args.filename ? 'filename' : args.path ? 'path' : 'target';
-            newArgs[key] = './' + origPath;
-            return { newTool: tool, newArgs };
-          }
-        }
-        return null;
-      }
-    },
-    {
-      name: 'alternative_search',
-      condition: (tool, error) => tool === 'web_search' && (error.includes('no results') || error.includes('failed')),
-      recover: (tool, args) => {
-        if (tool === 'web_search') {
-          return { newTool: 'web_search', newArgs: { ...args, action: 'search', searchDepth: 'advanced', numResults: Math.max(8, Number(args?.numResults) || 0) } };
-        }
-        return null;
-      }
-    },
-    {
-      name: 'json_fix',
-      condition: (tool, error) =>
-        error.includes('JSON') || error.includes('SyntaxError') || error.includes('Unexpected token'),
-      recover: (tool, args) => {
-        // Try to fix common JSON issues in args
-        if (args?.content && typeof args.content === 'string') {
-          const newArgs = { ...args };
-          try {
-            // Try to auto-fix common JSON issues
-            let fixed = args.content
-              .replace(/,\s*}/g, '}')
-              .replace(/,\s*]/g, ']')
-              .replace(/'/g, '"');
-            JSON.parse(fixed);
-            newArgs.content = fixed;
-            return { newTool: tool, newArgs };
-          } catch { }
-        }
-        return null;
-      }
-    }
-  ];
-
-  /** Attempt recovery from a tool failure */
-  attemptRecovery(toolName: string, args: any, error: string): { newTool: string, newArgs: any } | null {
-    for (const strategy of this.strategies) {
-      if (strategy.condition(toolName, error)) {
-        const recovery = strategy.recover(toolName, args, error);
-        if (recovery) {
-          console.log(`[Recovery] 🔄 Strategy "${strategy.name}": ${toolName} → ${recovery.newTool}`);
-          return recovery;
-        }
-      }
-    }
-    return null;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
 // 5. AGENT PIPELINE BUILDER
 // ═══════════════════════════════════════════════════════════════
 
@@ -886,7 +795,7 @@ export class PerformanceAnalytics {
 export const intelligentCache = new IntelligentCache();
 export const smartQueryRouter = new SmartQueryRouter();
 export const knowledgeEngine = new KnowledgeEngine();
-export const multiStrategyRecovery = new MultiStrategyRecovery();
+
 export const pipelineBuilder = new PipelineBuilder();
 export const performanceAnalytics = new PerformanceAnalytics();
 

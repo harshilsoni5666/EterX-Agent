@@ -97,20 +97,24 @@ export const Tooltip = React.memo(({
 
     const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
     
-    let isTicking = false;
+    let frame = 0;
     const updatePosition = () => {
       const trigger = ref.current;
       if (!trigger) {
-        isTicking = false;
+        frame = 0;
         return;
       }
       const rect = trigger.getBoundingClientRect();
+      if (!rect.width || !rect.height) { setVisible(false); setIsPositioned(false); frame = 0; return; }
       const margin = 12;
       const gap = 8;
+      const pane = trigger.closest('.eterx-conversation-pane, .eterx-side-workspace, .eterx-main-header')?.getBoundingClientRect();
+      const minLeft = Math.max(margin, pane ? pane.left + 6 : margin);
+      const maxRight = Math.min(window.innerWidth - margin, pane ? pane.right - 6 : window.innerWidth - margin);
       const tooltipFont = `500 12px ${tooltipFontFamily}`;
       const measuredTextWidth = measureTooltipText(text || '', tooltipFont);
       const width = Math.min(
-        window.innerWidth - margin * 2,
+        Math.max(40, maxRight - minLeft),
         content
           ? Math.max(68, contentWidth || 248)
           : Math.max(68, Math.ceil(measuredTextWidth + 32))
@@ -131,7 +135,7 @@ export const Tooltip = React.memo(({
         top = centerY - height / 2;
       }
 
-      left = clamp(left, margin, window.innerWidth - margin - width);
+      left = clamp(left, minLeft, Math.max(minLeft, maxRight - width));
       top = clamp(top, margin, window.innerHeight - margin - height);
 
       setCoords({
@@ -143,21 +147,24 @@ export const Tooltip = React.memo(({
       });
       
       setIsPositioned(true);
-      isTicking = false;
+      frame = 0;
     };
 
     const handleUpdate = () => {
-      if (!isTicking) {
-        isTicking = true;
-        window.requestAnimationFrame(updatePosition);
-      }
+      if (!frame) frame = window.requestAnimationFrame(updatePosition);
     };
 
     updatePosition();
+    const resizeObserver = new ResizeObserver(handleUpdate);
+    resizeObserver.observe(ref.current);
+    const paneElement = ref.current.closest('.eterx-conversation-pane, .eterx-side-workspace, .eterx-main-header');
+    if (paneElement) resizeObserver.observe(paneElement);
 
     window.addEventListener('resize', handleUpdate, { passive: true });
     window.addEventListener('scroll', handleUpdate, { capture: true, passive: true });
     return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
       window.removeEventListener('resize', handleUpdate);
       window.removeEventListener('scroll', handleUpdate, { capture: true });
     };
@@ -175,7 +182,7 @@ export const Tooltip = React.memo(({
       {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           {visible && (
-            <div 
+            <div role="tooltip"
               style={{ 
                 position: 'fixed', 
                 left: coords.left, 

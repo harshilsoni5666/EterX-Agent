@@ -1,7 +1,8 @@
 import { mergeUserAttachments, visibleUserRequest } from './chat-user-payload';
 
 /** Transport receipts never own a conversation turn. Only context delivery does. */
-const normalizeAdmissionId = (value: string): string => value.replace(/^steering-turn-/, '');
+export const normalizeAdmissionId = (value: string): string => value.replace(/^steering-turn-/, '');
+export const queuedFollowUpKey = (chatId: string, id: string): string => `${chatId}:${normalizeAdmissionId(id)}`;
 export function immutableUserAdmission(log: any): string {
   if (!['user_action', 'steering_received'].includes(log?.type)) return '';
   const explicit = String(log.admissionId || '').trim();
@@ -49,10 +50,11 @@ export function steeringMessageIds(log: any): string[] {
 }
 
 export function upsertQueuedSteering(logs: any[], incoming: any): void {
-  const id = String(incoming.steeringId || '');
+  const id = normalizeAdmissionId(String(incoming.steeringId || ''));
   const index = id ? logs.findIndex(log => log?.type === 'steering_queued' &&
-    String(log.steeringId || '') === id &&
-    (!log.runId || !incoming.runId || String(log.runId) === String(incoming.runId)) &&
+    normalizeAdmissionId(String(log.steeringId || '')) === id &&
+    String(log.subAgentChatId || log.subAgentId || log.subAgent || 'main') ===
+      String(incoming.subAgentChatId || incoming.subAgentId || incoming.subAgent || 'main') &&
     (!(log.ownerChatId || log.chatId) || !(incoming.ownerChatId || incoming.chatId) ||
       String(log.ownerChatId || log.chatId) === String(incoming.ownerChatId || incoming.chatId))) : -1;
   if (index < 0) {
@@ -80,13 +82,17 @@ export function projectSteeringDelivery(logs: any[]): { timeline: any[]; pending
     const worker = (log: any) => String(log.subAgentChatId || log.subAgentId || log.subAgent || 'main');
     if (chat(left) && chat(right) && chat(left) !== chat(right)) return false;
     if (worker(left) !== worker(right)) return false;
-    const promotedSuccessor = right.type === 'user_action' && steeringMessageIds(left).some(id =>
-      right.runId === `steering-turn-${id}` && right.turnId === right.runId);
-    return !left.runId || !right.runId || left.runId === right.runId || promotedSuccessor || sameUserAdmission(left, right);
+    // One client admission keeps its identity when the active run finishes
+    // and transfers guidance to a successor. Run IDs may change in that handoff.
+    return steeringMessageIds(left).some(id => steeringMessageIds(right)
+      .some(receiptId => normalizeAdmissionId(receiptId) === normalizeAdmissionId(id)));
   };
   for (const log of logs) {
     if (['steering_received', 'steering_applied', 'steering_cancelled', 'user_action'].includes(log?.type) && log._queuedFollowUp !== true) {
-      steeringMessageIds(log).forEach(id => delivered.set(id, [...(delivered.get(id) || []), log]));
+      steeringMessageIds(log).forEach(rawId => {
+        const id = normalizeAdmissionId(rawId);
+        delivered.set(id, [...(delivered.get(id) || []), log]);
+      });
     }
   }
   const queued: any[] = [];
@@ -98,7 +104,7 @@ export function projectSteeringDelivery(logs: any[]): { timeline: any[]; pending
   }
   const enrichment = new Map<any, any[]>();
   const pending = queued.filter(log => {
-    const matches = steeringMessageIds(log).flatMap(id => delivered.get(id) || [])
+    const matches = steeringMessageIds(log).flatMap(id => delivered.get(normalizeAdmissionId(id)) || [])
       .filter(receipt => matchesOwner(log, receipt));
     for (const receipt of matches) {
       enrichment.set(receipt, mergeUserAttachments(
@@ -163,7 +169,8 @@ export function settledQueueAdmissionIds(logs: any[]): ReadonlySet<string> {
     }
     for (const id of steeringMessageIds(log)) {
       ids.add(id);
-      ids.add(`steering-turn-${id}`);
+      ids.add(normalizeAdmissionId(id));
+      ids.add(`steering-turn-${normalizeAdmissionId(id)}`);
     }
   }
   settledQueueAdmissionsCache.set(logs, ids);

@@ -929,7 +929,7 @@ function CodePanel({
           }}
           className="rounded-lg border border-white/[0.08] bg-white/[0.035] p-2 text-white/44 transition-colors hover:bg-white/[0.07] hover:text-white/78"
         >
-          {copied ? <Check className="h-4 w-4" strokeWidth={2.2} /> : <Copy className="h-4 w-4" strokeWidth={2.2} />}
+          {copied ? <Check className="h-4 w-4 text-white" strokeWidth={2.2} /> : <Copy className="h-4 w-4" strokeWidth={2.2} />}
         </button>
       </div>
 

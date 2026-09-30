@@ -1,8 +1,7 @@
 import { MODEL_REQUEST_TIMEOUT_MS } from '../agent/model-request-policy';
 import { tavily } from '@tavily/core';
-import Anthropic from '@anthropic-ai/sdk';
+import { Anthropic, OpenAI } from '../agent/model-clients';
 import { GoogleGenAI } from '@google/genai';
-import OpenAI from 'openai';
 import {
   getRuntimeApiKey,
   getScopedRuntimeApiKeyValues,
@@ -161,6 +160,7 @@ export function applyRuntimeSearchSettings(raw: unknown, legacyTavilyKeys: unkno
 }
 
 const withTimeout = async <T,>(promise: Promise<T>, milliseconds = 30_000): Promise<T> => {
+  if (milliseconds <= 0) return promise;
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([

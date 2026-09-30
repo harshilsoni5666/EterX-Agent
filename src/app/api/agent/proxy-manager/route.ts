@@ -135,7 +135,8 @@ export async function POST(req: NextRequest) {
         status: 200,
         headers: {
           'Content-Type': 'application/x-ndjson; charset=utf-8',
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Cache-Control': 'no-cache, no-store, no-transform',
+          'Content-Encoding': 'identity',
           'X-Content-Type-Options': 'nosniff',
           'X-Accel-Buffering': 'no',
         },

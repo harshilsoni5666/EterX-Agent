@@ -16,6 +16,7 @@ interface Subscription {
   request: PollRequest;
   waiters: Set<PollWaiter>;
   traces: Map<number, any>;
+  traceChars: Map<number, number>;
   latest: any;
   version: number;
   deliveredVersion: number;
@@ -53,6 +54,15 @@ class LivePollChannel {
     this.bufferedChars = Math.max(0, this.bufferedChars - entry.bufferedChars);
     entry.bufferedChars = 0;
     entry.traces.clear();
+    entry.traceChars.clear();
+  }
+
+  private removeBufferedTrace(entry: Subscription, index: number) {
+    const chars = entry.traceChars.get(index) || 0;
+    entry.traces.delete(index);
+    entry.traceChars.delete(index);
+    entry.bufferedChars = Math.max(0, entry.bufferedChars - chars);
+    this.bufferedChars = Math.max(0, this.bufferedChars - chars);
   }
 
   request(request: PollRequest, signal: AbortSignal): Promise<any> {
@@ -61,13 +71,13 @@ class LivePollChannel {
     let entry = this.subscriptions.get(key);
     if (!entry) {
       entry = {
-        key, request: { ...request }, waiters: new Set(), traces: new Map(), latest: null,
+        key, request: { ...request }, waiters: new Set(), traces: new Map(), traceChars: new Map(), latest: null,
         version: 0, deliveredVersion: 0, touchedAt: Date.now(), bufferedChars: 0,
         replayNeeded: false, epoch: 0,
       };
       this.subscriptions.set(key, entry);
       this.scheduleReconnect();
-    } else if (request.after < entry.request.after || (!request.runId && !entry.waiters.size)) {
+    } else if (request.after < entry.request.after || (!request.runId && entry.latest?.runId && !entry.waiters.size)) {
       // A recovery reader needs older history. Invalidate records from the
       // previous subscription before reconnecting it at the earlier cursor.
       entry.request.after = request.after;
@@ -76,7 +86,7 @@ class LivePollChannel {
     } else if (!entry.waiters.size) {
       entry.request.after = request.after;
       for (const index of entry.traces.keys()) {
-        if (index <= request.after && !(index === -1 && request.after === -1)) entry.traces.delete(index);
+        if (index <= request.after && !(index === -1 && request.after === -1)) this.removeBufferedTrace(entry, index);
       }
       if (!entry.traces.size) this.clearBufferedTraces(entry);
       if (entry.replayNeeded) {
@@ -139,7 +149,7 @@ class LivePollChannel {
     entry.touchedAt = Date.now();
   }
 
-  private receive(entry: Subscription, payload: any, chars: number) {
+  private receive(entry: Subscription, payload: any) {
     if (!payload || typeof payload !== 'object') throw new Error('Invalid live poll record.');
     if (!payload._pollError && (!Array.isArray(payload.traces) || !Number.isFinite(payload.maxIndex))) {
       throw new Error('Invalid live trace payload.');
@@ -155,13 +165,18 @@ class LivePollChannel {
       // drops exactly those updates and can hide the completed answer.
       const index = Number.isFinite(trace?._pollIdx) ? trace._pollIdx : trace?._traceIdx;
       if (Number.isFinite(index) && (index > entry.request.after || (index === -1 && entry.request.after === -1))) {
+        // Count retained rows, not total wire traffic. Replays, heartbeats,
+        // and acknowledged prefixes must not exhaust a healthy chat's cap.
+        const chars = JSON.stringify(trace).length;
+        this.removeBufferedTrace(entry, index);
         entry.traces.set(index, trace);
+        entry.traceChars.set(index, chars);
+        entry.bufferedChars += chars;
+        this.bufferedChars += chars;
       }
     }
     const { traces: _traces, ...metadata } = payload;
     entry.latest = metadata;
-    entry.bufferedChars += chars;
-    this.bufferedChars += chars;
     entry.version += 1;
     this.deliver(entry);
     if (payload._pollError) {
@@ -215,20 +230,42 @@ class LivePollChannel {
     const controller = new AbortController();
     this.controller = controller;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    const dispatch = (index: number, result: any, chars: number) => {
+    const dispatch = (index: number, result: any) => {
       const entry = entries[index];
       if (!entry || this.generation !== generation || this.subscriptions.get(entry.key) !== entry ||
         entry.epoch !== epochs[index]) return;
-      this.receive(entry, result, chars);
+      try {
+        this.receive(entry, result);
+      } catch (error) {
+        // A bad record belongs to one subscription. Keep other chats' live
+        // readers connected, and let this consumer retry its committed cursor.
+        for (const waiter of entry.waiters) {
+          waiter.cleanup();
+          waiter.reject(error instanceof Error ? error : new Error(String(error)));
+        }
+        entry.waiters.clear();
+        this.reset(entry);
+        this.subscriptions.delete(entry.key);
+      }
     };
     try {
       const response = await fetch('/api/agent/poll', {
         method: 'POST', cache: 'no-store', signal: controller.signal,
         headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
-        body: JSON.stringify({ requests: entries.map(entry => ({
-          ...entry.request,
-          after: Math.min(entry.request.after, ...[...entry.waiters].map(waiter => waiter.after)),
-        })) }),
+        body: JSON.stringify({ requests: entries.map(entry => {
+          // Buffered records survive a connection replacement. Resume the wire
+          // after receipt while still acknowledging only committed UI cursors.
+          // Joining/stopping one chat no longer replays every other chat's
+          // uncommitted history. reset() discards this cursor on a real rewind.
+          const received = entry.latest && !entry.latest._pollError;
+          return {
+            ...entry.request,
+            runId: entry.request.runId || entry.latest?.runId || undefined,
+            after: received ? entry.latest.maxIndex : Math.min(
+              entry.request.after, ...[...entry.waiters].map(waiter => waiter.after),
+            ),
+          };
+        }) }),
       });
       if (!response.ok) throw new Error(`Poll HTTP ${response.status}`);
       if (!response.headers.get('content-type')?.includes('application/x-ndjson')) {
@@ -236,7 +273,7 @@ class LivePollChannel {
         if (!Array.isArray(payload.results) || payload.results.length !== entries.length) {
           throw new Error('Invalid batch poll response.');
         }
-        payload.results.forEach((result: any, index: number) => dispatch(index, result, 0));
+        payload.results.forEach((result: any, index: number) => dispatch(index, result));
         return;
       }
       if (!response.body) throw new Error('Live poll stream is unavailable.');
@@ -252,7 +289,7 @@ class LivePollChannel {
           pending = pending.slice(newline + 1);
           if (!line.trim()) continue;
           const record = JSON.parse(line);
-          dispatch(record.index, record.result, line.length);
+          dispatch(record.index, record.result);
         }
         if (pending.length > 32 * 1024 * 1024) throw new Error('Live poll record exceeded its buffer limit.');
         if (chunk.done) throw new Error('Live poll connection ended.');
@@ -260,7 +297,8 @@ class LivePollChannel {
     } catch (error) {
       if (this.generation === generation) {
         const failure = error instanceof Error ? error : new Error(String(error));
-        for (const entry of entries) {
+        for (const [index, entry] of entries.entries()) {
+          if (this.subscriptions.get(entry.key) !== entry || entry.epoch !== epochs[index]) continue;
           for (const waiter of entry.waiters) { waiter.cleanup(); waiter.reject(failure); }
           entry.waiters.clear();
         }

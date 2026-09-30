@@ -1,0 +1,322 @@
+'use client';
+
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, ArrowUpLeft, Folder, Loader2, Search } from 'lucide-react';
+import { MessagesCircle } from './workspace-icons';
+import { PremiumEdit } from '../ui/premium-icons';
+import { ChatFeed } from './chat-feed';
+import { ChatInput } from '../layout/chat-input';
+import type { MainAgentMode, MainAgentThinkingLevel } from '../../lib/agent/model-routing';
+import { updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
+import { FilePanelReveal } from '../../contexts/FilePanelContext';
+import { Tooltip } from '../ui/tooltip';
+import { readContextUsageMeter } from '../../lib/context-usage-meter';
+import { modelEntryKey, parseModelEntryKey } from '../../lib/agent/model-selector-store';
+import { resolveModelContextWindow } from '../../lib/agent/model-context-window';
+import { appStorage } from '../../lib/client-storage';
+import {
+  CONTEXT_BUDGET_REVISIONS_KEY,
+  contextWindowLimitNote,
+  normalizeContextWindow,
+  resolveContextWindowBudget,
+  resolveSavedContextBudget,
+} from '../../lib/context-window-policy';
+
+export type SideChatSession = { id: string; title: string; traceLogs: any[]; workspacePath?: string | null; modelSelection?: string; updatedAt: number; isFavorite?: boolean };
+export type SideChatSettings = { modelSelection: string; selectedAgent: { agentId: string | null; agentName: string; chatMode?: boolean }; thinkingLevel: MainAgentThinkingLevel; agentMode: MainAgentMode; workspacePath: string | null; runLocation: 'local' | 'sandbox' };
+export type SideChatActions = {
+  hydrate: (id: string) => Promise<void>;
+  settings: (id: string) => SideChatSettings;
+  workspace: (id: string, path: string | null) => void;
+  openMain: (id: string) => void;
+  send: (id: string, text: string, attachments: any[], settings: SideChatSettings) => Promise<boolean | void>;
+  stop: (id: string) => Promise<boolean>;
+  answer: (id: string, timestamp: number, answer: string, responseKey?: string) => void;
+  read: (id: string) => void;
+  startLive?: (id: string) => void;
+};
+type Draft = { text: string; attachments: any[]; settings: SideChatSettings };
+const drafts = new Map<string, Draft>();
+const emptyLogs: any[] = [];
+const ignore = () => {};
+
+const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, chat, running, actions }: { id: string; tabId: string; workspaceOwner: string; chat?: SideChatSession; running: boolean; actions: SideChatActions }) {
+  const hadSavedDraft = useRef(drafts.has(id));
+  const initial = useRef(drafts.get(id) || { text: '', attachments: [], settings: actions.settings(id) });
+  const [text, setTextState] = useState(initial.current.text);
+  const textRef = useRef(initial.current.text);
+  const [textRevision, setTextRevision] = useState(0);
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setText = useCallback((value: string | ((previous: string) => string)) => {
+    if (draftTimer.current !== null) clearTimeout(draftTimer.current);
+    draftTimer.current = null;
+    const next = typeof value === 'function' ? value(textRef.current) : value;
+    textRef.current = next;
+    setTextState(next);
+    setTextRevision(revision => revision + 1);
+  }, []);
+  const [attachments, setAttachments] = useState<any[]>(initial.current.attachments);
+  const [settings, setSettings] = useState(initial.current.settings);
+  const [loading, setLoading] = useState(Boolean(chat));
+  const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
+  const [showBottom, setShowBottom] = useState(false);
+  const end = useRef<HTMLDivElement>(null);
+  const pane = useRef<HTMLDivElement>(null);
+  const submitLock = useRef(false);
+  const submitSequence = useRef(0);
+  const alive = useRef(true);
+  const latest = useRef({ text, attachments, settings }); latest.current = { text: textRef.current, attachments, settings };
+  const updateTextDraft = useCallback((value: string) => {
+    textRef.current = value;
+    latest.current = { ...latest.current, text: value };
+    drafts.set(id, latest.current);
+    if (draftTimer.current !== null) clearTimeout(draftTimer.current);
+    // Keep keystrokes local to the textarea; the feed and context meter only
+    // need a draft snapshot after typing pauses. Send reads the ref immediately.
+    draftTimer.current = setTimeout(() => {
+      draftTimer.current = null;
+      setTextState(textRef.current);
+    }, 180);
+  }, [id]);
+  const actionsRef = useRef(actions); actionsRef.current = actions;
+  useLayoutEffect(() => {
+    const surface = pane.current, feed = surface?.querySelector<HTMLElement>('.eterx-chat-feed-scroll');
+    if (!surface || !feed) return;
+    const sync = () => surface.style.setProperty('--ws-chat-scrollbar-space', Math.max(0, feed.offsetWidth - feed.clientWidth) + 'px');
+    const observer = new ResizeObserver(sync); observer.observe(feed); sync();
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => { drafts.set(id, latest.current); }, [id, text, attachments, settings]);
+  useEffect(() => {
+    alive.current = true;
+    if (chat) {
+      void actionsRef.current.hydrate(id).catch(error => { if (alive.current) setError(String(error.message || error)); }).finally(() => { if (alive.current) setLoading(false); });
+      actionsRef.current.read(id);
+    }
+    return () => {
+      alive.current = false;
+      if (draftTimer.current !== null) clearTimeout(draftTimer.current);
+      drafts.set(id, { ...latest.current, text: textRef.current });
+    };
+  }, [id]);
+  useEffect(() => { if (running) { submitLock.current = false; setSending(false); } }, [running]);
+  useEffect(() => {
+    if (!loading && chat && !hadSavedDraft.current) {
+      // Hydration can supply project/model settings after the first render.
+      // Preserve any choice the user has already made in this composer.
+      hadSavedDraft.current = true;
+      setSettings(current => current === initial.current.settings ? actionsRef.current.settings(id) : current);
+    }
+  }, [loading, chat, id]);
+  const submit = () => {
+    const current = latest.current;
+    if (loading || submitLock.current || (!current.text.trim() && !current.attachments.length)) return;
+    const sequence = ++submitSequence.current;
+    submitLock.current = true; setSending(true); setError(''); setText(''); setAttachments([]);
+    void actionsRef.current.send(id, current.text, current.attachments, current.settings).then(accepted => {
+      if (accepted === false) throw new Error('Message was not accepted. Your draft has been restored.');
+    }).catch(error => {
+      const draft = drafts.get(id);
+      if (!draft?.text) drafts.set(id, { ...current });
+      if (alive.current) { setError(String(error.message || error)); setText(value => value || current.text); setAttachments(value => value.length ? value : current.attachments); }
+    }).finally(() => { if (sequence === submitSequence.current) { submitLock.current = false; if (alive.current) setSending(false); } });
+  };
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  const toggleSpeech = () => {
+    if (isRecording) {
+      try { recognitionRef.current?.stop?.(); } catch { }
+      setIsRecording(false);
+      return;
+    }
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      alert('Voice dictation is available in browsers supporting Web Speech API or in the main chat window.');
+      return;
+    }
+    try {
+      const rec = new SpeechRec();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = navigator.language || 'en-US';
+      const baseText = latest.current.text;
+      rec.onresult = (e: any) => {
+        let transcript = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          transcript += e.results[i][0].transcript;
+        }
+        if (transcript) {
+          setText(baseText ? `${baseText} ${transcript}` : transcript);
+        }
+      };
+      rec.onend = () => setIsRecording(false);
+      rec.onerror = () => setIsRecording(false);
+      rec.start();
+      recognitionRef.current = rec;
+      setIsRecording(true);
+    } catch (e) {
+      console.error('Dictation error:', e);
+      setIsRecording(false);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      try { recognitionRef.current?.stop?.(); } catch { }
+    };
+  }, []);
+
+  const contextUsage = useMemo(() => {
+    const logs = chat?.traceLogs || emptyLogs;
+    if (!logs.length) return undefined;
+    const selectedEntry = parseModelEntryKey(settings.modelSelection);
+    const meter = readContextUsageMeter(logs, text, selectedEntry);
+    const provider = selectedEntry?.provider || 'google';
+    const modelId = selectedEntry?.modelId || 'gemini-2.5-flash';
+
+    let discoveredMaximum = 0;
+    let savedSettings: any = {};
+    let chatOverride: unknown;
+    let savedBudgetRevision = 0;
+    try {
+      discoveredMaximum = normalizeContextWindow(
+        JSON.parse(appStorage.getItem('eterx_model_context_windows') || '{}')?.[modelEntryKey(provider, modelId)],
+      );
+      savedSettings = JSON.parse(appStorage.getItem('eterx_settings') || '{}');
+      const budgetRevisions = JSON.parse(appStorage.getItem(CONTEXT_BUDGET_REVISIONS_KEY) || '{}');
+      savedBudgetRevision = Math.max(Number(budgetRevisions.global || 0), Number(budgetRevisions.chats?.[id] || 0));
+      chatOverride = JSON.parse(appStorage.getItem('eterx_chat_context_window_overrides') || '{}')?.[id];
+    } catch { }
+
+    const latestContextUsage = meter.latestContextUsage;
+    const latestProviderUsage = meter.latestProviderUsage;
+    const latestCompactionEvent = meter.latestCompactionEvent;
+
+    const measuredModelMatches = latestContextUsage?.provider === provider
+      && String(latestContextUsage?.model || latestContextUsage?.modelId || '') === modelId;
+    const measuredModelWindow = measuredModelMatches ? normalizeContextWindow(latestContextUsage?.modelContextWindow) : 0;
+    const modelContextWindow = (running ? measuredModelWindow || discoveredMaximum : discoveredMaximum || measuredModelWindow)
+      || resolveModelContextWindow(provider, modelId);
+    const budget = resolveContextWindowBudget(resolveSavedContextBudget(savedSettings, chatOverride), modelContextWindow);
+    const configuredContextWindow = budget.configuredContextWindow;
+    let contextWindow = configuredContextWindow;
+
+    const authoritativeWindow = meter.contextWindow;
+    if (running && measuredModelMatches && Number.isFinite(authoritativeWindow) && authoritativeWindow >= 16_000) {
+      contextWindow = authoritativeWindow;
+    } else {
+      contextWindow = configuredContextWindow;
+    }
+    if (latestCompactionEvent?.phase === 'failed'
+      && savedBudgetRevision <= Number(latestCompactionEvent.contextBudgetRevision || 0)) {
+      const raisedWindow = Number(latestCompactionEvent.nextContextWindow || 0);
+      if (Number.isFinite(raisedWindow) && raisedWindow >= 16_000) {
+        contextWindow = Math.min(modelContextWindow, Math.max(contextWindow, raisedWindow));
+      }
+    }
+
+    const safeUsedTokens = Math.max(0, Math.round(Number.isFinite(meter.usedTokens) ? meter.usedTokens : 0));
+    const utilizationPct = contextWindow > 0 ? Math.max(0, Math.min(100, (safeUsedTokens / contextWindow) * 100)) : 0;
+
+    const breakdown = meter.breakdown || {
+      conversation: Math.max(0, safeUsedTokens - (meter.draftTokens || 0)),
+      systemPrompt: Math.min(1500, Math.round(safeUsedTokens * 0.2)),
+      toolDefinitions: Math.min(1200, Math.round(safeUsedTokens * 0.15)),
+      skills: 0,
+      rules: 0,
+      mcpDynamicTools: 0,
+      subagentDefinitions: 0,
+      providerOverhead: 0,
+    };
+
+    return {
+      usedTokens: safeUsedTokens,
+      contextWindow,
+      contextLimitNote: contextWindowLimitNote(budget.requestedContextWindow, modelContextWindow),
+      utilizationPct,
+      breakdown,
+      providerMetrics: meter.providerMetrics,
+      cacheStatus: meter.cacheStatus,
+      isEstimated: meter.isEstimated,
+      awaitingSelectedModelMeasurement: meter.awaitingSelectedModelMeasurement,
+      aggregateSource: meter.aggregateSource,
+      breakdownSource: 'serialized_payload' as const,
+      providerInputTokens: meter.providerInputTokens,
+      localEstimatedTokens: Number(latestContextUsage?.localEstimatedTokens || 0) || undefined,
+      draftTokens: meter.draftTokens,
+      liveEstimateTokens: meter.liveEstimateTokens,
+      providerName: String(latestProviderUsage?.provider || provider || '').trim() || undefined,
+      modelName: String(latestProviderUsage?.model || latestProviderUsage?.modelId || modelId || '').trim() || undefined,
+      compaction: latestCompactionEvent ? {
+        phase: latestCompactionEvent.phase,
+        beforeTokens: Number(latestCompactionEvent.beforeTokens || 0),
+        afterTokens: Number.isFinite(Number(latestCompactionEvent.afterTokens))
+          ? Number(latestCompactionEvent.afterTokens)
+          : undefined,
+        modelProvider: String(latestCompactionEvent.modelProvider || '').trim() || undefined,
+        modelName: String(latestCompactionEvent.modelName || '').trim() || undefined,
+        failureTier: Number(latestCompactionEvent.failureTier || 0) || undefined,
+        nextAttemptTokens: Number(latestCompactionEvent.nextAttemptTokens || 0)
+          ? Math.min(Number(latestCompactionEvent.nextAttemptTokens), Math.floor(modelContextWindow * 0.96))
+          : undefined,
+        nextContextWindow: Number(latestCompactionEvent.nextContextWindow || 0)
+          ? Math.min(Number(latestCompactionEvent.nextContextWindow), modelContextWindow)
+          : undefined,
+        summary: String(latestCompactionEvent.summary || '').trim() || undefined,
+        timestamp: Number(latestCompactionEvent.timestamp || 0) || undefined,
+      } : undefined,
+      providerMeasured: meter.providerMeasured,
+      hasDraftEstimate: (meter.draftTokens || 0) > 0,
+      hasEstimatedDelta: meter.hasEstimatedDelta,
+      updatedAt: meter.updatedAt,
+    };
+  }, [chat?.traceLogs, id, running, settings.modelSelection, text]);
+
+  const scrollBottom = () => pane.current?.querySelector('.eterx-chat-feed-scroll')?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'smooth' });
+  const selectWorkspace = (workspacePath: string | null) => {
+    // A native picker may finish after this side conversation has unmounted.
+    const current = alive.current ? latest.current : drafts.get(id) || latest.current;
+    drafts.set(id, { ...current, settings: { ...current.settings, workspacePath } });
+    if (alive.current) setSettings(previous => ({ ...previous, workspacePath }));
+    actionsRef.current.workspace(id, workspacePath);
+  };
+  return <FilePanelReveal value={() => actions.openMain(id)}><div ref={pane} className="eterx-workspace-side-conversation eterx-conversation-pane">
+    {loading && <div className="eterx-workspace-chat-loading"><Loader2 size={15} className="animate-spin" /> Loading conversation…</div>}
+    {error && <div className="eterx-workspace-inline-error" role="alert">{error}{loading === false && chat && !chat.traceLogs.length && <button onClick={() => { setError(''); setLoading(true); void actions.hydrate(id).catch(error => setError(String(error))).finally(() => setLoading(false)); }}>Retry</button>}</div>}
+    <ChatFeed workspaceOwner={workspaceOwner} scrollContainerId={`side-chat-${tabId}`} traceLogs={chat?.traceLogs || emptyLogs} chatId={id} isThinking={running || sending} messagesEndRef={end} setSidebarOpen={ignore} sidebarOpen={false} handleScroll={event => { const node = event.currentTarget; setShowBottom(node.scrollHeight - node.scrollTop - node.clientHeight > 100); }} showScrollBottom={false} isCompressed workspacePath={settings.workspacePath} onEditUserMessage={setText} onAnswerAskUser={(timestamp, answer, responseKey) => actions.answer(id, timestamp, answer, responseKey)} />
+    <ChatInput inputValue={text} inputValueRevision={textRevision} onInputValueChange={updateTextDraft} setInputValue={setText} isThinking={running || sending} canStop={running} isRecording={isRecording} toggleSpeech={toggleSpeech} showVoiceControls contextUsage={contextUsage} onLiveStart={() => { if (actions.startLive) actions.startLive(id); else actions.openMain(id); }} handleSend={submit} handleSteer={submit} handleStop={() => actions.stop(id)} attachments={attachments} setAttachments={setAttachments} greeting="" traceLogsLength={Math.max(1, chat?.traceLogs.length || 0)} activeChatId={id} isCompressed modelSelectionScope="surface" chatModelSelection={settings.modelSelection} onModelSelectionChange={modelSelection => setSettings(previous => ({ ...previous, modelSelection }))} selectedAgent={settings.selectedAgent.agentId} selectedAgentName={settings.selectedAgent.agentName} chatMode={settings.selectedAgent.chatMode} onAgentChange={(agentId, agentName, chatMode) => setSettings(previous => ({ ...previous, selectedAgent: { agentId, agentName, chatMode } }))} thinkingLevel={settings.thinkingLevel} onThinkingLevelChange={thinkingLevel => setSettings(previous => ({ ...previous, thinkingLevel }))} agentMode={settings.agentMode} onModeChange={agentMode => setSettings(previous => ({ ...previous, agentMode }))} workspacePath={settings.workspacePath} onWorkspacePathChange={selectWorkspace} runLocation={settings.runLocation} onRunLocationChange={runLocation => setSettings(previous => ({ ...previous, runLocation }))} showScrollBottom={showBottom} onScrollToBottom={scrollBottom} />
+  </div></FilePanelReveal>;
+});
+
+export function WorkspaceSideChat({ owner, tab, chats, mainChatId, runningChats, actions }: { owner: string; tab: WorkspaceTab; chats: SideChatSession[]; mainChatId: string | null; runningChats: Set<string>; actions: SideChatActions }) {
+  const [search, setSearch] = useState('');
+  const history = tab.chatHistory || (tab.chatId ? ['', tab.chatId] : ['']);
+  const position = tab.chatPosition ?? history.length - 1;
+  const current = chats.find(chat => chat.id === tab.chatId);
+  const selected = tab.chatId && tab.chatId !== mainChatId ? tab.chatId : null;
+  const select = (id: string) => {
+    const nextHistory = [...history.slice(0, position + 1), id];
+    updateWorkspaceTab(owner, tab.id, { chatId: id || undefined, title: id ? chats.find(item => item.id === id)?.title || 'New side chat' : 'Side chat', chatHistory: nextHistory, chatPosition: nextHistory.length - 1 });
+  };
+  const navigate = (offset: number) => {
+    const next = position + offset;
+    if (next < 0 || next >= history.length) return;
+    const id = history[next];
+    updateWorkspaceTab(owner, tab.id, { chatId: id || undefined, title: id ? chats.find(chat => chat.id === id)?.title || 'New side chat' : 'Side chat', chatHistory: history, chatPosition: next });
+  };
+  return <div className="eterx-workspace-side-chat">
+    <div className="eterx-workspace-chat-navigation">
+      <button aria-label="Back in side chat" disabled={position <= 0} onClick={() => navigate(-1)}><ArrowLeft size={16} /></button>
+      <button aria-label="Forward in side chat" disabled={position >= history.length - 1} onClick={() => navigate(1)}><ArrowRight size={16} /></button>
+      <button className="eterx-workspace-chat-title" onClick={() => selected && select('')}><MessagesCircle size={15} /><span>{selected ? current?.title || 'New side chat' : 'Conversations'}</span>{selected && runningChats.has(selected) && <Loader2 size={14} className="animate-spin" />}</button>
+      <Tooltip text="New side chat"><button aria-label="New side chat" onClick={() => select(crypto.randomUUID())}><PremiumEdit className="w-4 h-4 text-current" strokeWidth={1.8} /></button></Tooltip>
+      {selected && current && <Tooltip text="Open in main chat"><button aria-label="Open conversation in main chat" onClick={() => actions.openMain(selected)}><ArrowUpLeft size={17} /></button></Tooltip>}
+    </div>
+    {selected ? <Conversation key={selected} id={selected} tabId={tab.id} workspaceOwner={selected} chat={current} running={runningChats.has(selected)} actions={actions} /> : <div className="eterx-workspace-chat-picker">
+      <div className="eterx-workspace-search"><Search size={16} /><input aria-label="Search conversations" placeholder="Find a conversation…" value={search} onChange={event => setSearch(event.target.value)} /></div>
+      <div className="eterx-workspace-chat-list eterx-scrollbar">{chats.filter(chat => chat.id !== mainChatId && chat.title.toLowerCase().includes(search.toLowerCase())).map(chat => <button key={chat.id} onClick={() => select(chat.id)} className="eterx-workspace-chat-row"><MessagesCircle size={17} /><span><strong>{chat.title}</strong></span>{chat.workspacePath && <span className="eterx-workspace-chat-folder" title={chat.workspacePath}><Folder size={12} /><span>{chat.workspacePath.split(/[\\/]/).filter(Boolean).pop()}</span></span>}{runningChats.has(chat.id) ? <Loader2 size={15} className="animate-spin" /> : <span className="eterx-workspace-chat-time">{new Date(chat.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>}</button>)}{!chats.some(chat => chat.id !== mainChatId && chat.title.toLowerCase().includes(search.toLowerCase())) && <div className="eterx-workspace-empty"><p>No conversations found.</p><button onClick={() => select(crypto.randomUUID())}>Start a side chat</button></div>}</div>
+    </div>}
+  </div>;
+}

@@ -2,17 +2,26 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import {
   emitRuntimeTrace,
-  MAX_TERMINAL_TIMEOUT_MS,
-  normalizeTimeoutMs,
+  resolveWaitDurationMs,
   secondsFromTimeoutMs
 } from './terminal_timeout';
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-function resolveWaitMs(input: { seconds?: number; timeoutSeconds?: number; timeoutMs?: number; durationMs?: number }): number {
-  const seconds = input.seconds ?? input.timeoutSeconds;
-  if (seconds !== undefined) return normalizeTimeoutMs(seconds);
-  return normalizeTimeoutMs(input.timeoutMs ?? input.durationMs ?? MAX_TERMINAL_TIMEOUT_MS);
+function waitForTimer(ms: number, context: any): Promise<boolean> {
+  return new Promise(resolve => {
+    const signal: AbortSignal | undefined = context?.abortSignal;
+    let polling: ReturnType<typeof setInterval> | undefined;
+    const finish = (expired: boolean) => {
+      clearTimeout(timer);
+      if (polling) clearInterval(polling);
+      signal?.removeEventListener('abort', cancel);
+      resolve(expired);
+    };
+    const cancel = () => finish(false);
+    const timer = setTimeout(() => finish(true), ms);
+    signal?.addEventListener('abort', cancel, { once: true });
+    if (typeof context?.isCancelled === 'function') polling = setInterval(() => { if (context.isCancelled()) cancel(); }, 250);
+    if (signal?.aborted || context?.isCancelled?.()) cancel();
+  });
 }
 
 function timerTitle(title: unknown): string {
@@ -39,13 +48,14 @@ export const waitTimerTool: ToolDefinition = {
   outputSchema: z.object({
     success: z.boolean(),
     expired: z.boolean(),
+    cancelled: z.boolean().optional(),
     waitedMs: z.number(),
     title: z.string(),
     note: z.string(),
     nextActionNote: z.string()
   }),
   execute: async (input: { seconds?: number; timeoutSeconds?: number; timeoutMs?: number; durationMs?: number; title?: string; note?: string }, context: any) => {
-    const waitedMs = resolveWaitMs(input);
+    const waitedMs = resolveWaitDurationMs(input);
     const title = timerTitle(input.title);
     const note = timerNote(input.note);
     const seconds = secondsFromTimeoutMs(waitedMs);
@@ -61,7 +71,11 @@ export const waitTimerTool: ToolDefinition = {
       });
     }
 
-    await sleep(waitedMs);
+    const startedAt = Date.now();
+    const expired = await waitForTimer(waitedMs, context);
+    if (!expired) {
+      return { success: false, expired: false, cancelled: true, waitedMs: Date.now() - startedAt, title, note, nextActionNote: 'The wait was cancelled. Follow the latest user instruction; do not resume the cancelled step automatically.' };
+    }
 
     emitRuntimeTrace(context, {
       type: 'timer_expired',

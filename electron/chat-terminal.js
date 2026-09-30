@@ -1,15 +1,45 @@
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { randomUUID } = require('crypto');
+const { chatWorkspacePaths, isAbsoluteHostPath } = require('./workspace-layout');
+const { createHostEnvironment, findHostExecutable } = require('./host-environment');
+const { resolvePythonRuntime, applyWorkspaceEnvironment } = require('./python-runtime');
+const { workspaceRoot } = require('./storage-layout');
 
-function shellForPlatform(platform = process.platform, env = process.env) {
-  if (platform === 'win32') return { file: path.join(env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), args: ['-NoLogo'], label: 'PowerShell' };
-  const file = env.SHELL || (platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
-  return { file, args: ['-l'], label: path.basename(file) };
+function shellForPlatform(platform = process.platform, env = process.env, preference = 'auto') {
+  const selected = String(preference || 'auto').toLowerCase();
+  let candidates;
+  if (platform === 'win32') {
+    const powershell = ['pwsh.exe', 'powershell.exe', path.join(env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')];
+    const choices = {
+      auto: [...powershell, env.ComSpec || 'cmd.exe'], powershell,
+      cmd: [env.ComSpec || 'cmd.exe'], wsl: ['wsl.exe'],
+      'git-bash': [path.join(env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'), path.join(env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe'), 'bash.exe'],
+    };
+    candidates = choices[selected === 'bash' ? 'git-bash' : selected];
+  } else {
+    const choices = {
+      auto: [env.SHELL, platform === 'darwin' ? '/bin/zsh' : '/bin/bash', '/bin/sh'],
+      powershell: ['pwsh'], zsh: ['/bin/zsh', 'zsh'], bash: ['/bin/bash', 'bash'], fish: ['fish'], sh: ['/bin/sh', 'sh'],
+    };
+    candidates = choices[selected];
+  }
+  const file = candidates && findHostExecutable(candidates, env);
+  if (!file) throw new Error(`The selected terminal shell "${selected}" is not available on this device. Choose an installed shell in Settings.`);
+  const name = path.basename(file).toLowerCase();
+  const args = /^(?:powershell|pwsh)(?:\.exe)?$/.test(name) ? ['-NoLogo'] : /^cmd(?:\.exe)?$/.test(name) ? ['/d'] : /^wsl(?:\.exe)?$/.test(name) ? [] : ['-l'];
+  return { file, args, label: /powershell|pwsh/.test(name) ? 'PowerShell' : path.basename(file) };
 }
 
-function registerChatTerminals({ ipcMain, app, getWindow, loadPty = () => require('node-pty') }) {
+function loadChatPty() {
+  const modulePath = require.resolve('node-pty');
+  const unpacked = modulePath.replace(/\.asar([\\/])/g, '.asar.unpacked$1');
+  // Unix spawn-helper is an executable, so node-pty must resolve its helper
+  // relative to the real unpacked directory rather than the ASAR archive.
+  return require(fs.existsSync(unpacked) ? unpacked : modulePath);
+}
+
+function registerChatTerminals({ ipcMain, app, getWindow, loadPty = loadChatPty }) {
   const sessions = new Map();
   const owners = new Set();
   const authorize = (event) => {
@@ -35,10 +65,15 @@ function registerChatTerminals({ ipcMain, app, getWindow, loadPty = () => requir
     authorize(event);
     if (typeof options.chatId !== 'string' || !options.chatId || options.chatId.length > 200) throw new Error('Invalid chat');
     if (sessions.size >= 32 || [...sessions.values()].filter(s => s.chatId === options.chatId).length >= 8) throw new Error('Close an unused terminal before opening another (8 per chat, 32 total).');
-    const cwd = options.cwd || os.homedir();
-    if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error('The project folder is unavailable. Select an existing folder.');
-    const shell = shellForPlatform();
-    const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' };
+    const owned = chatWorkspacePaths(workspaceRoot(), 'default', options.chatId);
+    const cwd = options.cwd || owned.workspace;
+    if (!options.cwd) fs.mkdirSync(cwd, { recursive: true });
+    if (!isAbsoluteHostPath(cwd) || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`The project folder is unavailable on this device: ${cwd}. Select its current location; the terminal was not opened elsewhere.`);
+    const host = createHostEnvironment(process.env);
+    const runtime = resolvePythonRuntime({ cwd, managedRoot: path.join(owned.base, 'runtime', 'python'), env: host });
+    const env = applyWorkspaceEnvironment(host, { cwd, runtime, overrides: { TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
+    const shell = shellForPlatform(process.platform, env, options.terminalShell);
+    if (/^wsl(?:\.exe)?$/i.test(path.basename(shell.file))) shell.args = ['--cd', cwd];
     // Internal Electron/Node launch settings must not leak into user shells.
     for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH']) delete env[key];
     const pty = loadPty().spawn(shell.file, shell.args, { cwd, env, cols: 100, rows: 24, name: 'xterm-256color' });
@@ -75,6 +110,11 @@ function registerChatTerminals({ ipcMain, app, getWindow, loadPty = () => requir
       event.sender.once('destroyed', () => { disposeOwner(); owners.delete(event.sender); });
     }
     return { id, label: shell.label, cwd };
+  });
+  ipcMain.handle('chat-terminal-transfer', (event, from, to) => {
+    authorize(event);
+    if (typeof from !== 'string' || typeof to !== 'string' || !to || to.length > 200) throw new Error('Invalid terminal owner');
+    for (const session of sessions.values()) if (session.owner === event.sender && session.chatId === from) session.chatId = to;
   });
   ipcMain.handle('chat-terminal-attach', (event, id) => {
     const session = get(event, id);

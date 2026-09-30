@@ -1,52 +1,13 @@
 /** Focused coding-agent tool surface — advanced Cursor-class primitives */
 export const CODE_AGENT_TOOLS = [
-  'workspace_semantic_search',
-  'workspace_file_outline',
-  'workspace_find_files',
-  'workspace_search_text',
-  'workspace_read_file',
-  'workspace_read_many_files',
-  'workspace_edit_file',
-  'workspace_run_command',
-  'workspace_verify_code',
-  'process_manager',
-  'background_task',
-  'scheduled_tasks',
-  'wait_timer',
-  'browser_control',
-  'spawn_sub_agent',
-  'task_decomposer',
-  'task_checkpoint',
-  'get_skill_guidelines',
-  'memory_v2',
-  'context_manager',
-  'context_memory',
-  'web_search',
-  'web_scraper',
-  'deep_research',
-  'image_asset_search',
-  'realtime_verify',
+  'workspace_edit_file', 'workspace_run_command', 'scheduled_tasks', 'wait_timer',
+  'browser_control', 'spawn_sub_agent', 'task_decomposer', 'task_checkpoint',
+  'get_skill_guidelines', 'context_memory', 'web_search', 'image_asset_search',
 ] as const;
 
 export type CodeAgentToolName = typeof CODE_AGENT_TOOLS[number];
 
-const STATELESS_TOOLS = new Set<string>([
-  'workspace_semantic_search',
-  'workspace_file_outline',
-  'workspace_find_files',
-  'workspace_search_text',
-  'workspace_read_file',
-  'workspace_read_many_files',
-  'workspace_list_directory',
-  'realtime_verify',
-  'get_skill_guidelines',
-  'context_manager',
-  'context_memory',
-  'web_search',
-  'web_scraper',
-  'deep_research',
-  'image_asset_search',
-]);
+const STATELESS_TOOLS = new Set<string>(['get_skill_guidelines', 'web_search']);
 
 const STATEFUL_PREFIXES = [
   'write', 'edit', 'create', 'delete', 'remove', 'update',
@@ -73,47 +34,18 @@ export function partitionCodingToolCalls<T extends { name?: string; args?: any }
   for (const call of calls) {
     const name = String(call.name || '');
     const args = call.args || {};
-    const explicitBackground =
-      (name === 'background_task' && ['launch', 'check', 'list'].includes(String(args.mode || ''))) ||
-      (name === 'workspace_run_command' && args.background === true) ||
-      (name === 'process_manager' && ['start', 'status', 'logs', 'list'].includes(String(args.action || '')));
-    if (explicitBackground || isStatelessCodingTool(name)) stateless.push(call);
+    const terminalRead = name === 'workspace_run_command' && ['list', 'check', 'wait'].includes(String(args.mode || ''));
+    if (terminalRead || isStatelessCodingTool(name)) stateless.push(call);
     else stateful.push(call);
   }
   return { stateless, stateful };
 }
 
 export const CODE_AGENT_WORKFLOW = `
-CODING AGENT WORKFLOW:
-
-1. EXPLORE FAST (parallel)
-   - workspace_semantic_search for behavior/architecture questions
-   - workspace_find_files for path discovery
-   - workspace_search_text for exact strings/regex
-   - workspace_file_outline before editing unfamiliar files
-
-2. READ SMART (batch)
-   - workspace_read_many_files for 2+ known targets
-   - workspace_read_file with startLine/endLine for one range
-
-3. EDIT SAFE (simplest first)
-   - workspace_edit_file creates, edits, or deletes one file, or applies a related multi-file change
-   - single-file shape: filename + edits/delete; multi-file shape: files=[{filename, edits/delete}]
-   - a missing file is created by one edit whose replace value is its complete content
-
-4. VERIFY SMALL
-   - realtime_verify for quick syntax/json/file checks
-   - workspace_verify_code or workspace_run_command for project checks
-
-5. RUNTIME PROOF AND RISK CONTROL
-   - process_manager/background_task/wait_timer for servers or long checks
-   - browser_control for visible web UI behavior
-
-6. ADVANCED AGENT SUPPORT
-   - spawn_sub_agent only for independent exploration or blind review
-   - task_decomposer for broad work with several dependent actions, multiple files/systems, or a distinct verification phase—even when the user did not explicitly ask for a plan
-   - task_checkpoint after every proven plan item: advance with evidence, revise when discoveries change future work, and never finalize with unresolved items
-   - get_skill_guidelines for domain-specific implementation constraints
-   - memory_v2/context_manager for durable facts and stale-context hygiene
-
+CODING WORKFLOW
+- Use only this run's declared tools. Search and read with workspace_run_command using the current shell; batch independent known targets.
+- Author source/text changes with workspace_edit_file, grouping related targets. Use execution tools for builds, generators and binary artifacts.
+- Reuse current evidence. When authorized, verify the changed behavior with the narrowest relevant command; respect no-test/no-check instructions.
+- Keep a running command's taskId; use mode=wait/check/list/kill instead of inventing process tools or repeatedly launching it.
+- Use planning, skills, browser evidence and delegation only when relevant, available and authorized.
 `.trim();

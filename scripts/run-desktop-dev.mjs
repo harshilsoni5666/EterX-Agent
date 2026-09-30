@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -19,6 +20,7 @@ const electronSourceExtensions = new Set(['.js', '.cjs', '.mjs', '.json', '.html
 let nextProcess = null;
 let electronProcess = null;
 let electronRestartTimer = null;
+let electronSourceFingerprint = null;
 let electronRestartInProgress = false;
 let electronRestartQueued = false;
 let shuttingDown = false;
@@ -28,6 +30,26 @@ let devEnvironment = null;
 const childProcesses = new Set();
 const expectedElectronExits = new WeakSet();
 const sourceWatchers = [];
+
+function logLifecycle(message) {
+  console.log(`[EterX] ${message}`);
+  try {
+    fs.appendFileSync(path.join(desktopDevRoot, 'launcher.log'), `[${new Date().toISOString()}] ${message}\n`);
+  } catch { }
+}
+
+function readElectronSourceFingerprint() {
+  const hash = createHash('sha256');
+  const files = fs.readdirSync(electronSourceRoot)
+    .filter((name) => electronSourceExtensions.has(path.extname(name).toLowerCase()))
+    .map((name) => path.join(electronSourceRoot, name));
+  if (fs.existsSync(gatewayDaemonPath)) files.push(gatewayDaemonPath);
+  for (const file of files.sort()) {
+    hash.update(file);
+    hash.update(fs.readFileSync(file));
+  }
+  return hash.digest('hex');
+}
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -50,7 +72,8 @@ async function findAvailablePort(startPort) {
 }
 
 async function waitForHttpTarget(target) {
-  while (true) {
+  const deadline = Date.now() + 120_000;
+  while (!shuttingDown && Date.now() < deadline) {
     if (childHasExited(nextProcess)) {
       throw new Error('Next.js exited before the local page became available.');
     }
@@ -64,13 +87,14 @@ async function waitForHttpTarget(target) {
       // request, otherwise the first renderer navigation can remain stuck on
       // the splash while the pre-warm request is still active.
       const body = await response.arrayBuffer();
-      if (response.status >= 200 && response.status < 500 && body.byteLength > 0) return;
+      if (response.ok && body.byteLength > 0) return;
     } catch {
       // Next.js can accept the socket before the first page compilation is
       // complete. Keep polling until the local page itself is available.
     }
     await delay(500);
   }
+  throw new Error(shuttingDown ? 'Desktop startup cancelled.' : 'The local workspace did not become ready within two minutes.');
 }
 
 function waitForPort(port, timeoutMs = 30000) {
@@ -105,6 +129,23 @@ function isProcessRunning(pid) {
   }
 }
 
+function isEterxLauncherProcess(pid) {
+  if (!isProcessRunning(pid)) return false;
+  if (process.platform !== 'win32') return true;
+
+  const result = spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CommandLine) -join ''`,
+  ], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+  if (result.error || result.status !== 0) return false;
+
+  const commandLine = result.stdout.trim();
+  return commandLine.includes(repositoryRoot)
+    && /(?:^|[\\/])scripts[\\/]run-desktop-dev\.mjs(?:\s|$)/i.test(commandLine);
+}
+
 function acquireLauncherLock() {
   fs.mkdirSync(desktopDevRoot, { recursive: true });
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -120,7 +161,7 @@ function acquireLauncherLock() {
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
       const owner = Number.parseInt(fs.readFileSync(launcherLockPath, 'utf8').trim(), 10);
-      if (isProcessRunning(owner)) {
+      if (isEterxLauncherProcess(owner)) {
         throw new Error(`A local EterX desktop session is already running (launcher PID ${owner}).`);
       }
       fs.rmSync(launcherLockPath, { force: true });
@@ -217,16 +258,24 @@ function spawnElectron() {
       void shutdown(1);
     }
   });
-  child.once('exit', (code) => {
+  child.once('exit', (code, signal) => {
     if (electronProcess === child) electronProcess = null;
     if (expectedElectronExits.has(child) || shuttingDown) return;
-    void shutdown(code ?? 1);
+    logLifecycle(`Electron exited (code ${code ?? 'unknown'}, signal ${signal || 'none'}).`);
+    // Task Manager termination is indistinguishable from some native crashes.
+    // Only an explicit source-change restart may replace the desktop process.
+    // End the owned server session as well so its agents cannot run orphaned.
+    void shutdown(code === 0 && !signal ? 0 : 1);
   });
   return child;
 }
 
 async function restartElectron() {
   if (shuttingDown) return;
+  if (childHasExited(electronProcess)) {
+    await shutdown(0);
+    return;
+  }
   if (electronRestartInProgress) {
     electronRestartQueued = true;
     return;
@@ -250,12 +299,25 @@ function scheduleElectronRestart(changedFile) {
   if (electronRestartTimer) clearTimeout(electronRestartTimer);
   electronRestartTimer = setTimeout(() => {
     electronRestartTimer = null;
-    console.log(`[EterX] ${changedFile} changed; restarting the Electron shell...`);
+    let fingerprint;
+    try {
+      fingerprint = readElectronSourceFingerprint();
+    } catch (error) {
+      // Editors may temporarily remove or lock files during an atomic save.
+      // Keep the existing shell alive until the source can be read again.
+      logLifecycle(`Waiting for Electron source files: ${error.message || error}`);
+      scheduleElectronRestart(changedFile);
+      return;
+    }
+    if (fingerprint === electronSourceFingerprint) return;
+    electronSourceFingerprint = fingerprint;
+    logLifecycle(`${changedFile} changed; restarting the Electron shell...`);
     void restartElectron();
-  }, 250);
+  }, 750);
 }
 
 function watchElectronSources() {
+  electronSourceFingerprint = readElectronSourceFingerprint();
   const electronWatcher = fs.watch(electronSourceRoot, (_eventType, fileName) => {
     const changedFile = String(fileName || 'electron source');
     if (!fileName || electronSourceExtensions.has(path.extname(changedFile).toLowerCase())) {
@@ -284,6 +346,7 @@ function createDevEnvironment(overrides = {}) {
     ...overrides,
     ETERX_DESKTOP_DEV: '1',
     ETERX_DESKTOP_DEV_USER_DATA: desktopDevUserData,
+    ETERX_DATA_DIR: path.join(desktopDevUserData, 'data'),
     // Keep one reusable output directory. Next.js otherwise adds a new
     // generated type path to tsconfig.json every time the desktop command runs.
     ETERX_DEV_DIST_DIR: '.next-dev-desktop',
@@ -329,7 +392,7 @@ async function main() {
   });
   nextProcess.once('exit', (code) => {
     if (!shuttingDown) {
-      console.error(`[EterX] Next.js development server exited with code ${code ?? 'unknown'}.`);
+      logLifecycle(`Next.js development server exited with code ${code ?? 'unknown'}; closing the local session.`);
       void shutdown(code ?? 1);
     }
   });

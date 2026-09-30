@@ -1,4 +1,5 @@
 import path from 'path';
+import { formatTerminalProgram } from './terminal-invocation';
 
 export type ToolTraceLabel = {
   text: string;
@@ -396,6 +397,10 @@ export function buildToolTraceFields(
   let secondary = targets.length > 0
     ? summarizePathList(targets)
     : summarizeTraceValue(argValue ?? args?.path ?? args?.command ?? args?.commands ?? args?.taskId ?? args?.mode ?? args?.query ?? args?.action ?? canonicalToolName);
+
+  if (canonicalToolName === 'workspace_run_command' && args?.program) {
+    secondary = formatTerminalProgram(args.program, Array.isArray(args.args) ? args.args : [], true);
+  }
 
   if (!secondary && argKey) secondary = summarizeTraceValue(args?.[argKey]);
   if (!secondary) secondary = String(canonicalToolName || 'tool');

@@ -18,6 +18,54 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+async function readPollState(chatId: string, after: number, runId?: string, signal?: AbortSignal): Promise<any> {
+  let live: any = agentRegistry.getTraces(chatId, after, runId);
+  if (live.status !== 'idle') return live;
+
+  let recovered = false;
+  let persisted: Awaited<ReturnType<typeof taskStore.getPollState>> | undefined;
+  let recoveryError: unknown;
+  const recovery = taskStore.getPollState(chatId, after).then(
+    value => { persisted = value; recovered = true; },
+    error => { recoveryError = error; recovered = true; },
+  );
+  const lifetime = new AbortController();
+  const abort = () => lifetime.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
+  try {
+    while (!lifetime.signal.aborted) {
+      const version = agentRegistry.getTraceChangeVersion(chatId);
+      live = agentRegistry.getTraces(chatId, after, runId);
+      // Live work takes priority even while a slow disk recovery is pending.
+      // Re-reading also prevents an old disk run from pinning a new watcher.
+      if (live.status !== 'idle') return live;
+      if (recovered) {
+        if (recoveryError) throw recoveryError;
+        if (persisted && persisted.status !== 'idle' && (!runId || persisted.runId === runId)) {
+          return {
+            ...persisted,
+            ...(live.successorRunId && Number(live.successorStartedAt) >= Number(persisted.startedAt) ? {
+              successorRunId: live.successorRunId,
+              successorStartedAt: live.successorStartedAt,
+            } : {}),
+          };
+        }
+        return live;
+      }
+      await Promise.race([
+        recovery,
+        agentRegistry.waitForTraceChange(chatId, after, 4000, lifetime.signal, runId,
+          live.status, live.successorRunId, version),
+      ]);
+    }
+    return live;
+  } finally {
+    lifetime.abort();
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
 /** One browser request watches all live chats without exhausting HTTP slots. */
 export async function POST(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
@@ -38,14 +86,10 @@ export async function POST(req: NextRequest) {
     const ownerError = requireChatOwner(item.chatId, session.sessionId);
     requests.push({ chatId: item.chatId, after: Math.max(-1, parseInteger(String(item.after), -1)), runId: item.runId || undefined, denied: Boolean(ownerError) });
   }
-  const read = async (item: typeof requests[number]): Promise<any> => {
+  const read = async (item: typeof requests[number], signal: AbortSignal = req.signal): Promise<any> => {
     if (item.denied) return { _pollError: 'Polling access denied for this chat.' };
     try {
-      let result: any = agentRegistry.getTraces(item.chatId, item.after, item.runId);
-      if (result.status === 'idle') {
-        const persisted = await taskStore.getPollState(item.chatId, item.after);
-        if (persisted.status !== 'idle' && (!item.runId || persisted.runId === item.runId)) result = persisted;
-      }
+      const result = await readPollState(item.chatId, item.after, item.runId, signal);
       const { items: queuedFollowUps, queueRevision } = agentRegistry.getQueuedFollowUpSnapshot(item.chatId);
       return { ...result, queuedFollowUps, queueRevision, pendingFollowUpCount: queuedFollowUps.length,
         pendingProxyTaskCount: getPendingProxyTaskCount(item.chatId) };
@@ -92,7 +136,7 @@ export async function POST(req: NextRequest) {
           const item = { ...request };
           while (!lifetime.signal.aborted) {
             const observedVersion = agentRegistry.getTraceChangeVersion(item.chatId);
-            const result = await read(item);
+            const result = await read(item, lifetime.signal);
             if (lifetime.signal.aborted) return;
             await send(index, result);
             if (result._pollError) return;
@@ -101,6 +145,9 @@ export async function POST(req: NextRequest) {
             // rows, never read with indices belonging to the previous run.
             if (!item.runId && result.runId) item.runId = String(result.runId);
             if (Number.isFinite(result.maxIndex)) item.after = result.maxIndex;
+            // Let queued socket writes and other chats run even when a busy
+            // producer changes its revision on every read/wait handoff.
+            await new Promise<void>(resolve => setImmediate(resolve));
             // Initial idle/startup and terminal states also wait for events;
             // they must not spin or hold the rest of the subscriptions back.
             await agentRegistry.waitForTraceChange(
@@ -133,7 +180,7 @@ export async function POST(req: NextRequest) {
       },
     }), session);
   }
-  let results = await Promise.all(requests.map(read));
+  let results = await Promise.all(requests.map(item => read(item)));
   if (results.every(result => result.status === 'running' && !result.traces?.length) && !req.signal.aborted) {
     const controller = new AbortController();
     setMaxListeners(requests.length + 4, controller.signal);
@@ -150,7 +197,7 @@ export async function POST(req: NextRequest) {
       controller.abort();
       req.signal.removeEventListener('abort', abort);
     }
-    results = await Promise.all(requests.map(read));
+    results = await Promise.all(requests.map(item => read(item)));
   }
   return respond({ results });
 }
@@ -194,20 +241,7 @@ export async function GET(req: NextRequest) {
     }
 
     const afterIndex = Math.max(-1, parseInteger(afterStr, -1));
-    let result: any = agentRegistry.getTraces(chatId, afterIndex, requestedRunId || undefined);
-
-    if (result.status === 'idle') {
-      const persisted = await taskStore.getPollState(chatId, afterIndex);
-      // A run-scoped poll must never be hydrated with another run's saved
-      // snapshot. Doing so makes the first actions from a successor appear
-      // beneath its predecessor (or vice versa) after a reconnect.
-      if (
-        persisted.status !== 'idle'
-        && (!requestedRunId || persisted.runId === requestedRunId)
-      ) {
-        result = persisted;
-      }
-    }
+    let result = await readPollState(chatId, afterIndex, requestedRunId || undefined, req.signal);
 
     // Hold an otherwise empty running response briefly. This is real-time
     // long polling: traces return as soon as they exist, but an idle agent no
@@ -222,17 +256,7 @@ export async function GET(req: NextRequest) {
         req.signal,
         requestedRunId || undefined,
       );
-      let next: any = agentRegistry.getTraces(chatId, afterIndex, requestedRunId || undefined);
-      // A restored run can be task-store backed until its live registry is
-      // reattached. Preserve long-poll semantics for that path as well.
-      if (next.status === 'idle') {
-        const persisted = await taskStore.getPollState(chatId, afterIndex);
-        if (
-          persisted.status !== 'idle'
-          && (!requestedRunId || persisted.runId === requestedRunId)
-        ) next = persisted;
-      }
-      result = next;
+      result = await readPollState(chatId, afterIndex, requestedRunId || undefined, req.signal);
     }
     result.pendingProxyTaskCount = getPendingProxyTaskCount(chatId);
     const { items: queuedFollowUps, queueRevision } = agentRegistry.getQueuedFollowUpSnapshot(chatId);

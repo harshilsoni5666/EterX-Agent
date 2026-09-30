@@ -1,4 +1,6 @@
 import React from 'react';
+import { BookOpen } from 'lucide-react';
+import { SubAgentGeometricAvatar } from './subagent-geometric-avatar';
 
 export interface IconProps {
   isLive?: boolean;
@@ -6,7 +8,7 @@ export interface IconProps {
   color?: string;
 }
 
-const W = '#E8E6E3';
+export const W = '#E8E6E3';
 
 /** The unified EterX mark used by task and agent surfaces. */
 export const EterxLogo = ({
@@ -64,6 +66,32 @@ export const ComputerIcon = ({ size = 16, color = W }: IconProps) => (
     <path d="M8.5 20h7M12 16v4" />
     <path d="M7.2 8.2h.01M10.2 8.2h.01" />
   </LineIcon>
+);
+
+export const MonitorPlayIcon = ({ size = 15, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <rect x="3" y="4" width="18" height="12" rx="2" />
+    <path d="M10 7.5l5 2.5-5 2.5v-5z" fill={color} stroke="none" />
+    <path d="M8 20h8M12 16v4" />
+  </LineIcon>
+);
+
+export const MouseIcon = ({ size = 15, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <rect x="6" y="3" width="12" height="18" rx="6" />
+    <path d="M12 7v4" />
+  </LineIcon>
+);
+
+export const MousePointerClickIcon = ({ size = 15, color = W }: IconProps) => (
+  <LineIcon size={size} color={color}>
+    <path d="m9 9 5 12 1.8-5.2L21 14Z" />
+    <path d="M7.2 2.2 8 5.1M5.1 8 2.2 7.2M14 4.1l1.8 1.8M4.1 14l1.8 1.8" />
+  </LineIcon>
+);
+
+export const SkillIcon = ({ size = 15, color = W }: IconProps) => (
+  <BookOpen size={size} color={color} strokeWidth={1.9} aria-hidden="true" />
 );
 
 export const TerminalIcon = ({ size = 16, color = W }: IconProps) => (
@@ -444,8 +472,11 @@ const hashSubAgentName = (value: string) => {
   return hash >>> 0;
 };
 
+export { SubAgentGeometricAvatar } from './subagent-geometric-avatar';
+
 export const SubAgentIdentityIcon = ({
   name,
+  status,
   size = 32,
   className = '',
   title,
@@ -458,34 +489,25 @@ export const SubAgentIdentityIcon = ({
   title?: string;
   assetIndex?: number;
 }) => {
-  const cleanName = String(name || 'Subagent').trim();
-  const assetName = getSubAgentAssetName(name, assetIndex);
-
   return (
-    <span
-      className={`eterx-subagent-avatar flex items-center justify-center overflow-hidden rounded-full border border-white/[0.08] bg-black/10 ${className}`}
-      style={{
-        width: size,
-        height: size,
-      }}
-      role={title ? 'img' : undefined}
-      aria-label={title}
-      aria-hidden={title ? undefined : true}
+    <SubAgentGeometricAvatar
+      name={name}
+      status={status}
+      size={size}
+      className={className}
       title={title}
-    >
-      <img
-        src={`/icons/sub-agents/${assetName}.png`}
-        alt={cleanName}
-        className="h-full w-full select-none object-cover"
-      />
-    </span>
+      assetIndex={assetIndex}
+    />
   );
 };
 
 const CAT_MAP: Record<string, React.FC<IconProps>> = {
   computer: ComputerIcon,
   desktop: ComputerIcon,
-  browser: ComputerIcon,
+  browser: MonitorPlayIcon,
+  browser_launch: MonitorPlayIcon,
+  browser_control: MonitorPlayIcon,
+  browser_use: MonitorPlayIcon,
   ui: ComputerIcon,
   agent: AgentAssetIcon,
   terminal: TerminalIcon,
@@ -511,7 +533,7 @@ const CAT_MAP: Record<string, React.FC<IconProps>> = {
   chart: ChartLineIcon,
   memory: MemoryChipIcon,
   package: PackageBoxIcon,
-  skill: PackageBoxIcon,
+  skill: SkillIcon,
   code: CodeInspectIcon,
   git: GitBranchIcon,
   refactor: RefactorIcon,
@@ -595,7 +617,12 @@ const TRACE_TOOL_CATEGORIES: Record<string, string> = {
     web_search: 'web_search', web_fetch: 'web_search',
     browser: 'browser', browser_use: 'browser', computer_use: 'computer',
     image_generator: 'image', load_skill: 'skill',
-    spawn_sub_agent: 'agent', connector_mcp: 'connector',
+    spawn_sub_agent: 'agent', agent_communicate: 'agent', connector_mcp: 'connector',
+    wait_timer: 'clock', scheduled_tasks: 'schedule', task_decomposer: 'verification',
+    task_checkpoint: 'verification', context_memory: 'memory', get_skill_guidelines: 'skill',
+    computer: 'computer', screen_agent: 'computer', screenshot_capture: 'image',
+    image_asset_search: 'image', video_generator: 'image', desktop_notification: 'computer',
+    channel_agent: 'connector', gateway_bridge: 'connector', ask_user: 'agent',
 };
 
 export const resolveToolTraceIcon = (log: any): { Icon: React.FC<IconProps>; color: string } => {

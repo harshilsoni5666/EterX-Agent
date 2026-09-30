@@ -4,6 +4,7 @@ import path from 'path';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
 import { enforceToolCapability } from '../security/tool_policy';
 import { executeImageGeneration } from '../../../image/image-generation-runtime';
+import { retainChatImageOutput } from '../../../chat-media-store';
 
 /**
  * AI Image Generator Tool
@@ -59,6 +60,8 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
     enhancedPrompt: z.string(),
     provider: z.string().optional(),
     model: z.string().optional(),
+    displayUrl: z.string().optional(),
+    images: z.array(z.object({ src: z.string(), localPath: z.string(), name: z.string() })).optional(),
   }),
   execute: async (input: {
     prompt: string,
@@ -97,10 +100,16 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
     try {
       const result = await executeImageGeneration({ prompt: finalPrompt, width: w, height: h, filePath });
       const savedName = result.filePath ? path.basename(result.filePath) : '';
+      const displayUrl = result.success && result.filePath
+        ? await retainChatImageOutput(String(context?.ownerChatId || context?.chatId || context?.projectId || ''), result.filePath).catch(() => '') : '';
       console.log(`[Tool: image_generator] ${result.message}`);
       return {
         success: result.success,
         filePath: result.filePath,
+        ...(result.success && result.filePath ? {
+          displayUrl: displayUrl || result.filePath,
+          images: [{ src: displayUrl || result.filePath, localPath: result.filePath, name: savedName }],
+        } : {}),
         enhancedPrompt: finalPrompt,
         provider: result.provider || undefined,
         model: result.model || undefined,

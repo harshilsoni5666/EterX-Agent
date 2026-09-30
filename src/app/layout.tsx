@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import type { CSSProperties } from 'react';
+import { GeistMono } from 'geist/font/mono';
 import './globals.css';
 import '@xterm/xterm/css/xterm.css';
 import './chat-terminal.css';
@@ -10,10 +11,13 @@ import './composer-menus.css';
 import './light-theme.polish.css';
 import './composer-responsive.css';
 import './conversation-layout.css';
+import './side-workspace.css';
+import './dropdown-polish.css';
 import '../../electron/splash.css';
 import 'katex/dist/katex.min.css';
 import { ThemeBridge } from '../components/theme/theme-bridge';
 import { ClipboardPasteBridge } from '../components/ui/clipboard-paste-bridge';
+import { NativeTooltipSuppressor } from '../components/ui/native-tooltip-suppressor';
 import { readInitialThemePreference, resolveInitialTheme } from '../lib/initial-theme';
 import { DEFAULT_THEME } from '../lib/theme-config';
 
@@ -24,7 +28,7 @@ export const dynamic = 'force-dynamic';
 // where it is not installed.
 const localFontVariables: CSSProperties = {
   '--font-sans': '"Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif',
-  '--font-mono': '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+  '--font-mono': '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
   '--font-serif': 'Lora, Georgia, Cambria, "Times New Roman", serif',
 } as CSSProperties;
 
@@ -72,13 +76,14 @@ export default function RootLayout({
   const initialPreference = readInitialThemePreference();
   const initialTheme = resolveInitialTheme(initialPreference);
   return (
-    <html lang="en" className={initialTheme} style={localFontVariables} data-theme={initialTheme} suppressHydrationWarning>
+    <html lang="en" className={`${initialTheme} ${GeistMono.variable}`} style={localFontVariables} data-theme={initialTheme} suppressHydrationWarning>
       <head>
         <script id="eterx-theme-init" dangerouslySetInnerHTML={{ __html: createThemeInitScript(initialPreference) }} />
       </head>
       <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
         <ThemeBridge />
         <ClipboardPasteBridge />
+        <NativeTooltipSuppressor />
         {children}
       </body>
     </html>

@@ -94,6 +94,7 @@ export async function POST(req: NextRequest) {
           const history = allMessages.slice(0, currentUserIndex).map(message => ({
             role: message.role,
             parts: [{ text: message.content }],
+            ...(message.contextTurnId ? { contextTurnId: message.contextTurnId } : {}),
           }));
           const selectedMode: MainAgentMode = selectedProvider === 'gemini'
             ? 'think'

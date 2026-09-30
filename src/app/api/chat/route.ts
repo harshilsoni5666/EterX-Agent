@@ -330,7 +330,8 @@ export async function POST(req: NextRequest) {
     return attachAgentApiSessionCookie(new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Cache-Control': 'no-cache, no-store, no-transform',
+        'Content-Encoding': 'identity',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no', // Disable nginx/proxy buffering
       },

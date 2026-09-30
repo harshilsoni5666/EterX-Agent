@@ -15,7 +15,11 @@ Create or edit real Word documents. A `.docx` deliverable must be useful to the 
 - Use real content. Do not invent facts, names, numbers, citations, images, or completion status.
 - For current/company/legal/medical/financial facts, research with appropriate sources before writing.
 - Preserve existing document structure when editing unless the user asks for a rewrite.
-- Keep final user-facing files outside `.workspaces/sandbox` unless the user explicitly requested that location.
+- Save to the explicit user path when supplied; otherwise use the current chat workspace from runtime context. Do not move outputs to Desktop automatically.
+
+## Runtime and dependencies
+
+Use the runtime-provided OS, selected shell, workspace and executable paths. Pick one suitable generation method and create the deliverable; do not inventory unrelated converters or repeat successful import/version checks. Use `workspace_run_command` with `program` and an `args` array for Python or Node, so source strings and paths do not pass through shell quoting. If an import fails, resolve that specific dependency for the same interpreter, preferably in a workspace virtual environment. Libraries mentioned below are options, not promises that they are installed. Respect an explicit user request to skip checks or tests and report that limitation.
 
 ## Choose The Right Path
 

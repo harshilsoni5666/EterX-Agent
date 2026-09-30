@@ -207,9 +207,10 @@ export async function POST(req: NextRequest) {
 
     return attachAgentApiSessionCookie(new Response(stream, {
       headers: {
-        'Content-Type': 'application/x-ndjson',
-        'Transfer-Encoding': 'chunked',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, no-transform',
+        'Content-Encoding': 'identity',
+        'X-Accel-Buffering': 'no',
       },
     }), session);
 

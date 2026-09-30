@@ -8,6 +8,7 @@ import {
   type ToolEffect,
   type ToolResultOutcome,
 } from './tool-semantics';
+import { ObservationProgressTracker, stampObservation, type ObservationStamp } from './observation-progress';
 
 export type RuntimeEvidenceKind =
   | 'artifact'
@@ -39,6 +40,8 @@ export interface RuntimeEvidenceNode {
   workId?: string;
   /** Pending children of a compound call, settled individually by task ID. */
   pendingWorkIds?: string[];
+  observation?: ObservationStamp;
+  repeatedObservation?: boolean;
 }
 
 export interface RuntimeEvidenceSnapshot {
@@ -111,7 +114,13 @@ function summarizeToolResult(
   if (Array.isArray(result?.errors) && result.errors.length > 0) {
     return `${toolName} failed: ${truncate(result.errors.join('; '))}`;
   }
-  if (outcome === 'failed') return `${toolName} failed: ${truncate(result?.message || result?.status || 'unsuccessful result')}`;
+  if (outcome === 'failed') {
+    const failedChild = Array.isArray(result?.results)
+      ? result.results.find((entry: any) => getToolResultOutcome(entry) === 'failed') : undefined;
+    const detail = result?.stderr || result?.message || failedChild?.error || failedChild?.stderr
+      || failedChild?.message || result?.status || 'unsuccessful result';
+    return `${toolName} failed: ${truncate(detail)}`;
+  }
   if (result?.summary) return truncate(result.summary);
   if (effect === 'verification') {
     const command = args?.command ? ` ${truncate(args.command, 90)}` : '';
@@ -139,12 +148,14 @@ export class RuntimeEvidenceLedger {
   private nodes: RuntimeEvidenceNode[] = [];
   private sequence = 0;
   private mutationEpoch = 0;
+  private readonly observations: ObservationProgressTracker;
 
   constructor(
     private readonly scopeId: string = 'default',
     snapshot?: RuntimeEvidenceSnapshot | null,
   ) {
     if (snapshot) this.restore(snapshot);
+    this.observations = new ObservationProgressTracker(this.nodes);
   }
 
   recordTool(toolName: string, args: Record<string, any> = {}, result: any = {}): RuntimeEvidenceNode {
@@ -169,6 +180,9 @@ export class RuntimeEvidenceLedger {
     ) : undefined;
     const effect = pendingOrigin?.effect === 'verification' ? 'verification' : semantics.effect;
     const observedEpoch = pendingOrigin?.effect === 'verification' ? pendingOrigin.mutationEpoch : this.mutationEpoch;
+    const observation = effect === 'observation' && outcome === 'completed'
+      ? stampObservation(toolName, args, result) : undefined;
+    const repeatedObservation = !this.observations.record(observation, observedEpoch);
     const node: RuntimeEvidenceNode = {
       id: `${this.scopeId}-${Date.now()}-${++this.sequence}`,
       sequence: this.sequence,
@@ -177,7 +191,7 @@ export class RuntimeEvidenceLedger {
       effect,
       kind: !success ? 'failure' : outcome === 'pending' ? 'command' : classifyKind(toolName, effect),
       success,
-      materialProgress: toolResultMadeProgress(result, semantics),
+      materialProgress: toolResultMadeProgress(result, semantics) && !repeatedObservation,
       stateChanging: changedState,
       mutationEpoch: observedEpoch,
       signature: `${toolName}:${stableSerialize(args)}`,
@@ -186,6 +200,7 @@ export class RuntimeEvidenceLedger {
       metrics: extractNumericMetrics(result),
       outcome,
       workId,
+      ...(observation ? { observation, repeatedObservation } : {}),
       ...(pendingWorkIds.length ? { pendingWorkIds } : {}),
     };
     this.nodes.push(node);
@@ -194,6 +209,10 @@ export class RuntimeEvidenceLedger {
 
   list(): RuntimeEvidenceNode[] {
     return [...this.nodes];
+  }
+
+  revision(): number {
+    return this.sequence;
   }
 
   currentMutationEpoch(): number {
@@ -268,7 +287,7 @@ export class RuntimeEvidenceLedger {
   }
 
   successfulResearchCount(): number {
-    return this.nodes.filter(node => node.success && (!node.outcome || node.outcome === 'completed') && node.kind === 'research').length;
+    return this.nodes.filter(node => node.success && !node.repeatedObservation && (!node.outcome || node.outcome === 'completed') && node.kind === 'research').length;
   }
 
   materialProgressCount(): number {
@@ -277,9 +296,9 @@ export class RuntimeEvidenceLedger {
 
   summarize(maxItems = 6): string[] {
     return this.nodes
-      .filter(node => node.success)
+      .filter(node => !node.repeatedObservation && node.outcome !== 'noop')
       .slice(-maxItems)
-      .map(node => `${node.effect}: ${node.summary}`);
+      .map(node => `${node.success ? node.effect : 'failure'}: ${node.summary}`);
   }
 
   snapshot(): RuntimeEvidenceSnapshot {

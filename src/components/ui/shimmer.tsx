@@ -1,15 +1,17 @@
 import React, { useLayoutEffect, useRef } from 'react';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
 // Share observation across active labels. Nothing runs per frame in React,
 // and completed labels do not keep observers or compositor hints alive.
 const shimmerLabels = new Map<HTMLElement, { visible: boolean; duration: number; once: boolean }>();
 let shimmerVisibility: IntersectionObserver | null = null;
 let shimmerSizes: ResizeObserver | null = null;
+let stopAppVisibility: (() => void) | null = null;
 
 function updateShimmerVisibility(element: HTMLElement) {
   const state = shimmerLabels.get(element);
   if (!state) return;
-  const visible = state.visible && !document.hidden;
+  const visible = state.visible && isAppVisible();
   element.dataset.shimmerVisible = visible ? 'true' : 'false';
   if (visible && !state.once) {
     // Resuming a label follows the current live cycle instead of replaying it.
@@ -43,7 +45,7 @@ function observeShimmer(element: HTMLElement, duration: number, once: boolean) {
         target.dataset.shimmerReady = 'true';
       }
     });
-    document.addEventListener('visibilitychange', resumeShimmers);
+    stopAppVisibility = subscribeAppVisibility(resumeShimmers);
   }
   const inChat = Boolean(element.closest('.eterx-chat-column'));
   shimmerLabels.set(element, { visible: !shimmerVisibility, duration: inChat ? 2400 : duration, once });
@@ -60,7 +62,7 @@ function observeShimmer(element: HTMLElement, duration: number, once: boolean) {
     if (!shimmerLabels.size) {
       shimmerVisibility?.disconnect(); shimmerVisibility = null;
       shimmerSizes?.disconnect(); shimmerSizes = null;
-      document.removeEventListener('visibilitychange', resumeShimmers);
+      stopAppVisibility?.(); stopAppVisibility = null;
     }
   };
 }

@@ -1,3 +1,4 @@
+import { createLiveCatalogRequest, splitLiveKeys } from '../../../../lib/live/catalog-request';
 import { NextRequest, NextResponse } from 'next/server';
 import { rejectCrossOrigin } from '../../agent/_shared';
 import { readStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
@@ -22,10 +23,8 @@ export async function POST(req: NextRequest) {
     const provider = normalizeLiveProvider(body?.provider);
     const stored = readStoredRuntimeSettings();
     const rawKeys = stored.liveApiKeys?.[provider.keyProvider];
-    const keys = (Array.isArray(rawKeys) ? rawKeys : [rawKeys])
-      .map(key => String(key || '').trim())
-      .filter(Boolean);
-    const apiKey = keys[0] || '';
+    const keys = splitLiveKeys(rawKeys);
+    let apiKey = keys[0] || '';
     if (!apiKey) {
       return NextResponse.json(
         { error: `No separate ${provider.label} Live API key is configured.` },
@@ -46,6 +45,10 @@ export async function POST(req: NextRequest) {
       });
     }
     
+    // Lease the same authorized pool member used by catalog discovery.
+    const client = createLiveCatalogRequest(provider.value);
+    await client.request('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000');
+    apiKey = client.selectedKey;
     return NextResponse.json({ 
       apiKey,
       available: true,

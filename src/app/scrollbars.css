@@ -156,6 +156,102 @@
   background-size: 7px 10px !important;
 }
 
+/* Sources, tasks, and process lists share the compact EterX sidebar rail.
+   These selectors follow the native rules above so the global custom controls
+   cannot widen the rail or bring back platform arrow buttons. */
+.eterx-thread-switcher-scrollbar {
+  scrollbar-width: thin !important;
+  scrollbar-color: #3f3f42 transparent !important;
+}
+.eterx-thread-switcher-scrollbar::-webkit-scrollbar {
+  width: 5px !important;
+  height: 5px !important;
+}
+.eterx-thread-switcher-scrollbar::-webkit-scrollbar-track,
+.eterx-thread-switcher-scrollbar::-webkit-scrollbar-corner {
+  background: transparent !important;
+  margin: 0 !important;
+}
+.eterx-thread-switcher-scrollbar::-webkit-scrollbar-thumb {
+  min-width: 5px !important;
+  min-height: 24px !important;
+  background: #3f3f42 !important;
+  border-radius: 9999px !important;
+}
+.eterx-thread-switcher-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #525256 !important;
+}
+.eterx-thread-switcher-scrollbar::-webkit-scrollbar-button:single-button:vertical:decrement,
+.eterx-thread-switcher-scrollbar::-webkit-scrollbar-button:single-button:vertical:increment,
+.eterx-thread-switcher-scrollbar::-webkit-scrollbar-button:single-button:horizontal:decrement,
+.eterx-thread-switcher-scrollbar::-webkit-scrollbar-button:single-button:horizontal:increment {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: none !important;
+}
+.eterx-work-menu .eterx-work-menu-content.eterx-scrollbar::-webkit-scrollbar,
+.eterx-work-menu .eterx-work-menu-list.eterx-scrollbar::-webkit-scrollbar,
+.eterx-background-process-list.eterx-scrollbar::-webkit-scrollbar {
+  width: 5px !important;
+  height: 5px !important;
+}
+.eterx-work-menu .eterx-work-menu-content.eterx-scrollbar::-webkit-scrollbar-thumb,
+.eterx-work-menu .eterx-work-menu-list.eterx-scrollbar::-webkit-scrollbar-thumb,
+.eterx-background-process-list.eterx-scrollbar::-webkit-scrollbar-thumb {
+  background: #3f3f42 !important;
+  border-radius: 9999px !important;
+}
+.eterx-work-menu .eterx-work-menu-content.eterx-scrollbar::-webkit-scrollbar-button:single-button:vertical:decrement,
+.eterx-work-menu .eterx-work-menu-content.eterx-scrollbar::-webkit-scrollbar-button:single-button:vertical:increment,
+.eterx-work-menu .eterx-work-menu-content.eterx-scrollbar::-webkit-scrollbar-button:single-button:horizontal:decrement,
+.eterx-work-menu .eterx-work-menu-content.eterx-scrollbar::-webkit-scrollbar-button:single-button:horizontal:increment,
+.eterx-work-menu .eterx-work-menu-list.eterx-scrollbar::-webkit-scrollbar-button:single-button:vertical:decrement,
+.eterx-work-menu .eterx-work-menu-list.eterx-scrollbar::-webkit-scrollbar-button:single-button:vertical:increment,
+.eterx-work-menu .eterx-work-menu-list.eterx-scrollbar::-webkit-scrollbar-button:single-button:horizontal:decrement,
+.eterx-work-menu .eterx-work-menu-list.eterx-scrollbar::-webkit-scrollbar-button:single-button:horizontal:increment,
+.eterx-background-process-list.eterx-scrollbar::-webkit-scrollbar-button:single-button:vertical:decrement,
+.eterx-background-process-list.eterx-scrollbar::-webkit-scrollbar-button:single-button:vertical:increment,
+.eterx-background-process-list.eterx-scrollbar::-webkit-scrollbar-button:single-button:horizontal:decrement,
+.eterx-background-process-list.eterx-scrollbar::-webkit-scrollbar-button:single-button:horizontal:increment {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+/* The Sources panel can acquire nested scroll containers as its sections
+   expand. Keep every rail inside that popup on the same sidebar treatment. */
+.eterx-work-menu::-webkit-scrollbar,
+.eterx-work-menu *::-webkit-scrollbar {
+  width: 5px !important;
+  height: 5px !important;
+}
+.eterx-work-menu::-webkit-scrollbar-thumb,
+.eterx-work-menu *::-webkit-scrollbar-thumb {
+  background: #3f3f42 !important;
+  border-radius: 9999px !important;
+}
+.eterx-work-menu::-webkit-scrollbar-button:single-button:vertical:decrement,
+.eterx-work-menu::-webkit-scrollbar-button:single-button:vertical:increment,
+.eterx-work-menu::-webkit-scrollbar-button:single-button:horizontal:decrement,
+.eterx-work-menu::-webkit-scrollbar-button:single-button:horizontal:increment,
+.eterx-work-menu *::-webkit-scrollbar-button:single-button:vertical:decrement,
+.eterx-work-menu *::-webkit-scrollbar-button:single-button:vertical:increment,
+.eterx-work-menu *::-webkit-scrollbar-button:single-button:horizontal:decrement,
+.eterx-work-menu *::-webkit-scrollbar-button:single-button:horizontal:increment {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+:root[data-theme="light"] .eterx-thread-switcher-scrollbar {
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent !important;
+}
+:root[data-theme="light"] .eterx-thread-switcher-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2) !important;
+}
+:root[data-theme="light"] .eterx-thread-switcher-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.35) !important;
+}
+
 /* These surfaces deliberately scroll without a visible rail. */
 .scrollbar-hide::-webkit-scrollbar,
 .hide-scrollbar::-webkit-scrollbar,

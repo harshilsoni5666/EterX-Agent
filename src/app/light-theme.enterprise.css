@@ -1162,147 +1162,195 @@
 :root[data-theme="light"] .eterx-work-menu,
 :root[data-theme="light"] .eterx-work-menu-flyout {
   --shimmer-surface: #FFFFFF;
-  border: 1px solid rgba(31, 31, 29, 0.12) !important;
-  background: rgba(255, 255, 255, 0.98) !important;
-  color: #1F1F1D !important;
-  box-shadow: 0 16px 44px rgba(31, 31, 29, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.82) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  background: rgba(255, 255, 255, 0.96) !important;
+  color: #18181b !important;
+  box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04) !important;
+  backdrop-filter: blur(24px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-content,
+:root[data-theme="light"] .eterx-work-menu-list {
+  scrollbar-gutter: auto !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-content::-webkit-scrollbar-thumb,
+:root[data-theme="light"] .eterx-work-menu-list::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.14) !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-header {
-  border-bottom: 1px solid rgba(31, 31, 29, 0.08) !important;
-  background: linear-gradient(180deg, rgba(31, 31, 29, 0.02), rgba(31, 31, 29, 0.005)) !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06) !important;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.005)) !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-eyebrow,
 :root[data-theme="light"] .eterx-work-menu-flyout-label {
-  color: #77736C !important;
+  color: #71717a !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-title {
-  color: #1F1F1D !important;
+  color: #18181b !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-state,
 :root[data-theme="light"] .eterx-work-menu-section-badge {
-  border: 1px solid rgba(31, 31, 29, 0.12) !important;
-  background: #F4F4F3 !important;
-  color: #55514A !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  background: rgba(0, 0, 0, 0.05) !important;
+  color: rgba(0, 0, 0, 0.6) !important;
   box-shadow: none !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-state:hover,
 :root[data-theme="light"] .eterx-work-menu-section-button:hover .eterx-work-menu-section-badge {
-  background: #EBEBE9 !important;
-  border-color: rgba(31, 31, 29, 0.18) !important;
-  color: #1F1F1D !important;
+  background: rgba(0, 0, 0, 0.08) !important;
+  border-color: rgba(0, 0, 0, 0.14) !important;
+  color: #09090b !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-state-live {
-  border-color: rgba(16, 185, 129, 0.22) !important;
+  border-color: rgba(16, 185, 129, 0.25) !important;
   background: rgba(16, 185, 129, 0.10) !important;
-  color: #15803D !important;
+  color: #059669 !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-state-live:hover {
   background: rgba(16, 185, 129, 0.16) !important;
-  border-color: rgba(16, 185, 129, 0.30) !important;
-  color: #166534 !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
+  color: #047857 !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-section-button {
-  color: #1F1F1D !important;
+  color: #18181b !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-section-button:hover,
 :root[data-theme="light"] .eterx-work-menu-section-button:focus-visible {
-  background: rgba(31, 31, 29, 0.05) !important;
-  color: #1F1F1D !important;
+  background: rgba(0, 0, 0, 0.045) !important;
+  color: #09090b !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-section-button:active {
+  background: rgba(0, 0, 0, 0.075) !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-row {
-  color: #34332F !important;
+  color: #27272a !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-row:hover,
 :root[data-theme="light"] .eterx-work-menu-row:focus-visible {
-  border-color: rgba(31, 31, 29, 0.10) !important;
-  background: rgba(31, 31, 29, 0.05) !important;
-  color: #1F1F1D !important;
+  border-color: rgba(0, 0, 0, 0.04) !important;
+  background: rgba(0, 0, 0, 0.045) !important;
+  color: #09090b !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-row:active {
+  background: rgba(0, 0, 0, 0.075) !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-row-active {
-  border-color: rgba(31, 31, 29, 0.12) !important;
-  background: rgba(31, 31, 29, 0.065) !important;
-  color: #1F1F1D !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  background: rgba(0, 0, 0, 0.06) !important;
+  color: #09090b !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-row-icon {
-  color: #77736C !important;
+  color: rgba(0, 0, 0, 0.45) !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-row:hover .eterx-work-menu-row-icon,
 :root[data-theme="light"] .eterx-work-menu-row-active .eterx-work-menu-row-icon {
-  color: #1F1F1D !important;
+  color: #09090b !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-divider {
-  background: rgba(31, 31, 29, 0.08) !important;
+  background: rgba(0, 0, 0, 0.06) !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-empty {
-  color: #77736C !important;
+  color: #71717a !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-totals {
+  color: #71717a !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-detail {
+  color: #71717a !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-search {
-  border: 1px solid rgba(31, 31, 29, 0.10) !important;
-  background: rgba(31, 31, 29, 0.04) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  background: rgba(0, 0, 0, 0.035) !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-search:focus-within {
-  border-color: rgba(31, 31, 29, 0.22) !important;
-  background: rgba(31, 31, 29, 0.055) !important;
+  border-color: rgba(0, 0, 0, 0.2) !important;
+  background: rgba(0, 0, 0, 0.05) !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-search input {
-  color: #1F1F1D !important;
+  color: #18181b !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-search input::placeholder {
-  color: #8A857D !important;
+  color: #a1a1aa !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-task-row {
+  color: #27272a !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-task-row:hover {
+  background: rgba(0, 0, 0, 0.035) !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-task-row span.line-through {
-  color: #8A857D !important;
+  color: #a1a1aa !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-task-row span:not(.line-through) {
-  color: #1F1F1D !important;
+  color: #18181b !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-file-chip {
   border: 1px solid rgba(37, 99, 235, 0.22) !important;
-  background: rgba(37, 99, 235, 0.10) !important;
-  color: #1D4ED8 !important;
+  background: rgba(37, 99, 235, 0.08) !important;
+  color: #1d4ed8 !important;
   box-shadow: none !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-row:hover .eterx-work-menu-file-chip {
-  background: rgba(37, 99, 235, 0.15) !important;
-  border-color: rgba(37, 99, 235, 0.30) !important;
+  background: rgba(37, 99, 235, 0.14) !important;
+  border-color: rgba(37, 99, 235, 0.35) !important;
   color: #1e40af !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-file-chip-add {
   border-color: rgba(16, 185, 129, 0.22) !important;
-  background: rgba(16, 185, 129, 0.10) !important;
-  color: #15803D !important;
+  background: rgba(16, 185, 129, 0.08) !important;
+  color: #059669 !important;
   box-shadow: none !important;
 }
 
 :root[data-theme="light"] .eterx-work-menu-row:hover .eterx-work-menu-file-chip-add {
-  background: rgba(16, 185, 129, 0.15) !important;
-  border-color: rgba(16, 185, 129, 0.30) !important;
-  color: #166534 !important;
+  background: rgba(16, 185, 129, 0.14) !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
+  color: #047857 !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-added {
+  color: #059669 !important;
+  background: rgba(5, 150, 105, 0.08) !important;
+  border: 1px solid rgba(5, 150, 105, 0.2) !important;
+}
+
+:root[data-theme="light"] .eterx-work-menu-removed {
+  color: #dc2626 !important;
+  background: rgba(220, 38, 38, 0.08) !important;
+  border: 1px solid rgba(220, 38, 38, 0.2) !important;
 }
 
 /* Light theme overrides for sub-agent tab dock (eterx-agent-dock) */

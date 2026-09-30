@@ -7,8 +7,10 @@ import type { SearchSettings } from '../search/search-config';
 import { normalizeImageSettings, type ImageSettings } from '../image/image-generation-config';
 import { normalizeVideoSettings, type VideoSettings } from '../video/video-generation-config';
 import { normalizeApiRetries } from './api-retry';
+import { normalizeAgentToolSettings, type AgentToolSettings } from './builtin-agent-settings';
 
 export type StoredRuntimeSettings = {
+  agentTools?: AgentToolSettings;
   apiRetries?: number;
   apiKeys?: Record<string, string | string[]>;
   liveApiKeys?: Record<string, string | string[]>;
@@ -85,6 +87,7 @@ const normalizeStoredSettings = (value: unknown): StoredRuntimeSettings => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const source = value as Record<string, unknown>;
   return {
+    agentTools: normalizeAgentToolSettings(source.agentTools),
     apiRetries: normalizeApiRetries(source.apiRetries),
     apiKeys: source.apiKeys && typeof source.apiKeys === 'object' && !Array.isArray(source.apiKeys)
       ? source.apiKeys as Record<string, string | string[]>
@@ -143,7 +146,7 @@ export function readStoredRuntimeSettings(): StoredRuntimeSettings {
   return {};
 }
 
-export async function updateStoredRuntimeSettings(patch: StoredRuntimeSettings): Promise<void> {
+export async function updateStoredRuntimeSettings(patch: StoredRuntimeSettings | ((current: StoredRuntimeSettings) => StoredRuntimeSettings)): Promise<void> {
   const previous = runtimeSettingsGlobal.__eterxRuntimeSettingsWriteChain || Promise.resolve();
   let release!: () => void;
   runtimeSettingsGlobal.__eterxRuntimeSettingsWriteChain = new Promise<void>(resolve => {
@@ -153,7 +156,7 @@ export async function updateStoredRuntimeSettings(patch: StoredRuntimeSettings):
   let temporary: string | null = null;
   try {
     const current = readStoredRuntimeSettings();
-    const next = normalizeStoredSettings({ ...current, ...patch });
+    const next = normalizeStoredSettings({ ...current, ...(typeof patch === 'function' ? patch(current) : patch) });
     const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv('aes-256-gcm', encryptionKey(), iv);
     const encrypted = Buffer.concat([

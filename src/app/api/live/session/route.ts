@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { readStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
+import { createLiveCatalogRequest } from '../../../../lib/live/catalog-request';
 import { rejectCrossOrigin } from '../../agent/_shared';
 import {
   DEFAULT_DEEPGRAM_THINK_MODEL,
   DEFAULT_OPENAI_LIVE_MODEL,
   getLiveModelOptions,
   isLiveModelForProvider,
-  isOpenAIRealtimeModel,
   normalizeLiveProvider,
   readDeepgramGrantCredential,
   readLiveRealtimeCredential,
@@ -15,44 +14,18 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const firstKey = (value: unknown): string => {
-  const values = Array.isArray(value) ? value : [value];
-  return values.map(item => String(item || '').trim()).find(Boolean) || '';
-};
-
-const withTimeout = async <T,>(promise: Promise<T>, ms = 15_000): Promise<T> => {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Provider authorization timed out after ${ms}ms.`)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-};
-
 const providerModel = (providerValue: unknown, modelValue: unknown): string => {
   const requested = String(modelValue || '').trim();
-  const options = getLiveModelOptions(providerValue);
-  return requested && requested !== 'auto' && isLiveModelForProvider(providerValue, requested) && (
-    options.some(option => option.value === requested) || isOpenAIRealtimeModel(requested)
-  )
-    ? requested
-    : String(options.find(option => option.value !== 'auto')?.value || '');
+  if (requested && requested !== 'auto') {
+    if (!isLiveModelForProvider(providerValue, requested)) throw new Error('The selected model is incompatible with this Live provider. Choose a model in Live settings.');
+    return requested;
+  }
+  return String(getLiveModelOptions(providerValue).find(option => option.value !== 'auto')?.value || '');
 };
 
 const providerVoice = (voiceValue: unknown): string => {
   const voice = String(voiceValue || '').trim();
   return voice && !['auto', 'agent-default'].includes(voice) ? voice : '';
-};
-
-const upstreamError = async (response: Response, providerLabel: string): Promise<Error> => {
-  const payload = await response.json().catch(() => null);
-  const detail = payload?.error?.message || payload?.message || payload?.error || response.statusText;
-  return new Error(`${providerLabel} authorization failed (${response.status}): ${String(detail || 'unknown error')}`);
 };
 
 export async function POST(req: NextRequest) {
@@ -62,9 +35,8 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const provider = normalizeLiveProvider(body?.provider);
-    const stored = readStoredRuntimeSettings();
-    const apiKey = firstKey(stored.liveApiKeys?.[provider.keyProvider]);
-    if (!apiKey) {
+    const client = createLiveCatalogRequest(provider.value);
+    if (!client.hasKey) {
       return NextResponse.json({ ok: false, error: `No ${provider.label} API key is configured.` }, { status: 503 });
     }
 
@@ -73,9 +45,9 @@ export async function POST(req: NextRequest) {
     const instructions = String(body?.instructions || '').trim().slice(0, 20_000);
 
     if (provider.transport === 'openai-webrtc') {
-      const response = await withTimeout(fetch('https://api.openai.com/v1/realtime/client_secrets', {
+      const payload = await client.request('https://api.openai.com/v1/realtime/client_secrets', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session: {
             type: 'realtime',
@@ -92,35 +64,29 @@ export async function POST(req: NextRequest) {
             },
           },
         }),
-      }));
-      if (!response.ok) throw await upstreamError(response, provider.label);
-      const payload = await response.json();
+      });
       const credential = readLiveRealtimeCredential(payload);
       if (!credential.token) throw new Error(`${provider.label} did not return a client secret.`);
       return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model: model || DEFAULT_OPENAI_LIVE_MODEL });
     }
 
     if (provider.transport === 'xai-native') {
-      const response = await withTimeout(fetch('https://api.x.ai/v1/realtime/client_secrets', {
+      const payload = await client.request('https://api.x.ai/v1/realtime/client_secrets', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expires_after: { seconds: 300 } }),
-      }));
-      if (!response.ok) throw await upstreamError(response, provider.label);
-      const payload = await response.json();
+      });
       const credential = readLiveRealtimeCredential(payload);
       if (!credential.token) throw new Error(`${provider.label} did not return a client secret.`);
       return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model });
     }
 
     if (provider.transport === 'deepgram-native') {
-      const response = await withTimeout(fetch('https://api.deepgram.com/v1/auth/grant', {
+      const payload = await client.request('https://api.deepgram.com/v1/auth/grant', {
         method: 'POST',
-        headers: { Authorization: `Token ${apiKey}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ttl_seconds: 60 }),
-      }));
-      if (!response.ok) throw await upstreamError(response, provider.label);
-      const payload = await response.json();
+      });
       const credential = readDeepgramGrantCredential(payload);
       return NextResponse.json({
         ok: true,
@@ -136,11 +102,15 @@ export async function POST(req: NextRequest) {
       if (!agentId) {
         return NextResponse.json({ ok: false, error: 'ElevenLabs requires a Conversational Agent ID in Live settings.' }, { status: 400 });
       }
+      const agent = await client.request('https://api.elevenlabs.io/v1/convai/agents/' + encodeURIComponent(agentId));
+      const allowedOverrides = agent.platform_settings?.overrides?.conversation_config_override;
+      if (voice && allowedOverrides?.tts?.voice_id !== true) {
+        return NextResponse.json({ ok: false, error: 'This ElevenLabs agent does not allow voice overrides. Choose Agent configured voice, or enable voice overrides in the agent settings.' }, { status: 400 });
+      }
+      const allowPromptOverride = allowedOverrides?.agent?.prompt?.prompt === true;
       const url = new URL('https://api.elevenlabs.io/v1/convai/conversation/get-signed-url');
       url.searchParams.set('agent_id', agentId);
-      const response = await withTimeout(fetch(url, { headers: { 'xi-api-key': apiKey } }));
-      if (!response.ok) throw await upstreamError(response, provider.label);
-      const payload = await response.json();
+      const payload = await client.request(url.toString(), { method: 'GET', cache: 'no-store' });
       const signedUrl = String(payload?.signed_url || '').trim();
       if (!signedUrl) throw new Error('ElevenLabs did not return a signed conversation URL.');
       let parsedSignedUrl: URL;
@@ -151,12 +121,13 @@ export async function POST(req: NextRequest) {
       }
       if (
         parsedSignedUrl.protocol !== 'wss:' ||
+        parsedSignedUrl.hostname !== 'api.elevenlabs.io' ||
         parsedSignedUrl.pathname !== '/v1/convai/conversation' ||
         !parsedSignedUrl.searchParams.get('agent_id')
       ) {
         throw new Error('ElevenLabs returned an invalid signed conversation URL.');
       }
-      return NextResponse.json({ ok: true, provider: provider.value, signedUrl });
+      return NextResponse.json({ ok: true, provider: provider.value, signedUrl, allowPromptOverride });
     }
 
     return NextResponse.json({ ok: false, error: `No realtime authorization adapter is available for ${provider.label}.` }, { status: 400 });

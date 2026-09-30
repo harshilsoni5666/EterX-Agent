@@ -71,7 +71,7 @@ export const taskDecomposerTool: ToolDefinition = {
     const planningForbidden = /\b(?:(?:do\s+not|don't|dont|never|skip|avoid|without)(?:\s+\w+){0,3}|no\s+need\s+to)\s+(?:plan|decompose|use\s+(?:a\s+)?planner|create\s+(?:a\s+)?(?:plan|roadmap|task\s+tracker|checklist))\b|\bno\s+(?:plan|planning|decomposition|task\s+tracker|checklist)\b/i.test(taskText);
     // The main agent decides whether coordination is warranted from context.
     // A vocabulary counter must not reject that decision and trigger retries.
-    if (planningForbidden) {
+    if (planningForbidden && runtimeContext?.planMode !== true) {
       return {
         success: true,
         skipped: true,

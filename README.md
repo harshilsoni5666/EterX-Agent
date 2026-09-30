@@ -11,7 +11,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Status-Under%20Development-orange" alt="Status">
   <img src="https://img.shields.io/badge/Developer-Harshil%20Soni-blue" alt="Developer">
-  <img src="https://img.shields.io/badge/Tools-75%20curated%20definitions-green" alt="Tools">
 </p>
 
 

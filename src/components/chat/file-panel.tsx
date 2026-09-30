@@ -13,6 +13,7 @@ import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { buildFilePreviewUrl, isAbsolutePathLike, normalizePathForComparison } from '../../lib/path-utils';
 import { getPrimaryModifierLabel } from '../../lib/platform';
 import { decodeLocalFileHref, openLocalFilePath } from './local-file-link';
+import { isAppVisible } from '../../lib/app-visibility';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 const DiffEditor = dynamic(
@@ -330,7 +331,7 @@ export interface FilePanelProps {
   filename: string;
   filepath: string;
   content?: string;
-  diffLines?: Array<{ type: 'added'|'removed'|'unchanged'|'context'; content: string; oldLine?: number; newLine?: number }>;
+  diffLines?: Array<{ type: 'added'|'removed'|'unchanged'|'context'; content: string; oldLine?: number; newLine?: number; isGap?: boolean; skipped?: number }>;
   isEdit?: boolean;
   language?: string;
   linesAdded?: number;
@@ -349,6 +350,7 @@ export interface FilePanelProps {
   updatedAt?: string | number | Date;
   onClose?: () => void;
   activeTabMode?: 'preview' | 'code' | 'diff';
+  workspaceOwner?: string;
 }
 
 export const FilePanelModal = ({ filename, filepath, content: initialContent, diffLines, isEdit, linesAdded, linesRemoved, added: addedProp, removed: removedProp, onClose, activeTabMode }: FilePanelProps) => {
@@ -548,7 +550,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           ) : null}
         </div>
 
-        <button onClick={handleCopy} className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold tracking-wide transition-all ${copied ? 'text-emerald-400 bg-emerald-500/10' : 'text-[#555350] hover:text-[#E8E6E3] hover:bg-white/[0.04]'}`}>
+        <button onClick={handleCopy} className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold tracking-wide transition-all ${copied ? 'text-white bg-emerald-500/10' : 'text-[#555350] hover:text-[#E8E6E3] hover:bg-white/[0.04]'}`}>
           {copied ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>}
           {copied ? 'COPIED' : 'COPY'}
         </button>
@@ -925,7 +927,7 @@ export const IdePanel = () => {
     fetchFileTree(workspaceRoot, false);
     if (!sidebarOpen || activeTabMode !== 'code') return;
     const interval = setInterval(() => {
-      if (document.hidden) return;
+      if (!isAppVisible()) return;
       fetchFileTree(workspaceRoot, true);
     }, FILE_TREE_POLL_MS);
     return () => clearInterval(interval);

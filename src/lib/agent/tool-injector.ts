@@ -14,168 +14,23 @@ import { ToolDefinition } from './schemas';
 import type { AgentBuilderDirectTool, AgentBuilderCustomTool, AgentBuilderProfile } from './builder-agent';
 import { isBuilderOnlyToolName, validateAgentScopedCode } from './builder-agent';
 import * as vm from 'vm';
-import * as path from 'path';
-import * as fs from 'fs-extra';
+
+
 import { z } from 'zod';
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
 import { enforceToolCapability } from './tools/security/tool_policy';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 
-async function findFilesRecursively(dir: string, maxFiles = 500): Promise<string[]> {
-  const results: string[] = [];
-  const queue = [dir];
-  while (queue.length > 0 && results.length < maxFiles) {
-    const current = queue.shift()!;
-    try {
-      const stats = await fs.stat(current);
-      if (stats.isDirectory()) {
-        const children = await fs.readdir(current);
-        for (const child of children) {
-          if (child === 'node_modules' || child === '.git' || child === '.next') continue;
-          queue.push(path.join(current, child));
-        }
-      } else {
-        results.push(current);
-      }
-    } catch {}
-  }
-  return results;
-}
-
-function getLevenshteinDistance(a: string, b: string): number {
-  const tmp: number[][] = [];
-  for (let i = 0; i <= a.length; i++) {
-    tmp[i] = [i];
-  }
-  for (let j = 0; j <= b.length; j++) {
-    tmp[0][j] = j;
-  }
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      tmp[i][j] = Math.min(
-        tmp[i - 1][j] + 1,
-        tmp[i][j - 1] + 1,
-        tmp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
-      );
-    }
-  }
-  return tmp[a.length][b.length];
-}
-
-export async function selfHealPath(wrongPath: string, workspaceRoot: string): Promise<string | null> {
-  const base = path.basename(wrongPath);
-  const files = await findFilesRecursively(workspaceRoot);
-  
-  let bestMatch: string | null = null;
-  let minDistance = Infinity;
-
-  for (const file of files) {
-    const fileBase = path.basename(file);
-    if (fileBase.toLowerCase() === base.toLowerCase()) {
-      return file;
-    }
-    const dist = getLevenshteinDistance(fileBase.toLowerCase(), base.toLowerCase());
-    if (dist < minDistance && dist <= 3) {
-      minDistance = dist;
-      bestMatch = file;
-    }
-  }
-  return bestMatch;
-}
-
-function extractPathKeysAndValues(args: any): { key: string; value: string }[] {
-  if (!args || typeof args !== 'object') return [];
-  const found: { key: string; value: string }[] = [];
-  for (const [key, val] of Object.entries(args)) {
-    if (typeof val === 'string') {
-      const keyLower = key.toLowerCase();
-      if (
-        keyLower.includes('path') ||
-        keyLower.includes('file') ||
-        keyLower.includes('name') ||
-        val.includes('/') ||
-        val.includes('\\') ||
-        /\.[a-zA-Z0-9]{2,4}$/.test(val)
-      ) {
-        found.push({ key, value: val });
-      }
-    }
-  }
-  return found;
-}
-
-function repairMalformedJson(str: string): string | null {
-  let s = str.trim();
-  const jsonBlockMatch = s.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonBlockMatch) {
-    s = jsonBlockMatch[1].trim();
-  }
-  s = s.replace(/[\u201c\u201d]/g, '"');
-  s = s.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
-  try {
-    JSON.parse(s);
-    return s;
-  } catch {
-    return s;
-  }
-}
-
+/** Compatibility entry point: tools execute once with exactly the supplied paths
+ * and content. Recovery decisions belong to the agent after reading the error. */
 export async function runWithSelfHealing(
-  toolName: string,
+  _toolName: string,
   executeFn: (args: any, context: any) => Promise<any>,
   args: any,
-  context: any
+  context: any,
 ): Promise<any> {
-  try {
-    return await executeFn(args, context);
-  } catch (err: any) {
-    const errStr = String(err.message || err.code || '').toLowerCase();
-    if (errStr.includes('enoent') || errStr.includes('no such file') || errStr.includes('does not exist') || errStr.includes('not found')) {
-      const workspaceRoot = context?.workspacePath || process.cwd();
-      const paths = extractPathKeysAndValues(args);
-      
-      let healedAny = false;
-      const newArgs = { ...args };
-
-      for (const entry of paths) {
-        const healed = await selfHealPath(entry.value, workspaceRoot);
-        if (healed && healed !== entry.value) {
-          newArgs[entry.key] = healed;
-          healedAny = true;
-          console.log(`[SelfHealing] Auto-repaired parameter "${entry.key}" for tool "${toolName}": "${entry.value}" -> "${healed}"`);
-        }
-      }
-
-      if (healedAny) {
-        console.log(`[SelfHealing] Retrying tool "${toolName}" after auto-healing.`);
-        return await executeFn(newArgs, context);
-      }
-    }
-
-    if (errStr.includes('json') && errStr.includes('parse')) {
-      let healedAny = false;
-      const newArgs = { ...args };
-      for (const [key, val] of Object.entries(args)) {
-        if (typeof val === 'string') {
-          const cleaned = repairMalformedJson(val);
-          if (cleaned && cleaned !== val) {
-            newArgs[key] = cleaned;
-            healedAny = true;
-            console.log(`[SelfHealing] Auto-repaired malformed JSON in parameter "${key}" for tool "${toolName}"`);
-          }
-        }
-      }
-
-      if (healedAny) {
-        console.log(`[SelfHealing] Retrying tool "${toolName}" after JSON correction.`);
-        return await executeFn(newArgs, context);
-      }
-    }
-
-    throw err;
-  }
+  return executeFn(args, context);
 }
-
 export interface ResolvedTool {
   name: string;
   description: string;

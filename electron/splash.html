@@ -8,6 +8,7 @@
     var params = new URLSearchParams(window.location.search);
     var theme = params.get('theme') === 'light' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.setAttribute('data-splash-backdrop', params.get('backdrop') === 'native' ? 'native' : 'solid');
     document.documentElement.style.colorScheme = theme;
   </script>
   <link rel="stylesheet" href="splash.css" />

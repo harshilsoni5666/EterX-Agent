@@ -1,6 +1,34 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  terminalTransfer: (from, to) => ipcRenderer.invoke('chat-terminal-transfer', from, to),
+  workspaceFolderRoot: (options) => ipcRenderer.invoke('workspace-folder-root', options),
+  workspaceFolderRoots: (options) => ipcRenderer.invoke('workspace-folder-roots', options),
+  workspaceFolderList: (path, offset, showHidden) => ipcRenderer.invoke('workspace-folder-list', path, offset, showHidden),
+  workspaceBrowserCreate: (id, theme) => ipcRenderer.invoke('workspace-browser-create', id, theme),
+  workspaceBrowserCapture: (id) => ipcRenderer.invoke('workspace-browser-capture', id),
+  workspaceBrowserMenu: (id, anchor) => ipcRenderer.invoke('workspace-browser-menu', id, anchor),
+  workspaceBrowserPreview: (id) => ipcRenderer.invoke('workspace-browser-preview', id),
+  workspaceBrowserSuggest: (id, query) => ipcRenderer.invoke('workspace-browser-suggest', id, query),
+  workspaceFilesWatch: (id, path) => ipcRenderer.invoke('workspace-files-watch', id, path),
+  workspaceFilesUnwatch: (id) => ipcRenderer.send('workspace-files-unwatch', id),
+  workspaceOpenApps: () => ipcRenderer.invoke('workspace-open-apps'),
+  workspaceOpenFile: (path, application) => ipcRenderer.invoke('workspace-open-file', path, application),
+  workspaceReviewList: (root, scope, baseRef) => ipcRenderer.invoke('workspace-review-list', root, scope, baseRef),
+  workspaceReviewDiff: (root, path, scope, expanded, baseRef) => ipcRenderer.invoke('workspace-review-diff', root, path, scope, expanded, baseRef),
+  onWorkspaceFilesEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('workspace-files-event', listener);
+    return () => ipcRenderer.removeListener('workspace-files-event', listener);
+  },
+  workspaceBrowserCommand: (id, command, value) => ipcRenderer.invoke('workspace-browser-command', id, command, value),
+  workspaceBrowserBounds: (id, bounds) => ipcRenderer.send('workspace-browser-bounds', id, bounds),
+  workspaceBrowserClose: (id) => ipcRenderer.invoke('workspace-browser-close', id),
+  onWorkspaceBrowserEvent: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('workspace-browser-event', listener);
+    return () => ipcRenderer.removeListener('workspace-browser-event', listener);
+  },
   terminalCreate: (options) => ipcRenderer.invoke('chat-terminal-create', options),
   terminalAttach: (id) => ipcRenderer.invoke('chat-terminal-attach', id),
   terminalClose: (id) => ipcRenderer.invoke('chat-terminal-close', id),
@@ -103,6 +131,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = () => callback();
     ipcRenderer.on('desktop-resume', listener);
     return () => ipcRenderer.removeListener('desktop-resume', listener);
+  },
+  getWindowVisibility: () => ipcRenderer.invoke('desktop-window-visibility-get'),
+  onWindowVisibilityChanged: (callback) => {
+    const listener = (_event, visible) => callback(Boolean(visible));
+    ipcRenderer.on('desktop-window-visibility-changed', listener);
+    return () => ipcRenderer.removeListener('desktop-window-visibility-changed', listener);
   },
   openPetWindow: (status) => ipcRenderer.invoke('pet-window-open', status),
   updatePetWindow: (status) => ipcRenderer.send('pet-window-status', status),

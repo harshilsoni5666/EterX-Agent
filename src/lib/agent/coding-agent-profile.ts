@@ -1,5 +1,7 @@
 import type { ProjectContext } from './schemas';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
+import { executionPolicyForTools } from './execution-operating-policy';
+import { getRuntimeWorkspaceRoot } from './workspace/path_resolver';
 import { getCodingMode } from '../code/coding-modes';
 import { WORK_NOTE_POLICY } from './work-note';
 import { SOURCE_READING_POLICY } from './source-read-policy';
@@ -42,7 +44,7 @@ export function buildCodingAgentRootPrompt(options: CodingRootPromptOptions): st
     dynamicContext,
   } = options;
   const runtimeContext = context as any;
-  const workspacePath = runtimeContext.workspacePath || runtimeContext.workspaceRoot || process.cwd();
+  const workspacePath = getRuntimeWorkspaceRoot(runtimeContext);
   const uploadedFiles = (context.uploadedFiles || []).join(', ') || 'None';
   const runtimePlatformPrompt = buildRuntimePlatformPrompt(runtimeContext.terminalShell || 'auto');
   const mode = getCodingMode(runtimeContext.agentProfile)!;
@@ -70,23 +72,24 @@ ${runtimePlatformPrompt}
 </priority>
 
 <workflow>
-1. Start from the requested outcome and known context. Locate unknown owners with rg/rg --files in the terminal; do not inventory the workspace or probe runtimes without a concrete need.
-2. ${SOURCE_READING_POLICY}
-3. Use workspace_edit_file for every file mutation: creation, targeted edits, deletion, and related multi-file changes.
+${executionPolicyForTools(available)}
+1. Start from the requested outcome and known context. ${available.has('workspace_run_command') ? 'Locate unknown owners with rg/rg --files in the terminal; do not inventory the workspace or probe runtimes without a concrete need.' : 'Terminal inspection is disabled. Work from the supplied evidence; explain when missing access blocks progress.'}
+2. ${available.has('workspace_run_command') ? SOURCE_READING_POLICY : 'Do not invent observations from files you cannot read.'}
+3. ${available.has('workspace_edit_file') ? 'Use workspace_edit_file for authoring source and plain text. Execute appropriate enabled tools for binary artifacts and generated outputs.' : 'File editing is disabled. Explain proposed changes in the response; do not bypass this setting with another tool.'}
 4. Do not write persistent source files through shell commands.
 5. Verify proportionately when permitted. Respect requests such as no Git, no tests or no checks; do not substitute another validation command. Report skipped verification honestly.
 6. Diagnose/review requests authorize reading and explanation, not implementation. Build/fix requests authorize scoped changes. Persist on the current outcome until completed, blocked on needed input, cancelled or stopped; no special continuation word is required.
 </workflow>
 
 <editing>
-${WORKSPACE_EDIT_POLICY}
+${available.has('workspace_edit_file') ? WORKSPACE_EDIT_POLICY : 'Workspace mutation instructions are omitted because file editing is disabled.'}
 </editing>
 
 <tools>
 - The ${toolCount} declared tools are authoritative: ${toolNames}
 - Call only these declarations; tools from earlier modes or examples are not available unless listed now. The schemas supply exact arguments; do not guess missing tool names.
 - Prefer concurrent independent reads/searches in one response or terminal commands batch. Preserve dependencies: discovery before a path-dependent read, reads before edits, edits before verification. Unknown scripts and mutations remain ordered; a read-output hint never makes an action parallel-safe.
-- workspace_run_command: command OR commands, not both; mode=run by default. background=true hands back pending work, not success. Use its returned taskId with mode=check/kill and reuse outputEnd as sinceOffset; mode=list discovers managed tasks.
+${available.has('workspace_run_command') ? '- workspace_run_command: exactly one of command, program (+ args), or commands; mode=run by default. Reuse the host paths already supplied in runtime context. background=true hands back pending work, not success. Use its returned taskId with mode=wait/check/kill and reuse outputEnd as sinceOffset; mode=list discovers managed tasks.' : ''}
 ${support}
 - Autonomous supervision is compatible with either profile but does not add tools or authority. Follow accepted user guidance without competing with the supervisor, duplicating work, or restarting. Selection changes apply at the next run boundary.
 </tools>

@@ -79,6 +79,12 @@ export async function POST(req: NextRequest) {
     }, { status: 409 }), session!);
     if (agentRegistry.isDesktopHumanAdmissionBlocked(desktopAdmissionEpoch)) return closeRejection();
 
+    const cancelledReceipt = () => attachAgentApiSessionCookie(NextResponse.json({
+      success: false, accepted: false, status: 'cancelled',
+      reason: 'This message was removed from the queue.',
+    }, { status: 409 }), session!);
+    if (cleanId && agentRegistry.hasCancelledFollowUp(chatId, cleanId)) return cancelledReceipt();
+
     if (cleanId && agentRegistry.hasAcceptedSteering(chatId, cleanId, cleanRunId)) {
       return attachAgentApiSessionCookie(NextResponse.json({ success: true, id: cleanId, alreadyAccepted: true }), session);
     }
@@ -114,9 +120,9 @@ export async function POST(req: NextRequest) {
     }
 
     const requestedCreatedAt = Number(createdAt);
-    const resolvedMedia = mediaAttachments.length
-      ? await resolveChatMediaForRequest(chatId, cleanMessage, mediaAttachments) : [];
+    const resolvedMedia = await resolveChatMediaForRequest(chatId, cleanMessage, mediaAttachments);
     if (agentRegistry.isDesktopHumanAdmissionBlocked(desktopAdmissionEpoch)) return closeRejection();
+    if (cleanId && agentRegistry.hasCancelledFollowUp(chatId, cleanId)) return cancelledReceipt();
     const queued = agentRegistry.addSteeringMessage(
       chatId,
       cleanMessage,

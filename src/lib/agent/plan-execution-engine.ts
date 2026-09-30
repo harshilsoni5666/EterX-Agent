@@ -489,10 +489,10 @@ export class PlanExecutionEngine {
 
     // ── Instructions for model
     sections.push('');
-    sections.push('You own the plan semantics. Use task_checkpoint to: advance with a done_when justification and evidence, skip with reason, activate a READY step, revise future work when evidence changes the approach, or complete after all important steps are terminal.');
+    sections.push('This plan records prior intent; the effective human request controls which steps remain authorized and relevant. Apply later corrections, pauses, cancellations, and replacements before acting. A stale pending step cannot force continued execution or prevent an answer. When useful, use task_checkpoint to advance with evidence, skip obsolete work with a reason, activate a READY step, or revise unfinished work while preserving completed results.');
 
     if (resolved === total && total > 0) {
-      sections.push('ALL STEPS COMPLETE — deliver your final answer now.');
+      sections.push('ALL RECORDED STEPS RESOLVED. This does not settle a newer human request or prove skipped work succeeded; respond to the effective request using the actual evidence.');
       this.state.status = 'completed';
     }
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import {
   DEFAULT_LIVE_ORB_THEME,
   liveOrbFallback,
@@ -356,7 +357,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
     let clock = 0;
     let disposed = false;
     let firstFramePresented = false;
-    let pageVisible = document.visibilityState !== 'hidden';
+    let pageVisible = isAppVisible();
     let surfaceVisible = typeof IntersectionObserver === 'undefined';
     let contextAvailable = true;
     let lastFrameTime: number | null = null;
@@ -481,7 +482,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       requestNextFrame();
     };
     const handleVisibilityChange = () => {
-      pageVisible = document.visibilityState !== 'hidden';
+      pageVisible = isAppVisible();
       if (!pageVisible || !surfaceVisible) {
         if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
@@ -502,7 +503,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       : null;
     intersectionObserver?.observe(container);
     window.addEventListener('resize', handleResize);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    const unsubscribeVisibility = subscribeAppVisibility(handleVisibilityChange);
     renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', handleContextRestored);
 
@@ -511,7 +512,7 @@ const AbstractBall: React.FC<AbstractBallProps> = (props) => {
       resizeObserver?.disconnect();
       intersectionObserver?.disconnect();
       window.removeEventListener('resize', handleResize);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      unsubscribeVisibility();
       renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
       renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored);
       if (animationFrameId !== null) cancelAnimationFrame(animationFrameId);

@@ -1,4 +1,9 @@
+import { setRuntimePlanMode } from './plan-mode';
+import { requestManualCompaction, isManualCompactionActive } from './manual-compaction';
+import { compactSavedWorkingContext } from './working-context-checkpoint';
+import { compactContextAtBoundary } from './resilience/context-compaction';
 import { GoogleGenAI } from '@google/genai';
+import { isPastedText, pastedTextManifest } from '../pasted-text';
 import { randomUUID } from 'crypto';
 import { AgentOrchestrator } from './orchestrator';
 import { apiKeyPool, type KeyLease } from './api-key-pool';
@@ -23,7 +28,7 @@ import { getContextFabricForChat } from './context-fabric';
 import { formatUnknownError } from './error-format';
 import { contextMeasurementTime, contextUsageScopeKey } from '../context-usage-snapshot';
 import { getCodingMode } from '../code/coding-modes';
-import { sameUserAdmission } from '../steering-delivery';
+import { sameUserAdmission, normalizeAdmissionId } from '../steering-delivery';
 
 // Ensure tools are bootstrapped
 import './tools/index';
@@ -193,7 +198,7 @@ interface QueuedUserFollowUp {
   prompt: string;
   mediaAttachments: any[];
   createdAt: number;
-  steeringMessages?: Array<{ id: string; text: string }>;
+  steeringMessages?: Array<{ id: string; text: string; attachments?: any[]; createdAt?: number }>;
   runtimeOverride?: {
     mode: MainAgentMode;
     selectedModelProvider: string;
@@ -441,6 +446,19 @@ class AgentRegistry {
   }
 
   public appendTrace(execution: AgentExecution, traceEvent: any, persistToTaskStore = true): TraceEvent {
+    if (traceEvent?.type === 'steering_applied') {
+      const admission = normalizeAdmissionId(String(traceEvent.admissionId || traceEvent.steeringId || '').trim());
+      const owner = String(traceEvent.subAgentChatId || traceEvent.subAgentId || traceEvent.subAgent || 'main');
+      const applied = admission ? execution.traceBuffer.find(entry => {
+        const previous = entry.data;
+        return previous?.type === 'steering_applied' &&
+          normalizeAdmissionId(String(previous.admissionId || previous.steeringId || '').trim()) === admission &&
+          String(previous.subAgentChatId || previous.subAgentId || previous.subAgent || 'main') === owner;
+      }) : undefined;
+      // Replaying an acknowledgement must not reactivate an older guidance
+      // turn after a second correction has already entered model context.
+      if (applied) return applied;
+    }
     if (isFeedTurnBoundary(traceEvent)) {
       const admitted = execution.traceBuffer.find(entry => sameUserAdmission(entry.data, {
         ...traceEvent, ownerChatId: traceEvent.ownerChatId || execution.chatId,
@@ -570,16 +588,18 @@ class AgentRegistry {
       const mappedLifecycleStillOpen = Boolean(
         mappedLifecycleEntry && isFeedTraceOpen(mappedLifecycleEntry.data),
       );
-      // Provider-local IDs can restart after a guidance boundary. Preserve an
-      // older owner only while that exact lifecycle is still open; otherwise
-      // the repeated ID starts a new row in the current visible query.
+      // Provider-local IDs can restart after a message boundary. An open
+      // lifecycle or an explicitly addressed snapshot retains its old owner;
+      // an unscoped reused ID can start a new row in the current query.
       const ownerRootTurnId = mappedRootTurnId && (
-        mappedRootTurnId === currentRootTurnId || mappedLifecycleStillOpen
+        mappedRootTurnId === currentRootTurnId || mappedLifecycleStillOpen ||
+        (Boolean(streamIdentity) && reportedTurnId === mappedRootTurnId)
       )
         ? mappedRootTurnId
         : '';
       const ownerAuxiliaryTurnId = mappedAuxiliaryTurnId && (
-        mappedAuxiliaryTurnId === auxiliaryTurnId || mappedLifecycleStillOpen
+        mappedAuxiliaryTurnId === auxiliaryTurnId || mappedLifecycleStillOpen ||
+        (Boolean(streamIdentity) && String(traceEvent.subAgentTurnId || reportedTurnId) === mappedAuxiliaryTurnId)
       )
         ? mappedAuxiliaryTurnId
         : '';
@@ -898,11 +918,11 @@ class AgentRegistry {
     if (['answer', 'work_note', 'thought_stream'].includes(String(traceEvent?.type || ''))) {
       const type = String(traceEvent.type);
       const identity = String(
-        type === 'answer'
+        (type === 'answer'
           ? traceEvent.answerId
           : type === 'work_note'
             ? traceEvent.noteId
-            : traceEvent.thoughtId,
+            : traceEvent.thoughtId) || '',
       ).trim();
       if (identity) {
         const incomingScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
@@ -923,11 +943,11 @@ class AgentRegistry {
           if (isFeedTurnBoundary(existing)) continue;
           if (String(existing?.type || '') !== type) continue;
           const existingIdentity = String(
-            type === 'answer'
+            (type === 'answer'
               ? existing.answerId
               : type === 'work_note'
                 ? existing.noteId
-                : existing.thoughtId,
+                : existing.thoughtId) || '',
           ).trim();
           if (existingIdentity !== identity) continue;
           const existingScope = String(existing.turnId || existing.runId || '').trim();
@@ -936,6 +956,10 @@ class AgentRegistry {
           ).trim();
           if (incomingScope && existingScope && incomingScope !== existingScope) continue;
           if (incomingOwner !== existingOwner) continue;
+          // A delayed streaming callback cannot reopen an answer already
+          // finalized for this same turn. Keep the canonical closed snapshot
+          // in the buffer so reconnects see the same settled state as live UI.
+          if (isFeedTraceExplicitlySettled(existing) && isFeedTraceOpen(traceEvent)) return existingEntry;
           traceEvent = {
             ...traceEvent,
             _originTraceIdx: Number.isFinite(Number(existing?._originTraceIdx))
@@ -1337,6 +1361,9 @@ class AgentRegistry {
     desktopAdmissionEpoch?: number,
   ): { status: 'started' | 'already_running' | 'no_keys' | 'cancelled'; chatId: string; runId?: string; message: string } {
 
+    if (isManualCompactionActive(chatId) && !this.isRunning(chatId)) {
+      return { status: 'cancelled', chatId, message: 'Context is compacting. Please send your message again when it finishes.' };
+    }
     const source = String(pinnedContext?.triggerSource || '').trim();
     const allowedBackgroundStart = Boolean(this.desktopClosePolicy && (
       (this.desktopClosePolicy.keepScheduled && (source === 'scheduled_task' || pinnedContext?.scheduledTaskId)) ||
@@ -1346,6 +1373,8 @@ class AgentRegistry {
       (desktopAdmissionEpoch !== undefined && desktopAdmissionEpoch !== this.getDesktopAdmissionEpoch()))) {
       return { status: 'cancelled', chatId, runId: requestedRunId, message: 'This request was stopped when the app window closed.' };
     }
+
+    if (typeof pinnedContext?.planMode === 'boolean') setRuntimePlanMode(chatId, pinnedContext.planMode);
 
     // Check if this chat already has a running agent
     const existing = this.executions.get(chatId);
@@ -1570,7 +1599,9 @@ class AgentRegistry {
           chatId, humanMessages.map(item => item.text).join('\n\n'),
           humanMessages.flatMap(item => item.metadata?.attachments || []),
           `steering-turn-${last.id}`, humanMessages[0].createdAt,
-          undefined, humanMessages.map(item => ({ id: item.id, text: item.text })),
+          undefined, humanMessages.map(item => ({
+            id: item.id, text: item.text, attachments: item.metadata?.attachments || [], createdAt: item.createdAt,
+          })),
         );
         if (!admission.accepted) execution.steeringQueue.push(...humanMessages);
       }
@@ -1774,6 +1805,12 @@ class AgentRegistry {
         // Keep every attachment as the original file. Provider adapters below
         // decide how to upload it; nothing is downgraded to extracted text or
         // a path-only fallback here.
+        const pastedReferences = mediaFiles.filter(isPastedText);
+        // Large clipboard text is explicitly read on demand. Keep its bytes
+        // out of every provider's native upload and initial prompt content.
+        for (let index = mediaFiles.length - 1; index >= 0; index--) {
+          if (isPastedText(mediaFiles[index])) mediaFiles.splice(index, 1);
+        }
         const currentGeminiNativeFiles = [...mediaFiles];
 
         // The chat-media store resolves current and explicitly referenced prior
@@ -1823,7 +1860,7 @@ class AgentRegistry {
         // provider URI is created above for each run's leased key.
 
         // Build enriched prompt with file context
-        let enrichedPrompt = '';
+        let enrichedPrompt = pastedTextManifest(pastedReferences);
         if (geminiNativeFiles.length > 0) {
           const fileList = geminiNativeFiles.map(f => `  • ${ f.name } (${ f.mimeType })${ f.fileUri ? ' [UPLOADED ✓]' : '' }`).join('\n');
           enrichedPrompt += `[USER ATTACHED FILES]\nThe following original files are attached through the selected provider's native file/media input:\n${ fileList }\n\nDo not replace these attachments with extracted text or a local-path fallback. Analyze the native file/media inputs when the user asks about them.\n\n`;
@@ -1977,6 +2014,7 @@ class AgentRegistry {
         // produced its final response and is only unwinding resources.
         execution.status = terminalStatus;
         execution.completedAt = execution.completedAt || Date.now();
+        this.notifyTraceWaiters(chatId);
         const completedProxyTaskId = execution.launchSpec.pinnedContext?.autonomy?.proxyTaskId;
         if (completedProxyTaskId) {
           try { completeProxyTask(chatId, completedProxyTaskId, execution.runId, execution.status === 'completed' ? 'completed' : execution.status === 'stopped' ? 'stopped' : 'failed', execution.finalAnswer); }
@@ -2044,6 +2082,7 @@ class AgentRegistry {
         // advertising this execution as steerable while it is unwinding.
         execution.status = terminalStatus;
         execution.completedAt = execution.completedAt || Date.now();
+        this.notifyTraceWaiters(chatId);
 
         if (!wasCancelled) {
           // Check if it's an API key error — auto-failover
@@ -2185,6 +2224,12 @@ class AgentRegistry {
         totalTraces: 0,
         maxIndex: -1,
         finalAnswer: '',
+        // The predecessor may exist only on disk after retention/restart.
+        // Preserve its successor pointer so poll recovery can settle the old
+        // transcript and promptly attach to the current run.
+        ...(requestedOwner && currentExecution && currentExecution.runId !== requestedOwner
+          ? { successorRunId: currentExecution.runId, successorStartedAt: currentExecution.startedAt }
+          : {}),
         pendingProxyTaskCount: getPendingProxyTaskCount(chatId),
         pendingFollowUpCount: this.getQueuedFollowUps(chatId).length,
         queuedFollowUps: this.getQueuedFollowUps(chatId),
@@ -2406,6 +2451,7 @@ class AgentRegistry {
     const trimmedMessage = String(message || '').replace(/\u0000/g, '').trim();
     if (!trimmedMessage) return false;
     const resolvedId = steeringId || `steer_${ Date.now() }_${ Math.random().toString(36).slice(2, 8) }`;
+    if (this.hasCancelledFollowUp(chatId, resolvedId)) return false;
     // Treat retries with the same client ID as idempotent. In particular, do
     // not rewrite a queued message after it has already been acknowledged and
     // do not emit a second received event after the original was applied.
@@ -2448,7 +2494,9 @@ class AgentRegistry {
     };
     execution.acceptedSteeringIds.add(resolvedId);
     execution.steeringQueue.push(queuedMessage);
-    execution.steeringQueue.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+    // Stable sort preserves admission order for equal timestamps. Random IDs
+    // must never reverse a correction and the message it corrects.
+    execution.steeringQueue.sort((left, right) => left.createdAt - right.createdAt);
     // Completion-boundary Proxy guidance is revealed when it is applied on
     // the next loop boundary. Emitting it here would place the Proxy message
     // before the fully generated answer checkpoint and make that answer appear
@@ -2555,6 +2603,32 @@ class AgentRegistry {
   /**
    * Check if a specific chat has a running agent.
    */
+  public compactChat(chatId: string, rawSettings?: unknown): Promise<void> {
+    return requestManualCompaction(chatId, () => this.isRunning(chatId), async () => {
+      const execution = this.executions.get(chatId);
+      // A stopped worker may still be committing its last checkpoint.
+      if (execution && !execution.settled) await execution.promise.catch(() => undefined);
+      await compactSavedWorkingContext(chatId, async checkpoint => {
+        const fabric = await getContextFabricForChat(chatId);
+        const result = await compactContextAtBoundary({
+          chatId, kind: checkpoint.kind === 'gemini' ? 'gemini' : 'provider',
+          contents: checkpoint.contents,
+          activeModel: { provider: checkpoint.provider as any, modelId: checkpoint.model },
+          rawSettings: rawSettings || execution?.launchSpec.pinnedContext?.contextCompaction,
+          runtimeSettings: execution?.launchSpec.runtimeSettings || buildScopedRuntimeSettings(),
+          forceCompaction: true, semanticBoundary: 'safe',
+          continuityManifestFactory: () => fabric.buildContinuityManifest(),
+          onEvent: event => {
+            if (execution) this.appendTrace(execution, event);
+            else taskStore.addTrace(chatId, event);
+          },
+        });
+        if (result.failed) throw new Error('Context compaction failed. The original context was preserved.');
+        return result.contents;
+      });
+    });
+  }
+
   public isRunning(chatId: string): boolean {
     const execution = this.executions.get(chatId);
     return execution?.status === 'running';
@@ -2676,6 +2750,10 @@ class AgentRegistry {
       attachments: item.mediaAttachments.map(attachment => ({
         id: attachment.id, name: attachment.name, path: attachment.path || attachment.localPath,
         localPath: attachment.path || attachment.localPath, mimeType: attachment.mimeType,
+        originalPath: attachment.originalPath,
+        previewUrl: attachment.id
+          ? `/api/chat/media?chatId=${encodeURIComponent(chatId)}&id=${encodeURIComponent(attachment.id)}`
+          : undefined,
         size: attachment.size,
       })),
       ...(item.steeringMessages?.length ? { steeringIds: item.steeringMessages.map(message => message.id) } : {}),
@@ -2703,7 +2781,7 @@ class AgentRegistry {
     message: string;
   } {
     this.cancelledFollowUpAdmissions ??= new Map();
-    if (requestedId && this.cancelledFollowUpAdmissions.get(chatId)?.has(requestedId)) {
+    if (requestedId && this.hasCancelledFollowUp(chatId, requestedId)) {
       return { accepted: false, status: 'cancelled', message: 'This queued admission was cancelled.' };
     }
     const priorReceipt = this.userFollowUpReceipts.get(chatId)?.get(requestedId || '');
@@ -2792,22 +2870,57 @@ class AgentRegistry {
     };
   }
 
+  public hasCancelledFollowUp(chatId: string, id: string): boolean {
+    const admissionId = normalizeAdmissionId(id);
+    const cancelled = this.cancelledFollowUpAdmissions?.get(chatId);
+    return Boolean(cancelled?.has(admissionId) || cancelled?.has(id) || cancelled?.has(`steering-turn-${admissionId}`));
+  }
+
   public removeQueuedFollowUp(chatId: string, id: string): boolean {
+    if (this.hasCancelledFollowUp(chatId, id)) return true;
+    const admissionId = normalizeAdmissionId(id);
     const queue = this.userFollowUpQueues.get(chatId) || [];
     const receipt = this.userFollowUpReceipts.get(chatId)?.get(id);
+    const execution = this.executions.get(chatId);
+    const matches = (value: string) => normalizeAdmissionId(value) === admissionId;
+    const pendingSteering = execution?.steeringQueue.some(item => matches(item.id));
+    const pendingFollowUp = queue.some(item => item.steeringMessages?.length
+      ? item.steeringMessages.some(message => matches(message.id)) : matches(item.id));
     // Removing pending work is not permission to stop an already admitted run.
-    if (receipt && !queue.some(item => item.id === id)) return false;
+    if (receipt && !pendingFollowUp && !pendingSteering) return false;
     this.cancelledFollowUpAdmissions ??= new Map();
     const cancelled = this.cancelledFollowUpAdmissions.get(chatId) || new Set<string>();
-    cancelled.add(id);
+    cancelled.add(admissionId);
     while (cancelled.size > 200) cancelled.delete(cancelled.values().next().value!);
     this.cancelledFollowUpAdmissions.set(chatId, cancelled);
     while (this.cancelledFollowUpAdmissions.size > 200) {
       this.cancelledFollowUpAdmissions.delete(this.cancelledFollowUpAdmissions.keys().next().value!);
     }
-    const next = queue.filter(item => item.id !== id);
+    const next = queue.flatMap(item => {
+      if (!item.steeringMessages?.length) return matches(item.id) ? [] : [item];
+      const remaining = item.steeringMessages.filter(message => !matches(message.id));
+      if (remaining.length === item.steeringMessages.length) return [item];
+      if (!remaining.length) return [];
+      // Removing one message during the completion handoff must leave the
+      // other messages and their attachments available to the successor.
+      return [{
+        ...item, steeringMessages: remaining,
+        prompt: remaining.map(message => message.text).join('\n\n'),
+        mediaAttachments: remaining.every(message => Array.isArray(message.attachments))
+          ? remaining.flatMap(message => message.attachments || []) : item.mediaAttachments,
+        createdAt: remaining[0].createdAt || item.createdAt,
+      }];
+    });
     if (next.length > 0) this.userFollowUpQueues.set(chatId, next);
     else this.userFollowUpQueues.delete(chatId);
+    if (execution) {
+      execution.steeringQueue = execution.steeringQueue.filter(item => !matches(item.id));
+      this.appendTrace(execution, {
+        id: `queue-cancelled:${chatId}:${admissionId}`,
+        type: 'steering_cancelled', admissionId, steeringId: admissionId,
+        steeringIds: [admissionId, id], ownerChatId: chatId, timestamp: Date.now(),
+      });
+    }
     this.notifyTraceWaiters(chatId);
     return true;
   }
@@ -2829,6 +2942,7 @@ class AgentRegistry {
 
   /** Transfer ownership atomically; never remove a message before admission. */
   public steerQueuedFollowUp(chatId: string, id: string): boolean {
+    if (this.hasCancelledFollowUp(chatId, id)) return false;
     if (this.hasAcceptedSteering(chatId, id)) return true;
     const queue = this.userFollowUpQueues.get(chatId) || [];
     const item = queue.find(entry => entry.id === id);
@@ -2839,7 +2953,7 @@ class AgentRegistry {
     }
     if (!this.addSteeringMessage(chatId,
       item.prompt || 'Please review the attached files.', id,
-      { createdAt: Date.now(), attachments: item.mediaAttachments }, execution.runId)) return false;
+      { createdAt: item.createdAt, attachments: item.mediaAttachments }, execution.runId)) return false;
     const remaining = queue.filter(entry => entry.id !== id);
     if (remaining.length) this.userFollowUpQueues.set(chatId, remaining);
     else this.userFollowUpQueues.delete(chatId);
@@ -2857,7 +2971,10 @@ class AgentRegistry {
     // Remember Stop's removals just like an individual queue cancellation.
     // A late retry of a lost enqueue reply must not resurrect stopped work.
     for (const item of queue) {
-      if (item.createdAt <= admittedAtOrBefore) this.removeQueuedFollowUp(chatId, item.id);
+      if (item.createdAt <= admittedAtOrBefore) {
+        const ids = item.steeringMessages?.length ? item.steeringMessages.map(message => message.id) : [item.id];
+        for (const id of ids) this.removeQueuedFollowUp(chatId, id);
+      }
     }
     if (retained.length > 0) this.userFollowUpQueues.set(chatId, retained);
     else this.userFollowUpQueues.delete(chatId);
@@ -2876,7 +2993,7 @@ class AgentRegistry {
         || buildScopedRuntimeSettings();
       const history = current ? [...current.launchSpec.history] : [];
       if (current) {
-        history.push({ role: 'user', parts: [{ text: getVisibleRunPrompt(current.prompt) }] });
+        history.push({ role: 'user', parts: [{ text: getVisibleRunPrompt(current.prompt) }], contextTurnId: `user-turn-${current.runId}` });
         if (current.finalAnswer && current.status !== 'stopped') {
           history.push({ role: 'model', parts: [{ text: current.finalAnswer }] });
         }

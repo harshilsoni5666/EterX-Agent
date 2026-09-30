@@ -1,16 +1,18 @@
 'use client';
 
 import React, { useLayoutEffect, useRef } from 'react';
+import { motion, type MotionProps } from 'framer-motion';
 
 type AdaptiveMenuProps = React.HTMLAttributes<HTMLDivElement> & {
   preferredSide?: 'top' | 'bottom';
   heightLimit?: number;
   allowFlip?: boolean;
+  motionProps?: Pick<MotionProps, 'initial' | 'animate' | 'exit' | 'transition'>;
 };
 
 /** Keeps an anchored menu in the visible viewport without changing its DOM
  * ancestry (theme selectors and outside-click handlers keep working). */
-export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allowFlip = true, ...props }: AdaptiveMenuProps) {
+export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allowFlip = true, motionProps, ...props }: AdaptiveMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -111,5 +113,7 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
     };
   });
 
-  return <div {...props} ref={ref} data-adaptive-menu="true" />;
+  return motionProps
+    ? <motion.div {...props} {...motionProps} ref={ref} data-adaptive-menu="true" />
+    : <div {...props} ref={ref} data-adaptive-menu="true" />;
 }

@@ -59,14 +59,14 @@ const loadStoredValues = async (): Promise<StorageValues | null> => {
     const payload = await Promise.race([
       desktopApi.getRendererPreferences(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('Desktop preference read timed out.')), 15_000);
+        timer = setTimeout(() => reject(new Error('Desktop preference read timed out.')), 5_000);
       }),
     ]).finally(() => { if (timer) clearTimeout(timer); });
     if (payload?.ok === false) throw new Error(payload.error || 'Desktop preference read failed.');
     return normalizeStoredValues(payload?.values);
   }
 
-  const response = await requestJson(PREFERENCES_ENDPOINT, { cache: 'no-store' });
+  const response = await requestJson(PREFERENCES_ENDPOINT, { cache: 'no-store' }, 5_000);
   const payload = await response.json();
   if (!response.ok || !payload?.ok) throw new Error(payload?.error || `Preference read failed: ${response.status}`);
   return normalizeStoredValues(payload.values);

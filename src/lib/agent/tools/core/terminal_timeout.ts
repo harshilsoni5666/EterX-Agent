@@ -10,8 +10,12 @@ export const DEFAULT_TERMINAL_TIMEOUT_MS = 30_000;  // 30s default — enough fo
 export function normalizeTimeoutMs(value: unknown, defaultMs = DEFAULT_TERMINAL_TIMEOUT_MS): number {
   const raw = Number(value);
   if (!Number.isFinite(raw) || raw <= 0) return defaultMs;
-  const ms = raw <= 120 ? raw * 1000 : raw;
-  return Math.max(MIN_TERMINAL_TIMEOUT_MS, Math.min(MAX_TERMINAL_TIMEOUT_MS, Math.floor(ms)));
+  return Math.max(MIN_TERMINAL_TIMEOUT_MS, Math.min(MAX_TERMINAL_TIMEOUT_MS, Math.floor(raw)));
+}
+
+export function resolveWaitDurationMs(input?: { seconds?: number; timeoutSeconds?: number; timeoutMs?: number; durationMs?: number }): number {
+  const seconds = input?.seconds ?? input?.timeoutSeconds;
+  return normalizeTimeoutMs(seconds == null ? input?.timeoutMs ?? input?.durationMs ?? MAX_TERMINAL_TIMEOUT_MS : Number(seconds) * 1000);
 }
 
 export function inferTerminalCheckInMs(command: string): number {
@@ -28,16 +32,16 @@ export function normalizeCheckInMs(value: unknown, command = ''): number {
   const defaultMs = inferTerminalCheckInMs(command);
   const raw = Number(value);
   if (!Number.isFinite(raw) || raw <= 0) return defaultMs;
-  const ms = raw <= 120 ? raw * 1000 : raw;
-  return Math.max(MIN_TERMINAL_CHECKIN_MS, Math.min(MAX_TERMINAL_CHECKIN_MS, Math.floor(ms)));
+  return Math.max(MIN_TERMINAL_CHECKIN_MS, Math.min(MAX_TERMINAL_CHECKIN_MS, Math.floor(raw)));
 }
 
 export function normalizeHardTimeoutMs(value: unknown, checkInMs = DEFAULT_TERMINAL_CHECKIN_MS): number {
   const raw = Number(value);
   const defaultMs = Math.max(DEFAULT_TERMINAL_HARD_TIMEOUT_MS, checkInMs + 1_000);
   if (!Number.isFinite(raw) || raw <= 0) return defaultMs;
-  const ms = raw <= 3600 ? raw * 1000 : raw;
-  return Math.max(checkInMs + 1_000, Math.min(MAX_TERMINAL_HARD_TIMEOUT_MS, Math.floor(ms)));
+  // An explicit execution deadline is independent of the foreground check-in.
+  // Milliseconds must never be guessed as seconds or expanded past the request.
+  return Math.max(MIN_TERMINAL_TIMEOUT_MS, Math.min(MAX_TERMINAL_HARD_TIMEOUT_MS, Math.floor(raw)));
 }
 
 export function secondsFromTimeoutMs(timeoutMs: number): number {
@@ -56,7 +60,7 @@ export function terminalBackgroundHandoffNote(command: string, taskId: string, c
   return [
     `The command is still running after its ${seconds}-second foreground check-in: ${shortCommand}`,
     `Task ID: ${taskId}.`,
-    'workspace_run_command mode="check" returns its current status and new output.'
+    'This check-in does not make it a background task. Use workspace_run_command mode="wait" with taskId to await output/completion, mode="check" to inspect now, or mode="background" to explicitly continue it independently. Never execute the task ID as a shell command.'
   ].join(' ');
 }
 

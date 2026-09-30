@@ -4,11 +4,9 @@ import path from 'node:path';
 const repositoryRoot = path.resolve(process.cwd());
 const tracingPath = (...segments) => path.join(repositoryRoot, ...segments).replaceAll('\\', '/');
 const runtimeDataExcludes = [
-  tracingPath('.temp'),
-  tracingPath('.temp', '**'),
-  tracingPath('dist'),
-  tracingPath('dist', '**'),
-];
+  '.temp', '.workspaces', '.eterx-build-home', 'desktop-runtime', 'dist',
+  'logs', 'gaia', 'tests', '.git', '.codex-remote-attachments',
+].flatMap(directory => [tracingPath(directory), tracingPath(directory, '**')]);
 
 const nextConfig = {
   // Desktop development sessions get an isolated output directory so a

@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import fse from 'fs-extra';
 import path from 'path';
 import type { ToolDefinition } from '../../schemas';
-import { checkEterXProtection, resolveWorkspacePathForContext } from '../../workspace/path_resolver';
+import { resolveWorkspacePathForContext } from '../../workspace/path_resolver';
 import { acquireEditTransaction } from '../../workspace/edit-transaction-lock';
 import { normalizeWorkspaceEditChunk } from '../../workspace/edit-input';
 import { WORKSPACE_EDIT_DESCRIPTION } from '../../workspace-edit-contract';
@@ -13,7 +13,7 @@ import { completedEditReceipt, editInvocationKey, editRequestSignature, remember
 
 const editChunkSchema = z.preprocess(normalizeWorkspaceEditChunk, z.object({
   search: z.string().min(1).optional().describe('Exact observed block. Only this text is replaced; code outside it remains. Copy source without display numbers/omissions. With startLine/endLine, match only inside those lines. Omit for creation or range-only replacement.'),
-  replace: z.string().describe('Required literal replacement for ONLY the selected block/range. Empty string deletes it. Complete content without a selector creates a missing/empty file; rewriting an existing file requires startLine:1,endLine:-1. Never replace only a file prefix with a complete class/file.'),
+  replace: z.string().describe('Required literal text for ONLY the selected block/range, with JSON escaping exactly once. Empty string deletes it. No selector creates only a missing/zero-byte file. A stub or previously created file is existing: complete replacement requires startLine:1,endLine:-1. Write complete new files directly without a placeholder first. Never replace only a prefix with a complete class/file.'),
   replaceAll: z.boolean().optional().describe('Replace every exact match in the selected scope (whole file, or supplied range). Requires search; defaults to false.'),
   replace_all: z.boolean().optional().describe('Alias for replaceAll.'),
   startLine: z.number().int().min(1).optional().describe('First inclusive 1-based line; endLine is also required. Whole existing file: startLine:1,endLine:-1. Ranges refer to content after preceding edits.'),
@@ -244,7 +244,7 @@ async function applyExistingFileEdits(
         size: Buffer.byteLength(replacement, 'utf8'),
       };
     }
-    throw new Error(`Existing non-empty file ${target.filename} cannot use the create-file format. For the intended full rewrite use edits:[{startLine:1,endLine:-1,replace:completeContent}]. For a partial change use search:exactCurrentBlock plus replace. Nothing was written.`);
+    throw new Error(`Existing non-empty file ${target.filename} cannot use the create-file format, even if it is a stub or was created earlier in this task. Current size: ${Buffer.byteLength(content, 'utf8')} bytes. If complete replacement is intended and current full-file context is known, use edits:[{startLine:1,endLine:-1,replace:completeContent}]. For a partial change use search:exactCurrentBlock plus replace. Do not repeat the selector-free call. Nothing was written.`);
   }
 
   for (let editIndex = 0; editIndex < target.edits.length; editIndex++) {
@@ -423,11 +423,8 @@ export const workspaceEditFileTool: ToolDefinition = {
         const targetFilename = String(target.filename || '').trim();
         if (!targetFilename) throw new Error('Each workspace edit target requires a filename.');
         const requestedPath = resolveWorkspacePathForContext(targetFilename, context);
-        const requestedProtection = checkEterXProtection(requestedPath);
-        if (requestedProtection.blocked) throw new Error(requestedProtection.reason);
         const filePath = await physicalEditPath(requestedPath);
-        const protection = checkEterXProtection(filePath);
-        if (protection.blocked) throw new Error(protection.reason);
+        resolveWorkspacePathForContext(filePath, context);
         resolvedTargets.push({ ...target, filePath });
       }
       // The synthetic key is only an in-memory mutex key, never a disk path.

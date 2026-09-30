@@ -58,6 +58,24 @@ export function shellExecutableName(token: string): string {
   return token.split(/[\\/]/).pop()!.replace(/\.(?:exe|cmd|bat)$/i, '').toLowerCase();
 }
 
+/** Inspect native argv directly; never reinterpret it as shell syntax. */
+export function literalTerminalCommands(args: Record<string, any>): string[][] | null {
+  const entries = Array.isArray(args.commands) ? args.commands : [args];
+  const commands: string[][] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') return null;
+    if (typeof entry.program === 'string' && entry.program.trim()) {
+      if (entry.args !== undefined && (!Array.isArray(entry.args) || entry.args.some((arg: unknown) => typeof arg !== 'string'))) return null;
+      commands.push([entry.program, ...(entry.args || [])]);
+    } else {
+      const parsed = literalShellCommands(String(entry.command || entry.cmd || entry.script || ''));
+      if (!parsed) return null;
+      commands.push(...parsed);
+    }
+  }
+  return commands.length ? commands : null;
+}
+
 const READ_COMMANDS = new Set([
   'cat', 'bat', 'nl', 'more', 'gc', 'type', 'get-content', 'get-childitem', 'gci', 'dir', 'ls', 'pwd', 'get-location',
   'where', 'which', 'head', 'tail', 'rg', 'ripgrep', 'grep', 'findstr', 'select-string', 'sls',

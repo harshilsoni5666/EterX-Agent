@@ -30,6 +30,49 @@ export const isLocalFilePath = (value: string) =>
 export const encodeLocalFileHref = (filePath: string) =>
   `${ LOCAL_FILE_HREF_PREFIX }${ encodeURIComponent(String(filePath || '').trim()) }`;
 
+// Native paths are not Markdown destinations: spaces stop parsing and
+// backslashes can escape punctuation. Encode authored image paths before
+// parsing, including parentheses in folder names. Call outside code spans.
+export const normalizeLocalImageMarkdown = (text: string) => {
+  const opening = /!\[(?:\\.|[^\]\\\n])*\]\(\s*/g;
+  let result = '';
+  let consumed = 0;
+  let match: RegExpExecArray | null;
+  while ((match = opening.exec(text))) {
+    if (match.index > 0 && text[match.index - 1] === '\\') continue;
+    const start = opening.lastIndex;
+    let end = start;
+    if (text[start] === '<') {
+      const closing = text.indexOf('>', start + 1);
+      if (closing < 0) continue;
+      end = closing + 1;
+      while (text[end] === ' ' || text[end] === '\t') end++;
+      if (text[end] !== ')') continue;
+    } else {
+      let depth = 1;
+      for (; end < text.length; end++) {
+        if (text[end] === '\n') break;
+        if (text[end] === '(') depth++;
+        if (text[end] === ')' && --depth === 0) break;
+      }
+      if (text[end] !== ')' || depth !== 0) continue;
+    }
+    const destination = text.slice(start, end).trim();
+    // Keep optional Markdown titles separate from the filesystem path.
+    const titled = destination.match(/^([\s\S]+?)\s+("[^"\n]*"|'[^'\n]*')$/);
+    const source = titled ? titled[1] : destination;
+    if (/[\r\n]/.test(source)) continue;
+    const local = decodeLocalFileHref(source);
+    if (!local || source.startsWith('/api/')) continue;
+    const encoded = encodeLocalFileHref(local).replace(/\(/g, '%28').replace(/\)/g, '%29');
+    result += text.slice(consumed, match.index) + match[0] + encoded
+      + (titled ? ` ${titled[2]}` : '') + ')';
+    consumed = end + 1;
+    opening.lastIndex = consumed;
+  }
+  return result + text.slice(consumed);
+};
+
 const decodeNativeFileUrl = (href: string) => {
   // Chromium normalizes Windows file URLs differently depending on whether
   // the path came from a browser, Electron, or a copied markdown response.
@@ -103,9 +146,11 @@ export const decodeLocalFileHref = (href?: string | null) => {
   return null;
 };
 
-// Canonicalize native destinations before Markdown's protocol sanitizer. Image
-// sources still use its normal policy; only anchors become native file chips.
+// Preserve image sources for the shared viewer; native anchors use file chips.
 export const localAwareUrlTransform = (url: string, key: string) => {
+  if (key === 'src' && /^data:image\/[^,;\s]+(?:;[^,]*)?,/i.test(url)) return url;
+  if (key === 'src' && url.startsWith('blob:')) return url;
+  if (key === 'src' && decodeLocalFileHref(url)) return url;
   if (key === 'href') {
     const localPath = decodeLocalFileHref(url);
     if (localPath) return encodeLocalFileHref(localPath);
@@ -300,7 +345,7 @@ export const LocalFileLinkChip = React.memo(({
         aria-label={`Copy file path for ${ name }`}
         title="Copy file path"
       >
-        {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" strokeWidth={2.2} /> : <Copy className="h-3.5 w-3.5" strokeWidth={2.1} />}
+        {copied ? <Check className="h-3.5 w-3.5 text-white" strokeWidth={2.2} /> : <Copy className="h-3.5 w-3.5" strokeWidth={2.1} />}
       </button>
       <span role="status" className={message.startsWith('Could not') ? 'eterx-local-file-chip-error' : 'sr-only'}>{message}</span>
     </span>

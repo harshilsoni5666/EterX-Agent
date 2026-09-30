@@ -65,6 +65,41 @@ The append-only event history remains outside the prompt. This avoids turning be
 
 All provider loops receive the same initial decision surface, refreshed topology, tool semantics, evidence ledger, completion audit, and execution-governor policy. Model-native reasoning formats may differ, but the harness's definition of progress, risk, verification, retry continuity, and completion does not.
 
+## Continuous tool scheduling
+
+The main provider loops, custom-agent runner, and terminal command batches use
+the same bounded scheduler. Up to six independent reads can run at once. When a
+read finishes, the next eligible read starts immediately rather than waiting
+for every member of a fixed batch. Results remain in the model's original call
+order, while the custom-agent UI receives each completion as it becomes ready.
+
+Mutations, unknown scripts, and other stateful calls are ordering barriers:
+preceding reads drain, the action runs exclusively, then later reads become
+eligible. Two checks or waits for the same terminal task also serialize because
+they share an output cursor; unrelated reads can continue. Cancellation stops
+queued work from starting. Unexpected execution exceptions stop admission and
+drain active siblings before propagating, avoiding overlap with a provider retry.
+Ordinary structured tool failures still return to the model as evidence.
+
+## Observation novelty
+
+Successful reads remain available and their output remains intact. The governor
+and evidence ledger independently track whether the same observation changed
+since its last completion in the current mutation epoch. Streaming SHA-256
+digests cover the complete returned content, without retaining a second copy of
+large source files. Presentation arguments and terminal transport metadata do
+not turn an unchanged read into new evidence. Source and API data fields remain
+part of the digest.
+
+The bounded history retains the latest 128 observation identities and restores
+its baseline from existing retry snapshots. A changed result or a new mutation
+epoch counts as fresh evidence. An unchanged repeat remains a successful tool
+call but does not reset the no-progress counter or inflate research evidence.
+Repeated observations produce guidance to reuse known content, narrow the next
+question, or act on established evidence; they never block or cache a tool call.
+The compact evidence view keeps failures and omits unchanged read repetitions
+so that recent problems are not buried by successful polling or discovery.
+
 ## Verification
 
 Run the focused checks with:

@@ -36,7 +36,11 @@ if (packagedDependencyModuleRoot) {
   require('module').Module._initPaths();
 }
 
-const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig } = require('../src/lib/agent/gateways/daemon.cjs');
+const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig } = require(app.isPackaged
+  ? '../runtime/assets/gateways/daemon.cjs'
+  : '../src/lib/agent/gateways/daemon.cjs');
+const { installedProfileRoot, workspaceRoot } = require('./storage-layout');
+const { createHostEnvironment } = require('./host-environment');
 const { WhisperDictation } = require('./whisper-dictation');
 const IS_DESKTOP_DEVELOPMENT = !app.isPackaged;
 
@@ -61,18 +65,7 @@ if (process.platform === 'win32' && typeof app.setAppUserModelId === 'function')
 // profile. The renderer, packaged server, and Electron IPC all use the same
 // per-user root on every supported OS.
 const LEGACY_USER_DATA_PATH = app.getPath('userData');
-const INSTALLED_USER_DATA_PATH = (() => {
-  const home = app.getPath('home');
-  if (process.platform === 'win32') {
-    const localRoot = String(process.env.LOCALAPPDATA || process.env.APPDATA || '').trim();
-    return path.join(localRoot || path.dirname(LEGACY_USER_DATA_PATH), 'EterX');
-  }
-  if (process.platform === 'darwin') {
-    return path.join(home, 'Library', 'Application Support', 'EterX');
-  }
-  const xdgDataHome = String(process.env.XDG_DATA_HOME || '').trim();
-  return path.join(xdgDataHome || path.join(home, '.local', 'share'), 'EterX');
-})();
+const INSTALLED_USER_DATA_PATH = installedProfileRoot();
 
 function pathsOverlap(firstPath, secondPath) {
   const first = path.resolve(firstPath);
@@ -96,6 +89,10 @@ const ACTIVE_USER_DATA_PATH = IS_DESKTOP_DEVELOPMENT
   ? DEVELOPMENT_USER_DATA_PATH
   : INSTALLED_USER_DATA_PATH;
 
+// Electron requires custom path directories to exist before setPath.
+for (const directory of [ACTIVE_USER_DATA_PATH, path.join(ACTIVE_USER_DATA_PATH, 'session'), path.join(ACTIVE_USER_DATA_PATH, 'cache')]) {
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+}
 if (path.resolve(LEGACY_USER_DATA_PATH) !== path.resolve(ACTIVE_USER_DATA_PATH)) {
   app.setPath('userData', ACTIVE_USER_DATA_PATH);
 }
@@ -126,6 +123,14 @@ if (!hasSingleInstanceLock) {
 
 function getEterxDataRoot() {
   return path.join(app.getPath('userData'), 'data');
+}
+
+// Native known folders include redirected/OneDrive locations on Windows.
+// Pass the same durable root and folders to IPC and the packaged server.
+process.env.ETERX_DATA_DIR = getEterxDataRoot();
+process.env.ETERX_WORKSPACE_ROOT = workspaceRoot();
+for (const folder of ['desktop', 'documents', 'downloads']) {
+  try { process.env[`ETERX_${folder.toUpperCase()}_DIR`] = app.getPath(folder); } catch {}
 }
 
 function getEterxSettingsRoot() {
@@ -265,6 +270,7 @@ Menu.setApplicationMenu(null);
 
 let mainWindow;
 require('./chat-terminal').registerChatTerminals({ ipcMain, app, getWindow: () => mainWindow });
+require('./workspace-panel').registerWorkspacePanel({ ipcMain, app, getWindow: () => mainWindow });
 let petWindow;
 let petWindowReadyPromise = null;
 let backgroundTray;
@@ -282,6 +288,9 @@ const PET_WINDOW_SIZES = {
 let activeBootId = 0;
 let bootRetryTimer = null;
 let bootFailureCount = 0;
+let bootInProgress = false;
+let mainWindowWantsVisible = false;
+const rendererCrashTimes = [];
 
 // A production install runs its immutable Next.js server directly from the
 // packaged application archive. AppData contains durable user state only.
@@ -1023,6 +1032,26 @@ ipcMain.on('desktop-durable-flush-complete', (event, requestId, ok) => {
   pending.resolve(ok !== false);
 });
 
+function isMainWindowVisible() {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized());
+}
+
+let lastPublishedMainWindowVisibility;
+function publishMainWindowVisibility() {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+  const visible = isMainWindowVisible();
+  if (visible === lastPublishedMainWindowVisibility) return;
+  lastPublishedMainWindowVisibility = visible;
+  mainWindow.webContents.send('desktop-window-visibility-changed', visible);
+}
+
+ipcMain.handle('desktop-window-visibility-get', (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) {
+    throw new Error('Window visibility access denied');
+  }
+  return isMainWindowVisible();
+});
+
 async function performDesktopUpdateCheck({ silent = false } = {}) {
   if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
   if (desktopUpdateCheckPromise) return desktopUpdateCheckPromise;
@@ -1613,10 +1642,12 @@ function publishGatewayEvent(channel, payload) {
 }
 
 function showMainWindow() {
+  if (isQuitting) return;
   if (process.platform === 'darwin' && app.dock && typeof app.dock.show === 'function') {
     app.dock.show();
   }
   if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  mainWindowWantsVisible = true;
   if (mainWindow?.isMinimized()) mainWindow.restore();
   mainWindow?.show();
   mainWindow?.focus();
@@ -1936,6 +1967,15 @@ function migrateLegacyUserData() {
   const dataRoot = getEterxDataRoot();
   const settingsRoot = getEterxSettingsRoot();
   for (const legacyRoot of legacyRoots) {
+    // The source-bootstrap may already share our data directory. Its env file
+    // still lives under source, so migrate it independently of data relocation.
+    const legacyEnv = path.join(legacyRoot, 'source', '.env.local');
+    const destinationEnv = path.join(dataRoot, '.env.local');
+    if (fs.existsSync(legacyEnv) && !fs.existsSync(destinationEnv)) {
+      fs.mkdirSync(dataRoot, { recursive: true, mode: 0o700 });
+      fs.copyFileSync(legacyEnv, destinationEnv, fs.constants.COPYFILE_EXCL);
+      if (process.platform !== 'win32') fs.chmodSync(destinationEnv, 0o600);
+    }
     const dataSource = path.join(legacyRoot, 'data');
     if (path.resolve(dataSource) !== path.resolve(dataRoot) && fs.existsSync(dataSource)) {
       try {
@@ -2106,21 +2146,34 @@ function nativeThemeColors(theme) {
   if (safeTheme === 'dark') {
     return {
       background: '#0F0F0F',
-      titleBar: '#00000000',
+      // Keep the native caption-button area opaque enough for Windows/Linux
+      // to paint its hover states while the renderer owns the rest of the
+      // custom title bar.
+      titleBar: '#0F0F0F',
       titleSymbol: '#D0C8C0',
     };
   }
   return {
     background: '#FAFAF8',
-    titleBar: '#00000000',
+    titleBar: '#FAFAF8',
     titleSymbol: '#1F1F1D',
   };
+}
+
+const splashBackdropWindows = new WeakSet();
+
+function clearSplashBackdrop(targetWindow) {
+  if (!splashBackdropWindows.has(targetWindow)) return;
+  if (process.platform === 'darwin') targetWindow.setVibrancy(null);
+  else if (process.platform === 'win32') targetWindow.setBackgroundMaterial('none');
+  splashBackdropWindows.delete(targetWindow);
 }
 
 function applyNativeThemeToWindow(targetWindow, colors) {
   if (!targetWindow || targetWindow.isDestroyed()) return;
 
   try {
+    clearSplashBackdrop(targetWindow);
     targetWindow.setBackgroundColor(colors.background);
     // macOS takes the icon from the signed application bundle. setIcon is
     // intended for Windows/Linux and is unsupported for AppKit windows.
@@ -2186,15 +2239,36 @@ function applyNativeWindowTheme(theme) {
 }
 
 function applySplashWindowTheme(theme = readNativeTheme()) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
 
   const colors = nativeThemeColors(theme);
+  let nativeBackdrop = false;
 
   try {
+    clearSplashBackdrop(mainWindow);
     mainWindow.setBackgroundColor(colors.background);
+    // Let the OS supply the desktop material only while the splash is visible.
+    // Electron supports Mica starting with Windows 11 22H2 (build 22621).
+    try {
+      if (process.platform === 'darwin') {
+        mainWindow.setVibrancy('under-window');
+        nativeBackdrop = true;
+      } else if (process.platform === 'win32'
+        && Number(require('os').release().split('.')[2]) >= 22621
+        && typeof mainWindow.setBackgroundMaterial === 'function') {
+        mainWindow.setBackgroundMaterial('mica');
+        nativeBackdrop = true;
+      }
+    } catch (error) {
+      console.warn('[EterX] Native splash backdrop unavailable:', error);
+    }
+    if (nativeBackdrop) {
+      splashBackdropWindows.add(mainWindow);
+      mainWindow.setBackgroundColor('#00000000');
+    }
     if (process.platform !== 'darwin' && typeof mainWindow.setTitleBarOverlay === 'function') {
       mainWindow.setTitleBarOverlay({
-        color: colors.titleBar,
+        color: nativeBackdrop ? '#00000000' : colors.titleBar,
         symbolColor: colors.titleSymbol,
         height: NATIVE_FRAME_HEIGHT,
       });
@@ -2202,6 +2276,7 @@ function applySplashWindowTheme(theme = readNativeTheme()) {
   } catch (error) {
     console.warn('[EterX] Failed to apply splash theme:', error);
   }
+  return nativeBackdrop;
 }
 
 function getPetWindowHtml() {
@@ -2487,7 +2562,7 @@ function getPetWindowHtml() {
 }
 
 function getAppTarget() {
-  if (process.env.ELECTRON_URL) return process.env.ELECTRON_URL;
+  if (!app.isPackaged && process.env.ELECTRON_URL) return process.env.ELECTRON_URL;
 
   if (app.isPackaged && packagedServerUrl) return packagedServerUrl;
 
@@ -2529,7 +2604,8 @@ function isPortAvailable(port) {
 }
 
 async function findAvailablePort(startPort) {
-  for (let port = startPort; port < startPort + 40; port += 1) {
+  startPort = Number.isInteger(startPort) && startPort > 0 && startPort <= 65535 ? startPort : 3000;
+  for (let port = startPort; port <= Math.min(startPort + 39, 65535); port += 1) {
     if (await isPortAvailable(port)) return port;
   }
   throw new Error(`No free local port found from ${startPort} to ${startPort + 39}.`);
@@ -2546,13 +2622,13 @@ function preparePackagedRuntime() {
   }
 
   const dataRoot = getEterxDataRoot();
-  fs.mkdirSync(path.join(dataRoot, '.workspaces'), { recursive: true });
-  fs.mkdirSync(path.join(dataRoot, '.temp'), { recursive: true });
+  fs.mkdirSync(workspaceRoot(), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(path.join(dataRoot, '.temp'), { recursive: true, mode: 0o700 });
   packagedRuntimeRoot = runtimeRoot;
   return runtimeRoot;
 }
 
-function pruneOldPackagedRuntimes() {
+function migrateOldPackagedRuntimeData() {
   if (!app.isPackaged) return;
   const legacyRuntimeRoot = path.join(app.getPath('userData'), 'runtime');
   const legacySourceRoot = path.join(app.getPath('userData'), 'source');
@@ -2577,51 +2653,46 @@ function pruneOldPackagedRuntimes() {
           }
         }
       }
-      fs.rmSync(legacyRuntimeRoot, { recursive: true, force: true });
+      // Missing-only migration intentionally leaves collisions untouched.
+      // Deleting the originals here would silently lose the older files.
+      logToFile('[runtime] Legacy runtime data imported; original folders retained for recovery.');
     }
     if (fs.existsSync(legacySourceRoot)) {
-      const detachedSourceRoot = path.join(
-        app.getPath('userData'),
-        `.eterx-retired-source-${process.pid}-${Date.now()}`,
-      );
-      fs.renameSync(legacySourceRoot, detachedSourceRoot);
-      fs.rm(detachedSourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 }, (error) => {
-        if (error) {
-          logToFile(`[runtime] Detached legacy source cleanup will retry next launch: ${error.message || error}`);
-        } else {
-          logToFile('[runtime] Removed detached legacy AppData source checkout.');
-        }
-      });
+      // Old source installs allowed arbitrary user-created projects here.
+      // A source directory name alone is not proof its contents are disposable.
+      logToFile('[runtime] Legacy source retained for recovery; the app runs only from installed resources.');
     }
-    logToFile('[runtime] Removed legacy AppData application-code copies after preserving durable state.');
   } catch (error) {
     logToFile(`[runtime] Old-version cleanup skipped: ${error.message || error}`);
   }
 }
 
 async function startPackagedServer() {
-  if (!app.isPackaged || process.env.ELECTRON_URL) return null;
+  if (!app.isPackaged || isQuitting) return null;
   if (packagedServerStopPromise) await packagedServerStopPromise;
+  if (isQuitting) return null;
   if (packagedServer && !packagedServer.killed) return packagedServerUrl;
 
   const runtimeRoot = preparePackagedRuntime();
   const startPort = Number(process.env.ETERX_PORT || process.env.PORT || 3000);
   const port = await findAvailablePort(Number.isInteger(startPort) && startPort > 0 ? startPort : 3000);
+  if (isQuitting) return null;
   const persistentEnv = readEnvFile(path.join(getEterxDataRoot(), '.env.local'));
   const secureSettings = readSecureRuntimeSettings();
   const dataRoot = getEterxDataRoot();
   const runtimeModules = getPackagedDependencyModuleRoot() || path.join(runtimeRoot, 'modules');
   const env = removeDesktopRuntimeSettingEnvironment({
-    ...process.env,
-    ...persistentEnv,
+    ...createHostEnvironment({ ...process.env, ...persistentEnv }),
     NODE_ENV: 'production',
     HOSTNAME: '127.0.0.1',
     PORT: String(port),
     ETERX_PORT: String(port),
     ETERX_APP_ROOT: runtimeRoot,
     ETERX_DATA_DIR: dataRoot,
+    ETERX_WORKSPACE_ROOT: workspaceRoot(),
     ETERX_RUNTIME_MODULES: runtimeModules,
-    NODE_PATH: [runtimeModules, process.env.NODE_PATH].filter(Boolean).join(path.delimiter),
+    ETERX_DESKTOP_PARENT_PID: String(process.pid),
+    NODE_PATH: runtimeModules,
   });
   const connectorSecret = connectorStoreSecret();
   if (connectorSecret) env.ETERX_CONNECTOR_SECRET = connectorSecret;
@@ -2670,7 +2741,7 @@ async function startPackagedServer() {
     packagedServer = spawn(process.execPath, [serverEntry], {
       cwd: dataRoot,
       env: { ...env, ELECTRON_RUN_AS_NODE: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       windowsHide: true,
     });
     packagedServerLaunchMode = 'child';
@@ -2712,6 +2783,9 @@ async function startPackagedServer() {
       packagedServer = null;
       packagedServerUrl = null;
       packagedServerLaunchMode = null;
+      // A terminated runtime must not leave a live scheduler or relaunch
+      // through a later boot retry. The user can explicitly open EterX again.
+      if (!isQuitting) app.quit();
     }
   });
 
@@ -2793,14 +2867,22 @@ function delay(ms) {
 
 function requestTarget(target, timeoutMs = 5000) {
   return new Promise((resolve) => {
+    // A streaming response can keep the socket active indefinitely. Bound
+    // the whole readiness request, not just periods of socket inactivity.
+    const deadline = setTimeout(() => {
+      req.destroy();
+      resolve(false);
+    }, timeoutMs);
     const client = target.startsWith('https:') ? https : http;
     const req = client.get(target, (res) => {
+      res.on('error', () => { clearTimeout(deadline); resolve(false); });
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => {
         if (body.length < 256_000) body += chunk;
       });
       res.on('end', async () => {
+        clearTimeout(deadline);
         // A Next.js server can answer with its temporary 404 recovery page or
         // stale HTML while the app components are still compiling. Treat that
         // as not ready instead of navigating into an unstyled error screen.
@@ -2828,7 +2910,7 @@ function requestTarget(target, timeoutMs = 5000) {
       resolve(false);
     });
 
-    req.on('error', () => resolve(false));
+    req.on('error', () => { clearTimeout(deadline); resolve(false); });
   });
 }
 
@@ -2862,19 +2944,17 @@ async function resolveDevAppTarget() {
   throw new Error(`No healthy local EterX server found from port ${startPort} to ${startPort + 39}.`);
 }
 
-async function waitForHttpTarget(target) {
+async function waitForHttpTarget(target, isCurrent = () => !isQuitting) {
   const configuredTimeout = Number(process.env.ETERX_BOOT_TIMEOUT_MS || 0);
-  // Local development intentionally waits for Next.js without an artificial
-  // startup deadline. Large first compiles should not turn into a false
-  // Electron failure; the development runner reports if Next.js exits.
   const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
     ? configuredTimeout
-    : 0;
+    : 120000;
   const start = Date.now();
 
   while (timeoutMs === 0 || Date.now() - start < timeoutMs) {
+    if (!isCurrent()) return;
     if (await requestTarget(target)) return;
-    if (app.isPackaged && !process.env.ELECTRON_URL && !packagedServer) {
+    if (app.isPackaged && !packagedServer) {
       throw new Error('The bundled EterX runtime stopped before it became ready.');
     }
     await delay(450);
@@ -2896,6 +2976,7 @@ async function showStartupFailure(error, target) {
   if (!mainWindow) return;
 
   const failureTheme = readNativeTheme();
+  applyNativeThemeToWindow(mainWindow, nativeThemeColors(failureTheme));
   const failureColors = failureTheme === 'dark'
     ? {
       page: '#101010',
@@ -2963,15 +3044,17 @@ function clearBootRetry() {
 }
 
 async function showSplashScreen() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (isQuitting || !mainWindow || mainWindow.isDestroyed()) return;
+  const splashWindow = mainWindow;
   const theme = readNativeTheme();
 
-  applySplashWindowTheme(theme);
-  await mainWindow.loadFile(path.join(__dirname, 'splash.html'), {
+  const nativeBackdrop = applySplashWindowTheme(theme);
+  await splashWindow.loadFile(path.join(__dirname, 'splash.html'), {
     // Keep the query small. Embedding the full PNG as a data URL can create a
     // 60KB+ file:// URL, which Chromium may reject on Windows with ERR_FAILED.
     query: {
       theme,
+      backdrop: nativeBackdrop ? 'native' : 'solid',
       icon: getSplashIconUrl(),
       platform: process.platform === 'darwin'
         ? 'macos'
@@ -2982,13 +3065,13 @@ async function showSplashScreen() {
             : 'unknown',
     },
   });
-  if (!launchInBackground && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-    mainWindow.show();
+  if (!isQuitting && mainWindowWantsVisible && mainWindow === splashWindow && !splashWindow.isDestroyed() && !splashWindow.isVisible()) {
+    splashWindow.show();
   }
 }
 
 function scheduleBootRetry(delayMs = 900) {
-  if (bootRetryTimer || !mainWindow || mainWindow.isDestroyed()) return;
+  if (isQuitting || bootRetryTimer || !mainWindow || mainWindow.isDestroyed()) return;
 
   bootRetryTimer = setTimeout(() => {
     bootRetryTimer = null;
@@ -3115,6 +3198,7 @@ async function openPetWindow(status) {
     show: false,
     title: 'EterX Live Agent',
     webPreferences: {
+      devTools: IS_DESKTOP_DEVELOPMENT,
       nodeIntegration: false,
       contextIsolation: true,
       // This overlay is purely visual. Let Chromium suspend its WebGL frame
@@ -3165,8 +3249,12 @@ function closePetWindow() {
 }
 
 async function bootApp(options = {}) {
+  if (isQuitting || bootInProgress || !mainWindow || mainWindow.isDestroyed()) return;
   const { showSplash = false, retryOnFailure = false } = options;
   const bootId = ++activeBootId;
+  const bootWindow = mainWindow;
+  const isCurrent = () => !isQuitting && bootId === activeBootId && mainWindow === bootWindow && !bootWindow.isDestroyed();
+  bootInProgress = true;
 
   clearBootRetry();
 
@@ -3174,25 +3262,32 @@ async function bootApp(options = {}) {
     if (showSplash) {
       await showSplashScreen();
     }
+    if (!isCurrent()) return;
 
     if (app.isPackaged && !process.env.ELECTRON_URL && (!packagedServer || packagedServer.killed)) {
       await startPackagedServer();
     }
 
     const target = await resolveDevAppTarget();
+    if (!isCurrent()) return;
 
     if (isHttpTarget(target) && process.env.ETERX_DEV_PREWARMED !== '1') {
-      await waitForHttpTarget(target);
+      await waitForHttpTarget(target, isCurrent);
     }
 
-    if (bootId === activeBootId && mainWindow && !mainWindow.isDestroyed()) {
+    if (isCurrent()) {
       // Keep the splash visible until navigation paints the matching app loader.
       applyNativeWindowTheme(readNativeTheme());
-      await mainWindow.loadURL(target);
+      await bootWindow.loadURL(target);
+      if (!isCurrent()) return;
+      clearBootRetry();
       bootFailureCount = 0;
-      pruneOldPackagedRuntimes();
+      migrateOldPackagedRuntimeData();
     }
   } catch (error) {
+    if (!isCurrent()) return;
+    // A replacement navigation is not a startup failure.
+    if (error?.code === 'ERR_ABORTED' || error?.errno === -3) return;
     console.error('[EterX] Startup failed:', error);
     bootFailureCount += 1;
     const target = getAppTarget();
@@ -3202,10 +3297,16 @@ async function bootApp(options = {}) {
       return;
     }
     await showStartupFailure(error, target);
+  } finally {
+    if (bootId === activeBootId) bootInProgress = false;
   }
 }
 
 function createWindow() {
+  if (isQuitting || (mainWindow && !mainWindow.isDestroyed())) return;
+  mainWindowWantsVisible = !launchInBackground;
+  bootFailureCount = 0;
+  lastPublishedMainWindowVisibility = undefined;
   const initialNativeTheme = readNativeTheme();
   const initialNativeColors = nativeThemeColors(initialNativeTheme);
   const windowChrome = process.platform === 'darwin'
@@ -3234,6 +3335,7 @@ function createWindow() {
     ...windowChrome,
     show: false,
     webPreferences: {
+      devTools: IS_DESKTOP_DEVELOPMENT,
       nodeIntegration: false,
       contextIsolation: true,
       // Scheduled-task admission and gateway delivery reconciliation must
@@ -3250,7 +3352,7 @@ function createWindow() {
   applySystemIconToAllWindows();
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if ((input.control && input.shift && input.key.toLowerCase() === 'i') || input.key === 'F12') {
-      mainWindow.webContents.toggleDevTools();
+      if (IS_DESKTOP_DEVELOPMENT) mainWindow.webContents.toggleDevTools();
       event.preventDefault();
     }
   });
@@ -3302,6 +3404,7 @@ function createWindow() {
         ...childWindowChrome,
         autoHideMenuBar: true,
         webPreferences: {
+          devTools: IS_DESKTOP_DEVELOPMENT,
           nodeIntegration: false,
           contextIsolation: true,
           preload: path.join(__dirname, 'preload.js'),
@@ -3331,21 +3434,24 @@ function createWindow() {
   // Serialize the first navigation. Starting bootApp while loadFile(splash)
   // is still in flight can let the splash finish after the app URL and leave
   // a visible but non-interactive startup window on slower Macs.
+  const startingWindow = mainWindow;
+  const startingBootId = activeBootId;
   void showSplashScreen()
     .catch((error) => {
       console.error('[EterX] Could not load startup screen:', error);
-      if (!launchInBackground && mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
+      if (!isQuitting && mainWindowWantsVisible && mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
     })
-    .then(() => bootApp({ retryOnFailure: true }));
+    .then(() => {
+      if (!isQuitting && activeBootId === startingBootId && mainWindow === startingWindow && !startingWindow.isDestroyed()) {
+        return bootApp({ retryOnFailure: true });
+      }
+    });
 
   mainWindow.webContents.on('did-fail-load', (_event, _errorCode, _errorDescription, validatedURL, isMainFrame) => {
-    if (!isMainFrame || !isHttpTarget(validatedURL || getAppTarget())) return;
-    showSplashScreen()
-      .then(() => scheduleBootRetry(900))
-      .catch((error) => {
-        console.error('[EterX] Could not restore startup screen:', error);
-        scheduleBootRetry(900);
-      });
+    // loadURL's rejection owns boot failures. Handling the event too starts
+    // competing splash navigations, including for intentional ERR_ABORTED.
+    if (isQuitting || bootInProgress || _errorCode === -3 || !isMainFrame || !isTrustedAppUrl(validatedURL)) return;
+    scheduleBootRetry(900);
   });
 
   if (typeof mainWindow.webContents.session.setDisplayMediaRequestHandler === 'function') {
@@ -3389,6 +3495,7 @@ function createWindow() {
     if (isQuitting || closeAfterDurableFlush) return;
     if (desktopBackgroundPolicy().keepRuntime) {
       event.preventDefault();
+      mainWindowWantsVisible = false;
       void prepareDesktopClose(true);
       mainWindow.hide();
       ensureBackgroundTray();
@@ -3402,6 +3509,10 @@ function createWindow() {
     event.preventDefault();
     if (durableClosePending) return;
     durableClosePending = true;
+    mainWindowWantsVisible = false;
+    clearBootRetry();
+    activeBootId += 1;
+    bootInProgress = false;
     const closingWindow = mainWindow;
     void prepareDesktopClose(false).finally(() => {
       durableClosePending = false;
@@ -3411,15 +3522,42 @@ function createWindow() {
     });
   });
 
-  mainWindow.on('hide', stopAutomaticDesktopUpdateChecks);
-  mainWindow.on('minimize', stopAutomaticDesktopUpdateChecks);
-  mainWindow.on('show', notifyDesktopResume);
-  mainWindow.on('restore', notifyDesktopResume);
+  mainWindow.on('hide', () => {
+    stopAutomaticDesktopUpdateChecks();
+    publishMainWindowVisibility();
+  });
+  mainWindow.on('minimize', () => {
+    stopAutomaticDesktopUpdateChecks();
+    publishMainWindowVisibility();
+  });
+  mainWindow.on('show', () => {
+    publishMainWindowVisibility();
+    void notifyDesktopResume();
+  });
+  mainWindow.on('restore', () => {
+    publishMainWindowVisibility();
+    void notifyDesktopResume();
+  });
+  mainWindow.webContents.on('dom-ready', publishMainWindowVisibility);
   mainWindow.webContents.on('did-finish-load', () => {
+    publishMainWindowVisibility();
     if (mainWindow?.isVisible()) void notifyDesktopResume();
   });
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     if (isQuitting || details.reason === 'clean-exit') return;
+    if (details.reason === 'killed') {
+      logToFile('[renderer] Renderer was terminated; quitting the desktop session.');
+      app.quit();
+      return;
+    }
+    const now = Date.now();
+    while (rendererCrashTimes.length && now - rendererCrashTimes[0] > 60000) rendererCrashTimes.shift();
+    if (rendererCrashTimes.length >= 3) {
+      logToFile('[renderer] Repeated crashes; ending the desktop session.');
+      app.quit();
+      return;
+    }
+    rendererCrashTimes.push(now);
     // The server still owns running agents. Restore only their view and
     // scheduler; never restart an execution because its renderer crashed.
     logToFile(`[renderer] Recovering the chat view after ${details.reason}.`);
@@ -3427,6 +3565,10 @@ function createWindow() {
   });
 
   mainWindow.on('closed', function () {
+    clearBootRetry();
+    activeBootId += 1;
+    bootInProgress = false;
+    mainWindowWantsVisible = false;
     stopAutomaticDesktopUpdateChecks();
     mainWindow = null;
   });
@@ -4087,6 +4229,7 @@ app.on('ready', async () => {
   } catch (error) {
     console.error('[EterX] Could not prepare bundled server:', error);
   }
+  if (isQuitting) return;
 
   configureDesktopPermissions(session.defaultSession);
 
@@ -4113,6 +4256,10 @@ app.on('window-all-closed', function () {
 });
 
 app.on('before-quit', (event) => {
+  clearBootRetry();
+  activeBootId += 1;
+  bootInProgress = false;
+  mainWindowWantsVisible = false;
   desktopSpeechDictation.shutdown();
   stopAutomaticDesktopUpdateChecks();
   if (desktopUpdateInstallWatchdog) clearTimeout(desktopUpdateInstallWatchdog);

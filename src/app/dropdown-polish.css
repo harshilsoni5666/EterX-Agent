@@ -1,0 +1,207 @@
+/* Shared menu finish inspired by the compact native menu reference. Component
+   sheets still own sizing, placement and content. */
+:root {
+  --eterx-menu-surface: color-mix(in srgb, color-mix(in srgb, var(--background, #202020) 90%, var(--foreground, #fff) 10%) 96%, transparent);
+  --eterx-menu-line: color-mix(in srgb, var(--foreground, #fff) 9%, transparent);
+  --eterx-menu-hover: color-mix(in srgb, var(--foreground, #fff) 7%, transparent);
+  --eterx-menu-selected: color-mix(in srgb, var(--foreground, #fff) 10%, transparent);
+  --eterx-menu-shadow: 0 16px 42px rgba(0, 0, 0, .24), inset 0 1px 0 rgba(255, 255, 255, .045);
+}
+
+:root[data-theme="light"] {
+  --eterx-menu-surface: color-mix(in srgb, color-mix(in srgb, var(--background, #fff) 96%, var(--foreground, #202020) 4%) 97%, transparent);
+  --eterx-menu-shadow: 0 14px 36px rgba(0, 0, 0, .12), inset 0 1px 0 rgba(255, 255, 255, .78);
+}
+
+/* Composer selectors and utility dropdowns share a softly tinted surface;
+   chat-area menus keep their existing surface treatment. */
+:root .eterx-composer-shell [data-adaptive-menu="true"],
+:root .eterx-composer-popout,
+:root .eterx-agent-popout,
+:root .eterx-model-menu-popout,
+:root .eterx-status-popout,
+:root [role="menu"],
+:root .eterx-model-thinking-popout,
+:root .eterx-work-menu,
+:root .eterx-work-menu-flyout,
+:root .eterx-agent-overflow-menu,
+:root .eterx-theme-menu,
+:root .eterx-help-menu,
+:root .eterx-github-menu,
+:root .eterx-github-submenu,
+:root .eterx-proxy-attach-menu,
+:root .eterx-proxy-inset-menu,
+:root .eterx-proxy-runtime-model-menu,
+:root .eterx-proxy-popout,
+:root .eterx-proxy-model-menu,
+:root .eterx-sidebar-menu,
+:root .eterx-sidebar-project-menu,
+:root .eterx-project-menu,
+:root .eterx-settings-select-menu,
+:root .eterx-workspace-menu,
+:root .eterx-workspace-add-menu,
+:root .eterx-workspace-folder-menu {
+  background: var(--eterx-menu-surface) !important;
+  border: 1px solid var(--eterx-menu-line) !important;
+  color: var(--foreground, #f2f0ec) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(145%);
+  backdrop-filter: blur(22px) saturate(145%);
+  box-shadow: var(--eterx-menu-shadow) !important;
+}
+
+:root .eterx-composer-shell [data-adaptive-menu="true"],
+:root .eterx-composer-popout,
+:root .eterx-agent-popout,
+:root .eterx-model-menu-popout,
+:root .eterx-status-popout,
+:root [role="menu"],
+:root .eterx-model-thinking-popout,
+:root .eterx-theme-menu,
+:root .eterx-help-menu,
+:root .eterx-chat-action-menu,
+:root .eterx-thread-switcher,
+:root .eterx-github-menu,
+:root .eterx-github-submenu,
+:root .eterx-proxy-attach-menu,
+:root .eterx-proxy-inset-menu,
+:root .eterx-sidebar-menu,
+:root .eterx-sidebar-project-menu,
+:root .eterx-project-menu,
+:root .eterx-settings-select-menu,
+:root .eterx-workspace-menu,
+:root .eterx-workspace-add-menu,
+:root .eterx-mermaid-menu {
+  border-radius: 18px !important;
+}
+
+:root .eterx-work-menu,
+:root .eterx-work-menu-flyout,
+:root .eterx-agent-overflow-menu,
+:root .eterx-agent-popout,
+:root .eterx-model-menu-popout,
+:root .eterx-status-popout,
+:root .eterx-model-thinking-popout,
+:root .eterx-composer-popout,
+:root .eterx-proxy-runtime-model-menu,
+:root .eterx-proxy-popout,
+:root .eterx-proxy-model-menu,
+:root .eterx-workspace-folder-menu {
+  border-radius: 20px !important;
+}
+
+/* Consistent, low-key row feedback. Explicit active and checked states remain
+   visible so a menu is easy to scan without raising contrast everywhere. */
+:root .eterx-composer-shell :is(.eterx-status-menu-item, .eterx-agent-popout > button, .eterx-agent-popout .eterx-scrollbar button, .eterx-model-option-row > button),
+:root [role="menu"] [role^="menuitem"],
+:root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-work-menu-task-row, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button, .eterx-sidebar-project-menu-item, .eterx-project-menu-item:not(.eterx-project-menu-danger), .eterx-settings-select-menu button, .eterx-proxy-popout-item, .eterx-proxy-runtime-model-menu button, .eterx-github-menu button, .eterx-github-submenu button) {
+  border-radius: 11px !important;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease !important;
+}
+
+:root .eterx-composer-shell .eterx-status-menu-item:is(:hover, :focus-within, .is-selected),
+:root .eterx-composer-shell .eterx-agent-popout button:not(:disabled):is(:hover, [aria-pressed="true"]),
+:root .eterx-composer-shell .eterx-model-option-row > button:is(:hover, [aria-pressed="true"], [aria-checked="true"]),
+:root .eterx-composer-shell .eterx-model-option-row[data-thinking-open="true"] > button,
+:root [role="menu"] [role^="menuitem"]:not(.eterx-sidebar-menu-danger):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible, [data-highlighted], [aria-checked="true"], [data-active="true"]),
+:root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button:not(.eterx-sidebar-menu-danger), .eterx-sidebar-project-menu-item, .eterx-project-menu-item:not(.eterx-project-menu-danger), .eterx-settings-select-menu button, .eterx-proxy-popout-item, .eterx-proxy-runtime-model-menu button, .eterx-github-menu button, .eterx-github-submenu button):not(:disabled):is(:hover, :focus-visible, [aria-pressed="true"], [aria-checked="true"], [data-active="true"]) {
+  background: var(--eterx-menu-hover) !important;
+  color: var(--foreground, #f2f0ec) !important;
+}
+
+:root .eterx-composer-shell [data-adaptive-menu="true"] button:focus-visible,
+:root [role="menu"] [role^="menuitem"]:focus-visible,
+:root .eterx-model-thinking-popout button:focus-visible,
+:root :is(.eterx-agent-overflow-menu, .eterx-theme-menu, .eterx-help-menu, .eterx-github-menu, .eterx-github-submenu, .eterx-workspace-menu, .eterx-workspace-add-menu, .eterx-sidebar-menu, .eterx-sidebar-project-menu, .eterx-settings-select-menu) button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--foreground, #fff) 36%, transparent) !important;
+  outline-offset: -2px;
+}
+
+:root .eterx-work-menu-header {
+  border-color: var(--eterx-menu-line) !important;
+  background: color-mix(in srgb, var(--foreground, #fff) 3%, transparent) !important;
+}
+
+:root :is(.eterx-work-menu-divider, .eterx-chat-action-menu-divider, .eterx-mermaid-menu-separator, .eterx-workspace-menu hr) {
+  background-color: var(--eterx-menu-line) !important;
+  border-color: var(--eterx-menu-line) !important;
+}
+
+:root .eterx-agent-overflow-menu {
+  padding: 7px !important;
+}
+
+:root .eterx-agent-overflow-item,
+:root .eterx-chat-action-menu-item,
+:root .eterx-theme-menu-item,
+:root .eterx-help-menu-item {
+  min-height: 34px;
+  padding: 7px 10px !important;
+  color: var(--foreground, #f2f0ec) !important;
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+:root .eterx-theme-menu,
+:root .eterx-help-menu {
+  padding: 6px !important;
+}
+
+:root .eterx-theme-menu-item:is(:hover, :focus-visible, [data-highlighted]),
+:root .eterx-help-menu-item:is(:hover, :focus-visible, [data-highlighted]) {
+  background: var(--eterx-menu-hover) !important;
+}
+
+:root .eterx-workspace-menu button,
+:root .eterx-workspace-add-menu button,
+:root .eterx-workspace-folder-menu button {
+  color: var(--foreground, #f2f0ec);
+}
+
+:root .eterx-github-menu,
+:root .eterx-github-submenu {
+  color: var(--foreground, #f2f0ec) !important;
+}
+
+:root .eterx-github-menu button,
+:root .eterx-github-submenu button {
+  color: color-mix(in srgb, var(--foreground, #fff) 84%, transparent) !important;
+}
+
+:root .eterx-github-menu button:is(:hover, :focus-visible),
+:root .eterx-github-submenu button:is(:hover, :focus-visible) {
+  color: var(--foreground, #fff) !important;
+}
+
+:root .eterx-workspace-folder-menu-heading {
+  border-color: var(--eterx-menu-line) !important;
+}
+
+/* Match the proxy panel and its inset groups to the same generous silhouette;
+   the panel keeps its existing opaque surface. */
+:root .eterx-proxy-card {
+  border-radius: 22px !important;
+}
+
+:root .eterx-proxy-card .eterx-proxy-group-block {
+  border-radius: 15px !important;
+}
+
+/* Keep model selector surfaces consistent with the tinted composer menus. */
+:root[data-theme="dark"] :is(.eterx-model-menu-popout, .eterx-model-thinking-popout),
+:root[data-theme="light"] :is(.eterx-model-menu-popout, .eterx-model-thinking-popout),
+:root[data-theme="dark"] .eterx-composer-shell .eterx-model-menu-popout,
+:root[data-theme="dark"] .eterx-composer-shell .eterx-model-thinking-popout,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-menu-popout,
+:root[data-theme="light"] .eterx-composer-shell .eterx-model-thinking-popout {
+  background: var(--eterx-menu-surface) !important;
+  border-color: var(--eterx-menu-line) !important;
+  box-shadow: var(--eterx-menu-shadow) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(145%) !important;
+  backdrop-filter: blur(22px) saturate(145%) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root :is(.eterx-agent-overflow-item, .eterx-theme-menu-item, .eterx-help-menu-item, .eterx-work-menu-row, .eterx-work-menu-section-button, .eterx-workspace-menu button, .eterx-workspace-add-menu button, .eterx-workspace-folder-menu button, .eterx-sidebar-menu button, .eterx-sidebar-project-menu-item, .eterx-settings-select-menu button, .eterx-proxy-popout-item, .eterx-github-menu button, .eterx-github-submenu button) {
+    transition: none !important;
+  }
+}

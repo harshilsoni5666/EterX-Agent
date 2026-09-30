@@ -35,8 +35,11 @@ import { resolveAgentTools, type ResolvedTool } from './tool-injector';
 import { globalToolRegistry, normalizeRegistryToolName } from './tools/registry';
 import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/tool-args';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from './tools/security/tool_policy';
-import { getPathResolverInfo, resolveWorkspacePathForContext } from './workspace/path_resolver';
+import { resolveWorkspacePathForContext } from './workspace/path_resolver';
+import { initializeChatWorkspace, resolveChatWorkspaceContext } from './workspace/runtime-context';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
+import { getRuntimeEnvironment } from './runtime/environment';
+import { AGENT_EXECUTION_POLICY } from './execution-operating-policy';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import { normalizeProviderCacheUsage, resolveProviderPromptCacheMode } from './provider-prompt-cache';
 import { getOrCreateAgentCache, handleAgentCacheNotFound } from './agent-cache';
@@ -54,7 +57,7 @@ import {
 import { mergeStreamingText } from '../streaming-lifecycle';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improvement/engine';
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
-import { groupParallelToolCalls } from './parallel-tool-calls';
+import { executeParallelToolCalls } from './parallel-tool-calls';
 import { buildFilePreviewTraceId, buildLineDiffPreview, languageFromFilename } from './tool-trace';
 import { compactContextAtBoundary } from './resilience/context-compaction';
 import { openWorkingContextCheckpoint, resolveWorkingContextRequest } from './working-context-checkpoint';
@@ -216,7 +219,7 @@ export class AgentRunner {
   }
 
   /** Build the complete system instruction for this agent */
-  private buildSystemInstruction(taskText = ''): string {
+  private buildSystemInstruction(taskText = '', config?: AgentRunnerConfig): string {
     if (!this.profile) throw new Error('Agent not loaded');
 
     if (this.runtimeKind === 'agent_builder') {
@@ -245,6 +248,9 @@ export class AgentRunner {
 
 ${CONTEXT_CONTINUITY_OPERATING_POLICY}
 
+## Execution contract
+${AGENT_EXECUTION_POLICY}
+
 ## Current persisted target profile
 This snapshot is the latest authoritative configuration. Chat history explains user intent; this persisted state identifies what currently exists. A ready profile remains fully editable.
 ${persistedSnapshot}
@@ -266,7 +272,7 @@ ${persistedSnapshot}
 
     // Professional prompt (the core identity — written by the builder)
     parts.push(this.profile.professionalPrompt!);
-    parts.push(`\n${buildRuntimePlatformPrompt('auto')}`);
+    parts.push(`\n${buildRuntimePlatformPrompt(config?.pinnedContext?.terminalShell || 'auto')}`);
     parts.push(`\n${CONTEXT_CONTINUITY_OPERATING_POLICY}`);
 
     // Mission
@@ -350,11 +356,7 @@ Use file_read for reading files, file_create for creating files, file_edit for e
     // RUNTIME SAFETY GUARDRAILS (auto-injected, never skipped)
     // These complement the builder-written soul rules in the prompt.
     // ═══════════════════════════════════════════════════════════════
-    parts.push(`
-## Runtime safety
-- Stay inside the workspace and the mission of "${this.profile.name || this.profile.agentId}". Never escape paths, expose secrets, or perform destructive system/database actions.
-- Retry transient failures at most three times with backoff. Verify writes, command exit status, and time-sensitive research before claiming success.
-- Keep the user informed at meaningful work boundaries.`);
+    parts.push(`\n## Execution contract\n${AGENT_EXECUTION_POLICY}\nKeep the mission of "${this.profile.name || this.profile.agentId}" and preserve the user's authority over consequential actions.`);
 
     // ═══════════════════════════════════════════════════════════════
     // RUNTIME EFFICIENCY (auto-injected)
@@ -369,7 +371,7 @@ Use file_read for reading files, file_create for creating files, file_edit for e
     // Those values are attached to the latest user turn in run().
     parts.push(`
 ## Environment Context
-Workspace: ${getPathResolverInfo().desktopPath}
+Workspace: ${resolveChatWorkspaceContext(config?.chatId || 'custom-agent-' + (config?.agentId || 'agent'), 'default', config?.pinnedContext).workspacePath}
 Declared tools: ${activeTools.length}. Their schemas are authoritative.
 Current date/time and per-run evidence are supplied with the latest request.`);
 
@@ -449,7 +451,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
    * - Schema validation error reporting
    */
   async *run(
-    messages: Array<{ role: 'user' | 'model'; content: string }>,
+    messages: Array<{ role: 'user' | 'model'; content: string; contextTurnId?: string }>,
     config: AgentRunnerConfig
   ): AsyncGenerator<AgentRunnerEvent> {
     // A browser session spans many queries; it is never a dialogue identity.
@@ -493,7 +495,19 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       };
 
       const eventQueue: AgentRunnerEvent[] = [];
+      let wakeFlowEvent: (() => void) | null = null;
+      const notifyFlowEvent = () => {
+        const wake = wakeFlowEvent;
+        wakeFlowEvent = null;
+        wake?.();
+      };
+      const upstreamFlowSignal = config.pinnedContext?.abortSignal as AbortSignal | undefined;
+      const abortFlow = () => flowAbortController.abort();
+      flowAbortController.signal.addEventListener('abort', notifyFlowEvent);
+      if (upstreamFlowSignal?.aborted) abortFlow();
+      else upstreamFlowSignal?.addEventListener('abort', abortFlow, { once: true });
       const onTrace = (trace: any) => {
+        if (flowAbortController.signal.aborted) return;
         const traceTimestamp = Number(trace?.timestamp || Date.now());
         const traceAgentName = trace?.agentName || agentName;
         if (trace?.type === 'status') {
@@ -569,6 +583,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             timestamp: traceTimestamp,
           });
         } else if ([
+          'thought_stream',
           'file_preview',
           'evidence',
           'ask_user',
@@ -590,9 +605,11 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             timestamp: traceTimestamp,
           } as AgentRunnerEvent);
         }
+        if (eventQueue.length) notifyFlowEvent();
       };
 
       try {
+        if (flowAbortController.signal.aborted) throw new Error('CANCELLED_BY_USER');
         let flowSettled: AsyncSettlement<any> | null = null;
         void agentBuilderRunFlowTool.execute(
           { flowId: config.agentId, input: userMessage },
@@ -606,14 +623,20 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             _onTrace: onTrace
           }
         ).then(
-          value => { flowSettled = { status: 'fulfilled', value }; },
-          error => { flowSettled = { status: 'rejected', error }; },
+          value => { flowSettled = { status: 'fulfilled', value }; notifyFlowEvent(); },
+          error => { flowSettled = { status: 'rejected', error }; notifyFlowEvent(); },
         );
 
-        while (!flowSettled) {
+        while (!flowSettled || eventQueue.length > 0) {
+          if (flowAbortController.signal.aborted) throw new Error('CANCELLED_BY_USER');
           const pendingEvents = eventQueue.splice(0, eventQueue.length);
           for (const event of pendingEvents) yield event;
-          await new Promise(resolve => setTimeout(resolve, 100));
+          if (!flowSettled && eventQueue.length === 0) {
+            await new Promise<void>(resolve => {
+              wakeFlowEvent = resolve;
+              if (flowSettled || eventQueue.length > 0 || flowAbortController.signal.aborted) notifyFlowEvent();
+            });
+          }
         }
 
         const pendingEvents = eventQueue.splice(0, eventQueue.length);
@@ -639,6 +662,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         }
         return;
       } finally {
+        upstreamFlowSignal?.removeEventListener('abort', abortFlow);
+        flowAbortController.signal.removeEventListener('abort', notifyFlowEvent);
+        flowAbortController.abort();
+        wakeFlowEvent = null;
         if (this.cancelController === flowAbortController) this.cancelController = null;
       }
     }
@@ -696,7 +723,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       let ai = new GoogleGenAI({ apiKey: effectiveApiKey, httpOptions: { timeout: MODEL_REQUEST_TIMEOUT_MS } });
       const runtimeCurrentRequest = [...messages].reverse().find(item => item.role === 'user')?.content || '';
       const currentRequest = resolveWorkingContextRequest(config.pinnedContext, runtimeCurrentRequest);
-      let systemInstruction = this.buildSystemInstruction(currentRequest);
+      let systemInstruction = this.buildSystemInstruction(currentRequest, config);
       let funcDecls = this.buildFunctionDeclarations(currentRequest);
       let resolvedToolSurfaceSignature = this.resolvedTools.map(tool => tool.name).join('\0');
       const runtimeNow = new Date();
@@ -704,7 +731,12 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         '[SYSTEM-PROVIDED CURRENT RUNTIME CONTEXT]',
         `Date/time: ${runtimeNow.toISOString()}`,
         `Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
-        `Workspace: ${String(config.pinnedContext?.workspacePath || config.pinnedContext?.paths?.[0] || getPathResolverInfo().desktopPath)}`,
+        `Workspace: ${String(resolveChatWorkspaceContext(config.chatId || 'custom-agent-' + config.agentId, 'default', config.pinnedContext).workspacePath)}`,
+        `Current host environment (supplied automatically; no setup call needed): ${JSON.stringify(getRuntimeEnvironment({
+          ...resolveChatWorkspaceContext(config.chatId || 'custom-agent-' + config.agentId, 'default', config.pinnedContext),
+          chatId: config.chatId || 'custom-agent-' + config.agentId,
+          terminalShell: config.pinnedContext?.terminalShell,
+        }))}`,
       ];
       const resolvedModel = resolveGeminiRunnerModel(config);
       dynamicRunContextParts.push(
@@ -747,7 +779,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         const boundary = detectChatBoundaryFromHistory({
           newMessage: currentRequest,
           history: messages,
-          hasActiveTask: contextFabric.hasActiveFactKind('objective')
+          hasActiveTask: contextFabric.hasUnsettledUserRequest()
             || contextFabric.hasActiveFactKind('next_action'),
         });
         if (boundary.decision === 'new_task' && boundary.shouldResetSession) {
@@ -766,7 +798,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         try {
           const learnedContext = await adaptiveExperience.getExecutionContext({
             enabled: true,
-            userId: 'user',
+            userId: 'default',
             projectId: config.chatId || config.agentId,
             workspaceKey: String(config.pinnedContext?.workspacePath || config.pinnedContext?.paths?.[0] || ''),
             agentRuntime: this.runtimeKind === 'agent_builder' ? 'agent_builder' : `custom_agent:${config.agentId}`,
@@ -899,7 +931,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               name: refreshedProfile.name || this.profile?.name || config.pinnedContext?.agentName || config.agentId,
             };
             agentName = this.profile.name || agentName;
-            const nextSystemInstruction = this.buildSystemInstruction(currentRequest);
+            const nextSystemInstruction = this.buildSystemInstruction(currentRequest, config);
             const nextFuncDecls = this.buildFunctionDeclarations(currentRequest);
             const nextSurfaceSignature = `${nextSystemInstruction}\0${nextFuncDecls.map(tool => tool.name).join('\0')}`;
             const currentSurfaceSignature = `${systemInstruction}\0${funcDecls.map(tool => tool.name).join('\0')}`;
@@ -917,7 +949,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           } else {
             const nextSurfaceSignature = this.resolvedTools.map(tool => tool.name).join('\0');
             if (nextSurfaceSignature !== resolvedToolSurfaceSignature) {
-              systemInstruction = this.buildSystemInstruction(currentRequest);
+              systemInstruction = this.buildSystemInstruction(currentRequest, config);
               funcDecls = this.buildFunctionDeclarations(currentRequest);
               resolvedToolSurfaceSignature = nextSurfaceSignature;
               customAgentCachedContent = await getOrCreateAgentCache(
@@ -1307,7 +1339,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                 };
                 const toolAbortController = new AbortController();
                 const abortTool = () => toolAbortController.abort();
-                runAbortController.signal.addEventListener('abort', abortTool, { once: true });
+                if (runAbortController.signal.aborted) abortTool();
+                else runAbortController.signal.addEventListener('abort', abortTool, { once: true });
                 const toolTimeoutMs = this.resolveToolTimeoutMs(call.name, call.args);
                 let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
                 try {
@@ -1362,23 +1395,67 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                 if (activityVersion !== observedVersion) return Promise.resolve();
                 return new Promise<void>(resolve => activityWaiters.add(resolve));
               };
-              const running = calls.map(call => startToolCall(call, notifyActivity));
-              const pending = new Set(running);
+              const running = new Set<RunningToolCall>();
+              const skipped = new Set<FunctionCallRecord>();
+              let finished = false;
+              let schedulerError: { reason: unknown } | undefined;
+              const execution = executeParallelToolCalls(calls, async call => {
+                const run = startToolCall(call, notifyActivity);
+                running.add(run);
+                await run.promise;
+                const result = run.getResult();
+                callResults.set(call, result);
+                return result;
+              }, {
+                shouldStop: () => runAbortController.signal.aborted,
+                onSkipped: call => {
+                  const result = { success: false, cancelled: true, error: 'CANCELLED_BY_USER: tool was not started.' };
+                  skipped.add(call);
+                  callResults.set(call, result);
+                  return result;
+                },
+              }).catch(reason => {
+                schedulerError = { reason };
+              }).finally(() => {
+                finished = true;
+                notifyActivity();
+              });
 
-              while (pending.size > 0) {
-                const observedVersion = activityVersion;
-                for (const run of running) {
-                  for (const event of run.sideEvents.splice(0, run.sideEvents.length)) yield event;
+              try {
+                while (!finished || running.size > 0) {
+                  const observedVersion = activityVersion;
+                  for (const run of Array.from(running)) {
+                    for (const event of run.sideEvents.splice(0, run.sideEvents.length)) yield event;
+                    if (run.isSettled() && run.sideEvents.length === 0) {
+                      running.delete(run);
+                      yield {
+                        type: 'tool_result',
+                        toolName: run.call.name,
+                        toolCallId: run.call.uiToolCallId,
+                        toolResult: run.getResult(),
+                        agentName,
+                        timestamp: Date.now(),
+                      };
+                    }
+                  }
+                  if (!finished) await waitForActivityAfter(observedVersion);
                 }
-                for (const run of Array.from(pending)) {
-                  if (run.isSettled()) pending.delete(run);
+                if (schedulerError) throw schedulerError.reason;
+                // Queued actions were published before scheduling. Settle their
+                // UI cards as cancelled without ever invoking their tools.
+                for (const call of skipped) {
+                  yield {
+                    type: 'tool_result', toolName: call.name,
+                    toolCallId: call.uiToolCallId, toolResult: callResults.get(call),
+                    agentName, timestamp: Date.now(),
+                  };
                 }
-                if (pending.size > 0) await waitForActivityAfter(observedVersion);
-              }
-
-              for (const run of running) {
-                for (const event of run.sideEvents.splice(0, run.sideEvents.length)) yield event;
-                callResults.set(run.call, run.getResult());
+              } finally {
+                // Closing a streaming consumer must not leave queued work free
+                // to start or overlap a retry of this custom-agent run.
+                if (!finished) runAbortController.abort();
+                await execution;
+                activityWaiters.clear();
               }
             };
 
@@ -1393,13 +1470,16 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                     deferred: true,
                     error: 'Deferred because ask_user is a blocking user question. Use the user answer before deciding the next tool call.',
                   });
+                  yield {
+                    type: 'tool_result', toolName: call.name,
+                    toolCallId: call.uiToolCallId, toolResult: callResults.get(call),
+                    agentName, timestamp: Date.now(),
+                  };
                 }
               }
               for await (const event of runBatch([askUserCall])) yield event;
             } else {
-              for (const group of groupParallelToolCalls(functionCalls)) {
-                for await (const event of runBatch(group)) yield event;
-              }
+              for await (const event of runBatch(functionCalls)) yield event;
             }
 
             // Keep provider responses in call order even when executions finish
@@ -1422,14 +1502,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                   exactPageRef,
                 );
               }
-              yield {
-                type: 'tool_result',
-                toolName: call.name,
-                toolCallId: call.uiToolCallId,
-                toolResult: result,
-                agentName,
-                timestamp: Date.now(),
-              };
               toolResultParts.push({
                 functionResponse: {
                   name: call.name,
@@ -1642,59 +1714,11 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     const agentId = config.agentId;
     const chatId = config.chatId || `custom-agent-${agentId}`;
 
-    let workspaceRoot = getPathResolverInfo().desktopPath;
-    let paths = [workspaceRoot];
-    let allowedPaths = [workspaceRoot];
-    let sandboxGuard: any = null;
-    let isFocusedWorkspace = false;
-
-    if (config.runLocation === 'sandbox') {
-      try {
-        const { WorkspaceManager } = require('./workspace/manager');
-        const workspace = new WorkspaceManager('user', chatId);
-        await workspace.initialize();
-        const baseSandboxPath = workspace.getSandboxPath();
-
-        const { createSandboxSession, initializeSandbox, createSandboxGuard } = require('../sandbox');
-        const sandboxSession = createSandboxSession({
-          tenantId: 'local',
-          userId: 'user',
-          projectId: chatId,
-          sessionId: chatId,
-          workspaceRoot: baseSandboxPath,
-          network: 'deny',
-        });
-        await initializeSandbox(sandboxSession);
-        workspaceRoot = sandboxSession.root;
-        paths = [workspaceRoot];
-        allowedPaths = [workspaceRoot];
-
-        // Create the enterprise SandboxGuard and attach later to context
-        sandboxGuard = createSandboxGuard(sandboxSession);
-        await sandboxGuard.audit({ type: 'sandbox.guard.created', agentId, sandboxRoot: workspaceRoot });
-      } catch (e) {
-        console.error('Failed to initialize sandbox workspace for agent runner:', e);
-      }
-    } else {
-      const customWorkspace = config.pinnedContext?.workspacePath || config.pinnedContext?.paths?.[0];
-      if (customWorkspace) {
-        const resolvedCustom = path.resolve(customWorkspace);
-        try {
-          const customStat = fs.existsSync(resolvedCustom) ? fs.statSync(resolvedCustom) : null;
-          // A pinned path can be a file or a folder. Terminal cwd must
-          // always be the containing directory for file pins. Preserve a
-          // missing explicit path too, so a stale chat fails in its own
-          // workspace instead of silently executing on the desktop.
-          workspaceRoot = customStat && !customStat.isDirectory() ? path.dirname(resolvedCustom) : resolvedCustom;
-          paths = [workspaceRoot];
-          allowedPaths = [workspaceRoot];
-          isFocusedWorkspace = !!config.pinnedContext?.isFocusedWorkspace;
-        } catch {}
-      }
-    }
+    const routing = await initializeChatWorkspace(chatId, 'default', { ...config.pinnedContext, runLocation: config.runLocation });
+    const { workspaceRoot, paths, allowedPaths, isFocusedWorkspace, scratchRoot } = routing;
 
     const isSandboxRun = config.runLocation === 'sandbox';
-    const networkDenied = isSandboxRun || (config.pinnedContext?.networkPolicy === 'deny' && config.pinnedContext?.allowNetwork !== true);
+    const networkDenied = (config.pinnedContext?.networkPolicy === 'deny' && config.pinnedContext?.allowNetwork !== true);
     const localAllowedCapabilities = Array.from(new Set([
       ...DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES,
       'command.raw',
@@ -1722,29 +1746,25 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       agentSessionId: config.agentSessionId || '',
       workspaceRoot,
       workspacePath: workspaceRoot,
+      scratchRoot,
       paths,
       allowedPaths,
       isFocusedWorkspace,
       runLocation: isSandboxRun ? 'sandbox' : 'local',
       terminalShell: config.pinnedContext?.terminalShell || 'auto',
-      sandboxGuard: sandboxGuard || undefined,
-      allowedCapabilities: isSandboxRun
-        ? ['command.workspace', 'filesystem.read', 'filesystem.write', 'tool.utility', 'memory.manage']
-        : localAllowedCapabilities,
-      allowBrowserControl: isSandboxRun ? false : config.pinnedContext?.allowBrowserControl !== false,
+      allowedCapabilities: localAllowedCapabilities,
+      allowBrowserControl: config.pinnedContext?.allowBrowserControl !== false,
       networkPolicy: networkDenied ? 'deny' : 'allow',
       allowNetwork: !networkDenied,
-      allowAgentSpawning: isSandboxRun ? false : config.pinnedContext?.allowAgentSpawning !== false,
-      allowHostControl: isSandboxRun
-        ? false
-        : config.pinnedContext?.allowHostControl === true && config.pinnedContext?.computerUseEnabled !== false,
-      allowExternalCommunication: isSandboxRun ? false : config.pinnedContext?.allowExternalCommunication === true,
+      allowAgentSpawning: config.pinnedContext?.allowAgentSpawning !== false,
+      allowHostControl: config.pinnedContext?.allowHostControl === true && config.pinnedContext?.computerUseEnabled !== false,
+      allowExternalCommunication: config.pinnedContext?.allowExternalCommunication === true,
       userInitiatedCommunication: this.userInitiatedCommunication,
-      userId: 'user',
+      userId: 'default',
       selfImprovementEnabled: resolveSelfImprovementEnabled(config.pinnedContext?.selfImprovementEnabled),
-      allowDynamicCode: isSandboxRun ? false : config.pinnedContext?.allowDynamicCode !== false,
-      allowRawCommand: isSandboxRun ? false : config.pinnedContext?.allowRawCommand !== false,
-      allowVcs: isSandboxRun ? false : config.pinnedContext?.allowVcs !== false,
+      allowDynamicCode: config.pinnedContext?.allowDynamicCode !== false,
+      allowRawCommand: config.pinnedContext?.allowRawCommand !== false,
+      allowVcs: config.pinnedContext?.allowVcs !== false,
       maxSubAgents: config.pinnedContext?.maxSubAgents,
       maxRetries: config.pinnedContext?.maxRetries,
       _onTrace: onTrace,

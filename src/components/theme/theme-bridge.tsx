@@ -2,6 +2,7 @@
 
 import React, { useEffect } from 'react';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
+import { isAppVisible } from '../../lib/app-visibility';
 import { DEFAULT_THEME, isThemePreference, type ResolvedTheme, type ThemePreference } from '../../lib/theme-config';
 
 const SETTINGS_STORAGE_KEY = 'eterx_settings';
@@ -99,7 +100,7 @@ export const transitionEterxTheme = (
   if (
     !documentWithViewTransition.startViewTransition
     || prefersReducedMotion
-    || document.visibilityState !== 'visible'
+    || !isAppVisible()
     || themeAlreadyVisible
   ) {
     return commitWithoutTransition();

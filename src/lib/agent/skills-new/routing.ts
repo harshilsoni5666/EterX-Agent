@@ -59,7 +59,7 @@ export function getRelevantSkillIds(request: string): Set<string> {
 }
 
 export function evaluateSkillLoad(
-  request: string,
+  _request: string,
   requestedSkill: unknown,
   loadedThisTask: ReadonlySet<string>,
 ): SkillLoadDecision {
@@ -71,13 +71,9 @@ export function evaluateSkillLoad(
     return { allowed: false, skillId, reason: `Skill "${skillId}" is already loaded for this task. Use its existing guidelines.` };
   }
 
-  const relevant = getRelevantSkillIds(request);
-  if (!relevant.has(skillId)) {
-    const suffix = relevant.size > 0
-      ? ` The request only indicates: ${Array.from(relevant).join(', ')}.`
-      : ' This request does not require a specialized skill; continue with the normal workflow.';
-    return { allowed: false, skillId, reason: `Skill "${skillId}" is not relevant to the current user request.${suffix}` };
-  }
-
+  // Keyword routing is a discovery hint, not an authority gate. The model
+  // has the conversation, attachments, and live corrections; this function
+  // may receive only the run's original request. Do not veto its contextual
+  // choice of an available skill based on that stale, narrower string.
   return { allowed: true, skillId };
 }

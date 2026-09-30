@@ -3,6 +3,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
 import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, MessageSquarePlus, Activity, Minimize2, Info } from 'lucide-react';
 import { InlineRunNotice } from './inline-run-notice';
+import { UserMessageText } from './user-message-text';
+import { openChatImage } from './image-gallery';
+import { ChatMediaContext, ChatMediaOwnerContext, ChatMediaItem, findChatMedia } from './chat-media';
+import { PASTED_TEXT_MIME } from '../../lib/pasted-text';
+import { openLocalFilePath } from './local-file-link';
 import { ThinkingProcess, ProfessionalThought } from '../chat/thought-sequence';
 import { getTextPlaybackId, TextPlaybackScope } from './use-paced-text';
 import { AskUserPrompt } from '../chat/ask-user-prompt';
@@ -22,8 +27,13 @@ import { projectSteeringDelivery, sameUserAdmission, userAdmissionKey } from '..
 import { visibleUserRequest } from '../../lib/chat-user-payload';
 import { formatUnknownError } from '../../lib/agent/error-format';
 import { mergeFeedTracePayload } from '../../lib/chat-feed-lifecycle';
+import { FilePanelOwner } from '../../contexts/FilePanelContext';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
 interface ChatFeedProps {
+  workspaceOwner?: string;
+  scrollContainerId?: string;
+  media?: ChatMediaItem[];
   workspacePath?: string | null;
   traceLogs: any[];
   chatId: string | null;
@@ -64,7 +74,7 @@ const NakedCopyButton = React.memo(({ content }: { content: string }) => {
     <Tooltip text={copied ? "Copied!" : "Copy"}>
       <button type="button" onClick={handle} className="rounded-[8px] p-[6px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]">
         <span className="sr-only">{copied ? 'Copied' : 'Copy answer'}</span>
-        {copied ? <Check className="w-[15px] h-[15px] text-[#74D39A]" /> : <Copy className="w-[15px] h-[15px]" />}
+        {copied ? <Check className="w-[15px] h-[15px] text-white" /> : <Copy className="w-[15px] h-[15px]" />}
       </button>
     </Tooltip>
   );
@@ -123,7 +133,7 @@ const UserMessageActionButton = ({
         onClick(event);
       }}
       aria-label={label}
-      className="eterx-user-message-action-button relative isolate grid h-8 w-8 place-items-center rounded-full text-[#736E67] outline-none focus-visible:ring-2 focus-visible:ring-white/18"
+      className="eterx-user-message-action-button relative isolate grid h-6 w-6 place-items-center rounded-full text-[#736E67] outline-none focus-visible:ring-2 focus-visible:ring-white/18"
     >
       <span className="pointer-events-none relative z-10 grid h-6 w-6 place-items-center rounded-full">
         {children}
@@ -168,14 +178,14 @@ const UserMessageActions = React.memo(({ text, onEdit, timestamp }: { text: stri
   const timeLabel = formatShortTime(timestamp);
 
   return (
-    <div className="eterx-user-message-actions absolute right-full top-1/2 mr-2 flex -translate-y-1/2 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-150 group-hover/user:opacity-100 group-hover/user:pointer-events-auto group-hover/steer:opacity-100 group-hover/steer:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
+    <div className="eterx-user-message-actions absolute bottom-0 right-1 flex w-max items-center justify-end gap-0.5 opacity-0 pointer-events-none transition-opacity duration-100 group-hover/user:opacity-100 group-hover/user:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto">
       {timeLabel && (
         <span className="eterx-chat-message-time eterx-professional-number mr-1 text-[11px] font-[550] leading-none tracking-[-0.015em] text-[#736E67] select-none whitespace-nowrap">
           {timeLabel}
         </span>
       )}
       <UserMessageActionButton label={copied ? "Copied" : "Copy message"} onClick={handleCopy}>
-        {copied ? <Check className="h-[18px] w-[18px] text-emerald-400" strokeWidth={2.15} /> : <Copy className="h-[18px] w-[18px]" strokeWidth={2.15} />}
+        {copied ? <Check className="h-4 w-4 text-white" strokeWidth={2.15} /> : <Copy className="h-4 w-4" strokeWidth={2.15} />}
       </UserMessageActionButton>
       {onEdit && (
         <UserMessageActionButton
@@ -185,7 +195,7 @@ const UserMessageActions = React.memo(({ text, onEdit, timestamp }: { text: stri
             onEdit(text);
           }}
         >
-          <EditMessageIcon className="h-[18px] w-[18px]" />
+          <EditMessageIcon className="h-4 w-4" />
         </UserMessageActionButton>
       )}
     </div>
@@ -313,44 +323,81 @@ const chatFeedSurfaceStyles = `
     background: linear-gradient(90deg, rgba(75, 82, 91, 0.22), transparent);
   }
   .eterx-chat-turns-nav {
-    mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%);
-    scroll-padding-block: 16px;
+    --turn-nav-muted: #858582;
+    --turn-nav-active: #c4c2bd;
+    width: 30px;
+    gap: 3px;
+    max-height: calc(100% - 32px);
   }
-
+  :root[data-theme="light"] .eterx-chat-turns-nav {
+    --turn-nav-muted: #858c94;
+    --turn-nav-active: #46515d;
+  }
   .eterx-chat-turns-list {
     position: relative;
-    padding-block: 12px;
+    min-height: 0;
+    width: 30px;
+    padding: 11px 0;
     scroll-padding-block: 12px;
+    scrollbar-width: none;
+    --turn-fade-top: 0px;
+    --turn-fade-bottom: 0px;
+    mask-image: linear-gradient(to bottom, transparent, #000 var(--turn-fade-top), #000 calc(100% - var(--turn-fade-bottom)), transparent);
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--turn-fade-top), #000 calc(100% - var(--turn-fade-bottom)), transparent);
   }
+  .eterx-chat-turns-list::-webkit-scrollbar { display: none; }
+  .eterx-chat-turns-list[data-overflow-top="true"] { --turn-fade-top: 18px; }
+  .eterx-chat-turns-list[data-overflow-bottom="true"] { --turn-fade-bottom: 18px; }
   :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker {
-    width: 28px;
-    height: 10px;
-    min-height: 10px;
+    width: 30px;
+    height: 20px;
+    min-height: 20px;
     padding: 0;
-    justify-content: flex-start;
+    justify-content: center;
     background: transparent !important;
-    border-radius: 3px;
+    border-radius: 8px;
   }
-  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turns-dash {
-    width: 8px;
-    height: 2px;
-    background: var(--muted-foreground) !important;
-    opacity: 0.4;
-    transition: width 140ms ease-out, opacity 140ms ease-out;
+  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turns-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--turn-nav-muted);
+    opacity: 0.68;
+    transition: transform 160ms ease-out, opacity 160ms ease-out, background-color 160ms ease-out;
   }
-  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker:is(:hover, :focus-visible) .eterx-chat-turns-dash {
-    width: 24px;
-    opacity: 0.85;
+  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker:is(:hover, :focus-visible) .eterx-chat-turns-dot {
+    transform: scale(1.35);
+    opacity: 0.9;
   }
-  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker[aria-current="step"] .eterx-chat-turns-dash {
-    width: 20px;
-    background: var(--foreground) !important;
+  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker[aria-current="step"] .eterx-chat-turns-dot {
+    transform: scale(1.6);
+    background: var(--turn-nav-active);
     opacity: 1;
   }
-  :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turn-marker[aria-current="step"]:is(:hover, :focus-visible) .eterx-chat-turns-dash {
-    width: 26px;
+  .eterx-chat-turns-edge {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 30px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 9px;
+    color: var(--turn-nav-muted);
+    background: transparent;
+    opacity: 0.76;
+    transition: color 160ms ease-out, background-color 160ms ease-out, opacity 160ms ease-out;
   }
+  .eterx-chat-turns-edge:not(:disabled):hover {
+    color: var(--foreground);
+    background: var(--muted);
+    opacity: 1;
+  }
+  .eterx-chat-turns-edge:focus-visible {
+    outline: 2px solid var(--muted-foreground);
+    outline-offset: -2px;
+  }
+  .eterx-chat-turns-edge:disabled { opacity: 0.24; cursor: default; }
   :root[data-theme] .eterx-chat-turn-preview .eterx-chat-turns-popover {
     min-height: 0;
     max-height: 160px;
@@ -394,7 +441,8 @@ const chatFeedSurfaceStyles = `
     background: transparent !important;
   }
   @media (prefers-reduced-motion: reduce) {
-    :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turns-dash {
+    :root[data-theme] .eterx-chat-turns-nav .eterx-chat-turns-dot,
+    .eterx-chat-turns-edge {
       transition: none;
     }
   }
@@ -418,7 +466,6 @@ const chatFeedSurfaceStyles = `
   }
   @media (max-width: 640px) {
     .eterx-chat-turns-nav { display: none; }
-    .eterx-user-message-actions { margin-right: 0.25rem; }
   }
 `;
 
@@ -437,7 +484,9 @@ const HIDDEN_HELPER_TYPES = new Set(['answer', 'ask_user', 'file_preview', 'cons
 const NARRATIVE_TRACE_TYPES = new Set(['thought_stream', 'work_note', 'autonomy_proxy_status']);
 const getFeedNarrativeOwner = (log: any): string => {
   const explicitIdentity = String(log?.subAgentChatId || log?.subAgentId || log?.subAgent || '').trim();
-  if (explicitIdentity) return `sub:${ explicitIdentity }`;
+  if (explicitIdentity && !/^(?:main|main agent|assistant|eterx|eterx agent|root)$/i.test(explicitIdentity)) {
+    return `sub:${ explicitIdentity }`;
+  }
   const type = String(log?.type || '').trim().toLowerCase();
   const explicitlyChild = log?.isSubAgent === true ||
     Boolean(log?.terminalTask) ||
@@ -1633,7 +1682,7 @@ const isHiddenStatusOnlyLog = (log: any) => {
 
 const formatWorkElapsed = (seconds: number | null) => {
   if (seconds === null) return '';
-  const safeSeconds = Math.max(0, seconds);
+  const safeSeconds = Math.max(1, seconds);
   const hours = Math.floor(safeSeconds / 3600);
   const minutes = Math.floor((safeSeconds % 3600) / 60);
   const rest = safeSeconds % 60;
@@ -1664,6 +1713,9 @@ const isCountedWorkflowLog = (log: any) =>
   WORKFLOW_COUNT_TYPES.has(log?.type) &&
   !HIDDEN_HELPER_TYPES.has(log?.type) &&
   !isHiddenStatusOnlyLog(log);
+
+const isMainStreamActionLog = (log: any) =>
+  isCountedWorkflowLog(log) && getFeedNarrativeOwner(log) === 'main';
 
 const isTimedWorkLog = (log: any) =>
   isCountedWorkflowLog(log) ||
@@ -1724,8 +1776,8 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | 
     endedAt: recordedEnd,
     allowLiveFallback: hasTimedWork,
   });
-  if (elapsedMs === null) return null;
-  return Math.max(0, Math.floor(elapsedMs / 1_000));
+  if (elapsedMs === null) return hasTimedWork ? 1 : null;
+  return Math.max(1, Math.round(elapsedMs / 1_000));
 };
 
 const renderFeedContextCompaction = (log: any) => <ContextCompactionNotice log={log} />;
@@ -1796,7 +1848,8 @@ const ThoughtSequence = ({
   };
 
   const isOpen = open;
-  const hasRealActions = stepCount > 0;
+  const hasRealActions = stepCount > 0 && turnLogs.some(isMainStreamActionLog);
+  const showTimeline = isOpen || !hasRealActions;
   const hasNarrativeWork = hasVisibleNarrative(turnLogs);
   const hasRenderableTimelineWork = turnLogs.some(log =>
     isInternalStatusThought(log) || (
@@ -1815,26 +1868,26 @@ const ThoughtSequence = ({
 
   return (
     <div className="eterx-work-sequence relative" ref={containerRef}>
-      <div className={`eterx-worked-summary eterx-worked-summary-complete ${ isLiveThinking ? 'eterx-worked-summary-live' : '' } mb-1 flex w-full items-center gap-3 pt-0`}>
-        <button
-          type="button"
-          onClick={toggleOpen}
-          aria-expanded={isOpen}
-          className="eterx-worked-summary-button inline-flex shrink-0 items-center gap-1.5 rounded-md py-1 text-left outline-none transition-colors"
-        >
-          <span className="eterx-worked-summary-label py-[1px] text-[13px] font-semibold leading-[1.4] tracking-normal text-[var(--muted-foreground)]">
-            <span>{isLiveThinking
-              ? workElapsedLabel ? 'Working for\u00a0' : 'Working'
-              : workElapsedLabel ? 'Worked for\u00a0' : 'Worked'}</span>
-            {workElapsedLabel && <RollingTimeDisplay label={workElapsedLabel} />}
-          </span>
-          <ChevronDown className={`eterx-worked-summary-chevron h-3.5 w-3.5 transition-transform ${ isOpen ? '' : '-rotate-90' }`} aria-hidden="true" />
-        </button>
-        <div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" />
-      </div>
+      {hasRealActions && (
+        <div className={`eterx-worked-summary eterx-worked-summary-complete ${ isLiveThinking ? 'eterx-worked-summary-live' : '' } mb-1 flex w-full items-center gap-3 pt-0`}>
+          <button
+            type="button"
+            onClick={toggleOpen}
+            aria-expanded={isOpen}
+            className="eterx-worked-summary-button inline-flex shrink-0 items-center gap-1.5 rounded-md py-1 text-left outline-none transition-colors"
+          >
+            <span className="eterx-worked-summary-label py-[1px] text-[13px] font-semibold leading-[1.4] tracking-normal text-[var(--muted-foreground)]">
+              <span>{isLiveThinking ? 'Working for\u00a0' : 'Worked for\u00a0'}</span>
+              {workElapsedLabel && <RollingTimeDisplay label={workElapsedLabel} />}
+            </span>
+            <ChevronDown className={`eterx-worked-summary-chevron h-3.5 w-3.5 transition-transform ${ isOpen ? '' : '-rotate-90' }`} aria-hidden="true" />
+          </button>
+          <div className="eterx-worked-summary-line h-px flex-1 bg-[var(--border)]" />
+        </div>
+      )}
 
-      {isOpen && (
-        <div hidden={!isOpen} className="overflow-hidden">
+      {showTimeline && (
+        <div hidden={!showTimeline} className="overflow-hidden">
           <ThinkingProcess
             logs={logs}
             liveLogs={liveLogs}
@@ -1924,6 +1977,7 @@ const haveSameRenderedLog = (left: any, right: any) => {
 const ChatFeedMessageGroup = React.memo(({
   group,
   groupIdx,
+  dateLabel,
   turnStartedAt,
   isThinkingTurn,
   isLiveSessionActive,
@@ -1940,6 +1994,7 @@ const ChatFeedMessageGroup = React.memo(({
 }: {
   group: any[];
   groupIdx: number;
+  dateLabel?: string;
   turnStartedAt?: number | null;
   isThinkingTurn: boolean;
   isLiveSessionActive: boolean;
@@ -1961,10 +2016,14 @@ const ChatFeedMessageGroup = React.memo(({
   // already shown in that turn across sparse polling frames; newer snapshots
   // can update matching rows but can never make earlier work vanish.
   const landedTurnLogsRef = React.useRef<any[]>([]);
+  const chatMedia = React.useContext(ChatMediaContext);
   const first = group[0];
   if (isHiddenRecoveredUserBoundary(first)) return null;
   if (first?.type === 'user_action' || first?.type === 'steering_received') {
     const userText = getVisibleUserBoundaryText(first);
+    // Sparse boundary placeholders own ordering, but must not reserve a
+    // message-sized gap before their text or attachments arrive.
+    if (!userText && !first.attachments?.length) return null;
     const messageSource = String(first.source || '').toLowerCase();
     const delegatedSource = messageSource === 'proxy_manager'
       ? 'Side Proxy-Agent'
@@ -1974,10 +2033,11 @@ const ChatFeedMessageGroup = React.memo(({
           ? String(first.delegatedBy || 'Agent request')
           : '';
     return (
+      <div className="eterx-feed-entry" data-message-role="user" data-date-divider={dateLabel ? 'true' : undefined}>
+        {dateLabel && <ChatDateDivider label={dateLabel} />}
       <div data-chat-group-index={groupIdx} className="eterx-chat-message-group mt-8 mb-3 flex w-full scroll-m-20 justify-end group/user">
-        <div className="flex w-full justify-end">
-          <div data-delegated={delegatedSource ? 'true' : undefined} className={`eterx-user-message-bubble eterx-chat-feed-user-bubble flex min-w-0 flex-col items-end rounded-[22px] ${ delegatedSource ? 'bg-[#1B1B1B]' : 'bg-[#1F1F1F]' } px-4 py-2.5 text-[13.5px] leading-[1.5] text-[#F4F2EE] selection:bg-[#D98B6A]/25 relative whitespace-pre-wrap select-text shadow-none ${ isCompressed ? 'max-w-[92%]' : 'max-w-[520px]' }`}>
-            <UserMessageActions text={userText} onEdit={onEditUserMessage} timestamp={first.timestamp} />
+        <div className={`relative flex w-full min-w-0 justify-end ${userText ? 'pb-7' : ''}`}>
+          <div className="eterx-user-message-content flex min-w-0 flex-col items-end gap-2">
 
             {delegatedSource && (
               <div className="eterx-delegated-source-header mb-1.5 w-full border-b border-white/[0.09] pb-1.5 text-left text-[11px] font-medium tracking-[0.01em] text-white/55">
@@ -1986,20 +2046,22 @@ const ChatFeedMessageGroup = React.memo(({
             )}
 
             {first.attachments && first.attachments.length > 0 && (
-              <div className="flex flex-wrap justify-end gap-2.5 mb-3 w-full">
+              <div className="eterx-user-attachments flex max-w-full flex-wrap justify-end gap-2 w-full">
                 {first.attachments.map((att: any, i: number) => {
-                  const mimeType = String(att.mimeType || att.file?.type || '').toLowerCase();
-                  const fileName = att.name || att.file?.name || 'file';
+                  const savedMedia = findChatMedia(chatMedia, att);
+                  const mimeType = String(att.mimeType || att.file?.type || savedMedia?.mimeType || '').toLowerCase();
+                  const fileName = att.name || att.file?.name || savedMedia?.name || 'file';
                   const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
                   const isImage = mimeType.startsWith('image/') || ['PNG', 'JPG', 'JPEG', 'GIF', 'WEBP', 'AVIF'].includes(extension);
                   const isVideo = mimeType.startsWith('video/') || ['MP4', 'WEBM', 'MOV', 'M4V'].includes(extension);
                   // Blob URLs belong to the composer and may be revoked on send.
                   // Persisted files remain available after navigation and restart.
-                  const previewUrl = att.localPath || att.path
+                  const previewUrl = savedMedia?.previewUrl || att.previewUrl || (att.localPath || att.path
                     ? buildFilePreviewUrl(att.localPath || att.path)
-                    : att.preview || '';
+                    : att.preview || '');
                   const isPdf = extension === 'PDF';
-                  const isDocPreviewable = extension === 'PDF' || extension === 'DOCX';
+                  const isTextPreviewable = mimeType === PASTED_TEXT_MIME || ['TXT', 'MD', 'CSV', 'TSV', 'JSON', 'LOG'].includes(extension);
+                  const isDocPreviewable = extension === 'PDF' || extension === 'DOCX' || isTextPreviewable;
 
                   if ((isImage || isVideo) && previewUrl) {
                     return (
@@ -2010,16 +2072,17 @@ const ChatFeedMessageGroup = React.memo(({
                           e.preventDefault();
                           e.stopPropagation();
                           if (previewUrl) {
-                            window.dispatchEvent(new CustomEvent(isVideo ? 'eterx-preview-media' : 'eterx-preview-image', { detail: { previewUrl, kind: isVideo ? 'video' : 'image', fileName } }));
+                            if (isVideo) window.dispatchEvent(new CustomEvent('eterx-preview-media', { detail: { previewUrl, kind: 'video', fileName } }));
+                            else openChatImage(e.currentTarget, previewUrl, chatMedia.filter(item => item.mimeType.startsWith('image/')).map(item => item.previewUrl));
                           }
                         }}
-                        className="relative group h-[72px] w-[72px] shrink-0 cursor-pointer rounded-[14px] border border-white/[0.06] shadow-none transition-colors hover:border-white/[0.10] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                        className={`relative group ${first.attachments.length === 1 ? 'h-[144px] w-[192px]' : 'h-[96px] w-[112px]'} max-w-full shrink-0 cursor-pointer overflow-hidden rounded-[14px] border border-[var(--border)] shadow-none transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current`}
                         aria-label={`Preview ${ fileName }`}
                       >
                         {isVideo ? (
                           <video src={previewUrl} muted playsInline preload="metadata" className="h-full w-full rounded-[14px] object-cover opacity-90" />
                         ) : (
-                          <img src={previewUrl} alt={fileName} loading="lazy" decoding="async" className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
+                          <img data-chat-image src={previewUrl} alt={fileName} loading="lazy" decoding="async" className="w-full h-full object-cover rounded-[14px] transition-opacity hover:opacity-90" />
                         )}
                         {isVideo && <span className="pointer-events-none absolute inset-x-0 bottom-1 text-center text-[9px] font-semibold uppercase tracking-[0.12em] text-white/80">Video</span>}
                       </button>
@@ -2030,30 +2093,33 @@ const ChatFeedMessageGroup = React.memo(({
                     <button
                       type="button"
                       key={att.id || i}
-                      disabled={!isDocPreviewable}
+                      disabled={!att.localPath && !att.path && !att.preview}
                       onClick={() => {
                         if (isDocPreviewable) {
                           const targetPath = att.localPath || att.path || att.name;
-                          window.dispatchEvent(new CustomEvent('eterx-preview-document', { detail: { filePath: targetPath } }));
-                        }
+                          window.dispatchEvent(new CustomEvent(isTextPreviewable ? 'eterx-preview-text' : 'eterx-preview-document', { detail: { filePath: targetPath, name: fileName } }));
+                        } else { void openLocalFilePath(att.localPath || att.path); }
                       }}
-                      className={`flex h-[72px] w-[72px] shrink-0 flex-col items-center justify-center gap-1.5 rounded-[14px] border border-white/[0.055] bg-white/[0.024] shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20 ${ isDocPreviewable ? 'cursor-pointer transition-all hover:border-white/[0.10] hover:bg-white/[0.045]' : 'cursor-default' }`}
+                      className="inline-flex h-10 min-w-0 max-w-full items-center justify-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 text-[var(--foreground)] shadow-none transition-colors hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-50"
                       aria-label={isDocPreviewable ? `Preview ${ fileName }` : fileName}
                     >
                       <div className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center shrink-0 ${ isPdf ? 'bg-[#C65D58]' : extension === 'DOCX' ? 'bg-[#2A6B9C]' : 'bg-[#596B7B]' }`}>
                         <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
                       </div>
-                      <span className="text-[10px] font-medium text-[#C8C1B8] truncate max-w-[90%] px-1">{att.name || fileName}</span>
+                      <span className="min-w-0 max-w-[32ch] truncate text-[12px] font-medium">{mimeType === PASTED_TEXT_MIME ? 'Pasted text' : fileName}</span>
+                      <span className="shrink-0 text-[10px] text-[var(--muted-foreground)]">{att.size ? `${Math.max(1, Math.ceil(att.size / 1024))} KB` : extension}</span>
                     </button>
                   );
                 })}
               </div>
             )}
-            <div className="min-w-0 max-w-full w-full text-left">
-              <span className="block min-w-0 max-w-full w-full text-left break-words [word-break:break-word] [overflow-wrap:anywhere]">{userText}</span>
-            </div>
+            {userText && <div data-delegated={delegatedSource ? 'true' : undefined} className="eterx-user-message-bubble eterx-chat-feed-user-bubble relative min-w-0 max-w-full rounded-[22px] bg-[#1F1F1F] px-4 py-2.5 text-[13.5px] leading-[1.5] text-[#F4F2EE] select-text">
+              <UserMessageText text={userText} />
+            </div>}
           </div>
+          {userText && <UserMessageActions text={userText} onEdit={onEditUserMessage} timestamp={first.timestamp} />}
         </div>
+      </div>
       </div>
     );
   }
@@ -2338,6 +2404,8 @@ const ChatFeedMessageGroup = React.memo(({
   }
 
   return (
+    <div className="eterx-feed-entry" data-message-role="assistant" data-date-divider={dateLabel ? 'true' : undefined}>
+      {dateLabel && <ChatDateDivider label={dateLabel} />}
     <div
       data-chat-group-index={groupIdx}
       data-live={groupIsThinking ? 'true' : undefined}
@@ -2479,9 +2547,11 @@ const ChatFeedMessageGroup = React.memo(({
         />
       ))}
     </div>
+    </div>
   );
 }, (previous, next) => {
   if (previous.groupIdx !== next.groupIdx) return false;
+  if (previous.dateLabel !== next.dateLabel) return false;
   if (previous.turnStartedAt !== next.turnStartedAt) return false;
   if (previous.isThinkingTurn !== next.isThinkingTurn) return false;
   if (previous.isLiveSessionActive !== next.isLiveSessionActive) return false;
@@ -2549,8 +2619,9 @@ const ChatDateDivider = React.memo(({ label }: { label: string }) => (
   </div>
 ));
 
-export const ChatFeed = React.memo<ChatFeedProps>(({
-  traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, subAgentAssetIndexes, isFeedActivityPaused = false, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState, workspacePath
+const ChatFeedContent = React.memo<ChatFeedProps>(({
+  scrollContainerId = 'chat-container',
+  traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, subAgentAssetIndexes, isFeedActivityPaused = false, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState, workspacePath, media
 }) => {
   const isAgentBuilderFeed = String(chatId || '').startsWith('agent_builder_');
   const steeringDelivery = useMemo(
@@ -2576,6 +2647,15 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const navContainerRef = useRef<HTMLDivElement>(null);
+  const [navOverflow, setNavOverflow] = useState({ top: false, bottom: false });
+  const updateNavOverflow = useCallback(() => {
+    const list = navContainerRef.current;
+    if (!list) return;
+    const top = list.scrollTop > 1;
+    const bottom = list.scrollHeight - list.clientHeight - list.scrollTop > 1;
+    setNavOverflow(previous => previous.top === top && previous.bottom === bottom
+      ? previous : { top, bottom });
+  }, []);
   const previewCloseButtonRef = useRef<HTMLButtonElement>(null);
   const previewRestoreFocusRef = useRef<HTMLElement | null>(null);
   const previewTitleId = React.useId();
@@ -2823,11 +2903,21 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
     // the main chat while the user was reading it.
     const itemTop = activeEl.offsetTop;
     const itemBottom = itemTop + activeEl.offsetHeight;
-    const visibleTop = navContainer.scrollTop;
-    const visibleBottom = visibleTop + navContainer.clientHeight;
-    if (itemTop < visibleTop) navContainer.scrollTop = itemTop;
-    else if (itemBottom > visibleBottom) navContainer.scrollTop = itemBottom - navContainer.clientHeight;
-  }, [activeTurnIdx]);
+    const visibleTop = navContainer.scrollTop + 18;
+    const visibleBottom = navContainer.scrollTop + navContainer.clientHeight - 18;
+    if (itemTop < visibleTop) navContainer.scrollTop = Math.max(0, itemTop - 18);
+    else if (itemBottom > visibleBottom) navContainer.scrollTop = itemBottom - navContainer.clientHeight + 18;
+    updateNavOverflow();
+  }, [activeTurnIdx, userTurns.length, conversationIdentity, updateNavOverflow]);
+
+  useEffect(() => {
+    const list = navContainerRef.current;
+    if (!list) return;
+    updateNavOverflow();
+    const observer = new ResizeObserver(updateNavOverflow);
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [userTurns.length, conversationIdentity, updateNavOverflow]);
   const previewScrollRef = useRef<HTMLDivElement>(null);
   const feedContentRef = useRef<HTMLDivElement>(null);
   const prevTraceActivityRef = useRef('');
@@ -2865,7 +2955,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
 
   const pinLatestMessage = useCallback(() => {
     const container = scrollContainerRef.current;
-    if (!container || !shouldAutoFollowRef.current) return;
+    if (!container || !shouldAutoFollowRef.current || !isAppVisible()) return;
     const nextScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
     // Work panels and the floating composer can both shrink during a live
     // transition. Never issue an upward scroll for that temporary geometry;
@@ -2879,12 +2969,21 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
   }, []);
 
   const scheduleAutoFollow = useCallback(() => {
-    if (!shouldAutoFollowRef.current || autoFollowFrameRef.current !== null) return;
+    if (!shouldAutoFollowRef.current || !isAppVisible() || autoFollowFrameRef.current !== null) return;
     autoFollowFrameRef.current = window.requestAnimationFrame(() => {
       autoFollowFrameRef.current = null;
       pinLatestMessage();
     });
   }, [pinLatestMessage]);
+
+  useEffect(() => subscribeAppVisibility(() => {
+    if (isAppVisible()) {
+      scheduleAutoFollow();
+    } else if (autoFollowFrameRef.current !== null) {
+      window.cancelAnimationFrame(autoFollowFrameRef.current);
+      autoFollowFrameRef.current = null;
+    }
+  }), [scheduleAutoFollow]);
 
   const pauseAutoFollow = useCallback(() => {
     shouldAutoFollowRef.current = false;
@@ -3137,7 +3236,7 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       const targetRect = target.getBoundingClientRect();
       const targetTop = container.scrollTop + targetRect.top - containerRect.top;
       const centeredTop = targetTop - Math.max(0, (container.clientHeight - targetRect.height) / 2);
-      container.scrollTo({ top: Math.max(0, centeredTop), behavior: 'smooth' });
+      container.scrollTo({ top: Math.max(0, centeredTop), behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
     };
 
     setActiveTurnIdx(turnIndex);
@@ -3214,9 +3313,31 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
               initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.24, ease: 'easeOut' }}
-              className="eterx-chat-turns-nav pointer-events-none absolute inset-y-0 left-2 z-[60] flex items-center"
+              style={{ translate: '0 -50%' }}
+              className="eterx-chat-turns-nav pointer-events-auto absolute top-1/2 left-2 z-[60] flex flex-col items-center"
             >
-              <div ref={navContainerRef} className="eterx-chat-turns-list pointer-events-auto flex max-h-[min(52vh,460px)] flex-col gap-0 overflow-y-auto overscroll-contain py-3 pl-1.5 pr-1.5 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <button
+                type="button"
+                className="eterx-chat-turns-edge"
+                aria-label="Go to first query"
+                disabled={activeTurnIdx === 0 && !navOverflow.top}
+                onClick={() => {
+                  if (navContainerRef.current) navContainerRef.current.scrollTop = 0;
+                  setHoveredTurn(null);
+                  navigateToTurn(userTurns[0], 0);
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+                  <path d="M4.65 2.65a1.6 1.6 0 0 1 2.7 0l3.05 4.8A1.5 1.5 0 0 1 9.13 9.75H2.87A1.5 1.5 0 0 1 1.6 7.45Z" />
+                </svg>
+              </button>
+              <div
+                ref={navContainerRef}
+                onScroll={updateNavOverflow}
+                data-overflow-top={navOverflow.top}
+                data-overflow-bottom={navOverflow.bottom}
+                className="eterx-chat-turns-list flex max-h-[min(42vh,320px)] flex-col overflow-y-auto overscroll-contain"
+              >
                 {userTurns.map((turn, k) => (
                   <motion.button
                     type="button"
@@ -3234,19 +3355,30 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                     onKeyDown={(event) => { if (event.key === 'Escape') setHoveredTurn(null); }}
                     onClick={() => navigateToTurn(turn, k)}
                   >
-                    <span
-                      className={`eterx-chat-turns-dash h-[2px] rounded-full transition-[width,background-color,opacity] duration-200 ease-out ${ activeTurnIdx === k
-                          ? 'bg-[var(--sidebar-strong-text)] w-[22px] opacity-100'
-                          : 'bg-[var(--sidebar-icon)] w-[12px] opacity-30 group-hover:w-[18px] group-hover:opacity-60'
-                        }`}
-                    />
+                    <span className="eterx-chat-turns-dot" aria-hidden="true" />
                   </motion.button>
                 ))}
               </div>
+              <button
+                type="button"
+                className="eterx-chat-turns-edge"
+                aria-label="Go to latest query"
+                disabled={activeTurnIdx === userTurns.length - 1 && !navOverflow.bottom}
+                onClick={() => {
+                  const list = navContainerRef.current;
+                  if (list) list.scrollTop = list.scrollHeight;
+                  setHoveredTurn(null);
+                  navigateToTurn(userTurns[userTurns.length - 1], userTurns.length - 1);
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true" style={{ transform: 'rotate(180deg)' }}>
+                  <path d="M4.65 2.65a1.6 1.6 0 0 1 2.7 0l3.05 4.8A1.5 1.5 0 0 1 9.13 9.75H2.87A1.5 1.5 0 0 1 1.6 7.45Z" />
+                </svg>
+              </button>
             </motion.div>
           )}
           <div
-            id="chat-container"
+            id={scrollContainerId}
             className={`eterx-chat-feed-scroll relative h-full w-full flex flex-col overflow-y-auto overflow-x-hidden eterx-scrollbar [scrollbar-gutter:stable] ${ isCompressed ? 'px-4 sm:px-8' : 'px-4 sm:px-14'
               }`}
             style={{
@@ -3289,6 +3421,8 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
             {(traceLogs.length > 0 || steeringDelivery.pending.length > 0) && (
               <div ref={feedContentRef} className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isAgentBuilderFeed ? 'eterx-agent-builder-feed-content' : '' } ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[var(--eterx-reference-composer-max)] pt-16' }`}>
                 <LocalFileWorkspaceContext.Provider value={workspacePath || null}>
+                <ChatMediaContext.Provider value={media || []}>
+                <ChatMediaOwnerContext.Provider value={chatId}>
                 <TextPlaybackScope key={conversationIdentity} logs={traceLogs}>
                 {visibleGroups.map((group, visibleGroupIdx) => {
                   const groupIdx = visibleGroupIdx;
@@ -3324,13 +3458,9 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                   const dateLabel = showDateDivider ? formatDateLabel(thisDateKey) : '';
 
                   return (
-                    <div
-                      key={`group-${ conversationIdentity }-${ visibleGroupMountKeys[visibleGroupIdx] }`}
-                    >
-                      {showDateDivider && dateLabel && (
-                        <ChatDateDivider label={dateLabel} />
-                      )}
                       <ChatFeedMessageGroup
+                        key={`group-${ conversationIdentity }-${ visibleGroupMountKeys[visibleGroupIdx] }`}
+                        dateLabel={dateLabel}
                         group={group}
                         groupIdx={groupIdx}
                         turnStartedAt={turnStartedAt}
@@ -3347,12 +3477,10 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                         setPreviewUserMessage={setPreviewUserMessage}
                         showTokenCount={showTokenCount}
                       />
-                    </div>
                   );
                 })}
 
                 </TextPlaybackScope>
-                </LocalFileWorkspaceContext.Provider>
                 {/* Pending messages occupy ordinary document space. They do
                     not own an agent phase until delivery is acknowledged. */}
             {steeringDelivery.pending.map((message, index) => (
@@ -3370,6 +3498,9 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
                 showTokenCount={false}
               />
             ))}
+                </ChatMediaOwnerContext.Provider>
+                </ChatMediaContext.Provider>
+                </LocalFileWorkspaceContext.Provider>
                 <div ref={messagesEndRef} className="h-[2px]" />
               </div>
             )}
@@ -3421,4 +3552,8 @@ export const ChatFeed = React.memo<ChatFeedProps>(({
       </AnimatePresence>
     </>
   );
+});
+
+export const ChatFeed = React.memo(function ChatFeed(props: ChatFeedProps) {
+  return <FilePanelOwner value={props.workspaceOwner || props.chatId || undefined}><ChatFeedContent {...props} /></FilePanelOwner>;
 });

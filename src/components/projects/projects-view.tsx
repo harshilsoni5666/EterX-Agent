@@ -8,6 +8,7 @@ import { Shimmer } from '../ui/shimmer';
 import { normalizeScheduledTask, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UPDATED_EVENT, type ScheduledTaskRecord } from '../../lib/scheduled-tasks';
 import { persistScheduledTasks } from '../../lib/scheduled-task-sync';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
 export type ScheduledTaskItem = ScheduledTaskRecord;
 import {
@@ -328,7 +329,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       } catch { }
     };
     const syncDurableTasks = async () => {
-      if (disposed || inFlight || document.hidden) return;
+      if (disposed || inFlight || !isAppVisible()) return;
       inFlight = true;
       try {
       const pendingLocalWriteAt = Number(appStorage.getItem('eterx_scheduled_tasks_sync_pending') || 0);
@@ -350,14 +351,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     };
     window.addEventListener(SCHEDULED_TASKS_UPDATED_EVENT, handleSync);
     window.addEventListener('focus', syncDurableTasks);
-    document.addEventListener('visibilitychange', syncDurableTasks);
+    const unsubscribeVisibility = subscribeAppVisibility(syncDurableTasks);
     void syncDurableTasks();
     const interval = window.setInterval(syncDurableTasks, 4000);
     return () => {
       disposed = true;
       window.removeEventListener(SCHEDULED_TASKS_UPDATED_EVENT, handleSync);
       window.removeEventListener('focus', syncDurableTasks);
-      document.removeEventListener('visibilitychange', syncDurableTasks);
+      unsubscribeVisibility();
       window.clearInterval(interval);
     };
   }, []);

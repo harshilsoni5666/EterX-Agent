@@ -24,6 +24,10 @@ interface FilePanelActionsContextType {
 const FilePanelStateContext = createContext<FilePanelStateContextType | null>(null);
 const FilePanelActionsContext = createContext<FilePanelActionsContextType | null>(null);
 const FilePanelPresenceContext = createContext<boolean>(false);
+const FilePanelOwnerContext = createContext<string | undefined>(undefined);
+export const FilePanelOwner = FilePanelOwnerContext.Provider;
+const FilePanelRevealContext = createContext<(() => void) | undefined>(undefined);
+export const FilePanelReveal = FilePanelRevealContext.Provider;
 
 function mergeDefinedPanelProps(current: FilePanelProps, next: FilePanelProps): FilePanelProps {
   const merged = { ...current };
@@ -46,7 +50,7 @@ export function FilePanelProvider({ children }: { children: ReactNode }) {
   const openPanel = useCallback((props: FilePanelProps) => {
     const nextProps: FilePanelProps = { ...props, activeTabMode: props.activeTabMode ?? 'code' };
     setOpenFiles(prev => {
-      const existingIdx = prev.findIndex(f => f.filepath === nextProps.filepath);
+      const existingIdx = prev.findIndex(f => f.filepath === nextProps.filepath && f.workspaceOwner === nextProps.workspaceOwner);
       if (existingIdx !== -1) {
         setActiveIndex(existingIdx);
         const newFiles = [...prev];
@@ -144,8 +148,11 @@ export function useGlobalFilePanel() {
 
 export function useFilePanelActions() {
   const actions = useContext(FilePanelActionsContext);
+  const owner = useContext(FilePanelOwnerContext);
+  const reveal = useContext(FilePanelRevealContext);
+  const scoped = useMemo(() => actions && owner ? { ...actions, openPanel: (props: FilePanelProps) => { actions.openPanel({ ...props, workspaceOwner: props.workspaceOwner || owner }); reveal?.(); } } : actions, [actions, owner, reveal]);
   if (!actions) throw new Error('useFilePanelActions must be used within FilePanelProvider');
-  return actions;
+  return scoped!;
 }
 
 export function useHasOpenFiles() {

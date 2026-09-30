@@ -1,3 +1,4 @@
+import { requestJson } from '../request-json';
 import {
   AgentLiveSession,
   type LiveSession,
@@ -98,10 +99,10 @@ export const parseElevenLabsAudioFormat = (format: unknown, fallback = 16000): {
   return { encoding: 'pcm16', sampleRate };
 };
 
-export const createElevenLabsInitiationMessage = (instructions: string, voice?: string): Record<string, unknown> => ({
+export const createElevenLabsInitiationMessage = (instructions: string, voice?: string, allowPromptOverride = true): Record<string, unknown> => ({
   type: 'conversation_initiation_client_data',
   conversation_config_override: {
-    agent: { prompt: { prompt: instructions } },
+    ...(allowPromptOverride && instructions ? { agent: { prompt: { prompt: instructions } } } : {}),
     ...(voice ? { tts: { voice_id: voice } } : {}),
   },
 });
@@ -587,7 +588,7 @@ export class ProviderLiveSession implements LiveSession {
   }
 
   private async getSessionAuth(): Promise<Record<string, any>> {
-    const response = await fetch('/api/live/session', {
+    const response = await requestJson('/api/live/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -726,7 +727,7 @@ export class ProviderLiveSession implements LiveSession {
         type: 'session.update',
         session: {
           type: 'realtime',
-          model: this.options.model && this.options.model !== 'auto' ? this.options.model : DEFAULT_OPENAI_LIVE_MODEL,
+          model: String(auth.model || (this.options.model && this.options.model !== 'auto' ? this.options.model : DEFAULT_OPENAI_LIVE_MODEL)),
           instructions: this.sessionInstructions(),
            audio: {
             input: {
@@ -794,7 +795,7 @@ export class ProviderLiveSession implements LiveSession {
     if (!token) throw new Error('xAI did not return an ephemeral realtime client secret.');
     this.xaiTokenExpiresAt = Number(auth.expiresAt) || undefined;
     this.scheduleXaiCredentialRenewal(attempt, this.xaiTokenExpiresAt);
-    const model = this.options.model && this.options.model !== 'auto' ? this.options.model : DEFAULT_XAI_LIVE_MODEL;
+    const model = String(auth.model || (this.options.model && this.options.model !== 'auto' ? this.options.model : DEFAULT_XAI_LIVE_MODEL));
     const socket = new WebSocket(buildXaiRealtimeUrl(model, this.xaiConversationId), [`xai-client-secret.${token}`]);
     this.ws = socket;
     this.xaiSessionReady = false;
@@ -884,7 +885,7 @@ export class ProviderLiveSession implements LiveSession {
       const voice = this.options.voice && !['auto', 'agent-default'].includes(this.options.voice)
         ? this.options.voice
         : '';
-      if (!this.sendJson(createElevenLabsInitiationMessage(this.sessionInstructions(), voice))) {
+      if (!this.sendJson(createElevenLabsInitiationMessage(this.sessionInstructions(), voice, auth.allowPromptOverride === true))) {
         this.rejectConnectionReady(attempt, new Error('ElevenLabs conversation initialization could not be sent.'));
       }
     };
@@ -996,6 +997,8 @@ export class ProviderLiveSession implements LiveSession {
   }
 
   private sendDeepgramSettings(): void {
+    const listenModel = this.options.model && this.options.model !== 'auto' ? this.options.model : DEFAULT_DEEPGRAM_LISTEN_MODEL;
+    const speakModel = this.options.voice && this.options.voice !== 'auto' ? this.options.voice : DEFAULT_DEEPGRAM_SPEAK_MODEL;
     const functions = this.realtimeTools().map(definition => {
       const { type: _type, ...deepgramDefinition } = definition;
       return deepgramDefinition;
@@ -1008,9 +1011,9 @@ export class ProviderLiveSession implements LiveSession {
       },
       agent: {
         context: { messages: this.options.initialContext?.chatHistory?.slice(-20).map(item => ({ type: 'History', role: item.role === 'model' ? 'assistant' : item.role, content: item.text })) || [] },
-        listen: { provider: { type: 'deepgram', model: this.options.model && this.options.model !== 'auto' ? this.options.model : DEFAULT_DEEPGRAM_LISTEN_MODEL, version: 'v2', language: 'en' } },
+        listen: { provider: { type: 'deepgram', model: listenModel, version: listenModel.startsWith('flux-') ? 'v2' : 'v1', ...(listenModel.startsWith('flux-') ? {} : { language: 'multi' }) } },
         think: { provider: { type: 'open_ai', model: DEFAULT_DEEPGRAM_THINK_MODEL }, prompt: this.sessionInstructions(), functions },
-        speak: { provider: { type: 'deepgram', model: this.options.voice && this.options.voice !== 'auto' ? this.options.voice : DEFAULT_DEEPGRAM_SPEAK_MODEL } },
+        speak: { provider: { type: 'deepgram', model: speakModel, version: speakModel.startsWith('flux-') ? 'v2' : 'v1' } },
       },
     });
   }
@@ -1156,6 +1159,7 @@ export class ProviderLiveSession implements LiveSession {
         signal,
         body: JSON.stringify({
           command: String(args.command || ''),
+          cwd: this.options.initialContext?.workspacePath || undefined,
           terminalShell,
           chatId: this.chatId,
           ownerTraceId: activityId,

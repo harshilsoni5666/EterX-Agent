@@ -1,4 +1,4 @@
-﻿---
+---
 name: pdf
 description: Use whenever the user wants to create, read, extract from, edit, merge, split, rotate, watermark, redact, OCR, convert, fill forms in, secure, inspect, or otherwise manipulate PDF files. Also use when the final requested deliverable is a polished `.pdf`.
 license: Complete terms in LICENSE.txt
@@ -15,7 +15,11 @@ PDFs are final consumer artifacts or fixed-layout source files. Treat them as fi
 - New PDFs need reader-ready content. Existing PDFs need page/order/content preservation unless the user requests changes.
 - Do not fake OCR, redaction, signatures, extracted tables, or successful conversion.
 - Sensitive redaction must remove or flatten sensitive content; covering text visually is not enough.
-- Keep final PDFs outside `.workspaces/sandbox` unless explicitly requested.
+- Save to the explicit user path when supplied; otherwise use the current chat workspace from runtime context. Do not move outputs to Desktop automatically.
+
+## Runtime and dependencies
+
+Use the runtime-provided OS, selected shell, workspace and executable paths. Pick one suitable generation method and create the deliverable; do not inventory unrelated converters or repeat successful import/version checks. Use `workspace_run_command` with `program` and an `args` array for Python or Node, so source strings and paths do not pass through shell quoting. If an import fails, resolve that specific dependency for the same interpreter, preferably in a workspace virtual environment. Libraries mentioned below are options, not promises that they are installed. Respect an explicit user request to skip checks or tests and report that limitation.
 
 ## Choose The Right Path
 
@@ -68,11 +72,7 @@ qpdf --check input.pdf
 soffice --headless --convert-to pdf input.docx
 ```
 
-Python libraries commonly useful:
-
-```bash
-pip install pypdf pdfplumber reportlab pillow
-```
+Library names are optional choices, not a dependency-installation checklist. Add only a dependency required by the chosen method, using its selected runtime and environment.
 
 Use OCR tools only when installed and appropriate, such as `ocrmypdf` or Tesseract-based workflows.
 

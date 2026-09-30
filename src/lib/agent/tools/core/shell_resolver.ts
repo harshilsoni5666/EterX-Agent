@@ -1,5 +1,8 @@
 import fs from 'fs';
 import path from 'path';
+const { findHostExecutable } = require('../../../../../electron/host-environment') as {
+  findHostExecutable: (candidates: string[], env?: NodeJS.ProcessEnv) => string | null;
+};
 
 export type TerminalShellPreference =
   | 'auto'
@@ -22,6 +25,12 @@ export function normalizeTerminalShell(value: unknown): TerminalShellPreference 
 }
 
 export function resolveTerminalShell(preference?: unknown): string {
+  const requested = String(preference || 'auto').trim();
+  if (requested && !KNOWN_SHELLS.has(requested.toLowerCase() as TerminalShellPreference)) {
+    const executable = findExecutable([requested]);
+    if (executable) return executable;
+    throw new Error(`The requested shell is unavailable: ${requested}. Choose an installed shell or use program + args for direct execution.`);
+  }
   const selected = normalizeTerminalShell(preference);
 
   if (process.platform === 'win32') {
@@ -29,10 +38,10 @@ export function resolveTerminalShell(preference?: unknown): string {
     if (selected === 'wsl') return requireExecutable(['wsl.exe'], selected);
     if (selected === 'git-bash' || selected === 'bash') {
       return requireExecutable([
-        'bash.exe',
         path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
         path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
         path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe'),
+        'bash.exe',
       ], selected);
     }
     if (selected === 'auto') return defaultWindowsShell();
@@ -98,6 +107,7 @@ export type TerminalShellInvocation = {
 export function buildTerminalShellInvocation(
   command: string,
   shell?: boolean | string,
+  cwd?: string,
 ): TerminalShellInvocation {
   if (shell === false) {
     return { file: command, args: [], shell: false };
@@ -110,19 +120,23 @@ export function buildTerminalShellInvocation(
     : requestedShell || resolveTerminalShell();
   const shellName = path.basename(resolvedShell).toLowerCase();
 
+  if (['powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'].includes(shellName)) {
+    // Pass the script as UTF-16LE instead of letting Windows reinterpret quotes
+    // and Unicode. PowerShell uses the same switches on macOS and Linux.
+    const script = `$OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = $OutputEncoding;\n$ErrorActionPreference = 'Stop'\ntry {\n& {\n${command}\n}\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }\nexit 0\n} catch { [Console]::Error.WriteLine(($_ | Out-String)); exit 1 }`;
+    return {
+      file: resolvedShell,
+      args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-InputFormat', 'Text', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      shell: false,
+    };
+  }
+
   if (process.platform === 'win32') {
     if (shellName === 'cmd' || shellName === 'cmd.exe') {
       return { file: resolvedShell, args: ['/d', '/s', '/c', command], shell: false };
     }
-    if (shellName === 'powershell' || shellName === 'powershell.exe' || shellName === 'pwsh' || shellName === 'pwsh.exe') {
-      return {
-        file: resolvedShell,
-        args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-InputFormat', 'Text', '-OutputFormat', 'Text', '-Command', command],
-        shell: false,
-      };
-    }
     if (shellName === 'wsl' || shellName === 'wsl.exe') {
-      return { file: resolvedShell, args: ['--', 'sh', '-c', command], shell: false };
+      return { file: resolvedShell, args: [...(cwd ? ['--cd', cwd] : []), '--', 'sh', '-c', command], shell: false };
     }
     return { file: resolvedShell, args: ['-c', command], shell: false };
   }
@@ -170,19 +184,8 @@ export function isExecutableAvailable(candidates: string[]): boolean {
   return findExecutable(candidates) !== null;
 }
 
-function findExecutable(candidates: string[]): string | null {
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    if (path.isAbsolute(candidate)) {
-      if (isExecutable(candidate)) return candidate;
-      continue;
-    }
-    for (const directory of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
-      const resolved = path.join(directory, candidate);
-      if (isExecutable(resolved)) return resolved;
-    }
-  }
-  return null;
+export function findExecutable(candidates: string[], env?: NodeJS.ProcessEnv): string | null {
+  return findHostExecutable(candidates, env);
 }
 
 function requireExecutable(candidates: string[], selected: TerminalShellPreference): string {
@@ -193,6 +196,7 @@ function requireExecutable(candidates: string[], selected: TerminalShellPreferen
 
 function isExecutable(candidate: string): boolean {
   try {
+    if (!fs.statSync(candidate).isFile()) return false;
     fs.accessSync(candidate, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
     return true;
   } catch {

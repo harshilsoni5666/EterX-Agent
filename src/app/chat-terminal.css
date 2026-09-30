@@ -10,15 +10,18 @@
 .eterx-terminal-tabs[data-fade-left="true"][data-fade-right="false"] { mask-image: linear-gradient(to right, transparent, #000 18px); }
 .eterx-terminal-tabs[data-fade-left="false"][data-fade-right="true"] { mask-image: linear-gradient(to left, transparent, #000 18px); }
 .eterx-terminal-tabs[data-fade-left="true"][data-fade-right="true"] { mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent); }
-.eterx-terminal-tab { display: flex; align-items: center; border-radius: 9px; color: var(--terminal-muted); flex-shrink: 0; transition: background-color 120ms, color 120ms; }
+.eterx-terminal-tab { display:flex; align-items:center; border-radius:7px; color:var(--terminal-muted); flex:0 0 144px; width:144px; transition:background-color 120ms, color 120ms; }
 .eterx-terminal-tab.is-active { background: var(--terminal-tab); color: var(--terminal-fg); }
 .eterx-terminal-tab { padding: 2px 3px; gap: 0; }
 .eterx-terminal-tab:hover { background: var(--terminal-hover); }
 .eterx-terminal-tab.is-active:hover { background: var(--terminal-tab); }
-.eterx-terminal-tab > button[role="tab"] { background: transparent !important; border: 0; box-shadow: none; }
-.eterx-terminal-tab > button:last-child { flex-shrink: 0; width: 26px; height: 26px; padding: 6px; border-radius: 7px; }
+.eterx-terminal-tab > button[role="tab"] { background:transparent !important; border:0; box-shadow:none; flex:1; min-width:0; }
+.eterx-terminal-tab > button:last-child { flex-shrink:0; width:24px; height:26px; padding:5px; border-radius:6px; opacity:0; pointer-events:none; }
+.eterx-terminal-tab:hover > button:last-child,.eterx-terminal-tab:focus-within > button:last-child { opacity:1; pointer-events:auto; }
+@media (hover:none),(pointer:coarse) { .eterx-terminal-tab > button:last-child { opacity:1; pointer-events:auto; } }
 .eterx-terminal-tab button { display: flex; align-items: center; gap: 6px; padding: 6px 5px; border-radius: 8px; font-size: 12px; }
-.eterx-terminal-tab span { max-width: 130px; overflow: hidden; white-space: nowrap; padding-right: 4px; mask-image: linear-gradient(to right, #000 calc(100% - 4px), transparent); }
+.eterx-terminal-tab span { min-width:0; flex:1; overflow:hidden; white-space:nowrap; text-align:left; }
+.eterx-terminal-tab span[data-overflow="true"] { mask-image:linear-gradient(to right,#000 calc(100% - 10px),transparent); }
 .eterx-terminal-tab svg { flex-shrink: 0; }
 .eterx-terminal-tab button:hover, .eterx-terminal-action:hover { background: var(--terminal-hover); color: var(--terminal-fg); }
 .eterx-terminal-dock button:focus-visible { outline: 2px solid var(--terminal-muted); outline-offset: -2px; }

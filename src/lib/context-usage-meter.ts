@@ -146,6 +146,9 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
   const terminalPayload = (log: any) => log?.type === 'context_compaction'
     && (log.phase === 'compacted' || log.phase === 'failed')
     && log.usage && validPayload({ ...log.usage, type: 'context_usage' });
+  const calibratedPayload = (log: any) => log?.providerCalibrationApplied !== undefined
+    ? log.providerCalibrationApplied === true
+    : Number.isFinite(Number(log?.providerInputTokens)) && Number(log?.providerInputTokens) > 0;
   let baselineIndex = -1;
   let latestCompactionEvent: any = null;
   for (let index = orderedLogs.length - 1; index >= 0; index -= 1) {
@@ -153,6 +156,36 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     if (!latestCompactionEvent && log?.type === 'context_compaction') latestCompactionEvent = log;
     if (baselineIndex < 0 && (validPayload(log) || committedPayload(log) || terminalPayload(log))) baselineIndex = index;
     if (baselineIndex >= 0 && latestCompactionEvent) break;
+  }
+  // A model switch has no provider count until that model answers. Recover
+  // the preceding measurement so an uncalibrated preflight estimate cannot
+  // make retained history appear to shrink immediately. A real compaction
+  // or a count from the new model always ends this pending display state.
+  const baselineLog = orderedLogs[baselineIndex];
+  const baselinePayload = terminalPayload(baselineLog) ? baselineLog.usage : baselineLog;
+  if (validPayload({ ...baselinePayload, type: baselinePayload?.type || 'context_usage' })
+    && baselineLog?.phase !== 'compacted' && baselinePayload?.contextReplaced !== true
+    && !calibratedPayload(baselinePayload)) {
+    const baselineModel = contextMeasurementModel(baselinePayload);
+    if (baselineModel) {
+      let crossesModelChange = false;
+      for (let index = baselineIndex - 1; index >= 0; index -= 1) {
+        const previous = orderedLogs[index];
+        const previousPayload = terminalPayload(previous) ? { ...previous.usage, type: 'context_usage' } : previous;
+        const replacedContext = committedPayload(previous) || previousPayload?.contextReplaced === true
+          || (terminalPayload(previous) && previous.phase === 'compacted');
+        const previousProviderCount = previous?.type === 'model_usage' && previous.phase !== 'chat_title'
+          && Number.isFinite(Number(previous.promptTokens || previous.inputTokens))
+          && Number(previous.promptTokens || previous.inputTokens) > 0;
+        if (!validPayload(previousPayload) && !previousProviderCount && !replacedContext) continue;
+        const previousModel = contextMeasurementModel(previousPayload);
+        if (previousModel && previousModel !== baselineModel) crossesModelChange = true;
+        if (crossesModelChange) baselineIndex = index;
+        // Follow an unmeasured A -> B -> A sequence back to its last count,
+        // but never reach through a real measurement or committed compaction.
+        if (replacedContext || previousProviderCount || calibratedPayload(previousPayload)) break;
+      }
+    }
   }
   let displayTokens = 0;
   let measuredContextWindow = 0;
@@ -166,11 +199,16 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
   let retainedProviderOutputTokens = 0;
   let liveOutputEstimateTokens = 0;
   let updatedAt = 0;
+  let awaitingModelCount = false;
   const estimatedByIdentity = new Map<string, number>();
   const providerCoveredEstimateIdentities = new Set<string>();
   const seenProviderUsage = new Set<string>();
-  const resetPayload = (log: any, usedTokens: number) => {
-    displayTokens = usedTokens;
+  const resetPayload = (log: any, usedTokens: number, allowPendingModelCount = false) => {
+    const previousModel = contextMeasurementModel(authoritative);
+    const nextModel = contextMeasurementModel(log);
+    awaitingModelCount = allowPendingModelCount && log.contextReplaced !== true && !calibratedPayload(log)
+      && (awaitingModelCount || Boolean(previousModel && nextModel && previousModel !== nextModel));
+    if (!awaitingModelCount) displayTokens = usedTokens;
     const window = Number(log.contextWindow || 0);
     if (Number.isFinite(window) && window > 0) measuredContextWindow = window;
     authoritative = log;
@@ -192,7 +230,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
       latestCompactionEvent = log;
       if (terminalPayload(log)) {
         const payload = { ...log, ...log.usage, type: 'context_usage' };
-        resetPayload(payload, Number(payload.usedTokens));
+        resetPayload(payload, Number(payload.usedTokens), log.phase !== 'compacted');
         latestContextUsage = payload;
         latestBreakdown = Number(payload.breakdownVersion) === 3 && payload.breakdown ? payload.breakdown : null;
       } else if (committedPayload(log)) {
@@ -207,7 +245,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     if (log?.type === 'context_usage') {
       const tokens = Number(log.usedTokens);
       if (!validPayload(log)) continue;
-      resetPayload(log, tokens);
+      resetPayload(log, tokens, true);
       latestContextUsage = log;
       latestBreakdown = Number(log.breakdownVersion) === 3 && log.breakdown
         ? log.breakdown : null;
@@ -241,6 +279,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
       }
       displayTokens = inputTokens + retainedProviderOutputTokens + liveEstimateTokens;
       authoritative = log;
+      awaitingModelCount = false;
       providerMeasured = true;
       latestProviderUsage = log;
       hasEstimatedDelta = !outputMeasured || liveEstimateTokens > 0;
@@ -276,7 +315,8 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
   const draftTokens = draft.trim() ? Math.ceil(draft.length / 4) + 4 : 0;
   const selectedModelKey = contextMeasurementModel(selectedModel);
   const measurementModelKey = contextMeasurementModel(authoritative);
-  const awaitingSelectedModelMeasurement = Boolean(selectedModelKey && authoritative && selectedModelKey !== measurementModelKey);
+  const awaitingSelectedModelMeasurement = awaitingModelCount
+    || Boolean(selectedModelKey && authoritative && selectedModelKey !== measurementModelKey);
   const cacheMetrics = providerUsageMetricsFromTrace(latestProviderUsage);
   const cacheMode = String(latestProviderUsage?.cacheMode || latestContextUsage?.cacheMode || '');
   const cacheStatus = awaitingSelectedModelMeasurement

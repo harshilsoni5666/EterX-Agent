@@ -75,15 +75,20 @@ if (!applicationRoot) {
 // Keep packaging intermediates outside the repository. Next.js and TypeScript
 // intentionally scan the project tree, so an interrupted in-repo staging copy
 // can otherwise be mistaken for application source during the next build.
-const stagingRoot = path.join(os.tmpdir(), `eterx-desktop-runtime-${process.pid}`);
-fs.rmSync(stagingRoot, { recursive: true, force: true });
-fs.mkdirSync(stagingRoot, { recursive: true });
-for (const runtimeEntry of ['server.js', 'package.json', '.next']) {
+const stagingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'eterx-desktop-runtime-'));
+function runtimeFileFilter(source) {
+  const name = path.basename(source);
+  return !name.endsWith('.map') && !name.startsWith('.env')
+    && !['.git', '.DS_Store', 'Thumbs.db'].includes(name)
+    && !/[\\/]\.next[\\/]cache(?:[\\/]|$)/.test(source);
+}
+for (const runtimeEntry of ['server.js', '.next']) {
   const source = path.join(applicationRoot, runtimeEntry);
   if (!fs.existsSync(source)) continue;
   fs.cpSync(source, path.join(stagingRoot, runtimeEntry), {
     recursive: true,
     force: true,
+    filter: runtimeFileFilter,
   });
 }
 
@@ -110,6 +115,16 @@ fs.writeFileSync(
     + `const fs = require('fs');\n`
     + `const path = require('path');\n`
     + `const Module = require('module');\n`
+    + `// Never leave the agent runtime alive after its desktop owner exits.\n`
+    + `const desktopParentPid = Number(process.env.ETERX_DESKTOP_PARENT_PID);\n`
+    + `if (Number.isInteger(desktopParentPid) && desktopParentPid > 0) {\n`
+    + `  process.once('disconnect', () => process.exit(0));\n`
+    + `  const ownerTimer = setInterval(() => {\n`
+    + `    try { process.kill(desktopParentPid, 0); }\n`
+    + `    catch (error) { if (error.code === 'ESRCH') process.exit(0); }\n`
+    + `  }, 1000);\n`
+    + `  ownerTimer.unref();\n`
+    + `}\n`
     + `const configuredModulesRoot = String(process.env.ETERX_RUNTIME_MODULES || '').trim();\n`
     + `const packagedModulesRoot = process.resourcesPath\n`
     + `  ? path.join(process.resourcesPath, 'runtime', 'dependencies.asar', 'node_modules')\n`
@@ -131,17 +146,25 @@ const staticSource = path.join(repositoryRoot, '.next', 'static');
 const staticTarget = path.join(stagingRoot, '.next', 'static');
 if (fs.existsSync(staticSource)) {
   fs.mkdirSync(path.dirname(staticTarget), { recursive: true });
-  fs.cpSync(staticSource, staticTarget, { recursive: true, force: true });
+  fs.cpSync(staticSource, staticTarget, { recursive: true, force: true, filter: runtimeFileFilter });
 }
 
 const publicSource = path.join(repositoryRoot, 'public');
 if (fs.existsSync(publicSource)) {
-  fs.cpSync(publicSource, path.join(stagingRoot, 'public'), { recursive: true, force: true });
+  fs.cpSync(publicSource, path.join(stagingRoot, 'public'), { recursive: true, force: true, filter: runtimeFileFilter });
 }
 
 const repositoryPackage = JSON.parse(
   fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
 );
+// The installed server needs identity and CommonJS semantics, not repository
+// scripts, development dependencies, or build configuration.
+fs.writeFileSync(path.join(stagingRoot, 'package.json'), `${JSON.stringify({
+  name: repositoryPackage.name,
+  version: repositoryPackage.version,
+  private: true,
+  type: 'commonjs',
+}, null, 2)}\n`);
 const lockfile = JSON.parse(
   fs.readFileSync(path.join(repositoryRoot, 'package-lock.json'), 'utf8'),
 );
@@ -165,7 +188,7 @@ const dependencyCopyOptions = {
   // broken link makes Node's fs.cpSync abort before packaging starts. The
   // packaged server never invokes npm lifecycle binaries, so omit every .bin
   // shim directory and retain the actual dependency files and native modules.
-  filter: (source) => path.basename(source) !== '.bin',
+  filter: (source) => path.basename(source) !== '.bin' && !/\/node_modules\/node-pty\/build(?:\/|$)/.test(source.replace(/\\/g, '/')),
   verbatimSymlinks: true,
 };
 const targetSpec = String(process.env.ETERX_RUNTIME_TARGETS || '').trim();
@@ -199,6 +222,28 @@ for (const [index, spec] of targetSpecs.entries()) {
     targetCpu,
   );
   const installedModules = path.join(dependencyInstallRoot, 'node_modules');
+  const ptyOs = targetOs || process.env.ETERX_RUNTIME_OS || process.platform;
+  const ptyCpu = targetCpu || process.env.ETERX_RUNTIME_CPU || process.arch;
+  const ptyRoot = path.join(installedModules, 'node-pty');
+  const ptyPrebuild = path.join(ptyRoot, 'prebuilds', `${ptyOs}-${ptyCpu}`);
+  const ptyNative = path.join(ptyPrebuild, ptyOs === 'win32' ? 'conpty.node' : 'pty.node');
+  if (!fs.existsSync(ptyNative)) {
+    if (ptyOs !== process.platform || ptyCpu !== process.arch) {
+      throw new Error(`node-pty needs a native ${ptyOs}/${ptyCpu} build runner. Build this target on its matching OS and architecture.`);
+    }
+    const rebuildArguments = ['rebuild', 'node-pty', '--ignore-scripts=false', '--no-audit', '--fund=false'];
+    if (npmExecPath) rebuildArguments.unshift(npmExecPath);
+    const rebuilt = spawnSync(npmCommand, rebuildArguments, { cwd: dependencyInstallRoot, stdio: 'inherit', shell: false, windowsHide: true, env: { ...process.env, npm_config_build_from_source: 'true' } });
+    if (rebuilt.status !== 0) throw new Error('Could not compile the packaged terminal runtime.');
+    fs.mkdirSync(ptyPrebuild, { recursive: true });
+    fs.cpSync(path.join(ptyRoot, 'build', 'Release'), ptyPrebuild, { recursive: true });
+  }
+  if (!fs.existsSync(ptyNative)) throw new Error(`Missing terminal binary for ${ptyOs}/${ptyCpu}.`);
+  if (ptyOs !== 'win32') {
+    const helper = path.join(ptyPrebuild, 'spawn-helper');
+    if (!fs.existsSync(helper)) throw new Error(`Missing terminal spawn-helper for ${ptyOs}/${ptyCpu}.`);
+    fs.chmodSync(helper, 0o755);
+  }
   fs.cpSync(installedModules, stagedModules, dependencyCopyOptions);
   // These modules are loaded by Electron's main process before the Next
   // server starts. Fail the build if the production archive would not contain
@@ -214,6 +259,11 @@ for (const [index, spec] of targetSpecs.entries()) {
 fs.rmSync(path.join(stagingRoot, 'node_modules', '.bin'), { recursive: true, force: true });
 
 const assetsRoot = path.join(stagingRoot, 'assets');
+fs.cpSync(
+  path.join(repositoryRoot, 'src', 'lib', 'agent', 'gateways'),
+  path.join(assetsRoot, 'gateways'),
+  { recursive: true, filter: (source) => fs.statSync(source).isDirectory() || source.endsWith('.cjs') },
+);
 const sourceSkillsRoot = path.join(repositoryRoot, 'src', 'lib', 'agent', 'skills-new');
 const generatedSkillsRoot = path.join(repositoryRoot, 'desktop-runtime', 'assets', 'skills');
 const skillsRoot = fs.existsSync(path.join(sourceSkillsRoot, 'docx_skill.md'))
@@ -284,6 +334,7 @@ await createPackageWithOptions(stagingRoot, dependencyArchive, {
   dot: true,
   pattern: '/node_modules/**/*',
   unpack: '**/*.{node,dll,exe,so,dylib}',
+  unpackDir: '**/node-pty',
 });
 fs.rmSync(sourceModules, { recursive: true, force: true });
 
