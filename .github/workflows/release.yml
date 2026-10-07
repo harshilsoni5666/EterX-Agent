@@ -144,6 +144,10 @@ jobs:
       - name: Compile application
         run: npm run desktop:prepare-whisper && npm run build
 
+      - name: Install Linux ARM64 terminal toolchain
+        if: matrix.target == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
       - name: Prepare self-contained desktop runtime
         run: npm run desktop:prepare-runtime
 

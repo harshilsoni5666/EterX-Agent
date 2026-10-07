@@ -228,18 +228,33 @@ for (const [index, spec] of targetSpecs.entries()) {
   const ptyPrebuild = path.join(ptyRoot, 'prebuilds', `${ptyOs}-${ptyCpu}`);
   const ptyNative = path.join(ptyPrebuild, ptyOs === 'win32' ? 'conpty.node' : 'pty.node');
   if (!fs.existsSync(ptyNative)) {
-    if (ptyOs !== process.platform || ptyCpu !== process.arch) {
+    const crossCompileLinuxArm64 = ptyOs === 'linux' && ptyCpu === 'arm64'
+      && process.platform === 'linux' && process.arch === 'x64';
+    if (!crossCompileLinuxArm64 && (ptyOs !== process.platform || ptyCpu !== process.arch)) {
       throw new Error(`node-pty needs a native ${ptyOs}/${ptyCpu} build runner. Build this target on its matching OS and architecture.`);
     }
     const rebuildArguments = ['rebuild', 'node-pty', '--ignore-scripts=false', '--no-audit', '--fund=false'];
     if (npmExecPath) rebuildArguments.unshift(npmExecPath);
-    const rebuilt = spawnSync(npmCommand, rebuildArguments, { cwd: dependencyInstallRoot, stdio: 'inherit', shell: false, windowsHide: true, env: { ...process.env, npm_config_build_from_source: 'true' } });
+    const rebuilt = spawnSync(npmCommand, rebuildArguments, {
+      cwd: dependencyInstallRoot, stdio: 'inherit', shell: false, windowsHide: true,
+      env: {
+        ...process.env,
+        npm_config_build_from_source: 'true',
+        npm_config_arch: ptyCpu,
+        ...(crossCompileLinuxArm64 ? {
+          CC: 'aarch64-linux-gnu-gcc', CXX: 'aarch64-linux-gnu-g++',
+          AR: 'aarch64-linux-gnu-ar',
+        } : {}),
+      },
+    });
     if (rebuilt.status !== 0) throw new Error('Could not compile the packaged terminal runtime.');
     fs.mkdirSync(ptyPrebuild, { recursive: true });
     fs.cpSync(path.join(ptyRoot, 'build', 'Release'), ptyPrebuild, { recursive: true });
   }
   if (!fs.existsSync(ptyNative)) throw new Error(`Missing terminal binary for ${ptyOs}/${ptyCpu}.`);
-  if (ptyOs !== 'win32') {
+  // node-pty uses posix_spawn and this helper on macOS. Linux uses forkpty
+  // directly and its binding.gyp intentionally does not build spawn-helper.
+  if (ptyOs === 'darwin') {
     const helper = path.join(ptyPrebuild, 'spawn-helper');
     if (!fs.existsSync(helper)) throw new Error(`Missing terminal spawn-helper for ${ptyOs}/${ptyCpu}.`);
     fs.chmodSync(helper, 0o755);
