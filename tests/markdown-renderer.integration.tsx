@@ -86,6 +86,7 @@ const fileChipMarkup = renderToStaticMarkup(
   <LocalFileLinkChip filePath="C:\\Reports\\Cleaned_Retail_Store_Sales.xlsx" compact />,
 );
 assert.match(fileChipMarkup, /eterx-local-file-chip/);
-assert.match(fileChipMarkup, /h-8 w-8/);
+assert.match(fileChipMarkup, /<img[^>]*src="\/icons\/files\/spreadsheet\.svg"[^>]*class="h-4 w-4 /);
+assert.match(fileChipMarkup, /aria-label="Open Cleaned_Retail_Store_Sales\.xlsx in default app"/);
 
 console.log('markdown-renderer.integration: ok');

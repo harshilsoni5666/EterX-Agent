@@ -26,9 +26,12 @@ new patch version instead of replacing an existing version.
 ## Publish
 
 1. Set the intended SemVer value in `package.json` and `package-lock.json`.
+   Run `npm ci --legacy-peer-deps`, `npm run test:ci`, and `npm run build`
+   locally, fixing any failures before tagging. The release workflow also runs
+   the complete CI suite before creating its draft or building native packages.
 2. Create and push the matching `v<version>` tag, or run **Native release**
    manually against an existing tag.
-3. Wait for all three native build jobs and the publish job to complete.
+3. Wait for the test gate, all three native build jobs, and the publish job to complete.
 4. Confirm the release contains `SHA256SUMS.txt`, all native packages, and the
    complete updater metadata set before announcing it: `latest.yml`,
    `latest-mac.yml`, `latest-linux.yml`, and `latest-linux-arm64.yml`.

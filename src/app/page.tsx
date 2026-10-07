@@ -16153,7 +16153,7 @@ function DeepWorkUI() {
   return (
     <>
     {!startupReady && <Loading />}
-    <div {...(!startupReady ? { inert: '' } : {})} style={!startupReady ? { visibility: 'hidden', opacity: 0, pointerEvents: 'none' } : undefined} aria-hidden={!startupReady || undefined} data-startup-ready={startupReady ? 'true' : 'false'} data-active-view={activeView} data-document-visible={documentVisible ? 'true' : 'false'} data-sidebar-open={sidebarOpen ? 'true' : 'false'} data-platform={desktopPlatform} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+    <div ref={element => { if (element) { if (startupReady) element.removeAttribute('inert'); else element.setAttribute('inert', ''); } }} style={!startupReady ? { visibility: 'hidden', opacity: 0, pointerEvents: 'none' } : undefined} aria-hidden={!startupReady || undefined} data-startup-ready={startupReady ? 'true' : 'false'} data-active-view={activeView} data-document-visible={documentVisible ? 'true' : 'false'} data-sidebar-open={sidebarOpen ? 'true' : 'false'} data-platform={desktopPlatform} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
       {/* Global Window Drag Bar (Independent Layer) */}
       <div className="eterx-window-drag-layer pointer-events-none absolute top-0 h-[var(--eterx-shell-topbar-height)] z-[998] [-webkit-app-region:drag]" />
 

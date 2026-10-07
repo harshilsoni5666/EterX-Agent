@@ -35,7 +35,7 @@ export interface TerminalCommandRunOptions {
   /** Direct executable invocation; args are passed unchanged, never as shell text. */
   program?: string;
   args?: string[];
-  env?: NodeJS.ProcessEnv;
+  env?: Partial<NodeJS.ProcessEnv>;
   checkInMs?: number;
   hardTimeoutMs?: number;
   maxOutputChars?: number;
@@ -542,7 +542,7 @@ export async function getTerminalBackgroundTaskStatus(
 const historyGlobal = globalThis as typeof globalThis & {
   __eterxTerminalHistory?: { tasks: Map<string, any>; pending?: Promise<void>; refreshedAt: number };
 };
-const terminalHistory = historyGlobal.__eterxTerminalHistory ||= { tasks: new Map(), refreshedAt: 0 };
+const terminalHistory: NonNullable<typeof historyGlobal.__eterxTerminalHistory> = historyGlobal.__eterxTerminalHistory ||= { tasks: new Map(), refreshedAt: 0 };
 
 function refreshTerminalHistory(): void {
   if (terminalHistory.pending || Date.now() - terminalHistory.refreshedAt < 30_000) return;

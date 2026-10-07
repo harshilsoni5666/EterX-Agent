@@ -246,8 +246,12 @@ async function testTranscriptImportAndTaskBoundaryAreNonDestructive(): Promise<v
     'workspace artifacts remain valid across in-chat objective boundaries',
   );
   assert.ok(
-    fabric.listFacts().filter(fact => ['objective', 'constraint'].includes(fact.kind)).every(fact => fact.status !== 'active'),
-    'only prior task-scoped directives are closed at the boundary',
+    fabric.listFacts().filter(fact => ['objective', 'decision'].includes(fact.kind)).every(fact => fact.status !== 'active'),
+    'prior objective anchors and decisions are closed at the boundary',
+  );
+  assert.ok(
+    fabric.listFacts().some(fact => fact.kind === 'constraint' && fact.status === 'active' && /git/i.test(fact.text)),
+    'a heuristic task boundary cannot revoke a human constraint',
   );
 
   fabric.recordAssistantResponse('Exact terminal answer sentinel_783.', 'completed', 'run-terminal-1');

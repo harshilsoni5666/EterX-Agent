@@ -2320,7 +2320,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                       signal: toolAbortController.signal,
                       body: JSON.stringify({
                         command: cmd,
-                        cwd: this.options.initialContext?.workspacePath || undefined,
+                        cwd: this.options?.initialContext?.workspacePath || undefined,
                         terminalShell,
                         chatId: this.chatId,
                         ownerTraceId: activityId,

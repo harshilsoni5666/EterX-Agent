@@ -42,7 +42,7 @@ async function main(): Promise<void> {
       'an explicit prior-media request should still be able to recall the durable upload',
     );
 
-    const nextUpload = await resolveChatMediaForRequest(chatId, 'Compare this image.', [{
+    const nextUpload = await resolveChatMediaForRequest(chatId, 'Inspect this image.', [{
       id: 'image-two',
       name: 'second.png',
       mimeType: 'image/png',
@@ -53,6 +53,14 @@ async function main(): Promise<void> {
       ['image-two'],
       'a new upload must not pull older chat media into the same provider request',
     );
+    const comparison = await resolveChatMediaForRequest(chatId, 'Compare this image with the previous image.', [{
+      id: 'image-two',
+      name: 'second.png',
+      mimeType: 'image/png',
+      path: secondSource,
+    }]);
+    assert.deepEqual(comparison.map(item => item.id), ['image-two', 'image-one'],
+      'an explicit comparison must include the prior image alongside the new upload');
 
     const referencePattern = getChatMediaReferencePattern();
     assert.equal(referencePattern.test('Can you fix it now?'), false);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { evaluateSkillLoad, getRelevantSkillIds } from '../src/lib/agent/skills-new/routing';
 
-function testOrdinaryWorkDoesNotLoadSkills(): void {
+function testOrdinaryWorkDoesNotSuggestSkills(): void {
   const requests = [
     'Fix the login bug in src/app/page.tsx and run the tests.',
     'Explain why this API handler returns 401.',
@@ -10,7 +10,8 @@ function testOrdinaryWorkDoesNotLoadSkills(): void {
   ];
   for (const request of requests) {
     assert.deepEqual(Array.from(getRelevantSkillIds(request)), [], request);
-    assert.equal(evaluateSkillLoad(request, 'visualization', new Set()).allowed, false);
+    assert.equal(evaluateSkillLoad(request, 'visualization', new Set()).allowed, true,
+      'the discovery hint must not veto a contextual skill choice');
   }
 }
 
@@ -28,7 +29,8 @@ function testSkillSystemWorkRoutesSkillCreator(): void {
   const relevant = getRelevantSkillIds('Fix skill routing so prompts do not load skills repeatedly.');
   assert.deepEqual(Array.from(relevant), ['skill_creator']);
   assert.equal(evaluateSkillLoad('Fix skill routing.', 'skill-creator', new Set()).allowed, true);
-  assert.equal(evaluateSkillLoad('Fix skill routing.', 'pdf', new Set()).allowed, false);
+  assert.equal(evaluateSkillLoad('Fix skill routing.', 'pdf', new Set()).allowed, true);
+  assert.equal(evaluateSkillLoad('Fix skill routing.', 'unknown-skill', new Set()).allowed, false);
 }
 
 function testDedupIsTaskScoped(): void {
@@ -43,7 +45,7 @@ function testDedupIsTaskScoped(): void {
   assert.equal(evaluateSkillLoad('Edit this PDF.', 'pdf', new Set()).allowed, true);
 }
 
-testOrdinaryWorkDoesNotLoadSkills();
+testOrdinaryWorkDoesNotSuggestSkills();
 testExplicitArtifactRoutesOnePrimarySkill();
 testSkillSystemWorkRoutesSkillCreator();
 testDedupIsTaskScoped();

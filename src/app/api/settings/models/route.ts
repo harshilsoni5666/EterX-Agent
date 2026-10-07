@@ -229,6 +229,7 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
 
   try {
     const rawModels: any[] = [];
+    const pageTokens = new Set<string>();
     let pageToken = '';
     // models.list is paginated even when pageSize=1000. Keep discovery the
     // source of truth rather than silently dropping later model pages.
@@ -762,8 +763,6 @@ async function fetchCompatibleModels(provider: MainAgentProvider): Promise<Provi
           : []),
       ];
       return {
-      lifecycle: model?.active === false || model?.enabled === false ? 'disabled' : model?.lifecycle || model?.status,
-      deprecationDate: model?.expiration_date || model?.deprecationDate,
       ...readModelAvailability(model),
       id: String(model?.id || model?.name || model?.model || ''),
       name: String(model?.display_name || model?.name || model?.id || model?.model || ''),

@@ -30,8 +30,10 @@ assert.equal(normalizeModelOutputChars(999_999), 256_000);
 
 const handoffNote = terminalBackgroundHandoffNote('npm test', 'task-1', 15_000);
 assert.match(handoffNote, /foreground check-in/i);
-assert.match(handoffNote, /mode="check" returns its current status/i);
-assert.doesNotMatch(handoffNote, /do not|continue independent work|final output/i);
+assert.match(handoffNote, /mode="wait" with taskId to await output\/completion/i);
+assert.match(handoffNote, /mode="check" to inspect now/i);
+assert.match(handoffNote, /does not make it a background task/i);
+assert.match(handoffNote, /Never execute the task ID as a shell command/i);
 
 const serverTimeoutNote = terminalTimeoutNote('npm run dev', 30_000);
 assert.match(serverTimeoutNote, /hard execution deadline/i);

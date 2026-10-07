@@ -3,7 +3,7 @@
 import React, { useLayoutEffect, useRef } from 'react';
 import { motion, type MotionProps } from 'framer-motion';
 
-type AdaptiveMenuProps = React.HTMLAttributes<HTMLDivElement> & {
+type AdaptiveMenuProps = Omit<React.HTMLAttributes<HTMLDivElement>, 'onDrag' | 'onDragStart' | 'onDragEnd' | 'onAnimationStart'> & {
   preferredSide?: 'top' | 'bottom';
   heightLimit?: number;
   allowFlip?: boolean;
