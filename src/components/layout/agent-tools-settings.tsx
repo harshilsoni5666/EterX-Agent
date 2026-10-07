@@ -38,7 +38,9 @@ export function AgentToolsSettings() {
         setError('');
       }
     } catch (cause) {
-      if (mounted.current) setError(cause instanceof Error ? cause.message : 'Could not load agent tools.');
+      if (mounted.current && version === loadVersion.current && outstanding.current === 0) {
+        setError(cause instanceof Error ? cause.message : 'Could not load agent tools.');
+      }
     }
   };
 
@@ -85,7 +87,10 @@ export function AgentToolsSettings() {
         if (outstanding.current === 1) {
           try {
             const response = await requestJson('/api/settings/agents', { cache: 'no-store' });
-            if (response.ok && outstanding.current === 1) install(await response.json());
+            if (response.ok) {
+              const saved = await response.json();
+              if (outstanding.current === 1) install(saved);
+            }
           } catch { /* Keep the error and offer an explicit reload. */ }
         }
       } finally {

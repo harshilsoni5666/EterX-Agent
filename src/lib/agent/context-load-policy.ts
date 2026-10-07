@@ -14,7 +14,9 @@ export type ContextLoadPolicy = {
 /**
  * The modern stack keeps one durable evidence channel instead of injecting
  * several overlapping generations of memory and reasoning middleware into
- * every request. Legacy injectors remain available for compatibility when a
+ * every request. Explicit durable user preferences and project facts use one
+ * separate bounded channel; episodic state remains in the chat fabric.
+ * Legacy injectors remain available for compatibility when a
  * caller explicitly opts out or ETERX_MODERN_CONTEXT_ONLY=0 is configured.
  */
 export function isModernContextStackEnabled(context?: unknown): boolean {

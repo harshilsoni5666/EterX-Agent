@@ -4,9 +4,11 @@ import { readChatPlanMode, writeChatPlanMode, summarizeChatUsage } from '../lib/
 import { requestJson } from '../lib/request-json';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../lib/app-visibility';
 import Loading from './loading';
+import { reloadApp } from '../lib/reload-app';
 import React, { startTransition, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import dynamic from 'next/dynamic';
+import { createLazyPanel } from '../components/ui/lazy-panel';
 import { Sidebar } from '../components/layout/sidebar';
 import { CommandPalette } from '../components/layout/command-palette';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
@@ -148,9 +150,8 @@ const AgentsView = dynamic(
   { ssr: false },
 );
 
-const AgentChannelsView = dynamic(
+const AgentChannelsView = createLazyPanel('Channels',
   () => import('../components/channels/agent-channels-view').then(mod => mod.AgentChannelsView),
-  { ssr: false },
 );
 
 const ProjectsView = dynamic(
@@ -1982,7 +1983,7 @@ function DeepWorkUI() {
   }, []);
   const [greeting, setGreeting] = useState("What can I help you with?");
   const [startupPreferencesReady, setStartupPreferencesReady] = useState(false);
-  const [startupTakingLong, setStartupTakingLong] = useState(false);
+  const [startupVisualsReady, setStartupVisualsReady] = useState(false);
 
   const [chats, setChatsState] = useState<ChatSession[]>([]);
   const [isChatHistoryLoading, setIsChatHistoryLoading] = useState(true);
@@ -2005,13 +2006,37 @@ function DeepWorkUI() {
   }, []);
 
   useEffect(() => {
-    if (workspaceStartupReady) {
-      setStartupTakingLong(false);
-      return;
-    }
-    const timer = window.setTimeout(() => setStartupTakingLong(true), 15_000);
-    return () => window.clearTimeout(timer);
+    if (!workspaceStartupReady) return;
+    let cancelled = false;
+    let frame = 0;
+    let timeout = 0;
+    const settle = async () => {
+      // Let storage subscribers commit the restored landing page before
+      // collecting its fonts and icons. The shell stays mounted for layout.
+      await new Promise<void>(resolve => { frame = requestAnimationFrame(() => resolve()); });
+      if (cancelled) return;
+      const images = Array.from(document.querySelectorAll<HTMLImageElement>('.eterx-app-shell img'))
+        .filter(image => image.getBoundingClientRect().width > 0 && image.loading !== 'lazy');
+      await Promise.race([
+        Promise.allSettled([document.fonts.ready, ...images.map(image => image.decode())]),
+        new Promise<void>(resolve => { timeout = window.setTimeout(resolve, 4000); }),
+      ]);
+      window.clearTimeout(timeout);
+      if (cancelled) return;
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          if (!cancelled) setStartupVisualsReady(true);
+        });
+      });
+    };
+    void settle();
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+    };
   }, [workspaceStartupReady]);
+  const startupReady = workspaceStartupReady && startupVisualsReady;
   const sidebarChatsRef = useRef<ChatSession[]>([]);
   const nonBuilderChats = useMemo(() => {
     // Sidebar rows need metadata only. Keep this array referentially stable
@@ -4666,6 +4691,14 @@ function DeepWorkUI() {
       };
       liveCommitTurnRef.current = commitLiveTurn;
 
+      let liveRuntimePrompt = '';
+      try {
+        const response = await requestJson(`/api/runtime/platform?shell=${encodeURIComponent(String(storedLiveSettings.terminalShell || 'auto'))}`, { signal: bootstrapController.signal }, 5_000);
+        const platform = await response.json();
+        if (response.ok && typeof platform.runtimePrompt === 'string') liveRuntimePrompt = platform.runtimePrompt;
+      } catch { /* Tool results still supply host facts if startup discovery is unavailable. */ }
+      if (!isCurrentSession()) return;
+
       const session = createLiveSession(
         apiKey,
         currentChatId,
@@ -5748,6 +5781,7 @@ function DeepWorkUI() {
             chatHistory,
             workspacePath: activeWorkspacePath || undefined,
             systemNotes: [
+              liveRuntimePrompt,
               defaultLiveWorker
                 ? `Default Live worker model: ${defaultLiveWorker.provider}/${defaultLiveWorker.modelId}. For substantive research, coding, creation, or multi-step action, call send_prompt_to_main_agent without inventing another model ID; the app will route to this configured worker unless the user explicitly selects a different model.`
                 : 'No default external Live worker model was resolved. Use list_available_models before delegating substantial work.',
@@ -13693,9 +13727,25 @@ function DeepWorkUI() {
     // Preserve message order within one conversation, but never let a slow
     // terminal command in one gateway chat block unrelated conversations.
     const dispatchChains = new Map<string, Promise<void>>();
+    const botInputsInFlight = new Set<string>();
+    let disposed = false;
+    let botsAvailable = false;
+    let botReconciliationInFlight = false;
+    const updateBotAvailability = (status: any) => {
+      if (!disposed) botsAvailable = status?.running === true && Array.isArray(status.bots)
+        && status.bots.some((bot: any) => bot.enabled && bot.paired);
+    };
+    const unsubscribeBotStatus = desktopApi.onGatewayStatus?.(updateBotAvailability);
+    void desktopApi.getGatewayState?.().then((state: any) => updateBotAvailability(state?.status)).catch(() => undefined);
     const processGatewayInput = async (input: any) => {
       if (!input?.id || !input?.conversationId) return;
       try {
+        if (input.botId) {
+          // Bot conversations use AgentRegistry without a desktop ChatSession.
+          const response = await fetch('/api/bots/dispatch', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ eventId: input.id }) });
+          if (!response.ok) console.warn('[EterX Bots] Message retained for retry.');
+          return;
+        }
         const gatewayState = await desktopApi.getGatewayState?.();
         if (gatewayState?.config?.autoDispatch !== true) return;
 
@@ -13779,6 +13829,12 @@ function DeepWorkUI() {
     };
 
     const enqueue = (input: any) => {
+      if (input?.botId) {
+        if (!input.id || botInputsInFlight.has(input.id)) return;
+        botInputsInFlight.add(input.id);
+        void processGatewayInput(input).finally(() => botInputsInFlight.delete(input.id));
+        return;
+      }
       const key = String(input?.conversationId || 'unknown');
       const previous = dispatchChains.get(key) || Promise.resolve();
       let next!: Promise<void>;
@@ -13795,6 +13851,24 @@ function DeepWorkUI() {
       for (const input of Array.isArray(pending) ? pending : []) enqueue(input);
     }).catch(() => undefined);
     claimPending();
+    const reconcileBots = async () => {
+      if (disposed || !botsAvailable || botReconciliationInFlight) return;
+      botReconciliationInFlight = true;
+      try {
+        await Promise.allSettled([
+          fetch('/api/bots/tick', { method: 'POST', signal: AbortSignal.timeout(60000) })
+            .then(async response => {
+              if (!response.ok) return;
+              const result = await response.json();
+              if (!disposed) for (const event of Array.isArray(result.events) ? result.events : []) enqueue(event);
+            }),
+          desktopApi.claimGatewayInputs?.(100).then((pending: any[]) => {
+            if (!disposed) for (const input of Array.isArray(pending) ? pending : []) if (input.botId) enqueue(input);
+          }),
+        ]);
+      } finally { botReconciliationInFlight = false; }
+    };
+    const botReconciliationTimer = window.setInterval(() => void reconcileBots(), 5000);
 
     // Native events are the fast path. This reconciliation pass makes delivery
     // durable if an IPC event is missed while the window is hidden or waking.
@@ -13818,7 +13892,10 @@ function DeepWorkUI() {
     }, 60_000);
 
     return () => {
+      disposed = true;
       window.clearInterval(reconciliationTimer);
+      window.clearInterval(botReconciliationTimer);
+      unsubscribeBotStatus?.();
       unsubscribe?.();
     };
   }, [markChatUnreadIfBackground]);
@@ -16075,20 +16152,8 @@ function DeepWorkUI() {
 
   return (
     <>
-    {!workspaceStartupReady && (
-      <>
-        <Loading />
-        {startupTakingLong && (
-          <div role="status" className="fixed inset-x-0 bottom-16 z-[2147483647] text-center text-sm text-[var(--foreground)] [-webkit-app-region:no-drag]">
-            <p>Restoring your workspace is taking longer than usual.</p>
-            <button type="button" onClick={() => window.location.reload()} className="mt-3 rounded-lg border border-current/20 px-4 py-2">
-              Reload EterX
-            </button>
-          </div>
-        )}
-      </>
-    )}
-    <div style={!workspaceStartupReady ? { visibility: 'hidden', pointerEvents: 'none' } : undefined} aria-hidden={!workspaceStartupReady || undefined} data-active-view={activeView} data-document-visible={documentVisible ? 'true' : 'false'} data-sidebar-open={sidebarOpen ? 'true' : 'false'} data-platform={desktopPlatform} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
+    {!startupReady && <Loading />}
+    <div {...(!startupReady ? { inert: '' } : {})} style={!startupReady ? { visibility: 'hidden', opacity: 0, pointerEvents: 'none' } : undefined} aria-hidden={!startupReady || undefined} data-startup-ready={startupReady ? 'true' : 'false'} data-active-view={activeView} data-document-visible={documentVisible ? 'true' : 'false'} data-sidebar-open={sidebarOpen ? 'true' : 'false'} data-platform={desktopPlatform} className="eterx-app-shell flex h-screen font-sans overflow-hidden selection:bg-[#E2765A]/30 transition-colors relative">
       {/* Global Window Drag Bar (Independent Layer) */}
       <div className="eterx-window-drag-layer pointer-events-none absolute top-0 h-[var(--eterx-shell-topbar-height)] z-[998] [-webkit-app-region:drag]" />
 
@@ -16221,11 +16286,7 @@ function DeepWorkUI() {
                       e.preventDefault();
                       setActiveTopbarMenu(null);
                       await persistChats(chatsRef.current, true);
-                      if ((window as any).electronAPI?.restartApp) {
-                        await (window as any).electronAPI.restartApp();
-                      } else {
-                        window.location.reload();
-                      }
+                      await reloadApp();
                     }}
                   >
                     <button
@@ -16233,7 +16294,7 @@ function DeepWorkUI() {
                       className="eterx-help-menu-item flex items-center gap-[8px] w-full px-[8px] py-[6px] text-[12px] font-medium rounded-[6px] text-left transition-colors duration-150 outline-none border-0 cursor-pointer pointer-events-auto"
                     >
                       <RefreshCw size={14} />
-                      <span>Restart</span>
+                      <span>Reload app</span>
                     </button>
                   </DropdownMenu.Item>
 

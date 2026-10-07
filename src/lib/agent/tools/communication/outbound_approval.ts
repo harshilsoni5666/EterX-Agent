@@ -145,6 +145,10 @@ async function askUserForOutboundApproval(
   const startedAt = Date.now();
   while (Date.now() - startedAt < APPROVAL_WAIT_MS) {
     const pending = (globalThis as any).__pendingAskUser?.[responseKey];
+    if (pending?.status === 'interrupted' || context?.abortSignal?.aborted || context?.signal?.aborted) {
+      delete (globalThis as any).__pendingAskUser[responseKey];
+      return false;
+    }
     if (pending?.status === 'answered' && pending?.answer !== null) {
       delete (globalThis as any).__pendingAskUser[responseKey];
       return isPositiveApproval(pending.answer, pending.selectedOption);

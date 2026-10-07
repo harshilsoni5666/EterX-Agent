@@ -5,6 +5,7 @@ import { getRuntimeScratchRoot, getRuntimeWorkspaceRoot } from '../workspace/pat
 import { getUserFolders } from './user-folders';
 import { getLiveTerminalTaskContext } from '../tools/core/terminal_background';
 import { getChatCommandEnvironment } from './python-runtime';
+import { getRuntimeDeviceFacts } from './platform-context';
 
 let cache: { key: string; expires: number; executables: Record<string, string | null> } | undefined;
 
@@ -32,7 +33,7 @@ export function getRuntimeEnvironment(context?: any, refresh = false) {
   let shellError: string | undefined;
   try { shell = resolveTerminalShell(context?.terminalShell); } catch (error) { shellError = String((error as Error).message); }
   return {
-    platform: process.platform, architecture: process.arch,
+    platform: process.platform, ...getRuntimeDeviceFacts(),
     shell, shellError, cwd, scratchRoot: getRuntimeScratchRoot(context),
     home: os.homedir(), ...getUserFolders(), pathSeparator: path.sep,
     executables: { ...getRuntimeExecutables(refresh, env), python: python.program },

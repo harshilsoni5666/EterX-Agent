@@ -19,6 +19,10 @@ export function isWithinWorkspace(path: string, root: string) {
 }
 export function workspaceParent(path: string) {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!normalized) return '/';
+  if (/^[a-z]:$/i.test(normalized)) return normalized + '/';
+  // A drive or UNC share is a filesystem root, never a child of its server.
+  if (/^\/\/[^/]+\/[^/]+$/.test(normalized)) return normalized;
   const index = normalized.lastIndexOf('/');
   if (index < 0) return normalized;
   const parent = normalized.slice(0, index);

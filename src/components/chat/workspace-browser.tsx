@@ -5,12 +5,12 @@ import { ArrowLeft, ArrowRight, ArrowUpRight, ScanLine, Check, Globe, Loader2, R
 import { updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { Tooltip } from '../ui/tooltip';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
+import { BROWSER_HISTORY_KEY, clearBrowserHistory, loadBrowserHistory, readBrowserHistory, type BrowserHistoryItem } from '../../lib/browser-history';
+import { FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 
 type BrowserState = { url: string; title: string; favicon?: string; loading: boolean; canGoBack: boolean; canGoForward: boolean; error: string };
-type HistoryItem = { url: string; title: string; favicon?: string; visitedAt: number };
 export type BrowserCapture = { filePath: string; filename: string; dataUrl: string; url: string };
 const initial: BrowserState = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, error: '' };
-const historyKey = 'eterx.workspace.browser.history.v2';
 function address(value: string) {
   const input = value.trim();
   if (/^https?:\/\//i.test(input)) return input;
@@ -37,7 +37,7 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
   const frameReady = useRef<(revision: number) => void>();
   const [pageFrame, setPageFrame] = useState<{ source: string; revision: number } | null>(null);
   const input = useRef<HTMLInputElement>(null);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [history, setHistory] = useState<BrowserHistoryItem[]>([]);
   const [suggestions, setSuggestions] = useState(false);
   const [keywords, setKeywords] = useState<string[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(-1);
@@ -45,30 +45,27 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
   const [copied, setCopied] = useState(false);
   const [captureError, setCaptureError] = useState('');
   const copiedTimer = useRef<ReturnType<typeof setTimeout>>();
-  const persistedPage = useRef('');
   useEffect(() => {
-    try { const saved = JSON.parse(localStorage.getItem(historyKey) || '[]'); if (Array.isArray(saved)) setHistory(saved.filter(item => typeof item.url === 'string').slice(0, 100)); } catch {}
+    let disposed = false;
+    const refresh = () => { if (!disposed) setHistory(readBrowserHistory()); };
+    const changed = (event: Event) => { if ((event as CustomEvent).detail?.key === BROWSER_HISTORY_KEY) refresh(); };
+    void loadBrowserHistory().then(refresh);
+    window.addEventListener('eterx-folder-storage-updated', changed);
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, refresh);
+    return () => { disposed = true; window.removeEventListener('eterx-folder-storage-updated', changed); window.removeEventListener(FOLDER_STORAGE_READY_EVENT, refresh); };
+  }, []);
+  useEffect(() => {
     setReady(false);
     if (!api?.workspaceBrowserCreate) { setState({ ...initial, error: 'Restart EterX to enable the desktop browser.' }); return; }
     let disposed = false;
-    const receive = (event: BrowserState & { id: string; openUrl?: string }) => {
+    const receive = (event: BrowserState & { id: string; openUrl?: string; focusAddress?: boolean }) => {
       if (event.id !== tab.id || disposed) return;
       if (event.openUrl) return; // The workspace store routes new tabs, including background pages.
+      if (event.focusAddress) { input.current?.focus(); input.current?.select(); return; }
       setState(previous => Object.keys(event).every(key => key === 'id' || event[key as keyof BrowserState] === previous[key as keyof BrowserState]) ? previous : event);
       if (event.url && event.url !== 'about:blank') {
         if (lastURL.current !== event.url) { lastURL.current = event.url; if (document.activeElement !== input.current) setValue(event.url); }
         updateWorkspaceTab(owner, tab.id, { url: event.url, title: event.title || new URL(event.url).hostname, favicon: event.favicon });
-        const signature = `${event.url}|${event.title}|${event.favicon}`;
-        if (!event.loading && !event.error && persistedPage.current !== signature) {
-          persistedPage.current = signature;
-          setHistory(previous => {
-            let latest = previous;
-            try { const stored = JSON.parse(localStorage.getItem(historyKey) || '[]'); if (Array.isArray(stored)) latest = stored; } catch {}
-            const next = [{ url: event.url, title: event.title || event.url, favicon: event.favicon, visitedAt: Date.now() }, ...latest.filter(item => item.url !== event.url)].slice(0, 100);
-            try { localStorage.setItem(historyKey, JSON.stringify(next)); } catch {}
-            return next;
-          });
-        }
       }
     };
     const unsubscribe = api.onWorkspaceBrowserEvent(receive);
@@ -92,6 +89,7 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
   useLayoutEffect(() => {
     if (!ready || !viewport.current || !api) return;
     let frame = 0, captureRevision = 0;
+    let previewTimer: ReturnType<typeof setTimeout> | undefined;
     let previousBounds = '';
     let disposed = false, overlayVisible = false, previewLoaded = false;
     const schedule = () => { if (!disposed && !frame) frame = requestAnimationFrame(sync); };
@@ -102,6 +100,10 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
       if (overlay && !overlayVisible && flags.url && !flags.error) {
         overlayVisible = true; previewLoaded = false;
         const revision = ++captureRevision;
+        clearTimeout(previewTimer);
+        previewTimer = setTimeout(() => {
+          if (!disposed && revision === captureRevision) { previewLoaded = true; schedule(); }
+        }, 750);
         // A single captured frame keeps DOM suggestions/dialogs over the page.
         // Native "+" menus need no capture and leave the live renderer attached.
         const capture = api.workspaceBrowserPreview?.(tab.id) || Promise.resolve(null);
@@ -112,6 +114,7 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
         }).catch(() => { if (!disposed && revision === captureRevision) { previewLoaded = true; schedule(); } });
       } else if (!overlay && overlayVisible) {
         overlayVisible = false; previewLoaded = false; captureRevision++;
+        clearTimeout(previewTimer); setPageFrame(null);
       }
       const blocked = !isAppVisible() || (overlay && previewLoaded);
       const rect = viewport.current?.getBoundingClientRect();
@@ -119,7 +122,7 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
       const signature = JSON.stringify(bounds);
       if (signature !== previousBounds) { previousBounds = signature; api.workspaceBrowserBounds(tab.id, bounds); }
     };
-    frameReady.current = revision => { if (revision === captureRevision) { previewLoaded = true; schedule(); } };
+    frameReady.current = revision => { if (revision === captureRevision) { clearTimeout(previewTimer); previewLoaded = true; schedule(); } };
     scheduleViewport.current = schedule;
     const resize = new ResizeObserver(schedule); resize.observe(viewport.current);
     const mutations = new MutationObserver(records => {
@@ -130,6 +133,7 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
     schedule();
     return () => {
       disposed = true; captureRevision++; cancelAnimationFrame(frame);
+      clearTimeout(previewTimer);
       resize.disconnect(); mutations.disconnect();
       window.removeEventListener('resize', schedule); window.removeEventListener('scroll', schedule, true); unsubscribeVisibility();
       scheduleViewport.current = undefined; frameReady.current = undefined;
@@ -168,7 +172,7 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
       <button type="button" aria-label="Forward" disabled={!state.canGoForward} onClick={() => void command('forward')}><ArrowRight size={16} /></button>
       <Tooltip side="top" text={state.loading ? 'Stop loading' : 'Reload'}><button type="button" aria-label={state.loading ? 'Stop loading' : 'Reload'} disabled={!ready} onClick={() => void command(state.loading ? 'stop' : 'reload')}>{state.loading ? <X size={16} /> : <RotateCw size={16} />}</button></Tooltip>
       <div className="eterx-workspace-url"><BrowserFavicon url={state.favicon} /><input ref={input} role="combobox" aria-expanded={suggestions && entries.length > 0} aria-controls={`browser-suggestions-${tab.id}`} aria-autocomplete="list" aria-activedescendant={selectedSuggestion >= 0 ? `browser-suggestion-${tab.id}-${selectedSuggestion}` : undefined} aria-label="Search or enter a URL" placeholder="Search or enter a URL" value={value} onChange={event => { setValue(event.target.value); setSuggestions(true); setSelectedSuggestion(-1); }} onFocus={event => { event.currentTarget.select(); setSuggestions(true); }} onBlur={() => setSuggestions(false)} onKeyDown={event => { if (event.key === 'Escape') { setSuggestions(false); setSelectedSuggestion(-1); } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setSuggestions(true); setSelectedSuggestion(index => Math.max(-1, Math.min(entries.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))); } }} /><button disabled={!ready} aria-label="Go"><ArrowUpRight size={16} /></button>
-        {suggestions && entries.length > 0 && <div className="eterx-workspace-suggestions" id={`browser-suggestions-${tab.id}`} role="listbox">{entries.map((entry, index) => <button id={`browser-suggestion-${tab.id}-${index}`} role="option" aria-selected={selectedSuggestion === index} type="button" key={entry.text} onMouseDown={event => event.preventDefault()} onClick={() => navigate(entry.text)}>{entry.history ? <BrowserFavicon url={entry.favicon} /> : <Search size={14} />}<span>{entry.label}</span></button>)}<button type="button" className="eterx-workspace-clear-history" onMouseDown={event => event.preventDefault()} onClick={() => { setHistory([]); try { localStorage.removeItem(historyKey); } catch {} }}>Clear browsing history</button></div>}
+        {suggestions && entries.length > 0 && <div className="eterx-workspace-suggestions" id={`browser-suggestions-${tab.id}`} role="listbox">{entries.map((entry, index) => <button id={`browser-suggestion-${tab.id}-${index}`} role="option" aria-selected={selectedSuggestion === index} type="button" key={entry.text} onMouseDown={event => event.preventDefault()} onClick={() => navigate(entry.text)}>{entry.history ? <BrowserFavicon url={entry.favicon} /> : <Search size={14} />}<span>{entry.label}</span></button>)}<button type="button" className="eterx-workspace-clear-history" onMouseDown={event => event.preventDefault()} onClick={() => { clearBrowserHistory(); setHistory([]); }}>Clear browsing history</button></div>}
       </div>
       <Tooltip side="top" text={copied ? 'Copied and attached to chat' : 'Capture page'}><button type="button" disabled={!ready || !state.url || capturing} aria-label={copied ? 'Copied and attached to chat' : 'Capture page and attach to chat'} onClick={() => void capture()}>{capturing ? <Loader2 size={17} className="animate-spin" /> : copied ? <Check size={17} /> : <ScanLine size={18} strokeWidth={1.7} />}</button></Tooltip>
       {state.loading && <div className="eterx-workspace-loading-line" />}

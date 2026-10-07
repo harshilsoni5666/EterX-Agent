@@ -14,7 +14,7 @@ function logToFile(msg) {
 
 const http = require('http');
 const https = require('https');
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, systemPreferences, Tray, clipboard, utilityProcess, powerMonitor } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, desktopCapturer, Menu, nativeImage, nativeTheme, safeStorage, systemPreferences, Tray, clipboard, utilityProcess, powerMonitor, net: electronNet } = require('electron');
 
 // The gateway daemon is loaded by Electron's main process before the packaged
 // Next runtime is started. Its production dependencies live in the companion
@@ -39,6 +39,10 @@ if (packagedDependencyModuleRoot) {
 const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig } = require(app.isPackaged
   ? '../runtime/assets/gateways/daemon.cjs'
   : '../src/lib/agent/gateways/daemon.cjs');
+const { normalizeTelegramToken, verifyTelegramToken, setTelegramTransport, safeTelegramError, TELEGRAM_CLIENT_VERSION } = require(app.isPackaged
+  ? '../runtime/assets/gateways/telegram-api.cjs'
+  : '../src/lib/agent/gateways/telegram-api.cjs');
+setTelegramTransport((url, options) => electronNet.fetch(url, options));
 const { installedProfileRoot, workspaceRoot } = require('./storage-layout');
 const { createHostEnvironment } = require('./host-environment');
 const { WhisperDictation } = require('./whisper-dictation');
@@ -2973,68 +2977,8 @@ function escapeHtml(value) {
 }
 
 async function showStartupFailure(error, target) {
-  if (!mainWindow) return;
-
-  const failureTheme = readNativeTheme();
-  applyNativeThemeToWindow(mainWindow, nativeThemeColors(failureTheme));
-  const failureColors = failureTheme === 'dark'
-    ? {
-      page: '#101010',
-      text: '#f1f1f1',
-      panel: '#151515',
-      border: '#262626',
-      muted: '#b8b8b8',
-      code: '#e2e2e2',
-      shadow: '0 24px 70px rgba(0, 0, 0, 0.44)',
-    }
-    : {
-      page: '#FAFAF8',
-      text: '#1F1F1D',
-      panel: '#FFFFFF',
-      border: 'rgba(31, 31, 29, 0.12)',
-      muted: '#77736C',
-      code: '#516B8A',
-      shadow: '0 24px 70px rgba(31, 31, 29, 0.12)',
-    };
-
-  const html = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>EterX startup</title>
-    <style>
-      html, body { height: 100%; }
-      body {
-        margin: 0;
-        display: grid;
-        place-items: center;
-        background: ${failureColors.page};
-        color: ${failureColors.text};
-        font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
-      }
-      main {
-        width: min(440px, calc(100vw - 48px));
-        padding: 28px;
-        border: 1px solid ${failureColors.border};
-        border-radius: 22px;
-        background: ${failureColors.panel};
-        box-shadow: ${failureColors.shadow};
-      }
-      h1 { margin: 0 0 10px; font-size: 22px; line-height: 1.15; }
-      p { margin: 0; color: ${failureColors.muted}; line-height: 1.55; }
-      code { color: ${failureColors.code}; word-break: break-all; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>EterX is still starting</h1>
-      <p>Could not reach <code>${escapeHtml(target)}</code>.</p>
-      <p>${escapeHtml(error.message || error)}</p>
-    </main>
-  </body>
-</html>`;
-
-  await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  logToFile(`[startup] Could not load ${target}: ${error?.message || error}`);
+  await showSplashScreen({ recovery: true });
 }
 
 function clearBootRetry() {
@@ -3043,17 +2987,20 @@ function clearBootRetry() {
   bootRetryTimer = null;
 }
 
-async function showSplashScreen() {
+async function showSplashScreen({ recovery = false } = {}) {
   if (isQuitting || !mainWindow || mainWindow.isDestroyed()) return;
   const splashWindow = mainWindow;
   const theme = readNativeTheme();
 
-  const nativeBackdrop = applySplashWindowTheme(theme);
+  // Match the web loader on every platform to avoid a material/color flash.
+  applyNativeWindowTheme(theme);
+  const nativeBackdrop = false;
   await splashWindow.loadFile(path.join(__dirname, 'splash.html'), {
     // Keep the query small. Embedding the full PNG as a data URL can create a
     // 60KB+ file:// URL, which Chromium may reject on Windows with ERR_FAILED.
     query: {
       theme,
+      recovery: recovery ? 'true' : 'false',
       backdrop: nativeBackdrop ? 'native' : 'solid',
       icon: getSplashIconUrl(),
       platform: process.platform === 'darwin'
@@ -3625,59 +3572,11 @@ ipcMain.handle('get-file-icon', async (event, filePath) => {
   }
 });
 
-// IPC: Convert DOCX to PDF using local Word COM Automation
+// IPC: Convert DOCX with the host's installed document converter.
 ipcMain.handle('convert-docx-to-pdf', async (event, docxPath) => {
-  return new Promise((resolve) => {
-    try {
-      if (!docxPath || !fs.existsSync(docxPath)) {
-        return resolve(null);
-      }
-      const tempPdfPath = path.join(app.getPath('temp'), `docx_preview_${Date.now()}.pdf`);
-      const { exec, execFile } = require('child_process');
-
-      if (process.platform !== 'win32') {
-        const commands = process.platform === 'darwin'
-          ? ['/Applications/LibreOffice.app/Contents/MacOS/soffice', 'soffice', 'libreoffice']
-          : ['libreoffice', 'soffice', '/usr/bin/libreoffice', '/usr/bin/soffice'];
-        const tryNext = (index) => {
-          if (index >= commands.length) return resolve(null);
-          execFile(commands[index], ['--headless', '--convert-to', 'pdf', '--outdir', path.dirname(tempPdfPath), docxPath], { timeout: 60000 }, (err) => {
-            if (err) return tryNext(index + 1);
-            const generated = path.join(path.dirname(tempPdfPath), `${path.basename(docxPath, path.extname(docxPath))}.pdf`);
-            try {
-              if (!fs.existsSync(generated)) return tryNext(index + 1);
-              fs.renameSync(generated, tempPdfPath);
-              resolve(tempPdfPath);
-            } catch {
-              resolve(null);
-            }
-          });
-        };
-        tryNext(0);
-        return;
-      }
-
-      const escapedDocx = docxPath.replace(/'/g, "''");
-      const escapedPdf = tempPdfPath.replace(/'/g, "''");
-
-      const psCommand = `$word = New-Object -ComObject Word.Application; $word.Visible = $false; try { $doc = $word.Documents.Open('${escapedDocx}', $true, $true); $doc.SaveAs('${escapedPdf}', 17); $doc.Close(); } finally { $word.Quit(); }`;
-
-      exec(`powershell.exe -NoProfile -NonInteractive -Command "${psCommand.replace(/"/g, '\\"')}"`, (err, stdout, stderr) => {
-        if (err) {
-          console.error('Failed to convert docx to pdf via PowerShell:', err, stderr);
-          return resolve(null);
-        }
-        if (fs.existsSync(tempPdfPath)) {
-          resolve(tempPdfPath);
-        } else {
-          resolve(null);
-        }
-      });
-    } catch (err) {
-      console.error('Error during docx conversion:', err);
-      resolve(null);
-    }
-  });
+  if (!isTrustedRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame) return null;
+  try { return await require('./document-preview').convertDocumentToPdf(app, docxPath); }
+  catch (error) { logToFile(`[document-preview] ${error?.message || error}`); return null; }
 });
 
 
@@ -3710,7 +3609,9 @@ ipcMain.handle('clipboard-write-png', (_event, dataUrl) => {
   try {
     const value = String(dataUrl ?? '');
     if (!value.startsWith('data:image/png;base64,')) return false;
-    clipboard.writeImage(nativeImage.createFromDataURL(value));
+    const image = nativeImage.createFromDataURL(value);
+    if (image.isEmpty()) return false;
+    clipboard.writeImage(image);
     return true;
   } catch {
     return false;
@@ -3812,6 +3713,21 @@ ipcMain.handle('open-external', async (event, url) => {
   await shell.openExternal(url);
 });
 
+let rendererReloadPending = false;
+ipcMain.handle('app-reload', async (event) => {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false;
+  if (rendererReloadPending || bootInProgress || isQuitting) return false;
+  rendererReloadPending = true;
+  try {
+    if (isTrustedRenderer(event.sender)) await requestRendererDurableFlush();
+    bootFailureCount = 0;
+    await bootApp({ showSplash: true, retryOnFailure: true });
+    return true;
+  } finally {
+    rendererReloadPending = false;
+  }
+});
+
 ipcMain.handle('app-restart', async () => {
   if (IS_DESKTOP_DEVELOPMENT) {
     await requestRendererDurableFlush();
@@ -3876,17 +3792,93 @@ ipcMain.handle('secure-runtime-settings-clear', () => clearSecureRuntimeSettings
 
 ipcMain.handle('gateway-get-state', () => ({
   available: secureStorageAvailable(),
+  telegramClientVersion: TELEGRAM_CLIENT_VERSION,
   config: gatewayDaemon?.publicConfig() || normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG),
   status: gatewayDaemon?.status() || null,
   conversations: gatewayDaemon?.store.listConversations() || [],
   events: gatewayDaemon?.store.listEvents(100) || [],
 }));
 
-ipcMain.handle('gateway-save-config', async (_event, raw) => {
+let telegramBotMutation = Promise.resolve();
+const serializeTelegramBotMutation = (work) => {
+  const result = telegramBotMutation.then(work, work);
+  telegramBotMutation = result.catch(() => undefined);
+  return result;
+};
+ipcMain.handle('telegram-bot-save', (_event, raw) => serializeTelegramBotMutation(async () => {
+  const requestId = crypto.randomUUID();
+  let stage = 'Open desktop gateway';
+  let token = '';
+  try {
+    if (!gatewayDaemon) throw new Error('The desktop gateway is still starting.');
+    if (gatewayDaemon.externalRunning) throw new Error('Another EterX instance is running the gateway. Close that instance, then reconnect from this window.');
+    const previous = gatewayDaemon.config.telegramBots.find(bot => bot.id === raw?.id);
+    stage = 'Read bot token';
+    token = normalizeTelegramToken(raw?.token) || previous?.token || '';
+    if (!token) throw new Error('Paste the API token from @BotFather.');
+    stage = 'Read bot settings';
+    if (!raw?.name?.trim() || !raw?.model?.provider || !raw?.model?.modelId) throw new Error('Choose a name and a configured model.');
+    if (gatewayDaemon.config.platforms.telegram.token === token || gatewayDaemon.config.telegramBots.some(bot => bot.id !== raw?.id && bot.token === token)) throw new Error('This token already belongs to another connection in EterX.');
+    // Editing a role/model or pausing must work while the device is offline.
+    // New or replaced credentials are always verified against Telegram first.
+    let identity = { id: previous?.telegramId, username: previous?.username };
+    if (token !== previous?.token || !identity.id || !identity.username) {
+      stage = 'Verify token with Telegram';
+      const verified = await verifyTelegramToken(token);
+      token = verified.token;
+      identity = verified.identity;
+    }
+    stage = 'Save bot settings';
+    if (previous?.telegramId && previous.telegramId !== String(identity.id)) throw new Error('This token is for a different bot. Add it as a new bot.');
+    if (gatewayDaemon.config.telegramBots.some(bot => bot.id !== previous?.id && bot.telegramId === String(identity.id))) throw new Error('This Telegram bot is already connected. Edit that bot to replace its token or change its role.');
+    const bot = { ...raw, id: previous?.id || crypto.randomUUID(), token, username: identity.username, telegramId: String(identity.id) };
+    const bots = [...gatewayDaemon.config.telegramBots.filter(item => item.id !== bot.id), bot];
+    if (bots.length > 30) throw new Error('You can connect up to 30 bots on this device.');
+    const saved = writeGatewaySettings({ ...gatewayDaemon.config, enabled: true, keepRunningOnClose: true, telegramBots: bots });
+    if (!saved.ok) throw new Error(saved.error || 'Could not save bot settings.');
+    stage = 'Start bot connection';
+    const state = await gatewayDaemon.configure(saved.settings);
+    ensureBackgroundTray();
+    return { ok: true, id: bot.id, ...state };
+  } catch (error) {
+    // Keep only explicit, bounded metadata. Never log the request URL, token,
+    // response body, raw network error or error stack for credential setup.
+    const diagnostic = {
+      client: TELEGRAM_CLIENT_VERSION,
+      requestId,
+      time: new Date().toISOString(),
+      stage,
+      code: typeof error?.code === 'number' || /^[A-Z_0-9]{1,80}$/.test(String(error?.code || '')) ? error.code : undefined,
+      method: /^[a-zA-Z]{1,40}$/.test(String(error?.method || '')) ? error.method : undefined,
+      httpStatus: Number.isInteger(error?.httpStatus) ? error.httpStatus : undefined,
+      telegramCode: Number.isInteger(error?.telegramCode) ? error.telegramCode : undefined,
+      networkCode: /^ERR_[A-Z_]{3,80}$/.test(String(error?.networkCode || '')) ? error.networkCode : undefined,
+    };
+    logToFile(`[telegram-bot-save] ${JSON.stringify(diagnostic)}`);
+    return { ok: false, error: safeTelegramError(error?.message || 'Could not save bot.', token), code: diagnostic.code, retryAfter: error?.retryAfter, diagnostic };
+  }
+}));
+ipcMain.handle('telegram-bot-pair', (_event, id) => {
+  try { return { ok: true, ...gatewayDaemon.telegramBots.pairing(String(id)) }; }
+  catch (error) { return { ok: false, error: error?.message || 'Could not create pairing link.' }; }
+});
+ipcMain.handle('telegram-bot-remove', (_event, id) => serializeTelegramBotMutation(async () => {
+  try {
+    const saved = writeGatewaySettings({ ...gatewayDaemon.config, telegramBots: gatewayDaemon.config.telegramBots.filter(bot => bot.id !== id) });
+    if (!saved.ok) return saved;
+    const state = await gatewayDaemon.configure(saved.settings);
+    delete gatewayDaemon.telegramBots.data.owners[id];
+    gatewayDaemon.telegramBots.pairings.delete(id);
+    gatewayDaemon.telegramBots.persist();
+    return { ok: true, ...state };
+  } catch (error) { return { ok: false, error: error?.message || 'Could not disconnect bot.' }; }
+}));
+
+ipcMain.handle('gateway-save-config', (_event, raw) => serializeTelegramBotMutation(async () => {
   if (!gatewayDaemon) return { ok: false, error: 'Gateway daemon is not ready.' };
   const current = readGatewaySettings();
   const incoming = raw && typeof raw === 'object' ? raw : {};
-  const merged = { ...current, ...incoming, platforms: {} };
+  const merged = { ...current, ...incoming, telegramBots: gatewayDaemon.config.telegramBots, platforms: {} };
   const secretFields = ['token', 'webhookSecret', 'appSecret', 'publicKey', 'password', 'appPassword', 'emailPassword'];
   for (const platform of ['telegram', 'whatsapp', 'messenger', 'email', 'discord', 'signal', 'generic']) {
     const previous = current.platforms?.[platform] || {};
@@ -3907,12 +3899,16 @@ ipcMain.handle('gateway-save-config', async (_event, raw) => {
     backgroundTray = null;
   }
   return { ok: true, ...state };
-});
+}));
 
 ipcMain.handle('gateway-start', async () => gatewayDaemon?.start());
 ipcMain.handle('gateway-stop', async () => gatewayDaemon?.stop());
 ipcMain.handle('gateway-list-events', (_event, limit) => gatewayDaemon?.store.listEvents(Number(limit) || 100) || []);
-ipcMain.handle('gateway-claim-inputs', (_event, limit) => gatewayDaemon?.store.listPending(Number(limit) || 25) || []);
+ipcMain.handle('gateway-claim-inputs', (_event, limit) => {
+  if (!gatewayDaemon) return [];
+  const enabledBots = new Set(gatewayDaemon.config.telegramBots.filter(bot => bot.enabled).map(bot => bot.id));
+  return gatewayDaemon.store.listPending(Number(limit) || 25, event => !event.botId || enabledBots.has(event.botId));
+});
 ipcMain.handle('gateway-ack-input', (_event, eventId) => gatewayDaemon?.store.acknowledge(String(eventId || '')) || false);
 ipcMain.handle('gateway-list-conversations', () => gatewayDaemon?.store.listConversations() || []);
 ipcMain.handle('gateway-mark-read', (_event, conversationId) => gatewayDaemon?.store.markRead(String(conversationId || '')) || false);

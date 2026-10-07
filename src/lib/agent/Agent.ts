@@ -1,4 +1,5 @@
 import { isRuntimePlanMode, PLAN_MODE_INSTRUCTION } from './plan-mode';
+import { buildTelegramBotContext } from './telegram-bot-context';
 import { taskDecomposerTool } from './tools/core/task_decomposer';
 import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
 import { isPastedText, pastedTextManifest } from '../pasted-text';
@@ -2139,7 +2140,7 @@ ${ message.text }
     } catch { }
 
     // ── Memory loading ──
-    if (!longTermMemoryDisabled && !modernContextStack) {
+    if (!longTermMemoryDisabled && !(context as any).disableMemoryHydration && !modernContextStack) {
       try {
         await agentMemory.load();
         const memContext = agentMemory.getMemoryContext(
@@ -2150,14 +2151,19 @@ ${ message.text }
         if (memContext) dynamicContextParts.push(memContext);
       } catch { }
 
-      if (contextLoadPolicy.loadRelevantMemory) try {
+    }
+
+    if (!longTermMemoryDisabled && !(context as any).disableMemoryHydration && contextLoadPolicy.loadRelevantMemory) {
+      try {
         await memoryV2.initialize();
         const memoryV2Context = await memoryV2.getPromptContext({
           userId: (context as any).userId || 'user',
           projectId: persistenceProjectId,
           chatId: conversationScopeId,
-          query: message,
-          includeContinuity: shouldUseExistingSessionContext,
+          query: userVisibleMessage,
+          includeContinuity: !modernContextStack && shouldUseExistingSessionContext,
+          durableOnly: modernContextStack,
+          maxChars: Math.min(3200, contextLoadPolicy.memoryTokenBudget * 4),
         });
         if (memoryV2Context) dynamicContextParts.push(memoryV2Context);
       } catch { }
@@ -2248,6 +2254,7 @@ ${ message.text }
       shouldUseExistingSessionContext ? 'continuation' : 'new',
       String((context as any).runId || ''),
     );
+    adaptiveHarness.inheritUserDirectives(contextFabric.getActiveHumanDirectives());
     const requestedToolBudget = Number((context as any).maxToolCalls);
     const maxToolCalls = Number.isFinite(requestedToolBudget) && requestedToolBudget > 0
       ? Math.floor(requestedToolBudget)
@@ -5409,7 +5416,7 @@ ${ message.text }
       runtimeProfileContext,
       buildToolAvailabilityPrompt(this.buildFunctionDeclarations(isAgentBuilderRuntimeContext(context), context).map(tool => tool.name)),
     ].filter(Boolean).join('\n\n');
-    const dynamicPrompt = this.buildDynamicSystemSuffix(context, dynamicContext);
+    const dynamicPrompt = [this.buildDynamicSystemSuffix(context, dynamicContext), buildTelegramBotContext(context)].filter(Boolean).join('\n\n');
     return {
       staticPrompt,
       dynamicPrompt,
@@ -5482,6 +5489,7 @@ RESPONSE
 - Ground claims in evidence for the current request. Distinguish findings from assumptions; mention what changed, verification, skipped checks, and limitations when relevant. Never invent completion or default to a canned 'done' reply.
 - Use descriptive links beside claims, balanced $...$ inline math, and $$ on separate lines for display math. Escape literal currency dollars; do not rely on renderer repairs.
 - Link a known local artifact once as [filename](#eterx-local-file:<URL-encoded-absolute-path>); never expose raw or file:// paths.
+- Use the exact local path returned by a successful tool result. Never invent sandbox:/mnt/data links, download URLs, or web addresses for local files. If the output path is unknown, say so instead of fabricating a link.
 - End when the answer is complete. Add a next action only when useful; avoid filler and generic closing offers.
 
 WORK NOTES
@@ -5922,7 +5930,7 @@ OUTPUT CONTRACT
     // The edit tool is side-effecting, and terminal reads/checks may
     // legitimately repeat after the workspace changes.
     // ask_user: always needs fresh interaction
-    const neverDedupTools = ['workspace_edit_file', 'workspace_run_command', 'ask_user', 'task_checkpoint', 'browser_control', 'spawn_sub_agent', 'scheduled_tasks'];
+    const neverDedupTools = ['workspace_edit_file', 'workspace_run_command', 'ask_user', 'task_checkpoint', 'browser_control', 'spawn_sub_agent', 'scheduled_tasks', 'wait_timer'];
     const dedupToolName = normalizedSig.split(':')[0];
     if (neverDedupTools.includes(dedupToolName)) return false;
 
@@ -6226,6 +6234,7 @@ OUTPUT CONTRACT
       survivorState ? 'retry' : chatBoundaryDecision?.decision === 'new_task' ? 'new' : wantsSessionContext ? 'continuation' : 'new',
       String((context as any).runId || ''),
     );
+    adaptiveHarness.inheritUserDirectives(contextFabric.getActiveHumanDirectives());
 
     await this.ensureRequiredPlan(context, message, onTrace);
     taskDecomposerUsed = taskDecomposerUsed || Boolean(this.getActivePlanStateContext(chatId));
@@ -6499,7 +6508,7 @@ OUTPUT CONTRACT
     } catch { /* silent â€” workspace intel is optional */ }
 
     // === AGENT MEMORY: Inject user preferences + recent sessions ===
-    if (!longTermMemoryDisabled && !modernContextStack) {
+    if (!longTermMemoryDisabled && !(context as any).disableMemoryHydration && !modernContextStack) {
       try {
         await agentMemory.load();
         const memContext = agentMemory.getMemoryContext(message, { includeRecentSessions: wantsSessionContext }, chatId);
@@ -6508,15 +6517,17 @@ OUTPUT CONTRACT
     }
 
     // === MEMORY V2: governed factual/session memory + credential refs ===
-    if (!longTermMemoryDisabled && !modernContextStack && contextLoadPolicy.loadRelevantMemory) {
+    if (!longTermMemoryDisabled && !(context as any).disableMemoryHydration && contextLoadPolicy.loadRelevantMemory) {
       try {
         await memoryV2.initialize();
         const memoryV2Context = await memoryV2.getPromptContext({
           userId: (context as any).userId || 'user',
           projectId: persistenceProjectId,
           chatId,
-          query: message,
-          includeContinuity: wantsSessionContext,
+          query: userVisibleMessage,
+          includeContinuity: !modernContextStack && wantsSessionContext,
+          durableOnly: modernContextStack,
+          maxChars: Math.min(3200, contextLoadPolicy.memoryTokenBudget * 4),
         });
         if (memoryV2Context) dynamicContextParts.push(memoryV2Context);
       } catch { /* silent */ }

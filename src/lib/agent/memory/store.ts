@@ -253,7 +253,7 @@ export class MemoryManager {
    * Learn a user preference automatically.
    */
   public learnPreference(userId: string, category: string, preference: string, value: any): void {
-    const key = `global:${category}.${preference}`;
+    const key = `${userId}:${category}.${preference}`;
     this.userPreferences.set(key, { value, learnedAt: Date.now(), userId });
     console.log(`[MemoryManager] 🧠 Learned preference: ${category}.${preference} = ${JSON.stringify(value)}`);
     this.debouncedPersist();
@@ -265,7 +265,8 @@ export class MemoryManager {
   public getAllPreferences(userId: string): Record<string, any> {
     const prefs: Record<string, any> = {};
     for (const [key, value] of this.userPreferences.entries()) {
-      if (key.startsWith('global:') || key.startsWith(`${userId}:`)) {
+      if (key.startsWith(`${userId}:`) || (key.startsWith('global:')
+        && (value?.userId ? value.userId === userId : userId === 'user'))) {
         prefs[key] = value;
       }
     }

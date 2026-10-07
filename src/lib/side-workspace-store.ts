@@ -2,10 +2,12 @@
 
 import { useCallback, useSyncExternalStore } from 'react';
 import { compactWorkspaceRoots } from './workspace-paths';
+import type { TurnChanges } from './turn-changes';
+import { recordBrowserHistory } from './browser-history';
 
-export type WorkspaceKind = 'review' | 'terminal' | 'browser' | 'files' | 'chat';
+export type WorkspaceKind = 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat';
 export type WorkspaceReviewState = { scope: 'chat' | 'working' | 'branch'; selected: string; filter: string; expanded: boolean; split: boolean; showTree: boolean; root: string; wrap?: boolean; loadFull?: boolean; richPreview?: boolean; ignoreWhitespace?: boolean; wordDiffs?: boolean; viewed?: string[]; hideViewed?: boolean; compactFolders?: boolean; baseRefs?: Record<string, string> };
-export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number };
+export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges };
 type WorkspaceState = { open: boolean; width: number | null; expanded: boolean; tabs: WorkspaceTab[]; activeId: string | null; folders?: string[] };
 const empty: WorkspaceState = { open: false, width: null, expanded: false, tabs: [], activeId: null };
 const states = new Map<string, WorkspaceState>();
@@ -16,16 +18,22 @@ export function resolveWorkspaceOwner(owner: string): string {
 }
 const listeners = new Map<string, Set<() => void>>();
 let browserEventsStop: (() => void) | undefined;
+const recordedBrowserPages = new Map<string, string>();
 function observeBrowserTabs() {
   const api = typeof window === 'undefined' ? undefined : (window as any).electronAPI;
   if (browserEventsStop || !api?.onWorkspaceBrowserEvent) return;
-  browserEventsStop = api.onWorkspaceBrowserEvent((event: { id: string; url?: string; title?: string; favicon?: string; openUrl?: string }) => {
+  browserEventsStop = api.onWorkspaceBrowserEvent((event: { id: string; url?: string; title?: string; favicon?: string; openUrl?: string; loading?: boolean; error?: string }) => {
     const owner = workspaceTabOwner(event.id);
     if (!owner) return;
     if (event.openUrl) { addWorkspaceTab(owner, 'browser', { url: event.openUrl }); return; }
     if (!event.url || event.url === 'about:blank') return;
     let hostname = event.url; try { hostname = new URL(event.url).hostname; } catch {}
     updateWorkspaceTab(owner, event.id, { url: event.url, title: event.title || hostname, favicon: event.favicon });
+    const signature = JSON.stringify([event.url, event.title, event.favicon]);
+    if (event.loading === false && !event.error && /^https?:\/\//i.test(event.url) && recordedBrowserPages.get(event.id) !== signature) {
+      recordedBrowserPages.set(event.id, signature);
+      void recordBrowserHistory({ url: event.url, title: event.title || hostname, favicon: event.favicon, visitedAt: Date.now() });
+    }
   });
 }
 function releaseBrowserEvents() {
@@ -33,7 +41,7 @@ function releaseBrowserEvents() {
   browserEventsStop?.(); browserEventsStop = undefined;
 }
 const read = (owner: string) => states.get(resolveWorkspaceOwner(owner)) || empty;
-const titles: Record<WorkspaceKind, string> = { review: 'Review', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat' };
+const titles: Record<WorkspaceKind, string> = { review: 'Review', changes: 'Changes', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat' };
 function subscribe(owner: string, fn: () => void) {
   const set = listeners.get(owner) || new Set();
   listeners.set(owner, set); set.add(fn);
@@ -81,7 +89,7 @@ export function addWorkspaceTab(owner: string, kind: WorkspaceKind, details: Par
   // Files is a reusable explorer. Selecting a different file updates its preview
   // instead of accumulating a tab for every click in the tree.
   const existing = (kind === 'files' ? state.tabs.find(tab => tab.id === state.activeId && tab.kind === 'files') : undefined)
-    || state.tabs.find(tab => tab.kind === kind && (kind === 'terminal' || kind === 'review' || kind === 'files'));
+    || state.tabs.find(tab => tab.kind === kind && (kind === 'terminal' || kind === 'review' || kind === 'changes' || kind === 'files'));
   if (existing) {
     const requestedReview = kind === 'review' && details.path ? { reviewPathRequest: (existing.reviewPathRequest || 0) + 1, ...(existing.review ? { review: { ...existing.review, selected: details.path, scope: 'chat' as const } } : {}) } : {};
     updateWorkspace(owner, { open: true, activeId: existing.id, tabs: state.tabs.map(tab => tab.id === existing.id ? { ...tab, ...details, ...requestedReview, id: tab.id, kind, title: details.title || tab.title } : tab) });
@@ -107,6 +115,7 @@ export function updateWorkspaceTab(owner: string, id: string, patch: Partial<Wor
   updateWorkspace(owner, { tabs: state.tabs.map(tab => tab.id === id ? { ...tab, ...patch } : tab) });
 }
 export function closeWorkspaceTab(owner: string, id: string) {
+  recordedBrowserPages.delete(id);
   const state = read(owner);
   const index = state.tabs.findIndex(tab => tab.id === id);
   if (state.tabs[index]?.kind === 'browser') void (window as any).electronAPI?.workspaceBrowserClose(id).catch(() => {});
@@ -128,7 +137,7 @@ export function transferWorkspace(from: string, to: string) {
 export function disposeWorkspace(owner: string) {
   owner = resolveWorkspaceOwner(owner);
   disposedOwners.add(owner);
-  read(owner).tabs.forEach(tab => { if (tab.kind === 'browser') void (window as any).electronAPI?.workspaceBrowserClose(tab.id).catch(() => {}); });
+  read(owner).tabs.forEach(tab => { recordedBrowserPages.delete(tab.id); if (tab.kind === 'browser') void (window as any).electronAPI?.workspaceBrowserClose(tab.id).catch(() => {}); });
   states.delete(owner); controls.delete(owner); listeners.get(owner)?.forEach(fn => fn());
   releaseBrowserEvents();
 }

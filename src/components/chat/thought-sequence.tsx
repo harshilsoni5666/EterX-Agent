@@ -1889,6 +1889,7 @@ const InlineCodeView = ({
   const [atBottom, setAtBottom] = useState(false);
   const [loadedContent, setLoadedContent] = useState(content || '');
   const [isLoading, setIsLoading] = useState(Boolean(fetchFull && filepath && !content));
+  const isDocumentAsset = /\.(pdf|docx?|xlsx?|pptx?|od[stp]|rtf|zip|7z)$/i.test(filepath || filename);
 
   useEffect(() => {
     setLoadedContent(content || '');
@@ -1896,7 +1897,7 @@ const InlineCodeView = ({
   }, [content, filename]);
 
   useEffect(() => {
-    if (!fetchFull || !filepath || streaming) return;
+    if (!fetchFull || !filepath || streaming || isDocumentAsset) return;
     let cancelled = false;
     if (!content) setIsLoading(true);
     const simpleNameOnly = filepath === filename && !/[\\/]/.test(filepath);
@@ -1928,7 +1929,7 @@ const InlineCodeView = ({
       }
     })();
     return () => { cancelled = true; };
-  }, [fetchFull, filepath, filename, content, streaming]);
+  }, [fetchFull, filepath, filename, content, streaming, isDocumentAsset]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -1947,7 +1948,7 @@ const InlineCodeView = ({
     setAtBottom(false);
   }, [loadedContent, filename, streaming]);
 
-  const effectiveContent = loadedContent || content || '';
+  const effectiveContent = isDocumentAsset ? '' : loadedContent || content || '';
   
   // Extract line range (#L315-325 or L315-325 or 315-325) if present in filename, filepath, or content string
   const rangeMatch = useMemo(() => {
@@ -1992,6 +1993,7 @@ const InlineCodeView = ({
       setAtBottom(nearBottom);
     }
   };
+  if (isDocumentAsset) return <div className="min-w-0 p-3"><LocalFileLinkChip filePath={filepath || filename} label={filename} /></div>;
   const codePanel = (
     <div className={`eterx-inline-code-panel ${ created ? 'eterx-inline-code-panel-created' : '' } flex flex-col font-mono text-[#D8D1C8] ${ full ? 'h-full rounded-none border-0 bg-[#151514]' : `${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514] shadow-none' }` }`}>
       {/* Header (hidden when flush embedded in card) */}
@@ -2920,7 +2922,10 @@ const shouldRenderThoughtSegment = (log: any, flowLogs: any[], idx: number) => {
 };
 
 const isTimerAction = (log: any, command: string = '') => {
-  const toolName = String(log?.tool || log?.name || '').toLowerCase();
+  const toolName = String(log?.toolName || log?.tool || log?.name || '').toLowerCase();
+  if (toolName === 'scheduled_tasks') return false;
+  if (['wait_timer', 'sleep', 'timer', 'wait'].includes(toolName)) return true;
+  if (toolName) return false;
   const text = String(log?.text || '').toLowerCase();
   const cmd = String(command || log?.secondary || '').toLowerCase();
   return (
@@ -3085,9 +3090,9 @@ const TerminalTraceCard = ({
   // If this is a timer/schedule log, render an unopenable static status row with seconds/mins
   if (isTimer) {
     const timerLabel = extractTimerDurationLabel(log, durationMs);
-    const title = isStreaming ? 'Waiting' : 'Waited';
+    const title = isStreaming ? 'Waiting' : isStopped ? 'Wait cancelled' : isFailed ? 'Wait failed' : 'Waited';
     const headerLabel = timerLabel ? `${ title } · ${ timerLabel }` : title;
-    const timerPrompt = log?.toolArgs?.Prompt ?? log?.args?.Prompt ?? log?.toolArgs?.prompt ?? log?.args?.prompt;
+    const timerPrompt = log?.toolArgs?.note ?? log?.args?.note ?? log?.toolArgs?.title ?? log?.args?.title ?? log?.toolArgs?.Prompt ?? log?.args?.Prompt ?? log?.toolArgs?.prompt ?? log?.args?.prompt;
     const displayCollapsed = timerPrompt ? String(timerPrompt) : '';
 
     return (

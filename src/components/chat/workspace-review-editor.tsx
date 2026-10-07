@@ -497,7 +497,7 @@ function SubagentDetailPanel({
         {duration && <div className="eterx-professional-number shrink-0 rounded-full border border-white/[0.07] px-2 py-1 text-[11px] font-semibold text-white/42">{duration}</div>}
       </div>
 
-      <div className="eterx-review-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-4 [scrollbar-gutter:stable]">
+      <div className="eterx-scrollbar eterx-review-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain p-4 [scrollbar-gutter:stable]">
         <div className="rounded-[16px] border border-white/[0.07] bg-white/[0.018] p-4">
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/32">Current work</div>
           <div className="mt-2 text-[14px] font-semibold leading-6 text-white/76">
@@ -535,7 +535,7 @@ function SubagentDetailPanel({
         {agent.result && (
           <div className="mt-4 rounded-[16px] border border-white/[0.07] bg-[#101010]/78 p-4">
             <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/32">Result</div>
-            <div className="eterx-review-scrollbar mt-2 max-h-[36vh] overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words pr-2 text-[12.5px] leading-5 text-white/62 [scrollbar-gutter:stable]">
+            <div className="eterx-scrollbar eterx-review-scrollbar mt-2 max-h-[36vh] overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words pr-2 text-[12.5px] leading-5 text-white/62 [scrollbar-gutter:stable]">
               {agent.result}
             </div>
           </div>
@@ -565,7 +565,7 @@ function OverviewPanel({
   onSelectSubagent: (agent: WorkspaceReviewSubagent) => void;
 }) {
   return (
-    <div className="eterx-review-scrollbar h-full max-h-full min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain px-2 pr-3 [scrollbar-gutter:stable]">
+    <div className="eterx-scrollbar eterx-review-scrollbar h-full max-h-full min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain px-2 pr-3 [scrollbar-gutter:stable]">
       <Section
         title="Subagents"
         count={subagents.length}
@@ -933,7 +933,7 @@ function CodePanel({
         </button>
       </div>
 
-      <div className="eterx-review-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain bg-[#0B0B0C] p-4 font-mono text-[13px] leading-6 [scrollbar-gutter:stable]">
+      <div className="eterx-scrollbar eterx-review-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain bg-[#0B0B0C] p-4 font-mono text-[13px] leading-6 [scrollbar-gutter:stable]">
         {shownLines.length > 0 ? (
           visibleLines.map((line, index) => (
             <div key={`${index}-${line.slice(0, 20)}`} className="grid grid-cols-[48px_minmax(0,1fr)] gap-4">
@@ -1248,7 +1248,7 @@ export function WorkspaceReviewEditor({
               {filePickerOpen && (
                 <div className="absolute left-0 top-9 z-50 w-[min(360px,calc(100vw-40px))] overflow-hidden rounded-[14px] border border-white/[0.095] bg-[#151515]/98 shadow-none backdrop-blur-xl">
                   <div className="border-b border-white/[0.06] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/36">Open files</div>
-                  <div className="eterx-review-scrollbar max-h-[46vh] overflow-y-auto overflow-x-hidden overscroll-contain p-1.5 [scrollbar-gutter:stable]">
+                  <div className="eterx-scrollbar eterx-review-scrollbar max-h-[46vh] overflow-y-auto overflow-x-hidden overscroll-contain p-1.5 [scrollbar-gutter:stable]">
                     {tabEntries.map(({ file, index, key }) => {
                       const selected = key === activeKey;
                       return (

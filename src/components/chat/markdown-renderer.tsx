@@ -16,7 +16,7 @@ import { Check, ChevronDown, Copy, Download, Globe2, Maximize2, Minimize2, MoreH
 import { CopyButton, safeCopyTextToClipboard, safeCopyPngToClipboard } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
-import { LocalFileLinkChip, decodeLocalFileHref, isLocalFilePath, normalizeLocalImageMarkdown } from './local-file-link';
+import { LocalFileLinkChip, LocalFilePathsContext, getLocalFileName, decodeLocalFileHref, isLocalFilePath, normalizeLocalImageMarkdown } from './local-file-link';
 import { ReplyImage } from './image-gallery';
 
 // Text paints immediately. Expensive code/diagram work is settled once its
@@ -140,13 +140,24 @@ export const WebsiteLink = React.memo(({
 }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => {
   const website = useMemo(() => getWebsiteLinkMeta(href), [href]);
   const [failedFaviconUrl, setFailedFaviconUrl] = useState('');
+  const localFiles = React.useContext(LocalFilePathsContext);
+  const localPath = decodeLocalFileHref(href);
+  if (localPath) return <LocalFileLinkChip filePath={localPath} compact />;
 
   if (!website) {
+    const label = getNodeText(children).trim();
+    const matchingFiles = [...new Set(localFiles.filter(path => getLocalFileName(path) === label))];
+    if ((!href || !/^(?:#|[a-z][\w+.-]*:)/i.test(href)) && matchingFiles.length === 1) {
+      return <LocalFileLinkChip filePath={matchingFiles[0]} compact />;
+    }
+    // Unknown relative/model-generated destinations must never navigate to
+    // an application route in the external browser. Keep real page anchors.
+    if (!href || !/^(?:#|mailto:|tel:)/i.test(href)) {
+      return <span className="eterx-unresolved-file-link" title="This reference has no resolved local file or web address">{children}</span>;
+    }
     return (
       <a
         className={`eterx-markdown-link font-medium underline-offset-3 transition-colors hover:underline ${className}`}
-        target="_blank"
-        rel="noopener noreferrer"
         href={href}
         {...props}
       >
@@ -343,7 +354,7 @@ const downloadTextFile = (content: string, filename: string, type: string) => {
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 };
 
 const downloadBlob = (blob: Blob, filename: string) => {
@@ -354,7 +365,7 @@ const downloadBlob = (blob: Blob, filename: string) => {
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 };
 
 const svgToPngBlob = async (svg: string, scale = 2): Promise<Blob> => {
@@ -936,7 +947,7 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
           className="eterx-markdown-copy-button h-8 w-8 border border-white/[0.08] bg-white/[0.035] text-[#8C8A88] hover:bg-white/[0.07] hover:text-[#E8E6E3]"
         />
       </div>
-      <div className={`eterx-markdown-code-scroll overflow-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${ isLong && !expanded ? 'max-h-[520px]' : '' }`}>
+      <div className={`eterx-markdown-code-scroll eterx-scrollbar overflow-auto ${ isLong && !expanded ? 'max-h-[520px]' : '' }`}>
         {streaming ? (
           <div className="eterx-markdown-code-content code-span min-w-full text-[12.5px] leading-relaxed font-mono"
             style={{ margin: 0, background: 'var(--eterx-md-code-bg)', padding: '0.85rem 4rem 0.9rem 0.9rem', minWidth: '100%' }}>

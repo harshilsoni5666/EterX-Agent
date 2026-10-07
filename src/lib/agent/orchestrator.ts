@@ -303,15 +303,17 @@ export class AgentOrchestrator {
    * MEMORY HYDRATION — Load real data from disk into ProjectContext.
    * This is the key fix: the agent now actually READS its own memory.
    */
-  private async hydrateContext(context: any, projectId: string): Promise<void> {
+  private async hydrateContext(context: any, projectId: string, userId: string): Promise<void> {
     this.pruneHydrateCache();
+    const cacheKey = JSON.stringify([userId, projectId]);
 
     // FAST PATH: Use cached hydration if it's fresh (< 30s old)
-    const cached = this._hydrateCache.get(projectId);
+    const cached = this._hydrateCache.get(cacheKey);
     if (cached && (Date.now() - cached.ts) < AgentOrchestrator.HYDRATE_TTL_MS) {
-      Object.assign(context, cached.context);
-      this._hydrateCache.delete(projectId);
-      this._hydrateCache.set(projectId, { ...cached, ts: Date.now() });
+      Object.assign(context, this.buildHydrateCachePayload(cached.context as RuntimeProjectContext));
+      // LRU access must not extend the freshness of the data itself.
+      this._hydrateCache.delete(cacheKey);
+      this._hydrateCache.set(cacheKey, cached);
       return;
     }
 
@@ -331,10 +333,15 @@ export class AgentOrchestrator {
     ]);
 
     // 1. User preferences
+    context.userPreferences = {};
     if (prefsResult.status === 'fulfilled' && prefsResult.value) {
-      context.userPreferences = context.userPreferences || {};
       for (const [key, val] of Object.entries(prefsResult.value)) {
-        context.userPreferences[key] = (val as any)?.value || val;
+        const owner = (val as any)?.userId;
+        const scopedKey = key.startsWith(`${userId}:`) || key.startsWith(`${projectId}:`);
+        if (owner ? owner !== userId : !scopedKey && !(userId === 'user' && key.startsWith('global:'))) continue;
+        if (key.endsWith('last_successful_task')) continue;
+        context.userPreferences[key] = val && typeof val === 'object' && Object.prototype.hasOwnProperty.call(val, 'value')
+          ? (val as any).value : val;
       }
     }
 
@@ -342,7 +349,7 @@ export class AgentOrchestrator {
     if (errorsResult.status === 'fulfilled' && errorsResult.value) {
       const errors = errorsResult.value;
       if (Array.isArray(errors) && errors.length > 0) {
-        context.errorHistory = errors.slice(-5).map((e: any) =>
+        context.errorHistory = errors.filter((e: any) => String(e.context || '').includes(projectId)).slice(-5).map((e: any) =>
           `${ e.tool }: ${ (e.error || '').substring(0, 120) }`
         );
       }
@@ -361,7 +368,7 @@ export class AgentOrchestrator {
     }
 
     // Cache the result for this project
-    this._hydrateCache.set(projectId, {
+    this._hydrateCache.set(cacheKey, {
       context: this.buildHydrateCachePayload(context),
       ts: Date.now()
     });
@@ -394,6 +401,7 @@ export class AgentOrchestrator {
     const shouldInitializeMemory = shouldHydrateMemory || shouldPersistLongTermMemory;
     const shouldInitializeWorkspace = shouldExportTranscript || !pinnedContext?.disableWorkspaceInit;
     const experienceTrace: any[] = [];
+    const persistenceWarnings: string[] = [];
     const upstreamTrace = onTrace;
     onTrace = (trace: any) => {
       if (experienceTrace.length < 600) experienceTrace.push(trace);
@@ -416,29 +424,36 @@ export class AgentOrchestrator {
     const synapseGraph = shouldUseSynapseGraph ? getSynapseGraphForChat(projectId) : null;
     await Promise.all([
       shouldInitializeMemory ? globalMemoryManager.initialize() : Promise.resolve(),
-      shouldInitializeMemory ? memoryV2.initialize() : Promise.resolve(),
+      shouldInitializeMemory ? memoryV2.initialize().catch(error => {
+        persistenceWarnings.push('Durable memory was unavailable at the start of this turn.');
+        console.warn('[Orchestrator] Durable memory initialization unavailable:', formatUnknownError(error));
+      }) : Promise.resolve(),
       shouldPersistSession ? globalSessionManager.loadForProject(projectId) : Promise.resolve(),
       shouldInitializeWorkspace ? workspace.initialize() : Promise.resolve(),
       synapseGraph ? synapseGraph.initialize(projectId, projectId) : Promise.resolve(),
     ]);
 
     if (shouldPersistLongTermMemory) {
+      // Finish explicit preference admission before any provider recalls it.
+      // Learn only from the human message, never runtime-added instructions.
+      await Promise.all([
       memoryV2.recordRawEvent({
         userId,
         projectId,
         chatId: projectId,
         eventType: 'user_message',
-        text: effectiveRequest,
+        text: userRequest,
         metadata: { source: pinnedContext?.source || 'desktop' },
-      }).catch(() => undefined);
+      }).catch(error => console.warn('[Orchestrator] Could not record user memory:', formatUnknownError(error))),
       memoryV2.learnFromUserMessage({
         userId,
         projectId,
         chatId: projectId,
-        message: effectiveRequest,
-      }).catch(() => undefined);
+        message: userRequest,
+      }).catch(error => console.warn('[Orchestrator] Could not learn user preferences:', formatUnknownError(error))),
+      ]);
     }
-    const context: RuntimeProjectContext = shouldPersistLongTermMemory
+    const context: RuntimeProjectContext = shouldHydrateMemory && shouldPersistLongTermMemory
       ? globalMemoryManager.getProjectContext(projectId)
       : {
         projectId,
@@ -512,6 +527,7 @@ export class AgentOrchestrator {
       context.agentName = pinnedContext.agentName;
       context.source = pinnedContext.source;
       context.telegram = pinnedContext.telegram;
+      (context as any).telegramBot = pinnedContext.telegramBot;
       context.selectedModelProvider = String(pinnedContext.selectedModelProvider || '').trim() || undefined;
       context.strictModelSelection = pinnedContext.strictModelSelection === true;
       context.contextCompaction = pinnedContext.contextCompaction;
@@ -575,8 +591,8 @@ export class AgentOrchestrator {
       }
     }
 
-    if (shouldHydrateMemory) {
-      await this.hydrateContext(context, projectId);
+    if (shouldHydrateMemory && shouldPersistLongTermMemory) {
+      await this.hydrateContext(context, projectId, userId);
     }
 
     const startTime = Date.now();
@@ -1056,7 +1072,10 @@ export class AgentOrchestrator {
 
 
     if (shouldPersistSession) {
-      await globalSessionManager.saveForChat(projectId);
+      await globalSessionManager.saveForChat(projectId).catch(error => {
+        persistenceWarnings.push('The response is available, but session state could not be saved.');
+        console.warn('[Orchestrator] Could not persist session after response:', formatUnknownError(error));
+      });
     }
 
     // Flush Synapse graph state to disk
@@ -1067,8 +1086,13 @@ export class AgentOrchestrator {
     const artifactsGenerated: string[] = [];
     if (shouldExportTranscript) {
       const outputFilename = `result_${ Date.now() }.txt`;
-      const outputPath = await workspace.exportOutput(outputFilename, finalAnswer);
-      artifactsGenerated.push(outputPath);
+      try {
+        const outputPath = await workspace.exportOutput(outputFilename, finalAnswer);
+        artifactsGenerated.push(outputPath);
+      } catch (error) {
+        persistenceWarnings.push('The response is available, but its transcript could not be exported.');
+        console.warn('[Orchestrator] Could not export response transcript:', formatUnknownError(error));
+      }
     }
 
     const executionTime = Date.now() - startTime;
@@ -1080,18 +1104,12 @@ export class AgentOrchestrator {
     if (shouldPersistLongTermMemory) {
       globalMemoryManager.saveEpisodicMemory(
         projectId,
-        `Executed task: ${ userRequest }`,
+        `User request: ${ userRequest }\nAgent response (${success ? 'returned, completion unverified' : 'failed or stopped'}): ${finalAnswer.substring(0, 600)}`,
         'task_result',
         success ? 7 : 5,
         ['task', success ? 'success' : 'failed']
       );
 
-      if (success) {
-        globalMemoryManager.learnPreference(userId, 'interaction', 'last_successful_task', {
-          task: userRequest.substring(0, 200),
-          timestamp: Date.now()
-        });
-      }
       await memoryV2.saveSessionSnapshot({
         userId,
         projectId,
@@ -1101,9 +1119,18 @@ export class AgentOrchestrator {
         success,
         durationMs: executionTime,
         artifactsGenerated,
+      }).catch(error => {
+        persistenceWarnings.push('This turn could not be added to durable memory.');
+        console.warn('[Orchestrator] Could not save session memory:', formatUnknownError(error));
       });
-      await memoryV2.flush();
-      await globalMemoryManager.flush();
+      const persistence = await Promise.allSettled([memoryV2.flush(), globalMemoryManager.flush()]);
+      for (const result of persistence) {
+        if (result.status === 'rejected') {
+          persistenceWarnings.push('Some memory changes remain unsaved.');
+          console.warn('[Orchestrator] Memory flush failed:', formatUnknownError(result.reason));
+        }
+      }
+      this._hydrateCache.delete(JSON.stringify([userId, projectId]));
     }
 
     if (selfImprovementEnabled && finalAnswer !== 'Stopped by user.') {
@@ -1169,6 +1196,7 @@ export class AgentOrchestrator {
       complexity,
       modelMode: effectiveMode,
       effectiveApiKey,
+      ...(persistenceWarnings.length ? { warnings: [...new Set(persistenceWarnings)] } : {}),
     } as AgentResponse;
   }
 

@@ -14,7 +14,7 @@ const desktopDevUserData = path.resolve(
 );
 const launcherLockPath = path.join(desktopDevRoot, 'launcher.lock');
 const electronSourceRoot = path.join(repositoryRoot, 'electron');
-const gatewayDaemonPath = path.join(repositoryRoot, 'src', 'lib', 'agent', 'gateways', 'daemon.cjs');
+const gatewaySourceRoot = path.join(repositoryRoot, 'src', 'lib', 'agent', 'gateways');
 const electronSourceExtensions = new Set(['.js', '.cjs', '.mjs', '.json', '.html']);
 
 let nextProcess = null;
@@ -43,7 +43,11 @@ function readElectronSourceFingerprint() {
   const files = fs.readdirSync(electronSourceRoot)
     .filter((name) => electronSourceExtensions.has(path.extname(name).toLowerCase()))
     .map((name) => path.join(electronSourceRoot, name));
-  if (fs.existsSync(gatewayDaemonPath)) files.push(gatewayDaemonPath);
+  if (fs.existsSync(gatewaySourceRoot)) {
+    files.push(...fs.readdirSync(gatewaySourceRoot)
+      .filter((name) => path.extname(name).toLowerCase() === '.cjs')
+      .map((name) => path.join(gatewaySourceRoot, name)));
+  }
   for (const file of files.sort()) {
     hash.update(file);
     hash.update(fs.readFileSync(file));
@@ -329,9 +333,12 @@ function watchElectronSources() {
   });
   sourceWatchers.push(electronWatcher);
 
-  if (fs.existsSync(gatewayDaemonPath)) {
-    const gatewayWatcher = fs.watch(gatewayDaemonPath, () => {
-      scheduleElectronRestart(path.relative(repositoryRoot, gatewayDaemonPath));
+  if (fs.existsSync(gatewaySourceRoot)) {
+    const gatewayWatcher = fs.watch(gatewaySourceRoot, (_eventType, fileName) => {
+      const changedFile = String(fileName || 'gateway source');
+      if (!fileName || path.extname(changedFile).toLowerCase() === '.cjs') {
+        scheduleElectronRestart(path.relative(repositoryRoot, path.join(gatewaySourceRoot, changedFile)));
+      }
     });
     gatewayWatcher.on('error', (error) => {
       console.warn(`[EterX] Gateway source watcher stopped: ${error.message || error}`);

@@ -1,5 +1,6 @@
 import { distillEvidence } from './evidence-distiller';
 import { boundHarnessContext, isHarnessContext } from '../harness-context';
+import { boundDurableMemoryContext, isDurableMemoryContext } from './prompt-context';
 
 export interface ContextFederationResult {
   parts: string[];
@@ -74,6 +75,7 @@ function splitUnits(text: string): string[] {
 function contextPriority(text: string): number {
   if (isFabricWorkingSet(text)) return 99;
   if (isHarnessContext(text)) return 97;
+  if (isDurableMemoryContext(text)) return 88;
   if (EXACT_RUNTIME_CONTRACT.test(text)) return 1000;
   if (/\[PLAN EXECUTION STATE\]|\[SYSTEM - PLAN STILL ACTIVE\]/i.test(text)) return 98;
   if (/CONTEXT FABRIC - TEMPORAL EPISTEMIC WORKING SET/i.test(text)) return 95;
@@ -153,7 +155,9 @@ function boundCompleteChannel(
         ? boundFabricWorkingSet(item.text, sourceBudget)
         : isHarnessContext(item.text)
           ? boundHarnessContext(item.text, sourceBudget)
-          : distillEvidence(item.text, currentQuery, sourceBudget).text
+          : isDurableMemoryContext(item.text)
+            ? boundDurableMemoryContext(item.text, sourceBudget)
+            : distillEvidence(item.text, currentQuery, sourceBudget).text
       : item.text;
     if (!bounded) {
       sourcesDropped++;
@@ -204,7 +208,8 @@ export function federateDynamicContextParts(
     .filter(item => {
       // A tool result mentioning "Synapse" or "agent memory" does not turn
       // the structured continuity envelope into an advisory-memory document.
-      if (!isFabricWorkingSet(item.text) && !isHarnessContext(item.text) && MEMORY_MARKER.test(item.text)) return true;
+      if (!isFabricWorkingSet(item.text) && !isHarnessContext(item.text)
+        && !isDurableMemoryContext(item.text) && MEMORY_MARKER.test(item.text)) return true;
       ordinary.push(item.text);
       return false;
     })

@@ -311,6 +311,10 @@ export const appStorageReady = (async () => {
   return loaded;
 })();
 
+export function isAppStorageLoaded(): boolean {
+  return storageHydrated && !storageLoadFailed;
+}
+
 export async function refreshAppStorage(): Promise<boolean> {
   if (!isBrowser) return true;
   await appStorageReady;
@@ -386,28 +390,29 @@ if (isBrowser) {
   void appStorageReady.then(() => {
     if (storageLoadFailed) scheduleStorageRecovery();
   });
-  if (typeof BroadcastChannel !== 'undefined') {
+  let preferencesChannel: BroadcastChannel | undefined;
+  const connectPreferencesChannel = () => {
+    if (preferencesChannel || typeof BroadcastChannel === 'undefined') return;
     try {
       const channel = new BroadcastChannel(PREFERENCES_CHANNEL);
+      preferencesChannel = channel;
       channel.onmessage = event => {
         if (event?.data?.type !== 'preferences-committed') return;
         void refreshAppStorage();
       };
-      const flushOnPageExit = () => {
-        // keepalive=true in enqueuePersist lets direct localhost/browser use
-        // the same AppData store as Electron even when the document is being
-        // torn down. Electron also performs an awaited IPC flush.
-        void flushAppStorage();
-        channel.close();
-      };
-      window.addEventListener('pagehide', flushOnPageExit, { once: true });
-      window.addEventListener('beforeunload', flushOnPageExit, { once: true });
     } catch { }
-  } else {
-    const flushOnPageExit = () => { void flushAppStorage(); };
-    window.addEventListener('pagehide', flushOnPageExit, { once: true });
-    window.addEventListener('beforeunload', flushOnPageExit, { once: true });
-  }
+  };
+  connectPreferencesChannel();
+  // Exit flushing must also work when BroadcastChannel exists but its
+  // constructor is blocked. A cancelled unload must not disconnect syncing.
+  window.addEventListener('beforeunload', () => { void flushAppStorage(); });
+  window.addEventListener('pagehide', () => {
+    void flushAppStorage(); preferencesChannel?.close(); preferencesChannel = undefined;
+  });
+  window.addEventListener('pageshow', event => {
+    connectPreferencesChannel();
+    if (event.persisted) void refreshAppStorage();
+  });
 }
 
 /** Flush all pending AppData preference writes before a desktop update/quit. */

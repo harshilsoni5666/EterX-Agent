@@ -97,11 +97,13 @@ export class SemanticWorkingMemory {
    * Add or update a working memory slot.
    */
   setWorkingSlot(slot: Omit<WorkingMemorySlot, 'id' | 'createdAt'>): void {
-    const id = `ws_${slot.category}_${Date.now()}`;
+    const id = `ws_${slot.category}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    this.workingSlots = this.workingSlots.filter(item => !item.expiresAt || item.expiresAt > Date.now());
     const existing = this.workingSlots.find(s => s.category === slot.category && s.content === slot.content);
     if (existing) {
       existing.attention = slot.attention;
       existing.attentionScore = slot.attentionScore ?? (slot.attention === 'high' ? 1.0 : slot.attention === 'medium' ? 0.6 : 0.3);
+      existing.expiresAt = slot.expiresAt;
       return;
     }
 
@@ -115,9 +117,12 @@ export class SemanticWorkingMemory {
     // Enforce limits — drop lowest-attention slots first
     if (this.workingSlots.length > MAX_WORKING_SLOTS) {
       this.workingSlots.sort((a, b) => {
+        const binding = (item: WorkingMemorySlot) => item.category === 'constraint' || item.category === 'goal';
+        const priority = Number(binding(a)) - Number(binding(b));
+        if (priority) return priority;
         const scoreA = a.attentionScore ?? 0.5;
         const scoreB = b.attentionScore ?? 0.5;
-        return scoreA - scoreB;
+        return scoreA - scoreB || a.createdAt - b.createdAt;
       });
       this.workingSlots = this.workingSlots.slice(-MAX_WORKING_SLOTS);
     }
@@ -135,6 +140,14 @@ export class SemanticWorkingMemory {
         s.attentionScore = s.attention === 'high' ? 1.0 : s.attention === 'medium' ? 0.6 : 0.3;
       }
 
+      // Unrelated observations do not revoke a human constraint or finish a
+      // task. Explicit reset/expiry owns that lifecycle, not lexical decay.
+      if (s.category === 'constraint' || s.category === 'goal') {
+        s.attentionScore = Math.max(0.85, s.attentionScore);
+        s.attention = 'high';
+        return s;
+      }
+
       const contentLower = s.content.toLowerCase();
       const isMatched = keywords.some(k => contentLower.includes(k));
 
@@ -146,13 +159,13 @@ export class SemanticWorkingMemory {
 
       s.attention = s.attentionScore > 0.8 ? 'high' : s.attentionScore > 0.4 ? 'medium' : 'low';
       return s;
-    }).filter(s => (s.attentionScore || 0) >= 0.15); // Evict slots with activation < 0.15
+    }).filter(s => (!s.expiresAt || s.expiresAt > Date.now()) && (s.attentionScore || 0) >= 0.15);
   }
 
   /**
    * Get all active working memory as context, formatting with activation strength.
    */
-  getWorkingContext(): string {
+  getWorkingContext(maxChars = 4000): string {
     const active = this.workingSlots.filter(s => {
       if (s.expiresAt && s.expiresAt < Date.now()) return false;
       return true;
@@ -163,11 +176,21 @@ export class SemanticWorkingMemory {
     // Sort by attention activation level descending
     const sorted = [...active].sort((a, b) => (b.attentionScore || 0) - (a.attentionScore || 0));
 
-    const parts: string[] = ['🧠 WORKING COGNITIVE SLOTS:'];
+    const parts: string[] = ['WORKING MEMORY (source context; current human instructions take precedence):'];
+    const omission = 'Some working records did not fit. Use the exact conversation for omitted constraints; omission does not complete the task.';
+    let used = parts[0].length + omission.length + 1;
+    let omitted = false;
     for (const slot of sorted) {
       const pct = Math.round((slot.attentionScore || 0.5) * 100);
-      parts.push(`  [${slot.category} | load: ${pct}%] ${slot.content}`);
+      const line = `  [${slot.category} | attention: ${pct}%] ${JSON.stringify(slot.content)}`;
+      if (used + line.length + 1 > maxChars) {
+        omitted = true;
+        continue;
+      }
+      parts.push(line);
+      used += line.length + 1;
     }
+    if (omitted) parts.push(omission);
 
     return parts.join('\n');
   }
@@ -183,27 +206,24 @@ export class SemanticWorkingMemory {
    * Auto-extract working memory from a user message.
    */
   extractFromMessage(message: string): void {
-    const lower = message.toLowerCase();
-
     // Decay slots based on current message keywords before adding new ones
     this.decaySlots(message);
 
     // Extract execution goals/directives
     const verbMatch = message.match(/\b(compile|test|debug|lint|refactor|build|write|create|fix|verify)\b/i);
-    if (verbMatch) {
+    if (verbMatch && !/\b(?:don't|dont|do not|never|avoid|skip|no)\s+(?:\w+\s+){0,3}$/i.test(message.slice(0, verbMatch.index))) {
       this.setWorkingSlot({
-        content: `Active execution goal: ${verbMatch[1]} action`,
+        content: `User task: ${message}`,
         attention: 'high',
         category: 'goal',
       });
     }
 
     // Extract explicit negative constraints
-    if (/\b(don't|dont|do not|never|avoid|no)\b/i.test(message)) {
-      const constraintMatch = message.match(/(?:don't|dont|do not|never|avoid|no)\s+([a-zA-Z0-9_\-\s]{5,80})(?:\.|$|,)/i);
-      if (constraintMatch) {
+    for (const clause of message.split(/\n+|(?<=[.!?;])\s+/)) {
+      if (/\b(don't|dont|do not|never|avoid|no|only|must|without)\b/i.test(clause)) {
         this.setWorkingSlot({
-          content: `User constraint: do not ${constraintMatch[1].trim()}`,
+          content: `User constraint (interpret in source context): ${clause.trim()}`,
           attention: 'high',
           category: 'constraint',
         });
@@ -241,9 +261,9 @@ export class SemanticWorkingMemory {
     const techCues = message.match(/\b(typescript|javascript|python|rust|golang|next\.?js|react|electron|css|html)\b/i);
     if (techCues) {
       this.setWorkingSlot({
-        content: `Active stack preference: ${techCues[1]}`,
+        content: `Technology mentioned by user: ${techCues[1]}`,
         attention: 'medium',
-        category: 'constraint',
+        category: 'context',
       });
     }
   }
@@ -328,6 +348,7 @@ export class SemanticWorkingMemory {
     if (keywords.length === 0) return [];
 
     return this.episodicMemory
+      .filter(ep => ep.timestamp > Date.now() - EPISODIC_TTL_MS)
       .map(ep => {
         const relevanceScore = ep.relevanceKeywords.filter(k =>
           keywords.some(qk => k.includes(qk) || qk.includes(k))
@@ -362,12 +383,13 @@ export class SemanticWorkingMemory {
    */
   learnFact(fact: Omit<SemanticFact, 'id' | 'learnedAt' | 'reinforcedCount'>): void {
     const existing = this.semanticMemory.find(f =>
-      f.domain === fact.domain && f.fact.toLowerCase().includes(fact.fact.toLowerCase().substring(0, 30))
+      f.domain === fact.domain && f.source === fact.source && f.fact.trim() === fact.fact.trim()
     );
 
     if (existing) {
       existing.reinforcedCount++;
-      existing.confidence = Math.min(0.99, existing.confidence + 0.05);
+      // Repeating an assertion is not independent support for its truth.
+      existing.confidence = Math.max(existing.confidence, fact.confidence);
       return;
     }
 

@@ -895,7 +895,7 @@ export const IdePanel = () => {
     // Keep drive roots and UNC shares intact on Windows.
     const root = getDirname(firstPath);
     setWorkspaceRoot(root);
-    setWorkspaceName(root.split('/').filter(Boolean).pop() || 'Workspace');
+    setWorkspaceName(root.split(/[\\/]/).filter(Boolean).pop() || 'Workspace');
   }, [openFiles[0]?.filepath]);
 
   // Fetch real file tree from workspace root

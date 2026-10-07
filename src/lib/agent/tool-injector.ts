@@ -96,7 +96,7 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
   const normalizeInputSchema = (schema: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {
     if (!schema) return undefined;
     // Already a full schema with type+properties → use directly
-    if (schema.type && schema.properties && typeof schema.properties === 'object') {
+    if (schema.type === 'object') {
       return schema;
     }
     // Raw properties map → wrap into a proper schema
@@ -153,7 +153,7 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
           const realTool = globalToolRegistry.getTool(stepToolName);
           if (!realTool?.execute) {
             results.push({ tool: step.tool, error: 'Tool not found' });
-            continue;
+            return { success: false, chainResults: results, failedTool: step.tool };
           }
           const stepArgs = step.argsTemplate ? { ...step.argsTemplate, ...args } : args;
           try {
@@ -161,12 +161,12 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
             const validation = validateRegistryToolArgs(realTool, normalizedArgs);
             if (!validation.success) {
               results.push({ tool: step.tool, error: validation.error });
-              continue;
+              return { success: false, chainResults: results, failedTool: step.tool };
             }
             const capabilityDecision = enforceToolCapability(stepToolName, validation.args, context);
             if (!capabilityDecision.allowed) {
               results.push({ tool: step.tool, error: capabilityDecision.reason || `Tool ${stepToolName} is not allowed` });
-              continue;
+              return { success: false, chainResults: results, failedTool: step.tool };
             }
             const toolExec = createToolExecutionContext(context);
             try {
@@ -174,17 +174,21 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
               const result = await runWithSelfHealing(stepToolName, realTool.execute, validation.args, toolExec.context);
               toolExec.throwIfCancelled();
               results.push({ tool: step.tool, result });
+              if (result?.success === false || result?.cancelled || result?.error) {
+                return { success: false, chainResults: results, failedTool: step.tool, cancelled: Boolean(result?.cancelled) };
+              }
             } finally {
               toolExec.dispose();
             }
           } catch (err: any) {
             if (isToolCancellationError(err)) {
-              return { chainResults: results, cancelled: true, error: 'CANCELLED_BY_USER' };
+              return { success: false, chainResults: results, cancelled: true, error: 'CANCELLED_BY_USER' };
             }
             results.push({ tool: step.tool, error: err.message });
+            return { success: false, chainResults: results, failedTool: step.tool };
           }
         }
-        return { chainResults: results };
+        return { success: true, chainResults: results };
       },
     };
   }
@@ -216,6 +220,7 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
       const logs: string[] = [];
 
       const callTool = async (name: string, toolArgs: any) => {
+        name = normalizeRegistryToolName(name);
         const realTool = globalToolRegistry.getTool(name);
         if (!realTool?.execute) {
           throw new Error(`Tool "${name}" not found in registry.`);

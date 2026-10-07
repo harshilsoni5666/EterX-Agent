@@ -121,6 +121,8 @@ class WhisperDictation {
     this.session = null;
     this.drainingSessions = new Map();
     this.modelDownload = null;
+    this.modelAbort = null;
+    this.closed = false;
   }
 
   runtimeDirectory() {
@@ -168,29 +170,45 @@ class WhisperDictation {
       const temporary = `${destination}.download`;
       fs.rmSync(temporary, { force: true });
       this.send(owner, { type: 'loading', text: 'Preparing local speech model…', progress: 0 });
-      const response = await fetch(MODEL_URL, { redirect: 'follow' });
-      if (!response.ok || !response.body) throw new Error(`Speech model download failed (${response.status}).`);
-      let received = 0;
-      let lastProgress = -1;
-      const progressStream = new TransformStream({
-        transform: (chunk, controller) => {
-          received += chunk.byteLength;
-          const progress = Math.min(99, Math.floor((received / MODEL_BYTES) * 100));
-          if (progress >= lastProgress + 2) {
-            lastProgress = progress;
-            this.send(owner, { type: 'loading', text: `Preparing local speech model… ${progress}%`, progress });
-          }
-          controller.enqueue(chunk);
-        },
-      });
-      await pipeline(response.body.pipeThrough(progressStream), fs.createWriteStream(temporary));
-      if (!(await this.verifyFile(temporary, MODEL_BYTES, MODEL_SHA256))) {
+      const controller = new AbortController();
+      this.modelAbort = controller;
+      let idleTimer;
+      const progress = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => controller.abort(new Error('Speech model download stalled. Please retry.')), 90_000);
+        idleTimer.unref?.();
+      };
+      progress();
+      try {
+        const response = await fetch(MODEL_URL, { redirect: 'follow', signal: controller.signal });
+        if (!response.ok || !response.body) throw new Error(`Speech model download failed (${response.status}).`);
+        let received = 0;
+        let lastProgress = -1;
+        const progressStream = new TransformStream({
+          transform: (chunk, controller) => {
+            progress();
+            received += chunk.byteLength;
+            const percent = Math.min(99, Math.floor((received / MODEL_BYTES) * 100));
+            if (percent >= lastProgress + 2) {
+              lastProgress = percent;
+              this.send(owner, { type: 'loading', text: `Preparing local speech model… ${percent}%`, progress: percent });
+            }
+            controller.enqueue(chunk);
+          },
+        });
+        await pipeline(response.body.pipeThrough(progressStream), fs.createWriteStream(temporary));
+        if (!(await this.verifyFile(temporary, MODEL_BYTES, MODEL_SHA256))) {
+          fs.rmSync(temporary, { force: true });
+          throw new Error('The downloaded speech model did not pass verification.');
+        }
+        fs.rmSync(destination, { force: true });
+        fs.renameSync(temporary, destination);
+        return destination;
+      } finally {
+        clearTimeout(idleTimer);
+        if (this.modelAbort === controller) this.modelAbort = null;
         fs.rmSync(temporary, { force: true });
-        throw new Error('The downloaded speech model did not pass verification.');
       }
-      fs.rmSync(destination, { force: true });
-      fs.renameSync(temporary, destination);
-      return destination;
     })().finally(() => {
       this.modelDownload = null;
     });
@@ -198,12 +216,14 @@ class WhisperDictation {
   }
 
   async ensureServer(owner) {
-    if (this.server && this.server.exitCode === null && this.serverPort) return;
+    if (this.closed) throw new Error('Local speech recognition is shutting down.');
     if (this.serverStarting) return this.serverStarting;
+    if (this.server && this.server.exitCode === null && this.serverPort) return;
     this.serverStarting = (async () => {
       const runtime = this.runtimeDirectory();
       if (!runtime) throw new Error('The local whisper.cpp runtime is missing from this EterX build.');
       const model = await this.ensureModel(owner);
+      if (this.closed) throw new Error('Local speech recognition is shutting down.');
       const executable = path.join(runtime, process.platform === 'win32' ? 'whisper-server.exe' : 'whisper-server');
       const port = await findAvailablePort();
       const requestPath = `/eterx-${crypto.randomBytes(18).toString('hex')}`;
@@ -236,15 +256,24 @@ class WhisperDictation {
         const active = this.session;
         if (active) {
           this.session = null;
-          this.send(active.owner, { type: 'error', code: 'whisper-exit', text: `Local speech recognition stopped unexpectedly${code == null ? '.' : ` (${code}).`}` });
+          this.emit(active, { type: 'error', code: 'whisper-exit', text: `Local speech recognition stopped unexpectedly${code == null ? '.' : ` (${code}).`}` });
         }
       });
-      child.once('error', error => this.log(`[whisper.cpp] ${String(error?.message || error)}`));
+      let startupError;
+      child.once('error', error => { startupError = error; this.log(`[whisper.cpp] ${String(error?.message || error)}`); });
       const startedAt = Date.now();
-      while (!(await canConnect(port))) {
-        if (child.exitCode !== null) throw new Error('The local speech engine could not load.');
-        if (Date.now() - startedAt > 90000) throw new Error('The local speech engine took too long to load.');
-        await delay(250);
+      try {
+        while (true) {
+          if (startupError) throw startupError;
+          if (this.closed || child.exitCode !== null || child.signalCode !== null) throw new Error('The local speech engine could not load.');
+          if (Date.now() - startedAt > 90000) throw new Error('The local speech engine took too long to load.');
+          if (await canConnect(port)) break;
+          await delay(250);
+        }
+      } catch (error) {
+        if (this.server === child) { this.server = null; this.serverPort = 0; this.serverRequestPath = ''; }
+        try { child.kill(); } catch {}
+        throw error;
       }
     })().finally(() => {
       this.serverStarting = null;
@@ -427,6 +456,8 @@ class WhisperDictation {
   }
 
   shutdown() {
+    this.closed = true;
+    this.modelAbort?.abort();
     this.pendingStart = null;
     for (const draining of this.drainingSessions.values()) {
       draining.cancelled = true;

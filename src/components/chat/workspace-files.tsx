@@ -16,6 +16,7 @@ import { PierreChevron } from './workspace-review-tree';
 import { FileSearchCorner } from './workspace-icons';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { WorkspaceImagePreview } from './workspace-image-preview';
+import { WorkspaceDocumentPreview } from './workspace-document-preview';
 
 type Entry = { name: string; path: string; type: 'file' | 'directory' };
 type FlattenedEntry = Entry & {
@@ -267,7 +268,7 @@ export function WorkspaceMenu({ label, trigger, children, onOpen }: { label: str
     }
   }}>
     <button aria-label={label} aria-expanded={open} aria-haspopup="menu" onClick={() => { if (!open) onOpen?.(); setOpen(value => !value); }}>{trigger}</button>
-    {open && <div className="eterx-workspace-menu" role="menu" aria-label={label} onClick={event => { if ((event.target as HTMLElement).closest('button')) { setOpen(false); node.current?.querySelector('button')?.focus(); } }}>{children}</div>}
+    {open && <div className="eterx-workspace-menu eterx-scrollbar" role="menu" aria-label={label} onClick={event => { if ((event.target as HTMLElement).closest('button')) { setOpen(false); node.current?.querySelector('button')?.focus(); } }}>{children}</div>}
   </div>;
 }
 
@@ -374,7 +375,7 @@ export function WorkspaceFiles({ owner, tab, isActive = true, workspacePath, roo
   const copyTimer = useRef<ReturnType<typeof setTimeout>>();
   const selected = tab.path || '';
   const media = /\.(png|jpg|jpeg|webp|gif|svg|avif|ico|mp4|webm|mov|mp3|wav|ogg|pdf)$/i.test(selected);
-  const office = /\.(xlsx?|docx?|pptx?|od[stp]|numbers|pages|key|zip|7z|exe|dll)$/i.test(selected);
+  const office = /\.(xlsx?|docx?|pptx?|od[stp]|rtf|numbers|pages|key|zip|7z|exe|dll)$/i.test(selected);
   const revision = useFolderRevision(selected ? parentPath(selected) : '', isActive);
   const request = useRef<AbortController>();
   const documents = useRef(new Map<string, { doc: Document | null; binary: boolean }>());
@@ -484,7 +485,7 @@ export function WorkspaceFiles({ owner, tab, isActive = true, workspacePath, roo
         <div ref={scroll} className="eterx-workspace-document-scroll eterx-scrollbar">
           {!selected ? <Empty><FolderOpen size={32} strokeWidth={1.5} /><h3>Select a file</h3><p>{roots.length ? workspacePath ? 'Browse your selected workspace in the file tree.' : 'Browse the folders used in this chat.' : rootsLoading ? 'Finding this chat’s folders…' : 'Folders appear here when the agent works with files, or you can add one.'}</p>{rootError && <p role="alert">{rootError}</p>}{!workspacePath && <button onClick={() => void chooseFolder()}>Add folder</button>}</Empty>
             : error && !doc ? <Empty><File size={30} /><p role="alert">{error}</p><button onClick={() => void readFile()}>Try again</button><button onClick={() => void openWith()}>Open in app</button></Empty>
-            : office || binary ? <Empty><WorkspaceFileIcon path={selected} size={48} /><h3>{fileName(selected)}</h3><p>Open this file in its desktop app to view or edit it.</p><button onClick={() => void openWith()}>Open in {appChoice?.name || 'default app'}</button></Empty>
+            : office || binary ? <WorkspaceDocumentPreview key={selected} path={selected} revision={revision} isActive={isActive} onOpen={() => void openWith()} />
             : media ? /\.(png|jpe?g|webp|gif|svg|avif|ico)$/i.test(selected) ? <WorkspaceImagePreview key={selected} path={selected} revision={revision} /> : <div className="eterx-workspace-media">{/\.pdf$/i.test(selected) ? <iframe title={fileName(selected)} src={buildFilePreviewUrl(selected)} /> : /\.(mp4|webm|mov)$/i.test(selected) ? <video controls src={buildFilePreviewUrl(selected)} /> : <audio controls src={buildFilePreviewUrl(selected)} />}</div>
             : doc ? <>{error && <div className="eterx-workspace-inline-error" role="alert">{error}</div>}<WorkspaceCode content={doc.content} path={selected} language={doc.language} query={query} wrap={wrap} size={fontSize} />{doc.truncated && <button className="eterx-workspace-load-more" disabled={loading || doc.loadedLines >= 10000} onClick={() => void readFile(true)}>{doc.loadedLines >= 10000 ? '10,000 lines shown · Open in app to read more' : loading ? 'Loading…' : 'Read next 1,000 lines (' + doc.loadedLines + ' of ' + doc.totalLines + ')'}</button>}</>
             : loading ? <Empty><Loader2 size={24} className="animate-spin" /><p>Reading file…</p></Empty> : null}

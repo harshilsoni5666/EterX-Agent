@@ -8,7 +8,7 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
   const watches = new Map();
   const subscriptions = new Map();
   const appCache = new Map();
-  const exists = candidate => fsp.access(candidate).then(() => true, () => false);
+  const exists = candidate => fsp.access(candidate, process.platform === 'linux' ? fs.constants.X_OK : fs.constants.F_OK).then(() => true, () => false);
   const send = payload => { const window = getWindow(); if (window && !window.isDestroyed()) window.webContents.send('workspace-files-event', payload); };
   const unwatch = id => {
     const directory = subscriptions.get(id); subscriptions.delete(id);
@@ -69,7 +69,7 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
       if (definition.executable) candidates.push(definition.executable);
       if (process.platform === 'darwin' && definition.mac) candidates = ['/Applications', path.join(home, 'Applications'), '/System/Applications'].map(root => path.join(root, definition.mac));
       if (process.platform === 'win32' && definition.win) candidates.push(...winRoots.flatMap(root => definition.win.map(relative => path.join(root, relative))));
-      if (process.platform === 'linux' && definition.unix) candidates = String(process.env.PATH || '').split(path.delimiter).filter(Boolean).map(root => path.join(root, definition.unix));
+      if (process.platform === 'linux' && definition.unix) candidates = [...new Set([...String(process.env.PATH || '').split(path.delimiter), path.join(home, '.local', 'bin'), '/usr/local/bin', '/usr/bin', '/snap/bin'])].filter(Boolean).map(root => path.join(root, definition.unix));
       if (definition.id === 'pycharm' && process.platform === 'win32') {
         for (const root of winRoots) {
           try { const directory = path.join(root, 'JetBrains'); const entries = await fsp.readdir(directory); candidates.push(...entries.filter(name => /^PyCharm/i.test(name)).map(name => path.join(directory, name, 'bin', 'pycharm64.exe'))); } catch {}
@@ -96,8 +96,16 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
     await fsp.access(filePath);
     if (application === 'reveal') { shell.showItemInFolder(filePath); return; }
     if (application === 'save-as') {
+      const sourceStat = await fsp.stat(filePath);
+      if (!sourceStat.isFile()) throw new Error('Choose a file to save a copy.');
       const result = await dialog.showSaveDialog(getWindow(), { defaultPath: path.basename(filePath) });
-      if (!result.canceled && result.filePath && path.resolve(result.filePath) !== path.resolve(filePath)) await fsp.copyFile(filePath, result.filePath);
+      if (result.canceled || !result.filePath) return;
+      const source = await fsp.realpath(filePath);
+      const destination = await fsp.realpath(result.filePath).catch(() => path.resolve(result.filePath));
+      const destinationStat = await fsp.stat(result.filePath).catch(() => null);
+      if (destinationStat && sourceStat.ino && sourceStat.ino === destinationStat.ino && sourceStat.dev === destinationStat.dev) return;
+      const key = value => process.platform === 'win32' ? value.toLowerCase() : value;
+      if (key(source) !== key(destination)) await fsp.copyFile(filePath, result.filePath);
       return;
     }
     if (application === 'default') { const error = await shell.openPath(filePath); if (error) throw new Error(error); return; }
@@ -115,12 +123,17 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
     execFile('git', ['-C', root, ...args], { windowsHide: true, timeout: 10000, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } }, (error, stdout, stderr) => error ? reject(new Error(String(stderr || error.message).trim())) : resolve(stdout));
   });
   const reviewTargets = new Map();
+  const addedFileLines = content => {
+    const lines = content ? content.split(/\r?\n/) : [];
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    return { diffLines: lines.slice(0, 10000).map((content, index) => ({ type: 'added', content, newLine: index + 1 })), truncated: lines.length > 10000 };
+  };
   const resolveReviewTarget = async (root, scope, comparisonRef = '') => {
     if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('Choose a project folder to review.');
     const repository = String(await git(root, ['rev-parse', '--show-toplevel'])).trim();
     const branch = String(await git(repository, ['symbolic-ref', '--short', 'HEAD']).catch(() => 'Detached HEAD')).trim();
     const upstream = String(await git(repository, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).catch(() => '')).trim();
-    const references = String(await git(repository, ['for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'])).trim().split('\n').filter(ref => ref && !ref.endsWith('/HEAD')).slice(0, 1200);
+    const references = String(await git(repository, ['for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'])).trim().split(/\r?\n/).filter(ref => ref && !ref.endsWith('/HEAD')).slice(0, 1200);
     const baseRef = comparisonRef || upstream || 'HEAD';
     if (typeof baseRef !== 'string' || baseRef.length > 1024 || /[\x00-\x1f]/.test(baseRef)) throw new Error('Choose a valid comparison branch.');
     const hasHead = await git(repository, ['rev-parse', '--verify', 'HEAD']).then(() => true, () => false);
@@ -161,7 +174,7 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
       return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
     });
     const stats = new Map();
-    const numstat = String(await git(target.repository, ['diff', '--numstat', '-z', '--no-renames', ...target.base, '--']).catch(() => ''));
+    const numstat = String(await git(target.repository, ['diff', '--numstat', '-z', '--no-renames', ...(!target.hasHead && scope === 'working' ? ['--cached'] : []), ...target.base, '--']).catch(() => ''));
     for (const entry of numstat.split('\0')) {
       const match = /^(\d+|-)\t(\d+|-)\t([\s\S]+)$/.exec(entry);
       if (match && match[1] !== '-') stats.set(match[3], { linesAdded: Number(match[1]), linesRemoved: Number(match[2]) });
@@ -182,7 +195,7 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
       if (stat?.isFile() && stat.size <= 2 * 1024 * 1024) {
         const content = await fsp.readFile(absolute, 'utf8');
         if (content.includes('\0')) return { diffLines: [], notice: 'Binary file added.' };
-        return { diffLines: content.split('\n').slice(0, 10000).map((content, index) => ({ type: 'added', content, newLine: index + 1 })), truncated: content.split('\n').length > 10000 };
+        return addedFileLines(content);
       }
     }
     if (!patch) {
@@ -193,12 +206,12 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
         if (stat.size > 2 * 1024 * 1024) return { diffLines: [], notice: 'File is too large for an inline diff.' };
         const content = await fsp.readFile(absolute, 'utf8');
         if (content.includes('\0')) return { diffLines: [], notice: 'Binary file added.' };
-        return { diffLines: content.split('\n').slice(0, 10000).map((content, index) => ({ type: 'added', content, newLine: index + 1 })) };
+        return addedFileLines(content);
       }
     }
     let oldLine = 0, newLine = 0;
     const diffLines = [];
-    for (const line of patch.split('\n')) {
+    for (const line of patch.split(/\r?\n/)) {
       const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
       if (hunk) { oldLine = Number(hunk[1]); newLine = Number(hunk[2]); diffLines.push({ type: 'context', content: line }); }
       else if (oldLine || newLine) {

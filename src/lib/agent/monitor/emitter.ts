@@ -57,7 +57,8 @@ export interface MonitorEvent {
   result?: any;
   text?: string;
   url?: string;
-  screenshot?: string;      // base64 PNG
+  screenshot?: string;
+  screenshotMimeType?: 'image/png' | 'image/jpeg';
   cmd?: string;
   output?: string;
   filePath?: string;
@@ -283,8 +284,9 @@ class AgentMonitorEmitter extends EventEmitter {
     this.emit_event({ type: 'browser_nav', url, appName: 'Browser', chatId });
   }
 
-  browserScreenshot(base64Png: string, url?: string, chatId?: string) {
-    this.emit_event({ type: 'browser_screenshot', screenshot: base64Png, url, appName: 'Browser', chatId });
+  browserScreenshot(base64: string, url?: string, chatId?: string) {
+    const screenshotMimeType = base64.startsWith('/9j/') ? 'image/jpeg' : 'image/png';
+    this.emit_event({ type: 'browser_screenshot', screenshot: base64, screenshotMimeType, url, appName: 'Browser', chatId });
   }
 
   // ── Desktop / any app ────────────────────────────────────────

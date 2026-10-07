@@ -14,15 +14,32 @@
   <link rel="stylesheet" href="splash.css" />
 </head>
 <body>
-  <main class="eterx-startup" role="status" aria-label="Starting EterX" aria-busy="true">
+  <main class="eterx-startup" aria-label="Starting EterX" aria-busy="true">
     <div class="eterx-startup-drag" aria-hidden="true"></div>
-    <div class="eterx-startup-content" aria-hidden="true">
+    <div class="eterx-startup-content">
       <img id="splash-logo" class="eterx-startup-logo" alt="" draggable="false" />
       <h1 class="eterx-startup-title">Welcome to EterX</h1>
-      <div class="eterx-startup-status"><span class="eterx-startup-spinner"></span><span>Starting workspace</span></div>
-      <p class="eterx-startup-caption">Preparing your agent environment</p>
+      <div class="eterx-startup-status" role="status"><span class="eterx-startup-spinner"></span><span>Loading EterX</span></div>
     </div>
+    <button id="reload-app" class="eterx-startup-reload" type="button" hidden>Reload app</button>
   </main>
-  <script>document.getElementById('splash-logo').src = params.get('icon') || '';</script>
+  <script>
+    document.getElementById('splash-logo').src = params.get('icon') || '';
+    var reloadButton = document.getElementById('reload-app');
+    if (params.get('recovery') === 'true') reloadButton.hidden = false;
+    else setTimeout(function () { reloadButton.hidden = false; }, 15000);
+    reloadButton.addEventListener('click', async function () {
+      reloadButton.disabled = true;
+      reloadButton.textContent = 'Reloading…';
+      try {
+        await window.electronAPI.reloadApp();
+      } catch (error) {
+        console.error('[Startup] Reload failed:', error);
+      } finally {
+        reloadButton.disabled = false;
+        reloadButton.textContent = 'Reload app';
+      }
+    });
+  </script>
 </body>
 </html>

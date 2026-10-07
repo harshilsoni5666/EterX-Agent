@@ -80,6 +80,7 @@ The response will contain the user's answer. Continue your work based on it.`,
     selectedOption: z.any().optional(),
     answers: z.array(z.any()).optional(),
     timedOut: z.boolean().optional(),
+    interrupted: z.boolean().optional(),
     respondedInMs: z.number().optional(),
     error: z.string().optional(),
   }),
@@ -193,6 +194,10 @@ The response will contain the user's answer. Continue your work based on it.`,
       }
       // Check if user has responded
       const pending = (globalThis as any).__pendingAskUser?.[responseKey];
+      if (pending?.status === 'interrupted') {
+        delete (globalThis as any).__pendingAskUser[responseKey];
+        return { success: false, answer: '', interrupted: true, error: 'The user sent live steering instead of answering this question. Read that guidance and continue the active task. No answer or permission was granted.' };
+      }
       
       if (pending?.status === 'answered' && pending?.answer !== null) {
         // Keep a short-lived receipt so a lost HTTP response can be retried

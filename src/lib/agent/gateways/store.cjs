@@ -13,6 +13,7 @@ class GatewayStore {
     this.identitiesPath = path.join(root, 'identities.json');
     this.deliveriesPath = path.join(root, 'deliveries.json');
     this.seen = new Set();
+    this.eventIndex = new Map();
     this.acknowledged = new Set();
     this.conversations = new Map();
     this.identities = new Map();
@@ -30,6 +31,7 @@ class GatewayStore {
         let event;
         try { event = JSON.parse(row); } catch { continue; }
         if (event.dedupeKey) this.seen.add(event.dedupeKey);
+        if (event.id) this.eventIndex.set(event.id, event);
         this.eventCount = Math.max(this.eventCount + 1, Number(event.cursor || 0));
       }
     } catch (error) {
@@ -50,7 +52,10 @@ class GatewayStore {
     for (const [target, collection] of [[this.identitiesPath, this.identities], [this.deliveriesPath, this.deliveries]]) {
       try {
         const rows = JSON.parse(fs.readFileSync(target, 'utf8'));
-        for (const item of Array.isArray(rows) ? rows : []) if (item?.id) collection.set(String(item.id), item);
+        for (const item of Array.isArray(rows) ? rows : []) if (item?.id) {
+          if (collection === this.deliveries && item.status === 'sending') { item.status = 'retrying'; item.nextAttemptAt = Date.now(); }
+          collection.set(String(item.id), item);
+        }
       } catch (error) {
         if (error.code !== 'ENOENT') console.warn(`[gateway-store] Could not load ${path.basename(target)}:`, error.message);
       }
@@ -63,6 +68,7 @@ class GatewayStore {
     this.eventCount += 1;
     event.cursor = this.eventCount;
     fs.appendFileSync(this.eventsPath, `${JSON.stringify(event)}\n`, { encoding: 'utf8', mode: 0o600 });
+    this.eventIndex.set(event.id, event);
     const current = this.conversations.get(event.conversationId);
     const conversation = {
       id: event.conversationId,
@@ -118,10 +124,10 @@ class GatewayStore {
     return { events, cursor: events.length ? Number(events[events.length - 1].cursor || cursor) : cursor };
   }
 
-  listPending(limit = 100) {
-    return this.listEvents(Math.max(limit * 4, 100))
-      .reverse()
-      .filter((event) => !this.acknowledged.has(event.id))
+  listPending(limit = 100, accepts = () => true) {
+    return [...this.eventIndex.values()]
+      .filter((event) => !this.acknowledged.has(event.id) && accepts(event))
+      .sort((left, right) => Number(Boolean(right.botId)) - Number(Boolean(left.botId)) || left.receivedAt - right.receivedAt)
       .slice(0, Math.max(1, Math.min(500, limit)));
   }
 
@@ -193,6 +199,10 @@ class GatewayStore {
   }
 
   createDelivery(platform, target, text, metadata = {}) {
+    if (metadata.deliveryKey) {
+      const previous = [...this.deliveries.values()].find(item => item.platform === platform && item.metadata?.deliveryKey === metadata.deliveryKey && JSON.stringify(item.target) === JSON.stringify(target));
+      if (previous) return previous;
+    }
     const delivery = {
       id: crypto.randomUUID(), platform, target, text, metadata,
       status: 'pending', attempts: 0, createdAt: Date.now(), updatedAt: Date.now(), nextAttemptAt: Date.now(),

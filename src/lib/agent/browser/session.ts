@@ -16,11 +16,13 @@ import fs from 'fs-extra';
 import { getEterxWorkspaceDir } from '../storage-paths';
 
 function safeProfileName(name: string): string {
-  const cleaned = String(name || 'default')
+  let cleaned = String(name || 'default')
     .trim()
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .replace(/^\.+$/, '')
-    .slice(0, 80);
+    .slice(0, 80)
+    .replace(/\.+$/, '');
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(cleaned)) cleaned = `_${cleaned}`;
   return cleaned || 'default';
 }
 
@@ -249,7 +251,7 @@ export class BrowserSessionManager {
       
       // Filter out expired cookies
       const now = Math.floor(Date.now() / 1000);
-      const validCookies = cookies.filter((c: any) => !c.expires || c.expires > now);
+      const validCookies = cookies.filter((c: any) => !c.expires || c.expires === -1 || c.expires > now);
       
       if (validCookies.length > 0) {
         await context.addCookies(validCookies);
@@ -269,7 +271,11 @@ export class BrowserSessionManager {
   async getCookiesForDomain(context: any, domain: string): Promise<CookieData[]> {
     try {
       const allCookies = await context.cookies();
-      return allCookies.filter((c: any) => c.domain.includes(domain));
+      const requested = domain.toLowerCase().replace(/^\./, '');
+      return allCookies.filter((c: any) => {
+        const cookieDomain = String(c.domain).toLowerCase().replace(/^\./, '');
+        return requested === cookieDomain || (String(c.domain).startsWith('.') && requested.endsWith('.' + cookieDomain));
+      });
     } catch {
       return [];
     }
@@ -336,7 +342,7 @@ export class BrowserSessionManager {
       // Restore cookies
       if (state.cookies.length > 0) {
         const now = Math.floor(Date.now() / 1000);
-        const validCookies = state.cookies.filter((c: any) => !c.expires || c.expires > now);
+        const validCookies = state.cookies.filter((c: any) => !c.expires || c.expires === -1 || c.expires > now);
         if (validCookies.length > 0) {
           await context.addCookies(validCookies);
         }
@@ -345,6 +351,9 @@ export class BrowserSessionManager {
       // Navigate to the saved URL
       if (state.url && state.url !== 'about:blank') {
         await page.goto(state.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        if (new URL(page.url()).origin !== new URL(state.url).origin) {
+          throw new Error('The saved page redirected to a different origin; its storage was not copied.');
+        }
 
         // Restore localStorage
         if (Object.keys(state.localStorage).length > 0) {
@@ -362,6 +371,9 @@ export class BrowserSessionManager {
               try { sessionStorage.setItem(key, value); } catch {}
             }
           }, state.sessionStorage);
+        }
+        if (Object.keys(state.localStorage).length || Object.keys(state.sessionStorage).length) {
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
         }
       }
 

@@ -378,36 +378,38 @@ function throwIfBrowserCancelled(context?: any): void {
   if (isBrowserCancelled(context)) throw browserCancelledError();
 }
 
-function cancellationPromise(context?: any): Promise<never> | null {
-  const signal = getAbortSignal(context);
-  if (!signal) return null;
-  if (signal.aborted) return Promise.reject(browserCancelledError());
-  return new Promise<never>((_, reject) => {
-    signal.addEventListener('abort', () => reject(browserCancelledError()), { once: true });
-  });
-}
-
 async function waitWithBrowserCancellation<T>(promise: Promise<T>, context?: any): Promise<T> {
-  throwIfBrowserCancelled(context);
-  const abort = cancellationPromise(context);
-  const uiAbort = new Promise<never>((_, reject) => {
-    const signal = _browserUiInterruptController.signal;
-    if (signal.aborted) return reject(browserUiInterruptedError());
-    signal.addEventListener('abort', () => reject(browserUiInterruptedError()), { once: true });
-  });
-  return Promise.race(abort ? [promise, abort, uiAbort] : [promise, uiAbort]);
+  const signal = getAbortSignal(context);
+  const uiSignal = _browserUiInterruptController.signal;
+  let onAbort: () => void = () => {};
+  let onUiAbort: () => void = () => {};
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      onAbort = () => reject(browserCancelledError());
+      onUiAbort = () => reject(browserUiInterruptedError());
+      // Always observe the operation, even if cancellation already happened.
+      promise.then(resolve, reject);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      uiSignal.addEventListener('abort', onUiAbort, { once: true });
+      if (isBrowserCancelled(context)) onAbort();
+      else if (uiSignal.aborted) onUiAbort();
+    });
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    uiSignal.removeEventListener('abort', onUiAbort);
+  }
 }
 
 async function withBrowserLock<T>(context: any, fn: () => Promise<T>): Promise<T> {
   let release: () => void;
   const acquired = new Promise<void>(resolve => { release = resolve; });
   const previousLock = _browserLock;
-  _browserLock = acquired;
-  
-  // Wait for previous operation to finish
-  await waitWithBrowserCancellation(previousLock, context);
+  // A cancelled waiter must release its own slot without letting later work
+  // overtake the operation that is already running.
+  _browserLock = previousLock.then(() => acquired);
   
   try {
+    await waitWithBrowserCancellation(previousLock, context);
     throwIfBrowserCancelled(context);
     return await fn();
   } finally {
@@ -535,21 +537,13 @@ async function failWithPageState(page: any, action: string, msg: string, recover
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string, context?: any): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
-    throwIfBrowserCancelled(context);
     const races: Promise<T | never>[] = [
       promise,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
       }),
     ];
-    const abort = cancellationPromise(context);
-    if (abort) races.push(abort);
-    const uiSignal = _browserUiInterruptController.signal;
-    races.push(new Promise<never>((_, reject) => {
-      if (uiSignal.aborted) return reject(browserUiInterruptedError());
-      uiSignal.addEventListener('abort', () => reject(browserUiInterruptedError()), { once: true });
-    }));
-    return await Promise.race(races);
+    return await waitWithBrowserCancellation(Promise.race(races), context);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -2114,10 +2108,12 @@ USE THIS WHEN THE USER ASKS TO:
             viewport: input.width && input.height ? { width: input.width, height: input.height } : null,
           }), context);
         } catch (launchError) {
-          if ((input.mode || 'cdp') !== 'cdp' || input.cdpEndpoint) throw launchError;
+          throwIfBrowserCancelled(context);
+          if (isBrowserCancellationError(launchError) || (input.mode || 'cdp') !== 'cdp' || input.cdpEndpoint || process.env.ETERX_ALLOW_USER_CHROME === '0') throw launchError;
           const nativeResult = await nativeCurrentBrowser.connect(
             input.url ? normalizeBrowserUrl(input.url) : undefined,
           );
+          throwIfBrowserCancelled(context);
           if (!nativeResult.success) {
             return {
               ...nativeResult,
@@ -2143,6 +2139,7 @@ USE THIS WHEN THE USER ASKS TO:
           };
         }
         throwIfBrowserCancelled(context);
+        nativeCurrentBrowser.disconnect();
 
         // Restore session if profile specified
         if (input.profile) {
@@ -2237,6 +2234,7 @@ USE THIS WHEN THE USER ASKS TO:
 
       if (nativeCurrentBrowser.connected && !browserEngine.connected) {
         const nativeResult = await nativeCurrentBrowser.execute(action, input);
+        throwIfBrowserCancelled(context);
         if (nativeResult.screenshotBase64) {
           monitorEmitter.browserScreenshot(
             nativeResult.screenshotBase64,
@@ -2698,7 +2696,7 @@ USE THIS WHEN THE USER ASKS TO:
               return await failWithPageState(page, action, 'Target field is not currently visible/clickable for filling.', 'Take a fresh snapshot and choose a visible input/contenteditable ref.', 'snapshot', input, startedAt);
             }
             await page.waitForTimeout(50);
-            await page.keyboard.press('Control+A'); // Select all existing text
+            await page.keyboard.press('ControlOrMeta+A'); // Use the browser host's primary modifier.
             await page.keyboard.press('Delete');      // Clear it
             if (input.text) {
               if (input.visualFeedback !== false) void showKeyPulse(page, `typing ${input.text.length}`);
@@ -2722,7 +2720,7 @@ USE THIS WHEN THE USER ASKS TO:
               return await failWithPageState(page, action, 'Target field is not currently visible/clickable for clearing.', 'Take a fresh snapshot and choose a visible input/contenteditable ref.', 'snapshot', input, startedAt);
             }
             await page.waitForTimeout(50);
-            await page.keyboard.press('Control+A');
+            await page.keyboard.press('ControlOrMeta+A');
             await page.keyboard.press('Delete');
           }
           result = { cleared: input.ref ? `ref [${input.ref}]` : input.selector };

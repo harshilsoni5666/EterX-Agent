@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs-extra';
 import { resolveTerminalShell } from '../tools/core/shell_resolver';
+import { executePlatformScreenAction } from '../computer/platform-control';
 
 const execFileAsync = promisify(execFile);
 
@@ -30,9 +31,17 @@ function run(argv) {
     systemEvents.keystroke(value, { using: modifiers || [] });
     delay(0.12);
   }
-  function executeJS(source) {
-    try { return tab.execute({ javascript: source }); } catch (e) { return ''; }
+  function executeJS(source, optional) {
+    try {
+      const result = tab.execute({ javascript: source });
+      if (result === false && !optional) throw new Error('The target control is unavailable. Take a fresh snapshot.');
+      return result;
+    } catch (e) {
+      if (optional) return '';
+      throw new Error('Browser page action failed. Enable Allow JavaScript from Apple Events in the browser Develop/View menu when required. ' + String(e));
+    }
   }
+  function readJS(source) { return executeJS(source, true); }
 
   if (action === 'launch' && payload.url) {
     tab.url = payload.url;
@@ -65,6 +74,7 @@ function run(argv) {
   } else if (action === 'close_tab') {
     tab.close();
     delay(0.25);
+    if (!app.windows.length || !win.tabs.length) return JSON.stringify({ state: { browser: payload.browserLabel, processName: payload.browserName, pid: 0, title: '', url: '', text: '', refs: [], tabs: [] }, screenshot: '' });
     tab = win.activeTab();
   } else if (action === 'duplicate_tab') {
     const created = app.Tab({ url: tab.url() });
@@ -72,10 +82,13 @@ function run(argv) {
     win.activeTabIndex = win.tabs.length;
     tab = win.activeTab();
   } else if (action === 'press') {
-    const raw = String(payload.key || 'Enter').toLowerCase();
+    const parts = String(payload.key || 'Enter').split('+');
+    const raw = (parts.pop() || '+').toLowerCase();
+    const names = { controlormeta: 'command down', cmd: 'command down', command: 'command down', meta: 'command down', ctrl: 'command down', control: 'control down', alt: 'option down', option: 'option down', shift: 'shift down' };
+    const modifiers = parts.map(function(part) { return names[part.toLowerCase()]; }).filter(Boolean);
     const keyMap = { enter: 36, escape: 53, tab: 48, backspace: 51, delete: 117, arrowleft: 123, arrowright: 124, arrowdown: 125, arrowup: 126, pageup: 116, pagedown: 121 };
-    if (keyMap[raw] != null) systemEvents.keyCode(keyMap[raw]);
-    else key(String(payload.key || ''));
+    if (keyMap[raw] != null) systemEvents.keyCode(keyMap[raw], { using: modifiers });
+    else key(raw, modifiers);
   } else if (action === 'click') {
     executeJS("(function(){var e=document.elementFromPoint(" + Number(payload.x || 0) + "," + Number(payload.y || 0) + ");if(!e)return false;e.focus&&e.focus();e.click&&e.click();return true})()");
   } else if (action === 'dblclick') {
@@ -84,9 +97,9 @@ function run(argv) {
     executeJS("(function(){var e=document.elementFromPoint(" + Number(payload.x || 0) + "," + Number(payload.y || 0) + ");if(!e)return false;e.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));return true})()");
   } else if (action === 'fill' || action === 'type') {
     const encoded = JSON.stringify(String(payload.text || ''));
-    executeJS("(function(){var e=document.activeElement;if(!e)return false;var v=" + encoded + ";if(" + (action === 'fill' ? 'true' : 'false') + ")e.value='';e.value=(e.value||'')+v;e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));return true})()");
+    executeJS("(function(){var e=document.activeElement;if(!e)return false;var v=" + encoded + ";var replace=" + (action === 'fill' ? 'true' : 'false') + ";if(e.isContentEditable){if(replace){var r=document.createRange();r.selectNodeContents(e);var s=getSelection();s.removeAllRanges();s.addRange(r)}return document.execCommand('insertText',false,v)}if(!('value' in e)||e.disabled||e.readOnly)return false;var old=e.value||'';var start=replace?0:(e.selectionStart==null?old.length:e.selectionStart);var end=replace?old.length:(e.selectionEnd==null?start:e.selectionEnd);var setter=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e),'value');var next=old.slice(0,start)+v+old.slice(end);if(setter&&setter.set)setter.set.call(e,next);else e.value=next;e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));return true})()");
   } else if (action === 'clear') {
-    executeJS("(function(){var e=document.activeElement;if(!e)return false;e.value='';e.dispatchEvent(new Event('input',{bubbles:true}));return true})()");
+    key('a', ['command down']); systemEvents.keyCode(51);
   } else if (action === 'scroll') {
     executeJS("window.scrollBy(" + (payload.direction === 'left' ? -500 : payload.direction === 'right' ? 500 : 0) + "," + (payload.direction === 'up' ? -Math.abs(Number(payload.amount || 500)) : payload.direction === 'down' ? Math.abs(Number(payload.amount || 500)) : 0) + ");true");
   } else if (action === 'wait') {
@@ -95,7 +108,7 @@ function run(argv) {
 
   tab = win.activeTab();
   let dom = '';
-  dom = executeJS("(function(){var q='a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]';var refs=Array.from(document.querySelectorAll(q)).filter(function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>2&&r.height>2&&s.visibility!=='hidden'&&s.display!=='none'}).slice(0," + Number(payload.maxRefs || 180) + ").map(function(e,i){var r=e.getBoundingClientRect();return {ref:i+1,name:(e.innerText||e.getAttribute('aria-label')||e.getAttribute('placeholder')||e.value||'').trim().slice(0,180),role:(e.getAttribute('role')||e.tagName).toLowerCase(),value:e.value||'',x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height),centerX:Math.round(r.x+r.width/2),centerY:Math.round(r.y+r.height/2)}});return JSON.stringify({url:location.href,title:document.title,text:(document.body&&document.body.innerText||'').slice(0," + Number(payload.maxText || 30000) + "),refs:refs})})()");
+  dom = readJS("(function(){var q='a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]';var refs=Array.from(document.querySelectorAll(q)).filter(function(e){var r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>2&&r.height>2&&s.visibility!=='hidden'&&s.display!=='none'}).slice(0," + Number(payload.maxRefs || 180) + ").map(function(e,i){var r=e.getBoundingClientRect();return {ref:i+1,name:(e.innerText||e.getAttribute('aria-label')||e.getAttribute('placeholder')||e.value||'').trim().slice(0,180),role:(e.getAttribute('role')||e.tagName).toLowerCase(),value:e.value||'',x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height),centerX:Math.round(r.x+r.width/2),centerY:Math.round(r.y+r.height/2)}});return JSON.stringify({url:location.href,title:document.title,text:(document.body&&document.body.innerText||'').slice(0," + Number(payload.maxText || 30000) + "),refs:refs})})()");
   let parsed = {};
   try { parsed = dom ? JSON.parse(dom) : {}; } catch (e) {}
   const allTabs = win.tabs();
@@ -117,7 +130,8 @@ function run(argv) {
       tabs: tabs
     },
     screenshot: '',
-    windowId: Number(win.id())
+    windowId: Number(win.id()),
+    windowBounds: win.bounds()
   });
 }
 `;
@@ -154,7 +168,7 @@ export type NativeBrowserResult = {
   pageTitle?: string;
   snapshotText?: string;
   screenshotBase64?: string;
-  screenshotMimeType?: 'image/jpeg';
+  screenshotMimeType?: 'image/jpeg' | 'image/png';
   recovery?: string;
   nextAction?: string;
 };
@@ -177,10 +191,14 @@ public static class EterXBrowserNative {
   [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, int data, UIntPtr extra);
 }
 '@
+try { [EterXBrowserNative]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null }
+catch { [EterXBrowserNative]::SetProcessDPIAware() | Out-Null }
 
 function Decode-Payload {
   if ([string]::IsNullOrWhiteSpace($PayloadB64)) { return @{} }
@@ -224,15 +242,27 @@ function Send-Keys([string]$keys) {
 }
 
 function Paste-Text([string]$text) {
+  if ([string]::IsNullOrEmpty($text)) { return }
   $old = $null
-  try { if ([System.Windows.Forms.Clipboard]::ContainsText()) { $old = [System.Windows.Forms.Clipboard]::GetText() } } catch {}
+  try {
+    $current = [System.Windows.Forms.Clipboard]::GetDataObject()
+    $old = New-Object System.Windows.Forms.DataObject
+    if ($null -ne $current) {
+      foreach ($format in $current.GetFormats($false)) {
+        try { $old.SetData($format, $false, $current.GetData($format, $false)) } catch {}
+      }
+    }
+  } catch {}
   try {
     [System.Windows.Forms.Clipboard]::SetText([string]$text)
     Send-Keys '^v'
   } finally {
     if ($null -ne $old) {
       Start-Sleep -Milliseconds 80
-      try { [System.Windows.Forms.Clipboard]::SetText($old) } catch {}
+      try {
+        if ($old.GetFormats().Length) { [System.Windows.Forms.Clipboard]::SetDataObject($old, $true) }
+        else { [System.Windows.Forms.Clipboard]::Clear() }
+      } catch {}
     }
   }
 }
@@ -362,6 +392,12 @@ if ($null -eq $proc) {
 }
 
 Focus-Browser $proc
+if ($payload.coordinateSpace -eq 'screenshot' -and $null -ne $payload.x -and $null -ne $payload.y) {
+  $bounds = New-Object EterXBrowserNative+RECT
+  if (-not [EterXBrowserNative]::GetWindowRect($proc.MainWindowHandle, [ref]$bounds)) { throw 'Browser window bounds are unavailable.' }
+  $payload.x = [int]$payload.x + $bounds.Left
+  $payload.y = [int]$payload.y + $bounds.Top
+}
 switch ($Action) {
   'launch' {
     if ($payload.url) {
@@ -417,7 +453,8 @@ switch ($Action) {
   }
   'fill' {
     Send-Keys '^a'
-    Paste-Text ([string]$payload.text)
+    if ([string]::IsNullOrEmpty([string]$payload.text)) { Send-Keys '{BACKSPACE}' }
+    else { Paste-Text ([string]$payload.text) }
   }
   'clear' { Send-Keys '^a'; Send-Keys '{BACKSPACE}' }
   'click' {
@@ -461,11 +498,9 @@ function normalizeArray<T>(value: T | T[] | null | undefined): T[] {
 }
 
 function sendKeysFor(key: string): string {
-  const normalized = String(key || 'Enter')
-    .replace(/Control\+/gi, '^')
-    .replace(/Ctrl\+/gi, '^')
-    .replace(/Alt\+/gi, '%')
-    .replace(/Shift\+/gi, '+');
+  const parts = String(key || 'Enter').split('+');
+  const normalized = parts.pop() || '+';
+  const modifiers = parts.map(part => /^(controlormeta|control|ctrl|cmd|command|meta)$/i.test(part) ? '^' : /^(alt|option)$/i.test(part) ? '%' : /^shift$/i.test(part) ? '+' : '').join('');
   const named: Record<string, string> = {
     Enter: '{ENTER}',
     Escape: '{ESC}',
@@ -482,13 +517,16 @@ function sendKeysFor(key: string): string {
     End: '{END}',
     ' ': ' ',
   };
-  return named[normalized] || normalized;
+  const namedKey = Object.keys(named).find(name => name.toLowerCase() === normalized.toLowerCase());
+  const value = namedKey ? named[namedKey] : /^F(?:[1-9]|1\d|2[0-4])$/i.test(normalized) ? `{${normalized.toUpperCase()}}` : normalized.replace(/[+^%~(){}\[\]]/g, character => `{${character}}`);
+  return modifiers + value;
 }
 
 class NativeCurrentBrowserController {
   private active = false;
   private lastState: NativeState | null = null;
   private refs = new Map<number, NativeRef>();
+  private macCapture: { windowId: number; width: number; height: number } | null = null;
 
   get connected(): boolean {
     return this.active;
@@ -513,6 +551,7 @@ class NativeCurrentBrowserController {
     this.active = false;
     this.lastState = null;
     this.refs.clear();
+    this.macCapture = null;
   }
 
   async connect(url?: string): Promise<NativeBrowserResult> {
@@ -539,7 +578,7 @@ class NativeCurrentBrowserController {
       'duplicate_tab', 'close_tab', 'close_other_tabs', 'list_tabs',
       'start_browser_session', 'end_browser_session',
     ]);
-    if (!supported.has(action)) {
+    if (!supported.has(action) || ['check', 'uncheck', 'select', 'wait_for', 'close_other_tabs'].includes(action)) {
       return {
         success: false,
         action,
@@ -551,6 +590,9 @@ class NativeCurrentBrowserController {
 
     let targetRef: NativeRef | undefined;
     if (input.ref != null) targetRef = this.refs.get(Number(input.ref));
+    if ((input.ref != null && !targetRef) || input.selector) {
+      return { success: false, action, result: input.selector ? 'CSS selectors require CDP browser control.' : 'This native control reference is no longer available.', recovery: 'Take a fresh snapshot and use a visible ref or screenshot coordinates.', nextAction: 'snapshot' };
+    }
     const x = input.x ?? targetRef?.centerX;
     const y = input.y ?? targetRef?.centerY;
     if (['click', 'dblclick', 'hover', 'focus', 'check', 'uncheck', 'select'].includes(action) && (x == null || y == null)) {
@@ -571,11 +613,19 @@ class NativeCurrentBrowserController {
     if (action === 'type' && targetRef) nativeAction = 'click';
 
     const tabIndexMatch = String(input.tabId || '').match(/(\d+)$/);
+    if (action === 'switch_tab') {
+      const tabs = this.lastState?.tabs || [];
+      const index = tabIndexMatch ? Number(tabIndexMatch[1]) : -1;
+      if (index < 0 || !tabs.some(tab => tab.id === input.tabId) || (process.platform !== 'darwin' && index >= 8 && index !== tabs.length - 1)) {
+        return { success: false, action, result: 'This tab cannot be selected by its native shortcut.', recovery: 'Use next_tab/previous_tab, or connect through CDP to select any tab by ID.', nextAction: 'list_tabs' };
+      }
+    }
     const payload = {
       url: input.url || '',
       x,
       y,
-      text: input.text || input.value || '',
+      coordinateSpace: targetRef && input.x == null && input.y == null ? 'ref' : 'screenshot',
+      text: input.text ?? input.value ?? '',
       replace: action === 'fill',
       direction: input.direction || 'down',
       amount: input.amount || (action === 'wait_for' ? 500 : 0),
@@ -588,17 +638,20 @@ class NativeCurrentBrowserController {
     };
 
     try {
-      if (action === 'type' && targetRef) {
+      if (['type', 'fill', 'clear'].includes(action) && x != null && y != null) {
         await this.run('click', { ...payload, capture: false });
-        nativeAction = 'type';
+        nativeAction = action;
       }
       const raw = await this.run(nativeAction, payload);
       const state = raw.state as NativeState;
+      if (action === 'screenshot' && !raw.screenshot) throw new Error('No screenshot was captured. Check screen capture permission and the installed capture utility.');
       state.refs = normalizeArray(state.refs);
       state.tabs = normalizeArray(state.tabs);
       this.lastState = state;
       this.refs = new Map(state.refs.map((ref) => [Number(ref.ref), ref]));
       this.active = true;
+      if (action === 'get_url' && !state.url) throw new Error('This native provider cannot read the current URL. Use CDP browser control.');
+      if (['read_page', 'get_text'].includes(action) && process.platform === 'linux') throw new Error('Native Linux control does not expose page text. Use a screenshot or CDP browser control.');
 
       const snapshotText = this.formatSnapshot(state);
       let result: any = {
@@ -631,7 +684,7 @@ class NativeCurrentBrowserController {
         pageTitle: state.title,
         snapshotText: ['observe', 'snapshot'].includes(action) ? snapshotText : undefined,
         screenshotBase64: raw.screenshot || undefined,
-        screenshotMimeType: raw.screenshot ? 'image/jpeg' : undefined,
+        screenshotMimeType: raw.screenshot ? (String(raw.screenshot).startsWith('iVBORw0KGgo') ? 'image/png' : 'image/jpeg') : undefined,
       };
     } catch (error: any) {
       const recovery = process.platform === 'darwin'
@@ -710,19 +763,44 @@ class NativeCurrentBrowserController {
       browserName: browser.name,
       browserLabel: browser.label,
     };
+    let scriptAction = action;
+    if (payload.coordinateSpace === 'screenshot' && ['click', 'dblclick', 'hover'].includes(action)) {
+      const { stdout: stateOutput } = await execFileAsync(
+        'osascript', ['-l', 'JavaScript', '-e', MAC_BROWSER_SCRIPT, 'connect', JSON.stringify(macPayload)],
+        { timeout: 20_000, maxBuffer: 30 * 1024 * 1024 },
+      );
+      const current = JSON.parse(String(stateOutput || '').trim());
+      const bounds = current.windowBounds;
+      const capture = this.macCapture;
+      if (!capture || capture.windowId !== current.windowId || !bounds || ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)) {
+        throw new Error('Take a fresh browser screenshot before using screenshot coordinates.');
+      }
+      const clicked = await executePlatformScreenAction(action === 'dblclick' ? 'double_click' : action, {
+        x: bounds.x + Number(payload.x) * bounds.width / capture.width,
+        y: bounds.y + Number(payload.y) * bounds.height / capture.height,
+      });
+      if (!clicked?.success) throw new Error(String(clicked?.result || 'Native pointer input is unavailable.'));
+      scriptAction = 'connect';
+    }
     const { stdout } = await execFileAsync(
       'osascript',
-      ['-l', 'JavaScript', '-e', MAC_BROWSER_SCRIPT, action, JSON.stringify(macPayload)],
+      ['-l', 'JavaScript', '-e', MAC_BROWSER_SCRIPT, scriptAction, JSON.stringify(macPayload)],
       { timeout: 20_000, maxBuffer: 30 * 1024 * 1024 },
     );
     const parsed = JSON.parse(String(stdout || '').trim());
     if (payload.capture) {
       const tempPath = path.join(os.tmpdir(), `eterx-browser-${process.pid}-${Date.now()}.jpg`);
+      this.macCapture = null;
       try {
-        const captureArgs = parsed.windowId
-          ? ['-x', '-l', String(parsed.windowId), '-t', 'jpg', tempPath]
-          : ['-x', '-t', 'jpg', tempPath];
+        if (!parsed.windowId) throw new Error('No browser window is available to capture.');
+        // Exclude shadows and retain pixel dimensions for Retina coordinate conversion.
+        const captureArgs = ['-x', '-o', '-l', String(parsed.windowId), '-t', 'jpg', tempPath];
         await execFileAsync('screencapture', captureArgs, { timeout: 8000 });
+        const { stdout: dimensions } = await execFileAsync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', tempPath], { timeout: 5000 });
+        const width = Number(dimensions.match(/pixelWidth:\s*(\d+)/)?.[1]);
+        const height = Number(dimensions.match(/pixelHeight:\s*(\d+)/)?.[1]);
+        if (!(width > 0 && height > 0)) throw new Error('Browser screenshot dimensions are unavailable.');
+        this.macCapture = { windowId: parsed.windowId, width, height };
         parsed.screenshot = (await fs.readFile(tempPath)).toString('base64');
       } catch {
         parsed.screenshot = '';
@@ -782,7 +860,7 @@ class NativeCurrentBrowserController {
     const key = async (value: string) => xdo('key', '--clearmodifiers', value);
     const navigate = async (url: string) => {
       await key('ctrl+l');
-      await xdo('type', '--clearmodifiers', '--delay', '1', url);
+      await xdo('type', '--clearmodifiers', '--delay', '1', '--', url);
       await key('Return');
       await new Promise((resolve) => setTimeout(resolve, 700));
     };
@@ -802,12 +880,13 @@ class NativeCurrentBrowserController {
       await key('ctrl+l');
       await key('alt+Return');
     } else if (action === 'press') await key(this.linuxKey(String(payload.key || 'Return')));
-    else if (action === 'click') await xdo('mousemove', '--sync', String(payload.x), String(payload.y), 'click', '1');
-    else if (action === 'dblclick') await xdo('mousemove', '--sync', String(payload.x), String(payload.y), 'click', '--repeat', '2', '--delay', '80', '1');
-    else if (action === 'hover') await xdo('mousemove', '--sync', String(payload.x), String(payload.y));
+    else if (action === 'click') await xdo('mousemove', '--window', windowId, '--sync', String(payload.x), String(payload.y), 'click', '1');
+    else if (action === 'dblclick') await xdo('mousemove', '--window', windowId, '--sync', String(payload.x), String(payload.y), 'click', '--repeat', '2', '--delay', '80', '1');
+    else if (action === 'hover') await xdo('mousemove', '--window', windowId, '--sync', String(payload.x), String(payload.y));
     else if (action === 'type' || action === 'fill') {
       if (action === 'fill') await key('ctrl+a');
-      await xdo('type', '--clearmodifiers', '--delay', '1', String(payload.text || ''));
+      if (action === 'fill') await key('BackSpace');
+      await xdo('type', '--clearmodifiers', '--delay', '1', '--', String(payload.text || ''));
     } else if (action === 'clear') {
       await key('ctrl+a');
       await key('BackSpace');
@@ -845,7 +924,9 @@ class NativeCurrentBrowserController {
         processName: browser.className,
         pid: 0,
         title: String(titleOut || '').trim(),
-        url: payload.url || this.lastState?.url || '',
+        // Without CDP/DOM access the current URL cannot be observed after a
+        // redirect or tab change. Do not report a stale requested URL as fact.
+        url: '',
         text: '',
         refs: [],
         tabs: [],
@@ -868,7 +949,13 @@ class NativeCurrentBrowserController {
       PageUp: 'Page_Up',
       PageDown: 'Page_Down',
     };
-    return keys[value] || value.replace(/Control\+/gi, 'ctrl+').replace(/Alt\+/gi, 'alt+').replace(/Shift\+/gi, 'shift+');
+    return value.split('+').map(part => {
+      if (/^(ControlOrMeta|Control|Ctrl|Meta|Cmd|Command)$/i.test(part)) return 'ctrl';
+      if (/^(Alt|Option)$/i.test(part)) return 'alt';
+      if (/^Shift$/i.test(part)) return 'shift';
+      const name = Object.keys(keys).find(key => key.toLowerCase() === part.toLowerCase());
+      return name ? keys[name] : part;
+    }).join('+');
   }
 
   private formatSnapshot(state: NativeState): string {

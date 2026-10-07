@@ -47,6 +47,8 @@ const nextConfig = {
         ...ignoreList.filter(item => typeof item === 'string' && item.length > 0),
         '**/.git/**',
         '**/.next/**',
+        '**/.next-dev-*/**',
+        '**/.codex-remote-attachments/**',
         '**/dist/**',
         '**/build/**',
         '**/desktop-runtime/**',

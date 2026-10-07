@@ -10,6 +10,7 @@ const { GatewayAdapterRegistry } = require('./registry.cjs');
 const { buildGatewaySessionKey, GatewaySessionLanes } = require('./session.cjs');
 const { GatewayHookBus } = require('./hooks.cjs');
 const { EmailGatewayAdapter, sendEmailMessage } = require('./email.cjs');
+const { TelegramBots, normalizeBots, publicBot } = require('./telegram-bots.cjs');
 
 const PLATFORMS = ['telegram', 'whatsapp', 'messenger', 'email', 'discord', 'signal', 'generic'];
 const DEFAULT_CONFIG = Object.freeze({
@@ -23,6 +24,7 @@ const DEFAULT_CONFIG = Object.freeze({
   autoDispatch: false,
   busyInputMode: 'queue',
   mcpBridgeEnabled: true,
+  telegramBots: [],
   channelAgent: {
     enabled: true,
     defaultProfileId: 'channel-operator',
@@ -113,6 +115,7 @@ function mergeConfig(raw = {}) {
     // duplicate them into gateway configuration or return them to a renderer.
     connectorProfiles: {},
     channelAgent: normalizeChannelAgent(raw.channelAgent || {}),
+    telegramBots: normalizeBots(raw.telegramBots),
     controlToken: typeof raw.controlToken === 'string' && raw.controlToken.length >= 32 ? raw.controlToken : crypto.randomBytes(32).toString('hex'),
     host: raw.host === '0.0.0.0' || raw.host === '::' ? raw.host : '127.0.0.1',
     port: Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : DEFAULT_CONFIG.port,
@@ -234,6 +237,7 @@ class GatewayDaemon {
     this.discordResumeUrl = null;
     this.deliveryTimer = null;
     this.platformState = Object.fromEntries(PLATFORMS.map((id) => [id, { state: 'disabled' }]));
+    this.telegramBots = new TelegramBots(this);
     this.persistControlToken();
   }
 
@@ -274,12 +278,13 @@ class GatewayDaemon {
       };
     }
     const { controlToken, connectorProfiles, ...publicSettings } = this.config;
-    return { ...publicSettings, mcpConfigured: Boolean(controlToken), platforms };
+    return { ...publicSettings, telegramBots: this.config.telegramBots.map(publicBot), mcpConfigured: Boolean(controlToken), platforms };
   }
 
   status() {
     return {
       running: Boolean(this.server?.listening || this.externalRunning),
+      bots: this.telegramBots.status(),
       owner: this.externalRunning ? 'external' : this.server?.listening ? 'local' : 'none',
       startedAt: this.startedAt,
       host: this.config.host,
@@ -304,9 +309,18 @@ class GatewayDaemon {
 
   configure(raw) {
     const run = async () => {
+      const nextConfig = mergeConfig(raw);
+      const { telegramBots: previousBots, ...previousTransportConfig } = this.config;
+      const { telegramBots: nextBots, ...nextTransportConfig } = nextConfig;
+      if (this.server?.listening && JSON.stringify(previousTransportConfig) === JSON.stringify(nextTransportConfig)) {
+        this.config = nextConfig;
+        await this.telegramBots.reconfigure();
+        this.publishStatus();
+        return { config: this.publicConfig(), status: this.status() };
+      }
       const wasRunning = Boolean(this.server?.listening || this.externalRunning);
       await this.stop({ releaseExternal: true });
-      this.config = mergeConfig(raw);
+      this.config = nextConfig;
       this.persistControlToken();
       if (wasRunning || this.config.enabled) await this.start();
       this.publishStatus();
@@ -354,6 +368,7 @@ class GatewayDaemon {
       return this.status();
     }
     this.startedAt = Date.now();
+    this.telegramBots.start();
     for (const id of PLATFORMS) this.platformState[id] = { state: this.config.platforms[id].enabled ? 'listening' : 'disabled' };
     if (this.config.platforms.telegram.enabled && this.config.platforms.telegram.mode === 'polling') {
       const pollingTask = this.startTelegramPolling();
@@ -400,6 +415,7 @@ class GatewayDaemon {
       return this.status();
     }
     this.externalRunning = false;
+    await this.telegramBots.stop();
     const pollingTask = this.telegramPollingTask;
     const emailAdapter = this.emailAdapter;
     this.emailAdapter = null;
@@ -545,6 +561,41 @@ class GatewayDaemon {
   }
 
   async callBridgeTool(name, args = {}) {
+    if (name === 'bot_access_check') return { bot: publicBot(this.telegramBots.authorizedTarget(args.target || {})) };
+    if (name === 'bot_routine_event') {
+      const bot = this.telegramBots.authorizedTarget(args.target || {});
+      const owner = this.telegramBots.data.owners[bot.id];
+      if (!/^tbot_[a-f0-9]{40}$/.test(String(args.conversation_id || ''))) throw new Error('Invalid routine conversation.');
+      const id = `tbot_${bot.id}_${String(args.occurrence_id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 65)}`;
+      const event = { id, dedupeKey: id, botId: bot.id, platform: 'telegram', kind: 'message', conversationId: args.conversation_id, sessionKey: args.conversation_id, actor: { id: owner.id, displayName: owner.name }, text: String(args.text || '').slice(0, 16000), attachments: [], receivedAt: Date.now(), replyTarget: args.target, metadata: { routine: true } };
+      this.store.append(event);
+      return { eventId: id };
+    }
+    // Internal dispatch reads accepted events, never trusts a renderer-supplied
+    // prompt, bot profile, recipient or token.
+    if (name === 'bot_event_get') {
+      const candidate = this.store.eventIndex.get(String(args.event_id || ''));
+      const event = candidate?.botId ? candidate : null;
+      const bot = event && this.config.telegramBots.find(item => item.id === event.botId && item.enabled);
+      if (!event) throw Object.assign(new Error('Bot event is no longer available.'), { statusCode: 410, code: 'BOT_EVENT_GONE' });
+      if (!bot) throw Object.assign(new Error('This bot is paused or disconnected.'), { statusCode: 403, code: 'BOT_DISABLED' });
+      this.telegramBots.authorizedTarget(event.replyTarget);
+      return { event, bot: publicBot(bot) };
+    }
+    if (name === 'bot_event_ack') return this.store.acknowledge(String(args.event_id || ''));
+    if (name === 'bot_steering_received') {
+      const { event } = await this.callBridgeTool('bot_event_get', args);
+      return this.telegramBots.acknowledgeSteering(event);
+    }
+    if (name === 'bot_attachments') {
+      const { event } = await this.callBridgeTool('bot_event_get', args);
+      return this.telegramBots.download(event);
+    }
+    if (name === 'bot_typing') return this.telegramBots.typing(args.target || {});
+    if (name === 'bot_progress') return this.telegramBots.progress(args.target || {}, args.text, args.message_id);
+    if (name === 'bot_question') return this.telegramBots.question(args.target || {}, args.question || {}, args.conversation_id);
+    if (name === 'bot_question_resolved') return this.telegramBots.resolveQuestion(args.target || {}, args.response_key);
+    if (name === 'files_send') return this.telegramBots.sendFile(args.target || {}, String(args.file_path || ''), String(args.caption || ''), args.as_photo === true, args.media_type);
     if (name === 'conversations_list') {
       const platform = String(args.platform || '').toLowerCase();
       const search = String(args.search || '').toLowerCase();
@@ -571,7 +622,7 @@ class GatewayDaemon {
       } while (Date.now() < deadline);
       return { events: [], cursor: after };
     }
-    if (name === 'messages_send') return this.deliverMessage(String(args.platform || ''), args.target || {}, String(args.text || ''), { source: 'mcp' });
+    if (name === 'messages_send') return this.deliverMessage(String(args.platform || ''), args.target || {}, String(args.text || ''), { source: 'mcp', deliveryKey: args.delivery_key });
     if (name === 'channels_list') return PLATFORMS.map((id) => ({ id, ...this.status().platforms[id] }));
     if (name === 'agent_profile_get') {
       const hasExplicitProfile = Boolean(String(args.profile_id || '').trim());
@@ -652,7 +703,7 @@ class GatewayDaemon {
     } catch (error) {
       this.lastError = error.message;
       this.publishStatus();
-      return send(error.statusCode || 400, { error: error.message });
+      return send(error.statusCode || 400, { error: error.message, code: error.code });
     }
   }
 
@@ -810,6 +861,8 @@ class GatewayDaemon {
   async deliverMessage(platform, target, text, metadata = {}) {
     const normalized = String(text || '').trim();
     const delivery = this.store.createDelivery(platform, target, normalized, metadata);
+    if (delivery.status === 'delivered') return { ok: true, deliveryId: delivery.id, result: delivery.result };
+    if (delivery.status === 'sending') return { ok: false, retrying: true, deliveryId: delivery.id };
     if (['[SILENT]', 'SILENT', 'NO_REPLY', 'NO REPLY'].includes(normalized.toUpperCase())) {
       this.store.updateDelivery(delivery.id, { status: 'suppressed', deliveredAt: Date.now() });
       return { ok: true, suppressed: true, deliveryId: delivery.id };
@@ -822,14 +875,14 @@ class GatewayDaemon {
     this.store.updateDelivery(delivery.id, { status: 'sending', attempts, lastAttemptAt: Date.now() });
     await this.hooks.emit('delivery:attempt', { ...delivery, attempts });
     try {
-      const result = await this.sendRawMessage(delivery.platform, delivery.target, delivery.text);
+      const result = await this.sendRawMessage(delivery.platform, delivery.target, delivery.text, delivery);
       this.store.updateDelivery(delivery.id, { status: 'delivered', deliveredAt: Date.now(), result });
       await this.hooks.emit('delivery:delivered', { delivery, result });
       this.publishStatus();
       return { ok: true, deliveryId: delivery.id, result };
     } catch (error) {
       const terminal = attempts >= 10;
-      const retryDelay = Math.min(15 * 60 * 1000, 5000 * (2 ** Math.min(attempts - 1, 8)));
+      const retryDelay = Math.max(Number(error?.retryAfter || 0) * 1000, Math.min(15 * 60 * 1000, 5000 * (2 ** Math.min(attempts - 1, 8))));
       this.store.updateDelivery(delivery.id, {
         status: terminal ? 'failed' : 'retrying',
         error: error?.message || String(error),
@@ -846,7 +899,8 @@ class GatewayDaemon {
     for (const delivery of this.store.listPendingDeliveries(25)) await this.attemptDelivery(delivery).catch(() => {});
   }
 
-  async sendRawMessage(platform, target, text) {
+  async sendRawMessage(platform, target, text, delivery) {
+    if (platform === 'telegram' && target?.botId) return this.telegramBots.send(target, text, delivery);
     const settings = this.config.platforms[platform] || {};
     if (!settings.enabled) throw new Error(`${platform} is disabled`);
     const registeredAdapter = this.registry.get(platform);

@@ -16,7 +16,8 @@ import { Shimmer } from '../ui/shimmer';
 import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
-import { LocalFileLinkChip, LocalFileWorkspaceContext, decodeLocalFileHref } from './local-file-link';
+import { LocalFileLinkChip, LocalFileWorkspaceContext, LocalFilePathsContext, decodeLocalFileHref } from './local-file-link';
+import { collectWorkspaceTouches } from '../../lib/workspace-paths';
 import { areLikelySameFeedActionLifecycle, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary, isSettledAnswerTrace, isTerminalWorkTrace, isTurnWorkActive, mergeUserTurnBoundaries, orderFeedTimelineLogs, reconcileTerminalRunNotices, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles, shouldRenderContextCompactionEvent } from '../../lib/chat-feed-lifecycle';
 import { shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
 import { isLiveUserVisibleTrace } from '../../lib/agent/trace-visibility';
@@ -28,6 +29,7 @@ import { visibleUserRequest } from '../../lib/chat-user-payload';
 import { formatUnknownError } from '../../lib/agent/error-format';
 import { mergeFeedTracePayload } from '../../lib/chat-feed-lifecycle';
 import { FilePanelOwner } from '../../contexts/FilePanelContext';
+import { TurnChangesCard } from './turn-changes';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
 interface ChatFeedProps {
@@ -1915,6 +1917,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'urgent', 'responseKey', 'answeredWith', 'answeredAt', 'attachments',
   'filename', 'fileName', 'filepath', 'filePath', 'path', 'preview',
   'lineCount', 'totalLines', 'truncated', 'command', 'result', 'toolName',
+  'operation', 'isEdit', 'staged', 'language', 'artifactKind', '_diffLinesStripped',
   'toolCallId', 'action', 'occurrenceCount', 'spawnedAgents', 'agentDetails',
   'agentStatus', 'agentStep', 'currentAction', 'stepCount', 'durationMs', 'task',
   'taskSummary', 'traceId', 'ownerTraceId', 'isDelta', 'dedupe', 'args', 'cmd',
@@ -2501,6 +2504,13 @@ const ChatFeedMessageGroup = React.memo(({
                 updatedAt={shouldAnimateAnswerReveal ? displayFinalAnswer.timestamp : undefined}
                 reveal={shouldAnimateAnswerReveal}
                 suffix={!isAnswerActivelyTyping ? (
+                  <>
+                  {!groupIsThinking && hasSettledAnswer && (
+                    <TurnChangesCard
+                      logs={[...group, ...standardLogs]}
+                      turnId={String(group[0]?.turnId || group[0]?.runId || group[0]?._feedPresentationId || turnStartedAt || group[0]?.timestamp || groupIdx)}
+                    />
+                  )}
                   <div className="eterx-answer-footer mt-3 flex min-h-8 w-full items-center justify-start border-t border-white/[0.045] pt-2">
                     <div className={`flex items-center gap-0 transition-opacity duration-150 ${ isSubAgentTab ? 'opacity-70 hover:opacity-100 focus-within:opacity-100' : 'opacity-0 group-hover/thought:opacity-100 focus-within:opacity-100' }`}>
                       <NakedCopyButton content={displayFinalAnswer.text} />
@@ -2533,6 +2543,7 @@ const ChatFeedMessageGroup = React.memo(({
                       )}
                     </div>
                   </div>
+                  </>
                 ) : undefined}
               />
             </div>
@@ -2546,6 +2557,12 @@ const ChatFeedMessageGroup = React.memo(({
           notice={entry.notice}
         />
       ))}
+      {!displayFinalAnswer && !groupIsThinking && groupTerminalEndedAt !== null && (
+        <TurnChangesCard
+          logs={[...group, ...standardLogs]}
+          turnId={String(group[0]?.turnId || group[0]?.runId || group[0]?._feedPresentationId || turnStartedAt || group[0]?.timestamp || groupIdx)}
+        />
+      )}
     </div>
     </div>
   );
@@ -2624,6 +2641,8 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
   traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, subAgentAssetIndexes, isFeedActivityPaused = false, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState, workspacePath, media
 }) => {
   const isAgentBuilderFeed = String(chatId || '').startsWith('agent_builder_');
+  const localFilePaths = useMemo(() => collectWorkspaceTouches(incomingTraceLogs || [], chatId || '', workspacePath)
+    .filter(item => item.kind === 'file').map(item => item.path), [incomingTraceLogs, chatId, workspacePath]);
   const steeringDelivery = useMemo(
     () => projectSteeringDelivery(Array.isArray(incomingTraceLogs) ? incomingTraceLogs : []),
     [incomingTraceLogs],
@@ -3421,6 +3440,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
             {(traceLogs.length > 0 || steeringDelivery.pending.length > 0) && (
               <div ref={feedContentRef} className={`eterx-chat-feed-content w-full mx-auto pb-4 relative ${ isAgentBuilderFeed ? 'eterx-agent-builder-feed-content' : '' } ${ isCompressed ? 'max-w-[460px] pt-14' : 'max-w-[var(--eterx-reference-composer-max)] pt-16' }`}>
                 <LocalFileWorkspaceContext.Provider value={workspacePath || null}>
+                <LocalFilePathsContext.Provider value={localFilePaths}>
                 <ChatMediaContext.Provider value={media || []}>
                 <ChatMediaOwnerContext.Provider value={chatId}>
                 <TextPlaybackScope key={conversationIdentity} logs={traceLogs}>
@@ -3500,6 +3520,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
             ))}
                 </ChatMediaOwnerContext.Provider>
                 </ChatMediaContext.Provider>
+                </LocalFilePathsContext.Provider>
                 </LocalFileWorkspaceContext.Provider>
                 <div ref={messagesEndRef} className="h-[2px]" />
               </div>

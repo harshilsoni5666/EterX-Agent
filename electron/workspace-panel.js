@@ -1,6 +1,8 @@
 const fs = require('fs/promises');
 const path = require('path');
 const os = require('os');
+const { randomUUID } = require('crypto');
+const { dataRoot } = require('./storage-layout');
 
 // Applied once per document by Chromium. No page script, polling, or scroll
 // handlers are needed, and the media queries follow the native app theme.
@@ -108,11 +110,33 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
     });
     wc.on('context-menu', (_event, params) => {
       const template = [];
-      if (params.isEditable) template.push({ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' });
-      else if (params.selectionText) template.push({ role: 'copy' });
+      // Target the page explicitly: menu roles can act on the host renderer
+      // after a native popup takes focus away from a WebContentsView.
+      const editItem = (label, method, enabled = true) => ({ label, enabled, click: () => { if (!wc.isDestroyed()) wc[method](); } });
+      if (params.isEditable) template.push(editItem('Undo', 'undo', params.editFlags.canUndo), editItem('Redo', 'redo', params.editFlags.canRedo), { type: 'separator' }, editItem('Cut', 'cut', params.editFlags.canCut), editItem('Copy', 'copy', params.editFlags.canCopy), editItem('Paste', 'paste', params.editFlags.canPaste), editItem('Select all', 'selectAll'));
+      else if (params.selectionText) template.push(editItem('Copy', 'copy'));
       if (params.linkURL) template.push({ label: 'Open link in new tab', click: () => { try { window.webContents.send('workspace-browser-event', { id, openUrl: safeURL(params.linkURL) }); } catch {} } });
+      if (params.linkURL) template.push({ label: 'Copy link address', click: () => clipboard.writeText(params.linkURL) });
+      if (params.srcURL && params.mediaType === 'image') template.push({ label: 'Save image as…', click: () => { if (!wc.isDestroyed()) wc.downloadURL(params.srcURL); } });
       template.push({ label: 'Inspect element', click: () => wc.inspectElement(params.x, params.y) });
       Menu.buildFromTemplate(template).popup({ window });
+    });
+    wc.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const primary = process.platform === 'darwin' ? input.meta : input.control;
+      const key = input.key.toLowerCase();
+      if (primary && !input.alt && key === 'l') {
+        event.preventDefault(); window.webContents.focus();
+        window.webContents.send('workspace-browser-event', { id, focusAddress: true });
+      } else if ((primary && !input.alt && key === 'r') || key === 'f5') {
+        event.preventDefault(); entry.error = '';
+        if (input.shift) wc.reloadIgnoringCache(); else wc.reload();
+      } else if (input.alt && !primary && (key === 'arrowleft' || key === 'arrowright')) {
+        event.preventDefault();
+        const history = navigation(wc);
+        if (key === 'arrowleft' && history.canGoBack()) history.goBack();
+        if (key === 'arrowright' && history.canGoForward()) history.goForward();
+      }
     });
     return snapshot(entry);
   });
@@ -195,9 +219,9 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
     if (!entry || entry.view.webContents.isDestroyed() || !entry.view.webContents.getURL()) throw new Error('Open a page before taking a screenshot.');
     const screenshot = await entry.view.webContents.capturePage();
     if (screenshot.isEmpty()) throw new Error('The page has not finished drawing. Try again.');
-    const directory = path.join(app.getPath('userData'), 'data', 'browser-captures');
+    const directory = path.join(dataRoot(), 'browser-captures');
     await fs.mkdir(directory, { recursive: true });
-    const filename = `browser-${Date.now()}.png`;
+    const filename = `browser-${Date.now()}-${randomUUID()}.png`;
     const filePath = path.join(directory, filename);
     await fs.writeFile(filePath, screenshot.toPNG());
     clipboard.writeImage(screenshot);
@@ -255,10 +279,17 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
   ipcMain.handle('workspace-folder-list', async (event, directory, offset = 0, showHidden = false) => {
     authorize(event);
     if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw new Error('Choose a folder first.');
-    const entries = (await fs.readdir(directory, { withFileTypes: true }))
-      .filter(item => showHidden || (!item.name.startsWith('.') && !['node_modules', '__pycache__'].includes(item.name)))
-      .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name, undefined, { numeric: true }));
+    const items = (await fs.readdir(directory, { withFileTypes: true }))
+      .filter(item => showHidden || (!item.name.startsWith('.') && !['node_modules', '__pycache__'].includes(item.name)));
+    const entries = await Promise.all(items.map(async item => {
+      const filePath = path.join(directory, item.name);
+      // stat follows Unix symlinks and Windows directory junctions. Broken
+      // links remain visible as files so one link cannot break the listing.
+      const isDirectory = item.isDirectory() || (item.isSymbolicLink() && await fs.stat(filePath).then(stat => stat.isDirectory(), () => false));
+      return { name: item.name, path: filePath, type: isDirectory ? 'directory' : 'file' };
+    }));
+    entries.sort((a, b) => Number(b.type === 'directory') - Number(a.type === 'directory') || a.name.localeCompare(b.name, undefined, { numeric: true }));
     const start = Math.max(0, Math.floor(Number(offset) || 0));
-    return { entries: entries.slice(start, start + 300).map(item => ({ name: item.name, path: path.join(directory, item.name), type: item.isDirectory() ? 'directory' : 'file' })), more: start + 300 < entries.length };
+    return { entries: entries.slice(start, start + 300), more: start + 300 < entries.length };
   });
 };

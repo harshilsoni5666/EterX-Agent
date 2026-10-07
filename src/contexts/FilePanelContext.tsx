@@ -26,6 +26,7 @@ const FilePanelActionsContext = createContext<FilePanelActionsContextType | null
 const FilePanelPresenceContext = createContext<boolean>(false);
 const FilePanelOwnerContext = createContext<string | undefined>(undefined);
 export const FilePanelOwner = FilePanelOwnerContext.Provider;
+export const useFilePanelOwner = () => useContext(FilePanelOwnerContext);
 const FilePanelRevealContext = createContext<(() => void) | undefined>(undefined);
 export const FilePanelReveal = FilePanelRevealContext.Provider;
 

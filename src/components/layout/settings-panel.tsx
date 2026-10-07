@@ -6170,8 +6170,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   const blob = new Blob([data], { type: 'application/json' });
                                   const url = URL.createObjectURL(blob);
                                   const a = document.createElement('a');
-                                  a.href = url; a.download = 'eterx-settings.json'; a.click();
-                                  URL.revokeObjectURL(url);
+                                  a.href = url; a.download = 'eterx-settings.json';
+                                  document.body.appendChild(a); a.click(); a.remove();
+                                  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
                                 }}
                               >
                                 Export

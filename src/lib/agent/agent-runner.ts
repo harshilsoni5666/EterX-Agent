@@ -14,6 +14,7 @@ import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
  */
 import path from 'path';
 import { WORK_NOTE_POLICY } from './work-note';
+import { buildToolAvailabilityPrompt } from './tool-availability-prompt';
 import { SOURCE_READING_POLICY } from './source-read-policy';
 import { schemaUsageDescription } from './tools/registry';
 import { randomUUID } from 'crypto';
@@ -246,6 +247,8 @@ export class AgentRunner {
         this.profile.name,
       )}
 
+${buildRuntimePlatformPrompt(config?.pinnedContext?.terminalShell || 'auto')}
+
 ${CONTEXT_CONTINUITY_OPERATING_POLICY}
 
 ## Execution contract
@@ -337,6 +340,7 @@ Use file_read for reading files, file_create for creating files, file_edit for e
 - Keep ordinary replies professional: do not add emojis, emoji bullets, decorative icons, ornamental Unicode, or celebratory badges unless explicitly requested or faithfully quoting supplied content. Use plain words for status and emphasis.
 - Ground claims in evidence; distinguish findings from assumptions and preserve material uncertainty. Explain what changed and why, with verification or limitations only when relevant. Do not invent actions or results.
 - Link a known local deliverable once as [filename](#eterx-local-file:<URL-encoded-absolute-path>); never expose or repeat a raw path.
+- Use the exact local path returned by a successful tool result. Never invent sandbox:/mnt/data links, download URLs, or web addresses for local files. If the output path is unknown, say so instead of fabricating a link.
 - End when the answer is complete. Include a next action only when it helps the user use the result or resolve an actual blocker.`);
 
     parts.push(`
@@ -375,6 +379,7 @@ Workspace: ${resolveChatWorkspaceContext(config?.chatId || 'custom-agent-' + (co
 Declared tools: ${activeTools.length}. Their schemas are authoritative.
 Current date/time and per-run evidence are supplied with the latest request.`);
 
+    parts.push(buildToolAvailabilityPrompt(activeTools.map(tool => tool.name), true));
     return parts.join('\n');
   }
 

@@ -5,7 +5,7 @@
 <h1 align="center">EterX-Agent</h1>
 
 <p align="center">
-  <strong>An autonomous AI agent that works and operates in your computer, plans, and learns — built for real work.</strong>
+  <strong>An AI agent workspace for coding, research, documents, and work on your computer.</strong>
 </p>
 
 <p align="center">
@@ -13,148 +13,143 @@
   <img src="https://img.shields.io/badge/Developer-Harshil%20Soni-blue" alt="Developer">
 </p>
 
+EterX brings conversations, tools, files, terminals, browsers, and collaborating agents into one desktop application. Choose a model and an agent, describe the outcome you want, and follow the work as it happens. You can steer an active task, inspect each delegated agent in its own tab, review file changes, or enable a proxy agent to supervise longer workflows.
 
+The application runs on **Windows, macOS, and Linux**. Chats, settings, and memory are stored locally; model inference runs through the cloud provider or local model server you connect.
 
-## Install EterX
+<p align="center">
+  <a href="#install-eterx">Install</a> ·
+  <a href="#first-run">First run</a> ·
+  <a href="#choose-your-agent">Agents</a> ·
+  <a href="#agent-tabs-and-collaboration">Agent tabs</a> ·
+  <a href="#models-and-external-services">Models</a> ·
+  <a href="#development">Development</a> ·
+  <a href="#documentation">Documentation</a>
+</p>
 
-Use exactly one command for the device you are installing on. The bootstrap
-detects the processor, downloads the matching published release, verifies its
-SHA-256 manifest, installs the compiled application, and removes its temporary
-files. End users do not need Node.js, npm, Git, or the source repository.
-Large downloads use no-progress timeouts, bounded retries, and a persistent
-per-user partial-download cache. If a connection stalls or Terminal closes,
-run the same command again; the installer resumes the matching release instead
-of starting the large package from zero.
+## What you can do
 
-### Windows (PowerShell)
-
-Open **PowerShell** (not Command Prompt), paste this once, and press Enter:
-
-```powershell
-irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex
-```
-
-Do not wrap this command in another `powershell.exe` invocation and do not run
-it a second time while the installer is open. The native installer is per-user,
-requires no administrator access, and lets you choose the application folder
-and Desktop/Start Menu shortcuts. When it finishes, launch EterX from the
-shortcut it created.
-
-### macOS (Terminal)
-
-Open **Terminal**, paste this once, and press Return:
-
-```bash
-curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect-timeout 60 --max-time 300 https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
-```
-
-The default location is `~/Applications/EterX.app`. The same command supports
-Apple Silicon and Intel Macs; no second installer command is needed. EterX is
-installed with an atomic bundle swap. If macOS quarantines the unsigned public
-build, the installer shows a one-time native explanation and lets you either
-approve the verified EterX copy or use Apple's manual **Open Anyway** flow. It
-never reports a pending Gatekeeper approval as an application crash. An
-existing installation is restored if replacement or runtime startup genuinely
-fails. Diagnostics are written to
-`~/Library/Logs/EterX/install.log` and
-`~/Library/Application Support/EterX/eterx-desktop.log`.
-
-### Linux (Terminal)
-
-Open a terminal and paste this once:
-
-```bash
-curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect-timeout 60 --max-time 300 https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
-```
-
-The installer selects the matching x64 or ARM64 AppImage, places it under the
-per-user XDG data directory, and creates both an application-menu entry and
-`~/.local/bin/eterx`. The launcher uses native FUSE when available and falls
-back to AppImage extract-and-run mode on fresh systems that do not include
-`libfuse2`.
-
-The bootstrap accepts a release only after the SHA-256 manifest matches. A
-publisher-signature warning means the release was not code-signed; it is not a
-checksum failure. Do not continue when the checksum verification itself fails.
-
-### Updates and user data
-
-EterX never changes the installed application automatically. Open **Settings →
-Updates** and choose **Check for updates** when you want to look for a newer
-release; you can then review the version, download it, and choose **Restart and
-install**. This keeps updates fully user-controlled. Windows uses the NSIS
-updater and Linux replaces the matching x64 or ARM64 AppImage. A Developer-ID
-signed macOS build uses the native macOS updater; the unsigned public build
-uses a verified, atomic bundle replacement with rollback so it can update from
-the default user Applications folder without requesting administrator access.
-
-Application binaries and user-owned data are independent:
-
-| Platform | Application | Persistent user data |
-|---|---|---|
-| Windows | Location selected in the native installer | `%LOCALAPPDATA%\EterX\data` |
-| macOS | `~/Applications/EterX.app` by default | `~/Library/Application Support/EterX/data` |
-| Linux | `${XDG_DATA_HOME:-~/.local/share}/EterX/app` | `${XDG_DATA_HOME:-~/.local/share}/EterX/data` |
-
-Updates never replace chats, workspaces, preferences, browser profiles, logs, or
-encrypted API credentials. The native installer replaces only the compiled
-application bundle; the OS-specific EterX data directory remains independent.
-
-> [!IMPORTANT]
-> A downloadable installation exists only after a maintainer publishes a
-> version tag through the native release workflow. See
-> [Release operations](./docs/releasing.md).
-
----
-
-## About EterX Agent
-
-EterX is an autonomous agent platform that plans and completes tasks on your local computer. You give it a high-level goal, and it breaks that goal into clear steps. It then uses its tools and helper agents to carry out the work.
-
-*   **Collaborative Swarms**: Runs several background agents at the same time. They use a built-in mailbox system to share information and work on separate parts of a complex task.
-*   **Autonomous Mode**: Activates a proxy agent that monitors the main agent while it works. If the main agent starts to hallucinate, changes direction, gets stuck, or does not complete a task correctly, the proxy agent can step in, provide guidance, and help keep the work on track. You can choose the proxy agent’s model and set its intervention level to **High**, **Normal**, or **Minimal**, depending on the type of task. You can also work with the proxy agent directly to define future goals, provide guidance, and explain how you want the work to be handled.
-*   **Context and Context Compaction**: Each agent has its own context, including the main agent, sub-agents, proxy agents, and agents working in other tasks. You can set context limits in Settings, and EterX automatically compacts the conversation when a limit is reached. You can also set separate limits for specific chats. The compaction model can be selected in Settings to match your needs.
-*   **Work Mode Selection**: Choose the mode that best fits your task. **Chat Mode** provides direct answers with fewer unnecessary agent prompts, which helps reduce token usage for quick questions and focused tasks. **General Mode** is the default and connects you directly with the main agent for regular work. **Autonomous Mode** works like General Mode but also calls the proxy agent to support a more autonomous workflow.
-*   **Scheduled Tasks**: Schedule a task to run at a specific time or set it to repeat on a schedule. You can choose the model, priority, work mode, and other task settings. You can also ask the main agent to schedule a task for you. Priority is especially useful when several scheduled tasks are waiting to run. When the scheduled time arrives, you can follow the agent’s live progress in a chat view from the sidebar.
-*   **Connectors and MCP**: Open the **Channels** tab, go to **Gateway**, and connect the services and tools you need. You can connect external connectors, add MCP servers, import skills, or edit existing skills. Once connected, the agent can use these tools in its work. You can also ask the agent to set up a connection on your behalf by providing the required details.
-*   **Synapse Graph**: Keeps a local memory of important concepts, files, and conversation context. This helps EterX remember useful instructions, facts, and code patterns from earlier in a long conversation.
-*   **Custom Agent Builder**: Create specialized agents with their own rules, goals, and tools for the way you work.
+- **Choose how to work.** Switch between Chat, General, Coding Lite, Coding Heavy, and your own custom agents.
+- **Follow multiple agents.** Open separate sub-agent tabs, inspect their activity, send guidance, and control their execution.
+- **Work alongside your files.** Use a workspace with file browsing, editing, change review, an integrated terminal, a browser, and side chats.
+- **Delegate longer goals.** Enable Autonomous mode and communicate with a proxy agent that supervises the main worker.
+- **Repeat useful workflows.** Schedule tasks, review run history, and enable background operation in the desktop app.
+- **Connect your tools.** Configure cloud or local models, web search, image and video services, messaging channels, connectors, MCP servers, and skills.
+- **Keep context across long tasks.** Use local memory, context compaction, per-chat limits, and token usage reporting.
 
 <p align="center">
   <video src="https://github.com/user-attachments/assets/7ba6c169-a58e-46b9-af0e-6f0536f0b0cc" controls width="100%"></video>
 </p>
 
-### Agent-first app with light and dark themes
-EterX includes a clean interface with light and dark themes that you can choose based on your preference. All data runs locally on your machine, keeping your workspace settings and memories private.
+### Light and dark themes
+
+Choose a light, dark, or system theme in **Settings → Appearance**.
 
 <p align="center">
   <img src="./public/assets/black-theme.png" width="48%" alt="Dark Theme" />
   <img src="./public/assets/white-theme.png" width="48%" alt="White Theme" />
 </p>
 
----
+## Install EterX
 
-## Workflow-Overview
-### Autonomous Sub-Agent Swarms
+Use the command for your operating system. The bootstrap detects your processor, downloads the matching published release, checks its SHA-256 manifest, and installs the compiled desktop application. **Desktop users do not need Node.js, npm, or the source repository.**
 
-The sub-agent system is entirely orchestrated and managed by the AI engine itself, rather than being manually controlled by the user. When a complex task is submitted, the primary agent evaluates the goals and autonomously decides how, when, and which sub-agents to deploy:
+Downloads use bounded retries and a persistent partial-download cache. If a connection stalls or the terminal closes, rerun the same command to resume the matching release.
 
-*   **Self-Directed Swarms**: The primary agent determines if a project requires parallel execution. It autonomously spawns background sub-agents—identified by distinct personas (Einstein, Ada, Turing, Curie, etc.)—to handle independent lanes, staggered at 500ms intervals to prevent environment race conditions. Results are queued and merged without user intervention.
-*   **Automatic Key Isolation**: To avoid service disruptions, the system leases separate API keys from the pool to different sub-agents. This routing is handled entirely by the AI, preventing rate limit conflicts or speed throttling.
-*   **Independent Agent-to-Agent Mailbox**: Sub-agents autonomously check and manage their own mailbox coordination. They decide when to share discoveries, query other sub-agents, or send handoffs and alerts back to the main agent. This features multiple delivery modes:
-    *   *Interrupt*: The sending agent forces the recipient to pause at their next logical boundary to handle high-priority items.
-    *   *Defer*: Messages are queued to be read between tool execution runs.
-    *   *Silent*: Updates are written directly to logs for trace history without affecting agent behavior.
-*   **Interactive Control Override**: While the execution paths are autonomous, you retain override control. You can manually pause sub-agents (safely suspending their loops), resume them, or terminate them instantly via a global emergency stop.
-*   **Dynamic Specialist Deployments**: The agent analyzes code signals and automatically deploys tailored experts as needed:
-    *   *Mira (Security)*: Automatically scans for SQL/XSS vulnerabilities, credentials, and data-handling leaks.
-    *   *Leo (Performance)*: Explores memory leaks (unclosed streams/listeners) and database inefficiencies (N+1 query patterns).
-    *   *Kai (Architecture)*: Assesses module boundaries, state management, and maps circular dependencies.
-    *   *Zara (QA)*: Identifies untested paths and writes Jest/Vitest test suites to verify outputs.
-    *   *Sage (Research)*: Researches with date-aware filters, citations, and source credibility scoring.
-*   **Autonomous Cognitive Panels**: The system determines when high-stakes decisions require diverse perspectives and triggers advanced panels:
-    *   *Consensus Panels*: Spawns Dave (Optimist), Nova (Skeptic), and Sam (Realist) to debate upside opportunities, surface failure risks, and compile actionable realist recommendations.
-    *   *Adversarial Debate*: Runs multi-round critique rounds where agents debate findings, write rebuttals, modify their stances, and generate a final synthesis backed by concession-based confidence scores.
+### Windows
+
+Open **PowerShell**, paste this command, and press Enter:
+
+```powershell
+irm https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.ps1 | iex
+```
+
+Run it directly in PowerShell without wrapping it in another `powershell.exe` invocation. Keep only one installer running at a time.
+
+The per-user NSIS installer lets you choose the application folder and Desktop/Start Menu shortcuts. The default per-user installation does not require administrator access. Launch EterX from the shortcut when installation finishes.
+
+### macOS
+
+Open **Terminal**, paste this command, and press Return:
+
+```bash
+curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect-timeout 60 --max-time 300 https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
+```
+
+The same command supports **Apple Silicon and Intel**. The default location is `~/Applications/EterX.app`.
+
+The installer replaces the application using an atomic bundle swap. If macOS quarantines an unsigned build, it explains the approval step and supports Apple's **Open Anyway** flow. If replacement or runtime startup fails, the existing installation is restored.
+
+Installation diagnostics are written to `~/Library/Logs/EterX/install.log`; desktop runtime diagnostics are written to `~/Library/Application Support/EterX/eterx-desktop.log`.
+
+### Linux
+
+Open a terminal and run:
+
+```bash
+curl --fail --silent --show-error --location --retry 5 --retry-delay 3 --connect-timeout 60 --max-time 300 https://raw.githubusercontent.com/harshilsoni5666/EterX-Agent/main/install.sh | sh
+```
+
+The installer selects the **x64 or ARM64 AppImage**, installs it under the per-user XDG data directory, and creates an application-menu entry and `~/.local/bin/eterx` launcher. It uses FUSE when available and falls back to AppImage extract-and-run mode when needed.
+
+> [!NOTE]
+> These commands require a published native release. Package formats, release checks, signing, and recovery are documented in [Release operations](./docs/releasing.md). Unsigned builds may show operating-system publisher warnings; a failed SHA-256 verification must be resolved before installation.
+
+### Updates
+
+EterX checks for updates when the desktop window opens or becomes visible, and periodically while it remains visible. **Downloads and installation require your action.** Open **Settings → Updates** to check manually, review an available release, download it, and choose **Restart and install**.
+
+Windows uses the NSIS updater; Linux updates the matching AppImage. Signed macOS builds use the native updater, while unsigned builds use a verified bundle replacement with rollback. Application updates preserve the separate user-data directory described in [Local data and privacy](#local-data-and-privacy).
+
+## First run
+
+1. Open **Settings → API** and add a key for the model provider you want to use. For a local model server, configure its endpoint in **Settings → Models**.
+2. In **Settings → Models**, load the provider's catalog and add a specific model to your saved model list.
+3. Return to the chat input and select that model. EterX requires an explicit model selection.
+4. Open the **agent selector** and choose Chat, General, Coding Lite, Coding Heavy, or a ready custom agent.
+5. Select a project folder or attach the files relevant to your task. Describe the outcome, scope, and deliverable you want.
+6. Follow the activity feed, review changes and outputs, and send guidance while the agent works.
+
+For example: “Review this project and update its README to match the implemented features. Preserve the screenshots and edit only the README.”
+
+Web search and image/video generation have their own setup under **Settings → External service**. Live voice has separate credentials under **Settings → Live Convo**.
+
+## Choose your agent
+
+The agent selector in the chat input controls the worker for your conversation. The model selector controls the provider and model used by that worker.
+
+| Agent | Best suited to | Default tool access |
+| --- | --- | --- |
+| **Chat** | Questions, explanations, and direct conversation | Optional web search |
+| **General** | Research, writing, documents, file work, and tasks across applications | Shared agent tool library |
+| **Coding Lite** | Focused code changes and local project work | Terminal execution and file editing |
+| **Coding Heavy** | Coding that also needs browser inspection, research, or longer task coordination | Coding Lite tools plus browser, search, questions, planning, checkpoints, context recall, waiting, and skill guidance |
+| **Custom agents** | Reusable specialist roles and workflows | Tools and instructions configured through Agent Builder |
+
+Open **Settings → Agents** to inspect, enable, disable, or reset tools for each built-in agent. The table describes the defaults; your settings determine the tools exposed to a run. Chat remains limited to conversation and optional search.
+
+Agent and model choices are saved with the conversation. Changing the selected agent during an active run applies to a subsequent turn; the current run keeps its worker identity.
+
+**Autonomous mode** is a separate supervision setting for tool-using agents. It adds a proxy supervisor to the selected workflow. See [Autonomous mode](#autonomous-mode).
+
+### Composer controls
+
+Type `/` in the chat input to access **Plan mode**, **Compact**, **Chat usage**, and **Workspace**. Plan mode requests a visible task plan before execution; use it with an agent whose planning tools are enabled. The other controls let you compact the current conversation, inspect usage, or change its workspace without leaving the chat.
+
+You can send guidance while a task is running. EterX routes active-run steering and queued follow-ups according to the conversation's worker and run state. Set response preferences and reusable instructions under **Settings → Personalization**.
+
+## Agent tabs and collaboration
+
+When a worker delegates part of a task, its sub-agents appear in the **agent workspace tabs**. Use the dock to switch between the main conversation and each delegated worker.
+
+- **Inspect the right worker.** Each tab shows that agent's conversation, activity, and execution state.
+- **Guide individual agents.** Send a follow-up or change the task in the selected worker's tab.
+- **Keep controls scoped.** The composer reflects the active worker. A sub-agent tab keeps its agent identity; model changes apply at the next run boundary.
+- **Manage execution.** Pause, resume, or stop workers, and use the overall stop controls when necessary.
+- **Organize the dock.** Drag sub-agent tabs to reorder them and use the overflow menu when more workers are present.
+- **Revisit completed work.** Retained activity lets you inspect earlier sub-agent work within the chat.
+
+Delegation can split research, implementation, review, or verification into independent assignments. Agents coordinate through a mailbox that supports questions, discoveries, handoffs, and interrupt, deferred, or silent delivery. The available delegation tools and agent configuration determine whether a run can create sub-agents.
 
 <p align="center">
   <img src="./public/assets/subagent.png" width="100%" alt="Sub-Agent Panel" />
@@ -164,239 +159,267 @@ The sub-agent system is entirely orchestrated and managed by the AI engine itsel
   <img src="./public/assets/sub-agent2.png" width="100%" alt="Sub-Agent Workflow" />
 </p>
 
-### EterX-Synapse Graph (Memory & Context Continuity)
+## Workspaces, files, and execution
 
-EterX-Synapse is an advanced, local relational memory graph that maintains conversational context and session continuity across long execution horizons. Rather than relying on simple sliding window histories or external embedding APIs, it uses an in-process mathematical engine to evaluate semantic state shifts:
+Select a folder to give the agent a project location for relative file paths and commands. Chats without a selected folder use a durable EterX working directory. Multiple chats can work in the same folder while keeping their conversation histories and activity separate.
 
-*   **Divergence-Gated State Machine**: Evaluates user query semantic divergence against a running topic centroid vector to transition the session state between *Warmup* (baseline collection), *Continuity* (same topic focus), *Drift* (topic shifting), and *Transition* (major topic change).
-*   **Structured 4-Record Storage**: Implements the PCCA-specified storage structure, representing every context object (turns, tools, code snapshots, patches) as a network of linked Source, Version, State, and Confidence records, along with a Patch edit chain for coding sessions.
-*   **Five-Question Decision Surface**: On every turn, evaluates the active task, semantic proximity, version freshness, confidence thresholds, and token budget constraints to dynamically select the optimal context injection set.
-*   **Context Resonance Router**: Selects a budgeted, diverse evidence set using semantic fit, confidence, freshness, causal support, validation, and repetition fatigue. State-conditioned weights adapt retrieval across Warmup, Continuity, Drift, and Transition.
-*   **Closed-Loop Reasoning Pulses**: New tool results are linked to the current objective and can be injected into the very next reasoning iteration across provider loops. Evidence already injected during the turn is suppressed to prevent context amplification.
-*   **Loss-Aware Evidence Distillation**: Long tool output and old provider messages are compacted around exact errors, decisions, paths, identifiers, numeric values, and query-relevant evidence instead of blunt truncation.
-*   **Verification-Weighted Memory**: Successful checks promote the recent mutation chain to validated evidence; failed checks remain authoritative failure records and reduce trust in unverified changes.
-*   **Federated Memory Attention**: Agent Memory, Memory V2, Lifetime Brain, adaptive rules, and Synapse are merged into one provenance-labeled, deduplicated memory channel instead of independently consuming the prompt.
-*   **Online Synaptic Utility Feedback**: Recalled evidence that materially overlaps a later tool action gains retrieval strength; repeatedly injected but unused evidence decays through fatigue without changing model weights.
-*   **Anchor-EWMA Centroid Engine**: Automatically updates and maintains the active topic's running centroid vector by blending the original anchor vector intent with an exponentially weighted moving average (EWMA).
-*   **Local Zero-Network TF-IDF Vectorizer**: Performs fast (<2ms), incremental vocabulary vectorization completely locally, eliminating network latency and protecting privacy.
-*   **Graceful Degradation**: Protects agent behavior by automatically bypassing injection and degrading context gracefully when measurement confidence falls below the designated threshold.
+The side workspace brings related tools into the conversation:
 
-See [Context Resonance](./docs/context-resonance.md) for the scoring equation, provider-neutral runtime path, safety boundaries, reproducible synthetic benchmark, related work, and external validation plan.
+| Panel | What it provides |
+| --- | --- |
+| **Files** | Project tree, file opening and editing, image previews, and supported document previews |
+| **Review** | File changes made in the chat, with expandable diffs |
+| **Terminal** | Local shell sessions, live output, and a choice of side or bottom placement |
+| **Browser** | Website viewing, local previews, and screenshot capture |
+| **Side chat** | A second conversation alongside the current task |
 
-See [External service routing](./docs/external-services.md) for the live search,
-image, and video provider matrix, health-check contract, and the operating rules
-injected into Main and delegated sub-agents.
+The terminal runtime supports commands, independent command batches, and managed background processes. Running processes keep their task identity and output cursor across turns, so an agent can inspect ongoing work without launching it again. Terminal details retain the working directory, actual invocation, output, and available exit status.
 
-> [!NOTE]
-> **Research Citation:** The `EterX-Synapse` architecture, including the Anchor-EWMA centroid updates and the PCCA (Parallel Context Continuity Architecture) specifications, is implemented based on the research paper *EterX-Synapse: Cognitive Context Continuity in Autonomous Agents* by **Harshil Soni**.
+Choose the integrated shell and open destination in **Settings → General**. Environment settings support local execution configuration; existing project environments can be used without automatically creating a new environment when a chat opens.
 
-### Agent Builder (An AI agent designed to build custom agents)
+See [Workspace runtime](./docs/workspace-runtime-contract.md) for folder resolution, environment behavior, and process continuity.
+
+## Autonomous mode
+
+Autonomous mode adds a **proxy agent** that works with the main worker on your behalf. It can monitor progress, provide guidance, and help address drift, errors, or stalled work.
+
+Enable Autonomous mode in **Settings → General**. The proxy panel lets you:
+
+- Select the proxy model and choose **High**, **Normal**, or **Minimal** intervention.
+- Communicate directly with the supervisor about goals, preferences, and approval boundaries.
+- Pause, resume, or disable supervision for the current workflow.
+- Follow the supervisor's messages alongside the main agent's work.
+
+Define the outcome and boundaries clearly. Supervision uses an additional model runtime and contributes to provider usage.
+
+## Scheduled tasks and background work
+
+Open **Tasks** to create a task with instructions, a model and agent, a run time, recurrence, and priority. Tasks can create a new chat or continue an existing conversation. The task view includes **My List**, **Queue**, and **Completed**, with recorded run history and links back to the work.
+
+You can also ask an agent with the scheduling tool enabled to create or manage tasks.
+
+Desktop background settings in **Settings → General** control:
+
+- **Continue active chats in background** — keep supported chat runs working when the window is hidden or closed to the tray.
+- **Run scheduled chats in background** — dispatch due tasks and record their runs while the window is hidden.
+- **Start background companion at sign-in** — start enabled background workflows when you sign in.
+
+Background operation requires EterX to remain running and the computer to be awake. **Quit EterX** from the system tray fully shuts down the app.
+
+## Agent Builder
+
+Create a custom agent from **Agents**, then describe its role and workflow to the Builder. You can specify its mission, response style, instructions, preferred model, tool access, and channel or connector requirements.
 
 <p align="center">
   <video src="https://github.com/user-attachments/assets/69a12760-0d49-44dc-84c7-644d0ed7c7bb" controls width="100%"></video>
 </p>
-The Agent Builder is a specialized AI agent designed to dynamically configure, write, and deploy custom specialist agents. When you interact with the builder, it acts as a meta-architect—guiding you through the creation of a fully functional, self-contained workspace companion tailored specifically to your work environment.
 
-*   **Self-Profiling Persona Engine**: Based on your requirements, the builder autonomously writes a detailed, expert-level system prompt. It designs the custom agent's identity, core mission, response style, and operating boundaries, ensuring it knows how to handle ambiguities and manage its context window efficiently.
-*   **Built-in Safety & SOUL Rules**: The builder injects a set of inviolable guidelines into the new agent's core instructions. This includes Scope Fidelity (preventing the agent from attempting tasks outside its expertise), Truth over Speed (strictly prohibiting data fabrication), Transparency (requiring explanation of all actions), and Defensive Execution.
-*   **Automatic Workspace Tooling**: Once the prompt is saved, the builder automatically scans EterX's native tool library and attaches the optimal tools required for the custom agent's role (such as file read/write, search, and sandboxed execution), removing any tools that fall outside its safe operating boundary.
-*   **Custom Capabilities Creation**: If existing tools are not enough, the builder can design and compile custom capabilities specifically for that agent:
-    *   *Prompt Macros*: Behavioral rules and thinking patterns tailored for custom inputs (e.g. sentiment scoring or custom sorting rules).
-    *   *Tool Chains*: Composes multiple existing tools into sequenced workflows (e.g., automatically scraping a URL, reading the output, and writing a file as a single operation).
-    *   *Agent-Scoped Code*: Drafts custom scripts to execute specific operations. The builder automatically audits this code to ensure it blocks destructive actions (like file deletion commands, user account modifications, or unsafe script injections).
-*   **Fallback & Error Recovery Design**: The builder automatically structures error handling into the custom agent's instructions. It details fallback chains (e.g., trying directories if file reads fail, or trying alternative editors if text replacement fails) to ensure the newly created agent degrades gracefully instead of failing or entering infinite retry loops.
-*   **Profile Finalization & Validation**: Before deployment, the builder runs a comprehensive audit of the custom agent's configuration. It verifies that the prompt has sufficient depth, that the behavior and safety rules are properly established, and that all attached code tools have passed security reviews.
-## The Tools: What EterX Can Actually Do
+The Builder creates and refines the agent's profile, selects tools, and checks readiness before it becomes available for use. It can configure reusable capabilities such as prompt macros, tool chains, and agent-scoped code. Dedicated builder controls are isolated from normal agent runs.
 
-EterX currently has **73 native tool definitions plus 2 builder runtime tools**, for **75 registered tools when all optional providers are present**. macOS and Linux keep the shared desktop tools registered and only filter optional clipboard, notification, screenshot, and text-to-speech tools when their required OS utility is absent. This keeps the advertised tool list honest on every supported device.
+The **Agents** view supports selecting ready agents, returning to the Builder to edit them, and importing or exporting agent and flow packages. Ready custom agents also appear in the chat's agent selector.
 
-### 1. OS Automation & Computer Vision (`host.control`, `host.system`)
-Provides low-level OS access and computer vision control to securely see and interact with any workspace:
-*   **Vision & Mouse Control**: `screen_agent`, `desktop_control`, and `computer` expose the same cross-platform action surface. Windows uses the isolated/native backend; macOS uses Accessibility plus `screencapture`; Linux uses `xdotool`/XWayland plus the installed screenshot utility. Browser UI remains available through `browser_control` on every platform.
-*   **Isolation & Stream**: `computer` uses the isolated EterX Computer on Windows and a native desktop-provider fallback on macOS/Linux, with provider and missing-permission messages returned explicitly instead of hiding the tool.
-*   **System Utilities**: `system_monitor`, `system_automation`, and platform-checked clipboard, notification, screenshot, and text-to-speech tools automate OS-level events.
+## Models and external services
 
-For native desktop input, macOS needs Accessibility and Screen Recording permission for EterX; `cliclick` adds reliable pointer movement and drag support. Linux input uses `xdotool` with X11/XWayland, while Wayland-only sessions should use `browser_control` for browser UI or install a compatible desktop bridge. Install a screenshot utility (`grim`, `gnome-screenshot`, `spectacle`, `scrot`, `maim`, or ImageMagick `import`) and optional `tesseract` OCR when screen text/find actions are needed. Missing utilities produce an explicit provider message and do not remove the shared tools.
+EterX connects to multiple model providers through native and OpenAI-compatible adapters. **Model IDs come from provider discovery and explicit selection**, rather than a shipped default. The runtime retains the selected provider/model pair; rotating credentials does not silently select another model.
 
-### 2. Workspace & Code Intelligence (`command.workspace`, `filesystem`)
-A robust code-editing and workspace analysis environment for developers:
-*   **Precise Editing**: `workspace_read_file`, `workspace_write_file`, `workspace_edit_file`, `workspace_str_replace`, and `workspace_apply_patch` allow high-precision edits.
-*   **Search & Scans**: `workspace_search_text`, `workspace_find_files`, `workspace_file_outline`, and `workspace_semantic_search` identify codebase architecture.
-*   **Compiles & Runs**: `workspace_run_command` and `workspace_verify_code` handle commands, linting, compilation, and tests through the active OS shell.
+### Model connections
 
-### 3. Deep Research & Web Scraping (`network.public`)
-Gathers, parses, and synthesizes data directly from public resources:
-*   **Synthesized Research**: `deep_research` runs multiple concurrent queries, scraping matching pages to compile structured markdown reports with source citations.
-*   **Parsing Utilities**: `web_scraper`, `parse_pdf`, `parse_docx`, `youtube_transcript`, and `rss_feed_reader` extract clean text content from web layouts, documents, and feeds.
+| Connection type | Providers and runtimes |
+| --- | --- |
+| Native and dedicated adapters | Google Gemini, OpenAI, Anthropic, Perplexity |
+| Cloud APIs and gateways | OpenRouter, Mistral, Groq, DeepSeek, xAI, Cerebras, Together AI, Fireworks AI, SambaNova, DeepInfra, Hugging Face, NVIDIA NIM, Cloudflare Workers AI |
+| Additional compatible services | Novita AI, Qwen Cloud, Xiaomi MiMo, Tencent TokenHub, Z.AI / GLM, Kimi / Moonshot, StepFun, MiniMax, Ollama Cloud, Arcee AI, GMI Cloud, Kilo Gateway, OpenCode Zen, Upstage Solar |
+| Local model servers | Ollama, LM Studio, vLLM, llama.cpp |
+| Custom endpoints | A configured OpenAI-compatible base URL with discoverable, concrete model IDs |
 
-### 4. Autonomous Collaboration & Planning (`agent.spawn`, `memory.manage`)
-Multi-agent task delegation and persistent cognitive systems:
-*   **Parallel Sub-Agents**: `spawn_sub_agent` deploys background specialist personas (Mira, Leo, Zara) and hosts Consensus and Debate panels.
-*   **Relational Memories**: `memory_v2` and `synapse-graph` retain project facts, configurations, and long-term user preferences locally.
-*   **Task Orchestration**: `task_decomposer`, `task_checkpoint`, `background_task`, `scheduled_tasks`, and `spawn_sub_agent` manage complex execution pipelines.
+Available models and features depend on your account, endpoint, catalog, and model capabilities. **Agent workflows require tool calling.** Reasoning controls appear when supported, and attachment support depends on the provider's verified transport for that file type.
 
-### 5. Communication & Connected Services (`communication.connected`)
-Outbound integrations with collaborative and chat environments:
-*   **Live connectors**: `slack_controller` uses Slack directly, while `gateway_bridge` handles configured gateway channels and `connector_mcp` discovers and operates saved REST/MCP services.
+Configure provider keys, key pools, and model-specific connections in Settings. See [Universal provider runtime](./docs/universal-provider-runtime.md) for catalog discovery, request adapters, reasoning, attachments, streaming, and current limitations.
 
-### 6. Office Documents & Structured Data (`filesystem.write`)
-Generates rich data documents, presentations, and analyses:
-*   **Office Generators**: `docx_generator` builds Word documents in *Executive*, *Modern*, *Classic*, and *Minimal* layouts.
-*   **Data Analysis**: `csv_data_analyzer` aggregates and inspects CSV datasets.
+### Search, images, and video
 
-### 7. Utilities & Infrastructure (`tool.utility`)
-Built-in computational utilities supporting the EterX OS runtime:
-*   Includes `browser_control` (automated Chrome), `api_caller`, `calculator`, JSON/YAML transforms, regular expression processing, image generation/search, and background process management.
+Open **Settings → External service** to configure these separately from the chat model:
 
----
+- **Web search and research:** select a search route, credentials or a self-hosted endpoint, enabled capabilities, and fallback providers. Supported routes include Tavily, Brave, Exa, Firecrawl, Parallel, SearXNG, DuckDuckGo, and xAI. Native model search can run first when supported.
+- **Image generation:** select a generation provider and model, then save generated raster images into the workspace. Image generation currently accepts text prompts; reference-image editing is not implemented by the generation adapter.
+- **Video generation:** configure a supported video provider and model, then create and save video outputs.
+- **Image asset search:** find existing visual assets when a task calls for sourced images.
 
-## Models
+Provider availability, credentials, supported actions, and fallback behavior are detailed in [External service routing](./docs/external-services.md).
 
-EterX does not depend on any specific models. Any model can be easily connected and the agent can be run on that model easily. All models are fully compatible in EterX.
+## Voice and Live Convo
 
-To connect your models:
-1. Open the application **Settings** panel.
-2. Locate the **API Keys** section.
-3. Select your preferred **Provider**.
-4. Input your **API Key** and save to connect.
+EterX supports **local voice dictation** in the desktop chat input through `whisper.cpp`, and **Live Convo** for interactive provider-backed voice sessions.
 
-### Supported Providers
+Configure Live Convo's provider, dedicated credentials, model, and voice in **Settings → Live Convo**. The current provider adapters include Google Gemini Live, OpenAI Realtime, xAI Grok Voice, Deepgram Voice Agent, and ElevenLabs Conversational Agent. ElevenLabs also requires a configured agent ID.
 
-| Provider | Available Models |
-|----------|------------------|
-| **Google Gemini** | Select and run the agent on any Gemini model |
-| **OpenAI** | Select and run the agent on any OpenAI model |
-| **Anthropic** | Select and run the agent on any Anthropic model |
-| **OpenRouter** | Select and run the agent on any OpenRouter model |
-| **Mistral** | Select and run the agent on any Mistral model |
-| **Groq** | Select and run the agent on any Groq model |
+Live tools can inspect app context and perform supported app actions. Camera and screen sharing are available through the Gemini Live transport when enabled; the other listed transports are audio-only in EterX. Microphone, camera, and screen access depend on the permissions you grant.
 
+## Channels, connectors, MCP, and skills
 
-### Dynamic Parameter Configuration
-Different models have different parameters (such as thinking/reasoning modes, medium models, or small models). EterX automatically configures those provider-specific model parameters and exposes them directly in the UI of the application, allowing you to select your preferred configuration and work in real time.
+**Channels** brings messaging connections and service setup into the desktop app. The gateway runs in Electron's main process, so enabled channels can continue receiving messages while the window is hidden.
 
----
+- **Messaging gateway:** configured adapters support Telegram, Discord, WhatsApp Cloud, Messenger, email, a compatible Signal bridge, and custom webhooks. Setup requirements differ by platform.
+- **Connect as bot:** create Telegram bot teammates with their own model and agent selections, pair an owner through a private link, and manage connection status from the bot roster. Bot conversations can use the same agent engine, tools, and workspace as desktop chats.
+- **Connectors:** configure REST or MCP services for authorized data retrieval and actions. Catalog entries distinguish native adapters, MCP integrations, and setup pathways; a catalog listing alone does not mean a connection is active.
+- **MCP bridge:** expose the local gateway to an MCP client using the authenticated endpoint and copyable client configuration from the gateway's advanced settings.
+- **Skills:** import or edit reusable Markdown guidance. The bundled skill library covers documents, PDFs, spreadsheets, presentations, images, visualizations, templates, skill creation, and connector setup.
 
-## Memory Architecture
+Skills guide workflows; the active agent's tool configuration controls execution access. Document and spreadsheet tasks use the available terminal runtime and libraries rather than a separate native generator tool for every file format.
 
-EterX uses a **multi-tier, locally stored memory system**. Nothing is sent to any cloud memory service.
+See [Gateway operation](./docs/gateway-daemon.md), [Telegram bot teammates](./docs/telegram-bots.md), and the [local skill library](./src/lib/agent/skills-new/README.md).
 
-```text
-.workspaces/
-├── .memory_v2/
-│   ├── records.json                  # Long-term facts, user preferences, and working memories
-│   ├── credentials.enc.json          # Encrypted API key credentials and references
-│   ├── self_improvement_overlays.json # Active and pending self-improvement patches
-│   └── raw_events.json               # Chronological log of raw cognitive events
-├── .synapse/
-│   └── <chat-id>/
-│       └── graph.json                # Relational concept/fact graph for active session
-├── .checkpoints/                     # System state checkpoints for safe rollbacks
-├── config/
-│   ├── eterx.config.json             # Global application configuration
-│   └── setup-meta.json               # System installation metadata
-├── dynamic_tools/                    # Custom JS/TS tools compiled at runtime
-├── backups/                          # Timestamped configuration and memory archives
-└── temp/screen-agent/                # OCR files and screenshots generated during session
-```
+## Memory and context continuity
 
-The `synapse-graph` memory system builds a relational graph of concepts—connecting facts, files, and context together so the agent can recall relevant information even when it is not explicitly referenced in the current conversation window.
+EterX combines conversation history, working memory, user preferences, lifetime memory, and the **EterX-Synapse** graph to retain useful context across longer tasks.
 
----
+- **Local memory:** stores facts, preferences, decisions, and evidence in the EterX data directory.
+- **Context compaction:** condenses older conversation and tool output when context limits are reached. Choose the compaction model, global limits, and per-chat overrides; manual compaction is also available from the composer.
+- **Synapse continuity:** tracks topic changes and links source, version, state, and confidence records for relevant evidence.
+- **Context Resonance:** ranks recalled evidence using relevance, confidence, freshness, validation, and a context budget.
+- **Usage visibility:** inspect tokens, reported cache usage, and current context from the chat input and Settings.
 
-## Interfaces
+Main workers, sub-agents, and proxy agents maintain their own runtime context. Memory retrieval helps provide relevant information to the selected model; it does not retrain that model.
 
-| Interface | How to start | Description |
-|-----------|-------------|-------------|
-| **Web App** | `eterx start` | Next.js UI at `localhost:3000`. Full chat, file panel, monitor panel, agent controls. |
-| **Desktop App** | `eterx desktop` | Electron wrapper that runs the web app as a native desktop window with deeper OS integration. |
-| **Telegram Bot** | `eterx telegram` | Remote agent access from anywhere. Supports fast-path responses for quick questions and full task execution for complex work. |
+See [Memory continuity](./docs/memory-continuity.md) and [Context Resonance](./docs/context-resonance.md) for the memory architecture and retrieval design. The broader runtime is described in the [project research draft](./docs/EterX-Agent-Research-Paper.md) by **Harshil Soni**.
 
----
+## Tools and computer access
 
-## CLI Reference
+The active tool set depends on the agent, your settings, the operating system, and configured services. The current shared registry focuses on these capabilities:
 
-This section is for contributors running the repository in development mode.
-Native desktop installations are launched from the operating system and updated
-from **Settings → Updates**; they do not expose or depend on this source CLI.
+| Capability | Representative tools |
+| --- | --- |
+| Files and execution | `workspace_edit_file`, `workspace_run_command` |
+| Browser and desktop interaction | `browser_control`, `computer`, `screen_agent` |
+| Web research and visual assets | `web_search`, `image_asset_search`, `image_generator`, `video_generator` |
+| Planning and coordination | `task_decomposer`, `task_checkpoint`, `spawn_sub_agent`, `agent_communicate` |
+| Context and workflow support | `context_memory`, `get_skill_guidelines`, `ask_user`, `wait_timer` |
+| Scheduling and connected services | `scheduled_tasks`, `channel_agent`, `gateway_bridge`, `connector_mcp` |
 
-### Launch
+**Windows** provides the managed EterX Computer backend. **macOS** uses native desktop providers and requires Accessibility and Screen Recording permissions for relevant actions; `cliclick` adds pointer and drag support. **Linux** desktop input uses `xdotool` with X11/XWayland, and screen capture needs a supported screenshot utility. Wayland-only input needs a compatible bridge; browser interaction remains available through the browser tool.
+
+Optional notifications, screenshots, and OCR depend on installed OS utilities. Missing providers or permissions produce availability errors. Configure computer access under **Settings → Computer use** and per-agent tools under **Settings → Agents**.
+
+## Local data and privacy
+
+Installed application resources and writable user data are stored separately.
+
+| Platform | Application location | Persistent user data |
+| --- | --- | --- |
+| Windows | Folder selected in the native installer | `%LOCALAPPDATA%\EterX\data` |
+| macOS | `~/Applications/EterX.app` by default | `~/Library/Application Support/EterX/data` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/EterX/app` | `${XDG_DATA_HOME:-~/.local/share}/EterX/data` |
+
+Chats, scheduled tasks, memory, settings, and default workspaces live in the profile. Browser sessions and disposable caches use separate profile directories; selected project folders stay in their chosen locations. Desktop credentials use encrypted local storage. Application updates replace the compiled bundle and preserve user data.
+
+**Local storage does not imply local inference.** Cloud models and connected services receive the content needed for the requests you send them, including selected context or attachments. Local model servers offer a local inference route; enabled external tools can still make network requests.
+
+Read [Desktop storage](./docs/desktop-storage.md) for profile layout and migration behavior, and [SECURITY.md](./SECURITY.md) for security reporting and project security status.
+
+## Development
+
+For contributors working from a source copy, the project uses **Node.js 20+** and **npm 10+**.
+
+From the repository directory, install the locked dependencies:
+
 ```bash
-eterx start           # Web app at localhost:3000
-eterx desktop         # Desktop app (Electron)
-eterx telegram        # Telegram bot
-eterx open            # Open web app in browser
+npm ci
 ```
 
-### Setup & Keys
+Start the full desktop development app:
+
 ```bash
-eterx setup           # Full setup wizard
-eterx api             # Quick API key setup
-eterx config          # Reconfigure all keys
-eterx add-key         # Add a single new key
+npm run desktop
 ```
 
-### Diagnostics
+The desktop launcher starts the development server, chooses an available local port, and uses a separate development profile. This is the appropriate route for Electron integrations such as native terminals, the gateway, desktop browser panels, and local dictation.
+
+For the web interface alone:
+
 ```bash
-eterx doctor          # 30+ system checks
-eterx health          # Live API key test
-eterx benchmark       # Speed-test all providers
-eterx providers       # List all providers and their status
+npm run dev
 ```
 
-### Management
+Open the address printed by Next.js, normally `http://localhost:3000`. Features that depend on Electron require the desktop application.
+
+### Checks and packaging
+
+| Command | Purpose |
+| --- | --- |
+| `npm test` | Integration checks, reference evaluations, and TypeScript validation |
+| `npm run lint` | Next.js linting |
+| `npm run build` | Production application build |
+| `npm run desktop:build` | Prepare and package the desktop app for the current platform |
+| `npm run desktop:build:win` | Windows x64 and ARM64 packaging |
+| `npm run desktop:build:mac` | macOS Intel and Apple Silicon packaging |
+| `npm run desktop:build:linux` | Linux x64 and ARM64 packaging |
+| `npm run benchmark:context-resonance` | Synthetic context retrieval benchmark |
+
+Native packaging depends on the target platform's build requirements. Use the release workflow described in [Release operations](./docs/releasing.md) for published cross-platform packages.
+
+### Source CLI
+
+The repository also includes `eterx.js`. Invoke it directly without installing a global command:
+
 ```bash
-eterx status          # View config and update status
-eterx backup          # Backup config and memory
-eterx restore         # Restore from backup
-eterx repair          # Fix broken development dependencies
-eterx logs            # View last 60 lines of setup logs
-eterx env             # Show masked environment variables
-eterx clean           # Clear Next.js cache, TypeScript build info, stale locks
-eterx uninstall       # Remove EterX
+node eterx.js help
+node eterx.js start
+node eterx.js desktop
+node eterx.js doctor
+node eterx.js providers
 ```
 
----
+The source CLI also contains setup, key configuration, diagnostics, backup, and restore commands. Installed desktop users launch the app from their operating system and manage updates through Settings. Telegram bot setup is available through **Channels → Connect as bot**.
 
-## Project Structure
+### Project structure
 
 ```text
 EterX-Agent/
 ├── src/
-│   ├── app/                      # Next.js pages and API routes
-│   ├── components/               # React UI components (chat, monitor, file panel)
-│   ├── contexts/                 # React state providers
+│   ├── app/                  # Next.js interface and API routes
+│   ├── components/           # Chat, agents, tasks, channels, settings, workspace UI
+│   ├── contexts/             # Shared React context
 │   └── lib/
-│       ├── agent/                # Core agent engine
-│       │   ├── Agent.ts          # Main GeminiAgentClient — model routing, tool execution loop
-│       │   ├── tools/            # Native tool modules
-│       │   │   ├── core/         # Core system tools (shell, search, screen, memory...)
-│       │   │   ├── workspace/    # File and workspace manipulation tools
-│       │   │   ├── research/     # Web scraping, PDF, YouTube, and RSS parsers
-│       │   │   ├── automation/   # Agent Builder, process manager, and servers
-│       │   │   ├── communication/# Chat platform controllers (Telegram, Slack, WhatsApp)
-│       │   │   ├── security/     # Capability-based sandbox and tool policies
-│       │   │   └── shared/       # URL safety helpers and common utilities
-│       │   ├── memory/           # MemoryV2, conversation ledger, synapse graph
-│       │   ├── reasoning/        # Cognitive engine, context intelligence, verification
-│       │   ├── resilience/       # Auto-context compression, error recovery
-│       │   ├── roles/            # Sub-agent orchestration, inter-agent communication
-│       │   ├── hooks/            # Cognitive hooks, velocity monitor
-│       │   ├── browser/          # Chromium/browser control backend
-│       │   ├── computer/         # OS UI automation and virtual screen control
-│       │   └── model-routing.ts  # Universal model registry and fallback chains
-│       ├── code/                 # Code generation runtime
-│       ├── live/                 # Real-time WebSocket communication
-│       └── sandbox/              # Sandboxed command execution
-├── electron/                     # Desktop app wrapper (main process, package script)
-├── setup/                        # Installation and diagnostic scripts
-└── eterx.js                      # CLI entry point (400+ line command router)
+│       ├── agent/            # Agent runtime, providers, autonomy, memory, tools
+│       │   ├── autonomy/     # Proxy supervision and controls
+│       │   ├── browser/      # Browser automation
+│       │   ├── computer/     # Desktop interaction providers
+│       │   ├── gateways/     # Messaging daemon, adapters, bot transport
+│       │   ├── memory/       # Synapse, context retrieval, continuity
+│       │   ├── skills-new/   # Bundled Markdown skill library
+│       │   └── tools/        # Shared tools and runtime access policy
+│       ├── code/             # Coding profiles and workspace support
+│       ├── live/             # Realtime voice transports and catalogs
+│       └── sandbox/          # Command execution support
+├── electron/                 # Native desktop lifecycle and integrations
+├── public/                   # Application assets and existing screenshots
+├── docs/                     # Architecture, runtime, storage, release guides
+├── scripts/                  # Development, packaging, evaluation utilities
+├── setup/                    # Source setup and platform packaging support
+├── tests/                    # Integration checks
+├── install.ps1               # Windows release bootstrap
+├── install.sh                # macOS/Linux release bootstrap
+└── eterx.js                  # Source CLI
 ```
 
----
+## Documentation
 
-## Developer
+| Guide | Focus |
+| --- | --- |
+| [Universal provider runtime](./docs/universal-provider-runtime.md) | Model discovery, capability handling, attachments, and streaming |
+| [External service routing](./docs/external-services.md) | Search, image/video providers, credentials, and fallbacks |
+| [Workspace runtime](./docs/workspace-runtime-contract.md) | Folders, environments, terminal execution, and process state |
+| [Conversation intent and steering](./docs/conversation-intent-and-steering.md) | Follow-ups, task continuity, and active-run guidance |
+| [Memory continuity](./docs/memory-continuity.md) | Persisted history and context recovery |
+| [Context Resonance](./docs/context-resonance.md) | Evidence selection, scoring, and benchmark methodology |
+| [Adaptive cognitive harness](./docs/adaptive-cognitive-harness.md) | Runtime coordination and execution behavior |
+| [Gateway operation](./docs/gateway-daemon.md) | Background channels, adapters, authorization, and MCP |
+| [Telegram bot teammates](./docs/telegram-bots.md) | Bot setup, pairing, conversations, and routines |
+| [Desktop storage](./docs/desktop-storage.md) | Installed profiles, writable data, and migration |
+| [Release operations](./docs/releasing.md) | Native packaging, signing, publishing, and recovery |
 
-Currently under development.
+## Project status and license
 
-Built by **Harshil Soni**.
+EterX-Agent is under active development. Feature availability depends on the installed release, selected model, connected services, and host-platform permissions.
+
+Built by **Harshil Soni**. Licensed under [Apache License 2.0](./LICENSE). For bugs, include reproduction steps, your operating system, the EterX version, and relevant logs. Follow [SECURITY.md](./SECURITY.md) for vulnerability reports.

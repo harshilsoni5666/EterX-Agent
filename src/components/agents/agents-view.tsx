@@ -218,7 +218,7 @@ export const AgentsView = React.memo(({
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 
       setDownloadToastName(agent.name);
       setTimeout(() => setDownloadToastName(prev => (prev === agent.name ? null : prev)), 3500);

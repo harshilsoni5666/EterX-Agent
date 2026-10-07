@@ -30,7 +30,7 @@ async function runWithInput(command: string, args: string[], input?: string): Pr
     return String(stdout || '');
   }
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const timeout = setTimeout(() => {
       child.kill();
       reject(new Error(`${command} timed out`));
@@ -46,6 +46,7 @@ async function runWithInput(command: string, args: string[], input?: string): Pr
       if (code === 0) resolve(stdout);
       else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
     });
+    child.stdin.on('error', error => { clearTimeout(timeout); reject(error); });
     child.stdin.end(input);
   });
 }
@@ -183,7 +184,8 @@ const LINUX_KEY_MAP: Record<string, string> = {
 
 async function runLinux(action: string, input: any): Promise<PlatformActionResult | null> {
   const provider = 'Linux desktop input (xdotool)';
-  if (!(await hasExecutable('xdotool'))) {
+  // Clipboard and OS file/URL opening also work on Wayland without xdotool.
+  if (!['clipboard_get', 'clipboard_set', 'launch_app', 'open_url'].includes(action) && !(await hasExecutable('xdotool'))) {
     return { success: false, result: 'xdotool is required for Linux screen actions. On Wayland, use a desktop session with xdotool/XWayland or use browser CDP control.', provider };
   }
   const xdo = async (...args: string[]) => { await execFileAsync('xdotool', args, { timeout: 10000, maxBuffer: 4 * 1024 * 1024 }); };
@@ -204,7 +206,7 @@ async function runLinux(action: string, input: any): Promise<PlatformActionResul
     }
     if (action === 'type') {
       const text = String(input.text || '');
-      await xdo('type', '--clearmodifiers', '--delay', '1', text);
+      await xdo('type', '--clearmodifiers', '--delay', '1', '--', text);
       return { success: true, result: `Typed ${text.length} characters.`, provider };
     }
     if (action === 'key' || ['select_all', 'copy', 'paste', 'save', 'undo', 'close_window'].includes(action)) {

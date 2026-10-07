@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, ExternalLink } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
+import { workspacePathKey } from '../../lib/workspace-paths';
 import { getFileIconPath } from '../../lib/utils/file-icon-utils';
 import { defaultUrlTransform } from 'react-markdown';
 
 export const LOCAL_FILE_HREF_PREFIX = '#eterx-local-file:';
 export const LocalFileWorkspaceContext = React.createContext<string | null>(null);
+export const LocalFilePathsContext = React.createContext<string[]>([]);
 
 const isAbsoluteLocalPath = (value: string) => /^(?:[A-Za-z]:[\\/]|\\\\|\/|~[\\/])/.test(value);
 const isRelativeArtifactPath = (value: string) => !/^(?:[a-z][\w+.-]*:|\/\/|#|\?)/i.test(value)
@@ -118,6 +120,18 @@ export const decodeLocalFileHref = (href?: string | null) => {
   }
 
   for (const candidate of candidates) {
+    // Some models emit ChatGPT-style artifact links. Preserve the reference
+    // for resolution against this chat's actual files, never as a web URL.
+    if (/^(?:sandbox|attachment):\/?/i.test(candidate)) return candidate;
+    const localApi = candidate.startsWith('/api/') || /^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\/api\//i.test(candidate);
+    if (localApi) {
+      try {
+        const parsed = new URL(candidate, 'http://localhost');
+        const target = parsed.searchParams.get('path') || parsed.searchParams.get('filePath') || parsed.searchParams.get('filepath');
+        if (target && isAbsoluteLocalPath(target)) return target;
+      } catch {}
+      return null;
+    }
     if (/^file:\/\//i.test(candidate)) {
       const nativePath = decodeNativeFileUrl(candidate);
       if (nativePath) return nativePath;
@@ -138,8 +152,9 @@ export const decodeLocalFileHref = (href?: string | null) => {
       && !/[\r\n\0]/.test(candidate)) {
       try { return decodeURIComponent(candidate); } catch { return candidate; }
     }
-    if (isRelativeArtifactPath(candidate)) {
-      try { return decodeURIComponent(candidate); } catch { return candidate; }
+    const relative = candidate.split(/[?#]/)[0].replace(/:(\d+)(?::\d+)?$/, '');
+    if (isRelativeArtifactPath(relative)) {
+      try { return decodeURIComponent(relative); } catch { return relative; }
     }
   }
 
@@ -263,91 +278,61 @@ export const LocalFileIcon = React.memo(({ fileName, size = 'md' }: { fileName: 
   );
 });
 
-export const LocalFileLinkChip = React.memo(({
-  filePath,
-  label,
-  compact = false,
-}: {
-  filePath: string;
-  label?: string;
-  compact?: boolean;
-}) => {
+export const LocalFileLinkChip = React.memo(({ filePath, label, compact = false }: { filePath: string; label?: string; compact?: boolean }) => {
   const workspace = React.useContext(LocalFileWorkspaceContext);
-  const target = isAbsoluteLocalPath(filePath) ? filePath
-    : workspace && isAbsoluteLocalPath(workspace)
-      ? `${workspace.replace(/[\\/]+$/, '')}/${filePath}` : null;
-  const [copied, setCopied] = useState(false);
+  const recordedPaths = React.useContext(LocalFilePathsContext);
+  const source = (decodeLocalFileHref(filePath) || filePath).trim();
+  const reference = source.replace(/#L?\d+(?:[-:]L?\d+)?$/i, '').replace(/:(\d+)(?::\d+)?$/, '');
+  const synthetic = /^(?:sandbox|attachment):/i.test(reference);
+  const target = useMemo(() => {
+    const local = synthetic ? reference.replace(/^(?:sandbox|attachment):/i, '') : reference;
+    const normalized = workspacePathKey(local);
+    const exact = recordedPaths.find(path => workspacePathKey(path) === normalized);
+    if (exact) return exact;
+    if (!synthetic && isAbsoluteLocalPath(local)) return local;
+    const joined = workspace && isAbsoluteLocalPath(workspace) && !synthetic
+      ? workspace.replace(/[\\/]+$/, '') + '/' + local : null;
+    const inWorkspace = joined && recordedPaths.find(path => workspacePathKey(path) === workspacePathKey(joined));
+    if (inWorkspace) return inWorkspace;
+    const suffix = local.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+    const uniquePaths = [...new Map(recordedPaths.map(path => [workspacePathKey(path), path])).values()];
+    const matches = uniquePaths.filter(path => workspacePathKey(path).endsWith('/' + (/^[a-z]:/i.test(path) ? suffix.toLowerCase() : suffix)));
+    if (matches.length === 1) return matches[0];
+    // Synthetic sandbox paths have no local meaning. A unique recorded output
+    // can resolve their filename; ambiguous references must remain unresolved.
+    const name = getLocalFileName(local);
+    const names = uniquePaths.filter(path => getLocalFileName(path).localeCompare(name, undefined, { sensitivity: /^[a-z]:/i.test(path) ? 'accent' : 'variant' }) === 0);
+    if ((synthetic || !/[\\/]/.test(local)) && names.length === 1) return names[0];
+    if (synthetic || (!/[\\/]/.test(local) && names.length > 1)) return null;
+    return joined;
+  }, [recordedPaths, reference, synthetic, workspace]);
+  const filename = getLocalFileName(target || reference.replace(/^(?:sandbox|attachment):/i, ''));
+  const suppliedLabel = label?.trim();
+  const name = filename || suppliedLabel || 'File';
   const [message, setMessage] = useState('');
   const [opening, setOpening] = useState(false);
   const pending = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; if (timer.current) clearTimeout(timer.current); };
-  }, []);
-  const suppliedLabel = label?.trim();
-  const name = suppliedLabel && !decodeLocalFileHref(suppliedLabel) && suppliedLabel !== filePath
-    ? suppliedLabel : getLocalFileName(filePath);
-
-  const copyPath = async (event: React.MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const ok = await copyTextToClipboard(target || filePath);
-    if (!mounted.current) return;
-    setCopied(ok);
-    setMessage(ok ? 'Path copied' : 'Could not copy path');
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => { setCopied(false); setMessage(''); }, 1800);
-  };
-
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { setMessage(''); }, [target, reference]);
   const openPath = async (event: React.SyntheticEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-
+    event.preventDefault(); event.stopPropagation();
     if (pending.current) return;
-    if (!target) { setMessage('Could not open — this relative path needs its workspace'); return; }
-    pending.current = true;
-    setOpening(true);
-    setMessage('');
-    if (timer.current) clearTimeout(timer.current);
+    if (!target) { setMessage('Could not resolve this file to a unique local path in this chat.'); return; }
+    pending.current = true; setOpening(true); setMessage('');
     const ok = await openLocalFilePath(target).catch(() => false);
     pending.current = false;
     if (!mounted.current) return;
     setOpening(false);
-    setMessage(ok ? '' : 'Could not open — the path may be missing or have no associated app');
+    setMessage(ok ? '' : 'Could not open this file. It may be missing or have no associated app.');
   };
-
-  return (
-    <span
-      className={`eterx-local-file-chip inline-flex min-w-0 max-w-full items-center overflow-hidden align-middle text-left ${ compact ? 'my-0.5' : 'my-1' } rounded-[10px] border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`}
-      title={message ? `${message}\n${target || filePath}` : target || filePath}
-    >
-      <button
-        type="button"
-        onClick={openPath}
-        aria-label={`Open ${name}`}
-        aria-busy={opening}
-        aria-disabled={opening}
-        className={`eterx-local-file-chip-open inline-flex min-w-0 items-center gap-2 overflow-hidden rounded-l-[10px] ${ compact ? 'h-8 px-2' : 'h-9 px-2.5' } text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current`}
-      >
-        <LocalFileIcon fileName={filePath} size={compact ? 'sm' : 'md'} />
-        <span className="eterx-local-file-chip-name min-w-0 truncate text-[12.75px] font-semibold leading-tight tracking-normal text-[#E8E6E3]">
-          {name}
-        </span>
-        <ExternalLink className="eterx-local-file-chip-icon h-3.5 w-3.5 shrink-0 text-[#807A72] opacity-75" strokeWidth={2} />
-      </button>
-      <span className="eterx-local-file-chip-divider h-6 w-px shrink-0 bg-white/[0.10]" aria-hidden="true" />
-      <button
-        type="button"
-        onClick={copyPath}
-        className={`eterx-local-file-chip-copy inline-flex shrink-0 items-center justify-center rounded-r-[10px] ${ compact ? 'h-8 w-8' : 'h-9 w-9' } transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/24`}
-        aria-label={`Copy file path for ${ name }`}
-        title="Copy file path"
-      >
-        {copied ? <Check className="h-3.5 w-3.5 text-white" strokeWidth={2.2} /> : <Copy className="h-3.5 w-3.5" strokeWidth={2.1} />}
-      </button>
-      <span role="status" className={message.startsWith('Could not') ? 'eterx-local-file-chip-error' : 'sr-only'}>{message}</span>
-    </span>
-  );
+  return <span className={'eterx-local-file-chip inline-flex min-w-0 max-w-full flex-wrap items-center overflow-hidden align-middle text-left ' + (compact ? 'my-0.5' : 'my-1') + ' rounded-[10px] border transition-colors'} title={target || reference}>
+    <button type="button" onClick={openPath} aria-label={'Open ' + name + ' in default app'} aria-busy={opening} disabled={opening}
+      className={'eterx-local-file-chip-open inline-flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-[10px] ' + (compact ? 'h-8 px-2' : 'h-9 px-2.5') + ' text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current'}>
+      <LocalFileIcon fileName={target || reference} size={compact ? 'sm' : 'md'} />
+      <span className="eterx-local-file-chip-name min-w-0 truncate text-[12.75px] font-semibold leading-tight tracking-normal text-[var(--foreground)]">{name}</span>
+      <ExternalLink className="eterx-local-file-chip-icon h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)] opacity-75" strokeWidth={2} />
+    </button>
+    {message && <span role="status" className="eterx-local-file-chip-error w-full whitespace-normal px-2 py-1 text-xs">{message}</span>}
+  </span>;
 });

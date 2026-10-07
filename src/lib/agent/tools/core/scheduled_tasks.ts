@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { operateBotRoutine } from '../../telegram-bot-routines';
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { mutateScheduledTasks, loadScheduledTaskSnapshot } from '../../../scheduled-task-store';
@@ -50,6 +51,7 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
   }),
   outputSchema: z.any(),
   execute: async (input: any, context?: any) => {
+    if (context?.telegramBot) return operateBotRoutine(input, context);
     if (input.operation === 'list') {
       const snapshot = await loadScheduledTaskSnapshot();
       return { success: true, tasks: snapshot.tasks, total: snapshot.tasks.length };
@@ -111,7 +113,8 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
     await mutateScheduledTasks(tasks => {
       const index = tasks.findIndex(task => task.id === input.taskId);
       if (index < 0) { missing = true; return tasks; }
-      const task = tasks[index];
+      // Validate on a copy so a rejected update cannot persist earlier fields.
+      const task = { ...tasks[index] };
       if (task.status === 'running' && ['update', 'rename', 'run_now', 'pause', 'resume', 'delete'].includes(input.operation)) {
         message = 'A running scheduled task cannot be changed. Stop its chat run first or wait for completion.';
         return tasks;
@@ -173,6 +176,7 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
       }
       task.updatedAt = Date.now();
       changed = normalizeScheduledTask(task);
+      tasks[index] = changed;
       return tasks;
     });
     if (missing) return { success: false, message: `Scheduled task not found: ${input.taskId || '(missing ID)'}` };

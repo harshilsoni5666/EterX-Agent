@@ -38,6 +38,7 @@ export interface MonitorEvent {
   text?: string;
   url?: string;
   screenshot?: string;
+  screenshotMimeType?: 'image/png' | 'image/jpeg';
   cmd?: string;
   output?: string;
   filePath?: string;
@@ -394,7 +395,7 @@ function ComputerStage({
   const imageSrc = latestFrame?.frameData
     ? `data:image/jpeg;base64,${latestFrame.frameData}`
     : latestFrame?.screenshot
-      ? `data:image/png;base64,${latestFrame.screenshot}`
+      ? `data:${latestFrame.screenshotMimeType || 'image/png'};base64,${latestFrame.screenshot}`
       : null;
   const isLiveFrame = latestFrame?.type === 'live_frame';
 
@@ -498,7 +499,7 @@ function BrowserStage({
       </div>
       <div className="relative min-h-[340px] flex-1 overflow-hidden bg-[#080808]">
         {current?.screenshot ? (
-          <img src={`data:image/png;base64,${current.screenshot}`} alt="Browser screenshot" className="h-full w-full object-contain" />
+          <img src={`data:${current.screenshotMimeType || 'image/png'};base64,${current.screenshot}`} alt="Browser screenshot" className="h-full w-full object-contain" />
         ) : (
           <EmptyState icon={Globe2} title={connected ? 'Waiting for browser frames' : 'Monitor offline'} detail="Screenshots captured by the browser agent will appear here in real-time." />
         )}

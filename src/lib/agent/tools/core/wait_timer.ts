@@ -42,6 +42,7 @@ export const waitTimerTool: ToolDefinition = {
     seconds: z.number().optional().describe('Seconds to wait. Values are capped to 120 seconds.'),
     timeoutSeconds: z.number().optional().describe('Alias for seconds. Values are capped to 120 seconds.'),
     timeoutMs: z.number().optional().describe('Milliseconds to wait. Values are capped to 120000 ms.'),
+    durationMs: z.number().optional().describe('Alias for timeoutMs. Values are capped to 120000 ms.'),
     title: z.string().optional().describe('Short UI title for the check-in, e.g. "Schedule compilation check-in"'),
     note: z.string().optional().describe('Exact instruction for what to inspect or do after the timer expires.')
   }),
