@@ -184,10 +184,10 @@ See [Workspace runtime](./docs/workspace-runtime-contract.md) for folder resolut
 Autonomous mode adds a **proxy agent** that works with the main worker on your behalf. It can monitor progress, provide guidance, and help address drift, errors, or stalled work.
 
 <p align="center">
-  <img src="./docs/screenshots/autonomous-mode-card.svg" width="72%" alt="General settings showing the Autonomous work-mode option" />
+  <img src="./docs/screenshots/autonomous-mode-card.svg" width="92%" alt="Autonomous selected in the agent picker, with the Proxy-Agent controls open beside the conversation" />
 </p>
 
-Enable Autonomous mode in **Settings → General**. The proxy panel lets you:
+Choose **Autonomous** from the agent picker in the chat composer. The Proxy-Agent panel beside the conversation lets you:
 
 - Select the proxy model and choose **High**, **Normal**, or **Minimal** intervention.
 - Communicate directly with the supervisor about goals, preferences, and approval boundaries.
