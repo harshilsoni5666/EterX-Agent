@@ -1037,6 +1037,10 @@ export class SubAgentSpawner {
       subAgentContext.selectedModelMode = modelOverride.mode;
     }
     if (modelOverride?.provider && modelOverride?.model) {
+      if (modelOverride.provider !== subAgentContext.selectedModelProvider || modelOverride.model !== subAgentContext.selectedModelName) {
+        delete subAgentContext.modelThinkingCapability;
+        delete subAgentContext.modelWireCapabilities;
+      }
       subAgentContext.selectedModelProvider = modelOverride.provider;
       subAgentContext.selectedModelName = modelOverride.model;
       (subAgentContext as any).contextCompaction = rebaseContextCompactionWindow(
@@ -1047,6 +1051,8 @@ export class SubAgentSpawner {
       }
       subAgentContext.strictModelSelection = true;
     } else if (modelOverride?.mode) {
+      delete subAgentContext.modelThinkingCapability;
+      delete subAgentContext.modelWireCapabilities;
       subAgentContext.selectedModelProvider = undefined;
       subAgentContext.selectedModelName = undefined;
       subAgentContext.strictModelSelection = false;
@@ -1064,7 +1070,15 @@ export class SubAgentSpawner {
       id: agentId, projectId: context.projectId, name, task, deepBrief,
       status: 'running', traceLog, startedAt: Date.now(), abortController,
       directUserMessageIds: directConversationState.acceptedIds, directUserMessages,
-      originContext: context, parentContext, onTrace,
+      // Direct worker model changes must never mutate the parent's context.
+      originContext: { ...context,
+        selectedModelProvider: subAgentContext.selectedModelProvider,
+        selectedModelName: subAgentContext.selectedModelName,
+        selectedModelMode: subAgentContext.selectedModelMode,
+        selectedThinkingLevel: subAgentContext.selectedThinkingLevel,
+        modelThinkingCapability: subAgentContext.modelThinkingCapability,
+        modelWireCapabilities: subAgentContext.modelWireCapabilities,
+      } as ProjectContext, parentContext, onTrace,
     };
     this.activeAgents.set(agentId, instance);
     this.completedAgents.delete(agentId);
@@ -1908,6 +1922,11 @@ export class SubAgentSpawner {
     const requestedProvider = String(message.requestedModelProvider || '').trim() as MainAgentProvider;
     const requestedModel = String(message.requestedModelName || '').trim();
     if (requestedProvider && requestedModel) {
+      if (requestedProvider !== (matchingInstance.originContext as any).selectedModelProvider
+        || requestedModel !== (matchingInstance.originContext as any).selectedModelName) {
+        delete (matchingInstance.originContext as any).modelThinkingCapability;
+        delete (matchingInstance.originContext as any).modelWireCapabilities;
+      }
       (matchingInstance.originContext as any).selectedModelProvider = requestedProvider;
       (matchingInstance.originContext as any).selectedModelName = requestedModel;
       (matchingInstance.originContext as any).strictModelSelection = true;

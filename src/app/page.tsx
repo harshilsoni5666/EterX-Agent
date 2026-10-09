@@ -7955,6 +7955,7 @@ function DeepWorkUI() {
     timeoutMs = 8000,
     externalSignal?: AbortSignal,
     requestedRunId?: string,
+    direct = false,
   ) => {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -7969,9 +7970,13 @@ function DeepWorkUI() {
       // These are logical subscriptions. The transport multiplexes them over
       // at most two HTTP streams, leaving browser slots free for Send/Stop.
       releasePollSlot = await pollingGateRef.current!.acquire(controller.signal);
-      const payload = await fetchBatchedAgentPoll(
-        { chatId, after, runId: requestedRunId }, controller.signal,
-      );
+      const payload = direct ? await (async () => {
+        const query = new URLSearchParams({ chatId, after: String(after), wait: '0' });
+        if (requestedRunId) query.set('runId', requestedRunId);
+        const response = await fetch(`/api/agent/poll?${query}`, { cache: 'no-store', signal: controller.signal });
+        if (!response.ok) throw new Error(`Poll HTTP ${response.status}`);
+        return response.json();
+      })() : await fetchBatchedAgentPoll({ chatId, after, runId: requestedRunId }, controller.signal);
       if (
         !payload ||
         typeof payload !== 'object' ||
@@ -9448,6 +9453,7 @@ function DeepWorkUI() {
     let lastRequestedCursor = -2;
     let pollInFlight = false;
     let pendingStartAt = Date.now();
+    let observedRun = false;
     let successorHandoffPending = false;
     const ownsPollGeneration = () => Boolean(
       activePollersRef.current.has(chatId) &&
@@ -9465,15 +9471,23 @@ function DeepWorkUI() {
     };
 
     const finishDisconnectedStart = (message: string) => {
+      if (!ownsPollGeneration()) return;
+      const failedRunId = String(pollRunIdRef.current.get(chatId) || expectedRunId || '').trim();
+      flushBackgroundChatUpdates(chatId);
+      const settledLocally = failedRunId && (chatsRef.current.find(chat => chat.id === chatId)?.traceLogs || []).some((log: any) =>
+        String(log?.runId || log?.turnId || '').trim() === failedRunId && log?.mainTurnTerminal === true
+      );
       stopPolling(chatId);
       clearAgentConnectionStatus(chatId);
       removeRunningChat(chatId);
+      // Recovery can race a final committed answer. Never append a startup
+      // failure to a run whose terminal result is already in the transcript.
+      if (settledLocally) return;
       markChatUnreadIfBackground(
         chatId,
         `run:${expectedRunId || pollRunIdRef.current.get(chatId) || runStartedAfter || 'pending'}:start-error`,
       );
       setChatLogsById(chatId, logs => {
-        const failedRunId = String(expectedRunId || pollRunIdRef.current.get(chatId) || '').trim();
         const failedBoundary = [...logs].reverse().find((log: any) =>
           log?.type === 'user_action' &&
           (!failedRunId || String(log?.runId || log?.turnId || '').trim() === failedRunId)
@@ -9497,7 +9511,9 @@ function DeepWorkUI() {
       // back off individual requests to five seconds; a response-count limit
       // would otherwise leave a dead startup poller alive for many minutes.
       if (Date.now() - pendingStartAt >= 120_000) {
-        finishDisconnectedStart('Agent connection did not start. Please retry this message.');
+        finishDisconnectedStart(observedRun
+          ? 'The agent run is no longer available on the server. Reconnect or retry this message.'
+          : 'Agent connection did not start. Please retry this message.');
         return false;
       }
       scheduleNextPoll();
@@ -9566,7 +9582,12 @@ function DeepWorkUI() {
           const cursor = pollCursorsRef.current.get(chatId) ?? -1;
           lastRequestedCursor = cursor;
           const requestedRunId = String(pollRunIdRef.current.get(chatId) || '').trim();
-          const data = await fetchAgentPoll(chatId, cursor, 7000, requestController.signal, requestedRunId || undefined);
+          let data = await fetchAgentPoll(chatId, cursor, 7000, requestController.signal, requestedRunId || undefined);
+          if (data.status === 'idle' && Date.now() - pendingStartAt >= 120_000) {
+            // Confirm a missing run outside the shared stream before failing
+            // it. A stale subscription is not evidence that startup failed.
+            data = await fetchAgentPoll(chatId, -1, 7000, requestController.signal, requestedRunId || undefined, true);
+          }
 
           // The request may have been replaced while awaiting the response.
           if (!ownsPollGeneration()) return;
@@ -9579,6 +9600,16 @@ function DeepWorkUI() {
           const serverRunId = typeof data.runId === 'string' ? data.runId : '';
           const expectedRunStart = pollRunStartRef.current.get(chatId) || 0;
           const serverRunStart = typeof data.startedAt === 'number' ? data.startedAt : 0;
+          const successorRunId = String(data.successorRunId || '').trim();
+          if (data.status === 'idle' && successorRunId && successorRunId !== expectedRunId
+            && Number(data.successorStartedAt) > 0
+            && (!expectedRunStart || Number(data.successorStartedAt) >= expectedRunStart)) {
+            // Exact polling deliberately returns idle if the requested run
+            // has expired. Follow the server's successor pointer instead of
+            // waiting two minutes for a run that can no longer reappear.
+            startPolling(chatId, -1, Number(data.successorStartedAt), successorRunId);
+            return;
+          }
           if (expectedRunId && serverRunId !== expectedRunId) {
             // A queued or Proxy-started successor keeps the same chat ID but
             // receives a new internal run ID. Adopt a demonstrably newer run
@@ -9614,7 +9645,10 @@ function DeepWorkUI() {
             if (serverRunStart) pollRunStartRef.current.set(chatId, serverRunStart);
           }
 
-          const isStaleServerRun = !!(expectedRunStart && serverRunStart && serverRunStart + 1000 < expectedRunStart);
+          // IDs are authoritative. A retried admission or clock adjustment
+          // can make the original server start older than the local boundary.
+          const isStaleServerRun = !!(!(requestedRunId && requestedRunId === serverRunId)
+            && expectedRunStart && serverRunStart && serverRunStart + 1000 < expectedRunStart);
 
           if (isStaleServerRun) {
             if (!handleStartPending()) return;
@@ -9624,6 +9658,8 @@ function DeepWorkUI() {
           // A valid live response also repairs renderer liveness. A poller
           // can survive a missed startup update or a queued-run handoff.
           if (data.status === 'running') {
+            observedRun = true;
+            pendingStartAt = Date.now();
             runningChatsRef.current = new Set(runningChatsRef.current).add(chatId);
             setRunningChats(previous => previous.has(chatId) ? previous : new Set(previous).add(chatId));
           }
@@ -9633,7 +9669,7 @@ function DeepWorkUI() {
           // authoritative buffer once instead of polling forever past its end.
           const serverMaxIndex = Number(data.maxIndex);
           if (
-            data.status === 'running' &&
+            data.status !== 'idle' &&
             Number.isFinite(serverMaxIndex) &&
             serverMaxIndex < cursor
           ) {
@@ -13387,7 +13423,6 @@ function DeepWorkUI() {
 
       serverAccepted = true;
       sendAdmissionsRef.current.delete(admissionKey);
-      startPolling(chatIdToUse!, -1, runStartedAt, clientRunId);
 
       // `respond-async` returns a one-shot JSON acknowledgement. Polling is
       // already active, so do not feed that JSON body through the legacy SSE
@@ -13396,8 +13431,15 @@ function DeepWorkUI() {
         response.status === 202 ||
         /\brespond-async\b/i.test(response.headers.get('Preference-Applied') || '')
       ) {
+        // Use the accepted run's identity, including idempotent admissions.
+        // A missing/unreadable acknowledgement still reconnects to our key.
+        const acknowledgement = await response.json().catch(() => null);
+        const acceptedRunId = String(acknowledgement?.runId || clientRunId).trim();
+        if (!controller.signal.aborted) startPolling(chatIdToUse!, -1, undefined, acceptedRunId);
         return true;
       }
+
+      startPolling(chatIdToUse!, -1, runStartedAt, clientRunId);
 
       if (!response.body) throw new Error("No readable stream");
 

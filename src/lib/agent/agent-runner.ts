@@ -1827,7 +1827,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       if (!validation.success) {
         if (Array.isArray(validation.missing) && validation.missing.length > 0) {
           return {
-            success: true,
+            success: false,
+            executed: false,
             needsArguments: true,
             toolName: canonicalToolName,
             requiredArguments: validation.missing,

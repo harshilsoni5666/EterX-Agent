@@ -1701,6 +1701,8 @@ export class GeminiAgentClient {
             (context as any).contextCompaction = rebaseContextCompactionWindow(
               (context as any).contextCompaction, requestedProvider, requestedModel,
             );
+            delete (context as any).modelThinkingCapability;
+            delete (context as any).modelWireCapabilities;
           }
           (context as any).selectedModelProvider = requestedProvider;
           (context as any).selectedModelName = requestedModel;
@@ -2595,7 +2597,8 @@ ${ message.text }
         const missingArguments = getMissingRequiredToolArguments(canonicalToolName, effectiveArgs);
         if (missingArguments.missing.length > 0) {
           return recordRejectedTool({
-            success: true,
+            success: false,
+            executed: false,
             needsArguments: true,
             toolName: canonicalToolName,
             requiredArguments: missingArguments.missing,
@@ -3207,7 +3210,9 @@ ${ message.text }
           capabilities: (context as any).modelThinkingCapability,
         });
         if (this.activeProvider === 'openai' && isOpenAIReasoningModel(this.mistralModelName)) {
-          params.max_completion_tokens = positiveIntEnv('OPENAI_MAX_TOKENS', 8192);
+          // Reasoning and visible output share this ceiling. The former 8K
+          // cap could exhaust itself before a high-effort tool call finished.
+          params.max_completion_tokens = positiveIntEnv('OPENAI_MAX_TOKENS', 32768);
           delete params.max_tokens;
           delete params.temperature;
         }
@@ -3296,7 +3301,7 @@ ${ message.text }
                 // The visible Thought clock measures actual streamed reasoning,
                 // not DNS/queue/connection latency before the first token.
                 if (!thoughtStartTime) thoughtStartTime = Date.now();
-                accumulatedReasoning = mergeStreamingText(accumulatedReasoning, reasoningText, true);
+                accumulatedReasoning += reasoningText;
                 if (onTrace) {
                   onTrace({
                     type: 'thought_stream',
@@ -3315,7 +3320,7 @@ ${ message.text }
               const contentText = splitContent.text;
               if (contentText) {
                 closeActiveThought();
-                accumulatedContent = mergeStreamingText(accumulatedContent, contentText, true);
+                accumulatedContent += contentText;
                 if (toolCallsAccumulated.size === 0) {
                   provisionalAnswerId = `answer_stream_${ this.activeProvider }_${ interactions }`;
                   onTrace?.({
@@ -3373,11 +3378,11 @@ ${ message.text }
                   if (tc.id) existing.id = tc.id;
                   if (tc.function?.name) existing.function.name = tc.function.name;
                   if (tc.function?.arguments) {
-                    existing.function.arguments = mergeStreamingText(
-                      existing.function.arguments,
-                      tc.function.arguments,
-                      true,
-                    );
+                    // Function arguments are a byte sequence, not UI text.
+                    // Repeated chunks (braces, whitespace, quoted fragments)
+                    // must survive intact or valid generated JSON is corrupted.
+                    existing.function.arguments += typeof tc.function.arguments === 'string'
+                      ? tc.function.arguments : JSON.stringify(tc.function.arguments);
                   }
                 }
               }
@@ -3390,7 +3395,7 @@ ${ message.text }
           const taggedTail = taggedReasoning.flush();
           if (taggedTail.reasoning && !thoughtClosed) {
             if (!thoughtStartTime) thoughtStartTime = Date.now();
-            accumulatedReasoning = mergeStreamingText(accumulatedReasoning, taggedTail.reasoning, true);
+            accumulatedReasoning += taggedTail.reasoning;
             onTrace?.({
               type: 'thought_stream',
               text: accumulatedReasoning,
@@ -3406,7 +3411,7 @@ ${ message.text }
           }
           if (taggedTail.text) {
             closeActiveThought();
-            accumulatedContent = mergeStreamingText(accumulatedContent, taggedTail.text, true);
+            accumulatedContent += taggedTail.text;
             if (toolCallsAccumulated.size === 0) {
               provisionalAnswerId = `answer_stream_${ this.activeProvider }_${ interactions }`;
               onTrace?.({
@@ -4208,7 +4213,7 @@ ${ message.text }
               const delta = event.delta as any;
               if (delta.type === 'thinking_delta' && delta.thinking && !thoughtClosed) {
                 if (!thoughtStartTime) thoughtStartTime = Date.now();
-                accumulatedThought = mergeStreamingText(accumulatedThought, delta.thinking, true);
+                accumulatedThought += delta.thinking;
                 if (onTrace) {
                   onTrace({
                     type: 'thought_stream',
@@ -4225,7 +4230,7 @@ ${ message.text }
                 }
               } else if (delta.type === 'text_delta' && delta.text) {
                 closeActiveThought();
-                accumulatedText = mergeStreamingText(accumulatedText, delta.text, true);
+                accumulatedText += delta.text;
                 if (!hasToolUseBlock) {
                   provisionalAnswerId = `answer_stream_anthropic_${ interactions }`;
                   onTrace?.({
@@ -4802,7 +4807,11 @@ ${ message.text }
     const declarations = routedTools
       .map(tool => {
         const rawSchema = getToolInputJsonSchema(tool);
-        const cleaned = this.cleanSchemaStructure(rawSchema);
+        // Gemini's restricted declaration format must not erase JSON Schema
+        // unions, maps, constraints, or optionality for other providers.
+        const cleaned = this.activeProvider === 'gemini'
+          ? this.cleanSchemaStructure(rawSchema)
+          : rawSchema;
 
         // Coding and General share canonical runtime-derived labels/icons.
         // Presentation-only fields must not make otherwise valid calls fail.
@@ -4826,11 +4835,13 @@ ${ message.text }
       for (const resolved of profileTools) {
         if (typeof resolved.execute !== 'function') continue;
         if (declaredNames.has(resolved.name) || globalToolRegistry.getTool(resolved.name)) continue;
-        const parameters = this.cleanSchemaStructure(resolved.declaration.parameters || {
+        const rawParameters = resolved.declaration.parameters || {
           type: 'object',
           properties: {},
-        });
-        parameters.properties = parameters.properties || {};
+        };
+        const parameters = this.activeProvider === 'gemini'
+          ? this.cleanSchemaStructure(rawParameters)
+          : { ...rawParameters };
         declarations.push({
           name: resolved.name,
           description: this.compactText(resolved.description, 170),
@@ -8213,7 +8224,8 @@ OUTPUT CONTRACT
             const missingArguments = getMissingRequiredToolArguments(canonicalToolName, effectiveArgs);
             if (missingArguments.missing.length > 0) {
               argumentRequest = {
-                success: true,
+                success: false,
+                executed: false,
                 needsArguments: true,
                 toolName: canonicalToolName,
                 requiredArguments: missingArguments.missing,

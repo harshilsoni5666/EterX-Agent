@@ -320,13 +320,26 @@ function formatValidationIssues(error: any): string {
 
 /** Decode only fields whose real schema requires structured data. File
  * content/search strings remain byte-for-byte strings even when they are JSON. */
+function schemaAcceptsNull(schema: any): boolean {
+  if (!schema || typeof schema !== 'object' || Object.keys(schema).length === 0) return true;
+  if (schema.nullable === true || schema.type === 'null' || schema.const === null) return true;
+  if (Array.isArray(schema.type) && schema.type.includes('null')) return true;
+  if (Array.isArray(schema.enum)) return schema.enum.includes(null);
+  const alternatives = schema.anyOf || schema.oneOf;
+  if (Array.isArray(alternatives)) return alternatives.some(schemaAcceptsNull);
+  if (Array.isArray(schema.allOf)) return schema.allOf.every(schemaAcceptsNull);
+  return !schema.type && !schema.properties && !schema.items;
+}
+
 function decodeStructuredArguments(value: any, schema: any): any {
   const alternatives = schema?.anyOf || schema?.oneOf;
   if (Array.isArray(alternatives)) {
     const nonNull = alternatives.filter((item: any) => item.type !== 'null');
     if (nonNull.length === 1) return decodeStructuredArguments(value, nonNull[0]);
   }
-  const type = String(schema?.type || '').toLowerCase();
+  const rawType = Array.isArray(schema?.type)
+    ? schema.type.find((candidate: string) => candidate !== 'null') : schema?.type;
+  const type = String(rawType || (schema?.properties ? 'object' : '')).toLowerCase();
   let decoded = value;
   if ((type === 'object' || type === 'array') && typeof value === 'string') {
     try {
@@ -338,8 +351,15 @@ function decodeStructuredArguments(value: any, schema: any): any {
     return decoded.map(item => decodeStructuredArguments(item, schema.items));
   }
   if (type === 'object' && decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
-    return Object.fromEntries(Object.entries(decoded).map(([key, item]) =>
-      [key, decodeStructuredArguments(item, schema.properties?.[key] || schema.additionalProperties)]));
+    const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+    return Object.fromEntries(Object.entries(decoded).flatMap(([key, item]) => {
+      const propertySchema = schema.properties?.[key];
+      // Providers may fill omitted optional fields with null. Remove only
+      // placeholders the original schema cannot accept; meaningful nullable
+      // values, required fields, and arbitrary JSON payloads stay intact.
+      if (item === null && propertySchema && !required.has(key) && !schemaAcceptsNull(propertySchema)) return [];
+      return [[key, decodeStructuredArguments(item, propertySchema || schema.additionalProperties)]];
+    }));
   }
   return decoded;
 }
@@ -355,8 +375,9 @@ export function validateRegistryToolArgs(
   try {
     // The provider wire may require JSON strings for free-form objects. Decode
     // against the original schema before Zod, not with unrelated tool guesses.
-    const normalized = normalizeRegistryToolArgs(tool.name, args);
-    const decoded = decodeStructuredArguments(normalized, getToolInputJsonSchema(tool));
+    const schema = getToolInputJsonSchema(tool);
+    const normalized = normalizeRegistryToolArgs(tool.name, decodeStructuredArguments(args, schema));
+    const decoded = decodeStructuredArguments(normalized, schema);
     const result = tool.inputSchema.safeParse(decoded ?? {});
     if (result.success) {
       return { success: true, args: result.data };
@@ -365,7 +386,7 @@ export function validateRegistryToolArgs(
     return {
       success: false,
       error: `Invalid arguments for ${tool.name} after alias normalization: ${formatValidationIssues(result.error)}`,
-      missing: getRecoverableToolArgumentGaps(tool.name, args),
+      missing: getRecoverableToolArgumentGaps(tool.name, decoded),
     };
   } catch (err: any) {
     return {
