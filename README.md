@@ -45,8 +45,7 @@ The application runs on **Windows, macOS, and Linux**. Chats, settings, and memo
 Choose a light, dark, or system theme in **Settings → Appearance**.
 
 <p align="center">
-  <img src="./docs/screenshots/dark-theme.png" width="48%" alt="EterX in dark theme" />
-  <img src="./docs/screenshots/light-theme.png" width="48%" alt="EterX in light theme" />
+  <img src="./docs/screenshots/dark-theme-card.svg" width="47%" alt="EterX in dark theme" />&nbsp;&nbsp;&nbsp;&nbsp;<img src="./docs/screenshots/light-theme-card.svg" width="47%" alt="EterX in light theme" />
 </p>
 
 ## Install EterX
@@ -130,7 +129,7 @@ Open **Settings → Agents** to inspect, enable, disable, or reset tools for eac
 Agent and model choices are saved with the conversation. Changing the selected agent during an active run applies to a subsequent turn; the current run keeps its worker identity.
 
 <p align="center">
-  <img src="./docs/screenshots/agent-selection.png" width="600" alt="Expanded agent selector showing built-in and custom agents" />
+  <img src="./docs/screenshots/agent-selection-card.svg" width="400" alt="Expanded agent selector showing built-in and custom agents" />
 </p>
 
 **Autonomous mode** is a separate supervision setting for tool-using agents. It adds a proxy supervisor to the selected workflow. See [Autonomous mode](#autonomous-mode).
@@ -169,9 +168,9 @@ The side workspace brings related tools into the conversation:
 | **Side chat** | A second conversation alongside the current task |
 
 <p align="center">
-  <img src="./docs/screenshots/workspace-panels.png" width="100%" alt="Workspace panel selector for side chat, files, review, terminal, and browser" />
+  <img src="./docs/screenshots/workspace-panels-card.svg" width="92%" alt="Workspace panel selector for side chat, files, review, terminal, and browser" />
   <br /><br />
-  <img src="./docs/screenshots/browser.png" width="100%" alt="EterX chat alongside its integrated browser" />
+  <img src="./docs/screenshots/browser-card.svg" width="92%" alt="EterX chat alongside its integrated browser" />
 </p>
 
 The terminal runtime supports commands, independent command batches, and managed background processes. Running processes keep their task identity and output cursor across turns, so an agent can inspect ongoing work without launching it again. Terminal details retain the working directory, actual invocation, output, and available exit status.
@@ -185,7 +184,7 @@ See [Workspace runtime](./docs/workspace-runtime-contract.md) for folder resolut
 Autonomous mode adds a **proxy agent** that works with the main worker on your behalf. It can monitor progress, provide guidance, and help address drift, errors, or stalled work.
 
 <p align="center">
-  <img src="./docs/screenshots/settings.png" width="100%" alt="General settings with work-mode and permission controls" />
+  <img src="./docs/screenshots/autonomous-mode-card.svg" width="72%" alt="General settings showing the Autonomous work-mode option" />
 </p>
 
 Enable Autonomous mode in **Settings → General**. The proxy panel lets you:
@@ -202,7 +201,7 @@ Define the outcome and boundaries clearly. Supervision uses an additional model 
 Open **Tasks** to create a task with instructions, a model and agent, a run time, recurrence, and priority. Tasks can create a new chat or continue an existing conversation. The task view includes **My List**, **Queue**, and **Completed**, with recorded run history and links back to the work.
 
 <p align="center">
-  <img src="./docs/screenshots/scheduled-tasks.png" width="100%" alt="Scheduled task form with model, agent, recurrence, and priority controls" />
+  <img src="./docs/screenshots/scheduled-tasks-card.svg" width="92%" alt="Scheduled task form with model, agent, recurrence, and priority controls" />
 </p>
 
 You can also ask an agent with the scheduling tool enabled to create or manage tasks.
@@ -271,7 +270,7 @@ Live tools can inspect app context and perform supported app actions. Camera and
 - **Skills:** import or edit reusable Markdown guidance. The bundled skill library covers documents, PDFs, spreadsheets, presentations, images, visualizations, templates, skill creation, and connector setup.
 
 <p align="center">
-  <img src="./docs/screenshots/gateway.png" width="100%" alt="Gateway communication settings for Telegram and other messaging connections" />
+  <img src="./docs/screenshots/gateway-card.svg" width="92%" alt="Gateway communication settings for Telegram and other messaging connections" />
 </p>
 
 Skills guide workflows; the active agent's tool configuration controls execution access. Document and spreadsheet tasks use the available terminal runtime and libraries rather than a separate native generator tool for every file format.
@@ -279,9 +278,9 @@ Skills guide workflows; the active agent's tool configuration controls execution
 See [Gateway operation](./docs/gateway-daemon.md), [Telegram bot teammates](./docs/telegram-bots.md), and the [local skill library](./src/lib/agent/skills-new/README.md).
 
 <p align="center">
-  <img src="./docs/screenshots/telegram-bots.png" width="100%" alt="Telegram bot teammate page with bot status and controls" />
+  <img src="./docs/screenshots/telegram-bots-card.svg" width="92%" alt="Telegram bot teammate page with bot status and controls" />
   <br /><br />
-  <img src="./docs/screenshots/telegram-bot-setup.png" width="100%" alt="Telegram bot setup form with instructions, model, and agent settings" />
+  <img src="./docs/screenshots/telegram-bot-setup-card.svg" width="92%" alt="Telegram bot setup form with instructions, model, and agent settings" />
 </p>
 
 ## Memory and context continuity
