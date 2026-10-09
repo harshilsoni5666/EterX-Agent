@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="./public/assets/banner.png" width="100%" alt="EterX-Agent Banner">
-</p>
-
 <h1 align="center">EterX-Agent</h1>
 
 <p align="center">
@@ -13,11 +9,18 @@
   <img src="https://img.shields.io/badge/Developer-Harshil%20Soni-blue" alt="Developer">
 </p>
 
+<p align="center">
+  <a href="https://youtu.be/fR42EhxrjII?si=Gw0fPMfN4gYRlfSb">
+    <img src="./docs/screenshots/eterx-youtube-thumbnail.png" width="100%" alt="Watch the EterX demo on YouTube">
+  </a>
+</p>
+
 EterX brings conversations, tools, files, terminals, browsers, and collaborating agents into one desktop application. Choose a model and an agent, describe the outcome you want, and follow the work as it happens. You can steer an active task, inspect each delegated agent in its own tab, review file changes, or enable a proxy agent to supervise longer workflows.
 
 The application runs on **Windows, macOS, and Linux**. Chats, settings, and memory are stored locally; model inference runs through the cloud provider or local model server you connect.
 
 <p align="center">
+  <a href="https://youtu.be/fR42EhxrjII?si=Gw0fPMfN4gYRlfSb">Watch demo</a> ·
   <a href="#install-eterx">Install</a> ·
   <a href="#first-run">First run</a> ·
   <a href="#choose-your-agent">Agents</a> ·
@@ -37,17 +40,13 @@ The application runs on **Windows, macOS, and Linux**. Chats, settings, and memo
 - **Connect your tools.** Configure cloud or local models, web search, image and video services, messaging channels, connectors, MCP servers, and skills.
 - **Keep context across long tasks.** Use local memory, context compaction, per-chat limits, and token usage reporting.
 
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/7ba6c169-a58e-46b9-af0e-6f0536f0b0cc" controls width="100%"></video>
-</p>
-
 ### Light and dark themes
 
 Choose a light, dark, or system theme in **Settings → Appearance**.
 
 <p align="center">
-  <img src="./public/assets/black-theme.png" width="48%" alt="Dark Theme" />
-  <img src="./public/assets/white-theme.png" width="48%" alt="White Theme" />
+  <img src="./docs/screenshots/dark-theme.png" width="48%" alt="EterX in dark theme" />
+  <img src="./docs/screenshots/light-theme.png" width="48%" alt="EterX in light theme" />
 </p>
 
 ## Install EterX
@@ -130,6 +129,10 @@ Open **Settings → Agents** to inspect, enable, disable, or reset tools for eac
 
 Agent and model choices are saved with the conversation. Changing the selected agent during an active run applies to a subsequent turn; the current run keeps its worker identity.
 
+<p align="center">
+  <img src="./docs/screenshots/agent-selection.png" width="600" alt="Expanded agent selector showing built-in and custom agents" />
+</p>
+
 **Autonomous mode** is a separate supervision setting for tool-using agents. It adds a proxy supervisor to the selected workflow. See [Autonomous mode](#autonomous-mode).
 
 ### Composer controls
@@ -151,14 +154,6 @@ When a worker delegates part of a task, its sub-agents appear in the **agent wor
 
 Delegation can split research, implementation, review, or verification into independent assignments. Agents coordinate through a mailbox that supports questions, discoveries, handoffs, and interrupt, deferred, or silent delivery. The available delegation tools and agent configuration determine whether a run can create sub-agents.
 
-<p align="center">
-  <img src="./public/assets/subagent.png" width="100%" alt="Sub-Agent Panel" />
-  <br /><br />
-  <img src="./public/assets/sub-agent3.png" width="100%" alt="Sub-Agent Details" />
-  <br /><br />
-  <img src="./public/assets/sub-agent2.png" width="100%" alt="Sub-Agent Workflow" />
-</p>
-
 ## Workspaces, files, and execution
 
 Select a folder to give the agent a project location for relative file paths and commands. Chats without a selected folder use a durable EterX working directory. Multiple chats can work in the same folder while keeping their conversation histories and activity separate.
@@ -173,6 +168,12 @@ The side workspace brings related tools into the conversation:
 | **Browser** | Website viewing, local previews, and screenshot capture |
 | **Side chat** | A second conversation alongside the current task |
 
+<p align="center">
+  <img src="./docs/screenshots/workspace-panels.png" width="100%" alt="Workspace panel selector for side chat, files, review, terminal, and browser" />
+  <br /><br />
+  <img src="./docs/screenshots/browser.png" width="100%" alt="EterX chat alongside its integrated browser" />
+</p>
+
 The terminal runtime supports commands, independent command batches, and managed background processes. Running processes keep their task identity and output cursor across turns, so an agent can inspect ongoing work without launching it again. Terminal details retain the working directory, actual invocation, output, and available exit status.
 
 Choose the integrated shell and open destination in **Settings → General**. Environment settings support local execution configuration; existing project environments can be used without automatically creating a new environment when a chat opens.
@@ -182,6 +183,10 @@ See [Workspace runtime](./docs/workspace-runtime-contract.md) for folder resolut
 ## Autonomous mode
 
 Autonomous mode adds a **proxy agent** that works with the main worker on your behalf. It can monitor progress, provide guidance, and help address drift, errors, or stalled work.
+
+<p align="center">
+  <img src="./docs/screenshots/settings.png" width="100%" alt="General settings with work-mode and permission controls" />
+</p>
 
 Enable Autonomous mode in **Settings → General**. The proxy panel lets you:
 
@@ -196,6 +201,10 @@ Define the outcome and boundaries clearly. Supervision uses an additional model 
 
 Open **Tasks** to create a task with instructions, a model and agent, a run time, recurrence, and priority. Tasks can create a new chat or continue an existing conversation. The task view includes **My List**, **Queue**, and **Completed**, with recorded run history and links back to the work.
 
+<p align="center">
+  <img src="./docs/screenshots/scheduled-tasks.png" width="100%" alt="Scheduled task form with model, agent, recurrence, and priority controls" />
+</p>
+
 You can also ask an agent with the scheduling tool enabled to create or manage tasks.
 
 Desktop background settings in **Settings → General** control:
@@ -209,10 +218,6 @@ Background operation requires EterX to remain running and the computer to be awa
 ## Agent Builder
 
 Create a custom agent from **Agents**, then describe its role and workflow to the Builder. You can specify its mission, response style, instructions, preferred model, tool access, and channel or connector requirements.
-
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/69a12760-0d49-44dc-84c7-644d0ed7c7bb" controls width="100%"></video>
-</p>
 
 The Builder creates and refines the agent's profile, selects tools, and checks readiness before it becomes available for use. It can configure reusable capabilities such as prompt macros, tool chains, and agent-scoped code. Dedicated builder controls are isolated from normal agent runs.
 
@@ -265,9 +270,19 @@ Live tools can inspect app context and perform supported app actions. Camera and
 - **MCP bridge:** expose the local gateway to an MCP client using the authenticated endpoint and copyable client configuration from the gateway's advanced settings.
 - **Skills:** import or edit reusable Markdown guidance. The bundled skill library covers documents, PDFs, spreadsheets, presentations, images, visualizations, templates, skill creation, and connector setup.
 
+<p align="center">
+  <img src="./docs/screenshots/gateway.png" width="100%" alt="Gateway communication settings for Telegram and other messaging connections" />
+</p>
+
 Skills guide workflows; the active agent's tool configuration controls execution access. Document and spreadsheet tasks use the available terminal runtime and libraries rather than a separate native generator tool for every file format.
 
 See [Gateway operation](./docs/gateway-daemon.md), [Telegram bot teammates](./docs/telegram-bots.md), and the [local skill library](./src/lib/agent/skills-new/README.md).
+
+<p align="center">
+  <img src="./docs/screenshots/telegram-bots.png" width="100%" alt="Telegram bot teammate page with bot status and controls" />
+  <br /><br />
+  <img src="./docs/screenshots/telegram-bot-setup.png" width="100%" alt="Telegram bot setup form with instructions, model, and agent settings" />
+</p>
 
 ## Memory and context continuity
 
@@ -392,8 +407,8 @@ EterX-Agent/
 │       ├── live/             # Realtime voice transports and catalogs
 │       └── sandbox/          # Command execution support
 ├── electron/                 # Native desktop lifecycle and integrations
-├── public/                   # Application assets and existing screenshots
-├── docs/                     # Architecture, runtime, storage, release guides
+├── public/                   # Application assets
+├── docs/                     # Architecture, runtime, storage, release guides, and README screenshots
 ├── scripts/                  # Development, packaging, evaluation utilities
 ├── setup/                    # Source setup and platform packaging support
 ├── tests/                    # Integration checks
