@@ -216,7 +216,11 @@ Background operation requires EterX to remain running and the computer to be awa
 
 ## Agent Builder
 
-Create a custom agent from **Agents**, then describe its role and workflow to the Builder. You can specify its mission, response style, instructions, preferred model, tool access, and channel or connector requirements.
+<p align="center">
+  <img src="./docs/screenshots/agent-builder-card.svg" width="92%" alt="Agents library with custom agents, readiness states, and the New agent button" />
+</p>
+
+In **Agents**, select **New agent** to open Agent Builder. Describe the agent's role and workflow, then specify its mission, response style, instructions, preferred model, tool access, and channel or connector requirements.
 
 The Builder creates and refines the agent's profile, selects tools, and checks readiness before it becomes available for use. It can configure reusable capabilities such as prompt macros, tool chains, and agent-scoped code. Dedicated builder controls are isolated from normal agent runs.
 
