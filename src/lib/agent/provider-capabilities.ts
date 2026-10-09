@@ -3,7 +3,7 @@ import type {
   MainAgentThinkingLevel,
   ModelThinkingCapabilities,
 } from './model-routing';
-import { toMistralReasoningEffort, toOpenAIReasoningEffort } from './model-routing';
+import { inferModelThinkingCapabilities, isOpenAIReasoningModel, normalizeThinkingLevelForModel, toMistralReasoningEffort, toOpenAIReasoningEffort } from './model-routing';
 import { extractProviderText } from '../streaming-lifecycle';
 
 /**
@@ -70,8 +70,15 @@ export function applyCompatibleThinkingParameters(
   thinking: CompatibleThinking | null,
 ): void {
   if (!thinking) return;
-  const level = thinking.level;
+  const level = normalizeThinkingLevelForModel(thinking.level, provider, modelName, thinking.capabilities);
   const parameter = thinking.capabilities?.parameter;
+
+  if (provider === 'grok') {
+    const capabilities = thinking.capabilities?.source === 'provider'
+      ? thinking.capabilities : inferModelThinkingCapabilities(provider, modelName);
+    if (capabilities?.parameter === 'reasoning_effort') params.reasoning_effort = toOpenAIReasoningEffort(level);
+    return;
+  }
 
   // Provider/model semantics win over a generic parameter label. Groq's Qwen
   // models use only none/default, unlike GPT-OSS low/medium/high.
@@ -104,8 +111,6 @@ export function applyCompatibleThinkingParameters(
     params.reasoning_effort = toOpenAIReasoningEffort(level);
   } else if ((provider === 'together' || provider === 'nvidia') && /gpt-oss/i.test(modelName)) {
     params.reasoning_effort = toOpenAIReasoningEffort(level);
-  } else if (provider === 'grok' && /grok-(?:3|4)/i.test(modelName)) {
-    params.reasoning_effort = toOpenAIReasoningEffort(level);
   } else if (provider === 'qwen') {
     params.enable_thinking = level !== 'off';
     if (level !== 'off') params.thinking_budget = thinkingBudget(level);
@@ -114,7 +119,7 @@ export function applyCompatibleThinkingParameters(
       ...(params.chat_template_kwargs || {}),
       reasoning_effort: toOpenAIReasoningEffort(level),
     };
-  } else if (provider === 'openai' && /(?:^|\/)(?:o[134]|gpt-5)/i.test(modelName)) {
+  } else if (provider === 'openai' && isOpenAIReasoningModel(modelName)) {
     params.reasoning_effort = toOpenAIReasoningEffort(level);
   }
 }

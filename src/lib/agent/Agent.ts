@@ -1,5 +1,6 @@
 import { isRuntimePlanMode, PLAN_MODE_INSTRUCTION } from './plan-mode';
 import { buildTelegramBotContext } from './telegram-bot-context';
+import { buildTelegramWorkNoteCue } from './telegram-bot-behavior';
 import { taskDecomposerTool } from './tools/core/task_decomposer';
 import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
 import { isPastedText, pastedTextManifest } from '../pasted-text';
@@ -33,7 +34,7 @@ import {
   type RuntimeApiKeyProvider,
   type ScopedRuntimeSettings,
 } from './runtime-api-keys';
-import { getApiRetries, isProviderContextLimitError, isProviderFailoverError } from './api-retry';
+import { getApiRetries, isInterruptedProviderStream, isProviderContextLimitError, isProviderFailoverError } from './api-retry';
 import {
   intelligentCache, smartQueryRouter, knowledgeEngine,
   performanceAnalytics, initializeNextGenSystems
@@ -107,6 +108,8 @@ import { writeRuntimeTrace } from './runtime-trace';
 import { estimateRequestTokenBudget } from './request-token-budget';
 import {
   applyOpenAIPromptCachePolicy,
+  applyAnthropicPromptCachePolicy,
+  canUseExplicitGeminiSystemCache,
   buildOpenAISystemPromptContent,
   buildProviderConversationCacheId,
   buildPromptCacheIdentity,
@@ -3098,6 +3101,11 @@ ${ message.text }
           ).parts;
           workingContextMessage.content = `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${boundedContextParts.join('\n')}\n[END CURRENT RUNTIME CONTINUITY]`;
         }
+        const telegramCue = buildTelegramWorkNoteCue(context, trace);
+        if (telegramCue) {
+          workingContextMessage.content = workingContextMessage.content.split('\n[TELEGRAM COMMUNICATION BOUNDARY]')[0]
+            + `\n[TELEGRAM COMMUNICATION BOUNDARY]\n${telegramCue}`;
+        }
       }
 
       // A single large tool result can cross the hard limit, so every model
@@ -3209,6 +3217,7 @@ ${ message.text }
 
       let response: any;
       let apiAttempts = 0;
+      let interruptedStreamRecoveries = 0;
       const configuredRetries = this.getConfiguredApiRetries(context);
       const maxApiAttempts = this.getProviderKeyCount(this.activeProvider) * (configuredRetries + 1);
       while (apiAttempts < maxApiAttempts) {
@@ -3471,6 +3480,11 @@ ${ message.text }
         // cannot keep its timer open while the next provider attempt starts.
         closeActiveThought();
         cancelProvisionalAnswer();
+          if (isInterruptedProviderStream(err) && interruptedStreamRecoveries < 1) {
+            interruptedStreamRecoveries++;
+            onTrace?.({ type: 'progress', provider: this.activeProvider, text: 'Provider stream was interrupted; retrying the incomplete response.' });
+            continue;
+          }
           if (
             isProviderContextLimitError(err)
             && contextOverflowRecoveryAttempts < 2
@@ -3585,7 +3599,7 @@ ${ message.text }
         lastAnswer = contentText;
         const noteText = this.formatVisibleWorkNote(contentText);
         if (noteText) {
-          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `mistral_work_stream_${ interactions }` };
+          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `mistral_work_stream_${ interactions }`, timestamp: Date.now() };
           trace.push(noteEvt);
           onTrace?.(noteEvt);
         }
@@ -4029,6 +4043,11 @@ ${ message.text }
           ).parts;
           workingContextBlock.text = `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${boundedContextParts.join('\n')}\n[END CURRENT RUNTIME CONTINUITY]`;
         }
+        const telegramCue = buildTelegramWorkNoteCue(context, trace);
+        if (telegramCue) {
+          workingContextBlock.text = workingContextBlock.text.split('\n[TELEGRAM COMMUNICATION BOUNDARY]')[0]
+            + `\n[TELEGRAM COMMUNICATION BOUNDARY]\n${telegramCue}`;
+        }
       }
 
       // A single large tool result can cross the hard limit, so every model
@@ -4126,33 +4145,11 @@ ${ message.text }
         }
       }
 
-      // Strip any existing cache_control from previous messages to stay within the 4-breakpoint limit
-      for (const msg of messages) {
-        if (Array.isArray(msg.content)) {
-          for (const block of msg.content) {
-            if (block && typeof block === 'object') {
-              delete block.cache_control;
-            }
-          } 
-        }
-      }
-
-      // Add cache_control to the last message's last content block
-      if (cacheEnabled && messages.length > 0) {
-        const lastMsg = messages[messages.length - 1];
-        if (typeof lastMsg.content === 'string') {
-          lastMsg.content = [{ type: 'text', text: lastMsg.content }];
-        }
-        if (Array.isArray(lastMsg.content) && lastMsg.content.length > 0) {
-          const lastBlock = lastMsg.content[lastMsg.content.length - 1];
-          if (lastBlock && typeof lastBlock === 'object') {
-            lastBlock.cache_control = { type: 'ephemeral' };
-          }
-        }
-      }
+      applyAnthropicPromptCachePolicy(params, cacheEnabled);
 
       let response: any;
       let apiAttempts = 0;
+      let interruptedStreamRecoveries = 0;
       const configuredRetries = this.getConfiguredApiRetries(context);
       const maxApiAttempts = this.getProviderKeyCount('anthropic') * (configuredRetries + 1);
       while (apiAttempts < maxApiAttempts) {
@@ -4301,6 +4298,11 @@ ${ message.text }
           const errorMsg = formatUnknownError(err, 'Anthropic request failed');
           closeActiveThought();
           cancelProvisionalAnswer();
+          if (isInterruptedProviderStream(err) && interruptedStreamRecoveries < 1) {
+            interruptedStreamRecoveries++;
+            onTrace?.({ type: 'progress', provider: 'anthropic', text: 'Claude stream was interrupted; retrying the incomplete response.' });
+            continue;
+          }
           if (
             isProviderContextLimitError(err)
             && contextOverflowRecoveryAttempts < 2
@@ -4425,7 +4427,7 @@ ${ message.text }
         lastAnswer = contentText;
         const noteText = this.formatVisibleWorkNote(contentText);
         if (noteText) {
-          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `anthropic_work_stream_${ interactions }` };
+          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: `anthropic_work_stream_${ interactions }`, timestamp: Date.now() };
           trace.push(noteEvt);
           onTrace?.(noteEvt);
         }
@@ -5701,6 +5703,7 @@ OUTPUT CONTRACT
 
     let attempts = 0;
     let contextOverflowRecoveryAttempts = 0;
+    let interruptedStreamRecoveries = 0;
     const configuredRetries = this.getConfiguredApiRetries(context);
     const maxAttempts = this.getProviderKeyCount('gemini') * (configuredRetries + 1);
 
@@ -5764,6 +5767,12 @@ OUTPUT CONTRACT
         if ((error as any)._survivorState) {
           survivorState = (error as any)._survivorState;
           console.log(`[GeminiClient] ðŸ”„ Survivor state captured: ${ survivorState!.interactions } iterations, ${ survivorState!.callHistory.size } calls, ${ survivorState!.toolResultDigest.length } tool results preserved`);
+        }
+
+        if (survivorState && isInterruptedProviderStream(error) && interruptedStreamRecoveries < 1) {
+          interruptedStreamRecoveries++;
+          onTrace?.({ type: 'progress', provider: 'gemini', text: 'Gemini stream was interrupted; retrying the incomplete response with completed work preserved.' });
+          continue;
         }
 
         if (isProviderContextLimitError(error)) {
@@ -6626,6 +6635,9 @@ OUTPUT CONTRACT
       this.activeProvider === 'gemini' &&
       _runtimeToolDecls.length > 0 &&
       _runtimeToolNames === _cacheToolNames &&
+      // Gemini cannot override a cached system instruction. Dynamic runtime
+      // instructions must retain system authority, so use implicit caching.
+      canUseExplicitGeminiSystemCache(universalPromptParts.dynamicPrompt) &&
       isExplicitGeminiCacheEnabled();
     const _promptCacheIdentity = buildPromptCacheIdentity({
       provider: 'gemini',
@@ -6682,11 +6694,11 @@ OUTPUT CONTRACT
     };
     const fallBackToUncachedGeminiConfig = () => {
       const currentInstruction = String((config as any).systemInstruction || '');
-      const iterationSuffix = currentInstruction.startsWith(universalPromptParts.dynamicPrompt)
-        ? currentInstruction.slice(universalPromptParts.dynamicPrompt.length)
-        : currentInstruction.startsWith(universalPromptParts.fullPrompt)
-          ? currentInstruction.slice(universalPromptParts.fullPrompt.length)
-          : '';
+      const iterationSuffix = currentInstruction.startsWith(universalPromptParts.fullPrompt)
+        ? currentInstruction.slice(universalPromptParts.fullPrompt.length)
+        : universalPromptParts.dynamicPrompt && currentInstruction.startsWith(universalPromptParts.dynamicPrompt)
+          ? currentInstruction.slice(universalPromptParts.dynamicPrompt.length)
+          : currentInstruction;
       delete (config as any).cachedContent;
       _cachedContentName = null;
       _cachedContentModel = null;
@@ -6722,11 +6734,11 @@ OUTPUT CONTRACT
         return false;
       }
       const currentInstruction = String((config as any).systemInstruction || '');
-      const iterationSuffix = currentInstruction.startsWith(universalPromptParts.dynamicPrompt)
-        ? currentInstruction.slice(universalPromptParts.dynamicPrompt.length)
-        : currentInstruction.startsWith(universalPromptParts.fullPrompt)
-          ? currentInstruction.slice(universalPromptParts.fullPrompt.length)
-          : '';
+      const iterationSuffix = currentInstruction.startsWith(universalPromptParts.fullPrompt)
+        ? currentInstruction.slice(universalPromptParts.fullPrompt.length)
+        : universalPromptParts.dynamicPrompt && currentInstruction.startsWith(universalPromptParts.dynamicPrompt)
+          ? currentInstruction.slice(universalPromptParts.dynamicPrompt.length)
+          : currentInstruction;
       _cachedContentName = cacheName;
       _cachedContentModel = model;
       config.cachedContent = cacheName;
@@ -7123,12 +7135,12 @@ OUTPUT CONTRACT
       );
       const iterationSystemParts = [executionGovernorCue, adaptiveHarnessCue, contextFabricCue, workingMemoryCue].filter(Boolean);
       const codingContextProfile = isCodingAgentProfile((context as any).agentProfile);
-      const iterationSystemCue = federateDynamicContextParts(
+      const iterationSystemCue = [federateDynamicContextParts(
         iterationSystemParts,
         userVisibleMessage,
         codingContextProfile ? 1_800 : 1_200,
         codingContextProfile ? 4_500 : 1_200,
-      ).parts.join('\n');
+      ).parts.join('\n'), buildTelegramWorkNoteCue(context, trace)].filter(Boolean).join('\n');
       // When cache is active, baseSystemInstruction is already the dynamic suffix;
       // the cached content holds the static rules + tools so we must NOT override
       // config.tools (it would conflict with the cache contract).
@@ -7146,6 +7158,10 @@ OUTPUT CONTRACT
         config.systemInstruction = iterationSystemCue
           ? `${ iterationBaseSystemInstruction }\n${ iterationSystemCue }`
           : iterationBaseSystemInstruction;
+      }
+      if (_cachedContentName) {
+        if (String(config.systemInstruction || '').trim()) fallBackToUncachedGeminiConfig();
+        else delete config.systemInstruction;
       }
       // Measure the actual request after steering, mailbox delivery and runtime
       // context assembly. Cached static input also occupies model capacity.
@@ -7177,6 +7193,7 @@ OUTPUT CONTRACT
       // one connection attempt here so a selected retry is never multiplied
       // by a second hidden Gemini stream loop.
       const maxStreamAttempts = 1;
+      let cacheRecoveryAttempted = false;
       let lastStreamError = '';
       let activeStreamAbortController: AbortController | null = null;
       let accumulatedThought = '';
@@ -7348,7 +7365,8 @@ OUTPUT CONTRACT
               || isBadRequest
             );
 
-          if (isCacheRejectedError && _cacheableStaticPrompt && _canUseContextCache) {
+          if (isCacheRejectedError && _cacheableStaticPrompt && _canUseContextCache && !cacheRecoveryAttempted) {
+            cacheRecoveryAttempted = true;
             console.warn('[GeminiClient] ⚠️ Cached content expired mid-session — rebuilding cache...');
             try {
               const cacheNotFound = errMsg.includes('NOT_FOUND')
@@ -7368,6 +7386,7 @@ OUTPUT CONTRACT
               console.warn('[GeminiClient] Cache rebuild failed; falling back to uncached.');
               fallBackToUncachedGeminiConfig();
             }
+            streamAttempts--; // One bounded cache repair does not consume a transport attempt.
             continue; // Retry stream with rebuilt/fallback config
           }
 
@@ -7453,7 +7472,7 @@ OUTPUT CONTRACT
         if (!noteSource || workNoteEmitted) return false;
         const noteText = this.formatVisibleWorkNote(noteSource, 720, false);
         if (!noteText) return false;
-        const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId };
+        const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId, timestamp: Date.now() };
         if (onTrace) onTrace(noteEvt);
         workNoteEmitted = true;
         emittedWorkNoteText = noteText;
@@ -7567,7 +7586,10 @@ OUTPUT CONTRACT
         }
         await streamIterator.return?.().catch?.(() => { });
         const retryErr: any = new Error(errMsg);
-        retryErr._survivorState = captureContextSurvivorState(loopAccumulatedText || accumulatedText);
+        // Partial text/function arguments are not a completed model turn.
+        // Preserve only prior completed work; no tool from this stream ran.
+        retryErr._survivorState = captureContextSurvivorState();
+        retryErr._survivorState.interactions = Math.max(0, interactions - 1);
         await workingCheckpoint.save(contents, this.modelName, 'gemini', retryErr._survivorState.contextCalibration);
         throw retryErr;
       }
@@ -7576,7 +7598,14 @@ OUTPUT CONTRACT
       if (geminiPromptFeedback?.blockReason) {
         throw new Error(`MODEL_STREAM_BLOCKED: Gemini blocked the prompt (${geminiPromptFeedback.blockReason}).`);
       }
-      assertSuccessfulCompatibleFinish(geminiFinishReason, functionCalls.length > 0);
+      try {
+        assertSuccessfulCompatibleFinish(geminiFinishReason, functionCalls.length > 0);
+      } catch (error: any) {
+        cancelProvisionalAnswer();
+        error._survivorState = captureContextSurvivorState();
+        error._survivorState.interactions = Math.max(0, interactions - 1);
+        throw error;
+      }
 
       if (lastUsageMetadata) {
         const usageTrace = createProviderUsageTrace('gemini', currentModel, lastUsageMetadata, {
@@ -7616,7 +7645,7 @@ OUTPUT CONTRACT
         const noteText = this.formatVisibleWorkNote(accumulatedText || emittedWorkNoteText, 720, false);
         const shouldEmitFinalWorkNote = !!noteText;
         if (shouldEmitFinalWorkNote) {
-          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId };
+          const noteEvt = { type: 'work_note', text: noteText, isDelta: false, isStreaming: false, noteId: workNoteId, timestamp: Date.now() };
           trace.push(noteEvt);
           // Always publish the settled state. The text may match the final
           // streaming chunk while its lifecycle flags still need to change.

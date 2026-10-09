@@ -1,5 +1,6 @@
 import type OpenAI from 'openai';
 import type { MainAgentProvider } from './model-routing';
+import { withOpenAICacheFallback } from './provider-prompt-cache';
 
 const toResponsesTools = (tools: any[] = []) => tools.map(tool => ({
   type: 'function',
@@ -141,8 +142,9 @@ export function createProviderChatStream(
   if (provider === 'perplexity') {
     return streamPerplexityResponses(client, params, signal);
   }
-  return client.chat.completions.create(
-    { ...params, stream: true } as any,
+  const send = (body: Record<string, any>) => client.chat.completions.create(
+    { ...body, stream: true } as any,
     signal ? { signal } : undefined,
   ) as any;
+  return provider === 'openai' ? withOpenAICacheFallback(params, send) : send(params);
 }

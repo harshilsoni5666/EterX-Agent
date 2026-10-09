@@ -28,7 +28,7 @@ export function formatVisibleWorkNote(value: string, _maxLength = 720, _suppress
   return String(value || '')
     // Some compatible providers place private reasoning tags in their normal
     // text channel. Never promote those blocks into visible progress notes.
-    .replace(/<(analysis|thinking|reasoning|thought|scratchpad)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<(analysis|thinking|reasoning|thought|scratchpad)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi, '')
     .replace(/<\/?(?:analysis|thinking|reasoning|thought|scratchpad)\b[^>]*>/gi, '')
     .trim();
 }

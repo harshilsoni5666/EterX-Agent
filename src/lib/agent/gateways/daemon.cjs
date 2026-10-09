@@ -584,18 +584,22 @@ class GatewayDaemon {
     }
     if (name === 'bot_event_ack') return this.store.acknowledge(String(args.event_id || ''));
     if (name === 'bot_steering_received') {
-      const { event } = await this.callBridgeTool('bot_event_get', args);
-      return this.telegramBots.acknowledgeSteering(event);
+      // Older in-flight runtimes may still acknowledge admission. Admission
+      // is not comprehension; never turn it into an automatic reaction.
+      await this.callBridgeTool('bot_event_get', args);
+      return { ok: true };
     }
     if (name === 'bot_attachments') {
       const { event } = await this.callBridgeTool('bot_event_get', args);
       return this.telegramBots.download(event);
     }
     if (name === 'bot_typing') return this.telegramBots.typing(args.target || {});
-    if (name === 'bot_progress') return this.telegramBots.progress(args.target || {}, args.text, args.message_id);
+    if (name === 'bot_progress') return this.telegramBots.progress(args.target || {}, args.text, args.message_id, args);
     if (name === 'bot_question') return this.telegramBots.question(args.target || {}, args.question || {}, args.conversation_id);
     if (name === 'bot_question_resolved') return this.telegramBots.resolveQuestion(args.target || {}, args.response_key);
-    if (name === 'files_send') return this.telegramBots.sendFile(args.target || {}, String(args.file_path || ''), String(args.caption || ''), args.as_photo === true, args.media_type);
+    if (name === 'files_send') return args.file_paths
+      ? this.telegramBots.sendFiles(args.target || {}, args.file_paths, String(args.caption || ''), args.as_photo === true, args.media_type)
+      : this.telegramBots.sendFile(args.target || {}, String(args.file_path || ''), String(args.caption || ''), args.as_photo === true, args.media_type);
     if (name === 'conversations_list') {
       const platform = String(args.platform || '').toLowerCase();
       const search = String(args.search || '').toLowerCase();

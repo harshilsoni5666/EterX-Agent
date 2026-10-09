@@ -3,6 +3,13 @@ import { describeTimeout } from './timeout-error';
 export const DEFAULT_API_RETRIES = 0;
 export const MAX_API_RETRIES = 3;
 
+/** A transport/parser EOF is recoverable; invalid tool JSON and length limits are not. */
+export const isInterruptedProviderStream = (error: unknown): boolean => {
+  if (isApiRequestCancelled(error)) return false;
+  const message = String((error as any)?.message || error || '');
+  return /Incomplete JSON segment at the end|MODEL_STREAM_INCOMPLETE: provider closed the stream without a finish reason|MODEL_STREAM_INCOMPLETE: Anthropic ended the stream with stop_reason=missing|stream ended without producing a Message with role=assistant|request ended without sending any chunks|Premature close|ERR_STREAM_PREMATURE_CLOSE/i.test(message);
+};
+
 export const normalizeApiRetries = (value: unknown): number => {
   const retries = Number(value);
   return Number.isFinite(retries)
@@ -43,7 +50,10 @@ export const isProviderFailoverError = (error: unknown): boolean => {
   // an API round cannot help and only delays the compaction recovery path.
   if (isProviderContextLimitError(error)) return false;
   const message = String((error as any)?.message || error || '').toLowerCase();
-  return !/(invalid argument|bad request|unsupported parameter|model .* not found|not found|token limit|context length)/i.test(message);
+  const status = Number((error as any)?.status || (error as any)?.statusCode || (error as any)?.response?.status || 0);
+  // Authentication/rate limits may be key-specific; malformed payloads are not.
+  if (status >= 400 && status < 500 && ![401, 403, 408, 425, 429].includes(status)) return false;
+  return !/(invalid[ _](?:argument|value|request)|bad request|unsupported (?:parameter|value)|model .* not found|not found|token limit|context length)/i.test(message);
 };
 
 /**

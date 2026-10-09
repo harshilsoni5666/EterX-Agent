@@ -11,7 +11,7 @@ import {
   type RuntimeApiKeyProvider,
   type ScopedRuntimeSettings,
 } from '../agent/runtime-api-keys';
-import { isProviderContextLimitError, withApiKeyRounds } from '../agent/api-retry';
+import { isInterruptedProviderStream, isProviderContextLimitError, withApiKeyRounds } from '../agent/api-retry';
 import {
   type MainAgentMode,
   type MainAgentProvider,
@@ -42,7 +42,7 @@ import {
   providerSupportsStreamUsage,
   splitCompatibleDeltaContent,
 } from '../agent/provider-capabilities';
-import { normalizeProviderCacheUsage, applyOpenAIPromptCachePolicy, resolveProviderPromptCacheMode } from '../agent/provider-prompt-cache';
+import { normalizeProviderCacheUsage, applyOpenAIPromptCachePolicy, applyAnthropicPromptCachePolicy, buildProviderConversationCacheId, withOpenAICacheFallback, resolveProviderPromptCacheMode } from '../agent/provider-prompt-cache';
 import {
   executeSearchWithFailover,
   type NormalizedSearchResult,
@@ -622,6 +622,7 @@ async function runOpenAiCompatibleDirect(
   attachments: PreparedAttachment[],
   thinking: DirectThinking,
   systemInstruction: string,
+  conversationScope = '',
 ) {
   const baseURL = getProviderBaseURL(provider);
   if (!baseURL) throw new Error(`${provider} requires a configured API base URL.`);
@@ -634,7 +635,9 @@ async function runOpenAiCompatibleDirect(
           'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
           'X-Title': 'EterX Chat',
         }
-      : undefined,
+      : provider === 'grok' && process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1' && conversationScope
+        ? { 'x-grok-conv-id': buildProviderConversationCacheId(provider, conversationScope)! }
+        : undefined,
   });
 
   const params: any = {
@@ -665,7 +668,8 @@ async function runOpenAiCompatibleDirect(
     assertSuccessfulCompatibleFinish(finishReason, false);
     return text.trim();
   }
-  const response: any = await client.chat.completions.create(params);
+  const send = (body: Record<string, any>) => client.chat.completions.create(body as any);
+  const response: any = provider === 'openai' ? await withOpenAICacheFallback(params, send) : await send(params);
   assertSuccessfulCompatibleFinish(response?.choices?.[0]?.finish_reason, false);
   return String(response.choices?.[0]?.message?.content || '').trim();
 }
@@ -698,6 +702,7 @@ async function runAnthropicDirect(
     ],
   };
   applyAnthropicThinking(params, model, thinking);
+  applyAnthropicPromptCachePolicy(params);
   const response: any = attachments.some(item => item.fileId)
     ? await client.beta.messages.create(params)
     : await client.messages.create(params);
@@ -750,7 +755,7 @@ export async function runDirectChat(request: DirectChatRequest): Promise<{
             ? runGeminiDirect(model, key, history, currentText, attachments, thinking, systemInstruction)
             : provider === 'anthropic'
               ? runAnthropicDirect(model, key, history, currentText, attachments, thinking, systemInstruction)
-              : runOpenAiCompatibleDirect(provider, model, key, history, currentText, attachments, thinking, systemInstruction);
+              : runOpenAiCompatibleDirect(provider, model, key, history, currentText, attachments, thinking, systemInstruction, request.chatId || request.runId);
         },
       );
       break;
@@ -984,6 +989,7 @@ const streamOpenAiCompatibleDirect = async (
   onReasoningDelta: (delta: string) => void,
   systemInstruction: string,
   signal?: AbortSignal,
+  conversationScope = '',
 ): Promise<DirectProviderStreamResult> => {
   const baseURL = getProviderBaseURL(provider);
   if (!baseURL) throw new Error(`${provider} requires a configured API base URL.`);
@@ -996,7 +1002,9 @@ const streamOpenAiCompatibleDirect = async (
           'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER || 'http://localhost:3000',
           'X-Title': 'EterX Chat',
         }
-      : undefined,
+      : provider === 'grok' && process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1' && conversationScope
+        ? { 'x-grok-conv-id': buildProviderConversationCacheId(provider, conversationScope)! }
+        : undefined,
   });
   const params: any = {
     model,
@@ -1102,6 +1110,7 @@ const streamAnthropicDirect = async (
     ],
   };
   applyAnthropicThinking(params, model, thinking);
+  applyAnthropicPromptCachePolicy(params);
   const requestOptions = signal ? { signal } : undefined;
   const runner: any = attachments.some(item => item.fileId)
     ? client.beta.messages.stream(params, requestOptions)
@@ -1426,6 +1435,7 @@ export async function streamDirectChat(
   throwIfAborted(signal);
   let providerResult!: DirectProviderStreamResult;
   let contextOverflowRecoveryAttempts = 0;
+  let interruptedStreamRecoveries = 0;
   try {
     while (true) {
       try {
@@ -1441,7 +1451,7 @@ export async function streamDirectChat(
               ? streamGeminiDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal)
               : provider === 'anthropic'
                 ? streamAnthropicDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal)
-                : streamOpenAiCompatibleDirect(provider, model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal);
+                : streamOpenAiCompatibleDirect(provider, model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal, request.chatId || request.runId);
           },
           signal,
           (attempt, totalAttempts, error) => resetProviderAttemptLifecycle({
@@ -1451,6 +1461,11 @@ export async function streamDirectChat(
         );
         break;
       } catch (error) {
+        if (isInterruptedProviderStream(error) && interruptedStreamRecoveries < 1) {
+          interruptedStreamRecoveries++;
+          resetProviderAttemptLifecycle({ text: 'The provider stream was interrupted; retrying the incomplete response.' });
+          continue;
+        }
         if (
           contextOverflowRecoveryAttempts >= 2
           || !isProviderContextLimitError(error)

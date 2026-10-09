@@ -14,6 +14,9 @@ import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
  */
 import path from 'path';
 import { WORK_NOTE_POLICY } from './work-note';
+import { buildTelegramBotContext } from './telegram-bot-context';
+import { buildTelegramWorkNoteCue } from './telegram-bot-behavior';
+import { cleanText } from './gateways/telegram-presentation.cjs';
 import { buildToolAvailabilityPrompt } from './tool-availability-prompt';
 import { SOURCE_READING_POLICY } from './source-read-policy';
 import { schemaUsageDescription } from './tools/registry';
@@ -66,7 +69,8 @@ import { getSearchRouteBrief } from '../search/search-runtime';
 import { formatUnknownError } from './error-format';
 import { getImageGenerationRouteBrief } from '../image/image-generation-runtime';
 import { getVideoGenerationRouteBrief } from '../video/video-generation-runtime';
-import { getApiRetries, isProviderContextLimitError, isProviderFailoverError, waitForApiRetry } from './api-retry';
+import { getApiRetries, isInterruptedProviderStream, isProviderContextLimitError, isProviderFailoverError, waitForApiRetry } from './api-retry';
+import { assertSuccessfulCompatibleFinish } from './provider-capabilities';
 import { getContextFabricForChat } from './context-fabric';
 import { hydratePersistedConversationContext } from './conversation-context';
 import { detectChatBoundaryFromHistory } from './chat-boundary';
@@ -380,6 +384,8 @@ Declared tools: ${activeTools.length}. Their schemas are authoritative.
 Current date/time and per-run evidence are supplied with the latest request.`);
 
     parts.push(buildToolAvailabilityPrompt(activeTools.map(tool => tool.name), true));
+    const telegramContext = buildTelegramBotContext(config?.pinnedContext);
+    if (telegramContext) parts.push(telegramContext);
     return parts.join('\n');
   }
 
@@ -695,6 +701,12 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       ? Math.floor(requestedMaxIterations)
       : isBuilderRuntime ? 24 : 128;
     let agentName = this.profile?.name || config.pinnedContext?.agentName || config.agentId;
+    const telegramBehaviorEvents: any[] = [];
+    const recordTelegramBehavior = (event: any) => {
+      if (!config.pinnedContext?.telegramBot) return;
+      telegramBehaviorEvents.push(event);
+      if (telegramBehaviorEvents.length > 256) telegramBehaviorEvents.splice(0, telegramBehaviorEvents.length - 256);
+    };
 
     // Lease an API key
     apiKeyPool.initialize();
@@ -868,6 +880,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       let totalToolCalls = 0;
       let generateConfig: any = null; // Hoisted so catch block can inspect/modify it
       let cacheRecoveryAttempts = 0;
+      let interruptedStreamRecoveries = 0;
       let hadSuccessfulModelResponse = false;
       let completedNaturally = false;
       let finalAnswerText = '';
@@ -972,9 +985,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             ai, effectiveApiKey, resolvedModel, systemInstruction, funcDecls,
           ).catch(() => null);
           const workingSet = contextFabric.compileWorkingSet(currentRequest, 8_000);
-          const iterationContextCue = workingSet
+          const workingSetCue = workingSet
             ? `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${workingSet}\n[END CURRENT RUNTIME CONTINUITY]`
             : '';
+          const iterationContextCue = [workingSetCue, buildTelegramWorkNoteCue(config.pinnedContext, telegramBehaviorEvents)].filter(Boolean).join('\n');
           const iterationSystemInstruction = [systemInstruction, iterationContextCue].filter(Boolean).join('\n');
           const contextEvents: any[] = [];
           let wakeContextEvent: (() => void) | null = null;
@@ -1085,8 +1099,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             model: resolvedModel,
             contents,
             config: {
-              ...(customAgentCachedContent
-                ? { cachedContent: customAgentCachedContent, ...(iterationContextCue ? { systemInstruction: iterationContextCue } : {}) }
+              ...(customAgentCachedContent && !iterationContextCue
+                ? { cachedContent: customAgentCachedContent }
                 : { systemInstruction: iterationSystemInstruction }),
               temperature: config.temperature ?? 0.4,
               abortSignal: runAbortController.signal,
@@ -1111,7 +1125,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           if (thinkingConfig) generateConfig.config.thinkingConfig = thinkingConfig;
 
           // Add tools if we have any
-          if (funcDecls.length > 0 && !customAgentCachedContent) {
+          if (funcDecls.length > 0 && !generateConfig.config.cachedContent) {
             generateConfig.config.tools = [{ functionDeclarations: funcDecls }];
           }
 
@@ -1119,7 +1133,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             provider: 'gemini',
             model: resolvedModel,
             runtime: this.runtimeKind,
-            cacheActive: Boolean(customAgentCachedContent),
+            cacheActive: Boolean(generateConfig.config.cachedContent),
             ...estimateRequestTokenBudget({
               system: iterationSystemInstruction,
               tools: funcDecls,
@@ -1142,7 +1156,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           for await (const chunk of responseStream as any) {
             latestCandidate = chunk?.candidates?.[0] || latestCandidate;
             latestUsageMetadata = chunk?.usageMetadata || latestUsageMetadata;
-            const parts = latestCandidate?.content?.parts || [];
+            const parts = chunk?.candidates?.[0]?.content?.parts || [];
             for (const part of parts) {
               streamedParts.push(part);
               if (part.thought && part.text && !thoughtClosed) {
@@ -1170,6 +1184,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               }
             }
           }
+          // No function call may run until the provider confirms a complete turn.
+          assertSuccessfulCompatibleFinish(latestCandidate?.finishReason, streamedParts.some(part => part?.functionCall));
           // From this point onward the provider request has completed. Any
           // error while executing tools or assembling the next turn must not
           // spend another API-key route or replay work.
@@ -1199,7 +1215,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                 source: 'provider',
                 provider: 'gemini',
                 model: resolvedModel,
-                cacheMode: resolveProviderPromptCacheMode('gemini', process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1', !!customAgentCachedContent),
+                cacheMode: resolveProviderPromptCacheMode('gemini', process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1', !!generateConfig.config.cachedContent),
                 ...normalizedUsage,
                 interaction: iteration + 1,
                 agentId: config.agentId,
@@ -1250,7 +1266,20 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               .join('');
           }
           let visibleTextEmitted = false;
-          if (bufferedVisibleText) {
+          if (config.pinnedContext?.telegramBot && responseHasToolCalls) {
+            // Classify the entire visible response at the action boundary,
+            // including non-streamed fallbacks. Never truncate a bot update or
+            // accidentally promote tool-accompanying text to a final answer.
+            visibleTextEmitted = true;
+            const noteText = cleanText(bufferedVisibleText || candidate.content.parts
+              .filter((part: any) => part?.text && !part?.thought)
+              .map((part: any) => String(part.text)).join('')).trim();
+            if (noteText) {
+              const note = { type: 'work_note' as const, text: noteText, noteId: `${sessionId}:work:${iteration + 1}`, isStreaming: false, agentName, timestamp: Date.now() };
+              recordTelegramBehavior(note);
+              yield note;
+            }
+          } else if (bufferedVisibleText) {
             visibleTextEmitted = true;
             yield responseHasToolCalls
               ? {
@@ -1500,6 +1529,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               for (let callIndex = 0; callIndex < functionCalls.length; callIndex++) {
                 const call = functionCalls[callIndex];
               const result = callResults.get(call);
+              recordTelegramBehavior({ type: 'tool_result', toolName: call.name, toolCallId: call.uiToolCallId, toolResult: { success: !(result as any)?.error && (result as any)?.success !== false }, timestamp: Date.now() });
               if (normalizeRegistryToolName(call.name) !== 'context_memory') {
                 const exactPageRef = contextFabric.recordTool(call.name, call.args, providerToolResults[callIndex], result);
                 providerToolResults[callIndex] = toolResultCompactor.withExactPageRef(
@@ -1585,6 +1615,14 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             forceContextCompaction = true;
             iteration -= 1;
             iterationsStarted = Math.max(0, iterationsStarted - 1);
+            continue;
+          }
+
+          if (modelRequestStarted && isInterruptedProviderStream(err) && interruptedStreamRecoveries < 1) {
+            interruptedStreamRecoveries++;
+            iteration -= 1;
+            iterationsStarted = Math.max(0, iterationsStarted - 1);
+            yield { type: 'status', text: 'Gemini stream was interrupted; retrying the incomplete response.', timestamp: Date.now() };
             continue;
           }
 
@@ -1749,6 +1787,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       chatId,
       conversationScopeId: chatId,
       agentSessionId: config.agentSessionId || '',
+      telegramBot: config.pinnedContext?.telegramBot,
+      ownerChatId: config.pinnedContext?.ownerChatId,
       workspaceRoot,
       workspacePath: workspaceRoot,
       scratchRoot,

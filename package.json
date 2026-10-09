@@ -161,7 +161,7 @@
     "test:terminal-live-trace": "tsx tests/terminal-live-trace.integration.ts",
     "test:scheduled-task-store": "tsx tests/scheduled-task-store.integration.ts",
     "test:agent-builder-quality": "tsx tests/agent-builder-quality.integration.ts",
-    "test:provider-runtime": "tsx tests/provider-runtime.integration.ts && tsx tests/model-catalog-pagination.integration.ts",
+    "test:provider-runtime": "tsx tests/provider-runtime.integration.ts && tsx tests/model-catalog-pagination.integration.ts && tsx tests/provider-cache-contract.integration.ts && tsx tests/gemini-stream-recovery.integration.ts",
     "test:local-openai-compat": "tsx tests/local-openai-compat.integration.ts",
     "benchmark:context-resonance": "tsx scripts/run-context-resonance-benchmark.ts",
     "test:gaia": "tsx scripts/run-gaia.ts",

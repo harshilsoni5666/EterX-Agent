@@ -272,13 +272,13 @@ const normalizeAdvertisedThinkingLevel = (value: unknown): MainAgentThinkingLeve
 };
 
 export const isOpenAIReasoningModel = (model: string) =>
-  /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-5|gpt-oss/i.test(model);
+  /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-(?:[5-9]|[1-9]\d+)(?:[.-]|$)|gpt-oss/i.test(model);
 
 const isClaudeEffortModel = (model: string) =>
   /claude-(?:sonnet|opus)-(?:4|5)(?:[.-]|$)|claude-(?:fable|mythos)-(?:5|preview)(?:[.-]|$)/i.test(model);
 
 const isClaudeXHighModel = (model: string) =>
-  /claude-(?:sonnet|opus)-5(?:[.-]|$)/i.test(model);
+  /claude-(?:sonnet|opus)-5(?:[.-]|$)|claude-haiku-5[.-]5(?:[.-]|$)|claude-opus-4[.-][78](?:[.-]|$)/i.test(model);
 
 const isMistralReasoningModel = (model: string) =>
   /(?:mistral-small(?:-latest)?|mistral-medium-3-5)/i.test(model);
@@ -304,7 +304,7 @@ export function getModelThinkingOptions(
     // Gemini 3 uses thinkingLevel. "minimal" is the lowest effort; these
     // models do not provide a true thinking-off setting.
     if (model.includes('gemini-3.1-flash-lite-image')) return thinkingOptions('minimal', 'high');
-    if (model.includes('gemini-3.7-flash')) return thinkingOptions('low', 'medium', 'high');
+    if (/gemini-3\.[78]-flash/.test(model)) return thinkingOptions('low', 'medium', 'high');
     if (/gemini-3(?:-pro|\.0-pro)/.test(model)) return thinkingOptions('low', 'high');
     if (/gemini-3\.1-pro/.test(model)) return thinkingOptions('low', 'medium', 'high');
     if (model.includes('gemini-3')) {
@@ -348,6 +348,7 @@ export function getModelThinkingOptions(
     if (!isOpenAIReasoningModel(model)) return [];
     if (/gpt-5(?:\.[0-9]+)?[-.]pro(?:$|[-.])/i.test(model)) return thinkingOptions('high');
     if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
+    if (/gpt-5\.[234](?:$|-)/i.test(model)) return thinkingOptions('off', 'low', 'medium', 'high', 'xhigh');
     // OpenAI models before GPT-5.1 do not accept `none`; o-series models also
     // have no true off setting. GPT-5.1+ is the documented family where
     // reasoning can be disabled.
@@ -388,9 +389,12 @@ export function getModelThinkingOptions(
   }
 
   if (provider === 'grok' && /grok-(?:4|3)/.test(model)) {
-    return /grok-4\.6/.test(model)
-      ? thinkingOptions('low', 'medium', 'high', 'xhigh')
-      : thinkingOptions('low', 'medium', 'high');
+    if (/grok-4\.[67](?:$|-)/.test(model)) return thinkingOptions('low', 'medium', 'high', 'xhigh');
+    if (/grok-4\.5(?:$|-)/.test(model)) return thinkingOptions('low', 'medium', 'high');
+    if (/grok-3-mini(?:$|-)/.test(model)) return thinkingOptions('low', 'high');
+    // Other families have no verified adjustable Chat Completions control.
+    // Live provider metadata can advertise additional support above.
+    return !/non-reasoning/.test(model) && /grok-4/.test(model) ? thinkingOptions('high') : [];
   }
   if (provider === 'qwen' && /(?:qwen3|qwq|thinking)/.test(model)) {
     return thinkingOptions('off', 'low', 'medium', 'high');
@@ -437,7 +441,9 @@ export function inferModelThinkingCapabilities(
     parameter = 'reasoning';
   } else if (provider === 'qwen') {
     parameter = 'enable_thinking';
-  } else if (provider === 'mistral' || provider === 'openai' || provider === 'grok') {
+  } else if (provider === 'grok') {
+    parameter = /grok-(?:3-mini|4\.[567])(?:$|-)/.test(model) ? 'reasoning_effort' : undefined;
+  } else if (provider === 'mistral' || provider === 'openai') {
     parameter = 'reasoning_effort';
   } else if (provider === 'groq' && /qwen(?:\/|[-_])?qwen?3|qwen3/i.test(model)) {
     parameter = 'reasoning_effort';
@@ -485,6 +491,7 @@ export function getGeminiThinkingConfig(
   const model = String(modelName || '').toLowerCase();
   const options = getModelThinkingOptions('gemini', model, discovered);
   if (!options.length) return null;
+  level = normalizeThinkingLevelForModel(level, 'gemini', model, discovered);
 
   const parameter = discovered?.parameter
     || (model.includes('gemini-2.5') ? 'thinkingBudget' : 'thinkingLevel');
@@ -587,6 +594,7 @@ export function getAnthropicThinkingBudget(level: MainAgentThinkingLevel): numbe
 
 export function isAnthropicAdaptiveThinkingModel(modelName: string): boolean {
   const model = String(modelName || '').toLowerCase();
+  if (/claude-haiku-5[.-]5(?:[.-]|$)/i.test(model)) return true;
   if (/claude-(?:fable|mythos)-(?:5|preview)(?:[.-]|$)/i.test(model)) return true;
   if (/claude-(?:sonnet|opus)-5(?:[.-]|$)/i.test(model)) return true;
   const version = model.match(/claude-(?:sonnet|opus)-4[.-](\d+)(?:[.-]|$)/i);

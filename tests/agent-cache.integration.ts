@@ -129,7 +129,7 @@ function testProviderPromptCachePolicy(): void {
     identity,
   );
   assert.equal(params.stream_options.include_usage, true);
-  assert.equal(params.prompt_cache_retention, 'in-memory');
+  assert.equal(params.prompt_cache_retention, undefined, 'use model/account retention defaults');
   assert.equal(params.prompt_cache_options, undefined);
   assert.equal(
     buildOpenAISystemPromptContent('provider-model-id', 'stable', 'dynamic', true),

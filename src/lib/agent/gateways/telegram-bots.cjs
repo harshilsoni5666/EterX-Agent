@@ -7,6 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { normalizeGatewayPayload } = require('./normalizers.cjs');
 const { telegramApi, telegramFetch } = require('./telegram-api.cjs');
+const { formatTelegramText, renderTelegramText } = require('./telegram-presentation.cjs');
 
 const COMMANDS = [
   ['start', 'Meet your bot'], ['help', 'Commands and capabilities'],
@@ -15,8 +16,13 @@ const COMMANDS = [
   ['stop', 'Stop the current task'], ['settings', 'Bot and device settings'],
   ['peek', 'Show the latest work update'],
   ['steer', 'Give guidance while a question is waiting'],
+  ['quiet', 'Only send results and necessary questions'], ['updates', 'Show work updates again'],
 ];
 const digest = value => crypto.createHash('sha256').update(String(value)).digest('hex');
+const replyParameters = target => {
+  const messageId = Number(target?.messageId);
+  return Number.isSafeInteger(messageId) && messageId > 0 ? { message_id: messageId, allow_sending_without_reply: true } : undefined;
+};
 function normalizeBots(value) {
   const ids = new Set();
   return (Array.isArray(value) ? value : []).slice(0, 30).flatMap(raw => {
@@ -44,6 +50,8 @@ class TelegramBots {
     this.states = {};
     this.pairings = new Map();
     this.capabilities = new Map();
+    this.albumTimers = new Map();
+    this.progressRequests = new Map();
     this.file = path.join(daemon.dataDir, 'telegram-bots-state.json');
     try { this.data = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch { this.data = {}; }
     this.data.owners ||= {};
@@ -51,6 +59,8 @@ class TelegramBots {
     this.data.sessions ||= {};
     this.data.questions ||= {};
     this.data.replies ||= {};
+    this.data.progress ||= {};
+    this.data.mediaGroups ||= {};
   }
   persist() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
@@ -99,6 +109,8 @@ class TelegramBots {
     this.start();
   }
   async stop() {
+    for (const timer of this.albumTimers.values()) clearTimeout(timer);
+    this.albumTimers.clear();
     const workers = [...this.workers.values()];
     workers.forEach(worker => worker.controller.abort());
     await Promise.allSettled(workers.map(worker => worker.promise));
@@ -128,6 +140,7 @@ class TelegramBots {
             if (webhook.url) throw Object.assign(new Error('This bot has an active webhook. Remove its previous connection before connecting to EterX.'), { code: 409 });
             await telegramApi(bot.token, 'setMyCommands', { commands: COMMANDS.map(([command, description]) => ({ command, description })) }, signal);
             ready = true;
+            for (const [key, group] of Object.entries(this.data.mediaGroups)) if (group.event.botId === bot.id) this.scheduleAlbum(key);
           }
           this.setState(bot.id, 'connected');
           const updates = await telegramApi(bot.token, 'getUpdates', { offset: this.data.offsets[bot.id] || 0, timeout: 25, allowed_updates: ['message', 'callback_query', 'poll_answer'] }, signal);
@@ -161,7 +174,6 @@ class TelegramBots {
     for (const old of keys.slice(0, Math.max(0, keys.length - 5000))) delete this.data.replies[old];
     this.persist();
   }
-  conversationLabel(target) { return target.conversationNumber && !target.threadId ? `[Conversation ${target.conversationNumber}]\n` : ''; }
   async receive(bot, update) {
     if (update.callback_query || update.poll_answer) return this.receiveAnswer(bot, update);
     const message = update.message;
@@ -218,17 +230,60 @@ class TelegramBots {
     event.conversationId = `tbot_${digest(`${bot.id}:${message.from.id}:${message.message_thread_id || 0}:${active.id}`).slice(0, 40)}`;
     event.sessionKey = event.conversationId;
     event.replyTarget = { ...target, conversationNumber: String(active.number), conversationId: event.conversationId };
-    event.metadata = { ...event.metadata, botId: bot.id, telegramMessageId: message.message_id, conversationNumber: active.number, conversationTitle: active.title };
+    event.metadata = { ...event.metadata, botId: bot.id, telegramMessageId: message.message_id, conversationNumber: active.number, conversationTitle: active.title,
+      ...(message.quote?.text ? { quotedText: String(message.quote.text).slice(0, 2000) } : {}),
+      ...(message.media_group_id ? { mediaGroupId: String(message.media_group_id) } : {}) };
     if (command !== rawCommand) event.text = [command, ...rest].join(' ');
     if (command === '/steer') { event.text = rest.join(' '); event.metadata.forceSteering = true; }
     const reply = this.data.replies[`${bot.id}:${target.chatId}:${message.reply_to_message?.message_id}`];
     if (reply) {
       event.conversationId = reply.conversationId; event.sessionKey = reply.conversationId; event.replyTarget = reply.target;
       if (reply.responseKey) event.metadata.responseKey = reply.responseKey;
+      if (reply.deliveredFile) event.metadata.replyFile = reply.deliveredFile;
     }
     const question = Object.values(this.data.questions).find(item => item.botId === bot.id && item.messageId === message.reply_to_message?.message_id);
     if (question) { event.conversationId = question.conversationId; event.sessionKey = question.conversationId; event.metadata.responseKey = question.responseKey; event.replyTarget = question.target; }
+    // Native replies identify the task without inserting conversation labels
+    // into the bot's prose. A reply can still route to an older virtual chat.
+    event.replyTarget = { ...event.replyTarget, messageId: String(event.replyTarget.threadId || '') === String(target.threadId || '') ? String(message.message_id) : undefined };
+    if (message.media_group_id && event.attachments.length) {
+      const key = `${bot.id}:${target.chatId}:${message.media_group_id}`;
+      const group = this.data.mediaGroups[key];
+      if (group) {
+        if (!group.eventIds.includes(event.id)) {
+          group.eventIds.push(event.id);
+          group.event.attachments.push(...event.attachments.filter(item => !group.event.attachments.some(existing => existing.id === item.id)));
+          if (event.text && !group.captions.includes(event.text)) { group.captions.push(event.text); group.event.text = group.captions.join('\n\n'); }
+          // Captions/replies may arrive on a later member of the same album.
+          if (reply || question) { group.event.conversationId = event.conversationId; group.event.sessionKey = event.sessionKey; group.event.replyTarget = event.replyTarget; group.event.metadata.responseKey = event.metadata.responseKey; if (event.metadata.replyFile) group.event.metadata.replyFile = event.metadata.replyFile; }
+          group.updatedAt = Date.now();
+        }
+      } else this.data.mediaGroups[key] = { event, eventIds: [event.id], captions: event.text ? [event.text] : [], createdAt: Date.now(), updatedAt: Date.now() };
+      // Persist before the update offset advances; a restart resumes assembly.
+      this.persist(); this.scheduleAlbum(key); return;
+    }
     if (this.daemon.store.append(event).accepted) { this.daemon.onEvent(event); this.daemon.lastEventAt = Date.now(); }
+  }
+  scheduleAlbum(key) {
+    if (this.albumTimers.has(key)) clearTimeout(this.albumTimers.get(key));
+    const group = this.data.mediaGroups[key];
+    if (!group) return;
+    const delay = Math.max(0, Math.min(group.updatedAt + 1200, group.createdAt + 4000) - Date.now());
+    const timer = setTimeout(() => {
+      this.albumTimers.delete(key);
+      const buffered = this.data.mediaGroups[key];
+      if (!buffered || this.workers.get(buffered.event.botId)?.controller.signal.aborted) return;
+      try {
+        this.authorizedTarget(buffered.event.replyTarget);
+        if (this.daemon.store.append(buffered.event).accepted) { this.daemon.onEvent(buffered.event); this.daemon.lastEventAt = Date.now(); }
+        delete this.data.mediaGroups[key]; this.persist();
+      } catch (error) {
+        if (!['BOT_DISABLED', 'BOT_NOT_PAIRED'].includes(error.code)) {
+          buffered.updatedAt = Date.now(); buffered.createdAt = Date.now(); this.scheduleAlbum(key);
+        }
+      }
+    }, delay);
+    timer.unref?.(); this.albumTimers.set(key, timer);
   }
   authorizedTarget(target) {
     const bot = this.get(String(target.botId));
@@ -240,64 +295,117 @@ class TelegramBots {
   async send(target, text, delivery) {
     const bot = this.authorizedTarget(target);
     const results = [];
-    // Unicode-safe chunks fit Telegram's 4096 character limit, including a label.
-    const chars = Array.from(String(text));
-    const prefix = this.conversationLabel(target);
-    for (let i = (Number(delivery?.metadata?.telegramPartsSent) || 0) * 3500; i < chars.length; i += 3500) {
-      const result = await telegramApi(bot.token, 'sendMessage', { chat_id: target.chatId, message_thread_id: target.threadId ? Number(target.threadId) : undefined, text: prefix + chars.slice(i, i + 3500).join('') });
+    let sent = Number(delivery?.metadata?.telegramPartsSent) || 0;
+    let parts = delivery?.metadata?.telegramFormattedParts;
+    if (!Array.isArray(parts)) {
+      // Preserve the unsent remainder of deliveries created by older builds.
+      const remaining = sent ? Array.from(String(text)).slice(sent * 3500).join('') : String(text);
+      parts = formatTelegramText(remaining);
+      sent = 0;
+      if (delivery) this.daemon.store.updateDelivery(delivery.id, { metadata: { ...delivery.metadata, telegramFormattedParts: parts, telegramPartsSent: 0 } });
+    }
+    for (let i = sent; i < parts.length; i++) {
+      const result = await this.sendText(bot, 'sendMessage', { chat_id: target.chatId, message_thread_id: target.threadId ? Number(target.threadId) : undefined, ...parts[i], link_preview_options: { is_disabled: true }, ...(i === 0 ? { reply_parameters: replyParameters(target) } : {}) });
       results.push(result);
       this.rememberReply(target, result.message_id);
-      if (delivery) this.daemon.store.updateDelivery(delivery.id, { metadata: { ...delivery.metadata, telegramPartsSent: Math.floor(i / 3500) + 1 } });
+      if (delivery) this.daemon.store.updateDelivery(delivery.id, { metadata: { ...delivery.metadata, telegramPartsSent: i + 1 } });
     }
     return results;
   }
   async typing(target) { const bot = this.authorizedTarget(target); return telegramApi(bot.token, 'sendChatAction', { chat_id: target.chatId, action: 'typing', message_thread_id: target.threadId ? Number(target.threadId) : undefined }); }
-  async acknowledgeSteering(event) {
-    const bot = this.authorizedTarget(event.replyTarget);
-    if (event.metadata?.telegramMessageId) await telegramApi(bot.token, 'setMessageReaction', { chat_id: event.replyTarget.chatId, message_id: event.metadata.telegramMessageId, reaction: [{ type: 'emoji', emoji: '👍' }] });
-    return { ok: true };
-  }
-  async progress(target, text, messageId) {
-    const bot = this.authorizedTarget(target);
-    const content = `${this.conversationLabel(target)}${String(text).slice(0, 3600)}`;
-    const body = { chat_id: target.chatId, text: content, ...(messageId ? { message_id: messageId } : { message_thread_id: target.threadId ? Number(target.threadId) : undefined }) };
-    try {
-      const result = await telegramApi(bot.token, messageId ? 'editMessageText' : 'sendMessage', body);
-      this.rememberReply(target, result.message_id); return result;
+  async sendText(bot, method, body) {
+    try { return await telegramApi(bot.token, method, body); }
+    catch (error) {
+      if (Number(error.code) !== 400 || !/can't parse entities|unsupported url protocol|entity bounds|entity length/i.test(error.message)) throw error;
+      // Formatting must never strand an otherwise valid answer. Telegram
+      // rejected this request before accepting it, so plain-text fallback is safe.
+      return telegramApi(bot.token, method, { ...body, entities: [] });
     }
-    catch (error) { if (/message is not modified/i.test(error.message)) return { message_id: messageId }; throw error; }
+  }
+  async progress(target, text, messageId, options = {}) {
+    const key = `${target.botId}:${target.chatId}:${target.conversationId}:${options.progress_key || messageId || 'progress'}`;
+    const previous = this.progressRequests.get(key) || Promise.resolve();
+    const request = previous.catch(() => undefined).then(() => this.updateProgress(target, text, messageId, options));
+    this.progressRequests.set(key, request);
+    try { return await request; }
+    finally { if (this.progressRequests.get(key) === request) this.progressRequests.delete(key); }
+  }
+  async updateProgress(target, text, messageId, options = {}) {
+    const bot = this.authorizedTarget(target);
+    const key = options.progress_key ? digest(`${bot.id}:${target.chatId}:${target.conversationId}:${options.progress_key}`) : null;
+    const ids = [...(key && this.data.progress[key]?.ids || options.message_ids || (messageId ? [messageId] : []))];
+    const parts = options.clear ? [] : formatTelegramText(String(text));
+    const remember = () => {
+      if (!key) return;
+      this.data.progress[key] = { ids, updatedAt: Date.now() };
+      const keys = Object.keys(this.data.progress).sort((a, b) => this.data.progress[a].updatedAt - this.data.progress[b].updatedAt);
+      for (const old of keys.slice(0, Math.max(0, keys.length - 400))) delete this.data.progress[old];
+      this.persist();
+    };
+    for (let i = 0; i < parts.length; i++) {
+      const reply_markup = options.controls && i === parts.length - 1 ? { inline_keyboard: [[{ text: 'Latest update', callback_data: 'work:peek' }, { text: 'Stop', callback_data: 'work:stop' }]] } : { inline_keyboard: [] };
+      const body = { chat_id: target.chatId, ...parts[i], reply_markup, link_preview_options: { is_disabled: true },
+        ...(ids[i] ? { message_id: ids[i] } : { message_thread_id: target.threadId ? Number(target.threadId) : undefined, disable_notification: true, ...(i === 0 ? { reply_parameters: replyParameters(target) } : {}) }) };
+      try {
+        const result = await this.sendText(bot, ids[i] ? 'editMessageText' : 'sendMessage', body);
+        ids[i] = result.message_id;
+      } catch (error) {
+        if (/message is not modified/i.test(error.message)) continue;
+        // Deleted/old bubbles can be replaced; network failures must not create duplicates.
+        if (!ids[i] || !/message to edit not found|message can't be edited/i.test(error.message)) throw error;
+        delete body.message_id;
+        const result = await this.sendText(bot, 'sendMessage', { ...body, message_thread_id: target.threadId ? Number(target.threadId) : undefined, disable_notification: true, ...(i === 0 ? { reply_parameters: replyParameters(target) } : {}) });
+        ids[i] = result.message_id;
+      }
+      this.rememberReply(target, ids[i], options.run_id ? { runId: options.run_id } : {}); remember();
+    }
+    for (const old of ids.slice(parts.length)) {
+      await telegramApi(bot.token, 'deleteMessage', { chat_id: target.chatId, message_id: old }).catch(async () => {
+        await telegramApi(bot.token, 'editMessageText', { chat_id: target.chatId, message_id: old, text: options.clear ? 'Work status closed. See the latest message below.' : 'Update continued above.', reply_markup: { inline_keyboard: [] } }).catch(() => undefined);
+      });
+    }
+    ids.length = parts.length; remember();
+    return { message_id: ids[0], message_ids: ids };
   }
   async question(target, question, conversationId) {
     const bot = this.authorizedTarget(target);
-    const existing = Object.values(this.data.questions).find(item => item.botId === bot.id && item.responseKey === question.responseKey && item.expiresAt > Date.now());
-    if (existing) return { message_id: existing.messageId };
+    const existing = Object.entries(this.data.questions).find(([, item]) => item.botId === bot.id && item.responseKey === question.responseKey && item.expiresAt > Date.now());
+    if (existing) { await this.ensureQuestionSubmit(bot, existing[1], existing[0]); return { message_id: existing[1].messageId }; }
     const key = crypto.randomBytes(12).toString('hex');
     const options = question.mode === 'confirm' ? [{ label: 'Approve', value: 'yes' }, { label: 'Decline', value: 'no' }] : (question.options || []).slice(0, 8);
-    const heading = String(question.question || 'A few details before I continue');
+    const heading = renderTelegramText(question.question || 'A few details before I continue').text || 'A few details before I continue';
     let result;
-    if (['choice', 'multi_select'].includes(question.mode) && options.length >= 2 && heading.length < 255) {
-      if (question.context || options.some(item => item.description)) {
-        const details = [question.context, ...options.filter(item => item.description).map(item => `${item.label}: ${item.description}`)].filter(Boolean).join('\n\n');
-        await this.send(target, details.slice(0, 3500));
-      }
-      result = await telegramApi(bot.token, 'sendPoll', { chat_id: target.chatId, message_thread_id: target.threadId ? Number(target.threadId) : undefined, question: heading, options: options.map(item => ({ text: String(item.label).slice(0, 100) })), is_anonymous: false, allows_multiple_answers: question.mode === 'multi_select', open_period: 300 });
+    const details = [question.context, ...options.filter(item => item.description).map(item => `${item.label}: ${item.description}`)].filter(Boolean).join('\n\n');
+    const usePoll = (question.mode === 'multi_select' || question.mode === 'choice' && options.length > 5)
+      && options.length >= 2 && heading.length <= 300 && options.every(item => String(item.label).length <= 100);
+    if (usePoll) {
+      if (details) await this.send(target, details);
+      result = await telegramApi(bot.token, 'sendPoll', { chat_id: target.chatId, message_thread_id: target.threadId ? Number(target.threadId) : undefined, reply_parameters: replyParameters(target), question: heading, options: options.map(item => ({ text: String(item.label).slice(0, 100) })), is_anonymous: false, allows_multiple_answers: question.mode === 'multi_select', open_period: 300 });
     } else {
-      const groups = (question.questions || []).map((item, index) => `${index + 1}. ${item.question}${item.options?.length ? '\n' + item.options.map(option => option.label).join(' / ') : ''}`).join('\n\n');
-      result = await telegramApi(bot.token, 'sendMessage', { chat_id: target.chatId, message_thread_id: target.threadId ? Number(target.threadId) : undefined,
-        text: `${this.conversationLabel(target)}${heading}\n${question.context || ''}${groups ? '\n\n' + groups : ''}${question.mode === 'multi_select' ? '\n\n' + options.map((item, index) => `${index + 1}. ${item.label}`).join('\n') : ''}\n\nReply to this message${groups ? ' with one answer per line' : ' with your answer'}.`.slice(0, 4000),
-        reply_markup: options.length && question.mode !== 'multi_select' ? { inline_keyboard: options.map((item, index) => [{ text: String(item.label).slice(0, 64), callback_data: `q:${key}:${index}` }]) } : { force_reply: true, selective: true },
-      });
+      const groups = (question.questions || []).map((item, index) => `${index + 1}. ${item.question}${item.context ? '\n' + item.context : ''}${item.options?.length ? '\n' + item.options.map(option => `${option.label}${option.description ? ': ' + option.description : ''}`).join(' / ') : ''}`).join('\n\n');
+      const content = `${heading}${details ? '\n\n' + details : ''}${groups ? '\n\n' + groups : ''}${question.mode === 'multi_select' ? '\n\n' + options.map((item, index) => `${index + 1}. ${item.label}`).join('\n') : ''}\n\n${options.length && question.mode !== 'multi_select' ? 'Tap an option or reply with your answer.' : `Reply to this message${groups ? ' with one answer per line' : question.mode === 'multi_select' ? ' with the option numbers, separated by commas' : ' with your answer'}.`}`;
+      const parts = formatTelegramText(content);
+      for (let i = 0; i < parts.length; i++) {
+        result = await this.sendText(bot, 'sendMessage', { chat_id: target.chatId, message_thread_id: target.threadId ? Number(target.threadId) : undefined, ...parts[i], link_preview_options: { is_disabled: true }, ...(i === 0 ? { reply_parameters: replyParameters(target) } : {}),
+          ...(i === parts.length - 1 ? { reply_markup: options.length && question.mode !== 'multi_select' ? { inline_keyboard: options.map((item, index) => [{ text: Array.from(String(item.label)).slice(0, 64).join(''), callback_data: `q:${key}:${index}` }]) } : { force_reply: true, selective: true, input_field_placeholder: groups ? 'One answer per line' : 'Your answer' } } : {}),
+        });
+        this.rememberReply({ ...target, conversationId }, result.message_id, { responseKey: question.responseKey });
+      }
     }
     for (const [id, value] of Object.entries(this.data.questions)) if (value.expiresAt < Date.now()) delete this.data.questions[id];
     this.data.questions[key] = { botId: bot.id, conversationId, responseKey: question.responseKey, target, options, mode: question.mode, messageId: result.message_id, pollId: result.poll?.id, expiresAt: Date.now() + 5 * 60 * 1000 };
     this.rememberReply({ ...target, conversationId }, result.message_id, { responseKey: question.responseKey });
-    if (result.poll && question.mode === 'multi_select') {
-      const submit = await telegramApi(bot.token, 'sendMessage', { chat_id: target.chatId, message_thread_id: target.threadId ? Number(target.threadId) : undefined, text: 'Select your answers in the poll, then tap Submit answers.', reply_markup: { inline_keyboard: [[{ text: 'Submit answers', callback_data: `q:${key}:done` }]] } });
-      this.data.questions[key].selectionMessageId = submit.message_id;
-      this.rememberReply({ ...target, conversationId }, submit.message_id, { responseKey: question.responseKey });
-    }
+    await this.ensureQuestionSubmit(bot, this.data.questions[key], key);
     this.persist();
     return result;
+  }
+  async ensureQuestionSubmit(bot, question, key) {
+    if (!question.pollId || question.mode !== 'multi_select' || question.selectionMessageId || question.answered) return;
+    const target = question.target;
+    const submit = await telegramApi(bot.token, 'sendMessage', { chat_id: target.chatId, message_thread_id: target.threadId ? Number(target.threadId) : undefined, text: 'Select your answers in the poll, then tap Submit answers. You can also reply here in your own words.', reply_markup: { inline_keyboard: [[{ text: 'Submit answers', callback_data: `q:${key}:done` }]] } });
+    question.selectionMessageId = submit.message_id;
+    this.rememberReply({ ...target, conversationId: question.conversationId }, submit.message_id, { responseKey: question.responseKey });
+    this.persist();
   }
   async receiveAnswer(bot, update) {
     const callback = update.callback_query;
@@ -305,6 +413,17 @@ class TelegramBots {
     const owner = this.data.owners[bot.id];
     const actor = callback?.from || vote?.user;
     if (!owner || String(actor?.id) !== owner.id) return;
+    if (callback && String(callback.message?.chat?.id) !== String(owner.chatId)) return;
+    if (callback && /^work:(peek|stop)$/.test(callback.data || '')) {
+      const reply = this.data.replies[`${bot.id}:${owner.chatId}:${callback.message?.message_id}`];
+      await telegramApi(bot.token, 'answerCallbackQuery', { callback_query_id: callback.id, text: reply ? 'Request received' : 'Use /peek or /stop in the conversation.' });
+      if (!reply) return;
+      const event = { id: `tbot_${bot.id}_${update.update_id}`, dedupeKey: `tbot_${bot.id}_${update.update_id}`, botId: bot.id, platform: 'telegram', kind: 'message',
+        conversationId: reply.conversationId, sessionKey: reply.conversationId, actor: { id: owner.id, displayName: owner.name }, text: callback.data === 'work:stop' ? '/stop' : '/peek',
+        receivedAt: Date.now(), attachments: [], replyTarget: reply.target, metadata: { botId: bot.id, updateId: update.update_id, targetRunId: reply.runId } };
+      if (this.daemon.store.append(event).accepted) this.daemon.onEvent(event);
+      return;
+    }
     const [, key, index] = String(callback?.data || '').split(':');
     const question = callback ? this.data.questions[key] : Object.values(this.data.questions).find(item => item.pollId === vote?.poll_id);
     const active = question && question.botId === bot.id && !question.answered && question.expiresAt > Date.now();
@@ -326,10 +445,12 @@ class TelegramBots {
   async resolveQuestion(target, responseKey) {
     const bot = this.authorizedTarget(target);
     const question = Object.values(this.data.questions).find(item => item.botId === bot.id && item.responseKey === responseKey);
-    if (!question || question.answered) return { ok: true };
+    if (!question || question.closed) return { ok: true };
     question.answered = true; this.persist();
-    if (question.pollId) await telegramApi(bot.token, 'stopPoll', { chat_id: target.chatId, message_id: question.messageId }).catch(() => undefined);
-    if (!question.pollId || question.selectionMessageId) await telegramApi(bot.token, 'editMessageReplyMarkup', { chat_id: target.chatId, message_id: question.selectionMessageId || question.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => undefined);
+    const alreadyClosed = error => { if (!/already closed|message is not modified|message to edit not found|message with poll to stop not found/i.test(error.message)) throw error; };
+    if (question.pollId) await telegramApi(bot.token, 'stopPoll', { chat_id: target.chatId, message_id: question.messageId }).catch(alreadyClosed);
+    if (!question.pollId || question.selectionMessageId) await telegramApi(bot.token, 'editMessageReplyMarkup', { chat_id: target.chatId, message_id: question.selectionMessageId || question.messageId, reply_markup: { inline_keyboard: [] } }).catch(alreadyClosed);
+    question.closed = true; this.persist();
     return { ok: true };
   }
   async download(event) {
@@ -354,20 +475,66 @@ class TelegramBots {
   }
   async sendFile(target, filePath, caption = '', asPhoto = false, mediaType = 'document') {
     const bot = this.authorizedTarget(target);
-    if (!path.isAbsolute(filePath)) throw new Error('Provide an absolute file path.');
-    const stat = await fs.promises.stat(filePath);
-    if (!stat.isFile() || stat.size > 50 * 1024 * 1024) throw new Error('Choose a file of at most 50 MB for Telegram.');
+    const file = await this.prepareFile(filePath, asPhoto, mediaType);
     const form = new FormData();
     form.set('chat_id', String(target.chatId));
     if (target.threadId) form.set('message_thread_id', String(target.threadId));
-    form.set('caption', String(caption).slice(0, 1000));
+    if (replyParameters(target)) form.set('reply_parameters', JSON.stringify(replyParameters(target)));
+    const captions = formatTelegramText(caption, 1000);
+    if (captions[0]) { form.set('caption', captions[0].text); form.set('caption_entities', JSON.stringify(captions[0].entities)); }
+    form.set(file.kind, new Blob([file.bytes]), path.basename(filePath));
+    if (file.kind === 'video') form.set('supports_streaming', 'true');
+    let result;
+    try { result = await telegramApi(bot.token, { photo: 'sendPhoto', document: 'sendDocument', video: 'sendVideo', audio: 'sendAudio' }[file.kind], form); }
+    catch (error) {
+      if (file.kind !== 'photo' || !/PHOTO_INVALID_DIMENSIONS|IMAGE_PROCESS_FAILED|PHOTO_EXT_INVALID/i.test(error.message)) throw error;
+      form.delete('photo'); form.set('document', new Blob([file.bytes]), path.basename(filePath));
+      result = await telegramApi(bot.token, 'sendDocument', form);
+    }
+    const deliveredFile = { path: filePath, size: file.size, mtimeMs: file.mtimeMs, messageId: result.message_id };
+    this.rememberReply(target, result.message_id, { deliveredFile });
+    return { ...result, eterx_file: deliveredFile, caption_truncated: captions.length > 1 };
+  }
+  async prepareFile(filePath, asPhoto, mediaType) {
+    if (!path.isAbsolute(filePath)) throw new Error('Provide an absolute file path.');
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile() || stat.size > 50 * 1024 * 1024) throw new Error('Choose a file of at most 50 MB for Telegram.');
     const photo = asPhoto && stat.size <= 10 * 1024 * 1024 && /\.(png|jpe?g|webp)$/i.test(filePath);
     const kind = photo ? 'photo' : mediaType === 'video' && /\.mp4$/i.test(filePath) ? 'video' : mediaType === 'audio' && /\.(mp3|m4a)$/i.test(filePath) ? 'audio' : 'document';
-    form.set(kind, new Blob([await fs.promises.readFile(filePath)]), path.basename(filePath));
-    if (kind === 'video') form.set('supports_streaming', 'true');
-    const result = await telegramApi(bot.token, { photo: 'sendPhoto', document: 'sendDocument', video: 'sendVideo', audio: 'sendAudio' }[kind], form);
-    this.rememberReply(target, result.message_id);
-    return result;
+    const bytes = await fs.promises.readFile(filePath);
+    if (bytes.length > 50 * 1024 * 1024 || bytes.length !== stat.size) throw new Error('The file changed while preparing it. Finish saving it before sharing.');
+    return { path: filePath, kind, bytes, size: stat.size, mtimeMs: stat.mtimeMs };
+  }
+  async sendFiles(target, filePaths, caption = '', asPhoto = false, mediaType = 'document') {
+    const bot = this.authorizedTarget(target);
+    if (!Array.isArray(filePaths) || filePaths.length < 1 || filePaths.length > 10) throw new Error('Provide one to ten absolute file paths.');
+    if (filePaths.length === 1) return [await this.sendFile(target, filePaths[0], caption, asPhoto, mediaType)];
+    const files = [];
+    // Validate the whole album before any upload, with a bounded memory budget.
+    let total = 0;
+    for (const filePath of filePaths) {
+      const file = await this.prepareFile(String(filePath), asPhoto, mediaType);
+      total += file.size;
+      if (total > 100 * 1024 * 1024) throw new Error('Keep each album under 100 MB. Send large files individually.');
+      files.push(file);
+    }
+    const types = new Set(files.map(file => file.kind));
+    if (types.size > 1 && (types.has('document') || types.has('audio'))) throw new Error('Group documents or audio with files of the same type. Send previews separately, or use as_photo=false and media_type=document for all originals.');
+    const form = new FormData();
+    form.set('chat_id', String(target.chatId));
+    if (target.threadId) form.set('message_thread_id', String(target.threadId));
+    if (replyParameters(target)) form.set('reply_parameters', JSON.stringify(replyParameters(target)));
+    const captions = formatTelegramText(caption, 1000);
+    form.set('media', JSON.stringify(files.map((file, i) => {
+      form.set(`file${i}`, new Blob([file.bytes]), path.basename(file.path));
+      return { type: file.kind, media: `attach://file${i}`, ...(i === 0 && captions[0] ? { caption: captions[0].text, caption_entities: captions[0].entities } : {}), ...(file.kind === 'video' ? { supports_streaming: true } : {}) };
+    })));
+    const messages = await telegramApi(bot.token, 'sendMediaGroup', form);
+    return messages.map((message, i) => {
+      const deliveredFile = { path: files[i].path, size: files[i].size, mtimeMs: files[i].mtimeMs, messageId: message.message_id };
+      this.rememberReply(target, message.message_id, { deliveredFile });
+      return { ...message, eterx_file: deliveredFile, caption_truncated: i === 0 && captions.length > 1 };
+    });
   }
 }
 

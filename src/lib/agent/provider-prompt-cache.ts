@@ -74,10 +74,73 @@ export function applyOpenAIPromptCachePolicy(
 ): string {
   const identity = buildPromptCacheIdentity({ provider: 'openai', ...input });
   params.prompt_cache_key = identity;
-  params.prompt_cache_retention =
-    process.env.OPENAI_PROMPT_CACHE_RETENTION === '24h' ? '24h' : 'in-memory';
-  params.stream_options = { include_usage: true };
+  // Caching is automatic. Let the model/account choose its supported default:
+  // forcing a retention breaks models with different cache lifetime controls.
+  delete params.prompt_cache_retention;
+  const retention = process.env.OPENAI_PROMPT_CACHE_RETENTION?.trim().replace('-', '_');
+  const version = input.model.match(/(?:^|\/)gpt-(\d+)(?:\.(\d+))?/i);
+  const modernCache = version && (Number(version[1]) > 5 || (Number(version[1]) === 5 && Number(version[2]) >= 6));
+  const extendedOnly = /(?:^|\/)gpt-5\.5(?:$|-)/i.test(input.model);
+  if (!modernCache && (retention === '24h' || (retention === 'in_memory' && !extendedOnly))) {
+    params.prompt_cache_retention = retention;
+  }
+  params.stream_options = { ...params.stream_options, include_usage: true };
   return identity;
+}
+
+/** Retry only a rejected cache hint, before a stream has been returned. */
+export async function withOpenAICacheFallback<T>(
+  params: Record<string, any>,
+  send: (body: Record<string, any>) => Promise<T>,
+): Promise<T> {
+  try {
+    return await send(params);
+  } catch (error: any) {
+    const status = Number(error?.status || error?.statusCode || 0);
+    const field = String(error?.param || error?.error?.param || '');
+    const message = String(error?.message || '');
+    const rejectedHint = ['prompt_cache_retention', 'prompt_cache_key'].some(name =>
+      params[name] !== undefined && (field === name || message.includes(name)));
+    if (status !== 400 || !rejectedHint) throw error;
+    const fallback = { ...params };
+    delete fallback.prompt_cache_retention;
+    delete fallback.prompt_cache_key;
+    // Implicit provider caching remains active; no tools or reasoning change.
+    return send(fallback);
+  }
+}
+
+/** Claude allows at most four explicit breakpoints and no empty/thinking ones. */
+export function applyAnthropicPromptCachePolicy(params: Record<string, any>, enabled = process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1'): void {
+  delete params.cache_control;
+  const groups = [params.tools, params.system, ...(params.messages || []).map((message: any) => message.content)];
+  for (const group of groups) {
+    if (Array.isArray(group)) for (const block of group) {
+      if (block && typeof block === 'object') delete block.cache_control;
+    }
+  }
+  if (!enabled) return;
+  if (params.tools?.length) params.tools[params.tools.length - 1].cache_control = { type: 'ephemeral' };
+  if (Array.isArray(params.system)) {
+    const block = params.system.find((item: any) => item?.type === 'text' && item.text?.trim());
+    if (block) block.cache_control = { type: 'ephemeral' };
+  }
+  for (let i = (params.messages?.length || 0) - 1; i >= 0; i--) {
+    const message = params.messages[i];
+    if (typeof message.content === 'string') {
+      if (!message.content.trim()) continue;
+      message.content = [{ type: 'text', text: message.content }];
+    }
+    if (!Array.isArray(message.content)) continue;
+    const block = [...message.content].reverse().find((item: any) =>
+      (item?.type === 'text' && item.text?.trim()) || ['image', 'document', 'tool_use', 'tool_result'].includes(item?.type));
+    if (block) { block.cache_control = { type: 'ephemeral' }; break; }
+  }
+}
+
+/** Dynamic system instructions require implicit caching on Gemini. */
+export function canUseExplicitGeminiSystemCache(dynamicSystemInstruction: string): boolean {
+  return !dynamicSystemInstruction.trim();
 }
 
 export function buildOpenAISystemPromptContent(

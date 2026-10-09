@@ -18,7 +18,7 @@ Actions:
 - attachments_fetch: list attachments for message_id.
 - events_poll / events_wait: receive normalized new-message events using after_cursor.
 - messages_send: send text using platform and the adapter-specific target object.
-- files_send: deliver an absolute local file to Telegram; as_photo displays an image preview. Telegram bot runs automatically use their paired recipient.
+- files_send: deliver file_path or file_paths (1–10 absolute paths) to Telegram. as_photo displays image previews; file_paths groups related previews/documents as an album. Albums of documents/audio must contain only that type; at most 50 MB per file and 100 MB per album. Use a short caption (under 1000 characters). Telegram bot runs automatically use their paired recipient. A successful upload confirms delivery; do not resend it in a final answer.
 - channels_list: list configured platform connection states.
 - agent_profile_get: load a configured Channel Agent profile on demand.
 - permissions_list_open: list pending DM pairing requests.
@@ -37,6 +37,7 @@ Actions:
     target: z.record(z.string(), z.string()).optional(),
     text: z.string().optional(),
     file_path: z.string().optional(),
+    file_paths: z.array(z.string()).min(1).max(10).optional().describe('An album of related files or previews. Use instead of file_path; preserve the intended order.'),
     caption: z.string().optional(),
     as_photo: z.boolean().optional(),
     media_type: z.enum(['document', 'video', 'audio']).optional().describe('Use video for an MP4 preview, audio for MP3/M4A playback, or document for the original file.'),
@@ -54,15 +55,19 @@ Actions:
     }
     try {
       const { action, confirm: _confirm, ...args } = input;
+      if (action === 'files_send' && Boolean(args.file_path) === Boolean(args.file_paths?.length)) return { success: false, status: 'Provide either file_path or file_paths.' };
       if (context?.telegramBot && ['files_send', 'messages_send'].includes(action)) {
         args.target = context.telegramBot.target;
         args.platform = 'telegram';
       }
       const results = await callGateway(action, args);
       if (action === 'files_send' && context?.telegramBot) {
-        context._onTrace?.({ type: 'telegram_file_sent', path: args.file_path });
+        for (const result of Array.isArray(results) ? results : [results]) {
+          const file = result?.eterx_file;
+          if (file?.path) context._onTrace?.({ type: 'telegram_file_sent', ...file });
+        }
       }
-      return { success: true, status: `Gateway action ${action} completed.`, results };
+      return { success: true, status: results?.retrying ? 'Delivery is pending and will be retried. Do not claim it was received yet.' : `Gateway action ${action} completed.`, results };
     } catch (error: any) {
       return { success: false, status: error?.message || String(error) };
     }
