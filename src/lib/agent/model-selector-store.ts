@@ -10,7 +10,8 @@ export const MODEL_CATALOG_STORAGE_KEY = 'eterx_model_catalog';
 export const MODEL_SELECTOR_STORAGE_KEY = 'eterx_model_selector_entries';
 export const MODEL_SELECTOR_SCHEMA_STORAGE_KEY = 'eterx_model_selector_schema';
 export const MODEL_SELECTOR_SCHEMA_VERSION = '2';
-export const MODEL_THINKING_CAPABILITIES_STORAGE_KEY = 'eterx_model_thinking_capabilities';
+// v3 also replaces incomplete provider metadata with native catalogs and schemas.
+export const MODEL_THINKING_CAPABILITIES_STORAGE_KEY = 'eterx_model_thinking_capabilities_v3';
 export const MODEL_WIRE_CAPABILITIES_STORAGE_KEY = 'eterx_model_wire_capabilities';
 export const MODEL_THINKING_LEVELS_STORAGE_KEY = 'eterx-model-thinking-levels';
 export const MODEL_CONTEXT_WINDOWS_STORAGE_KEY = 'eterx_model_context_windows';

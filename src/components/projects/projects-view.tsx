@@ -9,6 +9,7 @@ import { normalizeScheduledTask, SCHEDULED_TASKS_STORAGE_KEY, SCHEDULED_TASKS_UP
 import { persistScheduledTasks } from '../../lib/scheduled-task-sync';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
+import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
 
 export type ScheduledTaskItem = ScheduledTaskRecord;
 import {
@@ -18,6 +19,7 @@ import {
   getMainAgentModelConfig,
   normalizeModelThinkingCapabilities,
   normalizeMainAgentThinkingLevel,
+  normalizeThinkingLevelForModel,
   type MainAgentProvider,
   type MainAgentMode,
   type MainAgentThinkingLevel,
@@ -498,9 +500,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       title: taskTitle.trim(),
       description: taskDescription.trim(),
       model: formModel,
-      thinkingLevel: ['minimal', 'low', 'medium', 'high'].includes(formThinkingLevel)
-        ? formThinkingLevel as 'minimal' | 'low' | 'medium' | 'high'
-        : undefined,
+      thinkingLevel: formThinkingOptions.some(option => option.id === formThinkingLevel) ? formThinkingLevel : undefined,
       agentId: formAgent.id,
       agentName: formAgent.name,
       priority: priority as 'low' | 'medium' | 'high',
@@ -715,29 +715,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   const selectedModel = useMemo(() => {
     return modelOptions.find(option => option.optionKey === storedModelSettings.chatModelSelection)
-      || modelOptions[0]
       || null;
   }, [modelOptions, storedModelSettings.chatModelSelection]);
-
-  useEffect(() => {
-    if (!selectedModel || selectedModel.optionKey === storedModelSettings.chatModelSelection) return;
-    const option = selectedModel;
-    const nextOverrides = {
-      ...storedModelSettings.modelOverrides,
-      [option.provider]: option.modelId || '',
-    };
-    appStorage.setItems({
-      [CHAT_MODEL_SELECTION_STORAGE_KEY]: option.optionKey,
-      [MODEL_OVERRIDE_STORAGE_KEY]: JSON.stringify(nextOverrides),
-    });
-    setStoredModelSettings(previous => ({
-      ...previous,
-      modelOverrides: nextOverrides,
-      chatModelSelection: option.optionKey,
-    }));
-    emitModelSettingsUpdate({ chatModelSelection: option.optionKey, modelOverrides: nextOverrides });
-    syncRuntimeModelOverrides(nextOverrides);
-  }, [modelOptions, selectedModel, storedModelSettings.modelOverrides]);
 
   const getThinkingTarget = useCallback((option: ChatModelOption | null) => option
     ? {
@@ -760,14 +739,14 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   // Mirror only an explicit, usable chat selection. Never manufacture a
   // provider/model default for scheduled tasks.
   useEffect(() => {
-    setFormModel(selectedModel?.optionKey || AUTO_MODEL_SELECTION);
-  }, [modelOptions, selectedModel]);
+    if (!editingTaskId && !formModel && selectedModel) setFormModel(selectedModel.optionKey);
+  }, [editingTaskId, formModel, selectedModel]);
 
   const allModelOptions = modelOptions;
-  const safeThinkingLevel = useMemo(() => normalizeMainAgentThinkingLevel(thinkingLevel), [thinkingLevel]);
+  const safeThinkingLevel = useMemo(() => selectedModel ? normalizeThinkingLevelForModel(thinkingLevel, selectedModel.provider, selectedModel.modelName, storedModelSettings.thinkingCapabilities[selectedModel.optionKey]) : 'off', [thinkingLevel, selectedModel, storedModelSettings.thinkingCapabilities]);
   const activeThinkingOptions = useMemo(() => getThinkingLevelOptions(selectedModel), [selectedModel, getThinkingLevelOptions]);
   const selectedThinkingLevel = useMemo(() => {
-    return activeThinkingOptions.find(option => option.id === safeThinkingLevel) || activeThinkingOptions[1] || activeThinkingOptions[0];
+    return activeThinkingOptions.find(option => option.id === safeThinkingLevel);
   }, [activeThinkingOptions, safeThinkingLevel]);
 
   const getModelOptionLabel = useCallback((option: ChatModelOption) => option.label, []);
@@ -783,8 +762,12 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
 
   useEffect(() => {
     if (formThinkingOptions.some(option => option.id === formThinkingLevel)) return;
-    setFormThinkingLevel(formThinkingOptions[1]?.id || formThinkingOptions[0]?.id || 'medium');
-  }, [formThinkingLevel, formThinkingOptions]);
+    setFormThinkingLevel(selectedFormModel ? normalizeThinkingLevelForModel(formThinkingLevel, selectedFormModel.provider, selectedFormModel.modelName, storedModelSettings.thinkingCapabilities[selectedFormModel.optionKey]) : 'off');
+  }, [formThinkingLevel, formThinkingOptions, selectedFormModel, storedModelSettings.thinkingCapabilities]);
+
+  useEffect(() => {
+    if (showModelMenu || activePopover === 'model' || activePopover === 'thinking') void refreshSavedModelCatalog();
+  }, [showModelMenu, activePopover]);
 
   const selectChatModelOption = useCallback((option: ChatModelOption) => {
     if (typeof window !== 'undefined') {

@@ -56,7 +56,7 @@ const nativeDialogueEntries = (contents: any[]): WorkingDialogueEntry[] => {
     // answer once, rather than appending it again on the next admission.
     const dialogueTexts = message.role === 'user' ? texts : [texts.join('\n')];
     for (const raw of dialogueTexts) {
-      if (!raw.trim() || /^\[(?:SYSTEM - COMPACTED CONTEXT CAPSULE |CURRENT RUNTIME |SYSTEM-PROVIDED CURRENT RUNTIME |HISTORICAL TOOL OBSERVATION|RECOVERED COMPLETED TOOL OBSERVATION|RESTORED WORKING CONTEXT RECORD|PRIOR MODEL EXECUTION RECORD)/.test(raw)
+      if (!raw.trim() || /^\[(?:SYSTEM - COMPACTED CONTEXT CAPSULE |CURRENT RUNTIME |SYSTEM-PROVIDED CURRENT RUNTIME |RUNTIME CONTEXT UPDATE: |HISTORICAL TOOL OBSERVATION|RECOVERED COMPLETED TOOL OBSERVATION|RESTORED WORKING CONTEXT RECORD|PRIOR MODEL EXECUTION RECORD)/.test(raw)
         || raw === 'Context capsule loaded. Continuing the retained active objective.') continue;
       let text = raw;
       const aliases = new Set<string>();

@@ -274,6 +274,7 @@ Menu.setApplicationMenu(null);
 
 let mainWindow;
 require('./chat-terminal').registerChatTerminals({ ipcMain, app, getWindow: () => mainWindow });
+require('./managed-workspaces').startWorkspaceCleanup();
 require('./workspace-panel').registerWorkspacePanel({ ipcMain, app, getWindow: () => mainWindow });
 let petWindow;
 let petWindowReadyPromise = null;
@@ -314,7 +315,17 @@ let desktopUpdateInstallWatchdog = null;
 let desktopUpdateRevision = 0;
 let desktopUpdateCheckTimer = null;
 let desktopUpdateViewedVersion = null;
+let desktopUpdateLastAttemptAt = 0;
+let desktopUpdateNextCheckAt = 0;
+let desktopUpdateCheckFailures = 0;
+let desktopUpdateSystemSuspended = false;
+let desktopUpdateDownloadCancellation = null;
+let desktopUpdateDownloadActivityAt = 0;
+let desktopUpdateDownloadWatchdog = null;
+let DesktopUpdateCancellationToken = null;
+const desktopUpdateNotifications = new Map();
 const DESKTOP_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+const DESKTOP_UPDATE_RESUME_INTERVAL_MS = 5 * 60 * 1000;
 const DESKTOP_UPDATE_VIEW_STATE_FILE = 'eterx-update-view-state.json';
 const pendingRendererFlushes = new Map();
 let rendererFlushSequence = 0;
@@ -352,6 +363,11 @@ let desktopUpdateState = {
   automaticChecks: false,
   manualInstall: true,
   lastCheckedAt: null,
+  lastCheckAttemptAt: null,
+  nextCheckAt: null,
+  checkError: null,
+  checking: false,
+  openSettingsRequest: null,
   platform: process.platform,
   architecture: process.arch,
   packageType: DESKTOP_UPDATE_PACKAGE_TYPE,
@@ -637,30 +653,35 @@ function markDesktopUpdateViewed() {
     desktopUpdateViewedVersion = version;
     writeDesktopUpdateViewedVersion(version);
   }
-  if (desktopUpdateState.updateAvailableUnread) {
-    return publishDesktopUpdateState({ updateAvailableUnread: false });
+  if (desktopUpdateState.updateAvailableUnread || desktopUpdateState.openSettingsRequest) {
+    return publishDesktopUpdateState({ updateAvailableUnread: false, openSettingsRequest: null });
   }
   return desktopUpdateState;
 }
 
 function desktopUpdateChecksAreActive() {
-  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized() && !isQuitting);
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized() && !isQuitting && !desktopUpdateSystemSuspended);
 }
 
 function stopAutomaticDesktopUpdateChecks() {
   if (desktopUpdateCheckTimer) clearTimeout(desktopUpdateCheckTimer);
   desktopUpdateCheckTimer = null;
+  if (desktopUpdateState.nextCheckAt) publishDesktopUpdateState({ nextCheckAt: null });
 }
 
 function scheduleAutomaticDesktopUpdateCheck() {
   stopAutomaticDesktopUpdateChecks();
   if (!desktopAutoUpdater || !desktopUpdateChecksAreActive()) return;
-  if (desktopUpdateState.availableVersion || ['available', 'downloading', 'ready', 'installing'].includes(desktopUpdateState.status)) return;
+  if (desktopUpdateCheckPromise || desktopUpdateDownloadPromise || desktopUpdateInstallPromise || desktopUpdateState.downloadReady ||
+    ['downloading', 'ready', 'installing'].includes(desktopUpdateState.status)) return;
+  if (!desktopUpdateNextCheckAt) desktopUpdateNextCheckAt = Date.now() + 8_000;
+  publishDesktopUpdateState({ nextCheckAt: new Date(desktopUpdateNextCheckAt).toISOString() });
   desktopUpdateCheckTimer = setTimeout(() => {
     desktopUpdateCheckTimer = null;
     if (!desktopUpdateChecksAreActive()) return;
-    void performDesktopUpdateCheck({ silent: true }).finally(scheduleAutomaticDesktopUpdateCheck);
-  }, DESKTOP_UPDATE_CHECK_INTERVAL_MS);
+    void performDesktopUpdateCheck({ silent: true });
+  }, Math.max(1_000, desktopUpdateNextCheckAt - Date.now()));
+  desktopUpdateCheckTimer.unref?.();
 }
 
 function startAutomaticDesktopUpdateChecks({ immediate = false } = {}) {
@@ -668,26 +689,61 @@ function startAutomaticDesktopUpdateChecks({ immediate = false } = {}) {
     stopAutomaticDesktopUpdateChecks();
     return;
   }
+  // Coalesce show/restore/load events and avoid a request on every focus change.
+  // Preserve failure backoff even if the user repeatedly hides the window.
+  if (immediate && desktopUpdateLastAttemptAt && !desktopUpdateCheckFailures &&
+    Date.now() - desktopUpdateLastAttemptAt >= DESKTOP_UPDATE_RESUME_INTERVAL_MS) {
+    desktopUpdateNextCheckAt = Math.min(desktopUpdateNextCheckAt || Infinity, Date.now() + 2_000);
+  }
   scheduleAutomaticDesktopUpdateCheck();
-  if (immediate) void performDesktopUpdateCheck({ silent: true });
 }
 
 function describeDesktopUpdateError(error, operation = 'Update') {
   const detail = String(error?.message || error || 'unknown error').trim();
-  if (/ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|latest(?:-mac|-linux(?:-arm64)?)?\.yml|\b404\b/i.test(detail)) {
-    const expectedMetadata = process.platform === 'darwin'
-      ? 'latest-mac.yml'
-      : process.platform === 'linux' && process.arch !== 'x64'
-        ? `latest-linux-${process.arch}.yml`
-        : process.platform === 'linux'
-          ? 'latest-linux.yml'
-          : 'latest.yml';
-    return `${operation} failed: GitHub Releases does not expose ${expectedMetadata} for this device.`;
+  const code = String(error?.code || '');
+  if (code === 'ERR_ETERX_RELEASE_PENDING') return detail;
+  if (/ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|ERR_UPDATER_LATEST_VERSION_NOT_FOUND|\b404\b/i.test(`${code} ${detail}`)) {
+    return `${operation} could not find a published update on the official release host. EterX will retry automatically.`;
   }
-  if (/ERR_INTERNET_DISCONNECTED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|network|internet/i.test(detail)) {
+  if (/\b(?:429|503)\b|rate.?limit/i.test(detail)) return `${operation} is temporarily unavailable. The release host is busy; EterX will retry later.`;
+  if (/ENOSPC|not enough space|disk.*full/i.test(`${code} ${detail}`)) return `${operation} failed: free some disk space and try again.`;
+  if (/checksum|sha512|sha256|ERR_CHECKSUM_MISMATCH/i.test(`${code} ${detail}`)) return `${operation} failed: the downloaded package could not be verified. Retry the download.`;
+  if (/ERR_INTERNET_DISCONNECTED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|network|internet|timed? ?out/i.test(`${code} ${detail}`)) {
     return `${operation} failed: the release host could not be reached. Check the internet connection and try again.`;
   }
   return `${operation} failed: ${detail}`;
+}
+
+function notifyDesktopUpdate(version, ready) {
+  const key = `${version}:${ready ? 'ready' : 'available'}`;
+  if (desktopUpdateNotifications.has(key)) return;
+  desktopUpdateNotifications.set(key, null);
+  // The visible app has its own notice. Native notifications help when the
+  // window is covered or a requested download finishes in the background.
+  if (mainWindow?.isFocused()) return;
+  try {
+    const { Notification } = require('electron');
+    if (!Notification.isSupported()) return;
+    const notification = new Notification({
+      title: `EterX ${version} ${ready ? 'is ready' : 'is available'}`,
+      body: ready ? 'Open Updates to restart and install.' : 'Open Updates to download the new version.',
+    });
+    notification.on('click', () => {
+      showMainWindow();
+      // Keep this request in the snapshot until Settings acknowledges it so a
+      // cold or reloading renderer does not lose a notification click.
+      publishDesktopUpdateState({ openSettingsRequest: desktopUpdateRevision + 1 });
+    });
+    desktopUpdateNotifications.set(key, notification);
+    notification.show();
+  } catch (error) {
+    logToFile(`[update] Could not show notification: ${error?.message || error}`);
+  }
+}
+
+function clearDesktopUpdateDownloadWatchdog() {
+  if (desktopUpdateDownloadWatchdog) clearInterval(desktopUpdateDownloadWatchdog);
+  desktopUpdateDownloadWatchdog = null;
 }
 
 function restoreDesktopRuntimeAfterInstallerFailure(error) {
@@ -810,6 +866,7 @@ async function prepareDesktopClose(background = false, timeoutMs = 8000) {
 
 let desktopResumePending = false;
 async function notifyDesktopResume() {
+  startAutomaticDesktopUpdateChecks({ immediate: true });
   if (desktopResumePending) return;
   desktopResumePending = true;
   try {
@@ -1058,84 +1115,61 @@ ipcMain.handle('desktop-window-visibility-get', (event) => {
 
 async function performDesktopUpdateCheck({ silent = false } = {}) {
   if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
-  if (desktopUpdateCheckPromise) return desktopUpdateCheckPromise;
-  if (silent && desktopUpdateState.status === 'available') return desktopUpdateState;
+  if (desktopUpdateCheckPromise) {
+    if (!silent) {
+      desktopUpdateCheckSilent = false;
+      if (!desktopUpdateState.availableVersion) publishDesktopUpdateState({ status: 'checking', message: 'Checking for updates...' });
+    }
+    return desktopUpdateCheckPromise;
+  }
   if (desktopUpdateState.status === 'downloading' ||
     desktopUpdateState.status === 'ready' ||
     desktopUpdateState.status === 'installing' ||
-    desktopUpdateState.downloadReady) {
+    desktopUpdateState.downloadReady || desktopUpdateDownloadPromise || desktopUpdateInstallPromise) {
     return desktopUpdateState;
   }
 
+  stopAutomaticDesktopUpdateChecks();
   desktopUpdateCheckSilent = silent;
-  const revisionBeforeCheck = desktopUpdateState.revision;
-  desktopUpdateCheckPromise = (async () => {
-    if (!silent) {
-      publishDesktopUpdateState({
-        status: 'checking',
-        availableVersion: null,
-        percent: 0,
-        transferred: 0,
-        total: 0,
-        bytesPerSecond: 0,
-        downloadReady: false,
-        releaseName: null,
-        releaseDate: null,
-        message: 'Checking for updates...',
-      });
-    }
+  desktopUpdateLastAttemptAt = Date.now();
+  publishDesktopUpdateState({
+    checking: true,
+    checkError: null,
+    lastCheckAttemptAt: new Date(desktopUpdateLastAttemptAt).toISOString(),
+    ...(!silent && !desktopUpdateState.availableVersion ? { status: 'checking', message: 'Checking for updates...' } : {}),
+  });
+  desktopUpdateCheckPromise = Promise.resolve().then(async () => {
     try {
       const result = await desktopAutoUpdater.checkForUpdates();
-      const checkedVersion = result?.updateInfo?.version;
-      // electron-updater normally emits update-available/update-not-available
-      // before resolving. Keep a defensive fallback for slower macOS feeds so
-      // the UI can never remain stuck on "checking".
-      if (desktopUpdateState.revision === revisionBeforeCheck || desktopUpdateState.status === 'checking') {
-        const now = new Date().toISOString();
-        if (result?.isUpdateAvailable && checkedVersion) {
-          publishDesktopUpdateState({
-            status: 'available',
-            ...desktopUpdateInfoPatch(result.updateInfo),
-            updateAvailableUnread: checkedVersion !== desktopUpdateViewedVersion,
-            percent: 0,
-            message: `EterX ${checkedVersion} is available`,
-            lastCheckedAt: now,
-          });
-        } else {
-          publishDesktopUpdateState({
-            status: 'current',
-            availableVersion: null,
-            updateAvailableUnread: false,
-            percent: 100,
-            message: 'EterX is up to date',
-            lastCheckedAt: now,
-          });
-        }
-      } else {
-        publishDesktopUpdateState({ lastCheckedAt: new Date().toISOString() });
+      if (!result?.updateInfo?.version || typeof result.isUpdateAvailable !== 'boolean') {
+        throw new Error('The release host did not return an update result. Try again shortly.');
       }
+      desktopUpdateCheckFailures = 0;
+      desktopUpdateNextCheckAt = Date.now() + DESKTOP_UPDATE_CHECK_INTERVAL_MS;
+      publishDesktopUpdateState({ lastCheckedAt: new Date().toISOString(), checkError: null });
     } catch (error) {
-      if (silent) {
-        logToFile(`[update] Silent check deferred: ${describeDesktopUpdateError(error, 'Update check')}`);
-      } else {
-        publishDesktopUpdateState({
-          status: 'error',
-          availableVersion: null,
-          percent: 0,
-          transferred: 0,
-          total: 0,
-          bytesPerSecond: 0,
-          downloadReady: false,
-          lastCheckedAt: new Date().toISOString(),
-          message: describeDesktopUpdateError(error, 'Update check'),
-        });
-      }
+      desktopUpdateCheckFailures += 1;
+      const retryMinutes = [1, 2, 5, 10, 30][Math.min(desktopUpdateCheckFailures - 1, 4)];
+      desktopUpdateNextCheckAt = Date.now() + retryMinutes * 60_000;
+      const message = describeDesktopUpdateError(error, 'Update check');
+      logToFile(`[update] ${message}`);
+      // Retain a known release through a transient offline check. Never claim
+      // "up to date" after a failed request, including silent startup scans.
+      publishDesktopUpdateState({
+        checkError: message,
+        ...(!desktopUpdateState.availableVersion ? {
+          status: error?.code === 'ERR_ETERX_RELEASE_PENDING' ? 'pending' : 'error',
+          message,
+        } : {}),
+      });
     } finally {
       desktopUpdateCheckSilent = false;
+      publishDesktopUpdateState({ checking: false });
       desktopUpdateCheckPromise = null;
+      scheduleAutomaticDesktopUpdateCheck();
     }
     return desktopUpdateState;
-  })();
+  });
   return desktopUpdateCheckPromise;
 }
 
@@ -1150,8 +1184,9 @@ function initializeDesktopUpdates() {
   }
   try {
     desktopUpdateViewedVersion = readDesktopUpdateViewedVersion();
+    let updaterEntry;
     try {
-      ({ autoUpdater: desktopAutoUpdater } = require('electron-updater'));
+      updaterEntry = require.resolve('electron-updater');
     } catch {
       // The desktop server runtime already contains the production dependency
       // graph. Keeping the updater there avoids duplicating a second large
@@ -1164,8 +1199,18 @@ function initializeDesktopUpdates() {
       const bundledUpdater = dependencyModuleRoot
         ? path.join(dependencyModuleRoot, 'electron-updater')
         : path.join(app.getAppPath(), 'runtime', 'modules', 'electron-updater');
-      ({ autoUpdater: desktopAutoUpdater } = require(bundledUpdater));
+      updaterEntry = require.resolve(bundledUpdater);
     }
+    ({ autoUpdater: desktopAutoUpdater } = require(updaterEntry));
+    const updaterRequire = require('module').createRequire(updaterEntry);
+    ({ CancellationToken: DesktopUpdateCancellationToken } = updaterRequire('builder-util-runtime'));
+    const { createDesktopUpdateProvider } = require('./update-provider');
+    desktopAutoUpdater.setFeedURL({
+      provider: 'custom',
+      updateProvider: createDesktopUpdateProvider(updaterEntry),
+      owner: 'harshilsoni5666',
+      repo: 'EterX-Agent',
+    });
     desktopAutoUpdater.autoDownload = false;
     desktopAutoUpdater.autoInstallOnAppQuit = false;
     // electron-updater >=7 exposes the more explicit install-event setting;
@@ -1184,7 +1229,7 @@ function initializeDesktopUpdates() {
     };
 
     desktopAutoUpdater.on('checking-for-update', () => {
-      if (desktopUpdateCheckSilent) return;
+      if (desktopUpdateCheckSilent || desktopUpdateState.availableVersion) return;
       publishDesktopUpdateState({
         status: 'checking',
         availableVersion: null,
@@ -1198,7 +1243,13 @@ function initializeDesktopUpdates() {
         message: 'Checking GitHub Releases for a newer EterX version...',
       });
     });
-    desktopAutoUpdater.on('update-available', (info) => publishDesktopUpdateState({
+    desktopAutoUpdater.on('update-available', (info) => {
+      if (desktopUpdateCheckSilent && desktopUpdateState.status === 'error' && desktopUpdateState.availableVersion === info.version) {
+        // Keep the download retry message while still looking for newer releases.
+        publishDesktopUpdateState({ ...desktopUpdateInfoPatch(info), lastCheckedAt: new Date().toISOString() });
+        return;
+      }
+      publishDesktopUpdateState({
       status: 'available',
       ...desktopUpdateInfoPatch(info),
       updateAvailableUnread: info.version !== desktopUpdateViewedVersion,
@@ -1209,7 +1260,9 @@ function initializeDesktopUpdates() {
       downloadReady: false,
       message: `EterX ${info.version} is available`,
       lastCheckedAt: new Date().toISOString(),
-    }));
+      });
+      if (info.version !== desktopUpdateViewedVersion) notifyDesktopUpdate(info.version, false);
+    });
     desktopAutoUpdater.on('update-not-available', () => publishDesktopUpdateState({
       status: 'current',
       availableVersion: null,
@@ -1225,6 +1278,8 @@ function initializeDesktopUpdates() {
       lastCheckedAt: new Date().toISOString(),
     }));
     desktopAutoUpdater.on('download-progress', (progress) => {
+      if (desktopUpdateDownloadCancellation?.cancelled) return;
+      desktopUpdateDownloadActivityAt = Date.now();
       const rawPercent = Number(progress?.percent);
       const percent = Math.max(0, Math.min(100, Number.isFinite(rawPercent) ? rawPercent : 0));
       publishDesktopUpdateState({
@@ -1234,10 +1289,11 @@ function initializeDesktopUpdates() {
         total: Math.max(0, Number(progress?.total) || 0),
         bytesPerSecond: Math.max(0, Number(progress?.bytesPerSecond) || 0),
         downloadReady: false,
-        message: `Downloading update - ${Math.round(percent)}%`,
+        message: percent >= 100 ? 'Download complete. Verifying the update package...' : `Downloading update - ${Math.round(percent)}%`,
       });
     });
     desktopAutoUpdater.on('update-downloaded', (info) => {
+      clearDesktopUpdateDownloadWatchdog();
       publishDesktopUpdateState({
         status: 'ready',
         ...desktopUpdateInfoPatch(info),
@@ -1247,15 +1303,7 @@ function initializeDesktopUpdates() {
         downloadReady: true,
         message: `EterX ${info.version} is ready - restart when convenient`,
       });
-      try {
-        const { Notification } = require('electron');
-        if (Notification.isSupported()) {
-          new Notification({
-            title: `EterX ${info.version} is ready`,
-            body: 'Open Updates and choose Restart and install.',
-          }).show();
-        }
-      } catch {}
+      notifyDesktopUpdate(info.version, true);
     });
     desktopAutoUpdater.on('update-cancelled', (info) => publishDesktopUpdateState({
       status: 'available',
@@ -1267,8 +1315,9 @@ function initializeDesktopUpdates() {
       message: `Download cancelled. EterX ${info.version} is still available.`,
     }));
     desktopAutoUpdater.on('error', (error) => {
-      if (desktopUpdateCheckSilent) {
-        logToFile(`[update] Silent updater event deferred: ${describeDesktopUpdateError(error, 'Update check')}`);
+      if (desktopUpdateCheckPromise || desktopUpdateDownloadPromise) {
+        // The owning operation publishes one actionable error and arms retries.
+        logToFile(`[update] ${error?.message || error}`);
         return;
       }
       // A late native-installer error must remain visible without discarding
@@ -1303,13 +1352,15 @@ function initializeDesktopUpdates() {
     publishDesktopUpdateState({
       status: 'idle',
       supported: true,
-      automaticChecks: false,
+      automaticChecks: true,
       manualInstall: true,
-      message: 'Ready to check for updates',
+      message: 'EterX will check for updates shortly.',
     });
+    startAutomaticDesktopUpdateChecks();
 
   } catch (error) {
-    publishDesktopUpdateState({ status: 'error', message: describeDesktopUpdateError(error, 'Updater initialization') });
+    desktopAutoUpdater = null;
+    publishDesktopUpdateState({ status: 'error', supported: false, automaticChecks: false, message: describeDesktopUpdateError(error, 'Updater initialization') });
   }
   return desktopUpdateState;
 }
@@ -2149,18 +2200,20 @@ function nativeThemeColors(theme) {
   const safeTheme = normalizeNativeTheme(theme);
   if (safeTheme === 'dark') {
     return {
-      background: '#0F0F0F',
+      background: '#111111',
       // Keep the native caption-button area opaque enough for Windows/Linux
       // to paint its hover states while the renderer owns the rest of the
       // custom title bar.
-      titleBar: '#0F0F0F',
-      titleSymbol: '#D0C8C0',
+      // Match --eterx-titlebar-bg in the renderer's dark palette.
+      titleBar: '#101010',
+      titleSymbol: '#D0D0D0',
     };
   }
   return {
-    background: '#FAFAF8',
-    titleBar: '#FAFAF8',
-    titleSymbol: '#1F1F1D',
+    background: '#FFFFFF',
+    // Match --sidebar-bg in the renderer's light palette.
+    titleBar: '#F5F5F5',
+    titleSymbol: '#505050',
   };
 }
 
@@ -3935,12 +3988,24 @@ ipcMain.handle('desktop-update-get-state', () => desktopUpdateState);
 
 ipcMain.handle('desktop-update-mark-viewed', () => markDesktopUpdateViewed());
 
+ipcMain.on('desktop-update-network-online', (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) return;
+  if (!desktopUpdateState.checkError || !desktopUpdateChecksAreActive()) return;
+  desktopUpdateNextCheckAt = Math.max(Date.now() + 2_000, desktopUpdateLastAttemptAt + 60_000);
+  scheduleAutomaticDesktopUpdateCheck();
+});
+
 ipcMain.handle('desktop-update-check', async () => {
   if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
   return performDesktopUpdateCheck();
 });
 
 ipcMain.handle('desktop-update-download', async () => {
+  if (desktopUpdateDownloadPromise) return desktopUpdateDownloadPromise;
+  // A header click can arrive during a periodic scan of an already-known
+  // release. Wait for that scan before choosing the download provider/version.
+  if (desktopUpdateCheckPromise) await desktopUpdateCheckPromise;
+  if (desktopUpdateDownloadPromise) return desktopUpdateDownloadPromise;
   const retryableDownload = desktopUpdateState.status === 'error'
     && Boolean(desktopUpdateState.availableVersion)
     && !desktopUpdateState.downloadReady;
@@ -3948,44 +4013,55 @@ ipcMain.handle('desktop-update-download', async () => {
     (desktopUpdateState.status !== 'available' && !retryableDownload)) {
     return desktopUpdateState;
   }
-  if (desktopUpdateDownloadPromise) return desktopUpdateDownloadPromise;
-
+  stopAutomaticDesktopUpdateChecks();
+  markDesktopUpdateViewed();
   publishDesktopUpdateState({
     status: 'downloading',
+    checkError: null,
     percent: 0,
     transferred: 0,
     bytesPerSecond: 0,
     downloadReady: false,
     message: `Downloading EterX ${desktopUpdateState.availableVersion || 'update'}...`,
   });
-  desktopUpdateDownloadPromise = (async () => {
+  desktopUpdateDownloadCancellation = new DesktopUpdateCancellationToken();
+  desktopUpdateDownloadActivityAt = Date.now();
+  let stalled = false;
+  desktopUpdateDownloadWatchdog = setInterval(() => {
+    if (desktopUpdateSystemSuspended) {
+      desktopUpdateDownloadActivityAt = Date.now();
+      return;
+    }
+    if (Date.now() - desktopUpdateDownloadActivityAt > 5 * 60_000) {
+      stalled = true;
+      clearDesktopUpdateDownloadWatchdog();
+      desktopUpdateDownloadCancellation?.cancel();
+    }
+  }, 15_000);
+  desktopUpdateDownloadWatchdog.unref?.();
+  desktopUpdateDownloadPromise = Promise.resolve().then(async () => {
     try {
-      await desktopAutoUpdater.downloadUpdate();
-      // The event is authoritative, but this fallback keeps the manual UI
-      // usable with older electron-updater builds that resolve before sending
-      // update-downloaded.
-      if (desktopUpdateState.status === 'downloading') {
-        publishDesktopUpdateState({
-          status: 'ready',
-          percent: 100,
-          transferred: desktopUpdateState.total || desktopUpdateState.transferred,
-          bytesPerSecond: 0,
-          downloadReady: true,
-          message: `EterX ${desktopUpdateState.availableVersion || 'update'} is ready - restart when convenient`,
-        });
+      await desktopAutoUpdater.downloadUpdate(desktopUpdateDownloadCancellation);
+      // Only update-downloaded proves the native client verified the package.
+      if (!desktopUpdateState.downloadReady && desktopUpdateState.status === 'downloading') {
+        throw new Error('The download ended before package verification completed. Retry the download.');
       }
     } catch (error) {
       publishDesktopUpdateState({
         status: 'error',
         bytesPerSecond: 0,
-        downloadReady: false,
-        message: describeDesktopUpdateError(error, 'Update download'),
+        message: stalled
+          ? 'The download stopped making progress. Check your connection and retry the download.'
+          : describeDesktopUpdateError(error, 'Update download'),
       });
     } finally {
+      clearDesktopUpdateDownloadWatchdog();
+      desktopUpdateDownloadCancellation = null;
       desktopUpdateDownloadPromise = null;
+      scheduleAutomaticDesktopUpdateCheck();
     }
     return desktopUpdateState;
-  })();
+  });
   return desktopUpdateDownloadPromise;
 });
 
@@ -3997,6 +4073,26 @@ ipcMain.handle('desktop-update-install', async () => {
   if (desktopUpdateInstallPromise) return desktopUpdateInstallPromise;
 
   desktopUpdateInstallPromise = (async () => {
+    const downloadedPath = desktopAutoUpdater.downloadedUpdateHelper?.file || desktopAutoUpdater.installerPath;
+    if (!downloadedPath || !fs.existsSync(downloadedPath)) {
+      publishDesktopUpdateState({
+        status: 'error', downloadReady: false, percent: 0, transferred: 0, bytesPerSecond: 0,
+        message: 'The downloaded update is no longer on this device. Download it again to continue.',
+      });
+      return false;
+    }
+    if (process.platform === 'linux') {
+      try {
+        fs.accessSync(process.env.APPIMAGE, fs.constants.R_OK | fs.constants.W_OK);
+        fs.accessSync(path.dirname(process.env.APPIMAGE), fs.constants.W_OK);
+      } catch {
+        publishDesktopUpdateState({
+          status: 'error', downloadReady: true,
+          message: 'EterX cannot replace this AppImage. Move it to a folder you can write to, reopen it, and retry the update.',
+        });
+        return false;
+      }
+    }
     let unsignedMacInstaller = null;
     if (process.platform === 'darwin') {
       const runningBundle = getRunningMacApplicationBundle();
@@ -4025,10 +4121,13 @@ ipcMain.handle('desktop-update-install', async () => {
     });
     const flushed = await prepareDesktopClose(false, 15000);
     if (!flushed) {
-      // AppData is written continuously during normal use. A missing renderer
-      // acknowledgement can mean the UI was reloading, suspended, or already
-      // closing; it must not permanently strand a verified native package.
-      logToFile('[update] Final renderer save acknowledgement was unavailable; continuing with the latest durable AppData snapshot.');
+      publishDesktopUpdateState({
+        status: 'error',
+        downloadReady: true,
+        message: 'EterX could not finish saving your work. The update is still downloaded; retry Restart to update when saving finishes.',
+      });
+      void notifyDesktopResume();
+      return false;
     }
     isQuitting = true;
     publishDesktopUpdateState({
@@ -4061,14 +4160,17 @@ ipcMain.handle('desktop-update-install', async () => {
           desktopUpdateInstallWatchdog = null;
           if (!mainWindow || mainWindow.isDestroyed()) return;
           restoreDesktopRuntimeAfterInstallerFailure(new Error('The native installer did not take control of the application.'));
-        }, 30_000);
+        }, process.platform === 'darwin' ? 5 * 60_000 : 30_000);
         desktopAutoUpdater.quitAndInstall(false, true);
       } catch (error) {
         restoreDesktopRuntimeAfterInstallerFailure(error);
       }
     });
     return true;
-  })().finally(() => {
+  })().catch(error => {
+    restoreDesktopRuntimeAfterInstallerFailure(error);
+    return false;
+  }).finally(() => {
     desktopUpdateInstallPromise = null;
   });
   return desktopUpdateInstallPromise;
@@ -4241,7 +4343,16 @@ app.on('ready', async () => {
   }
   createWindow();
   initializeDesktopUpdates();
-  powerMonitor.on('resume', notifyDesktopResume);
+  powerMonitor.on('suspend', () => {
+    desktopUpdateSystemSuspended = true;
+    stopAutomaticDesktopUpdateChecks();
+  });
+  powerMonitor.on('resume', () => {
+    desktopUpdateSystemSuspended = false;
+    desktopUpdateDownloadActivityAt = Date.now();
+    void notifyDesktopResume();
+  });
+  powerMonitor.on('unlock-screen', () => startAutomaticDesktopUpdateChecks({ immediate: true }));
   await gatewayInitialization;
 });
 

@@ -18,7 +18,7 @@ export interface ScheduledTaskRecord {
   title: string;
   description: string;
   model: string;
-  thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+  thinkingLevel?: import('./agent/model-routing').MainAgentThinkingLevel;
   agentId: string | null;
   agentName: string;
   priority: 'low' | 'medium' | 'high';
@@ -29,7 +29,7 @@ export interface ScheduledTaskRecord {
   sources: Array<{ id: string; name: string; type: string; path: string }>;
   /** Device/workspace captured when the schedule was created. */
   workspacePath?: string | null;
-  runLocation?: 'local' | 'sandbox';
+  runLocation?: 'local' | 'sandbox' | 'worktree';
   createdAt: number;
   updatedAt?: number;
   scheduledTimestamp: number;
@@ -146,7 +146,7 @@ export function normalizeScheduledTask(task: Partial<ScheduledTaskRecord>): Sche
     workspacePath: task.workspacePath === null
       ? null
       : String(task.workspacePath || '').trim() || undefined,
-    runLocation: task.runLocation === 'sandbox'
+    runLocation: task.runLocation === 'worktree' ? 'worktree' : task.runLocation === 'sandbox'
       ? 'sandbox'
       : task.runLocation === 'local'
         ? 'local'

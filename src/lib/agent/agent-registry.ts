@@ -1,6 +1,7 @@
 import { setRuntimePlanMode } from './plan-mode';
-import { requestManualCompaction, isManualCompactionActive } from './manual-compaction';
-import { compactSavedWorkingContext } from './working-context-checkpoint';
+import { setRuntimeSwarmMode } from './swarm-mode';
+import { requestManualCompaction, isManualCompactionActive, isDirectChatRunning } from './manual-compaction';
+import { compactSavedWorkingContext, type ManualCompactionFallback } from './working-context-checkpoint';
 import { compactContextAtBoundary } from './resilience/context-compaction';
 import { GoogleGenAI } from '@google/genai';
 import { isPastedText, pastedTextManifest } from '../pasted-text';
@@ -351,6 +352,7 @@ class AgentRegistry {
   }
 
   constructor() {
+    require('../../../electron/managed-workspaces').startWorkspaceCleanup();
     // Any persisted `running` task belongs to a previous process after a
     // desktop restart. Convert it before the UI can rehydrate it as live.
     taskStore.recoverOrphanedRunningTasks().catch(() => {});
@@ -872,6 +874,10 @@ class AgentRegistry {
           break;
         }
         if (existing?.type !== 'answer') continue;
+        const existingWorker = String(existing.subAgentChatId || existing.subAgentId || existing.subAgent || 'main');
+        const cancellingWorker = String(traceEvent.subAgentChatId || traceEvent.subAgentId || traceEvent.subAgent || 'main');
+        if (existingWorker !== cancellingWorker) continue;
+        if (existing.subAgentTurnId && traceEvent.subAgentTurnId && existing.subAgentTurnId !== traceEvent.subAgentTurnId) continue;
         const existingScope = String(existing.turnId || existing.runId || '').trim();
         const cancelScope = String(traceEvent.turnId || traceEvent.runId || '').trim();
         if (existingScope && cancelScope && existingScope !== cancelScope) continue;
@@ -1375,6 +1381,7 @@ class AgentRegistry {
     }
 
     if (typeof pinnedContext?.planMode === 'boolean') setRuntimePlanMode(chatId, pinnedContext.planMode);
+    if (typeof pinnedContext?.swarmMode === 'boolean') setRuntimeSwarmMode(chatId, pinnedContext.swarmMode);
 
     // Check if this chat already has a running agent
     const existing = this.executions.get(chatId);
@@ -2603,20 +2610,20 @@ class AgentRegistry {
   /**
    * Check if a specific chat has a running agent.
    */
-  public compactChat(chatId: string, rawSettings?: unknown): Promise<void> {
-    return requestManualCompaction(chatId, () => this.isRunning(chatId), async () => {
+  public compactChat(chatId: string, rawSettings?: unknown, fallback?: ManualCompactionFallback): Promise<void> {
+    return requestManualCompaction(chatId, () => this.isRunning(chatId) || isDirectChatRunning(chatId), async () => {
       const execution = this.executions.get(chatId);
       // A stopped worker may still be committing its last checkpoint.
       if (execution && !execution.settled) await execution.promise.catch(() => undefined);
+      const fabric = await getContextFabricForChat(chatId);
       await compactSavedWorkingContext(chatId, async checkpoint => {
-        const fabric = await getContextFabricForChat(chatId);
         const result = await compactContextAtBoundary({
           chatId, kind: checkpoint.kind === 'gemini' ? 'gemini' : 'provider',
           contents: checkpoint.contents,
           activeModel: { provider: checkpoint.provider as any, modelId: checkpoint.model },
           rawSettings: rawSettings || execution?.launchSpec.pinnedContext?.contextCompaction,
           runtimeSettings: execution?.launchSpec.runtimeSettings || buildScopedRuntimeSettings(),
-          forceCompaction: true, semanticBoundary: 'safe',
+          forceCompaction: true, semanticBoundary: 'safe', manualCompaction: true,
           continuityManifestFactory: () => fabric.buildContinuityManifest(),
           onEvent: event => {
             if (execution) this.appendTrace(execution, event);
@@ -2625,8 +2632,8 @@ class AgentRegistry {
         });
         if (result.failed) throw new Error('Context compaction failed. The original context was preserved.');
         return result.contents;
-      });
-    });
+      }, fallback, fabric);
+    }, rawSettings);
   }
 
   public isRunning(chatId: string): boolean {

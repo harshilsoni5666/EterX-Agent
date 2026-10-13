@@ -41,8 +41,14 @@ export function WorkspaceImagePreview({ path, revision = 0, label, onError }: { 
     </div>
     <div ref={viewport} className="eterx-workspace-image-viewport eterx-scrollbar" data-pannable={canPan} tabIndex={0} aria-label="Image preview"
       onDoubleClick={reset}
-      onKeyDown={event => { if (['+', '=', '-', '0'].includes(event.key)) { event.preventDefault(); event.key === '0' ? reset() : changeZoom(event.key === '-' ? 1 / 1.25 : 1.25); } }}
-      onPointerDown={event => { if (event.button !== 0 || !canPan) return; event.preventDefault(); const node = event.currentTarget; drag.current = { x: event.clientX, y: event.clientY, left: node.scrollLeft, top: node.scrollTop }; node.setPointerCapture(event.pointerId); }}
+      onKeyDown={event => { if (!event.ctrlKey && !event.metaKey && !event.altKey && ['+', '=', '-', '0'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); event.key === '0' ? reset() : changeZoom(event.key === '-' ? 1 / 1.25 : 1.25); } }}
+      onPointerDown={event => {
+        // Native scrollbar gestures target the viewport, not the image stage.
+        // Let those drag the thumb instead of accidentally starting image pan.
+        if (event.button !== 0 || !canPan || !(event.target as Element).closest('.eterx-workspace-image-stage')) return;
+        event.preventDefault(); const node = event.currentTarget; node.focus({ preventScroll: true });
+        drag.current = { x: event.clientX, y: event.clientY, left: node.scrollLeft, top: node.scrollTop }; node.setPointerCapture(event.pointerId);
+      }}
       onPointerMove={event => { if (drag.current) { event.currentTarget.scrollLeft = drag.current.left + drag.current.x - event.clientX; event.currentTarget.scrollTop = drag.current.top + drag.current.y - event.clientY; } }}
       onPointerUp={event => { drag.current = undefined; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={() => { drag.current = undefined; }} onLostPointerCapture={() => { drag.current = undefined; }}>
       {failed ? <div className="eterx-workspace-empty"><p>Could not load this image.</p><button onClick={() => { setFailed(false); setAttempt(value => value + 1); }}>Try again</button></div> : <div className="eterx-workspace-image-stage" style={{ width: Math.max(available.width, width * scale + 32), height: Math.max(available.height, height * scale + 32) }}>

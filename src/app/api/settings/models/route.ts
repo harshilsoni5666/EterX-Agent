@@ -7,13 +7,10 @@ import {
   type RuntimeApiKeyProvider,
 } from '../../../../lib/agent/runtime-api-keys';
 import {
-  getModelThinkingOptions,
-  inferModelThinkingCapabilities,
-  isAnthropicAdaptiveThinkingModel,
-  normalizeModelThinkingCapabilities,
   type MainAgentProvider,
   type ModelThinkingCapabilities,
 } from '../../../../lib/agent/model-routing';
+import { readModelThinkingCapabilities, readModelWireCapabilities } from '../../../../lib/agent/model-thinking-catalog';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import {
   getProviderBaseURL as savedProviderBaseURL,
@@ -34,13 +31,16 @@ const discoveryScope = new AsyncLocalStorage<{
   keys: Record<string, string[]>;
   baseURLs: Partial<Record<MainAgentProvider, string>>;
 }>();
-const requestJson = async (input: string, init: RequestInit = {}, timeoutMs = 12_000) => {
+const requestMetadata = async (input: string, init: RequestInit = {}, timeoutMs = 12_000) => {
   const remaining = (discoveryScope.getStore()?.deadlineAt ?? Date.now() + 35_000) - Date.now();
   if (remaining <= 0) throw new Error('Model discovery timed out. Please retry.');
-  const response = await requestModelCatalog(input, init, Math.min(timeoutMs, remaining));
+  return requestModelCatalog(input, init, Math.min(timeoutMs, remaining));
+};
+const requestJson = async (input: string, init: RequestInit = {}, timeoutMs = 12_000) => {
+  const response = await requestMetadata(input, init, timeoutMs);
   if (!response.ok) return response;
   const payload = await response.json();
-  if (!Array.isArray(payload) && !['data', 'models', 'voices'].some(key => Array.isArray(payload?.[key]))) {
+  if (payload?.success === false || (!Array.isArray(payload) && !['data', 'models', 'voices', 'result'].some(key => Array.isArray(payload?.[key])))) {
     throw new Error('Provider returned an invalid model catalog. Saved models have been kept.');
   }
   return response;
@@ -97,7 +97,7 @@ const readModelAvailability = (model: any) => ({
 const isAgentCompatibleModel = (model: ProviderModel) => {
   const id = String(model.id || '').trim();
   if (!id || id.toLowerCase() === 'openrouter/auto' || id.toLowerCase().startsWith('kilo-auto/') || NON_CONCRETE_MODEL_ID.test(id) || NON_AGENT_MODEL_ID.test(id) || isExpired(model.deprecationDate)) return false;
-  if (model.capabilities?.includes('tool-calling:false')) return false;
+  if (model.capabilities?.some(capability => capability === 'tool-calling:false' || capability === 'chat:false')) return false;
   const lifecycle = String(model.lifecycle || '').toLowerCase();
   return !['deprecated', 'retired', 'disabled', 'expired', 'unavailable'].some(status => lifecycle.includes(status));
 };
@@ -124,12 +124,6 @@ const resultWithExcluded = (
   rawModels: ProviderModel[],
 ): ProviderModelResult => {
   const models = trimModels(rawModels)
-    .map(model => {
-      const providerId = String(provider);
-      if (model.thinking || !isModelProvider(providerId)) return model;
-      const inferred = inferModelThinkingCapabilities(providerId, model.id);
-      return inferred ? { ...model, thinking: inferred } : model;
-    })
     .map((model, index) => ({ model, index }))
     .sort((a, b) => preferredModelScore(provider, b.model) - preferredModelScore(provider, a.model) || a.index - b.index)
     .map(({ model }) => model);
@@ -139,79 +133,6 @@ const resultWithExcluded = (
     source: 'live',
     models,
     excludedCount: Math.max(0, rawModels.length - models.length),
-  };
-};
-
-/** Normalize live model metadata without assuming a provider-specific schema. */
-const readThinkingCapabilities = (model: any, parameter: ModelThinkingCapabilities['parameter']) => {
-  const reasoning = model?.reasoning || model?.capabilities?.reasoning || {};
-  const thinking = model?.thinking || model?.thinkingConfig || model?.capabilities?.thinking || {};
-  return normalizeModelThinkingCapabilities({
-    levels: reasoning.supported_efforts
-      || reasoning.supportedEfforts
-      || thinking.supported_levels
-      || thinking.supportedLevels
-      || thinking.supported_thinking_levels
-      || model?.supported_reasoning_efforts
-      || model?.supportedThinkingLevels,
-    defaultLevel: reasoning.default_effort
-      || reasoning.defaultEffort
-      || thinking.default_level
-      || thinking.defaultLevel
-      || model?.default_reasoning_effort,
-    parameter,
-  });
-};
-
-const readAdvertisedThinkingCapabilities = (
-  model: any,
-  provider: MainAgentProvider,
-  fallbackParameter: ModelThinkingCapabilities['parameter'],
-): ModelThinkingCapabilities | null => {
-  const explicit = readThinkingCapabilities(model, fallbackParameter);
-  if (explicit) return explicit;
-
-  const supported = Array.isArray(model?.supported_parameters)
-    ? model.supported_parameters.map((value: unknown) => String(value || '').trim().toLowerCase())
-    : [];
-  const has = (...names: string[]) => names.some(name => supported.includes(name));
-  const parameter: ModelThinkingCapabilities['parameter'] | undefined = has('thinking_level', 'thinkinglevel')
-    ? 'thinkingLevel'
-    : has('thinking_budget', 'thinkingbudget')
-      ? 'thinkingBudget'
-      : has('enable_thinking', 'thinking_enabled')
-        ? 'enable_thinking'
-        : has('output_config.effort')
-          ? 'output_config.effort'
-          : has('reasoning_effort', 'reasoning.effort')
-            ? 'reasoning_effort'
-            : has('reasoning')
-              ? 'reasoning'
-              : provider === 'deepseek' && has('thinking')
-                ? 'thinking.type'
-                : undefined;
-  if (!parameter) return inferModelThinkingCapabilities(provider, String(model?.id || model?.name || ''));
-
-  const inferred = inferModelThinkingCapabilities(provider, String(model?.id || model?.name || ''));
-  const levels: ModelThinkingCapabilities['levels'] = inferred?.levels?.length
-    ? [...inferred.levels]
-    : parameter === 'thinking.type'
-      ? ['off', 'high', 'max']
-      : parameter === 'enable_thinking'
-        ? ['off', 'high']
-        : parameter === 'thinkingLevel' || parameter === 'thinkingBudget' || parameter === 'reasoning'
-          ? ['off', 'low', 'medium', 'high']
-          : ['high'];
-  const defaultLevel = levels.includes('medium')
-    ? 'medium'
-    : levels.includes('high')
-      ? 'high'
-      : levels.find(level => level !== 'off') || levels[0];
-  return {
-    levels: [...levels],
-    defaultLevel,
-    parameter,
-    source: 'provider',
   };
 };
 
@@ -261,22 +182,12 @@ async function fetchGeminiModels(): Promise<ProviderModelResult> {
         inputTokenLimit: model.inputTokenLimit,
         outputTokenLimit: model.outputTokenLimit,
         capabilities: [
+          ...readModelWireCapabilities(model),
           ...(model.supportedGenerationMethods || []),
           model.inputTokenLimit ? 'text-input' : undefined,
           model.thinking ? 'thinking' : undefined,
         ].filter(Boolean),
-        thinking: readThinkingCapabilities(
-          model,
-          /gemini-2\.5/i.test(String(model.baseModelId || model.name || '')) ? 'thinkingBudget' : 'thinkingLevel',
-        ) || (model.thinking
-          ? {
-            levels: getModelThinkingOptions('gemini', String(model.baseModelId || model.name || '')).map(option => option.id),
-            defaultLevel: getModelThinkingOptions('gemini', String(model.baseModelId || model.name || '')).find(option => option.id === 'medium')?.id
-              || getModelThinkingOptions('gemini', String(model.baseModelId || model.name || ''))[0]?.id,
-            parameter: /gemini-2\.5/i.test(String(model.baseModelId || model.name || '')) ? 'thinkingBudget' as const : 'thinkingLevel' as const,
-            source: 'inferred' as const,
-          }
-          : undefined),
+        thinking: readModelThinkingCapabilities(model, 'gemini'),
       }));
     return resultWithExcluded('gemini', mappedModels);
   } catch (error) {
@@ -300,16 +211,12 @@ async function fetchOpenAIModels(): Promise<ProviderModelResult> {
       .filter((model: any) => /^(?:ft:)?(?:gpt-|o[1-9](?:-|$)|chatgpt-)/i.test(String(model.id || '')))
       .map((model: any) => ({
         ...readModelAvailability(model),
+      capabilities: readModelWireCapabilities(model),
         id: String(model.id || ''),
         name: String(model.id || ''),
         description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
         createdAt: Number(model.created) || undefined,
-        thinking: readThinkingCapabilities(model, 'reasoning_effort') || (() => {
-          const levels = getModelThinkingOptions('openai', String(model.id || '')).map(option => option.id);
-          return levels.length > 0
-            ? { levels, defaultLevel: levels.includes('medium') ? 'medium' as const : levels[0], parameter: 'reasoning_effort' as const, source: 'inferred' as const }
-            : undefined;
-        })(),
+        thinking: readModelThinkingCapabilities(model, 'openai'),
       }))
       .sort((a: ProviderModel, b: ProviderModel) => (b.createdAt || 0) - (a.createdAt || 0) || a.id.localeCompare(b.id));
     return resultWithExcluded('openai', mappedModels);
@@ -349,10 +256,6 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
       })
       .map((model: any) => {
         const supportedParameters = Array.isArray(model.supported_parameters) ? model.supported_parameters : [];
-        const inferredThinking = getModelThinkingOptions('openrouter', String(model.id || '')).map(option => option.id);
-        const genericReasoning = supportedParameters.includes('reasoning')
-          ? (inferredThinking.length > 0 ? inferredThinking : ['off', 'low', 'medium', 'high'])
-          : [];
         return {
           ...readModelAvailability(model),
           id: String(model.id || ''),
@@ -363,14 +266,13 @@ async function fetchOpenRouterModels(): Promise<ProviderModelResult> {
           deprecationDate: model.expiration_date || undefined,
           createdAt: Number(model.created) || undefined,
           capabilities: [
+          ...readModelWireCapabilities(model),
             ...(model.architecture?.input_modalities || []),
             ...(model.architecture?.output_modalities || []),
             model.architecture?.instruct_type,
             ...supportedParameters,
           ].filter(Boolean),
-          thinking: readThinkingCapabilities(model, 'reasoning') || (genericReasoning.length > 0
-            ? { levels: genericReasoning, defaultLevel: genericReasoning.includes('medium') ? 'medium' : genericReasoning[0], parameter: 'reasoning', source: 'inferred' }
-            : undefined),
+          thinking: readModelThinkingCapabilities(model, 'openrouter'),
         } as ProviderModel;
       })
       .sort((a: ProviderModel, b: ProviderModel) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -398,21 +300,13 @@ async function fetchGroqModels(): Promise<ProviderModelResult> {
     const mappedModels = (data.data || [])
       .map((model: any) => ({
         ...readModelAvailability(model),
+      capabilities: readModelWireCapabilities(model),
         id: String(model.id || ''),
         name: String(model.id || ''),
         description: model.owned_by ? `Owned by ${ model.owned_by }` : undefined,
         ...readModelAvailability(model),
         contextLength: model.context_window,
-        thinking: readThinkingCapabilities(model, 'reasoning_effort') || (() => {
-          const levels = getModelThinkingOptions('groq', String(model.id || '')).map(option => option.id);
-          if (levels.length === 0) return undefined;
-          return {
-            levels,
-            defaultLevel: /qwen/i.test(String(model.id || '')) ? 'high' : 'medium',
-            parameter: 'reasoning_effort',
-            source: 'inferred',
-          } as ModelThinkingCapabilities;
-        })(),
+        thinking: readModelThinkingCapabilities(model, 'groq'),
       }))
       .sort((a: ProviderModel, b: ProviderModel) => a.id.localeCompare(b.id));
     return resultWithExcluded('groq', mappedModels);
@@ -443,15 +337,10 @@ async function fetchMistralModels(): Promise<ProviderModelResult> {
       id: String(model.id || ''),
       name: model.name || model.id,
       description: model.description,
-        capabilities: Object.entries(model.capabilities || {})
+        capabilities: [...readModelWireCapabilities(model), ...Object.entries(model.capabilities || {})
           .filter(([, enabled]) => Boolean(enabled))
-          .map(([name]) => name),
-        thinking: readThinkingCapabilities(model, 'reasoning_effort') || (() => {
-          const levels = getModelThinkingOptions('mistral', String(model.id || '')).map(option => option.id);
-          return levels.length > 0
-            ? { levels, defaultLevel: levels.includes('medium') ? 'medium' as const : levels[0], parameter: 'reasoning_effort' as const, source: 'inferred' as const }
-            : undefined;
-        })(),
+          .map(([name]) => name)],
+        thinking: readModelThinkingCapabilities(model, 'mistral'),
       }));
     return resultWithExcluded('mistral', mappedModels);
   } catch (error) {
@@ -486,11 +375,6 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
       afterId = String(data.last_id);
     }
     const mappedModels = discoveredModels.map((model: any) => {
-      const capabilities = model.capabilities && typeof model.capabilities === 'object'
-        ? Object.entries(model.capabilities)
-          .filter(([, value]) => Boolean((value as any)?.supported ?? value))
-          .map(([key]) => key)
-        : undefined;
       return {
         ...readModelAvailability(model),
         id: String(model.id || ''),
@@ -504,23 +388,8 @@ async function fetchAnthropicModels(): Promise<ProviderModelResult> {
         contextLength: Number(model.max_input_tokens) || undefined,
         inputTokenLimit: Number(model.max_input_tokens) || undefined,
         outputTokenLimit: Number(model.max_tokens) || undefined,
-        capabilities,
-        thinking: readThinkingCapabilities(
-          model,
-          isAnthropicAdaptiveThinkingModel(String(model.id || '')) ? 'output_config.effort' : undefined,
-        ) || (() => {
-          const levels = getModelThinkingOptions('anthropic', String(model.id || '')).map(option => option.id);
-          return levels.length > 0
-            ? {
-              levels,
-              defaultLevel: levels.includes('medium') ? 'medium' : levels[0],
-              ...(isAnthropicAdaptiveThinkingModel(String(model.id || ''))
-                ? { parameter: 'output_config.effort' as const }
-                : {}),
-              source: 'inferred' as const,
-            }
-            : undefined;
-        })(),
+        capabilities: readModelWireCapabilities(model),
+        thinking: readModelThinkingCapabilities(model, 'anthropic'),
       };
     });
     return resultWithExcluded('anthropic', mappedModels);
@@ -542,6 +411,8 @@ async function fetchDeepSeekModels(): Promise<ProviderModelResult> {
     const data = await res.json();
     const models = trimModels((data.data || []).map((model: any) => ({
       ...readModelAvailability(model),
+      capabilities: readModelWireCapabilities(model),
+      thinking: readModelThinkingCapabilities(model, 'deepseek'),
       id: String(model.id || ''),
       name: String(model.id || ''),
       description: model.owned_by ? `Owned by ${model.owned_by}` : undefined,
@@ -564,6 +435,8 @@ async function fetchGrokModels(): Promise<ProviderModelResult> {
     const data = await res.json();
     const models = trimModels((data.data || []).map((model: any) => ({
       ...readModelAvailability(model),
+      capabilities: readModelWireCapabilities(model),
+      thinking: readModelThinkingCapabilities(model, 'grok'),
       id: String(model.id || ''),
       name: String(model.id || ''),
       description: 'xAI Grok Model',
@@ -586,6 +459,8 @@ async function fetchCerebrasModels(): Promise<ProviderModelResult> {
     const data = await res.json();
     const models = trimModels((data.data || []).map((model: any) => ({
       ...readModelAvailability(model),
+      capabilities: readModelWireCapabilities(model),
+      thinking: readModelThinkingCapabilities(model, 'cerebras'),
       id: String(model.id || ''),
       name: String(model.id || ''),
       description: 'Cerebras Wafer Engine Model',
@@ -609,6 +484,8 @@ async function fetchTogetherModels(): Promise<ProviderModelResult> {
     const raw = Array.isArray(data) ? data : data.data || [];
     const models = trimModels(raw.map((model: any) => ({
       ...readModelAvailability(model),
+      capabilities: readModelWireCapabilities(model),
+      thinking: readModelThinkingCapabilities(model, 'together'),
       id: String(model.id || model.name || ''),
       name: model.display_name || model.id || model.name,
       description: model.description || 'Together AI Model',
@@ -643,36 +520,53 @@ async function fetchElevenLabsVoices(): Promise<ProviderModelResult> {
   }
 }
 
-async function fetchOllamaModels(): Promise<ProviderModelResult> {
+async function fetchOllamaModels(provider: 'ollama' | 'ollamacloud' = 'ollama'): Promise<ProviderModelResult> {
   try {
-    const baseURL = getProviderBaseURL('ollama') || 'http://127.0.0.1:11434/v1';
-    const apiKey = getRuntimeApiKeyValues('ollama' as any)[0] || 'ollama';
-    let res = await requestJson(`${baseURL}/models`, {
+    const baseURL = getProviderBaseURL(provider);
+    const apiKey = getRuntimeApiKeyValues(provider as any)[0];
+    if (provider === 'ollamacloud' && !apiKey) throw new Error('Missing Ollama Cloud API key');
+    const host = baseURL.replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
+    const headers: Record<string, string> = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+    const res = await requestJson(`${host}/api/tags`, {
       cache: 'no-store',
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers,
     }, 30_000);
-
-    // Older Ollama releases may expose the native catalog before they expose
-    // the OpenAI-compatible `/v1/models` route. Keep that route as a fallback
-    // so existing local installs remain discoverable without changing chat,
-    // which always uses the documented `/v1` OpenAI-compatible API.
-    if (!res.ok) {
-      const host = baseURL.replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
-      res = await requestJson(`${host}/api/tags`, { cache: 'no-store' }, 30_000);
-    }
-    if (!res.ok) throw new Error(`Ollama local request failed (${res.status})`);
+    if (!res.ok) throw new Error(`${provider} models request failed (${res.status})`);
     const data = await res.json();
     const rawModels = Array.isArray(data?.data) ? data.data : (data?.models || []);
+    // /v1/models omits thinking controls. /api/show reads installed template
+    // capabilities without loading or generating with the model.
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(4, rawModels.length) }, async () => {
+      while (next < rawModels.length) {
+        const index = next++;
+        const model = rawModels[index];
+        try {
+          const detail = await requestMetadata(`${host}/api/show`, {
+            method: 'POST', cache: 'no-store', headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: model.id || model.name || model.model }),
+          });
+          if (!detail.ok) continue;
+          const metadata = await detail.json();
+          rawModels[index] = { ...model, ...metadata, id: model.id || model.name || model.model,
+            ...(Array.isArray(metadata.capabilities) ? { supports_tools: metadata.capabilities.includes('tools') } : {}) };
+        } catch {
+          // The catalog entry is real, but unavailable details grant no controls.
+        }
+      }
+    }));
     const models = trimModels(rawModels.map((model: any) => ({
       ...readModelAvailability(model),
+      capabilities: readModelWireCapabilities(model),
+      thinking: readModelThinkingCapabilities(model, provider),
       id: String(model.id || model.name || model.model || ''),
       name: String(model.name || model.model || model.id || ''),
       description: model.details?.parameter_size ? `Local (${model.details.parameter_size})` : 'Local Ollama Model',
       contextLength: Number(model.context_length || model.details?.context_length || 0) || undefined,
     })));
-    return resultWithExcluded('ollama' as any, models);
+    return resultWithExcluded(provider as any, models);
   } catch (error) {
-    return providerError('ollama' as any, error);
+    return providerError(provider as any, error);
   }
 }
 
@@ -681,25 +575,22 @@ async function fetchLMStudioModels(): Promise<ProviderModelResult> {
     const baseURL = getProviderBaseURL('lmstudio') || 'http://127.0.0.1:1234/v1';
     const apiKey = getRuntimeApiKeyValues('lmstudio' as any)[0];
     const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
-    let res = await requestJson(`${baseURL}/models`, {
+    const host = baseURL.replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
+    const res = await requestJson(`${host}/api/v1/models`, {
       cache: 'no-store',
       headers,
     }, 30_000);
-    // LM Studio also exposes a native catalog at `/api/v1/models`. Prefer the
-    // OpenAI-compatible path for consistency with chat, then support the
-    // native path for installations where only the v1 REST server is enabled.
-    if (!res.ok) {
-      const host = baseURL.replace(/\/v1\/?$/i, '').replace(/\/+$/, '');
-      res = await requestJson(`${host}/api/v1/models`, { cache: 'no-store', headers }, 30_000);
-    }
     if (!res.ok) throw new Error(`LM Studio local request failed (${res.status})`);
     const data = await res.json();
     const rawModels = Array.isArray(data?.data) ? data.data : (data?.models || []);
     const models = trimModels(rawModels.map((model: any) => ({
       ...readModelAvailability(model),
+      capabilities: readModelWireCapabilities(model),
+      thinking: readModelThinkingCapabilities(model, 'lmstudio'),
       id: String(model.id || model.key || model.model_id || ''),
       name: String(model.id || model.key || model.model_id || ''),
-      description: 'LM Studio Desktop Local Server',
+      description: model.description || 'LM Studio Desktop Local Server',
+      contextLength: Number(model.max_context_length || model.context_length || 0) || undefined,
     })));
     return resultWithExcluded('lmstudio' as any, models);
   } catch (error) {
@@ -734,34 +625,58 @@ async function fetchCompatibleModels(provider: MainAgentProvider): Promise<Provi
   try {
     const headers: Record<string, string> = {};
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-    const res = await requestJson(`${baseURL.replace(/\/+$/, '')}/models`, {
+    const catalogURL = provider === 'cloudflare' && /\/ai\/v1\/?$/.test(baseURL)
+      ? `${baseURL.replace(/\/v1\/?$/, '')}/models/search?task=Text%20Generation&per_page=100`
+      : `${baseURL.replace(/\/+$/, '')}/models`;
+    const raw: any[] = [];
+    let nextURL = catalogURL;
+    const visited = new Set<string>();
+    while (nextURL) {
+    if (visited.has(nextURL)) throw new Error(`${provider} returned a repeated model catalog page`);
+    visited.add(nextURL);
+    const res = await requestJson(nextURL, {
       cache: 'no-store',
       headers,
     }, isLocalModelProvider(provider) ? 30_000 : MODEL_FETCH_TIMEOUT_MS);
     if (!res.ok) throw new Error(`${provider} models request failed (${res.status})`);
     const payload = await res.json();
-    const raw = Array.isArray(payload) ? payload : payload?.data || payload?.models || [];
-    const thinkingParameter: ModelThinkingCapabilities['parameter'] = provider === 'qwen'
-      ? 'enable_thinking'
-      : provider === 'perplexity'
-        ? 'reasoning'
-        : 'reasoning_effort';
+    raw.push(...(Array.isArray(payload) ? payload : payload?.data || payload?.models || payload?.result || []));
+    const pageURL = new URL(nextURL);
+    nextURL = '';
+    if (provider === 'cloudflare' && Number(payload?.result_info?.page) < Number(payload?.result_info?.total_pages)) {
+      pageURL.searchParams.set('page', String(Number(payload.result_info.page) + 1));
+      nextURL = pageURL.toString();
+    } else if (payload?.next_page_token || payload?.next_cursor) {
+      pageURL.searchParams.set(payload.next_page_token ? 'page_token' : 'cursor', String(payload.next_page_token || payload.next_cursor));
+      nextURL = pageURL.toString();
+    } else if (typeof payload?.next === 'string' && payload.next) {
+      const next = new URL(payload.next, catalogURL);
+      // Do not forward credentials to a different host or endpoint.
+      if (next.origin !== pageURL.origin || next.pathname !== pageURL.pathname) throw new Error(`${provider} returned an invalid catalog pagination URL`);
+      nextURL = next.toString();
+    }
+    }
+    if (provider === 'cloudflare' && /\/ai\/v1\/?$/.test(baseURL)) {
+      const nativeBase = baseURL.replace(/\/v1\/?$/, '');
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(4, raw.length) }, async () => {
+        while (next < raw.length) {
+          const index = next++;
+          const model = raw[index];
+          // Workers AI's catalog id is a UUID; inference uses its namespaced name.
+          raw[index] = { ...model, id: model.name || model.id };
+          try {
+            const response = await requestMetadata(`${nativeBase}/models/schema?model=${encodeURIComponent(raw[index].id)}`, { headers, cache: 'no-store' });
+            if (!response.ok) continue;
+            const details = await response.json();
+            if (details?.success === true && details?.result?.input) raw[index].input_schema = details.result.input;
+          } catch {
+            // Missing schema data must never create synthetic controls.
+          }
+        }
+      }));
+    }
     return resultWithExcluded(runtimeProvider, raw.map((model: any) => {
-      const supportedParameters = Array.isArray(model?.supported_parameters)
-        ? model.supported_parameters.map((value: unknown) => String(value || '').trim()).filter(Boolean)
-        : null;
-      const reportedCapabilities = Array.isArray(model?.capabilities)
-        ? model.capabilities
-        : model?.capabilities && typeof model.capabilities === 'object'
-          ? Object.entries(model.capabilities).filter(([, enabled]) => enabled === true).map(([name]) => name)
-          : [];
-      const capabilities = [
-        ...reportedCapabilities,
-        ...(supportedParameters || []),
-        ...(supportedParameters && !supportedParameters.some((value: string) => /^(?:tools?|tool_choice|function_call(?:ing)?)$/i.test(value))
-          ? ['tool-calling:false']
-          : []),
-      ];
       return {
       ...readModelAvailability(model),
       id: String(model?.id || model?.name || model?.model || ''),
@@ -769,10 +684,10 @@ async function fetchCompatibleModels(provider: MainAgentProvider): Promise<Provi
       description: model?.description || model?.owned_by || undefined,
       contextLength: Number(model?.context_length || model?.max_context_length || model?.max_model_len || 0) || undefined,
       createdAt: Number(model?.created || model?.created_at || 0) || undefined,
-      capabilities: capabilities.length > 0 ? capabilities : undefined,
+      capabilities: readModelWireCapabilities(model),
       // Generic catalogs are not allowed to invent reasoning_effort support.
       // Only provider-returned capability metadata is promoted into the UI.
-      thinking: readAdvertisedThinkingCapabilities(model, provider, thinkingParameter) || undefined,
+      thinking: readModelThinkingCapabilities(model, provider),
       };
     }));
   } catch (error) {
@@ -825,7 +740,7 @@ export async function POST(req: NextRequest) {
   if (!requested || requested.has('cerebras')) jobs.push(discover('cerebras' as RuntimeApiKeyProvider, fetchCerebrasModels));
   if (!requested || requested.has('together')) jobs.push(discover('together' as RuntimeApiKeyProvider, fetchTogetherModels));
   if (!requested || requested.has('elevenlabs')) jobs.push(fetchElevenLabsVoices());
-  if (!requested || requested.has('ollama')) jobs.push(discover('ollama' as RuntimeApiKeyProvider, fetchOllamaModels));
+  if (!requested || requested.has('ollama')) jobs.push(discover('ollama' as RuntimeApiKeyProvider, () => fetchOllamaModels('ollama')));
   if (!requested || requested.has('lmstudio')) jobs.push(discover('lmstudio' as RuntimeApiKeyProvider, fetchLMStudioModels));
   if (!requested || requested.has('fireworks')) jobs.push(discover('fireworks' as RuntimeApiKeyProvider, () => fetchCompatibleModels('fireworks')));
   if (!requested || requested.has('sambanova')) jobs.push(discover('sambanova' as RuntimeApiKeyProvider, () => fetchCompatibleModels('sambanova')));
@@ -844,7 +759,7 @@ export async function POST(req: NextRequest) {
   if (!requested || requested.has('kimi')) jobs.push(discover('kimi' as RuntimeApiKeyProvider, () => fetchCompatibleModels('kimi')));
   if (!requested || requested.has('stepfun')) jobs.push(discover('stepfun' as RuntimeApiKeyProvider, () => fetchCompatibleModels('stepfun')));
   if (!requested || requested.has('minimax')) jobs.push(discover('minimax' as RuntimeApiKeyProvider, () => fetchCompatibleModels('minimax')));
-  if (!requested || requested.has('ollamacloud')) jobs.push(discover('ollamacloud' as RuntimeApiKeyProvider, () => fetchCompatibleModels('ollamacloud')));
+  if (!requested || requested.has('ollamacloud')) jobs.push(discover('ollamacloud' as RuntimeApiKeyProvider, () => fetchOllamaModels('ollamacloud')));
   if (!requested || requested.has('arcee')) jobs.push(discover('arcee' as RuntimeApiKeyProvider, () => fetchCompatibleModels('arcee')));
   if (!requested || requested.has('gmi')) jobs.push(discover('gmi' as RuntimeApiKeyProvider, () => fetchCompatibleModels('gmi')));
   if (!requested || requested.has('kilo')) jobs.push(discover('kilo' as RuntimeApiKeyProvider, () => fetchCompatibleModels('kilo')));

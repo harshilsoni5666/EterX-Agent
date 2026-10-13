@@ -14,6 +14,7 @@ import { buildFilePreviewUrl, isAbsolutePathLike, normalizePathForComparison } f
 import { getPrimaryModifierLabel } from '../../lib/platform';
 import { decodeLocalFileHref, openLocalFilePath } from './local-file-link';
 import { isAppVisible } from '../../lib/app-visibility';
+import { createMonacoCodeTheme } from '../../lib/code-theme';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 const DiffEditor = dynamic(
@@ -276,53 +277,8 @@ function readResolvedUiTheme(): ResolvedUiTheme {
 }
 
 const configureEterxMonacoTheme = (monaco: any) => {
-  monaco.editor.defineTheme('eterx-light', {
-    base: 'vs',
-    inherit: true,
-    rules: [
-      { token: 'comment', foreground: '6A737D', fontStyle: 'italic' },
-      { token: 'string', foreground: '0A3069' },
-      { token: 'number', foreground: '0550AE' },
-      { token: 'keyword', foreground: 'CF222E', fontStyle: 'bold' },
-      { token: 'type', foreground: '953800' },
-      { token: 'type.identifier', foreground: '953800' },
-      { token: 'class', foreground: '8250DF' },
-      { token: 'class.identifier', foreground: '8250DF' },
-      { token: 'function', foreground: '8250DF' },
-      { token: 'function.call', foreground: '8250DF' },
-      { token: 'variable', foreground: '24292F' },
-      { token: 'constant', foreground: '0550AE' },
-      { token: 'operator', foreground: '57606A' },
-      { token: 'delimiter', foreground: '57606A' },
-      { token: 'tag', foreground: '0969DA' },
-      { token: 'attribute.name', foreground: '8250DF' },
-      { token: 'attribute.value', foreground: '0A3069' },
-      { token: 'regexp', foreground: '116329' },
-    ],
-    colors: {
-      'editor.background': '#F8FAFC',
-      'editor.foreground': '#24292F',
-      'editorLineNumber.foreground': '#8A94A6',
-      'editorLineNumber.activeForeground': '#57606A',
-      'editorGutter.background': '#F8FAFC',
-      'editor.selectionBackground': '#BBD7F5',
-      'editor.inactiveSelectionBackground': '#DCEBFA',
-      'editor.lineHighlightBackground': '#F1F5F9',
-      'editorCursor.foreground': '#57606A',
-      'editorIndentGuide.background': '#E2E8F0',
-      'editorIndentGuide.activeBackground': '#CBD5E1',
-      'editorOverviewRuler.border': '#E2E8F0',
-      'scrollbarSlider.background': '#CBD5E1AA',
-      'scrollbarSlider.hoverBackground': '#94A3B8AA',
-      'scrollbarSlider.activeBackground': '#64748BAA',
-      'diffEditor.insertedTextBackground': '#DDF6E3',
-      'diffEditor.removedTextBackground': '#FFE6E6',
-      'diffEditor.insertedLineBackground': '#EAF7EE',
-      'diffEditor.removedLineBackground': '#FFF0F0',
-      'diffEditorGutter.insertedLineBackground': '#B7E3C2',
-      'diffEditorGutter.removedLineBackground': '#F2B8B8',
-    },
-  });
+  monaco.editor.defineTheme('eterx-light', createMonacoCodeTheme('light'));
+  monaco.editor.defineTheme('eterx-dark', createMonacoCodeTheme('dark'));
 };
 
 type TabMode = 'code' | 'diff' | 'preview';
@@ -460,7 +416,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
         <Editor
           height="100%"
           language={editorLang}
-          theme={isLightTheme ? 'eterx-light' : 'vs-dark'}
+          theme={isLightTheme ? 'eterx-light' : 'eterx-dark'}
           beforeMount={configureEterxMonacoTheme}
           value={localContent}
           onChange={(value) => setLocalContent(value || '')}
@@ -506,7 +462,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
         <DiffEditor
           height="100%"
           language={editorLang}
-          theme={isLightTheme ? 'eterx-light' : 'vs-dark'}
+          theme={isLightTheme ? 'eterx-light' : 'eterx-dark'}
           beforeMount={configureEterxMonacoTheme}
           original={original}
           modified={modified}
@@ -534,8 +490,8 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
         <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: fileColor }} />
         <span className="text-[12.5px] font-semibold text-[#E8E6E3] truncate">{filename}</span>
         <span className="text-[9px] font-mono text-[#555350] bg-white/[0.04] border border-white/[0.06] px-1.5 py-[2px] rounded shrink-0 uppercase tracking-wide">{lang}</span>
-        {added > 0 && <span className="text-[10px] font-bold font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-[1.5px] rounded shrink-0">+{added}</span>}
-        {removed > 0 && <span className="text-[10px] font-bold font-mono text-red-400 bg-red-500/10 px-1.5 py-[1.5px] rounded shrink-0">−{removed}</span>}
+        {added > 0 && <span className="eterx-file-change-added text-[10px] font-bold font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-[1.5px] rounded shrink-0">+{added}</span>}
+        {removed > 0 && <span className="eterx-file-change-removed text-[10px] font-bold font-mono text-red-400 bg-red-500/10 px-1.5 py-[1.5px] rounded shrink-0">−{removed}</span>}
         {tab === 'code' && localContent && <span className="text-[10px] font-mono text-[#555350] shrink-0">{lineCount}L</span>}
       </div>
 
@@ -1689,7 +1645,7 @@ export const IdePanel = () => {
                       const map: Record<string,string> = { ts:'typescript',tsx:'typescript',js:'javascript',jsx:'javascript',html:'html',css:'css',scss:'scss',json:'json',md:'markdown',py:'python',go:'go',rs:'rust',sh:'shell' };
                       return map[ext] || 'plaintext';
                     })()}
-                    theme={isLightTheme ? 'eterx-light' : 'vs-dark'}
+                    theme={isLightTheme ? 'eterx-light' : 'eterx-dark'}
                     beforeMount={configureEterxMonacoTheme}
                     options={{
                       readOnly: true,

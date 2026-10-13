@@ -385,20 +385,39 @@ export function rebaseWorkingTranscriptForModel(contents: any[], kind: WireKind)
  * a newer run, and an edited chat cannot destroy its prior checkpoint.
  */
 /** Transform the exact idle transcript while preserving its admission lineage. */
-export async function compactSavedWorkingContext(chatId: string, transform: (checkpoint: Checkpoint) => Promise<any[]>) {
+export type ManualCompactionFallback = { provider: string; model: string; history: any[] };
+
+export async function compactSavedWorkingContext(chatId: string, transform: (checkpoint: Checkpoint) => Promise<any[]>, fallback?: ManualCompactionFallback, fabric?: ContextFabric) {
   const directory = getEterxWorkspaceDir('.context', 'working', stableScopeSegment(chatId));
   const names = await fs.readdir(directory).catch((error: any) => {
     if (error?.code === 'ENOENT') return [] as string[];
     throw error;
   });
   const latest = names.filter(name => /^\d{16}-[a-f0-9-]+\.json\.gz$/.test(name)).sort().reverse()[0];
-  if (!latest) throw new Error('This chat has no saved context to compact yet.');
-  const checkpoint = await readCheckpoint(path.join(directory, latest), chatId);
+  let checkpoint: Checkpoint;
+  if (latest) {
+    checkpoint = await readCheckpoint(path.join(directory, latest), chatId);
+  } else {
+    if (!fallback?.history.length) throw new Error('This chat has no saved context to compact yet.');
+    const kind: WireKind = fallback.provider === 'gemini' ? 'gemini' : fallback.provider === 'anthropic' ? 'anthropic' : 'compatible';
+    const history = fallback.history;
+    const recovered = await recoverLegacyToolContext({ chatId, kind, history, currentRequest: '', fabric });
+    const contents = history.map(message => kind === 'gemini'
+      ? message
+      : { role: message.role === 'model' ? 'assistant' : 'user', content: textOf(message) });
+    checkpoint = {
+      version: 1, scope: chatId, provider: fallback.provider, model: fallback.model,
+      kind, lineageVersion: 3, dialogue: history.map(dialogueIdentity),
+      lineage: history.map(message => workingDialogueEntry(message)),
+      contents: [...contents, ...recovered], fabricRevision: fabric?.getRevision(),
+    };
+  }
   const contents = await transform(checkpoint);
   const next = { ...checkpoint, contents, calibration: undefined };
   const serialized = JSON.stringify(next);
   if (Buffer.byteLength(serialized) > MAX_BYTES - 1024) throw new Error('Compacted context exceeds the safe checkpoint size.');
-  const destination = path.join(directory, `${String(Math.max(Date.now(), Number(latest.slice(0, 16)) + 1)).padStart(16, '0')}-${randomUUID()}.json.gz`);
+  await fs.ensureDir(directory);
+  const destination = path.join(directory, `${String(Math.max(Date.now(), latest ? Number(latest.slice(0, 16)) + 1 : 0)).padStart(16, '0')}-${randomUUID()}.json.gz`);
   const temporary = `${destination}.tmp`;
   try {
     const file = await openFile(temporary, 'wx', 0o600);

@@ -27,6 +27,7 @@ import { estimateTokens } from './auto-context';
 import { normalizeContextWindow } from '../../context-window-policy';
 import { refreshLiveContextBudget } from '../live-context-budget';
 import { createProviderChatStream } from '../provider-stream-adapter';
+import { applyAnthropicPromptCachePolicy, applyOpenAIPromptCachePolicy } from '../provider-prompt-cache';
 import { assertSuccessfulCompatibleFinish, createCompatibleTaggedReasoningSplitter, splitCompatibleDeltaContent } from '../provider-capabilities';
 import {
   buildContextUsageBreakdown,
@@ -1276,6 +1277,11 @@ const generateCapsulePartWithKey = async (
   apiKey: string,
   abortSignal?: AbortSignal,
 ): Promise<string> => {
+  const systemInstruction = 'Perform exact, loss-aware agent state transfer. Output only the requested continuation capsule.';
+  // The shared instructions end before per-part state. Preserve this boundary
+  // across chunks and repair retries without moving source data into the system.
+  const boundary = prompt.indexOf('\n\nThis is transcript part ');
+  const promptParts = boundary > 0 ? [prompt.slice(0, boundary), prompt.slice(boundary)] : [prompt];
   const modelContextWindow = Number.isFinite(Number(model.contextWindow)) && Number(model.contextWindow) >= 16_000
     ? Math.floor(Number(model.contextWindow))
     : resolveModelContextWindow(model.provider, model.modelId);
@@ -1290,9 +1296,9 @@ const generateCapsulePartWithKey = async (
     });
     const response = await client.models.generateContent({
       model: model.modelId,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      contents: [{ role: 'user', parts: promptParts.map(text => ({ text })) }],
       config: {
-        systemInstruction: 'Perform exact, loss-aware agent state transfer. Output only the requested continuation capsule.',
+        systemInstruction,
         temperature: 0.1,
         maxOutputTokens,
         abortSignal,
@@ -1310,13 +1316,17 @@ const generateCapsulePartWithKey = async (
       baseURL: getProviderBaseURL('anthropic'),
       maxRetries: 0,
     });
-    const response = await client.messages.create({
+    const params: any = {
       model: model.modelId,
       max_tokens: maxOutputTokens,
       temperature: 0.1,
-      system: 'Perform exact, loss-aware agent state transfer. Output only the requested continuation capsule.',
-      messages: [{ role: 'user', content: prompt }],
-    }, abortSignal ? { signal: abortSignal } as any : undefined);
+      system: systemInstruction,
+      messages: [{ role: 'user', content: promptParts.map(text => ({ type: 'text', text })) }],
+    };
+    applyAnthropicPromptCachePolicy(params);
+    const cacheControl = params.messages[0].content.at(-1)?.cache_control;
+    if (promptParts.length > 1 && cacheControl) params.messages[0].content[0].cache_control = { ...cacheControl };
+    const response = await client.messages.create(params, abortSignal ? { signal: abortSignal } as any : undefined);
     if (response.stop_reason !== 'end_turn') {
       throw new Error(`Context compaction model did not finish a complete capsule (${response.stop_reason}).`);
     }
@@ -1332,16 +1342,20 @@ const generateCapsulePartWithKey = async (
     } : undefined,
   });
   const usesModernOpenAIControls = model.provider === 'openai' && /^(?:gpt-[56]|o[134])(?:[-.]|$)/i.test(model.modelId);
-  const stream = await createProviderChatStream(client, model.provider, {
+  const params: Record<string, any> = {
     model: model.modelId,
     ...(usesModernOpenAIControls
       ? { max_completion_tokens: maxOutputTokens }
       : { temperature: 0.1, max_tokens: maxOutputTokens }),
     messages: [
-      { role: 'system', content: 'Perform exact, loss-aware agent state transfer. Output only the requested continuation capsule.' },
-      { role: 'user', content: prompt },
+      { role: 'system', content: systemInstruction },
+      { role: 'user', content: promptParts.map(text => ({ type: 'text', text })) },
     ],
-  }, abortSignal);
+  };
+  if (model.provider === 'openai' && process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1') {
+    applyOpenAIPromptCachePolicy(params, { model: model.modelId, staticPrompt: systemInstruction, tools: [] });
+  }
+  const stream = await createProviderChatStream(client, model.provider, params, abortSignal);
   const splitter = createCompatibleTaggedReasoningSplitter();
   let result = '';
   let finishReason = '';
@@ -2161,6 +2175,8 @@ type CompactInput = {
   semanticBoundary?: 'safe' | 'neutral' | 'unsafe';
   /** Provider proved the payload is over its real limit despite local/catalog estimates. */
   forceCompaction?: boolean;
+  /** Manual actions report progress outside the conversation feed. */
+  manualCompaction?: boolean;
   onEvent?: (event: ContextCompactionEvent | ({ type: 'context_usage' } & ContextCompactionUsage & { chatId: string; timestamp: number })) => void;
 };
 
@@ -3117,13 +3133,22 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
 
 /** Manual requests share the same transaction and continuity checks as automatic compaction. */
 export const compactContextAtBoundary = async (input: CompactInput) => {
-  const finish = input.semanticBoundary === 'unsafe' ? null : claimManualCompaction(input.chatId);
+  const request = input.semanticBoundary === 'unsafe' ? null : claimManualCompaction(input.chatId);
+  const manual = Boolean(request || input.manualCompaction);
+  const onEvent = input.onEvent;
   try {
-    const result = await compactContextAtBoundaryImpl(finish ? { ...input, forceCompaction: true } : input);
-    finish?.(result.failed ? new Error('Context compaction failed. The original context was preserved.') : undefined);
+    const result = await compactContextAtBoundaryImpl({
+      ...input,
+      ...(request ? { forceCompaction: true, rawSettings: request.rawSettings ?? input.rawSettings } : {}),
+      manualCompaction: manual,
+      onEvent: event => {
+        if (!manual || event.type !== 'context_compaction') onEvent?.(event);
+      },
+    });
+    request?.finish(result.failed ? new Error('Context compaction failed. The original context was preserved.') : undefined);
     return result;
   } catch (error) {
-    finish?.(error instanceof Error ? error : new Error(String(error)));
+    request?.finish(error instanceof Error ? error : new Error(String(error)));
     throw error;
   }
 };

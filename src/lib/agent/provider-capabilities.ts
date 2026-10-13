@@ -3,7 +3,7 @@ import type {
   MainAgentThinkingLevel,
   ModelThinkingCapabilities,
 } from './model-routing';
-import { inferModelThinkingCapabilities, isOpenAIReasoningModel, normalizeThinkingLevelForModel, toMistralReasoningEffort, toOpenAIReasoningEffort } from './model-routing';
+import { getAnthropicThinkingBudget, resolveModelThinkingCapabilities, normalizeThinkingLevelForModel, toOpenAIReasoningEffort } from './model-routing';
 import { extractProviderText } from '../streaming-lifecycle';
 
 /**
@@ -70,70 +70,80 @@ export function applyCompatibleThinkingParameters(
   thinking: CompatibleThinking | null,
 ): void {
   if (!thinking) return;
-  const level = normalizeThinkingLevelForModel(thinking.level, provider, modelName, thinking.capabilities);
-  const parameter = thinking.capabilities?.parameter;
+  const capabilities = resolveModelThinkingCapabilities(provider, modelName, thinking.capabilities);
+  if (!capabilities?.parameter || !capabilities.levels.length) return;
+  const level = normalizeThinkingLevelForModel(thinking.level, provider, modelName, capabilities);
+  const effort = capabilities.wireValues?.[level] ?? toOpenAIReasoningEffort(level);
 
-  if (provider === 'grok') {
-    const capabilities = thinking.capabilities?.source === 'provider'
-      ? thinking.capabilities : inferModelThinkingCapabilities(provider, modelName);
-    if (capabilities?.parameter === 'reasoning_effort') params.reasoning_effort = toOpenAIReasoningEffort(level);
-    return;
-  }
+  const setToggle = (parameter: string, enabled: boolean) => {
+    if (parameter === 'thinking.type') params.thinking = { type: enabled ? 'enabled' : 'disabled' };
+    else if (parameter === 'enable_thinking') params.enable_thinking = enabled;
+    else if (parameter === 'reasoning.enabled') params.reasoning = { ...(params.reasoning || {}), enabled };
+    else if (parameter === 'chat_template_kwargs.enable_thinking') params.chat_template_kwargs = { ...(params.chat_template_kwargs || {}), enable_thinking: enabled };
+  };
+  if (capabilities.toggleParameter) setToggle(capabilities.toggleParameter, level !== 'off');
+  if (capabilities.omitLevels?.includes(level)) return;
 
-  // Provider/model semantics win over a generic parameter label. Groq's Qwen
-  // models use only none/default, unlike GPT-OSS low/medium/high.
-  if (provider === 'groq' && /qwen(?:\/|[-_])?qwen?3|qwen3/i.test(modelName)) {
-    params.reasoning_effort = level === 'off' ? 'none' : 'default';
-    params.reasoning_format = 'parsed';
-  } else if (parameter === 'thinkingLevel') {
-    params.thinkingLevel = level;
-  } else if (parameter === 'thinkingBudget') {
-    params.thinkingBudget = thinkingBudget(level);
-  } else if (parameter === 'thinking.type') {
-    params.thinking = { type: level === 'off' ? 'disabled' : 'enabled' };
-    if (level !== 'off') {
-      params.reasoning_effort = level === 'max' || level === 'xhigh' ? 'max' : 'high';
-    }
-  } else if (parameter === 'enable_thinking') {
-    params.enable_thinking = level !== 'off';
-    if (level !== 'off') params.thinking_budget = thinkingBudget(level);
-  } else if (parameter === 'reasoning') {
-    params.reasoning = { effort: level === 'off' ? 'none' : level, exclude: false };
-  } else if (parameter === 'reasoning_effort') {
-    params.reasoning_effort = toOpenAIReasoningEffort(level);
-  } else if (parameter === 'output_config.effort') {
-    params.output_config = { effort: level === 'off' ? 'none' : level };
-  } else if (provider === 'openrouter') {
-    params.reasoning = { effort: level === 'off' ? 'none' : level, exclude: false };
-  } else if (provider === 'mistral') {
-    params.reasoning_effort = toMistralReasoningEffort(level);
-  } else if (provider === 'groq' && /gpt-oss/i.test(modelName)) {
-    params.reasoning_effort = toOpenAIReasoningEffort(level);
-  } else if ((provider === 'together' || provider === 'nvidia') && /gpt-oss/i.test(modelName)) {
-    params.reasoning_effort = toOpenAIReasoningEffort(level);
-  } else if (provider === 'qwen') {
-    params.enable_thinking = level !== 'off';
-    if (level !== 'off') params.thinking_budget = thinkingBudget(level);
-  } else if (provider === 'llamacpp') {
-    params.chat_template_kwargs = {
-      ...(params.chat_template_kwargs || {}),
-      reasoning_effort: toOpenAIReasoningEffort(level),
-    };
-  } else if (provider === 'openai' && isOpenAIReasoningModel(modelName)) {
-    params.reasoning_effort = toOpenAIReasoningEffort(level);
+  switch (capabilities.parameter) {
+    case 'thinkingLevel':
+      params.thinkingLevel = capabilities.wireValues?.[level] ?? level;
+      break;
+    case 'thinkingBudget':
+      params.thinkingBudget = thinkingBudget(level);
+      break;
+    case 'thinking_level':
+      params.thinking_level = capabilities.wireValues?.[level] ?? level;
+      break;
+    case 'thinking_budget':
+      params.thinking_budget = thinkingBudget(level);
+      break;
+    case 'thinking.type':
+      params.thinking = { type: capabilities.wireValues?.[level] ?? (level === 'off' ? 'disabled' : 'enabled') };
+      break;
+    case 'enable_thinking':
+    case 'reasoning.enabled':
+    case 'chat_template_kwargs.enable_thinking':
+      setToggle(capabilities.parameter, level !== 'off');
+      break;
+    case 'chat_template_kwargs.thinking':
+      params.chat_template_kwargs = { ...(params.chat_template_kwargs || {}), thinking: level !== 'off' };
+      break;
+    case 'reasoning':
+      params.reasoning = { ...(params.reasoning || {}), effort };
+      break;
+    case 'reasoning_effort':
+      params.reasoning_effort = effort;
+      if (provider === 'groq' && /^qwen\//i.test(modelName)) params.reasoning_format = 'parsed';
+      break;
+    case 'output_config.effort':
+      params.output_config = { effort };
+      break;
+    case 'thinking.budget_tokens':
+      params.thinking = level === 'off' ? { type: 'disabled' } : { type: 'enabled', budget_tokens: getAnthropicThinkingBudget(level) };
+      break;
+    case 'chat_template_kwargs.reasoning_effort':
+      params.chat_template_kwargs = { ...(params.chat_template_kwargs || {}), reasoning_effort: effort };
+      break;
   }
 }
-
 export function reasoningContinuationFields(
   provider: MainAgentProvider,
   reasoningText: string,
   reasoningDetails?: unknown[],
+  returnedFields?: Record<string, unknown>,
 ): Record<string, unknown> {
+  if (returnedFields) {
+    // Preserve the fields the selected endpoint actually returned, including
+    // hosted models. Never translate another provider's reasoning vocabulary.
+    return Object.fromEntries(['reasoning_content', 'reasoning', 'reasoning_details']
+      .filter(key => typeof returnedFields[key] === 'string' || Array.isArray(returnedFields[key]))
+      .map(key => [key, returnedFields[key]]));
+  }
   if (provider === 'openrouter' && Array.isArray(reasoningDetails) && reasoningDetails.length > 0) {
     return { reasoning_details: reasoningDetails };
   }
   if (provider === 'openrouter') return reasoningText ? { reasoning: reasoningText } : {};
-  if (['deepseek', 'mimo', 'kimi'].includes(provider)) {
+  if (['deepseek', 'mimo', 'kimi', 'zai', 'qwen', 'minimax', 'fireworks'].includes(provider)) {
     return reasoningText ? { reasoning_content: reasoningText } : {};
   }
   return {};

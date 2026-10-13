@@ -14,6 +14,7 @@ import {
 import { authorizeToolCommand } from '../security/command_broker';
 import { buildTerminalShellInvocation } from './shell_resolver';
 import { getEterxWorkspaceDir } from '../../storage-paths';
+import { managedWorkspaces } from '../../workspace/managed';
 import { resolveTerminalOutputKind, type TerminalOutputKind } from '../../source-read-policy';
 
 type TerminalTaskStatus = 'running' | 'completed' | 'failed' | 'killed';
@@ -262,7 +263,9 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
   }
 
   let child: ChildProcess;
+  let releaseWorkspace: (() => void) & { setProcess?: (pid?: number) => void } = () => {};
   try {
+    releaseWorkspace = managedWorkspaces.acquireWorkspaceLease(authorization.cwd);
     child = spawn(invocation.file, invocation.args, {
       cwd: authorization.cwd,
       shell: invocation.shell,
@@ -271,7 +274,9 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
       env: { PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', ...authorization.env },
       detached: process.platform !== 'win32',
     });
+    releaseWorkspace.setProcess?.(child.pid);
   } catch (error: any) {
+    releaseWorkspace();
     task.status = 'failed';
     task.exitCode = 127;
     task.completedAt = Date.now();
@@ -390,6 +395,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     child.stderr?.on('data', (chunk: Buffer) => onData('stderr', chunk));
 
     child.on('close', (code: number | null, signal: string | null) => {
+      releaseWorkspace();
       flushDecoders();
       const status = task.stopExitCode !== undefined ? 'killed' : code === 0 && !task.hardTimedOut ? 'completed' : 'failed';
       finishTask(status, task.stopExitCode ?? (task.hardTimedOut ? 124 : code), signal).catch(() => {
@@ -398,6 +404,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     });
 
     child.on('error', (error: Error) => {
+      releaseWorkspace();
       flushDecoders();
       appendTaskOutput(task, 'stderr', error.message);
       finishTask('failed', 1, null).catch(() => {

@@ -13,6 +13,8 @@ import './conversation-layout.css';
 import './side-workspace.css';
 import './turn-changes.css';
 import './dropdown-polish.css';
+import './code-review.css';
+import './composer-surfaces.css';
 import '../../electron/splash.css';
 import 'katex/dist/katex.min.css';
 import './scrollbars.css';

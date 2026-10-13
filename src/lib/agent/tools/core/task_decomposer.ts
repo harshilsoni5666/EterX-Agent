@@ -3,7 +3,7 @@ import { ToolDefinition } from '../../schemas';
 import { globalTaskPlanner } from '../../task_planner';
 import { normalizeMainAgentMode } from '../../model-routing';
 import { globalSessionManager } from '../../session';
-import { trackerToTrace, writeTaskTrackerState, type TaskTrackerData } from '../../task-tracker-store';
+import { trackerToTrace, readTaskTracker, writeTaskTrackerState, type TaskTrackerData } from '../../task-tracker-store';
 import { getPlanEngine } from '../../plan-execution-engine';
 import { getAgentConversationScope } from '../../context-scope';
 import { formatUnknownError } from '../../error-format';
@@ -60,12 +60,27 @@ export const taskDecomposerTool: ToolDefinition = {
     const pendingGeneration = pendingPlanGenerations.get(scopeId);
     if (pendingGeneration) return pendingGeneration;
     const existing = getPlanEngine(scopeId).serialize();
-    if (existing?.steps?.length) return {
-      success: true, skippedDuplicate: true, plan: existing.steps,
-      totalSteps: existing.steps.length,
-      estimatedTools: [...new Set(existing.steps.flatMap(step => step.tools || []))],
-      message: 'This task already has a plan. Reuse its current state; use task_checkpoint to advance or revise unfinished work.',
-    };
+    if (existing?.steps?.length && (existing.status === 'executing' || runtimeContext?.planMode !== true)) {
+      if (runtimeContext?.planMode === true && typeof runtimeContext._onTrace === 'function') {
+        let saved: TaskTrackerData | undefined;
+        try { saved = readTaskTracker(scopeId)?.data; } catch { /* The live plan is authoritative. */ }
+        const tracker: TaskTrackerData = {
+          planId: saved?.planId || `task-plan-${scopeId}`,
+          chatId: scopeId, goal: existing.goal, createdAt: existing.createdAt, updatedAt: existing.updatedAt,
+          complexity: saved?.complexity || 'ongoing', estimatedMinutes: saved?.estimatedMinutes || 0,
+          status: 'in_progress',
+          steps: existing.steps.map(step => ({ ...step,
+            status: step.status === 'active' ? 'in_progress' : step.status === 'ready' ? 'pending' : step.status })),
+        };
+        runtimeContext._onTrace(trackerToTrace(tracker, 'progress'));
+      }
+      return {
+        success: true, skippedDuplicate: true, plan: existing.steps,
+        totalSteps: existing.steps.length,
+        estimatedTools: [...new Set(existing.steps.flatMap(step => step.tools || []))],
+        message: 'This task already has a plan. Reuse its current state; use task_checkpoint to advance or revise unfinished work for the current request.',
+      };
+    }
     const generation = (async () => {
     const taskText = `${input.complexTask || ''}\n${input.context || ''}`.trim();
     const planningForbidden = /\b(?:(?:do\s+not|don't|dont|never|skip|avoid|without)(?:\s+\w+){0,3}|no\s+need\s+to)\s+(?:plan|decompose|use\s+(?:a\s+)?planner|create\s+(?:a\s+)?(?:plan|roadmap|task\s+tracker|checklist))\b|\bno\s+(?:plan|planning|decomposition|task\s+tracker|checklist)\b/i.test(taskText);

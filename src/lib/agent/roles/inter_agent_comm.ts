@@ -62,6 +62,9 @@ export interface AgentMessage {
     evidenceReady?: boolean;
     verificationStatus?: 'verified' | 'unverified' | 'unspecified';
     payloadTruncated?: boolean;
+    parentAgentId?: string;
+    parentAgentName?: string;
+    depth?: number;
     recipientAgentId?: string;
     recipientSubAgentChatId?: string;
     /** Requested execution model for the recipient's next continuation loop. */
@@ -99,6 +102,9 @@ export interface AgentPresence {
   agentName: string;
   agentId?: string;
   subAgentChatId?: string;
+  parentAgentId?: string;
+  parentAgentName?: string;
+  depth?: number;
   role: 'main' | 'sub_agent' | 'unknown';
   status: string;
   task?: string;
@@ -561,6 +567,9 @@ class InterAgentMailbox {
       agentName,
       agentId: details?.agentId ?? existing?.agentId,
       subAgentChatId: details?.subAgentChatId ?? existing?.subAgentChatId,
+      parentAgentId: details?.parentAgentId ?? (isNewRun ? undefined : existing?.parentAgentId),
+      parentAgentName: details?.parentAgentName ?? (isNewRun ? undefined : existing?.parentAgentName),
+      depth: details?.depth ?? (isNewRun ? undefined : existing?.depth),
       role: details?.role || existing?.role || (agentName.toLowerCase() === 'main' ? 'main' : 'sub_agent'),
       status: details?.status || existing?.status || 'registered',
       task: details?.task ?? existing?.task,
@@ -575,6 +584,7 @@ class InterAgentMailbox {
     const changed = !existing || isNewRun || [
       'agentId', 'subAgentChatId', 'role', 'status', 'task', 'progress',
       'ownerChatId', 'runId', 'turnId', 'subAgentTurnId',
+      'parentAgentId', 'parentAgentName', 'depth',
     ].some(field => (existing as any)?.[field] !== (nextPresence as any)[field]);
     team.set(key, changed ? nextPresence : { ...nextPresence, updatedAt: existing.updatedAt });
     if (changed) this.bumpProjectRevision(projectId);

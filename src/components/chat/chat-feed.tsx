@@ -30,6 +30,7 @@ import { formatUnknownError } from '../../lib/agent/error-format';
 import { mergeFeedTracePayload } from '../../lib/chat-feed-lifecycle';
 import { FilePanelOwner } from '../../contexts/FilePanelContext';
 import { TurnChangesCard } from './turn-changes';
+import { reconcileModelUsageLogs, summarizeModelUsage } from '../../lib/model-usage';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
 interface ChatFeedProps {
@@ -1103,8 +1104,13 @@ const dedupeFeedLogs = (logs: any[]) => {
     return Array.from(new Set([...eventKeys, ...traceKeys, ...actionReplayKeys, ...singletonKeys]));
   };
 
-  logs.forEach((log: any) => {
+  reconcileModelUsageLogs(logs).forEach((log: any) => {
     if (!log) return;
+    if (log.type === 'model_usage') {
+      // Receipt identity is independent of a feed row's presentation slot.
+      deduped.push(log);
+      return;
+    }
     const admission = userAdmissionKey(log);
     const priorAdmissionIndex = admission ? admissionIndexes.get(admission) : undefined;
     if (priorAdmissionIndex !== undefined) {
@@ -1912,7 +1918,7 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'id', 'admissionId', 'steeringIds', 'steeringMessages', 'deliveryState', '_queuedFollowUp', '_traceIdx', 'type', 'text', 'secondary', 'output', 'content',
   'timestamp', 'startTime', 'endTime', 'streamStartedAt', 'isStreaming', 'isLiveTyping',
   'wasStreaming', 'isLive', 'streamState', 'final', 'done', 'answerId', 'spokenText', 'noteId', 'thoughtId',
-  'subAgent', 'subAgentId', 'subAgentChatId', 'isSubAgent', 'agentRole', 'terminalTask', 'agentName', 'status', 'state', 'finishReason', 'finish_reason', 'progress', 'error',
+  'subAgent', 'subAgentId', 'subAgentChatId', 'parentAgentId', 'parentAgentName', 'depth', 'isSubAgent', 'agentRole', 'terminalTask', 'agentName', 'status', 'state', 'finishReason', 'finish_reason', 'progress', 'error',
   'question', 'mode', 'options', 'questions', 'context', 'defaultValue',
   'urgent', 'responseKey', 'answeredWith', 'answeredAt', 'attachments',
   'filename', 'fileName', 'filepath', 'filePath', 'path', 'preview',
@@ -1936,6 +1942,15 @@ const RENDER_RELEVANT_LOG_FIELDS = [
   'provider', 'source', 'promptTokens', 'inputTokens', 'completionTokens', 'outputTokens',
   'totalTokens', 'providerReportedTotalTokens', 'cachedTokens', 'uncachedPromptTokens', 'cacheHitRatio',
   'visibleOutputTokens', 'generatedTokens',
+  'usage', 'usageMetadata', 'prompt_tokens', 'input_tokens', 'completion_tokens', 'output_tokens',
+  'generated_tokens', 'total_tokens', 'promptTokenCount', 'candidatesTokenCount', 'totalTokenCount',
+  'promptTokensMeasured', 'completionTokensMeasured', 'reasoningTokensMeasured', 'cacheTokensMeasured',
+  'modelId', 'contextRequestId', 'measurementAt', '_contextMeasurementIdx',
+  'visible_output_tokens', 'reasoning_tokens', 'thoughtsTokenCount', 'thoughts_token_count',
+  'totalInputTokens', 'total_input_tokens', 'totalOutputTokens', 'total_output_tokens',
+  'totalThoughtTokens', 'total_thought_tokens', 'inputTokenCount', 'outputTokenCount',
+  'prompt_token_count', 'candidates_token_count', 'responseTokenCount', 'response_token_count',
+  'total_token_count', 'cache_read_input_tokens', 'cache_creation_input_tokens',
   'reasoningTokens', 'toolUsePromptTokens', 'interaction', 'usageId', 'chatId', 'ownerChatId',
   // Query and worker ownership are presentation state. Several of these are
   // deliberately enriched after the optimistic row first lands; omitting one
@@ -2127,23 +2142,7 @@ const ChatFeedMessageGroup = React.memo(({
     );
   }
 
-  const answerTokenUsage = (() => {
-    const seen = new Set<string>();
-    return group.reduce((usage: { input: number; output: number }, log: any) => {
-      if (log?.type !== 'model_usage') return usage;
-      const tokenTotal = Number(log.totalTokens ?? log.total_tokens ?? 0);
-      if (!Number.isFinite(tokenTotal) || tokenTotal <= 0) return usage;
-      const key = String(log.usageId || log._traceIdx || `${log.runId || log.turnId || ''}:${log.provider || ''}:${log.model || ''}:${log.interaction ?? ''}:${log.timestamp || ''}:${tokenTotal}`);
-      if (seen.has(key)) return usage;
-      seen.add(key);
-      const input = Number(log.promptTokens ?? log.prompt_tokens ?? log.inputTokens ?? log.input_tokens ?? 0);
-      const output = Number(log.generatedTokens ?? log.generated_tokens ?? log.outputTokens ?? log.output_tokens ?? log.completionTokens ?? log.completion_tokens ?? 0);
-      return {
-        input: usage.input + (Number.isFinite(input) && input > 0 ? input : 0),
-        output: usage.output + (Number.isFinite(output) && output > 0 ? output : 0),
-      };
-    }, { input: 0, output: 0 });
-  })();
+  const answerTokenUsage = summarizeModelUsage(group);
 
   // Bug 9: Empty groups (appended for live thinking indicator) must not
   // render a blank mb-8 div when the group truly has no content yet.
@@ -2534,11 +2533,12 @@ const ChatFeedMessageGroup = React.memo(({
                           {formatShortTime(displayFinalAnswer.endTime ?? displayFinalAnswer.timestamp)}
                         </span>
                       )}
-                      {showTokenCount && (answerTokenUsage.input > 0 || answerTokenUsage.output > 0) && (
+                      {showTokenCount && answerTokenUsage.receipts > 0 && (
                         <span className="eterx-professional-number ml-1.5 inline-flex items-center gap-1.5 text-[11px] font-medium leading-none text-[#746F67] select-none whitespace-nowrap" title="Provider-reported token usage across this run. Cached prompt tokens are included in input.">
-                          <span>Input {formatProviderTokenCount(answerTokenUsage.input)}</span>
+                          <span>Input {answerTokenUsage.inputMeasured ? formatProviderTokenCount(answerTokenUsage.input) : '—'}</span>
                           <span className="text-[#514D47]" aria-hidden="true">|</span>
-                          <span>Output {formatProviderTokenCount(answerTokenUsage.output)}</span>
+                          <span>Output {answerTokenUsage.outputMeasured ? formatProviderTokenCount(answerTokenUsage.output) : '—'}</span>
+                          {!answerTokenUsage.inputMeasured && !answerTokenUsage.outputMeasured && <span>Total {formatProviderTokenCount(answerTokenUsage.total)}</span>}
                         </span>
                       )}
                     </div>

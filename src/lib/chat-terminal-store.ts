@@ -9,6 +9,7 @@ import { readManagedTerminal, type ManagedTerminalTask } from './managed-termina
 import { appStorage } from './client-storage';
 import { formatTerminalProgram } from './agent/terminal-invocation';
 import { isAppVisible, subscribeAppVisibility } from './app-visibility';
+import { createTerminalSurface, loadTerminalRuntime } from './chat-terminal-runtime';
 
 export type TerminalTab = { id: string; number: number; label: string; cwd: string; terminal: Terminal; fit: FitAddon; element: HTMLDivElement; exitCode?: number; managedTaskId?: string; managedOwnerChatId?: string; managedLoading?: boolean; managedError?: string; initialSnapshot?: Promise<any>; outputOffset?: number; managedStatus?: string; managedSettled?: boolean; managedInitialized?: boolean };
 type ChatTerminals = { open: boolean; placement: 'bottom' | 'right'; width: number; tabs: TerminalTab[]; activeId: string | null; height: number; error: string; creating: boolean };
@@ -23,6 +24,8 @@ const controls = new Map<string, TerminalControls>();
 const titleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingTitles = new Map<string, string>();
 const pendingCreations = new Set<{ owner: string; disposed: boolean }>();
+const isCreating = (owner: string) => [...pendingCreations].some(creation => creation.owner === owner && !creation.disposed);
+const tabOwner = (tab: TerminalTab) => [...chats].find(([, state]) => state.tabs.includes(tab))?.[0];
 function subscribe(chatId: string, listener: () => void) {
   const group = listeners.get(chatId) || new Set<() => void>();
   listeners.set(chatId, group);
@@ -69,13 +72,14 @@ export function resizeTerminalWidth(chatId: string, width: number) { update(chat
 export function selectTerminal(chatId: string, activeId: string) { update(chatId, { activeId }); }
 export function resizeTerminalDock(chatId: string, height: number) { update(chatId, { height: Math.max(140, Math.min(650, height)) }); }
 export function transferChatTerminals(from: string, to: string) {
+  if (from === to) return;
   for (const creation of pendingCreations) if (creation.owner === from) creation.owner = to;
   void api()?.terminalTransfer?.(from, to).catch(() => {});
   const state = chats.get(from);
   if (!state) return;
   chats.delete(from);
   const existing = chats.get(to);
-  chats.set(to, existing?.tabs.length ? { ...state, tabs: [...existing.tabs, ...state.tabs], activeId: state.activeId || existing.activeId } : state);
+  chats.set(to, { ...(existing?.tabs.length ? { ...state, tabs: [...existing.tabs, ...state.tabs], activeId: state.activeId || existing.activeId } : state), creating: isCreating(to) });
   terminalNumbers.set(to, Math.max(terminalNumbers.get(from) || 0, terminalNumbers.get(to) || 0));
   terminalNumbers.delete(from);
   controls.delete(from);
@@ -96,6 +100,7 @@ export async function closeTerminal(chatId: string, id: string) {
   const tab = state.tabs.find(item => item.id === id);
   if (!tab) return;
   try { if (!tab.managedTaskId) await api().terminalClose(id); } catch { /* The process may already be gone. */ }
+  if (tabsById.get(id) !== tab) return;
   chatId = [...chats].find(([, state]) => state.tabs.some(tab => tab.id === id))?.[0] || chatId;
   tabsById.delete(id);
   clearTitle(id);
@@ -114,7 +119,7 @@ export async function createTerminal(chatId: string, cwd?: string | null) {
   let createdTerminal: Terminal | undefined;
   try {
     if (!api()?.terminalCreate) throw new Error('Open this project in the EterX desktop app to use the terminal. Restart the app after updating.');
-    const [{ Terminal }, { FitAddon }] = await Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')]);
+    const runtime = await loadTerminalRuntime();
     if (!subscribed) {
       api().onTerminalEvent((event: { id: string; data?: string; exitCode?: number }) => {
         const target = tabsById.get(event.id);
@@ -138,19 +143,20 @@ export async function createTerminal(chatId: string, cwd?: string | null) {
     }
     chatId = creation.owner;
     if (creation.disposed) return;
+    // Construct the display before spawning a shell so renderer failures never
+    // leave an interactive process behind.
+    const { terminal, fit, element } = createTerminalSurface(runtime, { cursorBlink: true, cursorStyle: 'bar', cursorWidth: 2, cursorInactiveStyle: 'outline', fontSize: 13, lineHeight: 1.18, fontFamily: '"Geist Mono", Consolas, "Liberation Mono", Menlo, monospace', scrollback: 2000, allowProposedApi: false, theme: chatTerminalTheme() });
+    createdTerminal = terminal;
     let terminalShell = 'auto';
     try { terminalShell = JSON.parse(appStorage.getItem('eterx_settings') || '{}').terminalShell || 'auto'; } catch {}
+    const requestedOwner = chatId;
     const result = await api().terminalCreate({ chatId, cwd, terminalShell });
     chatId = creation.owner;
     createdId = result.id;
-    if (creation.disposed || !chats.has(chatId)) { await api().terminalClose(result.id); return; }
-    const terminal = new Terminal({ cursorBlink: true, cursorStyle: 'bar', cursorWidth: 2, cursorInactiveStyle: 'outline', fontSize: 13, lineHeight: 1.18, fontFamily: '"Geist Mono", Consolas, "Liberation Mono", Menlo, monospace', scrollback: 2000, allowProposedApi: false, theme: chatTerminalTheme() });
-    createdTerminal = terminal;
-    const fit = new FitAddon();
-    terminal.loadAddon(fit);
-    const element = document.createElement('div');
-    element.className = 'eterx-terminal-surface';
-    terminal.open(element);
+    if (creation.disposed || !chats.has(chatId)) throw new Error('Terminal opening was cancelled.');
+    if (requestedOwner !== chatId) await api().terminalTransfer(requestedOwner, chatId);
+    chatId = creation.owner;
+    if (creation.disposed || !chats.has(chatId)) throw new Error('Terminal opening was cancelled.');
     terminal.onData(data => api().terminalInput(result.id, data));
     terminal.onResize(({ cols, rows }) => api().terminalResize(result.id, cols, rows));
     terminal.onTitleChange(label => {
@@ -192,15 +198,26 @@ export async function createTerminal(chatId: string, cwd?: string | null) {
       }
     }
     createdTerminal?.dispose();
-    if (chats.has(chatId)) update(chatId, { error: error instanceof Error ? error.message : String(error) });
+    if (!creation.disposed && chats.has(chatId)) update(chatId, { error: error instanceof Error ? error.message : String(error) });
   } finally {
     pendingCreations.delete(creation);
     chatId = creation.owner;
-    if (chats.has(chatId)) update(chatId, { creating: false });
+    if (chats.has(chatId)) update(chatId, { creating: isCreating(chatId) });
   }
 }
 
-const openingManaged = new Map<string, Promise<void>>();
+const openingManaged = new Map<string, { promise: Promise<void>; creation: { owner: string; disposed: boolean } }>();
+
+function placeManagedTerminal(chatId: string, tab: TerminalTab) {
+  const previousOwner = tabOwner(tab);
+  if (previousOwner && previousOwner !== chatId) {
+    const state = read(previousOwner);
+    const tabs = state.tabs.filter(item => item !== tab);
+    update(previousOwner, { tabs, activeId: state.activeId === tab.id ? tabs.at(-1)?.id || null : state.activeId });
+  }
+  const state = read(chatId);
+  update(chatId, { open: true, placement: 'right', tabs: state.tabs.includes(tab) ? state.tabs : [...state.tabs, tab], activeId: tab.id, error: '' });
+}
 
 /** panelChatId routes the UI tab, not ownership or exclusive access to a folder. */
 export async function openManagedTerminal(taskChatId: string, task: ManagedTerminalTask, panelChatId = taskChatId): Promise<void> {
@@ -208,48 +225,64 @@ export async function openManagedTerminal(taskChatId: string, task: ManagedTermi
   addWorkspaceTab(chatId, 'terminal');
   update(chatId, { open: true, placement: 'right', error: '' });
   const id = `managed:${taskChatId}:${task.id}`;
-  const existing = read(chatId).tabs.find(tab => tab.id === id);
-  if (existing) { update(chatId, { open: true, placement: 'right', activeId: id }); return; }
+  const existing = tabsById.get(id);
+  if (existing) { placeManagedTerminal(chatId, existing); return; }
   const pending = openingManaged.get(id);
-  if (pending) return pending;
+  if (pending && !pending.creation.disposed) {
+    const previousOwner = pending.creation.owner;
+    pending.creation.owner = chatId;
+    if (chats.has(previousOwner)) update(previousOwner, { creating: isCreating(previousOwner) });
+    update(chatId, { creating: true });
+    return pending.promise;
+  }
   const creation = { owner: chatId, disposed: false };
   pendingCreations.add(creation);
-  update(chatId, { creating: true, activeId: id });
+  update(chatId, { creating: true });
   // Fetch in parallel with loading xterm, before React mounts the dock.
   const initialSnapshot = readManagedTerminal(taskChatId, task.id, 0);
   void initialSnapshot.catch(() => {});
+  let createdTerminal: Terminal | undefined;
+  let createdTab: TerminalTab | undefined;
   const promise = (async () => {
-    const [{ Terminal }, { FitAddon }] = await Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')]);
+    const runtime = await loadTerminalRuntime();
     if (creation.disposed) return;
     chatId = creation.owner;
-    const terminal = new Terminal({
+    const { terminal, fit, element } = createTerminalSurface(runtime, {
       disableStdin: true, cursorBlink: false, convertEol: true, fontSize: 13,
       lineHeight: 1.18, fontFamily: '"Geist Mono", Consolas, "Liberation Mono", Menlo, monospace',
       scrollback: 10000, theme: chatTerminalTheme(),
     });
-    const fit = new FitAddon();
-    terminal.loadAddon(fit);
-    const element = document.createElement('div');
-    element.className = 'eterx-terminal-surface';
-    terminal.open(element);
+    createdTerminal = terminal;
     const tab: TerminalTab = {
       id, number: 0, label: task.program ? formatTerminalProgram(task.program, task.args, true) : task.command.replace(/\s+/g, ' ').trim() || 'Terminal command',
       cwd: task.cwd, terminal, fit, element, managedTaskId: task.id, managedOwnerChatId: taskChatId, managedLoading: !task.initialOutput, initialSnapshot, outputOffset: 0,
       managedStatus: task.status,
     };
-    tabsById.set(id, tab);
+    createdTab = tab;
     terminal.writeln(`$ ${task.command}\r\n[${task.cwd}]\r\n`);
     if (task.initialOutput) terminal.write(task.initialOutput);
-    update(chatId, { open: true, placement: 'right', tabs: [...read(chatId).tabs, tab], activeId: read(chatId).activeId || id, error: '' });
+    tabsById.set(id, tab);
+    placeManagedTerminal(chatId, tab);
   })();
-  openingManaged.set(id, promise);
+  openingManaged.set(id, { promise, creation });
   try { await promise; }
   catch (error) {
-    update(creation.owner, { error: error instanceof Error ? error.message : 'Could not open terminal.' });
+    if (createdTab && tabsById.get(id) === createdTab) {
+      tabsById.delete(id);
+      const owner = tabOwner(createdTab);
+      if (owner) {
+        const state = read(owner);
+        const tabs = state.tabs.filter(tab => tab !== createdTab);
+        update(owner, { tabs, activeId: state.activeId === id ? tabs.at(-1)?.id || null : state.activeId });
+      }
+    }
+    createdTerminal?.dispose();
+    if (!creation.disposed && chats.has(creation.owner)) update(creation.owner, { error: error instanceof Error ? error.message : 'Could not open terminal.' });
     throw error;
   } finally {
-    openingManaged.delete(id); pendingCreations.delete(creation);
-    if (chats.has(creation.owner)) update(creation.owner, { creating: false });
+    if (openingManaged.get(id)?.creation === creation) openingManaged.delete(id);
+    pendingCreations.delete(creation);
+    if (chats.has(creation.owner)) update(creation.owner, { creating: isCreating(creation.owner) });
   }
 }
 
@@ -269,6 +302,9 @@ export function streamManagedTerminal(chatId: string, tab: TerminalTab): () => v
       tab.initialSnapshot = undefined;
       const snapshot = await (prefetched || readManagedTerminal(tab.managedOwnerChatId || chatId, tab.managedTaskId!, tab.outputOffset || 0, controller.signal));
       if (controller.signal.aborted || tabsById.get(tab.id) !== tab) return;
+      const owner = tabOwner(tab);
+      if (!owner) return;
+      chatId = owner;
       if (tab.managedLoading || tab.managedError) {
         tab.managedLoading = false; tab.managedError = undefined;
         update(chatId, { tabs: [...read(chatId).tabs] });
@@ -295,7 +331,10 @@ export function streamManagedTerminal(chatId: string, tab: TerminalTab): () => v
         tab.terminal.writeln('[Process running; no output yet]');
       }
     } catch (error) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || tabsById.get(tab.id) !== tab) return;
+      const owner = tabOwner(tab);
+      if (!owner) return;
+      chatId = owner;
       const message = error instanceof Error ? error.message : 'Could not read process output.';
       if (previousError !== message) { previousError = message; tab.managedLoading = false; tab.managedError = message; update(chatId, { tabs: [...read(chatId).tabs] }); }
     } finally {

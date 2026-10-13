@@ -1,4 +1,7 @@
-import { readChatPlanMode, writeChatPlanMode, type summarizeChatUsage } from '../../lib/chat-command-state';
+'use client';
+
+import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
+import { readChatPlanMode, writeChatPlanMode, readChatSwarmMode, writeChatSwarmMode, type summarizeChatUsage } from '../../lib/chat-command-state';
 import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
 import { PASTED_TEXT_MIME, shouldAttachPaste } from '../../lib/pasted-text';
 import { AttachmentTextPreviewHost } from '../chat/attachment-text-preview';
@@ -7,7 +10,7 @@ import type { ChatMediaItem } from '../chat/chat-media';
 import { requestJson } from '../../lib/request-json';
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Info, ChevronLeft, BookText, BarChart3, Route, FolderCog } from 'lucide-react';
+import { Info, ChevronLeft, BookText, BarChart3, Route, FolderCog, Network } from 'lucide-react';
 import { CODING_MODES, getCodingMode, type CodingAgentId } from '../../lib/code/coding-modes';
 import { CodingModeDetails } from './coding-mode-details';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -40,6 +43,7 @@ import {
   MODEL_PROVIDER_MODE,
   MODEL_SELECTOR_STORAGE_KEY,
   MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
+  MODEL_WIRE_CAPABILITIES_STORAGE_KEY,
   MODEL_THINKING_LEVELS_STORAGE_KEY,
   entriesToModelCatalog,
   ensureModelSelectorEntry,
@@ -50,6 +54,9 @@ import {
   type ModelSelectorEntry,
 } from '../../lib/agent/model-selector-store';
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
+import { useManagedWorkspace } from '../../lib/use-managed-workspace';
+import { WorkspaceLocationMenu } from './workspace-location-menu';
+import type { RunLocation } from '../../lib/managed-workspaces';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { formatExactContextTokens } from '../../lib/context-window-policy';
 import { buildFilePreviewUrl, getNativeFilePath } from '../../lib/path-utils';
@@ -413,15 +420,18 @@ interface ChatInputProps {
   onAgentChange?: (agentId: string | null, agentName: string, chatMode?: boolean) => void;
   workspacePath?: string | null;
   onWorkspacePathChange?: (path: string | null) => void;
-  runLocation?: 'local' | 'sandbox';
-  onRunLocationChange?: (location: 'local' | 'sandbox') => void;
+  workspaceOwnerId?: string;
+  runLocation?: RunLocation;
+  onRunLocationChange?: (location: RunLocation) => void;
   chatModelSelection?: string;
   onModelSelectionChange?: (selection: string) => void;
   onOpenSettingsTab?: (tab: 'api' | 'models') => void;
   chatTitle?: string;
   chatUsage?: ReturnType<typeof summarizeChatUsage>;
   onCompact?: () => Promise<void>;
+  compacting?: boolean;
   onPlanModeChange?: (enabled: boolean) => Promise<void>;
+  onSwarmModeChange?: (enabled: boolean) => Promise<void>;
   contextUsage?: {
     usedTokens: number;
     contextWindow: number;
@@ -692,7 +702,7 @@ type SlashCommand = {
   description: string;
   prompt: string;
   iconSrc: string;
-  action?: 'agents' | 'goal' | 'plan' | 'pet' | 'compact' | 'usage' | 'workspace';
+  action?: 'agents' | 'goal' | 'plan' | 'swarm' | 'pet' | 'compact' | 'usage' | 'workspace';
 };
 
 type SlashPanel = 'agents' | 'goal' | 'usage' | 'workspace' | null;
@@ -780,6 +790,7 @@ const writeStoredGoal = (chatId: string | null | undefined, goal: string) => {
 const SLASH_COMMANDS: SlashCommand[] = [
   { id: 'compact', label: 'Compact', description: "Compact this chat’s context", prompt: '', iconSrc: '', action: 'compact' },
   { id: 'plan-mode', label: 'Plan mode', description: 'Require a plan for each request', prompt: '', iconSrc: '/icons/agent-ui/commands/plan-mode.svg', action: 'plan' },
+  { id: 'swarm-mode', label: 'Swarm Mode', description: 'Coordinate a team around the work', prompt: '', iconSrc: '', action: 'swarm' },
   { id: 'chat-usage', label: 'Chat usage', description: 'View tokens, cache hits, and current context', prompt: '', iconSrc: '', action: 'usage' },
   { id: 'workspace', label: 'Workspace', description: 'View or change this chat’s workspace', prompt: '', iconSrc: '', action: 'workspace' },
 ];
@@ -902,7 +913,8 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
         initial={{ opacity: 0, scale: 0.82 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
-        className="flex h-4 w-4 items-center justify-center rounded-full bg-[#A9A9A9] text-[#1F1F1F] shadow-none"
+        className="eterx-task-status-glyph flex h-4 w-4 items-center justify-center rounded-full bg-[#A9A9A9] text-[#1F1F1F] shadow-none"
+        data-status="done"
       >
         <Check className="h-[11px] w-[11px]" strokeWidth={3.2} />
       </motion.span>
@@ -911,7 +923,7 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
 
   if (status === 'skipped') {
     return (
-      <span className="flex h-4 w-4 items-center justify-center rounded-full border border-white/25 text-white/45">
+      <span className="eterx-task-status-glyph flex h-4 w-4 items-center justify-center rounded-full border border-white/25 text-white/45" data-status="skipped">
         <CircleSlash className="h-[11px] w-[11px]" strokeWidth={2.2} />
       </span>
     );
@@ -919,7 +931,7 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
 
   if (status === 'failed') {
     return (
-      <span className="flex h-4 w-4 items-center justify-center rounded-full border border-red-400/45 text-red-300/85">
+      <span className="eterx-task-status-glyph flex h-4 w-4 items-center justify-center rounded-full border border-red-400/45 text-red-300/85" data-status="failed">
         <X className="h-[11px] w-[11px]" strokeWidth={2.5} />
       </span>
     );
@@ -929,7 +941,7 @@ const TaskStatusGlyph = React.memo(({ status, active }: { status?: string; activ
     return <ProgressLoader />;
   }
 
-  return <span className="block h-4 w-4 rounded-full border-[2px] border-[#A9A9A9]/62" />;
+  return <span className="eterx-task-status-glyph block h-4 w-4 rounded-full border-[2px] border-[#A9A9A9]/62" data-status="pending" />;
 });
 
 const GeneratingDots = React.memo(({ className = '' }: { className?: string }) => (
@@ -988,7 +1000,7 @@ const TaskTrackerDock = React.memo(({
         className="eterx-task-tracker-header group flex min-h-[38px] w-full items-center gap-2 px-3.5 py-1.5 text-left transition-colors hover:bg-white/[0.025]"
         aria-expanded={open}
       >
-        <span className="flex min-w-0 flex-1 -translate-y-[3px] items-center gap-2">
+        <span className="flex min-w-0 flex-1 items-center gap-2">
           {liveHeader ? (
             <ProgressLoader className="h-[15px] w-[15px]" />
           ) : (
@@ -1016,15 +1028,16 @@ const TaskTrackerDock = React.memo(({
           >
             <div className="eterx-task-tracker-body px-2.5 pb-2.5 pt-0.5">
               <div className="relative">
-                  <div className="eterx-task-tracker-fade-top pointer-events-none absolute inset-x-0 top-0 z-20 h-5 bg-gradient-to-b from-[#202020] to-transparent" />
-                  <div className="eterx-task-tracker-fade-bottom pointer-events-none absolute inset-x-0 bottom-0 z-20 h-6 bg-gradient-to-t from-[#202020] to-transparent" />
                   <div className="eterx-task-tracker-list relative max-h-[176px] space-y-0.5 overflow-y-auto py-1 pr-1 eterx-scrollbar">
                     {steps.map((step) => {
-                      const active = step.id === activeStep?.id || step.step === activeStep?.step;
+                      const active = step === activeStep;
                       const activeWorking = active && !isComplete && (isThinking || step.status === 'in_progress');
                       return (
                         <div
                           key={step.id || step.step}
+                          data-status={step.status}
+                          data-active={activeWorking ? 'true' : undefined}
+                          title={step.name || `Task ${ step.step }`}
                           className="eterx-task-tracker-step relative flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 transition-colors hover:bg-white/[0.018]"
                         >
                           <span className="relative z-10 shrink-0">
@@ -1084,6 +1097,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   composerPlaceholder,
   onAgentChange,
   workspacePath,
+  workspaceOwnerId,
   onWorkspacePathChange,
   runLocation: propRunLocation,
   onRunLocationChange,
@@ -1093,7 +1107,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   chatTitle = 'New chat',
   chatUsage,
   onCompact,
+  compacting = false,
   onPlanModeChange,
+  onSwarmModeChange,
   contextUsage = null,
   queuedFollowUps = [],
   chatMedia = [],
@@ -1262,10 +1278,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [convertedPdfPath, setConvertedPdfPath] = useState<string | null>(null);
   const [conversionError, setConversionError] = useState(false);
   const [composerNotice, setComposerNotice] = useState<{ title: string; message: string } | null>(null);
+  const [composerNoticeTarget, setComposerNoticeTarget] = useState<Element | null>(null);
   const composerNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showComposerNotice = useCallback((title: string, message: string) => {
     if (composerNoticeTimerRef.current) clearTimeout(composerNoticeTimerRef.current);
+    setComposerNoticeTarget(textareaRef.current?.closest('.eterx-chat-column')?.querySelector('.eterx-conversation-pane')
+      || textareaRef.current?.closest('.eterx-conversation-pane') || null);
     setComposerNotice({ title, message });
     composerNoticeTimerRef.current = setTimeout(() => {
       setComposerNotice(null);
@@ -1385,19 +1404,47 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [goalDraft, setGoalDraft] = useState('');
   const [slashPanelOffset, setSlashPanelOffset] = useState({ x: 0, y: 0 });
   const [planModeActive, setPlanModeState] = useState(false);
-  const [compacting, setCompacting] = useState(false);
-  const setPlanModeActive = useCallback((enabled: boolean) => {
-    writeChatPlanMode(activeChatId, enabled);
-    setPlanModeState(enabled);
-    if (onPlanModeChange) void onPlanModeChange(enabled).catch(() => {
-      writeChatPlanMode(activeChatId, !enabled);
-      setPlanModeState(!enabled);
+  const [swarmModeActive, setSwarmModeState] = useState(false);
+  const [pendingModes, setPendingModes] = useState<Set<string>>(() => new Set());
+  const modeRequestsRef = useRef(new Set<string>());
+  const modeChatRef = useRef(activeChatId);
+  modeChatRef.current = activeChatId;
+  const setComposerMode = useCallback((kind: 'plan' | 'swarm', enabled: boolean) => {
+    const chatId = activeChatId;
+    const key = `${chatId || 'new_chat'}:${kind}`;
+    if (modeRequestsRef.current.has(key)) return;
+    const read = kind === 'plan' ? readChatPlanMode : readChatSwarmMode;
+    const write = kind === 'plan' ? writeChatPlanMode : writeChatSwarmMode;
+    const setState = kind === 'plan' ? setPlanModeState : setSwarmModeState;
+    const update = kind === 'plan' ? onPlanModeChange : onSwarmModeChange;
+    const previous = read(chatId);
+    write(chatId, enabled);
+    setState(enabled);
+    modeRequestsRef.current.add(key);
+    setPendingModes(new Set(modeRequestsRef.current));
+    void Promise.resolve().then(() => update?.(enabled)).catch(error => {
+      write(chatId, previous);
+      if (modeChatRef.current === chatId) {
+        setState(previous);
+        showComposerNotice(`Could not update ${kind === 'plan' ? 'Plan' : 'Swarm'} mode`, error instanceof Error ? error.message : 'Please try again.');
+      }
+    }).finally(() => {
+      modeRequestsRef.current.delete(key);
+      setPendingModes(new Set(modeRequestsRef.current));
     });
-  }, [activeChatId, onPlanModeChange]);
+  }, [activeChatId, onPlanModeChange, onSwarmModeChange, showComposerNotice]);
+  const setPlanModeActive = useCallback((enabled: boolean) => setComposerMode('plan', enabled), [setComposerMode]);
+  const setSwarmModeActive = useCallback((enabled: boolean) => setComposerMode('swarm', enabled), [setComposerMode]);
   useEffect(() => {
-    setPlanModeState(readChatPlanMode(activeChatId));
+    const restoreModes = () => {
+      setPlanModeState(readChatPlanMode(activeChatId));
+      setSwarmModeState(readChatSwarmMode(activeChatId));
+    };
+    restoreModes();
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, restoreModes);
     setSlashPanel(null);
     setSlashTrigger(null);
+    return () => window.removeEventListener(FOLDER_STORAGE_READY_EVENT, restoreModes);
   }, [activeChatId]);
   const [storedModelSettings, setStoredModelSettings] = useState<StoredModelSettings>(() => ({
     apiKeys: {},
@@ -1408,7 +1455,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     thinkingCapabilities: {},
     chatModelSelection: AUTO_MODEL_SELECTION,
   }));
-  const thinkingCatalogFetchesRef = useRef<Set<string>>(new Set());
   const activeConfiguredChatModel = useMemo(() => {
     const selection = propChatModelSelection !== undefined
       ? propChatModelSelection
@@ -1424,20 +1470,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     return exists && hasCredential ? entry : null;
   }, [propChatModelSelection, storedModelSettings.apiKeys, storedModelSettings.chatModelSelection, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
   const connectors = useConnectors();
-  const [localRunLocation, setLocalRunLocation] = useState<'local' | 'sandbox'>('local');
-  useEffect(() => {
-    const saved = appStorage.getItem('eterx_run_location');
-    if (saved === 'local' || saved === 'sandbox') setLocalRunLocation(saved);
-  }, []);
+  const [localRunLocation, setLocalRunLocation] = useState<RunLocation>('local');
   const runLocation = propRunLocation !== undefined ? propRunLocation : localRunLocation;
-  const handleRunLocationChange = useCallback((location: 'local' | 'sandbox') => {
+  const handleRunLocationChange = useCallback((location: RunLocation) => {
     if (onRunLocationChange) {
       onRunLocationChange(location);
     } else {
       setLocalRunLocation(location);
-      if (typeof window !== 'undefined') {
-      appStorage.setItem('eterx_run_location', location);
-      }
     }
     setOpenStatusMenu(null);
   }, [onRunLocationChange]);
@@ -1445,17 +1484,29 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   const [localWorkspacePath, setLocalWorkspacePath] = useState<string | null>(null);
   const activeWorkspacePath = workspacePath !== undefined ? workspacePath : localWorkspacePath;
   const handleWorkspacePathChange = useCallback((path: string | null) => {
+    handleRunLocationChange('local');
     if (onWorkspacePathChange) {
       onWorkspacePathChange(path);
     } else {
       setLocalWorkspacePath(path);
     }
-  }, [onWorkspacePathChange]);
+  }, [onWorkspacePathChange, handleRunLocationChange]);
+
+  const managedWorkspace = useManagedWorkspace(workspaceOwnerId || activeChatId || 'terminal-draft-initial', activeWorkspacePath || null, (location, path) => {
+    if (onWorkspacePathChange) onWorkspacePathChange(path);
+    else setLocalWorkspacePath(path);
+    handleRunLocationChange(location);
+  });
+  const runLocationLabel = runLocation === 'worktree' ? 'Worktree' : runLocation === 'sandbox' ? 'Scratch workspace' : 'Work locally';
+  useEffect(() => {
+    if (managedWorkspace.error) setOpenStatusMenu('run');
+  }, [managedWorkspace.error]);
 
   const workspaceName = useMemo(() => {
     if (!activeWorkspacePath) return "Chat workspace";
+    if (managedWorkspace.workspace) return managedWorkspace.workspace.kind === 'sandbox' ? 'Scratch workspace' : `${managedWorkspace.workspace.sourcePath?.split(/[/\\]/).filter(Boolean).pop() || 'Project'} worktree`;
     return activeWorkspacePath.split(/[/\\]/).filter(Boolean).pop() || activeWorkspacePath;
-  }, [activeWorkspacePath]);
+  }, [activeWorkspacePath, managedWorkspace.workspace]);
 
   const [recentProjects, setRecentProjects] = useState<Array<{ path: string; name: string }>>([]);
   useEffect(() => {
@@ -1475,9 +1526,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   const filteredRecentProjects = useMemo(() => {
     const query = projectSearch.trim().toLowerCase();
-    if (!query) return recentProjects;
-    return recentProjects.filter(p => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query));
-  }, [recentProjects, projectSearch]);
+    const projects = activeWorkspacePath
+      ? [{ path: activeWorkspacePath, name: workspaceName }, ...recentProjects.filter(project => project.path !== activeWorkspacePath)]
+      : recentProjects;
+    const uniqueProjects = projects.filter((project, index) => projects.findIndex(item => item.path === project.path) === index);
+    if (!query) return uniqueProjects;
+    return uniqueProjects.filter(p => p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query));
+  }, [recentProjects, projectSearch, activeWorkspacePath, workspaceName]);
 
   const looksLikePath = useMemo(() => {
     const trimmed = projectSearch.trim();
@@ -1584,61 +1639,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, []);
 
   const refreshComposerThinkingCapabilities = useCallback(async () => {
-    const eligibleEntries = storedModelSettings.modelEntries.filter(entry =>
-      isLocalModelProvider(entry.provider)
-      || Boolean(storedModelSettings.apiKeys[entry.provider])
-      || Boolean(storedModelSettings.modelApiKeys[modelEntryKey(entry.provider, entry.modelId)])
-    );
-    const providers = Array.from(new Set(eligibleEntries.map(entry => entry.provider))).sort();
-    if (providers.length === 0) return;
-    const signature = eligibleEntries
-      .map(entry => modelEntryKey(entry.provider, entry.modelId))
-      .sort()
-      .join('|');
-    if (!signature || thinkingCatalogFetchesRef.current.has(signature)) return;
-    thinkingCatalogFetchesRef.current.add(signature);
-
-    try {
-      const response = await requestJson('/api/settings/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providers }),
-      }, 180_000);
-      if (!response.ok) throw new Error(`Model capability discovery failed (${response.status})`);
-      const payload = await response.json();
-      const next = { ...readThinkingCapabilityRecord() };
-      let changed = false;
-      Object.values(payload?.providers || {}).forEach((providerValue: any) => {
-        const provider = String(providerValue?.provider || '');
-        (Array.isArray(providerValue?.models) ? providerValue.models : []).forEach((model: any) => {
-          const modelId = String(model?.id || '').trim();
-          if (!provider || !modelId) return;
-          const key = modelEntryKey(provider as MainAgentProvider, modelId);
-          const capability = normalizeModelThinkingCapabilities(model?.thinking);
-          if (!capability) {
-            if (Object.prototype.hasOwnProperty.call(next, key)) {
-              delete next[key];
-              changed = true;
-            }
-            return;
-          }
-          if (JSON.stringify(next[key]) === JSON.stringify(capability)) return;
-          next[key] = capability;
-          changed = true;
-        });
-      });
-      if (!changed) return;
-      appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
-      setStoredModelSettings(previous => ({ ...previous, thinkingCapabilities: next }));
-      emitModelSettingsUpdate({ type: 'model-thinking-capabilities-updated', thinkingCapabilities: next });
-    } catch {
-      // A later menu open retries a transient provider/network error.
-    } finally {
-      // Every menu open requests current metadata. Only concurrent duplicate
-      // requests are suppressed, and a timeout always releases the guard.
-      thinkingCatalogFetchesRef.current.delete(signature);
-    }
-  }, [storedModelSettings.apiKeys, storedModelSettings.modelApiKeys, storedModelSettings.modelEntries]);
+    await refreshSavedModelCatalog();
+  }, []);
   // Let the editor grow with the draft, but keep long prompts from taking over
   // the chat. Once this bound is reached, the textarea itself becomes the
   // scroll viewport and the rest of the composer stays in place.
@@ -2059,6 +2061,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       notifyAgentFaceInputChange(currentInputValue, nextValue);
       setInputValue(nextValue);
       setSlashTrigger(null);
+      if (command.action === 'swarm') {
+        setSwarmModeActive(!swarmModeActive);
+        window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+        return;
+      }
       if (command.action === 'plan') {
         setPlanModeActive(!planModeActive);
         window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
@@ -2070,10 +2077,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       }
       if (command.action === 'compact') {
         if (!onCompact || compacting) return;
-        setCompacting(true);
         void onCompact().catch((error: unknown) => {
           showComposerNotice('Could not compact context', error instanceof Error ? error.message : 'Please try again.');
-        }).finally(() => setCompacting(false));
+        });
         return;
       }
       openSlashPanel(command.action);
@@ -2095,7 +2101,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       textarea.focus({ preventScroll: true });
       textarea.setSelectionRange(nextCaret, nextCaret);
     });
-  }, [onOpenPet, openSlashPanel, setInputValue, slashTrigger, onCompact, compacting, planModeActive, setPlanModeActive, showComposerNotice]);
+  }, [onOpenPet, openSlashPanel, setInputValue, slashTrigger, onCompact, compacting, planModeActive, setPlanModeActive, swarmModeActive, setSwarmModeActive, showComposerNotice]);
 
   const openAgentRoomFromPanel = useCallback(() => {
     closeSlashPanel();
@@ -2565,7 +2571,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [activeChatId, handleStop, showComposerNotice]);
 
   useEffect(() => {
-    if (queuedSendRef.current !== activeComposerChatKey || hasPreparingAttachments || hasErroredAttachments) return;
+    if (managedWorkspace.busy || queuedSendRef.current !== activeComposerChatKey || hasPreparingAttachments || hasErroredAttachments) return;
     if (!latestInputValueRef.current.trim() && attachments.length === 0) {
       queuedSendRef.current = null;
       return;
@@ -2588,9 +2594,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     notifyAgentFaceSend();
     handleSend();
-  }, [activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isNetworkPaused, isThinking, showComposerNotice]);
+  }, [managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isNetworkPaused, isThinking, showComposerNotice]);
 
   const submitPrompt = useCallback(() => {
+    if (managedWorkspace.busy) {
+      showComposerNotice('Preparing workspace', 'Your workspace is still being created. Send your message once it is ready.');
+      return;
+    }
     const hasCurrentPayload = Boolean(latestInputValueRef.current.trim()) || attachments.length > 0;
     if (isNetworkPaused) {
       onNetworkPausedAction();
@@ -2637,7 +2647,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (!hasCurrentPayload) return;
     notifyAgentFaceSend();
     handleSend();
-  }, [activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
+  }, [managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isLiveActive, isNetworkPaused, isThinking, onLiveSendText, onNetworkPausedAction, setInputValue, showComposerNotice]);
 
   const handleTextareaKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter also finalizes IME composition. Do not submit while an input method
@@ -2903,7 +2913,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     ? getModelOptionLabel(selectedModel)
     : modelOptions.length > 0
       ? 'Select a model'
-      : 'Add API to load models';
+      : 'Set up models';
 
   // Normalize this composer's active level without rewriting model defaults.
   // Only an explicit thinking-level edit should persist a new default; a
@@ -3126,9 +3136,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     ? inputValue.includes('\n') || inputValue.length > 55 ? 'rounded-[22px]' : 'rounded-full'
     : composerRadius;
   const surfacePaddingClass = isLiveActive ? 'p-1' : isCompressed ? 'pt-2 pb-2' : 'pt-2.5 pb-2';
-  const surfaceBorderClass = isLiveActive
-    ? 'border border-white/[0.20]'
-    : 'border border-white/[0.075] hover:border-white/[0.11] focus-within:border-white/[0.15]';
+  const surfaceBorderClass = 'border border-transparent';
 
   return (
     <div ref={composerDockRef} className={`eterx-chat-input-dock absolute left-0 right-0 z-30 flex w-full flex-col items-center ${dockPositionClass} ${inputSidePadding}`}
@@ -3282,6 +3290,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           data-compressed={isCompressed ? 'true' : undefined}
           data-composer-controls={showComposerControls ? undefined : 'hidden'}
          data-new-chat={isNewChatHome ? 'true' : undefined}
+         data-status-rail={isNewChatHome || runLocation !== 'local' ? 'true' : undefined}
          data-task-tracker={taskTracker?.steps?.length ? 'true' : undefined}
          data-agent-builder={isAgentBuilder ? 'true' : undefined}
          data-typing={hasPromptText ? 'true' : undefined}
@@ -3541,15 +3550,18 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             </div>
             {slashPanel === 'usage' ? <>
               <p className="text-xs opacity-75">Total token use in <span className="font-medium text-[var(--context-panel-title,inherit)]">{chatTitle}</span></p>
-              <div className="my-2 text-3xl font-semibold tabular-nums tracking-tight">{(chatUsage?.total ?? 0).toLocaleString()}</div>
+              <div className="my-2 text-3xl font-semibold tabular-nums tracking-tight">{chatUsage?.receipts ? chatUsage.total.toLocaleString() : 'Not reported yet'}</div>
               <dl className="mt-4 space-y-3 text-[12.5px]">
                 {[
-                  ['Total input tokens', (chatUsage?.input ?? 0).toLocaleString()],
-                  ['Total output tokens', (chatUsage?.output ?? 0).toLocaleString()],
+                  ['Total input tokens', chatUsage?.inputMeasured ? chatUsage.input.toLocaleString() : 'Not reported'],
+                  ['Total output tokens', chatUsage?.outputMeasured ? chatUsage.output.toLocaleString() : 'Not reported'],
                   ['Cache hit rate', chatUsage?.cacheHitRate == null ? 'Not reported' : `${(chatUsage.cacheHitRate * 100).toFixed(1)}%`],
-                  ['Current context', contextUsage ? `${contextUsage.isEstimated ? '≈ ' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
+                  ['Latest request cache hit', chatUsage?.latestCacheHitRate == null ? 'Not reported' : `${(chatUsage.latestCacheHitRate * 100).toFixed(1)}%`],
+                  ['Cache reporting coverage', chatUsage?.cacheReportingCoverage == null ? 'Not reported' : `${(chatUsage.cacheReportingCoverage * 100).toFixed(1)}% of input tokens`],
+                  ['Current context', contextUsage && contextUsage.contextWindow > 0 ? `${contextUsage.isEstimated ? '≈ ' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
                 ].map(([label, value]) => <div key={label} className="flex items-center justify-between gap-4"><dt className="opacity-65">{label}</dt><dd className="text-right font-medium tabular-nums">{value}</dd></div>)}
               </dl>
+              <p className="mt-3 text-[11px] leading-relaxed opacity-60">Cache hit rate is cached input tokens divided by input tokens on requests with provider cache reporting. It includes cold requests. Cache writes and output tokens do not count as hits; missing reports are excluded.</p>
             </> : <>
               <div className="flex items-center gap-3 rounded-xl bg-white/[0.04] p-3">
                 <Folder className="h-5 w-5 shrink-0 opacity-65" />
@@ -3581,6 +3593,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       type="button"
                       role="option"
                       aria-selected={active}
+                      disabled={Boolean((command.action === 'plan' || command.action === 'swarm') && pendingModes.has(`${activeChatId || 'new_chat'}:${command.action}`))}
                       onMouseEnter={() => setSlashActiveIndex(index)}
                       onMouseDown={event => event.preventDefault()}
                       onClick={() => selectSlashCommand(command)}
@@ -3588,6 +3601,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     >
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center">
                         {command.action === 'compact' ? <BookText className={`h-4 w-4 ${compacting ? 'animate-pulse' : ''}`} />
+                          : command.action === 'swarm' ? <Network className="h-4 w-4" />
                           : command.action === 'usage' ? <BarChart3 className="h-4 w-4" />
                           : command.action === 'workspace' ? <FolderCog className="h-4 w-4" /> : <Route className="h-4 w-4" />}
                       </span>
@@ -3596,7 +3610,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           {command.label}
                         </span>
                         <span className="min-w-0 truncate text-[11.5px] font-normal text-[#8C8984]">
-                          {command.action === 'compact' && compacting ? 'Compacting context…' : command.action === 'plan' && planModeActive ? 'Enabled · click to turn off' : command.description}
+                          {command.action === 'compact' && compacting ? 'Compacting context…' : ((command.action === 'plan' && planModeActive) || (command.action === 'swarm' && swarmModeActive)) ? 'Enabled · click to turn off' : command.description}
                         </span>
                       </span>
                     </button>
@@ -3846,18 +3860,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </motion.div>
               ) : (
                 <div className="eterx-composer-textarea-wrap relative w-full">
-                  {planModeActive && (
-                    <div className="mb-2 flex items-center">
-                      <span className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-current/10 bg-white/[0.05] pl-2 pr-1 text-[11.5px] font-medium text-[var(--context-panel-title,inherit)]">
-                        <Route className="h-3.5 w-3.5" /> Plan mode
-                        <button type="button" aria-label="Turn off Plan mode" onClick={() => setPlanModeActive(false)} className="ml-1 grid h-5 w-5 place-items-center rounded hover:bg-white/10"><X className="h-3 w-3" /></button>
-                      </span>
+                  {(planModeActive || swarmModeActive) && (
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      {([{ kind: 'plan', active: planModeActive, label: 'Plan mode', Icon: Route, toggle: setPlanModeActive },
+                        { kind: 'swarm', active: swarmModeActive, label: 'Swarm Mode', Icon: Network, toggle: setSwarmModeActive }] as const).filter(mode => mode.active).map(mode => (
+                        <span key={mode.kind} className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-current/10 bg-white/[0.05] pl-2 pr-1 text-[11.5px] font-medium text-[var(--context-panel-title,inherit)]">
+                          <mode.Icon className="h-3.5 w-3.5" aria-hidden="true" /> {mode.label}
+                          <button type="button" aria-label={`Turn off ${mode.label}`} disabled={pendingModes.has(`${activeChatId || 'new_chat'}:${mode.kind}`)} onClick={() => mode.toggle(false)} className="ml-1 grid h-5 w-5 place-items-center rounded hover:bg-white/10 disabled:opacity-40"><X className="h-3 w-3" /></button>
+                        </span>
+                      ))}
                     </div>
                   )}
 
                   {/* Folders, Files, and Attachments rendered in a unified upper row */}
                   {(pinnedItems.length > 0 || attachments.length > 0) && (
-                    <div className="eterx-pinned-items flex flex-nowrap items-center gap-2 px-0 pt-0.5 pb-2 bg-transparent min-w-0 overflow-x-auto w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                    <div className="eterx-pinned-items flex flex-nowrap items-start gap-4 px-0 pt-0.5 pb-4 bg-transparent min-w-0 overflow-x-auto w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                       {/* Pinned Folders and Files */}
                       {pinnedItems.map((item) => {
                         const isFolder = item.type === 'folder';
@@ -3956,7 +3973,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           return (
                             <div
                               key={att.id || i}
-                              className={`relative w-[42px] h-[42px] shrink-0 rounded-[12px] bg-black/40 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.08]' } shadow-none select-none group ${ isPreparing ? 'cursor-default' : 'cursor-pointer' }`}
+                              className={`relative w-[184px] h-[184px] shrink-0 rounded-[12px] bg-black/40 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.08]' } shadow-none select-none group ${ isPreparing ? 'cursor-default' : 'cursor-pointer' }`}
                               onClick={() => {
                                 if (isPreparing) return;
                                 if (att.preview) {
@@ -3978,23 +3995,25 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                               )}
                               {isPreparing && (
                                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-[12px] bg-black/25">
-                                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white/85" />
+                                  <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white/85" />
                                 </div>
                               )}
                               {isErrored && (
                                 <div className="absolute inset-0 flex items-center justify-center bg-black/28 rounded-[12px]">
-                                  <AlertCircle className="w-4 h-4 text-[#F0B6A7]" strokeWidth={2.2} />
+                                  <AlertCircle className="w-6 h-6 text-[#F0B6A7]" strokeWidth={2.2} />
                                 </div>
                               )}
                               {/* Delete button (top right) */}
                               <button
+                                type="button"
+                                aria-label={`Remove ${displayName}`}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   removeAttachment(i);
                                 }}
-                                className="absolute top-0.5 right-0.5 w-[15px] h-[15px] flex items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-neutral-200 shrink-0 shadow-none z-10"
+                                className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-neutral-200 shrink-0 shadow-none z-10"
                               >
-                                <X className="w-2.5 h-2.5" strokeWidth={3.5} />
+                                <X className="w-3 h-3" strokeWidth={3} />
                               </button>
                             </div>
                           );
@@ -4102,7 +4121,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       style={{
                         ['--eterx-composer-textarea-max' as any]: `${ textareaMaxHeight }px`,
                         height: hasPromptText ? undefined : textareaMinHeight,
-                        caretColor: '#F0F0F0',
+                        caretColor: 'var(--composer-menu-ink)',
                         maxHeight: textareaMaxHeight,
                         outline: 'none',
                         boxShadow: 'none',
@@ -4766,7 +4785,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         <button
                           type="button"
                           onClick={submitPrompt}
-                          disabled={!hasComposerPayload}
+                          disabled={!hasComposerPayload || managedWorkspace.busy}
                           aria-label={isThinking ? 'Send follow-up' : 'Send message'}
                           className={`eterx-control-button eterx-composer-send-button eterx-composer-action-send w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full transition-none bg-[#292929] text-white shadow-none active:scale-[0.96] group relative overflow-hidden ${ hasErroredAttachments ? 'opacity-60 cursor-not-allowed' : '' }`}
                         >
@@ -4800,7 +4819,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           )}
         </motion.div>
 
-        {isNewChatHome && (
+        {(isNewChatHome || runLocation !== 'local') && (
           <div
             className="eterx-new-chat-status-rail"
             aria-label="Workspace status"
@@ -4813,6 +4832,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   aria-label={`Workspace ${ workspaceName }`}
                   aria-haspopup="dialog"
                   aria-expanded={openStatusMenu === 'project'}
+                  title={activeWorkspacePath || 'Choose a workspace for this chat'}
+                  disabled={executionContextLocked || managedWorkspace.busy || isThinking}
                   onClick={(event) => toggleStatusMenu(event, 'project')}
                 >
                   <FolderClosed className="eterx-new-chat-status-icon" strokeWidth={1.9} />
@@ -4822,10 +4843,27 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 {openStatusMenu === 'project' && (
                     <AdaptiveMenu
                       className="eterx-composer-popout eterx-status-popout eterx-status-popout-project"
-                      heightLimit={360}
+                      heightLimit={420}
                       role="dialog"
                       aria-label="Workspace folder selector"
                       onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape') {
+                          event.stopPropagation();
+                          setOpenStatusMenu(null);
+                          setProjectSearch('');
+                          event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(':scope > button')?.focus();
+                          return;
+                        }
+                        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+                        event.preventDefault();
+                        const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('.eterx-status-menu-item:not(:disabled)'));
+                        const index = items.indexOf(document.activeElement as HTMLElement);
+                        const next = index < 0
+                          ? (event.key === 'ArrowDown' ? 0 : items.length - 1)
+                          : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+                        items[next]?.focus();
+                      }}
                     >
                       <label className="eterx-status-search">
                         <Search className="h-4 w-4 shrink-0" strokeWidth={2} />
@@ -4837,20 +4875,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           placeholder="Search projects"
                         />
                       </label>
-                      <div className="eterx-status-menu-section max-h-[160px] flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
-                        <button
-                          type="button"
-                          className={`eterx-status-menu-item ${!activeWorkspacePath ? 'is-selected' : ''}`}
-                          onClick={() => {
-                            handleWorkspacePathChange(null);
-                            setProjectSearch('');
-                            setOpenStatusMenu(null);
-                          }}
-                        >
-                          <CircleSlash className="eterx-status-menu-icon" strokeWidth={1.95} />
-                          <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium">Don&apos;t work in project</span>
-                          {!activeWorkspacePath && <Check className="h-4 w-4 shrink-0 text-emerald-500 dark:text-emerald-400" strokeWidth={2.35} />}
-                        </button>
+                      <div data-menu-scroll-region className="eterx-status-menu-section flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
                         {looksLikePath && (
                           <button
                             type="button"
@@ -4925,7 +4950,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                             </div>
                           );
                         }) : !looksLikePath && (
-                          <div className="eterx-status-empty text-xs py-4 text-center text-[var(--eterx-status-popout-muted)]">No recent folders found</div>
+                          <div className="eterx-status-empty" role="status">
+                            <FolderOpen className="mx-auto mb-2 h-5 w-5" strokeWidth={1.6} />
+                            <p>{projectSearch.trim() ? 'No matching projects' : 'Choose your first project'}</p>
+                            <p className="eterx-project-empty-hint">{projectSearch.trim() ? 'Try another name or paste a folder path.' : 'Open a folder to give this chat a workspace.'}</p>
+                          </div>
                         )}
                       </div>
                       
@@ -4933,7 +4962,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       
                       <button
                         type="button"
-                        className="eterx-status-menu-item w-full"
+                        className="eterx-status-menu-item eterx-project-action w-full"
                         onClick={() => {
                           handleSelectFolderDialog();
                           setOpenStatusMenu(null);
@@ -4941,6 +4970,20 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       >
                         <Plus className="eterx-status-menu-icon" strokeWidth={1.95} />
                         <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-current">New project</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="eterx-status-menu-item eterx-project-action"
+                        aria-pressed={!activeWorkspacePath}
+                        onClick={() => {
+                          handleWorkspacePathChange(null);
+                          setProjectSearch('');
+                          setOpenStatusMenu(null);
+                        }}
+                      >
+                        <X className="eterx-status-menu-icon" strokeWidth={1.8} />
+                        <span className="min-w-0 flex-1 truncate text-left">Don&apos;t work in a project</span>
+                        {!activeWorkspacePath && <Check className="eterx-project-selected-check h-4 w-4 shrink-0" strokeWidth={2} />}
                       </button>
                     </AdaptiveMenu>
                 )}
@@ -4950,53 +4993,39 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <button
                   type="button"
                   className={`eterx-new-chat-status-item ${ openStatusMenu === 'run' ? 'is-open' : '' }`}
-                  aria-label={runLocation === 'local' ? "Work locally" : "Scratch workspace"}
+                  aria-label={runLocationLabel}
                   aria-haspopup="dialog"
                   aria-expanded={openStatusMenu === 'run'}
                   onClick={(event) => toggleStatusMenu(event, 'run')}
                 >
                   {runLocation === 'local' ? (
                     <LaptopMinimal className="eterx-new-chat-status-icon" strokeWidth={1.9} />
+                  ) : runLocation === 'worktree' ? (
+                    <GitFork className="eterx-new-chat-status-icon" strokeWidth={1.9} />
                   ) : (
                     <Terminal className="eterx-new-chat-status-icon" strokeWidth={1.9} />
                   )}
-                  <span>{runLocation === 'local' ? "Work locally" : "Scratch workspace"}</span>
+                  <span>{managedWorkspace.busy ? 'Preparing workspace…' : runLocationLabel}</span>
                   <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
                 </button>
                 {openStatusMenu === 'run' && (
                     <AdaptiveMenu
                       className="eterx-composer-popout eterx-status-popout eterx-status-popout-run"
+                      preferredSide={isNewChatHome ? 'bottom' : 'top'}
                       role="dialog"
                       aria-label="Run location menu"
                       onClick={(event) => event.stopPropagation()}
                     >
-                      <div className="eterx-status-menu-label">Start in</div>
-                      <button
-                        type="button"
-                        className={`eterx-status-menu-item ${ runLocation === 'local' ? 'is-selected' : '' }`}
-                        onClick={() => handleRunLocationChange('local')}
-                      >
-                        <LaptopMinimal className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Work locally</span>
-                        {runLocation === 'local' && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
-                      </button>
-                      <button type="button" className="eterx-status-menu-item" disabled>
-                        <GitFork className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">New worktree</span>
-                        <small className="shrink-0 text-[10px] font-normal">Coming soon</small>
-                      </button>
-                      <button
-                        type="button"
-                        className="eterx-status-menu-item"
-                        disabled
-                      >
-                        <Terminal className="eterx-status-menu-icon" strokeWidth={1.95} />
-                        <span className="min-w-0 flex-1 truncate">Scratch workspace</span>
-                        <small className="shrink-0 text-[10px] font-normal">Coming soon</small>
-                      </button>
+                      <WorkspaceLocationMenu location={runLocation} workspace={managedWorkspace.workspace}
+                        retentionDays={managedWorkspace.retentionDays} busy={managedWorkspace.busy} error={managedWorkspace.error}
+                        locked={executionContextLocked || isThinking} choose={managedWorkspace.choose} update={managedWorkspace.update} />
                     </AdaptiveMenu>
                 )}
               </div>
+
+              {managedWorkspace.workspace?.kind === 'sandbox' && <span className="eterx-workspace-rail-expiry" title={managedWorkspace.workspace.expiresAt ? new Date(managedWorkspace.workspace.expiresAt).toLocaleString() : 'Automatic deletion is disabled for this workspace'}>
+                {managedWorkspace.workspace.status === 'expired' ? 'Expired' : managedWorkspace.workspace.expiresAt ? `Expires ${new Date(managedWorkspace.workspace.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : 'Kept'}
+              </span>}
 
               {isGitRepo && (
                 <div className="eterx-new-chat-status-anchor">
@@ -5020,7 +5049,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         onClick={(event) => event.stopPropagation()}
                       >
                         <div className="eterx-status-menu-label">Branch</div>
-                        <div className="eterx-status-menu-section max-h-[160px] flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
+                        <div data-menu-scroll-region className="eterx-status-menu-section flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
                           {branchesList.map(b => {
                             const isCurrent = b === branchName;
                             return (
@@ -5103,31 +5132,33 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       />
       {/* Lightbox Preview Modal */}
       {composerNotice && typeof window !== 'undefined' && createPortal(
+        <div className={`pointer-events-none inset-x-0 top-3 z-[11000] flex justify-center px-4 ${composerNoticeTarget ? 'absolute' : 'fixed'}`}>
         <motion.div
           initial={{ opacity: 0, y: -12, scale: 0.97 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -8, scale: 0.98 }}
           role="alert"
           aria-live="assertive"
-          className="fixed right-5 top-5 z-[11000] flex w-[360px] max-w-[calc(100vw-32px)] items-start gap-3 rounded-2xl border border-red-400/30 bg-[#351411]/95 p-4 text-[#FFF4F1] shadow-none backdrop-blur-xl"
+          className="eterx-composer-notice pointer-events-auto flex w-[360px] max-w-full items-start gap-3 rounded-2xl border p-4 backdrop-blur-xl"
         >
-          <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full border border-red-300/30 bg-red-300/10">
-            <AlertCircle className="h-4 w-4 text-[#FFB5A8]" strokeWidth={2.2} />
+          <span className="eterx-composer-notice-icon mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full border">
+            <AlertCircle className="h-4 w-4" strokeWidth={2.2} />
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-[13.5px] font-semibold leading-5">{composerNotice.title}</span>
-            <span className="mt-0.5 block text-[12.5px] leading-5 text-[#EBC8C1]">{composerNotice.message}</span>
+            <span className="eterx-composer-notice-detail mt-0.5 block break-words text-[12.5px] leading-5">{composerNotice.message}</span>
           </span>
           <button
             type="button"
             onClick={() => setComposerNotice(null)}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-[#D5A8A0] transition-colors hover:bg-white/10 hover:text-white"
+            className="eterx-composer-notice-dismiss grid h-7 w-7 shrink-0 place-items-center rounded-lg transition-colors"
             aria-label="Dismiss notification"
           >
             <X className="h-4 w-4" strokeWidth={2.2} />
           </button>
-        </motion.div>,
-        document.body,
+        </motion.div>
+        </div>,
+        composerNoticeTarget || document.body,
       )}
 
       {previewImage && typeof window !== 'undefined' && createPortal(

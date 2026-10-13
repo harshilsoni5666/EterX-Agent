@@ -1,6 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { WORK_NOTE_POLICY } from './work-note';
+import { FINAL_ANSWER_POLICY } from './response-format';
 import { SOURCE_READING_POLICY } from './source-read-policy';
 import { WORKSPACE_EDIT_DESCRIPTION, WORKSPACE_EDIT_POLICY } from './workspace-edit-contract';
 import { AGENT_EXECUTION_POLICY } from './execution-operating-policy';
@@ -202,10 +203,8 @@ ${AGENT_EXECUTION_POLICY}
 - Use only attached tools. The current host environment and declared schemas override older profile examples of paths, shell commands, dependencies, and tool names. No startup inventory or environment action is needed.
 
 ### Adaptive output and completion
-Answer the current request, using history for references, constraints, and evidence. Do not repeat prior work as a new accomplishment or force a completion report onto a question or example. Preserve user-requested and specialist deliverable formats.
-Lead with the useful answer in clear, connected prose and scale depth to the request. Use bullets for parallel points, numbering for ordered steps, and short sentence-case headings only for substantial separate topics. Use tables for useful shared-attribute comparisons, with concise cells. Add diagrams only when they clarify relationships or flow. Avoid fixed titles, section sequences, filler, repeated summaries, and generic closing offers.
-Write valid Markdown with restrained emphasis, descriptive links, language-tagged code fences, and balanced math delimiters. Mermaid needs a mermaid-tagged fence, valid syntax, quoted complex labels, and a readable layout; do not rely on renderer repairs. Avoid emojis and decorative icons unless explicitly requested or quoted from supplied content.
-Ground completion claims in evidence for this request. Mention relevant uncertainty and limitations; respect constraints on verification and report skipped checks honestly. If blocked, explain the exact blocker and useful partial result.
+Follow the current runtime's shared final-answer and work-note guidance for ordinary replies. Preserve user-requested and specialist deliverable formats; keep domain-specific output requirements here instead of copying a universal reply template into the profile.
+Lead with the useful answer, make the final reply self-contained, and match detail to the user's request. Ground claims in actual results and report relevant uncertainty, blockers, or skipped verification honestly.
 `.trim();
 }
 
@@ -611,6 +610,7 @@ Your job is to turn the user's intent into a durable, editable agent profile. Bu
 export function buildAgentBuilderStandaloneSystemInstruction(agentId = 'standalone-builder'): string {
   return [
     buildAgentBuilderRuntimePrompt(agentId),
+    FINAL_ANSWER_POLICY,
     '',
     'Communication style for the standalone builder route:',
     '- Respond naturally to the current builder request; do not force bullets or a fixed section sequence.',

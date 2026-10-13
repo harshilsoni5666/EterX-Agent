@@ -15,6 +15,31 @@ language, a domain, or a mandatory sequence of discovery and setup steps.
 - File edit transactions coordinate only their target files. Other files and
   other chats remain independent; current file contents govern conflict handling.
 
+## Managed workspaces
+
+- **New worktree** prepares a dedicated branch and folder from the selected
+  repository's current commit. It does not copy uncommitted files, run checkout
+  hooks, install dependencies, or change the source checkout's branch.
+- **Scratch workspace** prepares an empty local folder. The default lifetime
+  is seven days from creation. General settings offers a 1–365 day retention
+  control; changing it affects newly created workspaces only.
+- The composer shows the selected mode and scratch expiry. Its info panels
+  show the folder, creation date, branch or expiry, and workspace management.
+  Scratch workspaces can be extended or kept without automatic deletion.
+- Creation completes before the chat switches its folder. Errors retain the
+  previous selection. The reserved draft chat ID becomes the real chat ID,
+  so files and workspace ownership survive the first message.
+- Cleanup runs on startup and hourly while EterX is running. Active agents,
+  native terminals and background commands hold cross-process leases. Expired
+  scratch folders are removed after these users release them. No operating
+  system job is installed; cleanup resumes when EterX next starts.
+- Cleanup removes only the managed working folder after canonical containment
+  and link checks. It retains chat history and an expiry receipt. An expired
+  folder produces an explicit error rather than being silently recreated.
+- Worktrees never expire automatically. Removal requires confirmation, refuses
+  active use and uncommitted changes, and preserves the branch. Manual scratch
+  removal also requires confirmation and refuses active use.
+
 ## Execution and environment
 
 - Native `program` and `args` are passed as an argument array. Human-readable

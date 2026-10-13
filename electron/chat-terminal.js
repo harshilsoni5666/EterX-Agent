@@ -2,32 +2,16 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { chatWorkspacePaths, isAbsoluteHostPath } = require('./workspace-layout');
-const { createHostEnvironment, findHostExecutable } = require('./host-environment');
+const { createHostEnvironment } = require('./host-environment');
+const { resolveHostShell } = require('./terminal-shell');
 const { resolvePythonRuntime, applyWorkspaceEnvironment } = require('./python-runtime');
 const { workspaceRoot } = require('./storage-layout');
+const { acquireWorkspaceLease } = require('./managed-workspaces');
 
 function shellForPlatform(platform = process.platform, env = process.env, preference = 'auto') {
-  const selected = String(preference || 'auto').toLowerCase();
-  let candidates;
-  if (platform === 'win32') {
-    const powershell = ['pwsh.exe', 'powershell.exe', path.join(env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')];
-    const choices = {
-      auto: [...powershell, env.ComSpec || 'cmd.exe'], powershell,
-      cmd: [env.ComSpec || 'cmd.exe'], wsl: ['wsl.exe'],
-      'git-bash': [path.join(env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'), path.join(env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe'), 'bash.exe'],
-    };
-    candidates = choices[selected === 'bash' ? 'git-bash' : selected];
-  } else {
-    const choices = {
-      auto: [env.SHELL, platform === 'darwin' ? '/bin/zsh' : '/bin/bash', '/bin/sh'],
-      powershell: ['pwsh'], zsh: ['/bin/zsh', 'zsh'], bash: ['/bin/bash', 'bash'], fish: ['fish'], sh: ['/bin/sh', 'sh'],
-    };
-    candidates = choices[selected];
-  }
-  const file = candidates && findHostExecutable(candidates, env);
-  if (!file) throw new Error(`The selected terminal shell "${selected}" is not available on this device. Choose an installed shell in Settings.`);
+  const file = resolveHostShell(preference, env, platform);
   const name = path.basename(file).toLowerCase();
-  const args = /^(?:powershell|pwsh)(?:\.exe)?$/.test(name) ? ['-NoLogo'] : /^cmd(?:\.exe)?$/.test(name) ? ['/d'] : /^wsl(?:\.exe)?$/.test(name) ? [] : ['-l'];
+  const args = /^(?:powershell|pwsh)(?:\.exe)?$/.test(name) ? ['-NoLogo'] : /^cmd(?:\.exe)?$/.test(name) ? ['/d'] : /^wsl(?:\.exe)?$/.test(name) ? [] : /^(?:bash|zsh|fish)(?:\.exe)?$/.test(name) ? ['-l'] : ['-i'];
   return { file, args, label: /powershell|pwsh/.test(name) ? 'PowerShell' : path.basename(file) };
 }
 
@@ -57,12 +41,15 @@ function registerChatTerminals({ ipcMain, app, getWindow, loadPty = loadChatPty 
     if (!session) return;
     sessions.delete(id);
     clearTimeout(session.timer);
-    session.dataListener.dispose();
-    session.exitListener.dispose();
+    clearTimeout(session.attachTimer);
+    session.dataListener?.dispose();
+    session.exitListener?.dispose();
     try { session.pty.kill(); } catch {}
+    session.releaseWorkspace?.();
   };
   ipcMain.handle('chat-terminal-create', (event, options = {}) => {
     authorize(event);
+    if (!options || typeof options !== 'object') throw new Error('Invalid terminal options');
     if (typeof options.chatId !== 'string' || !options.chatId || options.chatId.length > 200) throw new Error('Invalid chat');
     if (sessions.size >= 32 || [...sessions.values()].filter(s => s.chatId === options.chatId).length >= 8) throw new Error('Close an unused terminal before opening another (8 per chat, 32 total).');
     const owned = chatWorkspacePaths(workspaceRoot(), 'default', options.chatId);
@@ -74,18 +61,33 @@ function registerChatTerminals({ ipcMain, app, getWindow, loadPty = loadChatPty 
     const env = applyWorkspaceEnvironment(host, { cwd, runtime, overrides: { TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
     const shell = shellForPlatform(process.platform, env, options.terminalShell);
     if (/^wsl(?:\.exe)?$/i.test(path.basename(shell.file))) shell.args = ['--cd', cwd];
+    // Git Bash otherwise changes to HOME from its login profile.
+    if (process.platform === 'win32' && /^bash\.exe$/i.test(path.basename(shell.file))) env.CHERE_INVOKING = '1';
     // Internal Electron/Node launch settings must not leak into user shells.
     for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH']) delete env[key];
-    const pty = loadPty().spawn(shell.file, shell.args, { cwd, env, cols: 100, rows: 24, name: 'xterm-256color' });
+    let pty;
+    const releaseWorkspace = acquireWorkspaceLease(cwd);
+    try {
+      pty = loadPty().spawn(shell.file, shell.args, { cwd, env, cols: 100, rows: 24, name: 'xterm-256color' });
+      releaseWorkspace.setProcess?.(pty.pid);
+    } catch (error) {
+      releaseWorkspace();
+      throw new Error(`Could not start ${shell.label} on ${process.platform}/${process.arch}: ${error.message || error}`);
+    }
     const id = randomUUID();
-    const session = { id, pty, owner: event.sender, chatId: options.chatId, pending: '', outstanding: 0, timer: null, attached: false, visible: false, paused: false, cols: 100, rows: 24 };
+    const session = { id, pty, releaseWorkspace, owner: event.sender, chatId: options.chatId, pending: '', outstanding: 0, timer: null, attached: false, visible: false, paused: false, cols: 100, rows: 24 };
+    const send = (payload) => {
+      if (session.owner.isDestroyed()) { close(id); return; }
+      try { session.owner.send('chat-terminal-event', { id, ...payload }); }
+      catch { close(id); }
+    };
     const flush = () => {
       clearTimeout(session.timer);
       session.timer = null;
       if (!session.attached || !session.pending || session.owner.isDestroyed()) return;
       const data = session.pending;
       session.pending = '';
-      session.owner.send('chat-terminal-event', { id, data });
+      send({ data });
     };
     session.flush = flush;
     session.dataListener = pty.onData(data => {
@@ -98,10 +100,15 @@ function registerChatTerminals({ ipcMain, app, getWindow, loadPty = loadChatPty 
     });
     session.exitListener = pty.onExit(({ exitCode }) => {
       session.exitCode = exitCode;
+      releaseWorkspace();
       flush();
-      if (session.attached && !session.owner.isDestroyed()) session.owner.send('chat-terminal-event', { id, exitCode });
+      if (session.attached) send({ exitCode });
     });
     sessions.set(id, session);
+    // A renderer can disappear between create and attach without ever owning
+    // a visible tab. Do not leave that shell running indefinitely.
+    session.attachTimer = setTimeout(() => { if (!session.attached) close(id); }, 30_000);
+    session.attachTimer.unref?.();
     if (!owners.has(event.sender)) {
       owners.add(event.sender);
       const disposeOwner = () => { for (const [key, item] of sessions) if (item.owner === event.sender) close(key); };
@@ -118,6 +125,8 @@ function registerChatTerminals({ ipcMain, app, getWindow, loadPty = loadChatPty 
   });
   ipcMain.handle('chat-terminal-attach', (event, id) => {
     const session = get(event, id);
+    clearTimeout(session.attachTimer);
+    if (session.attached) return;
     session.attached = true;
     session.flush();
     if (session.exitCode !== undefined) session.owner.send('chat-terminal-event', { id, exitCode: session.exitCode });

@@ -1,7 +1,10 @@
-import fs from 'fs';
 import path from 'path';
 const { findHostExecutable } = require('../../../../../electron/host-environment') as {
   findHostExecutable: (candidates: string[], env?: NodeJS.ProcessEnv) => string | null;
+};
+const { resolveHostShell, availableHostShells } = require('../../../../../electron/terminal-shell') as {
+  resolveHostShell: (preference?: unknown, env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform, allowCustom?: boolean) => string;
+  availableHostShells: () => TerminalShellPreference[];
 };
 
 export type TerminalShellPreference =
@@ -25,71 +28,11 @@ export function normalizeTerminalShell(value: unknown): TerminalShellPreference 
 }
 
 export function resolveTerminalShell(preference?: unknown): string {
-  const requested = String(preference || 'auto').trim();
-  if (requested && !KNOWN_SHELLS.has(requested.toLowerCase() as TerminalShellPreference)) {
-    const executable = findExecutable([requested]);
-    if (executable) return executable;
-    throw new Error(`The requested shell is unavailable: ${requested}. Choose an installed shell or use program + args for direct execution.`);
-  }
-  const selected = normalizeTerminalShell(preference);
-
-  if (process.platform === 'win32') {
-    if (selected === 'cmd') return requireExecutable([process.env.ComSpec || 'cmd.exe', 'cmd.exe'], selected);
-    if (selected === 'wsl') return requireExecutable(['wsl.exe'], selected);
-    if (selected === 'git-bash' || selected === 'bash') {
-      return requireExecutable([
-        path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
-        path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
-        path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe'),
-        'bash.exe',
-      ], selected);
-    }
-    if (selected === 'auto') return defaultWindowsShell();
-    if (['zsh', 'fish', 'sh'].includes(selected)) {
-      throw new Error(`The selected terminal shell "${selected}" is not available on Windows. Use PowerShell, cmd, Git Bash, or WSL.`);
-    }
-    return requireExecutable([
-      'pwsh.exe',
-      'powershell.exe',
-      path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    ], selected);
-  }
-
-  if (selected === 'powershell') {
-    return requireExecutable(['pwsh', '/usr/bin/pwsh', '/usr/local/bin/pwsh', '/opt/homebrew/bin/pwsh'], selected);
-  }
-  if (selected === 'auto') return defaultPosixShell();
-  if (['cmd', 'git-bash', 'wsl'].includes(selected)) {
-    throw new Error(`The selected terminal shell "${selected}" is only available on Windows.`);
-  }
-  return requireExecutable(posixShellCandidates(selected), selected);
+  return resolveHostShell(preference, undefined, process.platform, true);
 }
 
 export function getAvailableTerminalShells(): TerminalShellPreference[] {
-  const available: TerminalShellPreference[] = ['auto'];
-
-  if (process.platform === 'win32') {
-    if (findExecutable([
-      'pwsh.exe',
-      'powershell.exe',
-      path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    ])) available.push('powershell');
-    if (findExecutable([process.env.ComSpec || 'cmd.exe', 'cmd.exe'])) available.push('cmd');
-    if (findExecutable([
-      'bash.exe',
-      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
-      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Git', 'bin', 'bash.exe'),
-    ])) available.push('git-bash');
-    if (findExecutable(['wsl.exe'])) available.push('wsl');
-    return available;
-  }
-
-  for (const shell of ['zsh', 'bash', 'fish', 'sh'] as const) {
-    if (findExecutable(posixShellCandidates(shell))) available.push(shell);
-  }
-  if (findExecutable(['pwsh', '/usr/bin/pwsh', '/usr/local/bin/pwsh', '/opt/homebrew/bin/pwsh'])) available.push('powershell');
-  return available;
+  return availableHostShells();
 }
 
 export type TerminalShellInvocation = {
@@ -153,33 +96,6 @@ export function platformDefaultTerminalShell(): TerminalShellPreference {
     : 'bash';
 }
 
-function defaultPosixShell(): string {
-  const configured = process.env.SHELL;
-  if (configured && isExecutable(configured)) return configured;
-  if (process.platform === 'darwin') return requireExecutable(['/bin/zsh', 'zsh', '/bin/bash', 'bash', '/bin/sh'], 'auto');
-  return requireExecutable(['/bin/bash', 'bash', '/bin/sh'], 'auto');
-}
-
-function defaultWindowsShell(): string {
-  return requireExecutable([
-    'pwsh.exe',
-    'powershell.exe',
-    path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    process.env.ComSpec || 'cmd.exe',
-    'cmd.exe',
-  ], 'auto');
-}
-
-function posixShellCandidates(shell: string): string[] {
-  switch (shell) {
-    case 'zsh': return ['/bin/zsh', '/usr/bin/zsh', 'zsh'];
-    case 'bash': return ['/bin/bash', '/usr/bin/bash', 'bash'];
-    case 'fish': return ['/usr/bin/fish', '/opt/homebrew/bin/fish', 'fish'];
-    case 'sh': return ['/bin/sh', '/usr/bin/sh', 'sh'];
-    default: return [shell];
-  }
-}
-
 export function isExecutableAvailable(candidates: string[]): boolean {
   return findExecutable(candidates) !== null;
 }
@@ -188,18 +104,3 @@ export function findExecutable(candidates: string[], env?: NodeJS.ProcessEnv): s
   return findHostExecutable(candidates, env);
 }
 
-function requireExecutable(candidates: string[], selected: TerminalShellPreference): string {
-  const resolved = findExecutable(candidates);
-  if (resolved) return resolved;
-  throw new Error(`The selected terminal shell "${selected}" is not installed or is not available on this device.`);
-}
-
-function isExecutable(candidate: string): boolean {
-  try {
-    if (!fs.statSync(candidate).isFile()) return false;
-    fs.accessSync(candidate, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}

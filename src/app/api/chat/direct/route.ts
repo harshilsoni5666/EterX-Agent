@@ -18,6 +18,7 @@ import {
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
+import { beginDirectChatRun, isManualCompactionActive } from '../../../../lib/agent/manual-compaction';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -82,6 +83,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (isManualCompactionActive(chatId)) {
+      return attachAgentApiSessionCookie(jsonError('Context is compacting. Please wait until it finishes.', 409), session);
+    }
+    const finishDirectRun = beginDirectChatRun(chatId);
     const encoder = new TextEncoder();
     const streamAbortController = new AbortController();
     const normalizedRunId = String(runId || '').trim().slice(0, 160) || undefined;
@@ -152,7 +157,10 @@ export async function POST(req: NextRequest) {
             }
             close();
           })
-          .finally(() => req.signal.removeEventListener('abort', forwardAbort));
+          .finally(() => {
+            finishDirectRun();
+            req.signal.removeEventListener('abort', forwardAbort);
+          });
       },
       cancel() {
         streamClosed = true;

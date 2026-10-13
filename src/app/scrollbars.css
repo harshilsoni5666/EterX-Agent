@@ -289,3 +289,42 @@ html[data-theme][class][lang] body .eterx-terminal-dock .eterx-terminal-surface[
   filter: none !important;
   -webkit-filter: none !important;
 }
+
+/* Composer menu rails stay inside the rounded panel, without native arrows. */
+:root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout) {
+  --eterx-sb-size: 6px;
+  --eterx-sb-inset: 1px;
+  scrollbar-width: thin !important;
+}
+
+:root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout) * {
+  scrollbar-width: thin !important;
+}
+
+/* Electron uses the six-pixel custom rail; Firefox keeps the thin fallback. */
+@supports selector(::-webkit-scrollbar) {
+  :root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout),
+  :root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout) * {
+    scrollbar-width: auto !important;
+  }
+}
+
+:root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout)::-webkit-scrollbar-button,
+:root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout)::-webkit-scrollbar-button:single-button,
+:root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout) *::-webkit-scrollbar-button,
+:root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout) *::-webkit-scrollbar-button:single-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  background: none !important;
+}
+
+:root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout)::-webkit-scrollbar-track:vertical {
+  margin-block: 16px !important;
+}
+
+:root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout) *::-webkit-scrollbar-track:vertical {
+  margin-block: 4px !important;
+}

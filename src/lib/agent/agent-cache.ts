@@ -10,7 +10,7 @@
  *
  * Key behaviours:
  *  - Singleton via globalThis — survives Next.js hot reloads.
- *  - Keyed by (apiKey_suffix + modelName) — each rotated key gets its own cache.
+ *  - Keyed by credential fingerprint, model and exact system/tool content.
  *  - TTL = 1 hour; heartbeat every 14 min extends it automatically.
  *  - Self-heals on NOT_FOUND: clears stale entry, recreates immediately.
  *  - Opt out with ETERX_ENABLE_EXPLICIT_GEMINI_CACHE=0.
@@ -18,6 +18,7 @@
  */
 
 import * as crypto from 'crypto';
+import { canonicalizeToolDeclarations } from './provider-prompt-cache';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -46,7 +47,7 @@ interface CacheEntry {
 const CACHE_TTL_S = 3600;                        // 1 hour
 const CACHE_SAFETY_BUFFER_MS = 2 * 60 * 1000;   // expire 2 min early on our side
 const HEARTBEAT_INTERVAL_MS = 14 * 60 * 1000;   // extend TTL every 14 min
-const MAX_CACHE_VARIANTS_PER_MODEL = 6;
+const MAX_CACHE_VARIANTS_PER_MODEL = 32;
 const CACHE_RETRY_COOLDOWN_MS = 10 * 60 * 1000;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -110,7 +111,7 @@ function stableSerialize(value: unknown): string {
 }
 
 function normalizeGeminiCacheToolDeclarations(toolDeclarations: any[]): any[] {
-  return toolDeclarations.map((declaration) => {
+  return canonicalizeToolDeclarations(toolDeclarations).map((declaration) => {
     if (!declaration || typeof declaration !== 'object') return declaration;
     const normalized = { ...declaration };
     // Cached-content accepts standard JSON Schema through the dedicated JSON
@@ -234,10 +235,6 @@ async function getOrCreateAgentCacheUnlocked(
   // whole API key for the lifetime of the desktop process.
   const keyId = apiKeyId(apiKey);
   const ownerKey = cacheOwnerKey(apiKey, modelName);
-  const disabledUntil = getCacheBackoffStore().get(ownerKey) || 0;
-  if (disabledUntil > Date.now()) return null;
-  if (disabledUntil) getCacheBackoffStore().delete(ownerKey);
-
   const store = getCacheStore();
   const hash = buildContentHash(staticSystemInstruction, toolDeclarations);
   const key = storeKey(apiKey, modelName, hash);
@@ -251,17 +248,27 @@ async function getOrCreateAgentCacheUnlocked(
     return existing.name;
   }
 
+  // Failure to create one variant must not disable an already usable cache.
+  // A too-small prefix only backs off that content, not larger prompts using
+  // the same credential/model.
+  const contentBackoffKey = `${key}:content`;
+  const backoff = getCacheBackoffStore();
+  for (const [backoffKey, until] of backoff) {
+    if (until <= Date.now()) backoff.delete(backoffKey);
+  }
+  for (const backoffKey of [ownerKey, contentBackoffKey]) {
+    const until = backoff.get(backoffKey) || 0;
+    if (until > Date.now()) return null;
+    if (until) backoff.delete(backoffKey);
+  }
+
   // ── Invalidate stale entry ──
   if (existing) {
     clearEntry(existing);
     store.delete(key);
     console.log(`[AgentCache] 🔄 Stale/changed cache invalidated for model ${modelName}`);
-    try {
-      await ai.caches.delete({ name: existing.name });
-      console.log(`[AgentCache] 🗑️ Deleted stale/changed cache on Google servers: ${existing.name}`);
-    } catch (e: any) {
-      console.warn(`[AgentCache] ⚠️ Failed to delete stale cache on Google servers: ${e.message || e}`);
-    }
+    // Local expiry includes a safety buffer. Another in-flight request can
+    // still hold this name, so stop renewal and let its remote TTL expire.
   }
 
   // ── Create new cache ──
@@ -307,11 +314,8 @@ async function getOrCreateAgentCacheUnlocked(
       if (oldestKey === key) continue;
       clearEntry(oldest);
       store.delete(oldestKey);
-      try {
-        await ai.caches.delete({ name: oldest.name });
-      } catch {
-        // Provider-side expiry/deletion is best-effort.
-      }
+      // Another chat may already be using this remote name. Retire local
+      // ownership/renewal but let the bounded remote TTL expire naturally.
     }
 
     const providerCachedTokens = Number(
@@ -344,7 +348,8 @@ async function getOrCreateAgentCacheUnlocked(
         `(free-tier, quota, or permission). Falling back temporarily; EterX will retry.`
       );
     } else {
-      getCacheBackoffStore().set(ownerKey, Date.now() + 30_000);
+      const contentIneligible = /too (?:small|short)|minimum|min[_ ]?total[_ ]?token|not (?:supported|support)|unsupported/i.test(msg);
+      getCacheBackoffStore().set(contentBackoffKey, Date.now() + (contentIneligible ? CACHE_RETRY_COOLDOWN_MS : 30_000));
       console.warn(`[AgentCache] ⚠️ Cache creation failed (falling back to uncached): ${msg.slice(0, 120)}`);
     }
     return null;

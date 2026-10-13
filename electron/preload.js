@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   workspaceBrowserSuggest: (id, query) => ipcRenderer.invoke('workspace-browser-suggest', id, query),
   workspaceFilesWatch: (id, path) => ipcRenderer.invoke('workspace-files-watch', id, path),
   workspaceFilesUnwatch: (id) => ipcRenderer.send('workspace-files-unwatch', id),
-  workspaceOpenApps: () => ipcRenderer.invoke('workspace-open-apps'),
+  workspaceOpenApps: (refresh = false) => ipcRenderer.invoke('workspace-open-apps', refresh === true),
   workspaceOpenFile: (path, application) => ipcRenderer.invoke('workspace-open-file', path, application),
   workspaceReviewList: (root, scope, baseRef) => ipcRenderer.invoke('workspace-review-list', root, scope, baseRef),
   workspaceReviewDiff: (root, path, scope, expanded, baseRef) => ipcRenderer.invoke('workspace-review-diff', root, path, scope, expanded, baseRef),
@@ -114,6 +114,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getUpdateState: () => ipcRenderer.invoke('desktop-update-get-state'),
   markUpdateViewed: () => ipcRenderer.invoke('desktop-update-mark-viewed'),
   checkForUpdates: () => ipcRenderer.invoke('desktop-update-check'),
+  notifyUpdateNetworkOnline: () => ipcRenderer.send('desktop-update-network-online'),
   downloadUpdate: () => ipcRenderer.invoke('desktop-update-download'),
   installUpdate: () => ipcRenderer.invoke('desktop-update-install'),
   onUpdateState: (callback) => {

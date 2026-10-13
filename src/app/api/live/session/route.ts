@@ -3,8 +3,6 @@ import { createLiveCatalogRequest } from '../../../../lib/live/catalog-request';
 import { rejectCrossOrigin } from '../../agent/_shared';
 import {
   DEFAULT_DEEPGRAM_THINK_MODEL,
-  DEFAULT_OPENAI_LIVE_MODEL,
-  getLiveModelOptions,
   isLiveModelForProvider,
   normalizeLiveProvider,
   readDeepgramGrantCredential,
@@ -20,7 +18,7 @@ const providerModel = (providerValue: unknown, modelValue: unknown): string => {
     if (!isLiveModelForProvider(providerValue, requested)) throw new Error('The selected model is incompatible with this Live provider. Choose a model in Live settings.');
     return requested;
   }
-  return String(getLiveModelOptions(providerValue).find(option => option.value !== 'auto')?.value || '');
+  throw new Error('Resolve an exact available Live model before starting a session.');
 };
 
 const providerVoice = (voiceValue: unknown): string => {
@@ -67,7 +65,7 @@ export async function POST(req: NextRequest) {
       });
       const credential = readLiveRealtimeCredential(payload);
       if (!credential.token) throw new Error(`${provider.label} did not return a client secret.`);
-      return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model: model || DEFAULT_OPENAI_LIVE_MODEL });
+      return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model });
     }
 
     if (provider.transport === 'xai-native') {

@@ -2,9 +2,11 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, ArrowUpRight, Bot, Check, ChevronRight, Copy, Eye, EyeOff, FileText, HelpCircle, Loader2, Monitor, Plus, Search, Settings2, ShieldCheck, X } from 'lucide-react';
-import { appStorage, appStorageReady } from '../../lib/client-storage';
+import { appStorage, appStorageReady, flushAppStorage } from '../../lib/client-storage';
+import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
+import { getModelThinkingOptions, normalizeThinkingLevelForModel, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
-import { MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, normalizeModelSelectorEntries, modelEntryKey, parseModelEntryKey, type ModelSelectorEntry } from '../../lib/agent/model-selector-store';
+import { MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_THINKING_CAPABILITIES_STORAGE_KEY, isModelProvider, normalizeModelSelectorEntries, modelEntryKey, parseModelEntryKey, type ModelSelectorEntry } from '../../lib/agent/model-selector-store';
 import { normalizeTelegramToken, TELEGRAM_CLIENT_VERSION } from '../../lib/agent/gateways/telegram-token.cjs';
 
 type BotProfile = {
@@ -37,6 +39,7 @@ export function ConnectAsBot({ onBack, onChanged }: { onBack: () => void; onChan
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState<BotProfile | null>(null);
   const [models, setModels] = useState<ModelSelectorEntry[]>([]);
+  const [thinkingCapabilities, setThinkingCapabilities] = useState<Record<string, ModelThinkingCapabilities>>({});
   const [customAgents, setCustomAgents] = useState<Array<{ agentId: string; name: string }>>([]);
   const [search, setSearch] = useState('');
   const [guide, setGuide] = useState(false);
@@ -65,11 +68,16 @@ export function ConnectAsBot({ onBack, onChanged }: { onBack: () => void; onChan
   useEffect(() => {
     const read = () => {
       try { setModels(normalizeModelSelectorEntries(JSON.parse(appStorage.getItem(MODEL_SELECTOR_STORAGE_KEY) || 'null'), JSON.parse(appStorage.getItem(MODEL_CATALOG_STORAGE_KEY) || '{}'))); } catch { setModels([]); }
+      try { setThinkingCapabilities(JSON.parse(appStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}')); } catch { setThinkingCapabilities({}); }
     };
     let active = true;
     void appStorageReady.then(() => { if (active) read(); });
-    read(); window.addEventListener('focus', read); return () => { active = false; window.removeEventListener('focus', read); };
+    read();
+    const events = ['focus', 'eterx-settings-updated', 'eterx-folder-storage-updated'];
+    events.forEach(name => window.addEventListener(name, read));
+    return () => { active = false; events.forEach(name => window.removeEventListener(name, read)); };
   }, [draft?.id]);
+  useEffect(() => { if (draft) void refreshSavedModelCatalog(); }, [Boolean(draft)]);
   useEffect(() => {
     let live = true;
     void fetch('/api/agents/list').then(response => response.json()).then(data => {
@@ -92,6 +100,9 @@ export function ConnectAsBot({ onBack, onChanged }: { onBack: () => void; onChan
   const save = async (value: BotProfile, reconnect = false) => {
     setBusy(true); setError(''); setDiagnostic(''); setNotice('');
     try {
+      if (value.enabled && !models.some(model => model.provider === value.model.provider && model.modelId === value.model.modelId)) throw new Error('Select an available model for this bot.');
+      if (isModelProvider(value.model.provider)) value = { ...value, thinkingLevel: normalizeThinkingLevelForModel(value.thinkingLevel, value.model.provider, value.model.modelId, thinkingCapabilities[modelEntryKey(value.model.provider, value.model.modelId)]) };
+      await flushAppStorage();
       const desktop = await api.getGatewayState();
       if (desktop?.telegramClientVersion !== TELEGRAM_CLIENT_VERSION) {
         setDiagnostic(`Step: Load desktop connection\nCode: TELEGRAM_DESKTOP_RESTART\nExpected client: ${TELEGRAM_CLIENT_VERSION}`);
@@ -134,6 +145,8 @@ export function ConnectAsBot({ onBack, onChanged }: { onBack: () => void; onChan
   };
   const visible = bots.filter(bot => `${bot.name} ${bot.username || ''} ${bot.instructions}`.toLowerCase().includes(search.toLowerCase()));
   const active = bots.filter(bot => bot.enabled && bot.paired && bot.state === 'connected').length;
+  const thinkingOptions = draft && isModelProvider(draft.model.provider) ? getModelThinkingOptions(draft.model.provider, draft.model.modelId, thinkingCapabilities[modelEntryKey(draft.model.provider, draft.model.modelId)]) : [];
+  const selectedThinkingLevel = draft && isModelProvider(draft.model.provider) ? normalizeThinkingLevelForModel(draft.thinkingLevel, draft.model.provider, draft.model.modelId, thinkingCapabilities[modelEntryKey(draft.model.provider, draft.model.modelId)]) : 'off';
 
   return <div className="eterx-channels-view h-full min-h-0 w-full overflow-y-auto bg-[var(--eterx-channel-surface)] px-5 pb-12 pt-5 text-[#353230] dark:text-white/90 md:px-8">
     <div className="mx-auto w-full max-w-[1180px]">
@@ -182,7 +195,7 @@ export function ConnectAsBot({ onBack, onChanged }: { onBack: () => void; onChan
           <label className="block space-y-2 text-[12px] font-semibold"><span>What should this bot do?</span><textarea rows={4} maxLength={16000} value={draft.instructions} onChange={event => patch({ instructions: event.target.value })} placeholder="Help me research and write. Give me concise updates, cite original sources, and send finished documents. Remember my preferences as we work." className={`${field} resize-y font-normal leading-6`} /></label>
           <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-2 text-[12px] font-semibold"><span>Model</span><select required value={draft.model.provider ? modelEntryKey(draft.model.provider, draft.model.modelId) : ''} onChange={event => { const model = parseModelEntryKey(event.target.value); if (model) patch({ model }); }} className={field}><option value="">Select a configured model</option>{models.map(model => <option key={modelEntryKey(model.provider, model.modelId)} value={modelEntryKey(model.provider, model.modelId)}>{model.provider} · {model.modelId}</option>)}{draft.model.provider && !models.some(item => item.provider === draft.model.provider && item.modelId === draft.model.modelId) && <option value={modelEntryKey(draft.model.provider, draft.model.modelId)}>{draft.model.provider} · {draft.model.modelId} (saved)</option>}</select></label><label className="space-y-2 text-[12px] font-semibold"><span>Agent type</span><select value={draft.agentType} onChange={event => patch({ agentType: event.target.value })} className={field}><option value="general">General · full agent toolkit</option><option value="coding-lite">Coding Lite · terminal and files</option><option value="coding-heavy">Coding Heavy · coding and research</option>{customAgents.map(agent => <option key={agent.agentId} value={`custom:${agent.agentId}`}>{agent.name} · custom agent</option>)}</select></label></div>
           {!models.length && <p className="text-[12px] leading-5 text-amber-600 dark:text-amber-300">Add a provider and model in EterX Settings first, then return here. Each bot uses its chosen model and your existing provider credentials.</p>}
-          <details className={`${panel} p-4`}><summary className="cursor-pointer text-[12px] font-semibold">Computer and execution settings</summary><div className="mt-4 space-y-4"><label className="block space-y-2 text-[12px]"><span>Working folder (optional)</span><input value={draft.workspacePath} onChange={event => patch({ workspacePath: event.target.value })} placeholder="Absolute path on this computer" className={field} /></label><label className="flex items-center justify-between text-[12px]">Thinking effort<select value={draft.thinkingLevel} onChange={event => patch({ thinkingLevel: event.target.value })} className={`${field} !w-32`}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label><label className="flex items-center justify-between gap-4 text-[12px]">Use connected browser<input type="checkbox" checked={draft.allowBrowserControl} onChange={event => patch({ allowBrowserControl: event.target.checked })} className="h-4 w-4 accent-[#2388dc]" /></label><label className="flex items-center justify-between gap-4 text-[12px]">Control this computer and share requested screenshots<input type="checkbox" checked={draft.allowHostControl} onChange={event => patch({ allowHostControl: event.target.checked })} className="h-4 w-4 accent-[#2388dc]" /></label><p className={`text-[11px] leading-5 ${muted}`}>The selected agent’s enabled tools and device permissions still apply. Coding modes keep their focused toolsets. Model and role changes apply to the next task.</p></div></details>
+          <details className={`${panel} p-4`}><summary className="cursor-pointer text-[12px] font-semibold">Computer and execution settings</summary><div className="mt-4 space-y-4"><label className="block space-y-2 text-[12px]"><span>Working folder (optional)</span><input value={draft.workspacePath} onChange={event => patch({ workspacePath: event.target.value })} placeholder="Absolute path on this computer" className={field} /></label><label className="flex items-center justify-between text-[12px]">Thinking effort<select value={thinkingOptions.length ? selectedThinkingLevel : ""} disabled={!thinkingOptions.length} onChange={event => patch({ thinkingLevel: event.target.value })} className={`${field} !w-32`}>{thinkingOptions.length ? thinkingOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>) : <option value="">Provider default</option>}</select></label><label className="flex items-center justify-between gap-4 text-[12px]">Use connected browser<input type="checkbox" checked={draft.allowBrowserControl} onChange={event => patch({ allowBrowserControl: event.target.checked })} className="h-4 w-4 accent-[#2388dc]" /></label><label className="flex items-center justify-between gap-4 text-[12px]">Control this computer and share requested screenshots<input type="checkbox" checked={draft.allowHostControl} onChange={event => patch({ allowHostControl: event.target.checked })} className="h-4 w-4 accent-[#2388dc]" /></label><p className={`text-[11px] leading-5 ${muted}`}>The selected agent’s enabled tools and device permissions still apply. Coding modes keep their focused toolsets. Model and role changes apply to the next task.</p></div></details>
           {error && <ConnectionError message={error} diagnostic={diagnostic} />}
           <div className="flex items-center justify-between gap-3 border-t border-black/[0.08] pt-5 dark:border-white/[0.08]">{draft.id ? <button type="button" disabled={busy} onClick={() => { setRemoving(draft.id!); setDraft(null); }} className="text-[12px] text-red-500">Disconnect bot</button> : <span className={`text-[11px] ${muted}`}>Pair your account after saving.</span>}<button type="submit" disabled={busy || !draft.model.modelId} className={primary}>{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}{busy ? 'Connecting…' : draft.id ? 'Save changes' : 'Connect bot'}</button></div>
         </form>

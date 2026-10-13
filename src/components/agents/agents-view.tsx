@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, ArrowUp, SendHorizontal, Download, CheckCircle2, Upload } from 'lucide-react';
 import { PremiumEdit, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
+import type { MainAgentThinkingLevel } from '../../lib/agent/model-routing';
 
 interface Agent {
   id: string;
@@ -15,7 +16,7 @@ interface Agent {
   kind?: 'agent' | 'flow';
   stepCount?: number;
   preferredModel?: string;
-  preferredThinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+  preferredThinkingLevel?: MainAgentThinkingLevel;
   qualityScore?: number;
   readinessPassed?: number;
   readinessChecks?: number;

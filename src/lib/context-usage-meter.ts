@@ -1,66 +1,18 @@
 import { normalizeContextUsageBreakdown, type ContextUsageBreakdown } from './context-usage-breakdown';
 import { contextMeasurementModel, contextMeasurementTime, orderContextMeasurementLogs } from './context-usage-snapshot';
+import { readModelUsage, reconcileModelUsageLogs } from './model-usage';
 
 const providerUsageMetricsFromTrace = (usage: any) => {
   if (!usage || usage.type !== 'model_usage') return undefined;
-  const inputTokens = Number(usage.promptTokens || usage.inputTokens || 0);
-  if (!Number.isFinite(inputTokens) || inputTokens <= 0) return undefined;
-  const measuredNumber = (...keys: string[]): number | undefined => {
-    for (const key of keys) {
-      if (usage[key] === undefined || usage[key] === null || usage[key] === '') continue;
-      const value = Number(usage[key]);
-      if (Number.isFinite(value)) return Math.max(0, value);
-    }
-    return undefined;
-  };
-  const wasMeasured = (flag: string, ...keys: string[]) => usage[flag] !== undefined
-    ? Number(usage[flag]) > 0
-    : keys.some(key => usage[key] !== undefined && Number.isFinite(Number(usage[key])));
-  const hasCacheMeasurement = wasMeasured(
-    'cacheTokensMeasured',
-    'cacheHitRatio',
-    'cachedTokens',
-    'uncachedPromptTokens',
-  );
-  const cachedInputTokens = hasCacheMeasurement
-    ? Math.max(0, Math.min(inputTokens, Number(usage.cachedTokens || 0)))
-    : undefined;
-  const uncachedInputTokens = hasCacheMeasurement
-    ? Math.max(0, Number.isFinite(Number(usage.uncachedPromptTokens))
-      ? Number(usage.uncachedPromptTokens)
-      : inputTokens - Number(cachedInputTokens || 0))
-    : undefined;
-  const explicitHitRatio = Number(usage.cacheHitRatio);
-  const cacheHitRatio = hasCacheMeasurement
-    ? Math.max(0, Math.min(1, Number.isFinite(explicitHitRatio)
-      ? explicitHitRatio
-      : Number(cachedInputTokens || 0) / inputTokens))
-    : undefined;
-  const reasoningTokens = wasMeasured('reasoningTokensMeasured', 'reasoningTokens')
-    ? measuredNumber('reasoningTokens')
-    : undefined;
-  const outputMeasured = wasMeasured(
-    'completionTokensMeasured',
-    'visibleOutputTokens',
-    'outputTokens',
-    'completionTokens',
-  );
-  const visibleOutputTokens = outputMeasured ? measuredNumber('visibleOutputTokens') : undefined;
-  const totalOutputTokens = outputMeasured ? measuredNumber('outputTokens', 'completionTokens') : undefined;
-  const outputTokens = visibleOutputTokens !== undefined
-    ? visibleOutputTokens
-    : totalOutputTokens !== undefined
-      ? Math.max(0, totalOutputTokens - (reasoningTokens || 0))
-      : undefined;
+  const measured = readModelUsage(usage);
   return {
-    cacheHitRatio,
-    cachedInputTokens,
-    uncachedInputTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheWriteTokens: wasMeasured('cacheWriteTokensMeasured', 'cacheWriteTokens', 'cacheCreationTokens')
-      ? measuredNumber('cacheWriteTokens', 'cacheCreationTokens')
-      : undefined,
+    cacheHitRatio: measured.cacheMeasured && measured.inputMeasured
+      ? (measured.promptTokens > 0 ? measured.cachedTokens / measured.promptTokens : 0) : undefined,
+    cachedInputTokens: measured.cacheMeasured ? measured.cachedTokens : undefined,
+    uncachedInputTokens: measured.cacheMeasured ? measured.uncachedPromptTokens : undefined,
+    outputTokens: measured.visibleOutputTokens,
+    reasoningTokens: measured.reasoningMeasured ? measured.reasoningTokens : undefined,
+    cacheWriteTokens: measured.cacheWriteTokens,
   };
 };
 
@@ -136,7 +88,7 @@ const contextTraceEstimateIdentity = (log: any): string => {
  * This is deliberately not a lifetime high-water mark.
  */
 export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: { provider: string; modelId: string } | null) => {
-  const orderedLogs = orderContextMeasurementLogs(logs).filter(log => log?.auxiliaryRuntime !== true);
+  const orderedLogs = orderContextMeasurementLogs(reconcileModelUsageLogs(logs)).filter(log => log?.auxiliaryRuntime !== true);
   const validPayload = (log: any) => log?.type === 'context_usage'
     && log.usedTokens !== undefined && log.usedTokens !== null
     && Number.isFinite(Number(log.usedTokens)) && Number(log.usedTokens) >= 0;
@@ -175,8 +127,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
         const replacedContext = committedPayload(previous) || previousPayload?.contextReplaced === true
           || (terminalPayload(previous) && previous.phase === 'compacted');
         const previousProviderCount = previous?.type === 'model_usage' && previous.phase !== 'chat_title'
-          && Number.isFinite(Number(previous.promptTokens || previous.inputTokens))
-          && Number(previous.promptTokens || previous.inputTokens) > 0;
+          && readModelUsage(previous).inputMeasured;
         if (!validPayload(previousPayload) && !previousProviderCount && !replacedContext) continue;
         const previousModel = contextMeasurementModel(previousPayload);
         if (previousModel && previousModel !== baselineModel) crossesModelChange = true;
@@ -253,8 +204,9 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     }
     if (log?.type === 'model_usage') {
       if (log.phase === 'chat_title') continue;
-      const inputTokens = Number(log.promptTokens || log.inputTokens || 0);
-      if (!Number.isFinite(inputTokens) || inputTokens <= 0) continue;
+      const measuredUsage = readModelUsage(log);
+      if (!measuredUsage.inputMeasured) continue;
+      const inputTokens = measuredUsage.promptTokens;
       // A delayed usage report for the old request is billing data, not the
       // current context. Keep it in the trace ledger but out of this meter.
       if (authoritative?.contextRequestId && log.contextRequestId
@@ -355,7 +307,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     breakdownSource: latestBreakdown ? 'serialized_payload' as const : 'unavailable' as const,
     providerMetrics: cacheMetrics,
     cacheStatus,
-    providerInputTokens: providerMeasured ? Number(latestProviderUsage?.promptTokens || latestProviderUsage?.inputTokens) : undefined,
+    providerInputTokens: providerMeasured ? readModelUsage(latestProviderUsage).promptTokens : undefined,
     localEstimatedTokens: Number(latestContextUsage?.localEstimatedTokens || 0) || undefined,
     hasDraftEstimate: draftTokens > 0,
   };

@@ -39,11 +39,43 @@
 /* Keep project and execution menus proportional to the composer controls.
    AdaptiveMenu owns viewport fitting; the surface owns the only scrollbar. */
 :root .eterx-composer-shell .eterx-status-popout-project {
-  width: 288px !important;
+  width: 304px !important;
 }
 :root .eterx-composer-shell .eterx-status-popout-run {
-  width: 248px !important;
+  width: 284px !important;
 }
+
+.eterx-workspace-location-menu { color: var(--composer-menu-ink); }
+.eterx-workspace-rail-expiry { align-self: center; white-space: nowrap; font-size: 11px; color: var(--composer-menu-muted); padding: 0 8px; }
+.eterx-workspace-option { display: flex; align-items: center; border-radius: 10px; min-height: 34px; }
+.eterx-workspace-option:is(:hover, :focus-within, [data-selected="true"]) { background: var(--composer-menu-active); }
+.eterx-workspace-option > button:first-child { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12px; text-align: left; border-radius: 10px; }
+.eterx-workspace-info { display: grid; place-items: center; width: 32px; height: 32px; margin-right: 2px; flex-shrink: 0; border-radius: 8px; opacity: .6; }
+.eterx-workspace-info:is(:hover, :focus-visible) { opacity: 1; }
+.eterx-workspace-option button:disabled { opacity: .45; cursor: wait; }
+.eterx-workspace-details { padding: 4px 8px 8px; }
+.eterx-workspace-back { display: flex; align-items: center; gap: 8px; padding: 6px 0 10px; font-size: 12px; font-weight: 500; }
+.eterx-workspace-details p { color: var(--composer-menu-muted); font-size: 11.5px; line-height: 18px; }
+.eterx-workspace-detail-block { margin-top: 12px; }
+.eterx-workspace-details strong { display: block; margin-bottom: 3px; font-size: 12px; font-weight: 500; }
+.eterx-workspace-receipt { border-top: 1px solid var(--composer-menu-line); padding-top: 12px; margin-top: 14px; }
+.eterx-workspace-path { overflow-wrap: anywhere; }
+.eterx-workspace-actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.eterx-workspace-actions button { border: 1px solid var(--composer-menu-line); border-radius: 8px; padding: 6px 9px; font-size: 11.5px; }
+.eterx-workspace-actions button:hover { background: var(--composer-menu-active); }
+.eterx-workspace-actions button:disabled { opacity: .45; }
+.eterx-workspace-expiry { display: flex; align-items: center; gap: 7px; padding: 10px; margin-top: 5px; border-top: 1px solid var(--composer-menu-line); width: 100%; text-align: left; color: var(--composer-menu-muted); font-size: 11px; line-height: 16px; }
+.eterx-workspace-footnote { padding: 10px 0 0; color: var(--composer-menu-muted); font-size: 11px !important; line-height: 17px; }
+.eterx-workspace-feedback { display: flex; align-items: center; gap: 7px; padding: 10px; font-size: 11.5px; color: var(--composer-menu-muted); }
+.eterx-workspace-error { margin: 8px 4px 3px; padding: 9px; border-radius: 8px; background: color-mix(in srgb, #ef4444 8%, transparent); color: var(--composer-menu-ink); font-size: 11.5px; line-height: 18px; overflow-wrap: anywhere; }
+.eterx-retention-stepper { display: flex; align-items: center; flex-shrink: 0; gap: 4px; padding: 4px; border: 1px solid var(--composer-menu-line); border-radius: 12px; background: var(--composer-menu-active); }
+.eterx-retention-stepper button { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; font-size: 18px; }
+.eterx-retention-stepper button:hover { background: var(--composer-menu-active); }
+.eterx-retention-stepper button:disabled { opacity: .3; cursor: default; }
+.eterx-retention-stepper input { width: 38px; background: transparent; text-align: center; outline: none; font-variant-numeric: tabular-nums; font-size: 13px; appearance: textfield; -moz-appearance: textfield; }
+.eterx-retention-stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.eterx-retention-stepper input:focus-visible { border-radius: 4px; outline: 2px solid var(--composer-menu-muted); }
+.eterx-retention-stepper span { padding-right: 5px; font-size: 12px; opacity: .55; }
 :root .eterx-composer-shell .eterx-status-popout {
   box-sizing: border-box;
   gap: 2px;
@@ -97,6 +129,115 @@
   font-size: 12px;
   font-weight: 400;
   color: var(--composer-menu-ink);
+}
+
+/* Workspace picker: a quiet search header, readable choices and fixed actions. */
+:root .eterx-composer-shell .eterx-status-popout.eterx-status-popout-project {
+  padding: 7px;
+  gap: 2px;
+  border: 1px solid var(--composer-menu-line) !important;
+  border-radius: 16px !important;
+  background: var(--composer-menu-surface) !important;
+  color: var(--composer-menu-ink);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .24), 0 3px 10px rgba(0, 0, 0, .1) !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-status-search {
+  height: 38px;
+  min-height: 38px;
+  margin: 0 8px 4px;
+  padding: 0 4px;
+  gap: 10px;
+  border: 0 !important;
+  border-bottom: 1px solid var(--composer-menu-line) !important;
+  border-radius: 0;
+  background: transparent !important;
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-status-search:focus-within {
+  border-bottom-color: var(--composer-menu-muted) !important;
+  box-shadow: none;
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-status-search input {
+  font-size: 13px;
+  line-height: 20px;
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-status-search input::placeholder {
+  color: var(--composer-menu-muted);
+  opacity: 1;
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project > .eterx-status-menu-section {
+  flex: 0 1 auto !important;
+  min-height: 0;
+  max-height: 224px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+  scroll-padding-block: 4px;
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-status-menu-item {
+  min-height: 36px !important;
+  padding: 7px 10px !important;
+  gap: 8px;
+  border-radius: 9px !important;
+  font-size: 13px !important;
+  font-weight: 450;
+  line-height: 20px;
+  transition: background-color 120ms ease, color 120ms ease !important;
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-status-menu-item > span {
+  font-weight: inherit;
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-status-menu-icon {
+  width: 17px;
+  height: 17px;
+  color: var(--composer-menu-muted);
+  transform: none;
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .is-selected .eterx-status-menu-icon,
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-project-selected-check {
+  color: var(--composer-menu-ink);
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-status-menu-rule {
+  margin: 4px 9px;
+  background: var(--composer-menu-line);
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-project-action {
+  color: var(--composer-menu-muted);
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-project-action:is(:hover, :focus-visible) {
+  color: var(--composer-menu-ink);
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-status-empty {
+  padding: 14px 10px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--composer-menu-muted);
+}
+
+:root .eterx-composer-shell .eterx-status-popout-project .eterx-project-empty-hint {
+  margin-top: 4px;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+:root .eterx-composer-shell .eterx-new-chat-status-item:disabled {
+  cursor: not-allowed;
+  opacity: .5;
 }
 :root .eterx-composer-shell .eterx-status-popout .eterx-status-menu-rule {
   margin: 4px 10px;

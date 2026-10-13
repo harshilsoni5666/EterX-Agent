@@ -156,7 +156,7 @@ function highlightReviewSyntax(code: string): string {
       else if (REVIEW_VALUES.has(identifier)) output += `<span class="eterx-syntax-value">${full}</span>`;
       else output += escaped.slice(lastIndex).trimStart().startsWith('(')
         ? `<span class="eterx-syntax-function">${full}</span>`
-        : full;
+        : `<span class="eterx-syntax-variable">${full}</span>`;
     } else if (flag) output += `<span class="eterx-syntax-flag">${full}</span>`;
     else output += full;
   }
@@ -435,8 +435,8 @@ function StatsButton({
       }}
       className="eterx-professional-number inline-flex h-6 items-center gap-1 rounded-full px-1.5 text-[11.5px] font-bold transition-all hover:bg-white/[0.08] hover:shadow-none focus:outline-none focus:ring-1 focus:ring-white/18"
     >
-      <span className="text-[#4BE37B]">+{stats.added}</span>
-      <span className="text-[#FF6C63]">-{stats.removed}</span>
+      <span className="eterx-file-change-added">+{stats.added}</span>
+      <span className="eterx-file-change-removed">-{stats.removed}</span>
     </button>
   );
 }
@@ -806,7 +806,7 @@ function ReviewPanel({
                         rows.map(row => {
                           if (row.kind === 'gap') {
                             return (
-                              <div key={row.key} className="relative my-1 flex items-center justify-center px-4 text-[11px] text-white/38">
+                              <div key={row.key} className="eterx-review-diff-gap relative my-1 flex items-center justify-center px-4 text-[11px] text-white/38">
                                 <div className="h-px flex-1 bg-white/[0.08]" />
                                 <span className="mx-2 rounded-lg border border-white/[0.07] bg-white/[0.04] px-2 py-1">+{row.count} more lines</span>
                                 <div className="h-px flex-1 bg-white/[0.08]" />
@@ -820,6 +820,7 @@ function ReviewPanel({
                           return (
                             <div
                               key={row.key}
+                              data-kind={line.type}
                               className={cx(
                                 'eterx-review-diff-row grid grid-cols-[44px_44px_22px_minmax(0,1fr)] gap-0 px-3',
                                 isAdded && 'bg-[#20361F]',

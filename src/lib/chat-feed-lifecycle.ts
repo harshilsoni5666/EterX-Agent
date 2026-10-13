@@ -1,4 +1,5 @@
 import { contextUsageCursor, mergeContextCompactionSnapshot, mergeContextUsageSnapshot } from './context-usage-snapshot';
+import { modelUsageReceiptKey, mergeModelUsageReceipt } from './model-usage';
 import { sameUserAdmission, userAdmissionKey, reconcileQueuedTurnDelivery } from './steering-delivery';
 import { mergeUserAttachments, visibleUserRequest } from './chat-user-payload';
 
@@ -53,6 +54,10 @@ const SETTLED_FEED_STATUSES = new Set([
 export const isFeedTurnBoundary = (log: any): boolean => Boolean(
   log && (log.type === 'user_action' || log.type === 'steering_received')
 );
+
+export const getFeedTraceWorkerScope = (log: any): string => String(
+  log?.subAgentChatId || log?.subAgentId || log?.subAgent || 'main',
+).trim().split('::sub-agent::').pop() || 'main';
 
 const FEED_ACTION_TYPES = new Set([
   'command', 'tool_call', 'exploration', 'file_edit', 'browser',
@@ -671,11 +676,16 @@ const timelineContentSignature = (log: any): string => String(
 
 const timelineStableKeys = (log: any): string[] => {
   const type = normalizedTimelineType(log);
+  if (type === 'model_usage') {
+    const receiptKey = modelUsageReceiptKey(log);
+    return receiptKey ? [`model-receipt:${receiptKey}`] : [];
+  }
   // Turn identity is authoritative. Including both turn and run aliases here
   // let two real queries inside one long-lived run match the same provider ID.
   const ownerScope = String(log?.turnId || log?.runId || '').trim();
   const chatScope = String(log?.ownerChatId || log?.chatId || 'chat').trim();
-  const scopes = ownerScope ? [ownerScope] : [];
+  const workerScope = getFeedTraceWorkerScope(log);
+  const scopes = ownerScope ? [`${ownerScope}:worker:${workerScope}:${log?.subAgentTurnId || ''}`] : [];
   if (!type) return [];
   const admissionKey = userAdmissionKey(log);
   if (admissionKey) return [`admission:${ admissionKey }`];
@@ -762,17 +772,17 @@ const timelineStableKeys = (log: any): string[] => {
     }
   }
   if (stableIds.length > 0) {
-    return (scopes.length > 0 ? scopes : ['unscoped'])
+    return (scopes.length > 0 ? scopes : [`unscoped:worker:${workerScope}`])
       .flatMap(scope => stableIds.map(stableId => `trace:${ scope }:${ type }:${ stableId }`));
   }
   const traceIndex = timelineTraceIndex(log);
   if (traceIndex !== null) {
-    return (scopes.length > 0 ? scopes : ['unscoped'])
+    return (scopes.length > 0 ? scopes : [`unscoped:worker:${workerScope}`])
       .map(scope => `trace:${ scope }:${ type }:index:${ traceIndex }`);
   }
   const timestamp = timelineTimestamp(log);
   return timestamp !== null
-    ? [`trace:time:${ type }:${ timestamp }:${ timelineContentSignature(log) }`]
+    ? [`trace:time:worker:${workerScope}:${ type }:${ timestamp }:${ timelineContentSignature(log) }`]
     : [];
 };
 
@@ -897,6 +907,9 @@ export const mergeFeedTracePayload = (previous: any, incoming: any): any => {
 };
 
 const mergeTimelineTrace = (previous: any, incoming: any): any => {
+  if (previous?.type === 'model_usage' && incoming?.type === 'model_usage') {
+    return mergeModelUsageReceipt(previous, incoming);
+  }
   if (previous?.type === 'context_compaction' && incoming?.type === 'context_compaction') {
     return mergeContextCompactionSnapshot(previous, incoming);
   }
@@ -1017,6 +1030,8 @@ const PROVISIONAL_ANSWER_CONTINUATION_TYPES = new Set([
 ]);
 
 const feedTraceOwnershipMatches = (left: any, right: any): boolean => {
+  if (getFeedTraceWorkerScope(left) !== getFeedTraceWorkerScope(right)) return false;
+  if (left?.subAgentTurnId && right?.subAgentTurnId && left.subAgentTurnId !== right.subAgentTurnId) return false;
   const leftChat = String(left?.ownerChatId || left?.chatId || '').trim();
   const rightChat = String(right?.ownerChatId || right?.chatId || '').trim();
   if (leftChat && rightChat && leftChat !== rightChat) return false;
@@ -1320,7 +1335,7 @@ export const settleFeedTraceLifecycles = (logs: any[]): any[] => {
       }
     }
 
-    const settledAnswer = isConclusiveSettledAnswerTrace(log, index, source);
+    const settledAnswer = isMainRunTrace(log) && isConclusiveSettledAnswerTrace(log, index, source);
     if (settledAnswer || isTerminalWorkTrace(log)) {
       const explicitTerminalStatus = String(log?.status || '').trim().toLowerCase();
       terminalStatus = ['stopped', 'cancelled', 'canceled'].includes(explicitTerminalStatus)
@@ -1750,7 +1765,12 @@ const timelineTraceIndex = (log: any): number | null => {
 };
 
 const timelineTimestamp = (log: any): number | null => {
-  const raw = [log?.startTime, log?.timestamp, log?.endTime]
+  // Worker completions carry the execution start for duration display, but
+  // their position in the transcript is the time they finished.
+  const times = /^sub_agent_(?:complete|answer|result|error|close)$/.test(String(log?.type || ''))
+    ? [log?.endTime, log?.timestamp, log?.startTime]
+    : [log?.startTime, log?.timestamp, log?.endTime];
+  const raw = times
     .map(value => Number(value))
     .find(value => Number.isFinite(value) && value > 0);
   if (raw === undefined) return null;
@@ -2340,12 +2360,13 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
 
   const lifecycleSnapshotIdentity = (log: any): string => {
     const type = normalizedTimelineType(log);
+    const owner = `${getFeedTraceWorkerScope(log)}:${String(log?.subAgentTurnId || '')}`;
     const identityField = [
       'toolCallId', 'noteId', 'thoughtId', 'answerId', 'responseKey', 'steeringId', 'id',
     ].find(field => String(log?.[field] ?? '').trim());
-    if (identityField) return `${type}:${identityField}:${String(log[identityField]).trim()}`;
+    if (identityField) return `${owner}:${type}:${identityField}:${String(log[identityField]).trim()}`;
     const traceIndex = timelineTraceIndex(log);
-    return traceIndex === null ? '' : `${type}:trace:${traceIndex}`;
+    return traceIndex === null ? '' : `${owner}:${type}:trace:${traceIndex}`;
   };
 
   const deduplicateBoundaryEntries = (entries: TimelineEntry[]): TimelineEntry[] => {

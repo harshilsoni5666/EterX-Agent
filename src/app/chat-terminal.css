@@ -40,7 +40,7 @@
 .eterx-terminal-dock .xterm .xterm-helper-textarea { min-height: 0 !important; min-width: 0 !important; box-shadow: none !important; background: transparent !important; }
 .eterx-terminal-empty { position: absolute; inset: 65px 0 15px; display: grid; place-items: center; pointer-events: none; font-size: 13px; color: var(--terminal-muted); }
 .eterx-terminal-empty button { pointer-events: auto; padding: 8px 14px; border-radius: 8px; background: var(--terminal-tab); }
-.eterx-terminal-error { padding: 4px 14px; color: var(--terminal-error); font-size: 12px; }
+.eterx-terminal-error { padding: 4px 14px; color: var(--terminal-error); font-size: 12px; flex-shrink: 0; overflow-wrap: anywhere; }
 
 /* Reuse the live terminal surface when changing placement; only geometry
    changes, so the shell, scrollback, tabs and current command stay intact. */

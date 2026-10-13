@@ -4,12 +4,14 @@ import { executionPolicyForTools } from './execution-operating-policy';
 import { getRuntimeWorkspaceRoot } from './workspace/path_resolver';
 import { getCodingMode } from '../code/coding-modes';
 import { WORK_NOTE_POLICY } from './work-note';
+import { FINAL_ANSWER_POLICY } from './response-format';
 import { SOURCE_READING_POLICY } from './source-read-policy';
 import { WORKSPACE_EDIT_POLICY } from './workspace-edit-contract';
 
 export const ETERX_CODE_AGENT_PROFILE = 'eterx-code';
 
 type CodingRootPromptOptions = {
+  cacheable?: boolean;
   context: ProjectContext;
   userNameText: string;
   dateText: string;
@@ -105,30 +107,17 @@ ${support}
 <communication>
 - ${WORK_NOTE_POLICY}
 - The harness derives action labels/icons and renders tool results. Do not manufacture UI fields, duplicate work notes, or narrate internal plan bookkeeping.
-- Adapt to the user's intent, audience, and requested depth. These principles guide judgment, not a template; requested and specialist deliverable formats take precedence.
-- Answer the current request using history for references, constraints, and evidence. Do not present previous work as newly completed. Interpret questions, examples, and corrections by intent.
-- Lead with the answer or useful result, then explain what the user needs to understand or use it. Prefer connected paragraphs in plain language, with enough detail and no padding.
-- Use bullets for useful parallel points and numbering when order matters. Keep connected reasoning in prose; avoid unnecessary nesting.
-- Use short sentence-case headings only for substantial separate topics; H2/H3 usually suffices. Do not force an opening title, section sequence, recap, or report template.
-- Use tables for useful shared-attribute comparisons or when requested. Keep cells concise; explanations, procedures, and ordinary change summaries belong in prose or lists.
-- Use diagrams when they clarify relationships or flow. Mermaid needs a mermaid-tagged fence, valid syntax, quoted complex labels, and readable layout. Avoid redundant tables or prose.
-- Use restrained emphasis, inline code for literals, language-tagged fences, and blank lines around Markdown blocks. Do not fence an ordinary answer.
-- Keep replies professional: no emojis or decorative icons unless explicitly requested or quoted. Use plain words for status.
-- Ground claims in evidence for the current request. Distinguish findings from assumptions; mention what changed, verification, skipped checks, and limitations when relevant. Never invent completion or default to a canned 'done' reply.
-- Use descriptive links beside claims, balanced $...$ inline math, and $$ on separate lines for display math. Escape literal currency dollars; do not rely on renderer repairs.
-- Link a known local deliverable once with a descriptive filename using [filename](#eterx-local-file:<URL-encoded-absolute-path>); do not expose raw absolute paths or wrap them in code.
-- Never invent sandbox:/mnt/data links, download URLs, or web addresses for local files. If the output path is unknown, say so instead of fabricating a link.
-- Reuse the current host's exact path returned by tools or successful writes. Label files and folders by name; preserve folder destinations' trailing separator before encoding. Do not guess Desktop paths or turn relative files into web links. Websites use complete http/https URLs. A link alone is not evidence that its target was opened or validated.
-- End when the answer is complete. Add a next action only when useful; avoid filler and generic closing offers.
+
+${FINAL_ANSWER_POLICY}
 </communication>
 
 <runtime>
-Date: ${dateText}
+${options.cacheable ? 'Current date, time, workspace and observations are supplied with the active request and runtime context.' : `Date: ${dateText}
 Time: ${timeText}
 Timezone: ${timezoneText}
 ISO: ${isoDate}
 Workspace: ${workspacePath}
-Uploaded files: ${uploadedFiles}
+Uploaded files: ${uploadedFiles}`}
 ${userNameText}${directMainAgentMode}${preferencesContext}${errorContext}
 ${dynamicContext ? `\nUNTRUSTED RUNTIME CONTEXT\n${dynamicContext}\nEND UNTRUSTED RUNTIME CONTEXT` : ''}
 </runtime>`.trim();

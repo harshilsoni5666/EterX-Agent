@@ -1,0 +1,293 @@
+/* One review palette for inline edits, turn changes, split review and code.
+   Opaque line fills keep contrast stable inside cards, popovers and panels. */
+:root {
+  --code-bg: #111111;
+  --code-fg: #F0F0F0;
+  --code-header: #202020;
+  --code-border: #343434;
+  --code-muted: #A0A0A0;
+  --code-line-number: #929292;
+  --code-fold: #2D2D2D;
+  --code-fold-hover: #363636;
+  --diff-added: #00D26A;
+  --diff-removed: #FF514D;
+  --diff-added-bg: #1B301E;
+  --diff-removed-bg: #3B1D1B;
+  --diff-added-gutter: #122518;
+  --diff-removed-gutter: #301513;
+  --diff-added-word: #286D3880;
+  --diff-removed-word: #AF383C70;
+  --syntax-comment: #929AA6;
+  --syntax-string: #9AE66E;
+  --syntax-number: #78C8FF;
+  --syntax-type: #FFD178;
+  --syntax-keyword: #FF6B80;
+  --syntax-declaration: #E7D8FF;
+  --syntax-function: #C792FF;
+  --syntax-variable: #FFB454;
+  --syntax-property: #52DAFF;
+}
+
+:root[data-theme="light"] {
+  --code-bg: #FFFFFF;
+  --code-fg: #24292F;
+  --code-header: #F5F5F5;
+  --code-border: #DEDEDE;
+  --code-muted: #666666;
+  --code-line-number: #69727E;
+  --code-fold: #EEEEEE;
+  --code-fold-hover: #E4E4E4;
+  --diff-added: #087536;
+  --diff-removed: #CB302B;
+  --diff-added-bg: #E4F4E6;
+  --diff-removed-bg: #FCE8E6;
+  --diff-added-gutter: #CDEACF;
+  --diff-removed-gutter: #F7D4D0;
+  --diff-added-word: #A8DDB2;
+  --diff-removed-word: #F5B9B3;
+  --syntax-comment: #68717E;
+  --syntax-string: #187238;
+  --syntax-number: #075DB3;
+  --syntax-type: #925300;
+  --syntax-keyword: #C42B49;
+  --syntax-declaration: #7536AF;
+  --syntax-function: #7638BF;
+  --syntax-variable: #914B12;
+  --syntax-property: #006C91;
+}
+
+/* Keep the surrounding UI neutral so code and changes carry the color. */
+:root[data-theme="dark"] {
+  --background: #111111;
+  --foreground: #ECECEC;
+  --muted: #242424;
+  --muted-foreground: #A0A0A0;
+  --border: #FFFFFF14;
+  --input-bg: #2B2B2B;
+  --sidebar-bg: #101010;
+  --sidebar-shell-bg: #101010;
+  --sidebar-surface-bg: #161718;
+  --sidebar-surface-border: #FFFFFF0A;
+  --sidebar-surface-shadow: none;
+  --sidebar-shell-sheen: none;
+  --sidebar-text: #D0D0D0;
+  --sidebar-muted-text: #999B9D;
+  --sidebar-strong-text: #EFEFEF;
+  --sidebar-icon: #A1A3A5;
+  --sidebar-working-text: #E5E5E5;
+  --sidebar-profile-bg: #101010;
+  --sidebar-active-bg: #2A2C2D;
+  --sidebar-active-border: transparent;
+  --sidebar-active-text: #F2F2F2;
+  --sidebar-active-shadow: none;
+  --sidebar-active-fade: #2A2C2D;
+  --sidebar-hover-bg: #222426;
+  --sidebar-hover-text: #F2F2F2;
+  --eterx-topbar-text: #A0A0A0;
+  --eterx-md-text: #E6E6E6;
+  --eterx-md-strong: #F5F5F5;
+  --eterx-md-muted: #A0A0A0;
+  --eterx-md-card: #1B1B1B;
+  --eterx-md-card-soft: #222222;
+  --eterx-md-inline-code-bg: #2D2D2D;
+}
+
+/* Preserve the Recents surface beneath its translucent gradient. */
+:root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-recents {
+  background-color: var(--sidebar-surface-bg) !important;
+}
+
+:root[data-theme="light"] {
+  --background: #FFFFFF;
+  --light-chrome: #F5F5F5;
+  --light-surface: #FAFAFA;
+  --light-hover: #EEEEEE;
+  --light-selected: #E6E6E6;
+  --light-pressed: #DDDDDD;
+  --light-ink: #252525;
+  --light-body: #363636;
+  --light-secondary: #606060;
+  --light-muted: #737373;
+  --light-line: #E4E4E4;
+  --light-line-hover: #D4D4D4;
+  --chat-activity-ink: #626262;
+  --chat-detail-ink: #737373;
+  --chat-placeholder-ink: #818181;
+  --chat-hairline: #E7E7E7;
+  --chat-card-surface: #FAFAFA;
+  --chat-card-border: #E0E0E0;
+  --chat-row-hover: #F1F1F1;
+  --foreground: #252525;
+  --muted: #F3F3F3;
+  --muted-foreground: #666666;
+  --border: #E0E0E0;
+  --input-bg: #F5F5F5;
+  --sidebar-bg: #F5F5F5;
+  --sidebar-shell-bg: #F5F5F5;
+  --sidebar-surface-bg: #F5F5F5;
+  --sidebar-surface-border: #E4E4E4;
+  --sidebar-surface-shadow: none;
+  --sidebar-shell-sheen: none;
+  --sidebar-text: #505050;
+  --sidebar-muted-text: #737373;
+  --sidebar-strong-text: #252525;
+  --sidebar-icon: #666666;
+  --sidebar-working-text: #414141;
+  --sidebar-profile-bg: #F5F5F5;
+  --sidebar-active-bg: #E6E6E6;
+  --sidebar-active-border: transparent;
+  --sidebar-active-text: #252525;
+  --sidebar-active-shadow: none;
+  --sidebar-active-fade: #E6E6E6;
+  --sidebar-hover-bg: #EEEEEE;
+  --sidebar-hover-text: #252525;
+  --eterx-topbar-text: #626262;
+  --eterx-md-text: #363636;
+  --eterx-md-strong: #252525;
+  --eterx-md-muted: #666666;
+  --eterx-md-card: #FAFAFA;
+  --eterx-md-card-soft: #F3F3F3;
+  --eterx-md-inline-code-bg: #EEEEEE;
+}
+
+/* Explicit theme scope also supersedes the earlier light workspace palette. */
+:root[data-theme] .eterx-side-workspace {
+  --ws-added: var(--diff-added);
+  --ws-removed: var(--diff-removed);
+  --ws-added-bg: var(--diff-added-bg);
+  --ws-removed-bg: var(--diff-removed-bg);
+  --ws-added-word: var(--diff-added-word);
+  --ws-removed-word: var(--diff-removed-word);
+}
+
+:root[data-theme] :is(.eterx-turn-changes-card, .eterx-turn-changes-popup, .eterx-turn-changes-panel) {
+  --change-added: var(--diff-added);
+  --change-removed: var(--diff-removed);
+  --change-surface: var(--code-header);
+  --change-hover: var(--code-fold);
+}
+
+:root[data-theme] :is(.eterx-file-change-added, .eterx-action-diff-added, .eterx-workspace-diff-added) { color: var(--diff-added) !important; }
+:root[data-theme] :is(.eterx-file-change-removed, .eterx-action-diff-removed, .eterx-workspace-diff-removed) { color: var(--diff-removed) !important; }
+.eterx-turn-change-counts, .eterx-workspace-review-totals { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+:root[data-theme] :is(.eterx-inline-diff-panel, .eterx-inline-code-panel, .eterx-review-file-card, .eterx-markdown-code-block, .eterx-turn-changes-popup) {
+  border-color: var(--code-border) !important;
+  background: var(--code-bg) !important;
+  color: var(--code-fg) !important;
+}
+
+:root[data-theme] :is(.eterx-inline-diff-header, .eterx-inline-code-header, .eterx-review-file-card-head, .eterx-turn-diff-heading, .eterx-markdown-code-actions) {
+  background: var(--code-header) !important;
+  border-color: var(--code-border) !important;
+  color: var(--code-muted) !important;
+}
+
+:root[data-theme] :is(.eterx-inline-diff-filename, .eterx-inline-code-filename, .eterx-turn-file-label > strong) {
+  color: var(--code-fg) !important;
+  font-weight: 500;
+}
+.eterx-turn-file-label.is-inline > small { opacity: 1; }
+.eterx-turn-file-label > small { color: var(--code-muted); }
+:root[data-theme] :is(.eterx-inline-diff-header, .eterx-inline-code-header) button > span + span { color: var(--code-muted) !important; }
+.eterx-turn-changes-panel .eterx-turn-change-section { border: 0; border-radius: 0; margin: 0 8px 12px; }
+.eterx-turn-changes-panel .eterx-turn-diff-heading { min-height: 42px; background: var(--code-bg) !important; }
+.eterx-turn-panel-scope { border-radius: 999px; padding: 6px 11px; background: var(--code-header); font-size: 12px; }
+.eterx-turn-changes-title { color: var(--foreground); }
+
+:root[data-theme] :is(.eterx-inline-diff-scroll, .eterx-inline-code-scroll, .eterx-review-diff-body, .eterx-turn-diff-lines, .eterx-workspace-diff-scroll, .eterx-workspace-code, .eterx-markdown-code-content) {
+  --eterx-md-code-bg: var(--code-bg);
+  background: var(--code-bg) !important;
+  color: var(--code-fg) !important;
+}
+
+.eterx-turn-diff-lines { font-size: 12.5px; line-height: 1.8; }
+.eterx-turn-changes-popup .eterx-turn-diff-lines { font-size: 12px; line-height: 1.8; }
+.eterx-turn-changes-popup .eterx-turn-diff-number { font-size: 11px; }
+.eterx-turn-changes-popup .eterx-turn-diff-number { flex-basis: 40px; padding-inline: 5px; }
+.eterx-turn-changes-popup .eterx-turn-diff-sign { flex-basis: 16px; }
+.eterx-turn-changes-popup .eterx-turn-diff-line > code { padding-left: 8px; }
+:root[data-theme] .eterx-inline-diff-line-number { width: 38px; padding-right: 6px; }
+:root[data-theme] .eterx-inline-diff-glyph { width: 16px; }
+:root[data-theme] .eterx-inline-diff-content { padding-left: 8px; }
+
+/* Counters remain plain text controls; retain their keyboard focus outline. */
+:root[data-theme] .eterx-turn-changes-card .eterx-turn-changes-title:hover,
+:root[data-theme] .eterx-action-diff-chip:hover,
+:root[data-theme] .eterx-professional-number:hover {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.eterx-turn-diff-line, .eterx-workspace-diff-row, .eterx-workspace-diff-cell, .eterx-review-diff-row { border-left: 4px solid transparent; }
+.eterx-turn-diff-line { min-height: 23px; }
+
+/* Color belongs to the gutter; source text keeps its full syntax palette. */
+:root[data-theme] :is(.eterx-turn-diff-line[data-kind="added"], .eterx-workspace-diff-row.diff-added, .eterx-workspace-diff-cell.diff-added, .eterx-inline-diff-row-added, .eterx-review-diff-row[data-kind="added"]) {
+  background: var(--diff-added-bg) !important;
+  border-left-color: var(--diff-added);
+}
+:root[data-theme] :is(.eterx-turn-diff-line[data-kind="removed"], .eterx-workspace-diff-row.diff-removed, .eterx-workspace-diff-cell.diff-removed, .eterx-inline-diff-row-removed, .eterx-review-diff-row[data-kind="removed"]) {
+  background: var(--diff-removed-bg) !important;
+  border-left-color: var(--diff-removed);
+}
+:root[data-theme] :is(.eterx-inline-diff-row-added, .eterx-inline-diff-row-removed) .eterx-inline-diff-bar { width: 4px; }
+.eterx-inline-diff-row-added .eterx-inline-diff-bar { background: var(--diff-added); }
+.eterx-inline-diff-row-removed .eterx-inline-diff-bar { background: var(--diff-removed); }
+
+:root[data-theme] :is(.eterx-turn-diff-number, .eterx-inline-diff-line-number, .eterx-workspace-line-number, .eterx-workspace-diff-row > span, .eterx-workspace-diff-cell > span, .eterx-review-diff-row > span:not(.eterx-review-diff-content)) {
+  color: var(--code-line-number) !important;
+  opacity: 1;
+  font-variant-numeric: tabular-nums;
+  border-color: transparent !important;
+}
+:root[data-theme] :is(.eterx-turn-diff-line[data-kind="added"], .eterx-inline-diff-row-added, .eterx-review-diff-row[data-kind="added"], .eterx-workspace-diff-row.diff-added, .eterx-workspace-diff-cell.diff-added) > :is(.eterx-turn-diff-number, .eterx-turn-diff-sign, .eterx-inline-diff-line-number, .eterx-inline-diff-glyph, span:not(.eterx-review-diff-content), b) {
+  color: var(--diff-added) !important;
+  background: var(--diff-added-gutter);
+}
+:root[data-theme] :is(.eterx-turn-diff-line[data-kind="removed"], .eterx-inline-diff-row-removed, .eterx-review-diff-row[data-kind="removed"], .eterx-workspace-diff-row.diff-removed, .eterx-workspace-diff-cell.diff-removed) > :is(.eterx-turn-diff-number, .eterx-turn-diff-sign, .eterx-inline-diff-line-number, .eterx-inline-diff-glyph, span:not(.eterx-review-diff-content), b) {
+  color: var(--diff-removed) !important;
+  background: var(--diff-removed-gutter);
+}
+:root[data-theme] :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-turn-diff-line > code, .eterx-workspace-diff-row > code, .eterx-workspace-diff-cell > code) { color: var(--code-fg) !important; }
+:root[data-theme] .eterx-review-code-content { color: var(--code-fg) !important; }
+.eterx-turn-diff-line > code, .eterx-workspace-diff-cell > code { padding-left: 10px; }
+.eterx-workspace-diff-row > b { text-align: center; margin-right: 10px; }
+.eterx-inline-diff-content { padding-left: 10px; }
+
+.eterx-code-word-change { color: inherit; border-radius: 3px; padding: 0; }
+.eterx-code-word-change.diff-added { background: var(--diff-added-word); }
+.eterx-code-word-change.diff-removed { background: var(--diff-removed-word); }
+
+:root[data-theme] .eterx-inline-code-line-number { color: var(--code-line-number) !important; border-color: transparent !important; }
+:root[data-theme] .eterx-inline-code-row-created { background: var(--diff-added-bg) !important; box-shadow: inset 4px 0 var(--diff-added); }
+:root[data-theme] .eterx-inline-code-row-created .eterx-inline-code-line-number { color: var(--diff-added) !important; background: var(--diff-added-gutter); border-left: 4px solid var(--diff-added); }
+
+:root[data-theme] :is(.eterx-turn-diff-gap, .eterx-inline-diff-gap, .eterx-workspace-diff-fold, .eterx-workspace-diff-context, .eterx-review-diff-gap) {
+  margin: 4px 0;
+  padding: 7px 10px;
+  min-height: 32px;
+  border: 0 !important;
+  border-radius: 8px;
+  background: var(--code-fold) !important;
+  color: var(--code-muted) !important;
+  font: 12px/1.5 var(--font-sans);
+}
+.eterx-workspace-diff-fold { width: calc(100% - 16px); margin-inline: 8px !important; }
+.eterx-workspace-diff-fold:hover { background: var(--code-fold-hover) !important; }
+.eterx-inline-diff-gap > div { color: inherit; border: 0; padding-block: 0; font-style: normal; }
+.eterx-review-diff-gap > div { display: none; }
+.eterx-review-diff-gap > span { border: 0; background: transparent; padding: 0; margin: 0; }
+
+/* Fallback previews use the same semantic hues as Shiki, Monaco and Prism. */
+:root[data-theme] body :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-review-code-content) .eterx-syntax-comment { color: var(--syntax-comment) !important; font-style: normal; }
+:root[data-theme] body :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-review-code-content) .eterx-syntax-string { color: var(--syntax-string) !important; }
+:root[data-theme] body :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-review-code-content) :is(.eterx-syntax-number, .eterx-syntax-value) { color: var(--syntax-number) !important; }
+:root[data-theme] body :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-review-code-content) .eterx-syntax-type { color: var(--syntax-type) !important; }
+:root[data-theme] body :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-review-code-content) .eterx-syntax-keyword { color: var(--syntax-keyword) !important; }
+:root[data-theme] body :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-review-code-content) .eterx-syntax-declaration { color: var(--syntax-declaration) !important; font-weight: 400; }
+:root[data-theme] body :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-review-code-content) .eterx-syntax-function { color: var(--syntax-function) !important; }
+:root[data-theme] body :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-review-code-content) .eterx-syntax-flag { color: var(--syntax-property) !important; }
+:root[data-theme] body :is(.eterx-inline-diff-content, .eterx-inline-code-content, .eterx-review-diff-content, .eterx-review-code-content) .eterx-syntax-variable { color: var(--syntax-variable) !important; }
+
+:root[data-theme] .eterx-workspace-syntax-token { color: var(--ws-code-dark, var(--code-fg)); }
+:root[data-theme="light"] .eterx-workspace-syntax-token { color: var(--ws-code-light, var(--code-fg)); }

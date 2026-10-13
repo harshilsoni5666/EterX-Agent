@@ -52,6 +52,12 @@ export const ProjectContextSchema = z.object({
   errorHistory: z.array(z.string()).optional(),
   userName: z.string().optional(),
   allowAgentSpawning: z.boolean().optional(),
+  planMode: z.boolean().optional(),
+  swarmMode: z.boolean().optional(),
+  swarmRunId: z.string().optional(),
+  agentDepth: z.number().int().min(0).max(8).optional(),
+  parentAgentId: z.string().optional(),
+  parentAgentName: z.string().optional(),
   maxSubAgents: z.number().int().min(1).max(20).optional(),
   maxRetries: z.number().int().min(0).max(5).optional(),
 });

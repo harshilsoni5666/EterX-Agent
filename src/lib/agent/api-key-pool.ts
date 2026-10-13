@@ -2,19 +2,10 @@
  * Smart API Key Pool — Collision-Free Key Assignment with Auto-Failover
  * 
  * This is the brain of parallel agent execution. It solves:
- * 1. NO COLLISIONS: Each chat/agent gets a key that nobody else is currently using
- * 2. AUTO-FAILOVER: If a key fails (429, 403, etc.), the system auto-swaps to an unused key
+ * 1. CAPACITY: Each key has a bounded number of concurrent leases
+ * 2. AUTO-FAILOVER: Failed requests can rotate to another key with capacity
  * 3. LEASE SYSTEM: Keys are "leased" to a chatId. When the chat finishes, the key is returned to the pool
- * 4. FAIR ROTATION: Keys with fewer total uses get priority (load balancing)
- * 5. HEALTH TRACKING: Failed keys are skipped immediately without timer-based waiting
-/**
- * Smart API Key Pool — Collision-Free Key Assignment with Auto-Failover
- * 
- * This is the brain of parallel agent execution. It solves:
- * 1. NO COLLISIONS: Each chat/agent gets a key that nobody else is currently using
- * 2. AUTO-FAILOVER: If a key fails (429, 403, etc.), the system auto-swaps to an unused key
- * 3. LEASE SYSTEM: Keys are "leased" to a chatId. When the chat finishes, the key is returned to the pool
- * 4. FAIR ROTATION: Keys with fewer total uses get priority (load balancing)
+ * 4. CACHE AFFINITY: Returning chats reuse a healthy key; new chats balance load
  * 5. HEALTH TRACKING: Failed keys are skipped immediately without timer-based waiting
  * 6. PARALLEL CAPACITY: With 27 keys, easily supports 4-8+ simultaneous agents
  * 
@@ -24,12 +15,15 @@
  * - keyHealth: Map<keyIndex, { failures, totalUses, lastUsed }> - per-key health
  */
 
+import { createHash } from 'crypto';
+
 export interface KeyLease {
   keyIndex: number;
   apiKey: string;
   chatId: string;
   leasedAt: number;
   purpose: 'main_agent' | 'sub_agent';
+  cacheScope?: string;
 }
 
 interface KeyHealth {
@@ -43,9 +37,17 @@ class APIKeyPool {
   private allKeys: string[] = [];
   private activeLeases: Map<string, KeyLease> = new Map(); // chatId/agentId → lease
   private keyHealth: Map<number, KeyHealth> = new Map();
+  private cacheAffinity = new Map<string, string>();
   private initialized = false;
 
   private static readonly DEFAULT_PARALLEL_LEASES_PER_KEY = 8;
+
+  private rememberCacheKey(scope: string, apiKey: string): void {
+    this.cacheAffinity.delete(scope);
+    this.cacheAffinity.set(scope, createHash('sha256').update(apiKey).digest('hex'));
+    // Retain routes across turns without retaining an unbounded chat registry.
+    while (this.cacheAffinity.size > 4096) this.cacheAffinity.delete(this.cacheAffinity.keys().next().value!);
+  }
 
   private get maxParallelLeasesPerKey(): number {
     const configured = Number.parseInt(process.env.ETERX_MAX_PARALLEL_PER_GEMINI_KEY || '', 10);
@@ -97,6 +99,10 @@ class APIKeyPool {
         .filter(key => key.startsWith('AIza') && key.length > 20),
     ));
     const allowedKeys = new Set(uniqueKeys);
+    const allowedFingerprints = new Set(uniqueKeys.map(key => createHash('sha256').update(key).digest('hex')));
+    for (const [scope, fingerprint] of this.cacheAffinity) {
+      if (!allowedFingerprints.has(fingerprint)) this.cacheAffinity.delete(scope);
+    }
 
     for (const [chatId, lease] of Array.from(this.activeLeases.entries())) {
       if (!allowedKeys.has(lease.apiKey)) {
@@ -158,8 +164,8 @@ class APIKeyPool {
    * LEASE a key for a specific chat/agent.
    * 
    * The algorithm picks the BEST available key:
-   * 1. Filter out keys that are currently leased to other chats
-   * 2. Prefer the least-loaded, least-used keys
+   * 1. Filter out keys at capacity and the key being avoided during failover
+   * 2. Reuse a healthy remembered route when it has capacity
    * 3. Sort remaining by: fewest active leases -> fewest total uses -> fewest failures -> longest since last use
    * 
    * If calling for the same chatId that already has a lease, returns the existing lease.
@@ -168,7 +174,7 @@ class APIKeyPool {
    * @param purpose - Whether this is for a main agent or sub-agent
    * @returns The leased key, or null if no keys available
    */
-  public leaseKey(chatId: string, purpose: 'main_agent' | 'sub_agent' = 'main_agent', avoidKeyIndex?: number): KeyLease | null {
+  public leaseKey(chatId: string, purpose: 'main_agent' | 'sub_agent' = 'main_agent', avoidKeyIndex?: number, cacheScope = chatId): KeyLease | null {
     this.initialize();
     // If this chatId already has a lease, return it
     const existing = this.activeLeases.get(chatId);
@@ -211,16 +217,21 @@ class APIKeyPool {
       return a.health.lastUsed - b.health.lastUsed; // Older = better
     });
 
-    const picked = candidates[0];
+    const remembered = this.cacheAffinity.get(cacheScope);
+    const preferred = remembered ? candidates.find(candidate => candidate.health.failures === 0
+      && createHash('sha256').update(this.allKeys[candidate.index]).digest('hex') === remembered) : undefined;
+    const picked = preferred || candidates[0];
     const lease: KeyLease = {
       keyIndex: picked.index,
       apiKey: this.allKeys[picked.index],
       chatId,
       leasedAt: now,
       purpose,
+      cacheScope,
     };
 
     this.activeLeases.set(chatId, lease);
+    this.rememberCacheKey(cacheScope, lease.apiKey);
     picked.health.totalUses++;
     picked.health.lastUsed = now;
 
@@ -231,10 +242,9 @@ class APIKeyPool {
 
   /**
    * Lease a user-provided key when settings explicitly supplied one.
-   * This keeps the same no-collision lease semantics as the general pool:
-   * if another active chat is using this key, the caller must wait/fallback.
+   * This respects the same per-key concurrency limit as the general pool.
    */
-  public leaseSpecificKey(chatId: string, apiKey: string, purpose: 'main_agent' | 'sub_agent' = 'main_agent'): KeyLease | null {
+  public leaseSpecificKey(chatId: string, apiKey: string, purpose: 'main_agent' | 'sub_agent' = 'main_agent', cacheScope = chatId): KeyLease | null {
     this.initialize();
 
     const key = String(apiKey || '').trim();
@@ -262,9 +272,11 @@ class APIKeyPool {
       chatId,
       leasedAt: now,
       purpose,
+      cacheScope,
     };
 
     this.activeLeases.set(chatId, lease);
+    this.rememberCacheKey(cacheScope, lease.apiKey);
     health.totalUses++;
     health.lastUsed = now;
     console.log(`[APIKeyPool] Leased runtime settings key #${keyIndex} to ${purpose} [${chatId.substring(0, 8)}...]`);
@@ -316,7 +328,7 @@ class APIKeyPool {
     if (errorType === 'server_error' || errorType === 'transient' || /timeout|timed out|deadline/i.test(errorMsg)) {
       console.warn(`[APIKeyPool] Request failed (${errorType}); rotating without a credential-health penalty.`);
       this.activeLeases.delete(chatId);
-      return this.leaseKey(chatId, currentLease.purpose, failedKeyIndex);
+      return this.leaseKey(chatId, currentLease.purpose, failedKeyIndex, currentLease.cacheScope || chatId);
     }
 
     health.failures++;
@@ -324,7 +336,7 @@ class APIKeyPool {
     console.warn(`[APIKeyPool] Key #${failedKeyIndex} failed (${errorType}); rotating immediately. All configured keys remain eligible.`);
 
     this.activeLeases.delete(chatId);
-    return this.leaseKey(chatId, currentLease.purpose, failedKeyIndex);
+    return this.leaseKey(chatId, currentLease.purpose, failedKeyIndex, currentLease.cacheScope || chatId);
   }
 
   /**
@@ -341,6 +353,7 @@ class APIKeyPool {
 
     health.failures = 0; // Reset consecutive failures on success
     health.lastUsed = Date.now();
+    this.rememberCacheKey(lease?.cacheScope || chatId, this.allKeys[keyIndex]);
     console.log(`[APIKeyPool] Key #${keyIndex} recovered and remains eligible for rotation.`);
   }
 

@@ -26,6 +26,7 @@ export interface SubAgentStrategy {
   mode: SubAgentStrategyMode;
   complexity: SubAgentStrategyComplexity;
   shouldSpawn: boolean;
+  requiresTaskDesign?: boolean;
   confidence: number;
   estimatedAgentCount: number;
   rationale: string[];
@@ -125,31 +126,6 @@ function detectComplexity(request: string): SubAgentStrategyComplexity {
   return 'simple';
 }
 
-function splitParallelTasks(request: string, specialists: SpecialistRole[], maxAgents: number): SubAgentStrategyRecommendation[] {
-  if (specialists.length > 0) {
-    return specialists.slice(0, maxAgents).map((role) => ({
-      role,
-      task: request,
-      reason: `The request matches ${role.replace(/_/g, ' ')} signals.`,
-    }));
-  }
-
-  const genericTasks = [
-    {
-      role: 'parallel_worker' as const,
-      task: request,
-      reason: 'Independent discovery can run while the main agent starts implementation.',
-    },
-    {
-      role: 'parallel_worker' as const,
-      task: request,
-      reason: 'Independent QA review reduces missed regressions.',
-    },
-  ];
-
-  return genericTasks.slice(0, maxAgents);
-}
-
 export function buildSubAgentStrategy(request: string, options?: { maxAgents?: number; forceHighRigor?: boolean }): SubAgentStrategy {
   const normalizedRequest = String(request || '').trim();
   const requestedMaxAgents = Number(options?.maxAgents);
@@ -172,7 +148,8 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
   const rationale: string[] = [];
   const guardrails = [
     'Do not spawn agents for tiny sequential tasks or tasks requiring one shared mutable edit at a time.',
-    'Keep each sub-agent task independent, scoped, and mergeable by the main agent.',
+    'Define each outcome, dependency and resource owner explicitly. Children may delegate narrower outcomes and must integrate their descendants.',
+    'A broad request is not evidence that more agents will help. Expand only for useful independent work; reused evidence and local work can be cheaper.',
     'Use status sparingly; collect only when results are needed for synthesis.',
     'The main agent remains accountable for final verification and user-facing output.',
   ];
@@ -269,25 +246,13 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
     };
   }
 
-  if (independentWork || (explicitDelegation && specialists.length > 1)) {
-    const agents = splitParallelTasks(normalizedRequest, specialists, maxAgents);
-    rationale.push('The request has independent work lanes that can be explored in parallel.');
-    if (specialists.length > 0) {
-      rationale.push(`Detected specialist lanes: ${specialists.map((role) => role.replace(/_/g, ' ')).join(', ')}.`);
-    }
+  if (independentWork || explicitDelegation) {
+    rationale.push('Delegation is worth considering, but keywords cannot identify independent deliverables or file ownership.');
+    rationale.push('Inspect the actual task and design a small frontier of distinct outcomes. Define acceptance, dependency edges, edit ownership, and why each worker helps.');
     return {
-      mode: specialists.length > 1 ? 'hybrid' : 'parallel',
-      complexity,
-      shouldSpawn: true,
-      confidence: 0.74,
-      estimatedAgentCount: agents.length,
-      rationale,
-      guardrails,
-      recommendedAgents: agents,
-      recommendedToolCall: {
-        mode: 'spawn',
-        tasks: agents.map((agent) => ({ task: agent.task, name: agent.name })),
-      },
+      mode: 'parallel', complexity, shouldSpawn: true, requiresTaskDesign: true,
+      confidence: 0.5, estimatedAgentCount: 0, rationale, guardrails,
+      recommendedAgents: [], recommendedToolCall: null,
     };
   }
 

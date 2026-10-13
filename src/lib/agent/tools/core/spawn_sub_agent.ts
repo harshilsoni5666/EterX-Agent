@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { globalSubAgentSpawner, agentMessageBus, SubAgentName, clearPendingResults, getPendingResults, hasPendingResults, pauseAgent, resumeAgent, closeAgent } from '../../roles/sub_agent';
+import { globalSubAgentSpawner, agentMessageBus, SubAgentName, clearPendingResults, getPendingResults, getRetainedResult, hasPendingResults, pauseAgent, resumeAgent, closeAgent } from '../../roles/sub_agent';
 import { interAgentMailbox } from '../../roles/inter_agent_comm';
 import { buildSubAgentStrategy, type SpecialistRole } from '../../roles/sub_agent_strategy';
 import { enforceToolCapability } from '../security/tool_policy';
 import { MODEL_PROVIDER_ORDER } from '../../model-selector-store';
 import type { MainAgentMode, MainAgentProvider } from '../../model-routing';
 import { MAX_SUB_AGENTS } from '../../sub-agent-settings';
+import { swarmCoordinator, SWARM_LIMITS, type SwarmContract } from '../../swarm-coordinator';
 import {
   assessDelegatedAgent,
   formatDelegationCollection,
@@ -19,6 +20,13 @@ const MODEL_MODE_ENUM = ['think', 'fast', ...MODEL_PROVIDER_ORDER.filter(provide
 const SUB_AGENT_TASK_SCHEMA = z.object({
   task: z.string().min(1).max(200_000).describe('Detailed task description for this sub-agent'),
   name: z.string().optional().describe('Optional agent name (auto-assigned if not provided)'),
+  key: z.string().min(1).max(100).optional().describe('Unique task key within this run, usable by dependsOn in the same batch'),
+  dependsOn: z.array(z.string()).max(64).optional().describe('Task keys or run IDs whose usable evidence must arrive before this task starts'),
+  acceptance: z.string().max(4000).optional().describe('Concrete evidence or deliverable that makes this assignment complete'),
+  rationale: z.string().max(2000).optional().describe('Why this independent outcome justifies another agent; avoid duplicating an existing task'),
+  resources: z.array(z.object({ path: z.string().min(1), access: z.enum(['read', 'write']) })).max(64).optional()
+    .describe('File or directory ownership. Overlapping writers/readers are serialized. Omission inherits the parent scope; [] permits no file writes. Paths are relative to the workspace. Declare all shared writes.'),
+  priority: z.number().int().min(0).max(10).optional().describe('Scheduling priority; waiting tasks gain priority with age'),
   mode: z.enum(MODEL_MODE_ENUM).optional()
     .describe('Optional provider mode for this worker; otherwise inherit the parent mode'),
   provider: z.enum(MODEL_PROVIDER_ENUM).optional()
@@ -31,26 +39,47 @@ const SUB_AGENT_TASK_SCHEMA = z.object({
   { message: 'provider and model must be provided together' },
 );
 
-function buildCollectionPayload(agents: any[], prefix = '') {
+function buildCollectionPayload(agents: any[], prefix = '', options: { resultOffset?: number; resultLimit?: number } = {}) {
+  const perReportLimit = Math.min(options.resultLimit || 12000, Math.max(1, Math.floor(48000 / Math.max(1, agents.length))));
   const annotatedAgents = agents.map(agent => {
     const delegationEvidence = assessDelegatedAgent(agent, true);
-    return { ...agent, collected: true, delegationEvidence };
+    const fullResult = String(agent.result || '');
+    const resultOffset = Math.min(options.resultOffset || 0, fullResult.length);
+    const result = fullResult.slice(resultOffset, resultOffset + perReportLimit);
+    const nextResultOffset = resultOffset + result.length < fullResult.length ? resultOffset + result.length : null;
+    const payloadTruncated = resultOffset > 0 || nextResultOffset !== null;
+    return { ...agent, task: String(agent.task || '').slice(0, 1200), result,
+      traceLog: Array.isArray(agent.traceLog) ? agent.traceLog.slice(-3) : [],
+      collected: delegationEvidence.collected, resultOffset, nextResultOffset,
+      resultChars: fullResult.length, payloadTruncated,
+      delegationEvidence: { ...delegationEvidence, payloadTruncated } };
   });
-  const collection = summarizeDelegationCollection(
-    annotatedAgents.map(agent => agent.delegationEvidence),
-  );
+  const collection = summarizeDelegationCollection(annotatedAgents.map(agent => agent.delegationEvidence));
+  const truncated = annotatedAgents.some(agent => agent.payloadTruncated);
   return {
-    agents: annotatedAgents,
-    collection,
+    agents: annotatedAgents, collection,
     evidenceReady: collection.evidenceReady,
-    fullyGrounded: collection.fullyGrounded,
+    fullyGrounded: collection.fullyGrounded && !truncated,
     usableResults: annotatedAgents.filter(agent => agent.delegationEvidence.evidenceReady),
-    message: [prefix, formatDelegationCollection(collection)].filter(Boolean).join(' '),
-    snapshotOnly: true,
-    shouldPoll: false,
+    message: [prefix, formatDelegationCollection(collection), truncated ? 'Some reports are excerpts. Continue collect with the exact agentId and nextResultOffset as resultOffset to read the remainder before relying on it.' : ''].filter(Boolean).join(' '),
+    snapshotOnly: true, shouldPoll: false,
     nextRecommendedAction: collection.evidenceReady
-      ? 'Synthesize the usable reports with Main work.'
-      : 'Continue Main work; workers will hand off automatically when their evidence is ready.',
+      ? 'Read the required reports, resolve uncertainties, and integrate their evidence.'
+      : 'Continue independent work or join when child evidence is needed.',
+  };
+}
+
+async function collectGraphNode(projectId: string, node: any) {
+  if (['queued', 'running', 'waiting'].includes(node.state)) {
+    return { name: node.name, agentId: node.id, task: node.task, status: node.state, progress: node.reason,
+      parentAgentId: node.parentAgentId, parentAgentName: node.parentAgentName, depth: node.depth, result: '' };
+  }
+  const retained = await getRetainedResult(projectId, node.id, false);
+  if (retained && (retained.attempt || 0) === (node.attempt || 0)) return await getRetainedResult(projectId, node.id) || retained;
+  return {
+    name: node.name, agentId: node.id, task: node.task, status: node.state,
+    result: node.reason || '', success: false,
+    parentAgentId: node.parentAgentId, parentAgentName: node.parentAgentName, depth: node.depth,
   };
 }
 
@@ -61,8 +90,8 @@ function buildCollectionPayload(agents: any[], prefix = '') {
  * The main agent continues working while sub-agents run in the background.
  * Workers hand off automatically; Main collects only when synthesis needs a retained snapshot.
  * 
- * This means the main agent is NEVER blocked waiting for sub-agents.
- * It can do its own work in parallel.
+ * Parents continue independent work, then explicitly join required children.
+ * Waiting parents release their slots and claims to prevent nested deadlocks.
  * 
  * MODES:
  * - spawn: Fire-and-forget launch. Returns immediately with agent names.
@@ -76,9 +105,11 @@ export const spawnSubAgentTool: ToolDefinition = {
 
 MODES:
 - "advise": Decide whether the current request should stay solo or use parallel agents, consensus, debate, or a specialist. Does not spawn anything.
-- "spawn": FIRE-AND-FORGET launch. Returns immediately with custom task-based names and exact run IDs. Existing workers keep running and new workers fill available concurrent slots. You MUST continue doing YOUR OWN work after spawning — do NOT wait.
+- "spawn": FIRE-AND-FORGET launch. Returns immediately with custom task-based names and exact run IDs. Existing workers keep running and new workers fill available concurrent slots. Continue independent work; use join when further progress requires child evidence.
+- "graph": Paginated dependency graph, resource ownership, queue reasons and remaining task budget.
+- "join": Wait for your children only when their evidence is needed. Your slot is released while waiting and reacquired before returning.
 - "status": Check what sub-agents are doing right now. Returns their current progress.
-- "collect": Get retained, distinct run-ID-based results from completed, failed, or cancelled sub-agents. Call this ONLY when you need their output snapshot; workers also report to Main automatically.
+- "collect": Get retained, distinct run-ID-based results from completed, failed, or cancelled sub-agents. Call this ONLY when you need their output snapshot; workers also report to their delegating parent automatically.
 - "consensus": Run a 3-agent Optimist/Skeptic/Realist panel for high-stakes analysis.
 - "debate": Run multi-round adversarial analysis for critical tradeoffs, security, financial, or strategic decisions.
 - "specialist": Run one deeply profiled specialist: security_auditor, performance_analyst, architect, qa_tester, researcher.
@@ -89,7 +120,7 @@ CRITICAL WORKFLOW:
 1. If unsure, call mode="advise" with the user request.
 2. If spawning, use independent tasks only. Launch with mode="spawn" and continue your own work.
 3. Use mode="status" sparingly; do not poll in a loop. Use agent_communicate for direct/team coordination while work continues.
-4. Workers automatically hand off to Main. Call mode="collect" when retained distinct results are needed and synthesize them with your own work.
+4. Workers automatically hand off to their parent, which owns integration. Call mode="collect" when retained distinct results are needed and synthesize them with your own work.
 5. Lifecycle is not evidence. Read collection.fullyGrounded and each agent.delegationEvidence. Never infer a finding from started/running/completed status, and never merge a pending, empty, failed, cancelled, or unavailable payload.
 
 WHEN TO SPAWN: 2+ independent parts, each worth meaningful work.
@@ -98,9 +129,13 @@ WHEN TO USE DEBATE: high-stakes choices where assumptions need challenge and reb
 WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or research tasks.`,
   category: 'core',
   inputSchema: z.object({
-    mode: z.enum(['advise', 'spawn', 'status', 'collect', 'clear', 'consensus', 'debate', 'specialist', 'pause', 'resume', 'close'])
+    mode: z.enum(['advise', 'spawn', 'graph', 'join', 'status', 'collect', 'clear', 'consensus', 'debate', 'specialist', 'pause', 'resume', 'close'])
       .describe('advise = choose the right orchestration pattern without spawning, spawn = fire-and-forget launch, status = check progress, collect = get results, clear = cleanup, consensus = 3-agent panel, debate = multi-round adversarial panel, specialist = one expert role, pause/resume/close = control an agent'),
-    tasks: z.array(SUB_AGENT_TASK_SCHEMA).max(MAX_SUB_AGENTS).optional().describe('Array of tasks for spawn, consensus, debate, or specialist mode'),
+    tasks: z.array(SUB_AGENT_TASK_SCHEMA).max(SWARM_LIMITS.maxBatch).optional().describe('Task graph frontier; concurrency is bounded independently of batch size'),
+    offset: z.number().int().min(0).optional().describe('Pagination offset for graph, status, collect, or join'),
+    limit: z.number().int().min(1).max(100).optional().describe('Maximum entries per page; default 50 for graph and 20 for reports/status'),
+    resultOffset: z.number().int().min(0).optional().describe('Character offset for reading a retained report; use with exact agentId'),
+    resultLimit: z.number().int().min(512).max(48000).optional().describe('Maximum report characters; pages share a 48000-character payload budget'),
     request: z.string().optional().describe('Original user request for advise mode. Falls back to the first task if omitted.'),
     specialistRole: z.enum(SPECIALIST_ROLES).optional().describe('Required for specialist mode.'),
     maxAgents: z.number().int().min(1).max(MAX_SUB_AGENTS).optional().describe('Maximum agents to recommend in advise mode.'),
@@ -112,6 +147,12 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     agents: z.array(z.any()),
     message: z.string(),
     collection: z.any().optional(),
+    graph: z.any().optional(),
+    total: z.number().optional(),
+    nextOffset: z.number().nullable().optional(),
+    unresolvedCount: z.number().optional(),
+    collectionScope: z.string().optional(),
+    unresolved: z.array(z.any()).optional(),
     evidenceReady: z.boolean().optional(),
     fullyGrounded: z.boolean().optional(),
     usableResults: z.array(z.any()).optional(),
@@ -125,7 +166,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
   }),
   execute: async (input: {
     mode: string,
-    tasks?: Array<{
+    tasks?: Array<SwarmContract & {
       task: string,
       name?: string,
       mode?: MainAgentMode,
@@ -138,6 +179,10 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     maxAgents?: number,
     agentName?: string,
     agentId?: string,
+    offset?: number,
+    limit?: number,
+    resultOffset?: number,
+    resultLimit?: number,
   }, context: any) => {
     if (context?.isUserProxy) {
       if (input.mode !== 'specialist') {
@@ -156,8 +201,15 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       return { mode: input.mode || 'blocked', agents: [], message: decision.reason || 'Sub-agent spawning is not allowed' };
     }
 
+    if (context?.isSubAgent && ['pause', 'resume', 'close', 'clear'].includes(input.mode)) {
+      const target = input.agentId || (input.agentName ? globalSubAgentSpawner.findActiveAgentId(context.projectId, input.agentName) : undefined);
+      if (input.mode === 'clear' || !target || !swarmCoordinator.descendants(context.subAgentId).some(node => node.id === target)) {
+        return { mode: input.mode, agents: [], message: 'Workers may control only their descendants. Ask the parent to coordinate changes to another branch.' };
+      }
+    }
+
     // Extract the UI trace callback from context (injected by gemini.ts)
-    const onTrace = context?._onTrace as ((t: any) => void) | undefined;
+    const onTrace = (context?._rootOnTrace || context?._onTrace) as ((t: any) => void) | undefined;
     const resolveActiveAgentId = (agentName: string) =>
       globalSubAgentSpawner.findActiveAgentId(context?.projectId, agentName);
 
@@ -166,7 +218,10 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     // observation mode the model swaps to (collect -> status was a common loop).
     if (input.mode === 'status' || input.mode === 'collect') {
       const now = Date.now();
-      const previousObservationAt = Number(context?._lastSubAgentObservationAt || 0);
+      const observations: Map<string, number> = context._subAgentObservations ||= new Map();
+      const revision = swarmCoordinator.snapshot(context, 0, 0).revision;
+      const observationKey = `${input.mode}:${input.agentId || input.agentName || '*'}:${input.offset || 0}:${input.resultOffset || 0}:${revision}`;
+      const previousObservationAt = observations.get(observationKey) || 0;
       if (previousObservationAt > 0 && now - previousObservationAt < 15_000) {
         return {
           mode: input.mode,
@@ -178,10 +233,32 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
           message: 'Repeated agent observation suppressed. No waiting or polling is needed; continue Main work.',
         };
       }
-      context._lastSubAgentObservationAt = now;
+      observations.set(observationKey, now);
+      if (observations.size > 64) observations.delete(observations.keys().next().value!);
     }
 
     switch (input.mode) {
+      case 'graph': {
+        const graph = swarmCoordinator.snapshot(context, input.offset || 0, input.limit || 50);
+        return { mode: 'graph', agents: graph.nodes, graph, shouldPoll: false,
+          message: 'Use dependencies, ownership and actual evidence to decide the next useful frontier. Team size is not a target.' };
+      }
+      case 'join': {
+        await globalSubAgentSpawner.joinChildren(context);
+        const graph = swarmCoordinator.snapshot(context, 0, SWARM_LIMITS.maxNodes);
+        const children = graph.nodes.filter(node => node.parentAgentId === context.subAgentId);
+        const offset = input.offset || 0, limit = input.limit || 20;
+        const page = children.slice(offset, offset + limit);
+        const results = await Promise.all(page.map(node => collectGraphNode(context.projectId, node)));
+        const unresolved = children.filter(node => ['blocked', 'failed', 'cancelled'].includes(node.state));
+        const payload = buildCollectionPayload(results, 'Direct children settled. Integrate their reports; inspect the graph for deeper branches.', input);
+        return { mode: 'join', ...payload, total: children.length,
+          collectionScope: 'Returned page of direct children',
+          fullyGrounded: payload.fullyGrounded && page.length === children.length && unresolved.length === 0,
+          nextOffset: offset + limit < children.length ? offset + limit : null,
+          unresolvedCount: unresolved.length,
+          unresolved: unresolved.slice(0, limit).map(node => ({ agentId: node.id, name: node.name, status: node.state, reason: node.reason })) };
+      }
       // === ADVISE: Decide orchestration without spawning ===
       case 'advise': {
         const request = input.request || input.tasks?.[0]?.task || '';
@@ -189,7 +266,9 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         return {
           mode: 'advise',
           agents: strategy.recommendedAgents,
-          message: strategy.shouldSpawn
+          message: strategy.requiresTaskDesign
+            ? 'Define task-specific independent outcomes before spawning. No team size or fixed role layout has been prescribed.'
+            : strategy.shouldSpawn
             ? `Recommended ${strategy.mode} orchestration with ${strategy.estimatedAgentCount} agent(s).`
             : 'Recommended direct main-agent execution.',
           strategy
@@ -201,8 +280,12 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         if (!input.tasks || input.tasks.length === 0) {
           return { mode: 'spawn', agents: [], message: 'ERROR: No tasks provided. Pass tasks array with {task, name?} objects.' };
         }
+        if (context.swarmMode && input.tasks.some(task => !task.rationale?.trim() || !task.acceptance?.trim())) {
+          return { mode: 'spawn', agents: [], message: 'Swarm Mode requires a rationale and acceptance condition for each task. Define why the independent outcome helps and what evidence will complete it.', shouldPoll: false };
+        }
 
         const taskList = input.tasks.map(t => ({
+          ...t,
           task: t.task,
           name: t.name as SubAgentName | undefined,
           mode: t.mode,
@@ -211,20 +294,24 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
           thinkingLevel: t.thinkingLevel,
         }));
 
-        const parentContext = `Main agent spawned ${ taskList.length } parallel sub-agents. Each agent works independently on its assigned task. Do NOT mark the full project as complete — you are only doing YOUR assigned part.`;
+        const parentContext = `${context.agentName || 'Main'} delegated ${taskList.length} outcomes. Integrate your own descendants and report to your parent. Original user request and restrictions:\n${context.rootUserRequest || context.workingContextRequest?.visibleText || context.conversationSummary || ''}`;
 
         // Fire-and-forget: returns immediately
-        const { agentNames, agents, notStartedTasks, message } = globalSubAgentSpawner.spawnParallelFireAndForget(
+        let launch: ReturnType<typeof globalSubAgentSpawner.spawnParallelFireAndForget>;
+        try { launch = globalSubAgentSpawner.spawnParallelFireAndForget(
           taskList,
           context,
           parentContext,
           onTrace
-        );
+        ); } catch (error) {
+          return { mode: 'spawn', agents: [], message: error instanceof Error ? error.message : 'Task graph admission failed', shouldPoll: false };
+        }
+        const { agentNames, agents, notStartedTasks, message } = launch;
 
         return {
           mode: 'spawn',
-          agents: agents.map(agent => ({ ...agent, status: 'spawning' })),
-          message: message + '\n\nIMPORTANT: Continue Main work now. Do not wait, narrate a future check, or poll status/collect. Each worker reports automatically; collect a retained snapshot only after a meaningful handoff or when final synthesis actually needs it.',
+          agents: agents.map(agent => ({ ...agent, status: swarmCoordinator.get(agent.agentId)?.state || 'queued' })),
+          message: message + '\n\nContinue independent work. Join when a dependent step needs child evidence; collect reads retained snapshots without waiting. Every parent must integrate its required branches before finishing.',
           shouldPoll: false,
           nextRecommendedAction: 'Continue Main work on independent parts of the request.',
           spawnedAgentNames: agentNames,
@@ -234,6 +321,24 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
 
       // ═══ STATUS: Check what sub-agents are doing ═══
       case 'status': {
+        const graph = swarmCoordinator.snapshot(context, 0, SWARM_LIMITS.maxNodes);
+        if (graph.total || input.agentId) {
+          const exact = input.agentId ? swarmCoordinator.get(input.agentId) : undefined;
+          const matches = input.agentId ? (exact?.projectId === context.projectId ? [exact] : [])
+            : graph.nodes.filter(node => !input.agentName || node.name.toLowerCase() === input.agentName.toLowerCase());
+          const offset = input.offset || 0, limit = input.limit || 20;
+          const agents: any[] = matches.slice(offset, offset + limit).map(node => ({
+            name: node.name, agentId: node.id, status: node.state, progress: node.reason,
+            task: node.task.slice(0, 600), parentAgentId: node.parentAgentId, parentAgentName: node.parentAgentName, depth: node.depth,
+          }));
+          if (!agents.length && input.agentId) {
+            const retained = await getRetainedResult(context.projectId, input.agentId, false);
+            if (retained) agents.push({ name: retained.name, agentId: retained.agentId, status: retained.status, task: retained.task.slice(0, 600) });
+          }
+          return { mode: 'status', agents, total: matches.length || agents.length,
+            nextOffset: offset + limit < matches.length ? offset + limit : null,
+            shouldPoll: false, message: `${agents.length} task states returned. Completion is not proof of correctness; collect the required reports.` };
+        }
         if (input.agentName) {
           const liveAgentId = input.agentId || globalSubAgentSpawner.findActiveAgentId(context?.projectId, input.agentName);
           const liveAgent = liveAgentId
@@ -287,7 +392,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         }
 
         // Check for queued results first
-        const queuedCount = hasPendingResults(context?.projectId) ? 'Usable retained reports are available for synthesis.' : '';
+        const queuedCount = hasPendingResults(context?.projectId) ? 'Uncollected reports are available; read their result usability before synthesis.' : '';
         
         const projectId = context?.projectId || '';
         const allStatuses = await agentMessageBus.readAllStatuses(projectId);
@@ -304,10 +409,13 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
           ...Array.from(statusByName.values()).map((status: any) => status.agentName || ''),
         ].filter(Boolean));
 
-        const agents = Array.from(rosterNames).map((name) => {
+        const presenceByName = new Map(teamSnapshot.map(agent => [agent.agentName.toLowerCase(), agent]));
+        const roster = Array.from(rosterNames);
+        const offset = input.offset || 0, limit = input.limit || 20;
+        const agents = roster.slice(offset, offset + limit).map((name) => {
           const key = name.toLowerCase();
           const data = statusByName.get(key);
-          const presence = teamSnapshot.find(agent => agent.agentName.toLowerCase() === key);
+          const presence = presenceByName.get(key);
           const mailbox = mailboxByName.get(key);
           return {
             name,
@@ -326,6 +434,8 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         return {
           mode: 'status',
           agents,
+          total: roster.length,
+          nextOffset: offset + limit < roster.length ? offset + limit : null,
           shouldPoll: false,
           nextRecommendedAction: 'Continue Main work; use direct communication only for a concrete coordination need.',
           message: agents.length > 0
@@ -336,121 +446,56 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
 
       // ═══ COLLECT: Get final results from completed sub-agents ═══
       case 'collect': {
-        // Collect is a snapshot, not a join barrier. Waiting for every agent
-        // made one slow or stuck sub-agent freeze Main even though the response
-        // format already supports reporting agents as still running.
-        
-        if (input.agentName) {
-          const queuedResults = getPendingResults(context?.projectId, input.agentName, input.agentId);
-          const status = await agentMessageBus.readAgentStatus(input.agentName, context?.projectId);
-          const collectionPresence = interAgentMailbox.getTeamSnapshot(context?.projectId || '')
-            .find(agent => agent.agentName.toLowerCase() === input.agentName!.toLowerCase() && (!input.agentId || !agent.agentId || agent.agentId === input.agentId));
-          const statusMatchesRun = !input.agentId || status?.agentId === input.agentId;
-          if (!status || !statusMatchesRun) {
-            if (queuedResults.length > 0) {
-              const payload = buildCollectionPayload(queuedResults.map(queuedResult => ({
-                name: queuedResult.name,
-                agentId: queuedResult.agentId,
-                subAgentChatId: queuedResult.subAgentChatId,
-                status: queuedResult.status,
-                result: queuedResult.result,
-                traceLog: [],
-                task: queuedResult.task,
-                durationMs: queuedResult.durationMs,
-                completedAt: queuedResult.completedAt,
-              })), `${input.agentName}: ${queuedResults.length} queued result(s) returned.`);
-              return {
-                mode: 'collect',
-                ...payload,
-              };
-            }
-            return { mode: 'collect', ...buildCollectionPayload([], `No data found for ${input.agentName}.`) };
-          }
-          const queuedAgents = queuedResults.map(queuedResult => ({
-            name: queuedResult.name,
-             agentId: queuedResult.agentId,
-             subAgentChatId: queuedResult.subAgentChatId,
-             status: queuedResult.status,
-             result: queuedResult.result,
-             traceLog: [],
-             task: queuedResult.task || status.task,
-             durationMs: queuedResult.durationMs,
-             completedAt: queuedResult.completedAt,
-          }));
-          const latestStatusAgent = {
-            name: input.agentName,
-            agentId: status.agentId,
-            subAgentChatId: status.subAgentChatId,
-            status: collectionPresence?.status || status.status,
-            result: status.result || 'No result yet',
-            traceLog: status.traceLog || [],
-            task: collectionPresence?.task || status.task,
-            durationMs: status.completedAt ? status.completedAt - status.startedAt : null,
-            completedAt: status.completedAt,
-          };
-          const collectedAgents = status.agentId && queuedAgents.some(agent => agent.agentId === status.agentId)
-            ? queuedAgents
-            : [...queuedAgents, latestStatusAgent];
-          return {
-            mode: 'collect',
-            ...buildCollectionPayload(collectedAgents, `${input.agentName}: ${collectedAgents.length} distinct run record(s); latest status ${collectionPresence?.status || status.status}.`),
-          };
+        // Select before reading/marking reports. A branch or page cannot consume
+        // a sibling's unread evidence, and exact IDs survive display-name reuse.
+        const projectId = context.projectId;
+        const graph = swarmCoordinator.snapshot(context, 0, SWARM_LIMITS.maxNodes);
+        const offset = input.offset || 0, limit = input.limit || 20;
+        let records: any[];
+        let total: number;
+        if (input.agentId) {
+          const node = swarmCoordinator.get(input.agentId);
+          const record = node?.projectId === projectId ? await collectGraphNode(projectId, node)
+            : await getRetainedResult(projectId, input.agentId);
+          records = record ? [record] : [];
+          total = records.length;
+        } else if (graph.total) {
+          const matches = graph.nodes.filter(node => !input.agentName || node.name.toLowerCase() === input.agentName.toLowerCase());
+          total = matches.length;
+          records = await Promise.all(matches.slice(offset, offset + limit).map(node => collectGraphNode(projectId, node)));
+        } else {
+          // Compatibility/restart fallback: exact-ID archives remain available,
+          // while name-based discovery uses the last saved status per name.
+          const retained = getPendingResults(projectId, input.agentName, undefined, { markCollected: false });
+          const statuses = input.agentName
+            ? [await agentMessageBus.readAgentStatus(input.agentName, projectId)].filter(Boolean)
+            : Object.values(await agentMessageBus.readAllStatuses(projectId));
+          const ids = new Set(retained.map(record => record.agentId));
+          const candidates: any[] = [...retained, ...statuses.filter((status: any) => !ids.has(status.agentId))];
+          total = candidates.length;
+          records = await Promise.all(candidates.slice(offset, offset + limit).map(async record =>
+            record.agentId ? await getRetainedResult(projectId, record.agentId) || { ...record, name: record.agentName || record.name }
+              : { ...record, name: record.agentName || record.name }));
         }
-
-        // Collect ALL results — from both queue and disk
-        const queuedResults = getPendingResults(context?.projectId);
-        const agents: any[] = queuedResults.map(queued => ({
-          name: queued.name,
-          agentId: queued.agentId,
-          subAgentChatId: queued.subAgentChatId,
-          status: queued.status,
-          result: queued.result,
-          traceLog: [],
-          task: queued.task,
-          durationMs: queued.durationMs,
-          completedAt: queued.completedAt,
-        }));
-        const queuedAgentIds = new Set(queuedResults.map(result => result.agentId));
-        const queuedLegacyNames = new Set(queuedResults.map(result => result.name.toLowerCase()));
-        const allStatuses = await agentMessageBus.readAllStatuses(context?.projectId);
-        for (const [name, data] of Object.entries(allStatuses) as Array<[string, any]>) {
-          const displayName = data.agentName || name;
-          if ((data.agentId && queuedAgentIds.has(data.agentId)) || (!data.agentId && queuedLegacyNames.has(String(displayName).toLowerCase()))) {
-            continue;
-          }
-          agents.push({
-            name: displayName,
-            agentId: data.agentId,
-            subAgentChatId: data.subAgentChatId,
-            status: data.status,
-            result: data.result || 'No result yet',
-            traceLog: data.traceLog || [],
-            task: data.task,
-            durationMs: data.startedAt
-              ? Math.max(0, Number(data.completedAt || Date.now()) - Number(data.startedAt))
-              : 0,
-            completedAt: data.completedAt,
-          });
-        }
-
-        const payload = buildCollectionPayload(
-          agents,
-          `Collected from ${agents.length} delegated agent${agents.length === 1 ? '' : 's'}.`,
-        );
-
-        return {
-          mode: 'collect',
-          ...payload,
-          // Compatibility alias, now restricted to semantically usable payloads.
-          completedResults: payload.usableResults,
-        };
+        const nextOffset = !input.agentId && offset + limit < total ? offset + limit : null;
+        const payload = buildCollectionPayload(records, `${records.length} of ${total} matching task records returned.`, input);
+        return { mode: 'collect', ...payload, total, nextOffset,
+          collectionScope: input.agentId ? 'Exact task ID' : graph.total ? 'Returned page of this run' : 'Returned page of retained history',
+          fullyGrounded: payload.fullyGrounded && records.length === total,
+          completedResults: payload.usableResults };
       }
 
       // ═══ CLEAR: Clean up agent files ═══
       case 'clear': {
-        await agentMessageBus.clearAll(context?.projectId);
-        if (context?.projectId) await interAgentMailbox.clearProject(context.projectId);
-        clearPendingResults(context?.projectId);
+        if (globalSubAgentSpawner.getBackgroundCount(context?.projectId)) return { mode: 'clear', agents: [], message: 'Active tasks still own their reports and mailboxes. Finish or close them before clearing retained data.' };
+        let release: () => void;
+        try { release = swarmCoordinator.beginResultCleanup(context.projectId); }
+        catch (error) { return { mode: 'clear', agents: [], message: error instanceof Error ? error.message : 'Task data is currently in use.' }; }
+        try {
+          await agentMessageBus.clearAll(context.projectId);
+          await interAgentMailbox.clearProject(context.projectId);
+          clearPendingResults(context.projectId);
+        } finally { release(); }
         return { mode: 'clear', agents: [], message: 'All sub-agent data cleared.' };
       }
 
@@ -500,7 +545,8 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
             round: round.round,
             name: result.agent,
             task: `Debate round ${round.round}: ${input.tasks![0].task}`,
-            status: 'completed',
+            status: result.success ? 'completed' : 'failed',
+            success: result.success,
             result: result.result,
           }))));
         return {

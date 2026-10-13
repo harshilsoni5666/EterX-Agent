@@ -32,13 +32,13 @@ const PROVIDER_ROOT_SUFFIX: Partial<Record<MainAgentProvider, string>> = {
   deepinfra: '/v1/openai',
   huggingface: '/v1',
   nvidia: '/v1',
-  novita: '/openai',
+  novita: '/openai/v1',
   qwen: '/compatible-mode/v1',
   mimo: '/v1',
   tokenhub: '/v1',
   zai: '/api/paas/v4',
   kimi: '/v1',
-  stepfun: '/step_plan/v1',
+  stepfun: '/v1',
   minimax: '/v1',
   ollamacloud: '/v1',
   arcee: '/api/v1',
@@ -68,6 +68,8 @@ export function normalizeProviderBaseURL(provider: MainAgentProvider, value: unk
     // Accept a full OpenAI endpoint in settings without causing the SDK to
     // request `/chat/completions/chat/completions` or `/models/models`.
     pathname = pathname.replace(/\/(?:chat\/completions|completions|responses|messages|models)$/i, '');
+    // Repair the historical Novita preset and saved copies of that preset.
+    if (provider === 'novita' && url.hostname === 'api.novita.ai' && pathname === '/openai') pathname = '/openai/v1';
 
     if (LOCAL_OPENAI_PROVIDERS.has(provider)) {
       // Ollama's native API uses `/api/tags`; its OpenAI-compatible API uses
@@ -244,7 +246,7 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
   novita: {
     label: 'Novita AI',
     compactLabel: 'Novita',
-    baseURL: envOr('novita', 'NOVITA_BASE_URL', 'https://api.novita.ai/openai'),
+    baseURL: envOr('novita', 'NOVITA_BASE_URL', 'https://api.novita.ai/openai/v1'),
     visionModelPattern: /(vision|vl|llava|qwen.*vl)/i,
   },
   qwen: {
@@ -280,7 +282,7 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<OpenAICompatibleProvider, Provi
   stepfun: {
     label: 'StepFun Step Plan',
     compactLabel: 'StepFun',
-    baseURL: envOr('stepfun', 'STEPFUN_BASE_URL', 'https://api.stepfun.com/step_plan/v1'),
+    baseURL: envOr('stepfun', 'STEPFUN_BASE_URL', 'https://api.stepfun.com/v1'),
     visionModelPattern: /(vision|vl|omni)/i,
   },
   minimax: {

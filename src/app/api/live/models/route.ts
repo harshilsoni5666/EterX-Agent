@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { rejectCrossOrigin } from '../../agent/_shared';
 import { createLiveCatalogRequest, isAvailableCatalogItem } from '../../../../lib/live/catalog-request';
+import { readModelThinkingCapabilities } from '../../../../lib/agent/model-thinking-catalog';
+import type { ModelThinkingCapabilities } from '../../../../lib/agent/model-routing';
 import {
   getLiveModelOptions, isDeepgramLiveModel, isGeminiLiveModel,
   isOpenAIRealtimeModel, normalizeLiveProvider,
@@ -9,7 +11,7 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-type CatalogModel = { id: string; name: string; description?: string; created?: number; tag?: string };
+type CatalogModel = { id: string; name: string; description?: string; created?: number; tag?: string; thinking?: ModelThinkingCapabilities };
 
 export async function POST(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
@@ -41,7 +43,8 @@ export async function POST(req: NextRequest) {
             id: String(model.name || model.baseModelId || '').replace(/^models\//, ''),
             name: String(model.displayName || model.name || '').replace(/^models\//, ''),
             description: model.description,
-          })).filter((model: CatalogModel) => isGeminiLiveModel(model.id)));
+            thinking: readModelThinkingCapabilities(model, 'gemini'),
+          })));
         token = String(payload.nextPageToken || '');
         if (!token) break;
         if (tokens.has(token) || page === 99) throw new Error('Gemini returned an incomplete model catalog. Please retry.');
@@ -54,7 +57,8 @@ export async function POST(req: NextRequest) {
       if (!Array.isArray(payload?.data)) throw new Error(`${provider.label} returned an invalid model catalog.`);
       models = payload.data.filter((model: any) => isAvailableCatalogItem(model)
         && (provider.provider === 'openai' ? isOpenAIRealtimeModel(model.id) : /^grok-voice(?:-|$)/i.test(String(model.id))))
-        .map((model: any) => ({ id: String(model.id).trim(), name: String(model.display_name || model.name || model.id), created: Number(model.created) || 0 }));
+        .map((model: any) => ({ id: String(model.id).trim(), name: String(model.display_name || model.name || model.id), created: Number(model.created) || 0,
+          thinking: readModelThinkingCapabilities(model, provider.provider === 'openai' ? 'openai' : 'grok') }));
       models.sort((a, b) => (b.created || 0) - (a.created || 0) || b.id.localeCompare(a.id, undefined, { numeric: true }));
       // xAI's general model directory can omit its separately served voice API.
       // Label the documented transport catalog honestly instead of claiming discovery.

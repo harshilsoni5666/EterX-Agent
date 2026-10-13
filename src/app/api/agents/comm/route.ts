@@ -242,18 +242,27 @@ export async function GET(request: NextRequest) {
         ...summaries.map(summary => summary.agentName),
         ...Array.from(diskStatusByName.values()).map(status => status?.agentName).filter(Boolean),
       ]);
+      const presenceByName = new Map(team.map(agent => [agent.agentName.toLowerCase(), agent]));
       const agents = Array.from(rosterNames).map(agentName => {
-        const presence = team.find(agent => agent.agentName.toLowerCase() === agentName.toLowerCase());
+        const presence = presenceByName.get(agentName.toLowerCase());
         const mailbox = mailboxByName.get(agentName.toLowerCase());
         const diskStatus = diskStatusByName.get(agentName.toLowerCase());
+        const hasCurrentResult = diskStatus?.status === 'completed' &&
+          (!presence?.agentId || presence.agentId === diskStatus?.agentId) &&
+          (!presence || presence.status === 'completed' && Number(diskStatus?.updatedAt || diskStatus?.completedAt || 0) >= Number(presence.updatedAt || 0));
         return {
           agentName,
           agentId: presence?.agentId || diskStatus?.agentId,
           subAgentChatId: presence?.subAgentChatId || diskStatus?.subAgentChatId,
+          parentAgentId: presence?.parentAgentId || diskStatus?.parentAgentId,
+          parentAgentName: presence?.parentAgentName || diskStatus?.parentAgentName,
+          depth: presence?.depth ?? diskStatus?.depth,
           role: presence?.role || (agentName.toLowerCase() === 'main' ? 'main' : 'sub_agent'),
           status: presence?.status || diskStatus?.status || 'registered',
           task: presence?.task || diskStatus?.task,
           progress: presence?.progress || diskStatus?.progress,
+          result: hasCurrentResult ? diskStatus?.result : undefined,
+          completedAt: hasCurrentResult ? diskStatus?.completedAt : undefined,
           ownerChatId: presence?.ownerChatId || diskStatus?.ownerChatId,
           runId: presence?.runId || diskStatus?.runId,
           turnId: presence?.turnId || diskStatus?.turnId,

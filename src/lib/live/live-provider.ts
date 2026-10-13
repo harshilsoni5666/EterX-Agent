@@ -214,7 +214,7 @@ export const normalizeGeminiLiveModelName = (value: unknown): string => {
 export const isGeminiLiveModel = (value: unknown): boolean => {
   const model = String(value || '').trim().toLowerCase();
   if (!model || model.includes('translate') || model.includes('robotics')) return false;
-  return model.includes('native-audio') || model.includes('flash-live') || model.includes('live-preview');
+  return model.includes('native-audio') || /(?:^|-)live(?:-|$)/.test(model);
 };
 
 /** OpenAI exposes realtime snapshots through /v1/models in addition to the

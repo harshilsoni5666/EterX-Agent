@@ -1,5 +1,6 @@
 import type { ToolDefinition } from '../../schemas';
 import { isConfiguredToolAllowed } from '../../builtin-agent-tool-policy';
+import { swarmCoordinator, SWARM_LIMITS } from '../../swarm-coordinator';
 
 export type ToolCapabilityDecision = {
   allowed: boolean;
@@ -79,6 +80,16 @@ export function enforceToolCapability(
   _args: any,
   context?: any,
 ): ToolCapabilityDecision {
+  if (toolName === 'spawn_sub_agent' && ['spawn', 'consensus', 'debate', 'specialist'].includes(String(_args?.mode || ''))) {
+    if (context?.disableSubAgents === true || context?.allowAgentSpawning !== true || Number(context?.agentDepth || 0) >= SWARM_LIMITS.maxDepth) {
+      return { allowed: false, reason: 'Delegation is disabled or this branch reached its depth limit. Complete the work locally.', capability: 'agent.spawn' };
+    }
+  }
+  if (toolName === 'workspace_edit_file') {
+    const targets = [_args?.filename, ...(_args?.files || []).map((file: any) => file.filename || _args?.filename)].filter((value): value is string => typeof value === 'string');
+    const conflict = swarmCoordinator.writeConflict(context || {}, targets);
+    if (conflict) return { allowed: false, reason: conflict, capability: 'filesystem.write' };
+  }
   if (!isConfiguredToolAllowed(toolName, context)) {
     return {
       allowed: false,

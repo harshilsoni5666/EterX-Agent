@@ -1,7 +1,8 @@
 import type OpenAI from 'openai';
 import type { MainAgentProvider } from './model-routing';
-import { isOpenAIReasoningModel } from './model-routing';
-import { withOpenAICacheFallback } from './provider-prompt-cache';
+import { applyOpenAIResponsesCachePolicy, withOpenAICacheFallback } from './provider-prompt-cache';
+import { getProviderProtocol } from './provider-protocol';
+import { streamMessagesBridge, streamGenerateContentBridge } from './provider-native-bridge';
 
 const toResponsesTools = (tools: any[] = []) => tools.map(tool => ({
   type: 'function',
@@ -76,7 +77,7 @@ function responsesRequest(params: Record<string, any>, provider: MainAgentProvid
   for (const field of ['parallel_tool_calls', 'temperature', 'top_p', 'service_tier', 'user', 'metadata', 'prompt_cache_key', 'prompt_cache_retention']) {
     if (params[field] !== undefined) body[field] = params[field];
   }
-  if (provider === 'openai') {
+  if (provider === 'openai' || (provider === 'opencode' && /^gpt-/i.test(params.model))) {
     // Tool continuations need the complete reasoning items even when account
     // policy disables storage. A reasoning summary cannot replace them.
     body.store = false;
@@ -89,6 +90,7 @@ async function* streamProviderResponses(
   client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal,
 ): AsyncGenerator<any> {
   const body = responsesRequest(params, provider);
+  if (provider === 'openai') applyOpenAIResponsesCachePolicy(body, params.messages || []);
   const send = (request: Record<string, any>) => (client.responses.create as any)(request, signal ? { signal } : undefined);
   const events: any = await (provider === 'openai' ? withOpenAICacheFallback(body, send) : send(body));
   type Call = { index: number; id: string; name: string; arguments: string; emitted: boolean };
@@ -184,42 +186,20 @@ async function* streamCompatibleChat(
 ): AsyncGenerator<any> {
   const body: Record<string, any> = { ...params, stream: true };
   // Responses metadata can remain in a checkpoint after switching models.
-  body.messages = (params.messages || []).map(({ responses_output: _output, ...message }: any) => message);
+  body.messages = (params.messages || []).map(({ responses_output: _output, anthropic_content: _anthropic, gemini_content: _gemini, ...message }: any) => message);
+  if (provider === 'minimax') body.reasoning_split = true;
   const send = (request: Record<string, any>) => client.chat.completions.create(request as any, signal ? { signal } : undefined) as any;
-  let stream: AsyncIterable<any>;
-  for (;;) {
-    try {
-      stream = await (provider === 'openai' ? withOpenAICacheFallback(body, send) : send(body));
-      break;
-    } catch (error: any) {
-      const status = Number(error?.status || error?.statusCode || 0);
-      const message = String(error?.message || error?.error?.message || '');
-      if (status !== 400 && status !== 422) throw error;
-      if (body.tools?.length && /(?:\/v1\/responses|responses api)/i.test(message)
-        && /(?:not supported|unsupported|only supported|use .*responses)/i.test(message)) {
-        // Recover an explicit endpoint rejection before any output or tool
-        // execution, preserving the selected model and reasoning effort.
-        yield* streamProviderResponses(client, provider, params, signal);
-        return;
-      }
-      const field = String(error?.param || error?.error?.param || '');
-      const rejectedHint = ['stream_options', 'parallel_tool_calls'].find(name =>
-        body[name] !== undefined && (field === name || field.startsWith(`${name}.`) || message.includes(name))
-        && /(?:not supported|unsupported|unknown|unrecognized|not allowed|extra inputs|unexpected)/i.test(message));
-      if (!rejectedHint) throw error;
-      // These hints don't remove tools or change the user's thinking level.
-      delete body[rejectedHint];
-    }
-  }
+  const stream: AsyncIterable<any> = await (provider === 'openai' ? withOpenAICacheFallback(body, send) : send(body));
   yield* stream;
 }
 
 export function createProviderChatStream(
-  client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal,
+  client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal, capabilities: string[] = [],
 ): AsyncIterable<any> {
-  const reasoningModel = isOpenAIReasoningModel(String(params.model || '')) && !/gpt-oss/i.test(String(params.model || ''));
-  if (provider === 'perplexity' || (provider === 'openai' && (reasoningModel || /codex/i.test(String(params.model || ''))))) {
-    return streamProviderResponses(client, provider, params, signal);
+  switch (getProviderProtocol(provider, String(params.model || ''), capabilities)) {
+    case 'responses': return streamProviderResponses(client, provider, params, signal);
+    case 'messages': return streamMessagesBridge(client, params, signal);
+    case 'generateContent': return streamGenerateContentBridge(client, params, signal);
+    default: return streamCompatibleChat(client, provider, params, signal);
   }
-  return streamCompatibleChat(client, provider, params, signal);
 }

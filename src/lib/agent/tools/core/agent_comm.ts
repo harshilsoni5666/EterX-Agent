@@ -3,6 +3,10 @@ import { ToolDefinition } from '../../schemas';
 import { interAgentMailbox, MessageType } from '../../roles/inter_agent_comm';
 import { agentMessageBus } from '../../roles/sub_agent';
 
+// Bounded, per-run message admission. Repeated progress must not turn a large
+// task graph into quadratic broadcast traffic or consume every context window.
+const sendWindows = new Map<string, { since: number; count: number; recent: Map<string, number> }>();
+
 const formatAgentMessage = (m: any) => ({
   id: m.id,
   from: m.from,
@@ -102,6 +106,7 @@ ACTIONS:
 - "broadcast": Send a discovery/alert to ALL agents at once
 - "ask_main": Ask Main for clarification, approval, or a merge decision
 - "handoff_main": Send completed partial work, blockers, or evidence to Main
+- "ask_parent", "handoff_parent": Route a question or evidence to the agent that owns your assignment
 - "status": See the active/planned team roster, each agent's task/progress, and mailbox status
 - "history": Read recent visible inter-agent messages without marking them read
 - "thread": Read a message thread by ID
@@ -126,11 +131,11 @@ WHEN TO USE:
 - Before starting work, check if other agents left you messages → check`,
   category: 'core',
   inputSchema: z.object({
-    action: z.enum(['send', 'schedule', 'check', 'reply', 'broadcast', 'ask_main', 'handoff_main', 'status', 'history', 'thread', 'mark_read']).describe('What to do'),
+    action: z.enum(['send', 'schedule', 'check', 'reply', 'broadcast', 'ask_main', 'handoff_main', 'ask_parent', 'handoff_parent', 'status', 'history', 'thread', 'mark_read']).describe('What to do'),
     to: z.string().optional().describe('Recipient agent name (for send/reply). Use "*" for broadcast.'),
     type: z.enum(['info_share', 'question', 'answer', 'alert', 'coordination', 'discovery', 'progress', 'handoff']).optional().describe('Message type'),
     subject: z.string().optional().describe('Short summary of the message (max 100 chars)'),
-    body: z.string().optional().describe('Full message content'),
+    body: z.string().max(16000).optional().describe('Concise evidence, decision, blocker or question. Reference artifacts for larger payloads.'),
     replyToId: z.string().optional().describe('Message ID to reply to (for reply action)'),
     from: z.string().optional().describe('Filter by sender for history/check'),
     priority: z.enum(['low', 'normal', 'high', 'critical']).optional().describe('Message priority'),
@@ -152,7 +157,24 @@ WHEN TO USE:
   outputSchema: z.any(),
   execute: async (input: any, context?: any) => {
     const projectId = context?.projectId || context?.chatId || 'default';
-    const myName = context?.agentName || context?.subAgentName || 'Main';
+    const myName = context?.communicationAgentName || context?.agentName || context?.subAgentName || 'Main';
+
+    const parentAction = input.action === 'ask_parent' || input.action === 'handoff_parent';
+    const parentTarget = context?.parentAgentName || 'Main';
+    if (['send', 'schedule', 'reply', 'broadcast', 'ask_main', 'handoff_main', 'ask_parent', 'handoff_parent'].includes(input.action)) {
+      if ((input.action === 'broadcast' || input.to === '*') && interAgentMailbox.getTeamSnapshot(projectId).length > 64 && input.priority !== 'critical') {
+        return { success: false, message: 'This team is large. Send the finding to your parent or the specific owners it affects. Reserve global broadcasts for critical team-wide changes.' };
+      }
+      const key = `${projectId}:${context?.runId || ''}:${context?.subAgentId || myName}`;
+      const now = Date.now();
+      let window = sendWindows.get(key);
+      if (!window || now - window.since >= 60_000) { window = { since: now, count: 0, recent: new Map() }; sendWindows.set(key, window); }
+      const signature = JSON.stringify([input.action, input.to, input.replyToId, input.subject, input.body]);
+      if (window.recent.has(signature)) return { success: false, duplicateSuppressed: true, message: 'This same message was already attempted in the last minute. Continue useful work or send new evidence.' };
+      if (window.count >= 60) return { success: false, message: 'Message budget reached for this minute. Consolidate updates and continue useful work.', retryAfterMs: 60_000 - (now - window.since) };
+      window.count++; window.recent.set(signature, now);
+      if (sendWindows.size > 4096) sendWindows.delete(sendWindows.keys().next().value!);
+    }
 
     try {
       switch (input.action) {
@@ -275,13 +297,14 @@ WHEN TO USE:
           };
         }
 
+        case 'ask_parent':
         case 'ask_main': {
           if (!input.subject || !input.body) {
             return { success: false, message: 'Required: subject, body' };
           }
           const msg = interAgentMailbox.send({
             from: myName,
-            to: 'Main',
+            to: parentAction ? parentTarget : 'Main',
             projectId,
             type: 'question',
             subject: input.subject.substring(0, 100),
@@ -295,17 +318,18 @@ WHEN TO USE:
           return {
             success: true,
             messageId: msg.id,
-            message: `Question sent to Main: "${input.subject}"`
+            message: `Question sent to ${parentAction ? parentTarget : 'Main'}: "${input.subject}"`
           };
         }
 
+        case 'handoff_parent':
         case 'handoff_main': {
           if (!input.subject || !input.body) {
             return { success: false, message: 'Required: subject, body' };
           }
           const msg = interAgentMailbox.send({
             from: myName,
-            to: 'Main',
+            to: parentAction ? parentTarget : 'Main',
             projectId,
             type: (input.type || 'handoff') as MessageType,
             subject: input.subject.substring(0, 100),
@@ -318,7 +342,7 @@ WHEN TO USE:
           return {
             success: true,
             messageId: msg.id,
-            message: `Handoff sent to Main: "${input.subject}"`
+            message: `Handoff sent to ${parentAction ? parentTarget : 'Main'}: "${input.subject}"`
           };
         }
 
@@ -340,15 +364,19 @@ WHEN TO USE:
             ...Array.from(diskStatusByName.values()).map((status: any) => status.agentName || ''),
           ].filter(Boolean));
 
+          const presenceByName = new Map(teamSnapshot.map(agent => [agent.agentName.toLowerCase(), agent]));
           const agents = Array.from(rosterNames).map((agentName) => {
             const key = agentName.toLowerCase();
-            const presence = teamSnapshot.find(agent => agent.agentName.toLowerCase() === key);
+            const presence = presenceByName.get(key);
             const mailbox = mailboxByName.get(key);
             const disk = diskStatusByName.get(key);
             return {
               agentName,
               agentId: presence?.agentId || disk?.agentId,
               subAgentChatId: presence?.subAgentChatId || disk?.subAgentChatId,
+              parentAgentId: presence?.parentAgentId,
+              parentAgentName: presence?.parentAgentName,
+              depth: presence?.depth,
               role: presence?.role || (key === 'main' ? 'main' : 'sub_agent'),
               status: presence?.status || disk?.status || 'registered',
               task: presence?.task || disk?.task,
@@ -363,9 +391,10 @@ WHEN TO USE:
           const runningCount = agents.filter((agent: any) => ['running', 'working', 'planned', 'paused'].includes(agent.status)).length;
           return {
             success: true,
-            agents,
-            mailboxes: summaries,
-            team: teamSnapshot,
+            agents: agents.slice(0, Math.min(100, input.limit || 20)),
+            mailboxes: summaries.slice(0, Math.min(100, input.limit || 20)),
+            team: teamSnapshot.slice(0, Math.min(100, input.limit || 20)),
+            totalAgents: agents.length,
             message: `${agents.length} agent(s) visible. ${runningCount} active/planned/paused. ${summaries.reduce((sum: number, s: any) => sum + s.unreadCount, 0)} total unread messages.`
           };
         }

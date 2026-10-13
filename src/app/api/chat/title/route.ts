@@ -3,6 +3,9 @@ import { GoogleGenAI } from '@google/genai';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { isOpenAIReasoningModel, getModelThinkingOptions, getGeminiThinkingConfig, type MainAgentProvider } from '../../../../lib/agent/model-routing';
+import { readStoredModelMetadata } from '../../../../lib/agent/stored-model-metadata';
+import { createProviderChatStream } from '../../../../lib/agent/provider-stream-adapter';
+import { applyCompatibleThinkingParameters, assertSuccessfulCompatibleFinish, createCompatibleTaggedReasoningSplitter, splitCompatibleDeltaContent } from '../../../../lib/agent/provider-capabilities';
 import { getProviderBaseURL, isLocalModelProvider } from '../../../../lib/agent/provider-runtime';
 import { normalizeProviderCacheUsage } from '../../../../lib/agent/provider-prompt-cache';
 import { isConcreteModelId, isModelProvider } from '../../../../lib/agent/model-selector-store';
@@ -28,18 +31,6 @@ type RequestedTitleModel = {
 
 const STANDARD_TITLE_TOKENS = 256;
 const REASONING_TITLE_TOKENS = 4_096;
-
-const isTokenParameterCompatibilityError = (error: unknown) => {
-  const status = Number((error as any)?.status || (error as any)?.statusCode || 0);
-  const message = String((error as any)?.message || error || '');
-  return (status === 400 || status === 422 || /invalid|unsupported|unknown|unrecognized/i.test(message))
-    && /max_(?:completion_)?tokens|max output tokens/i.test(message);
-};
-
-const isLikelyReasoningModel = (provider: MainAgentProvider, modelName: string) =>
-  (provider === 'openai' && isOpenAIReasoningModel(modelName)) ||
-  getModelThinkingOptions(provider, modelName).length > 0 ||
-  /(?:^|[\/:_.-])(?:reasoner|reasoning|deepseek-r1|r1|magistral|qwq|qwen3|gpt-oss)(?:$|[\/:_.-])/i.test(modelName);
 
 const isDefaultChatTitle = (title: unknown) =>
   !String(title || '').trim() || String(title || '').trim().toLowerCase() === DEFAULT_CHAT_TITLE.toLowerCase();
@@ -88,9 +79,10 @@ async function generateTitleWithProviderOnce(
 
   if (provider === 'gemini') {
     const genAI = new GoogleGenAI({ apiKey });
-    const lowestThinkingLevel = getModelThinkingOptions('gemini', modelName)[0]?.id;
+    const metadata = readStoredModelMetadata('gemini', modelName);
+    const lowestThinkingLevel = getModelThinkingOptions('gemini', modelName, metadata.thinking)[0]?.id;
     const thinkingConfig = lowestThinkingLevel
-      ? getGeminiThinkingConfig(lowestThinkingLevel, modelName, false)
+      ? getGeminiThinkingConfig(lowestThinkingLevel, modelName, false, metadata.thinking)
       : null;
     const result = await genAI.models.generateContent({
       model: modelName,
@@ -109,7 +101,7 @@ async function generateTitleWithProviderOnce(
     return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usageMetadata) };
   }
 
-  // Other OpenAI-compatible providers: openai, openrouter, groq, mistral
+  // Use the same endpoint and reasoning contract as normal chat requests.
   const client = new OpenAI({
     apiKey,
     baseURL: getProviderBaseURL(provider),
@@ -121,69 +113,33 @@ async function generateTitleWithProviderOnce(
       }
       : undefined,
   });
-  const isReasoning = isLikelyReasoningModel(provider, modelName);
+  const metadata = readStoredModelMetadata(provider, modelName);
   const baseParams: any = {
     model: modelName,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [{ role: 'system', content: TITLE_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
+    ...(provider === 'openai' && isOpenAIReasoningModel(modelName)
+      ? { max_completion_tokens: REASONING_TITLE_TOKENS }
+      : { max_tokens: REASONING_TITLE_TOKENS }),
   };
-  if (provider === 'openai' && isOpenAIReasoningModel(modelName)) {
-    const effort = getModelThinkingOptions(provider, modelName).find(option => option.id !== 'off')?.id;
-    if (effort) baseParams.reasoning_effort = effort;
+  const lowestThinkingLevel = getModelThinkingOptions(provider, modelName, metadata.thinking)[0]?.id;
+  if (lowestThinkingLevel) {
+    applyCompatibleThinkingParameters(baseParams, provider, modelName, { level: lowestThinkingLevel, capabilities: metadata.thinking });
   }
-
-  const tokenLimit = isReasoning ? REASONING_TITLE_TOKENS : STANDARD_TITLE_TOKENS;
-  const preferredTokenField = provider === 'openai' && isOpenAIReasoningModel(modelName)
-    ? 'max_completion_tokens'
-    : 'max_tokens';
-  const alternateTokenField = preferredTokenField === 'max_tokens'
-    ? 'max_completion_tokens'
-    : 'max_tokens';
-
-  let result: any;
-  let tokenField: string | null = preferredTokenField;
-  let outputLimit = tokenLimit;
-  // Adapt only parameters explicitly rejected by the selected endpoint.
-  // Keep all compatibility attempts inside the same cancellation deadline.
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      result = await client.chat.completions.create({
-        ...baseParams,
-        ...(tokenField ? { [tokenField]: outputLimit } : {}),
-      }, { signal });
-      if (!cleanGeneratedTitle(result.choices?.[0]?.message) &&
-          result.choices?.[0]?.finish_reason === 'length' && outputLimit < 8_192 && tokenField) {
-        outputLimit = 8_192;
-        continue;
-      }
-      break;
-    } catch (error) {
-      if (signal.aborted) throw error;
-      const message = String((error as any)?.message || error || '');
-      if (baseParams.reasoning_effort && /reasoning_effort/i.test(message) &&
-          /unsupported|invalid|not supported|unknown|not permitted/i.test(message)) {
-        delete baseParams.reasoning_effort;
-        continue;
-      }
-      if (isTokenParameterCompatibilityError(error) && tokenField) {
-        tokenField = tokenField === preferredTokenField ? alternateTokenField : null;
-        continue;
-      }
-      if (provider === 'openai' && /responses|not a chat model|not supported.*chat.*completions/i.test(message)) {
-        const response = await client.responses.create({
-          model: modelName,
-          input: prompt,
-          max_output_tokens: REASONING_TITLE_TOKENS,
-        }, { signal });
-        const title = cleanGeneratedTitle(response);
-        if (!title) throw new Error('Model returned an invalid chat title');
-        return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, response.usage) };
-      }
-      throw error;
-    }
+  let titleText = '';
+  let usage: any;
+  let finishReason: unknown;
+  const taggedReasoning = createCompatibleTaggedReasoningSplitter();
+  for await (const chunk of createProviderChatStream(client, provider, baseParams, signal, metadata.wire)) {
+    const choice = chunk?.choices?.[0];
+    titleText += splitCompatibleDeltaContent(choice?.delta?.content, taggedReasoning).text;
+    if (chunk.usage) usage = chunk.usage;
+    finishReason = choice?.finish_reason ?? finishReason;
   }
-  const title = cleanGeneratedTitle(result?.choices?.[0]?.message);
+  titleText += taggedReasoning.flush().text;
+  assertSuccessfulCompatibleFinish(finishReason, false);
+  const title = cleanGeneratedTitle(titleText);
   if (!title) throw new Error('Model returned an invalid chat title');
-  return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, (result as any).usage) };
+  return { title, provider, model: modelName, usage: normalizeProviderCacheUsage(provider, usage) };
 }
 
 async function generateTitleWithProvider(

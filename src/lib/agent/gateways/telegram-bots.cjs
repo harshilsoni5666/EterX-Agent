@@ -37,7 +37,7 @@ function normalizeBots(value) {
       agentType: ['general', 'coding-lite', 'coding-heavy'].includes(raw.agentType) || /^custom:[a-zA-Z0-9_-]{1,100}$/.test(String(raw.agentType)) ? raw.agentType : 'general',
       workspacePath: String(raw.workspacePath || '').slice(0, 2000),
       allowBrowserControl: raw.allowBrowserControl !== false, allowHostControl: raw.allowHostControl === true,
-      thinkingLevel: ['low', 'medium', 'high'].includes(raw.thinkingLevel) ? raw.thinkingLevel : 'low',
+      thinkingLevel: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(raw.thinkingLevel) ? raw.thinkingLevel : 'low',
     }];
   });
 }

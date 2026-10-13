@@ -1,4 +1,7 @@
 import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 /** @type {import('next').NextConfig} */
 const repositoryRoot = path.resolve(process.cwd());
@@ -32,6 +35,12 @@ const nextConfig = {
     config.resolve.alias = {
       ...config.resolve.alias,
       'undici': false,
+      // Keep xterm's prebuilt CommonJS module boundaries. Reprocessing the
+      // flattened ESM build with Next 14's compiler can break class inheritance
+      // during terminal construction ("Super constructor null ..."). Exact
+      // aliases leave the package's stylesheet and type imports alone.
+      '@xterm/xterm$': require.resolve('@xterm/xterm/lib/xterm.js'),
+      '@xterm/addon-fit$': require.resolve('@xterm/addon-fit/lib/addon-fit.js'),
     };
     // Desktop runtime data, generated bundles, browser profiles, fixtures,
     // and logs live beside the source tree. They cannot affect the module

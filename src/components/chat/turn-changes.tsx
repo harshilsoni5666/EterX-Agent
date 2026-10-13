@@ -2,24 +2,19 @@
 
 import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, ChevronRight, ChevronsUpDown, ChevronsDownUp, FileText, FileSpreadsheet, FileImage, File, ExternalLink, X } from 'lucide-react';
+import { ChevronRight, ChevronsUpDown, ChevronsDownUp, Files, ExternalLink, X } from 'lucide-react';
 import { useFilePanelOwner } from '../../contexts/FilePanelContext';
 import { addWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { collectTurnChanges, type TurnFileChange } from '../../lib/turn-changes';
 import { workspaceChatDiffLines } from '../../lib/workspace-review-data';
-import { highlightWorkspaceCode, workspaceLanguage, type WorkspaceTokens } from '../../lib/workspace-syntax';
+import { HighlightedDiffCode, useDiffSyntax } from './diff-syntax';
 import { FileCodeCorner, SquareSplitHorizontal } from './workspace-icons';
+import { WorkspaceFileIcon } from './workspace-file-icon';
 import type { FilePanelProps } from './file-panel';
 import { LocalFileWorkspaceContext } from './local-file-link';
 
 function ChangeFileIcon({ path }: { path: string }) {
-  const extension = path.split('.').pop()?.toLowerCase() || '';
-  const Icon = /^(pdf|docx?|odt|rtf|txt|md|mdx)$/.test(extension) ? FileText
-    : /^(xlsx?|ods|csv|tsv)$/.test(extension) ? FileSpreadsheet
-    : /^(png|jpe?g|webp|gif|svg|avif|ico|bmp)$/.test(extension) ? FileImage
-    : /^(zip|7z|gz|tar|exe|dll|mp[34]|wav|webm|pptx?)$/.test(extension) ? File
-    : FileCodeCorner;
-  return <span className="eterx-change-file-icon" aria-hidden="true"><Icon size={17} strokeWidth={1.65} /></span>;
+  return <span className="eterx-change-file-icon" aria-hidden="true"><WorkspaceFileIcon path={path} size={17} /></span>;
 }
 
 function ChangeCounts({ files }: { files: FilePanelProps[] }) {
@@ -36,21 +31,15 @@ function RecordedDiff({ file, compact }: { file: FilePanelProps; compact?: boole
   const [limit, setLimit] = useState(compact ? 300 : 1200);
   const lines = useMemo(() => workspaceChatDiffLines(file, false), [file]);
   const visible = useMemo(() => lines.slice(0, limit), [lines, limit]);
-  const [syntax, setSyntax] = useState<{ lines: typeof visible; tokens: WorkspaceTokens | null } | null>(null);
-  useEffect(() => {
-    let disposed = false;
-    void highlightWorkspaceCode(visible.map(line => line.content).join('\n'), workspaceLanguage(file.filepath, file.language))
-      .then(tokens => { if (!disposed) setSyntax({ lines: visible, tokens }); });
-    return () => { disposed = true; };
-  }, [visible, file.filepath, file.language]);
+  const syntax = useDiffSyntax(visible, file.filepath, file.language);
   return <>
     {lines.length ? <div className="eterx-turn-diff-lines">
       {visible.map((line, index) => line.isGap ? <div key={index} className="eterx-turn-diff-gap">{line.skipped || 'Some'} unchanged lines omitted</div> :
         <div key={index} className="eterx-turn-diff-line" data-kind={line.type}>
-          <span className="eterx-turn-diff-number">{line.oldLine ?? ''}</span><span className="eterx-turn-diff-number">{line.newLine ?? ''}</span>
+          {!compact && <span className="eterx-turn-diff-number">{line.oldLine ?? ''}</span>}
+          <span className="eterx-turn-diff-number">{compact && line.type === 'removed' ? line.oldLine ?? '' : line.newLine ?? ''}</span>
           <span className="eterx-turn-diff-sign">{line.type === 'added' ? '+' : line.type === 'removed' ? '−' : ' '}</span>
-          <code>{(syntax?.lines === visible ? syntax.tokens?.[index] : undefined)?.map((token, tokenIndex) =>
-            <span key={tokenIndex} className="eterx-workspace-syntax-token" style={{ '--ws-code-light': token.light, '--ws-code-dark': token.dark } as React.CSSProperties}>{token.text}</span>) || line.content || ' '}</code>
+          <code><HighlightedDiffCode line={line} tokens={syntax?.get(line)} /></code>
         </div>)}
     </div> : <p className="eterx-turn-diff-notice">This file changed, but no text diff was recorded. Documents and binary files may not have a text preview.</p>}
     {lines.length > limit && <button className="eterx-turn-change-more" onClick={() => setLimit(value => value + 1200)}>Show more diff lines ({lines.length - limit} remaining)</button>}
@@ -67,10 +56,10 @@ function FileChanges({ file, compact }: { file: TurnFileChange; compact?: boolea
   </React.Fragment>)}{revisions.length > revisionLimit && <button className="eterx-turn-change-more" onClick={() => setRevisionLimit(value => value + 5)}>Show more edits ({revisions.length - revisionLimit} remaining)</button>}</>;
 }
 
-function FileLabel({ file }: { file: FilePanelProps }) {
+function FileLabel({ file, inline = false }: { file: FilePanelProps; inline?: boolean }) {
   const parts = file.filepath.replace(/\\/g, '/').split('/').filter(Boolean);
   const name = parts.pop() || file.filename;
-  return <span className="eterx-turn-file-label" aria-label={file.filepath}><strong>{name}</strong>{parts.length > 0 && <small>{parts.slice(-2).join('/')}/</small>}</span>;
+  return <span className={`eterx-turn-file-label${inline ? ' is-inline' : ''}`} aria-label={file.filepath} title={file.filepath}><strong>{name}</strong>{parts.length > 0 && <small>{inline ? file.filepath.replace(/\\/g, '/').slice(0, -name.length) : parts.slice(-2).join('/') + '/'}</small>}</span>;
 }
 
 export function TurnChangesCard({ logs, turnId }: { logs: any[]; turnId: string }) {
@@ -210,20 +199,18 @@ export function TurnChangesCard({ logs, turnId }: { logs: any[]; turnId: string 
   });
   return <section className="eterx-turn-changes-card" aria-label="Changes from this query" data-copy-exclude="true">
     <div className="eterx-turn-changes-summary">
-      <span className="eterx-turn-changes-icon"><FileCodeCorner size={20} strokeWidth={1.65} /></span>
-      <button className="eterx-turn-changes-title" onClick={() => open(files.length === 1 ? files[0].filepath : undefined)} {...(files.length === 1 ? previewEvents(files[0]) : {})}>
-        <span className="eterx-turn-changes-eyebrow">Updated in this reply</span>
-        <strong>{files.length === 1 ? files[0].filename : files.length + ' files changed'}</strong>
+      <button className="eterx-turn-changes-title" aria-expanded={expanded} aria-controls={listId} onClick={() => { dismiss(); setExpanded(value => !value); }}>
+        <strong>{files.length} {files.length === 1 ? 'file' : 'files'} changed</strong>
+        <ChangeCounts files={files} />
+        <ChevronRight size={14} aria-hidden="true" style={{ transform: expanded ? 'rotate(90deg)' : undefined }} />
       </button>
-      <ChangeCounts files={files} />
-      <button className="eterx-turn-changes-open" disabled={!owner} onClick={() => open()} aria-label="View changes"><span>View changes</span><SquareSplitHorizontal size={15} strokeWidth={1.65} /></button>
+      <button className="eterx-turn-changes-open" disabled={!owner} onClick={() => open()} aria-label="Review changes"><Files size={15} strokeWidth={1.65} /><span>Review</span></button>
     </div>
-    {files.length > 1 && <div id={listId} className="eterx-turn-changes-files eterx-scrollbar">
-      {(expanded ? files : files.slice(0, 3)).map(file => <button key={file.filepath} className="eterx-turn-changes-file" onClick={() => open(file.filepath)} {...previewEvents(file)}>
-        <ChangeFileIcon path={file.filepath} /><FileLabel file={file} /><ChangeCounts files={[file]} /><ChevronRight size={13} className="eterx-turn-file-arrow" />
+    <div id={listId} hidden={!expanded} className="eterx-turn-changes-files eterx-scrollbar">
+      {expanded && files.map(file => <button key={file.filepath} className="eterx-turn-changes-file" onClick={() => open(file.filepath)} {...previewEvents(file)}>
+        <ChangeFileIcon path={file.filepath} /><FileLabel file={file} inline />
       </button>)}
-    </div>}
-    {files.length > 3 && <button className="eterx-turn-change-more" aria-expanded={expanded} aria-controls={listId} onClick={() => { dismiss(); setExpanded(value => !value); }}>{expanded ? 'Show fewer files' : (files.length - 3) + ' more files'}<ChevronDown size={14} style={{ transform: expanded ? 'rotate(180deg)' : undefined }} /></button>}
+    </div>
     {hover && typeof document !== 'undefined' && createPortal(<div ref={popup} id={popupId} role="region" aria-label={'Recorded changes to ' + hover.file.filename} tabIndex={0} className="eterx-turn-changes-popup" style={{ left: position?.left ?? 0, top: position?.top ?? 0, width: position?.width ?? 360, maxHeight: position?.maxHeight ?? 320, visibility: position ? 'visible' : 'hidden' }} onPointerEnter={() => { cancelOpen(); keep(); }} onPointerLeave={leave} onFocus={keep} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) leave(); }}>
       <div className="eterx-turn-diff-heading"><ChangeFileIcon path={hover.file.filepath} /><FileLabel file={hover.file} /><ChangeCounts files={[hover.file]} /><button aria-label="Close changes preview" onClick={dismiss}><X size={15} /></button></div>
       <div className="eterx-turn-diff-scroll eterx-scrollbar"><FileChanges key={hover.file.filepath} file={hover.file} compact /></div>
@@ -261,7 +248,7 @@ export function WorkspaceTurnChanges({ owner, tab, isActive }: { owner: string; 
       </>}
     </div>
     <div ref={scroll} className="eterx-turn-changes-panel-scroll eterx-scrollbar">
-      {!changes?.files.length ? <div className="eterx-workspace-empty"><FileCodeCorner size={30} strokeWidth={1.5} /><h3>No query selected</h3><p>Choose “View changes” below a completed reply to see that query’s edits.</p></div> : changes.files.slice(0, visibleLimit).map(file => {
+      {!changes?.files.length ? <div className="eterx-workspace-empty"><FileCodeCorner size={30} strokeWidth={1.5} /><h3>No query selected</h3><p>Choose “Review” below a completed reply to see that query’s edits.</p></div> : changes.files.slice(0, visibleLimit).map(file => {
         const folded = collapsed.has(file.filepath);
         return <section key={file.filepath} data-change-path={file.filepath} className="eterx-turn-change-section">
           <div className="eterx-turn-diff-heading">

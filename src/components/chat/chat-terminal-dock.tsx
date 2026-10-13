@@ -5,6 +5,7 @@ import { Loader2, Plus, TerminalSquare, X } from 'lucide-react';
 import { closeTerminal, createTerminal, resizeTerminalDock, resizeTerminalWidth, selectTerminal, setTerminalOpen, streamManagedTerminal, useChatTerminals } from '../../lib/chat-terminal-store';
 import { chatTerminalTheme, terminalTitle } from '../../lib/chat-terminal-theme';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
+import { fitTerminalSurface } from '../../lib/chat-terminal-runtime';
 
 function ChatTerminalDockView({ chatId, cwd, embedded = false }: { chatId: string; cwd?: string | null; embedded?: boolean }) {
   const state = useChatTerminals(chatId);
@@ -68,7 +69,7 @@ function ChatTerminalDockView({ chatId, cwd, embedded = false }: { chatId: strin
     }
     if (shouldClose) { setTerminalOpen(chatId, false); return; }
     if (!cancelled) resizeDock(size);
-    if (host.current?.clientWidth && host.current?.clientHeight) tab?.fit.fit();
+    if (tab && host.current?.clientWidth && host.current?.clientHeight) fitTerminalSurface(tab);
   };
   const tab = state.tabs.find(item => item.id === state.activeId);
   useEffect(() => {
@@ -123,6 +124,8 @@ function ChatTerminalDockView({ chatId, cwd, embedded = false }: { chatId: strin
     let fitTimer: ReturnType<typeof setTimeout> | undefined;
     let fittedWidth = -1;
     let fittedHeight = -1;
+    let fittedPixelRatio = -1;
+    let disposed = false;
     const fit = () => {
       cancelAnimationFrame(frame);
       if (fitTimer) clearTimeout(fitTimer);
@@ -131,10 +134,11 @@ function ChatTerminalDockView({ chatId, cwd, embedded = false }: { chatId: strin
       const schedule = () => { frame = requestAnimationFrame(() => {
         const width = container.clientWidth;
         const height = container.clientHeight;
-        if (width > 0 && height > 0 && (width !== fittedWidth || height !== fittedHeight)) {
+        const pixelRatio = window.devicePixelRatio;
+        if (!disposed && width > 0 && height > 0 && (width !== fittedWidth || height !== fittedHeight || pixelRatio !== fittedPixelRatio) && fitTerminalSurface(tab)) {
           fittedWidth = width;
           fittedHeight = height;
-          tab.fit.fit();
+          fittedPixelRatio = pixelRatio;
         }
       }); };
       if (drag.current || container.closest('[data-workspace-resizing="true"]')) fitTimer = setTimeout(schedule, 90);
@@ -142,9 +146,19 @@ function ChatTerminalDockView({ chatId, cwd, embedded = false }: { chatId: strin
     };
     const observer = new ResizeObserver(fit);
     observer.observe(container);
+    // Font loading and moving between displays can change cell dimensions
+    // without changing the dock's CSS size.
+    const refit = () => {
+      if (disposed) return;
+      fittedWidth = -1;
+      fit();
+    };
+    window.addEventListener('resize', refit);
+    document.fonts.addEventListener('loadingdone', refit);
+    void document.fonts.ready.then(refit);
     fit();
     activateTerminal();
-    return () => { observer.disconnect(); themeObserver.disconnect(); cursorStyleHandler.dispose(); typingListener.dispose(); container.removeEventListener('pointerup', activateTerminal); if (typingTimer) clearTimeout(typingTimer); delete tab.element.dataset.typing; unsubscribeVisibility(); cancelAnimationFrame(frame); if (fitTimer) clearTimeout(fitTimer); if (!tab.managedTaskId) (window as any).electronAPI?.terminalVisible?.(tab.id, false); tab.terminal.options.cursorBlink = false; tab.element.remove(); };
+    return () => { disposed = true; observer.disconnect(); window.removeEventListener('resize', refit); document.fonts.removeEventListener('loadingdone', refit); themeObserver.disconnect(); cursorStyleHandler.dispose(); typingListener.dispose(); container.removeEventListener('pointerup', activateTerminal); if (typingTimer) clearTimeout(typingTimer); delete tab.element.dataset.typing; unsubscribeVisibility(); cancelAnimationFrame(frame); if (fitTimer) clearTimeout(fitTimer); if (!tab.managedTaskId) (window as any).electronAPI?.terminalVisible?.(tab.id, false); tab.terminal.options.cursorBlink = false; tab.element.remove(); };
   }, [tab, tab?.exitCode, state.open]);
   if (!state.open) return null;
   return (

@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { getChatWorkspacePaths } from '../storage-paths';
 import { getRuntimeWorkspaceRoot } from './path_resolver';
+import { managedWorkspaces } from './managed';
 
 /** Rebuild chat routing from this admission. Selection is not an exclusive
  * folder lease: any number of chats may select the same workspacePath. */
@@ -26,11 +27,23 @@ export function resolveChatWorkspaceContext(chatId: string, userId: string, sele
     allowedPaths: Array.from(new Set([workspacePath, owned.scratch, ...pins])),
     isFocusedWorkspace: Boolean(selected),
     // Kept for saved-chat compatibility; scratch is not a different host.
-    runLocation: selection?.runLocation === 'sandbox' ? 'sandbox' as const : 'local' as const,
+    runLocation: selection?.runLocation === 'worktree' ? 'worktree' as const : selection?.runLocation === 'sandbox' ? 'sandbox' as const : 'local' as const,
   };
 }
 
 export async function initializeChatWorkspace(chatId: string, userId: string, selection?: any) {
+  // Old saved scratch selections did not contain a real scratch folder.
+  // Resolve them before constructing tool, terminal, and prompt context.
+  if (selection?.runLocation === 'sandbox' || selection?.runLocation === 'worktree') {
+    const managed = selection.workspacePath ? managedWorkspaces.findByPath(selection.workspacePath) : null;
+    if (managed && (managed.status !== 'ready' || !fs.existsSync(managed.path))) {
+      throw new Error('This workspace has expired or was removed. Choose a new workspace before continuing.');
+    }
+    if (!managed || managed.kind !== selection.runLocation) {
+      const created = await managedWorkspaces.create({ chatId, kind: selection.runLocation, sourcePath: selection.workspacePath });
+      selection = { ...selection, workspacePath: created.path };
+    }
+  }
   const context = resolveChatWorkspaceContext(chatId, userId, selection);
   const owned = getChatWorkspacePaths(chatId, userId);
   await Promise.all([fs.ensureDir(owned.workspace), fs.ensureDir(owned.scratch)]);

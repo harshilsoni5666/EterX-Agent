@@ -58,10 +58,30 @@ does not change the AppData-preserving update architecture.
 
 ## Update behavior
 
-The desktop app uses GitHub Releases through `electron-updater`, but checks are
-manual. The user opens the Updates section in Settings, chooses **Check for
-updates**, then explicitly downloads and installs a release. User data lives
-outside the installed application and is not an update target.
+The desktop app uses GitHub Releases through `electron-updater`. Native checks
+start about 8 seconds after the window opens, repeat every 30 minutes while
+visible, and refresh on return when the last attempt was more than 5 minutes
+ago. Show, restore, and renderer-load events share one request. Failures retry
+after 1, 2, 5, 10, then 30 minutes; reconnecting schedules a retry with a one-minute
+minimum between attempts. Scans pause while hidden, minimized, suspended,
+downloading, or awaiting installation. Manual checks bypass the retry delay.
+
+The header keeps its normal **Updates** link when no release is available. A
+blue **Update** button opens Settings and starts downloading the known release.
+Viewing or dismissing a notice acknowledges that release without removing the
+blue button. In-app notices announce availability and readiness. Native notices
+are also available when the app is unfocused, and open Updates when clicked.
+Restart remains an explicit action. User data lives outside the installed
+application and is not an update target.
+
+The provider compares the public stable release tag before fetching metadata;
+clients already at that version do not require a `latest*.yml` asset. For newer
+versions, it pins downloads to the release tag and selects the installed OS and
+architecture. If channel metadata is missing, a matching installer in the
+official `SHA256SUMS.txt` permits a full download verified by electron-updater.
+Missing packages or checksums remain pending and retry automatically; network
+errors never count as a successful up-to-date check. This compatibility fallback
+does not replace the requirement to publish every metadata file for new releases.
 
 The packaged `app-update.yml` points at the `harshilsoni5666/EterX-Agent`
 GitHub repository. Installed clients access that feed without a GitHub token,

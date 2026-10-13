@@ -1,7 +1,14 @@
 'use client';
 import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
 import { requestJson } from '../../lib/request-json';
+import { DEFAULT_SCRATCH_RETENTION_DAYS, normalizeScratchRetention } from '../../lib/managed-workspaces';
+import { ScratchRetentionControl } from './scratch-retention-control';
+import { beginModelCatalogRequest } from '../../lib/model-catalog-client';
+import { useDesktopUpdates } from '../../lib/desktop-updates';
 import { AgentToolsSettings } from './agent-tools-settings';
+import { ComputerUseSettings } from './computer-use-settings';
+import { SettingsProfile } from './settings-profile';
+import { buildProfileActivity, EMPTY_PROFILE_ACTIVITY, type ProfileActivityStats } from '../../lib/profile-activity';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -64,6 +71,8 @@ import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { resolveModelContextWindow } from '../../lib/agent/model-context-window';
 import { readContextUsageMeter } from '../../lib/context-usage-meter';
+import { readModelUsage, uniqueModelUsageLogs } from '../../lib/model-usage';
+import { selectMainContextLogs } from '../../lib/chat-usage-scope';
 import {
   CONTEXT_BUDGET_REVISIONS_KEY, CONTEXT_WINDOW_SIZE_OPTIONS, contextWindowLimitNote, formatExactContextTokens,
   normalizeContextWindow, resolveContextWindowBudget, resolveSavedContextBudget,
@@ -331,6 +340,7 @@ export interface AppSettings {
   fontSize: 'compact' | 'default' | 'comfortable';
   workMode: 'specialist' | 'everyday';
   openDestination: 'eterx' | 'workspace' | 'last';
+  scratchRetentionDays: number;
   terminalShell: 'auto' | 'powershell' | 'cmd' | 'git-bash' | 'wsl' | 'zsh' | 'bash' | 'fish' | 'sh';
   selfImprovementEnabled: boolean;
   requireCtrlEnter: boolean;
@@ -404,6 +414,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   fontSize: 'default',
   workMode: 'everyday',
   openDestination: 'eterx',
+  scratchRetentionDays: DEFAULT_SCRATCH_RETENTION_DAYS,
   terminalShell: 'auto',
   selfImprovementEnabled: true,
   requireCtrlEnter: false,
@@ -483,6 +494,7 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
     ? value as Partial<AppSettings>
     : {};
   const next = { ...DEFAULT_SETTINGS, ...stored } as AppSettings;
+  next.scratchRetentionDays = normalizeScratchRetention(stored.scratchRetentionDays);
   next.theme = stored.theme === 'dark' || stored.theme === 'system' || stored.theme === 'light'
     ? stored.theme
     : DEFAULT_SETTINGS.theme;
@@ -512,6 +524,7 @@ const getTerminalShellOptions = (platform: 'unknown' | 'windows' | 'mac' | 'linu
       { value: 'zsh', label: 'Z shell (zsh)' },
       { value: 'bash', label: 'Bash' },
       { value: 'fish', label: 'Fish' },
+      { value: 'sh', label: 'POSIX shell (sh)' },
       { value: 'powershell', label: 'PowerShell (pwsh)' },
     ]);
   }
@@ -590,31 +603,6 @@ type ModelOverrides = Record<string, string>;
 type ModelCatalog = Record<string, string[]>;
 type ProviderModelOption = { id: string; label: string; source: 'selected' | 'saved' | 'live' };
 type LiveModelOption = { value: string; label: string; tag?: string; description?: string };
-type DesktopUpdateState = {
-  revision?: number;
-  status: 'idle' | 'development' | 'unsupported' | 'checking' | 'available' | 'downloading' | 'current' | 'ready' | 'installing' | 'error';
-  currentVersion: string;
-  availableVersion?: string | null;
-  percent: number;
-  transferred?: number;
-  total?: number;
-  bytesPerSecond?: number;
-  downloadReady?: boolean;
-  message: string;
-  supported?: boolean;
-  automaticChecks?: boolean;
-  manualInstall?: boolean;
-  lastCheckedAt?: string | null;
-  platform?: string;
-  architecture?: string;
-  packageType?: string;
-  updateHost?: string;
-  releasePage?: string;
-  releaseName?: string | null;
-  releaseDate?: string | null;
-  updateAvailableUnread?: boolean;
-};
-
 const formatUpdateBytes = (value?: number) => {
   const bytes = Math.max(0, Number(value) || 0);
   if (bytes < 1024) return `${Math.round(bytes)} B`;
@@ -879,15 +867,6 @@ const applyUiDensity = (fontSize: AppSettings['fontSize']) => {
   document.documentElement.style.setProperty('--eterx-ui-line-height', values.lineHeight);
 };
 
-type TokenStats = {
-  lifetimeTokens: number;
-  peakTokens: number;
-  longestChatMinutes: number;
-  currentStreak: number;
-  longestStreak: number;
-  daily: Record<string, number>;
-};
-
 type TokenChatSummary = {
   id: string;
   title: string;
@@ -923,15 +902,6 @@ type StoredTokenMetrics = {
   toolUsePromptTokens: number;
 };
 
-const EMPTY_TOKEN_STATS: TokenStats = {
-  lifetimeTokens: 0,
-  peakTokens: 0,
-  longestChatMinutes: 0,
-  currentStreak: 0,
-  longestStreak: 0,
-  daily: {},
-};
-
 const EMPTY_STORED_TOKEN_METRICS: StoredTokenMetrics = {
   processedTokens: 0,
   promptTokens: 0,
@@ -942,95 +912,8 @@ const EMPTY_STORED_TOKEN_METRICS: StoredTokenMetrics = {
   toolUsePromptTokens: 0,
 };
 
-const tokenMetricsForStoredLog = (log: any): StoredTokenMetrics => {
-  if (!log || log.type !== 'model_usage') return EMPTY_STORED_TOKEN_METRICS;
-  const usage = log.usageMetadata || log.usage || log;
-  const optionalMetric = (...values: unknown[]): number | undefined => {
-    for (const value of values) {
-      if (value === undefined || value === null || value === '') continue;
-      const parsed = Number(value);
-      if (Number.isFinite(parsed) && parsed >= 0) return parsed;
-    }
-    return undefined;
-  };
-  const metric = (...values: unknown[]) => optionalMetric(...values) ?? 0;
-  const promptTokens = metric(
-    log.promptTokens, log.prompt_tokens, log.inputTokens, log.input_tokens,
-    log.totalInputTokens, log.total_input_tokens,
-    usage.promptTokens, usage.prompt_tokens, usage.inputTokens, usage.input_tokens,
-    usage.promptTokenCount, usage.prompt_token_count, usage.inputTokenCount,
-    usage.totalInputTokens, usage.total_input_tokens,
-  );
-  const completionTokens = metric(
-    log.completionTokens, log.completion_tokens,
-    usage.completionTokens, usage.completion_tokens,
-  );
-  const visibleOutputTokens = metric(
-    log.visibleOutputTokens, log.visible_output_tokens,
-    usage.visibleOutputTokens, usage.visible_output_tokens,
-    usage.candidatesTokenCount, usage.candidates_token_count, usage.responseTokenCount,
-  );
-  const legacyOutputTokens = metric(
-    log.outputTokens, log.output_tokens, log.totalOutputTokens, log.total_output_tokens,
-    usage.outputTokens, usage.output_tokens, usage.outputTokenCount,
-    usage.candidatesTokenCount, usage.candidates_token_count, usage.responseTokenCount,
-    usage.totalOutputTokens, usage.total_output_tokens,
-  );
-  const total = metric(
-    log.totalTokens, log.total_tokens, usage.totalTokens, usage.total_tokens,
-    usage.totalTokenCount, usage.total_token_count,
-  );
-  const reasoning = metric(
-    log.reasoningTokens, log.reasoning_tokens, usage.reasoningTokens, usage.reasoning_tokens,
-    log.totalThoughtTokens, log.total_thought_tokens,
-    usage.thoughtsTokenCount, usage.thoughts_token_count, usage.thoughtTokenCount,
-    usage.totalThoughtTokens, usage.total_thought_tokens,
-  );
-  const toolUsePrompt = metric(
-    log.toolUsePromptTokens, log.tool_use_prompt_tokens,
-    log.totalToolUseTokens, log.total_tool_use_tokens,
-    usage.toolUsePromptTokens, usage.tool_use_prompt_tokens,
-    usage.toolUsePromptTokenCount, usage.tool_use_prompt_token_count,
-    usage.totalToolUseTokens, usage.total_tool_use_tokens,
-  );
-  const measuredCachedTokens = metric(
-    log.cachedTokens, log.cached_tokens, log.totalCachedTokens, log.total_cached_tokens,
-    usage.cachedTokens, usage.cached_tokens, usage.cacheReadTokens,
-    usage.cachedContentTokenCount, usage.cached_content_token_count,
-    usage.totalCachedTokens, usage.total_cached_tokens,
-  );
-  const cachedTokens = promptTokens > 0
-    ? Math.min(promptTokens, measuredCachedTokens)
-    : measuredCachedTokens;
-  const explicitUncachedPromptTokens = optionalMetric(
-    log.uncachedPromptTokens, log.uncached_prompt_tokens,
-    usage.uncachedPromptTokens, usage.uncached_prompt_tokens,
-  );
-  const uncachedPromptTokens = explicitUncachedPromptTokens
-    ?? Math.max(0, promptTokens - cachedTokens);
-  const generatedTokens = metric(
-    log.generatedTokens, log.generated_tokens,
-    usage.generatedTokens, usage.generated_tokens,
-  ) || completionTokens || (visibleOutputTokens > 0
-    ? visibleOutputTokens + reasoning
-    : legacyOutputTokens);
-  // tool-use prompt tokens are diagnostic subdivisions of provider input, not
-  // a separate bucket to add again. Provider total remains authoritative.
-  const fallbackTotal = promptTokens + generatedTokens;
-
-  return {
-    // Provider total is authoritative. Component arithmetic is only a fallback
-    // for adapters that omit their aggregate usage field.
-    processedTokens: total > 0 ? total : fallbackTotal,
-    promptTokens,
-    cachedTokens,
-    uncachedPromptTokens,
-    outputTokens: generatedTokens,
-    reasoningTokens: reasoning,
-    toolUsePromptTokens: toolUsePrompt,
-  };
-};
-
+const tokenMetricsForStoredLog = (log: any): StoredTokenMetrics =>
+  log?.type === 'model_usage' ? readModelUsage(log) : EMPTY_STORED_TOKEN_METRICS;
 const tokenCountForStoredLog = (log: any): number =>
   tokenMetricsForStoredLog(log).processedTokens;
 
@@ -1046,33 +929,6 @@ const sumStoredTokenMetrics = (logs: any[]): StoredTokenMetrics =>
     totals.toolUsePromptTokens += metrics.toolUsePromptTokens;
     return totals;
   }, { ...EMPTY_STORED_TOKEN_METRICS });
-
-const TOKEN_ACTIVITY_CELL_COUNT = 200;
-
-const buildTokenActivityDates = (endAt = Date.now()) => {
-  const start = new Date(endAt);
-  start.setDate(1);
-  start.setHours(0, 0, 0, 0);
-  return Array.from({ length: TOKEN_ACTIVITY_CELL_COUNT }, (_, index) => {
-    const date = new Date(start);
-    date.setDate(start.getDate() + index);
-    return date;
-  });
-};
-
-const dayKey = (value: number) => {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue) || numericValue <= 0) return '';
-  // Runtime traces from older providers can store Unix seconds while newer
-  // traces use milliseconds. Normalize both before mapping into a cell.
-  const timestamp = numericValue < 10_000_000_000 ? numericValue * 1000 : numericValue;
-  const date = new Date(timestamp);
-  if (!Number.isFinite(date.getTime())) return '';
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
 
 const normalizeSettingsTab = (tab: any): Tab => {
   const validTabs: Tab[] = [
@@ -1310,10 +1166,10 @@ const ThemePreviewSelector: React.FC<{
             aria-pressed={selected}
             aria-label={`Use ${option.label.toLowerCase()} theme`}
             onClick={() => onChange(option.value)}
-            className="group min-w-0 rounded-[13px] text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2F8BEF] focus-visible:ring-offset-2 focus-visible:ring-offset-[#202020]"
+            className="group min-w-0 rounded-[13px] text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--muted-foreground)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
           >
             <div
-              className={`rounded-[13px] border-2 p-[2px] transition-all duration-200 ${selected ? 'border-[#2F8BEF]' : 'border-transparent group-hover:border-white/25'}`}
+              className={`rounded-[13px] border-2 p-[2px] transition-all duration-200 ${selected ? 'border-[var(--muted-foreground)]' : 'border-transparent group-hover:border-white/25'}`}
             >
               {preview(option.value)}
             </div>
@@ -2215,9 +2071,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [activeContextChatId, setActiveContextChatId] = useState('');
   const [contextChatOverrides, setContextChatOverrides] = useState<Record<string, string>>({});
   const [contextChatsLoading, setContextChatsLoading] = useState(false);
-  const [tokenStats, setTokenStats] = useState<TokenStats>(EMPTY_TOKEN_STATS);
+  const [tokenStats, setTokenStats] = useState<ProfileActivityStats>(EMPTY_PROFILE_ACTIVITY);
   const [tokenChats, setTokenChats] = useState<TokenChatSummary[]>([]);
   const [tokenStatsLoading, setTokenStatsLoading] = useState(false);
+  const [tokenStatsError, setTokenStatsError] = useState('');
   const [selectedTokenChatId, setSelectedTokenChatId] = useState('');
   const [hoveredToken, setHoveredToken] = useState<{
     value: number;
@@ -2272,29 +2129,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const providerBaseURLSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const providerBaseURLSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const providerBaseURLDirtyRef = useRef(false);
-  const [updateState, setUpdateState] = useState<DesktopUpdateState>({
-    revision: 0,
-    status: 'development',
-    currentVersion: 'development',
-    percent: 0,
-    transferred: 0,
-    total: 0,
-    bytesPerSecond: 0,
-    downloadReady: false,
-    automaticChecks: false,
-    message: 'Desktop updates are available in the installed application.',
-  });
-  const applyDesktopUpdateState = useCallback((incoming: DesktopUpdateState | null | undefined) => {
-    if (!incoming || typeof incoming !== 'object') return;
-    setUpdateState(current => {
-      const incomingRevision = Number(incoming.revision);
-      const currentRevision = Number(current.revision);
-      if (Number.isFinite(incomingRevision) && Number.isFinite(currentRevision) && incomingRevision < currentRevision) {
-        return current;
-      }
-      return incoming;
-    });
-  }, []);
+  const { updateState, updateActionError, updateActionPending, runUpdateAction, markUpdateViewed } = useDesktopUpdates(isOpen);
   apiKeysRef.current = apiKeys;
   modelEntriesRef.current = modelEntries;
   searchSettingsRef.current = searchSettings;
@@ -2309,15 +2144,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const selectedImageModel = imageSettings.modelByProvider[imageSettings.provider] || selectedImageMeta.defaultModel;
   const selectedVideoMeta = VIDEO_PROVIDER_META[videoSettings.provider];
   const selectedVideoModel = videoSettings.modelByProvider[videoSettings.provider] || selectedVideoMeta.defaultModel;
-  const computerRuntime = browserRuntimeStatus?.computer;
-  const cuaDriver = computerRuntime?.cuaDriver;
-  const computerState = !settings.computerUse
-    ? { label: 'Off', tone: 'neutral' }
-    : cuaDriver?.healthy
-      ? { label: 'Ready', tone: 'good' }
-      : cuaDriver?.installed
-        ? { label: 'Needs setup', tone: 'warn' }
-        : { label: 'Driver unavailable', tone: 'warn' };
   const selectedSearchServices = searchSettings.enabledServices[searchSettings.provider] || [...SEARCH_SERVICE_IDS];
 
   const refreshBrowserRuntimeStatus = useCallback(async () => {
@@ -2446,24 +2272,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const keysChangedRef = useRef(false);
 
   useEffect(() => {
-    if (!isOpen) return;
-    const desktopApi = (window as any)?.electronAPI;
-    let unsubscribe: undefined | (() => void);
-    if (typeof desktopApi?.getUpdateState === 'function') {
-      // Subscribe before reading the snapshot. The revision guard prevents a
-      // slower IPC response from overwriting a newer progress event.
-      if (typeof desktopApi.onUpdateState === 'function') unsubscribe = desktopApi.onUpdateState(applyDesktopUpdateState);
-      desktopApi.getUpdateState().then(applyDesktopUpdateState).catch(() => {});
-    }
-    return () => unsubscribe?.();
-  }, [applyDesktopUpdateState, isOpen]);
-
-  useEffect(() => {
     if (!isOpen || activeTab !== 'updates') return;
-    const desktopApi = (window as any)?.electronAPI;
-    if (typeof desktopApi?.markUpdateViewed !== 'function') return;
-    desktopApi.markUpdateViewed().then(applyDesktopUpdateState).catch(() => {});
-  }, [activeTab, applyDesktopUpdateState, isOpen, updateState.availableVersion]);
+    markUpdateViewed();
+  }, [activeTab, markUpdateViewed, isOpen, updateState.availableVersion]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -2614,9 +2425,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const normalizeChats = (rawChats: any[]): ContextChatSummary[] => rawChats
       .filter(chat => chat && typeof chat.id === 'string')
       .map(chat => {
-        const logs = (Array.isArray(chat.traceLogs) ? chat.traceLogs : []).filter((log: any) =>
-          !log?.subAgentId && !log?.subAgentChatId && (!log?.subAgent || log.subAgent === 'Main') && log?.auxiliaryRuntime !== true
-        );
+        const logs = selectMainContextLogs(Array.isArray(chat.traceLogs) ? chat.traceLogs : [], chat.id);
         const meter = readContextUsageMeter(logs);
         const usage = meter.latestContextUsage;
         const selection = parseModelEntryKey(chat.modelSelection);
@@ -2671,36 +2480,23 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     let lastSnapshotText: string | null = null;
     let lastStatisticsDay = '';
 
-    if (!appStorage.getItem('eterx_app_launch_at')) {
-      appStorage.setItem('eterx_app_launch_at', String(Date.now()));
-    }
-
     const refreshTokenStats = () => {
       if (cancelled || !isAppVisible()) return;
       if (refreshInFlight) return refreshInFlight;
       refreshInFlight = (async () => {
        if (lastSnapshotText === null) setTokenStatsLoading(true);
        try {
-      const snapshotText = await fetch('/api/chats', { cache: 'no-store' })
-        .then(response => response.ok ? response.text() : Promise.reject(new Error('Unable to load chats')));
+      const snapshot = await requestJson('/api/chats', { cache: 'no-store' }, 15_000)
+        .then(response => response.ok ? response.json() : Promise.reject(new Error('Unable to load chats')));
+      const snapshotText = JSON.stringify(snapshot);
       const statisticsDay = new Date().toDateString();
-      if (cancelled || (snapshotText === lastSnapshotText && statisticsDay === lastStatisticsDay)) return;
-      const snapshot = JSON.parse(snapshotText);
-      const chats = Array.isArray(snapshot?.chats) ? snapshot.chats : [];
-      const uniqueProviderUsageLogs = (logs: any[]) => {
-        const seen = new Set<string>();
-        return logs.filter((log: any) => {
-          if (log?.type !== 'model_usage' || tokenCountForStoredLog(log) <= 0) return false;
-          const key = String(
-            log.usageId ||
-            log._traceIdx ||
-            `${log.runId || log.turnId || ''}:${log.provider || ''}:${log.model || ''}:${log.interaction ?? ''}:${log.timestamp || log.endTime || ''}:${tokenCountForStoredLog(log)}`
-          );
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      };
+      if (cancelled) return;
+      setTokenStatsError('');
+      if (snapshotText === lastSnapshotText && statisticsDay === lastStatisticsDay) return;
+      if (!Array.isArray(snapshot?.chats)) throw new Error('Invalid chat snapshot');
+      const chats = snapshot.chats;
+      const uniqueProviderUsageLogs = (logs: any[]) => uniqueModelUsageLogs(logs)
+        .filter(log => tokenCountForStoredLog(log) > 0);
       const nextTokenChats: TokenChatSummary[] = chats
         .filter((chat: any) => chat && typeof chat.id === 'string')
         .map((chat: any) => {
@@ -2762,64 +2558,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       if (cancelled) return;
       setTokenChats(nextTokenChats);
       setSelectedTokenChatId(previous => previous && nextTokenChats.some(chat => chat.id === previous) ? previous : nextTokenChats[0]?.id || '');
-      const daily: Record<string, number> = {};
-      let lifetimeTokens = 0;
-      let peakTokens = 0;
-      let longestChatMinutes = 0;
-
-      chats.forEach((chat: any) => {
-        const logs = Array.isArray(chat?.traceLogs) ? chat.traceLogs : [];
-        let chatTokens = 0;
-        let firstAt = Number(chat?.createdAt || chat?.updatedAt || 0);
-        let lastAt = Number(chat?.updatedAt || firstAt);
-        logs.forEach((log: any) => {
-          const at = Number(log?.timestamp || log?.endTime || log?.startTime || 0);
-          if (at > 0) {
-            firstAt = firstAt > 0 ? Math.min(firstAt, at) : at;
-            lastAt = Math.max(lastAt, at);
-          }
-        });
-        uniqueProviderUsageLogs(logs).forEach((log: any) => {
-          const at = Number(log?.timestamp || log?.endTime || log?.startTime || chat?.updatedAt || Date.now());
-          const count = tokenCountForStoredLog(log);
-          if (count <= 0) return;
-          chatTokens += count;
-          const key = dayKey(at || Number(chat?.updatedAt || Date.now()));
-          if (key) daily[key] = (daily[key] || 0) + count;
-        });
-        peakTokens = Math.max(peakTokens, chatTokens);
-        lifetimeTokens += chatTokens;
-        if (lastAt > firstAt) longestChatMinutes = Math.max(longestChatMinutes, Math.round((lastAt - firstAt) / 60000));
-      });
-
-      const activeDays = Object.keys(daily).filter(key => daily[key] > 0).sort();
-      let longestStreak = 0;
-      let streak = 0;
-      let previousDay = '';
-      activeDays.forEach(key => {
-        const current = new Date(`${key}T00:00:00Z`).getTime();
-        const previous = previousDay ? new Date(`${previousDay}T00:00:00Z`).getTime() : 0;
-        streak = previous && current - previous === 86400000 ? streak + 1 : 1;
-        longestStreak = Math.max(longestStreak, streak);
-        previousDay = key;
-      });
-      let currentStreak = 0;
-      const today = new Date();
-      for (let offset = 0; offset < activeDays.length + 1; offset += 1) {
-        const date = new Date(today);
-        date.setHours(0, 0, 0, 0);
-        date.setDate(today.getDate() - offset);
-        const key = dayKey(date.getTime());
-        if (!daily[key]) break;
-        currentStreak += 1;
-      }
-      setTokenStats({ lifetimeTokens, peakTokens, longestChatMinutes, currentStreak, longestStreak, daily });
+      setTokenStats(buildProfileActivity(chats));
       lastSnapshotText = snapshotText;
       lastStatisticsDay = statisticsDay;
        } catch {
          // Keep the last successful snapshot visible during transient API or
          // desktop startup failures instead of replacing real cells with an
          // empty grid.
+         if (!cancelled) setTokenStatsError(lastSnapshotText === null
+           ? 'Unable to load activity. Retrying automatically…'
+           : 'Unable to refresh. Showing the last loaded activity.');
        } finally {
          if (!cancelled) setTokenStatsLoading(false);
          refreshInFlight = null;
@@ -2887,6 +2635,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const provider = providers[0];
     const runDiscovery = async () => {
       if (discoveryRevision !== settingsRevisionRef.current) return;
+      const isCurrent = beginModelCatalogRequest(provider);
       setModelDirectoryStatus('loading');
       try {
       const res = await requestJson('/api/settings/models', {
@@ -2903,6 +2652,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const payload = await res.json();
       if (!res.ok || !payload?.ok) throw new Error(payload?.error || 'Model discovery failed');
       if (discoveryRevision !== settingsRevisionRef.current || modelDirectoryGenerationRef.current[provider] !== generation) return;
+      if (!isCurrent()) { setModelDirectoryStatus('idle'); return; }
       const nextDirectory = payload.providers || {};
       setModelDirectory(previous => ({ ...previous, ...nextDirectory }));
       reconcileModelDirectoryRef.current(nextDirectory);
@@ -2932,7 +2682,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         storedWireCapabilities = JSON.parse(appStorage.getItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY) || '{}');
       } catch { }
       appStorage.setItem(MODEL_WIRE_CAPABILITIES_STORAGE_KEY, JSON.stringify({
-        ...storedWireCapabilities,
+        ...withoutRefreshedProviders(storedWireCapabilities),
         ...discoveredWireCapabilities,
       }));
       setModelThinkingCapabilities(previous => {
@@ -4178,11 +3928,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const selectedApiProviderSync = providerSync(selectedApiProvider);
   const selectedApiProviderPoolValue = `provider:${selectedApiProvider}`;
   const selectedApiProviderModelEntries = modelEntries.filter(entry => entry.provider === selectedApiProvider);
-  const tokenActivityDates = useMemo(() => buildTokenActivityDates(), [tokenStats.daily]);
-  const tokenActivityMax = useMemo(
-    () => Math.max(1, ...Object.values(tokenStats.daily)),
-    [tokenStats.daily],
-  );
   const apiPoolEntries = [
     {
       value: selectedApiProviderPoolValue,
@@ -4694,6 +4439,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 ]}
                               />
                             </SettingsStackRow>
+                            <SettingsStackRow title="Scratch workspace retention" description="Delete temporary workspace files after this many days from creation. Applies to new workspaces; active agents and open terminals delay cleanup. Chat history is kept." tall>
+                              <ScratchRetentionControl value={settings.scratchRetentionDays} onChange={days => updateSetting('scratchRetentionDays', days)} />
+                            </SettingsStackRow>
                             <SettingsStackRow title="Integrated terminal shell" description="Smart automatically selects the best available shell for this operating system.">
                               <SelectControl
                                 value={settings.terminalShell}
@@ -4969,50 +4717,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                       {(activeTab === 'profile' || activeTab === 'tokens') && (
                         <div>
-                          {activeTab === 'profile' && <div className="flex items-center gap-3 rounded-2xl border border-white/[0.08] bg-[#1A1A1A]/95 px-4 py-2.5">
-                            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-white/[0.12] bg-[#1D1D1D] text-base font-semibold text-[#F1F1F1]">{settings.userName?.charAt(0).toUpperCase() || 'U'}</div>
-                            <input aria-label="Profile name" value={settings.userName || ''} onChange={e => updateSetting('userName', e.target.value)} className="min-w-0 flex-1 border-b border-white/[0.10] bg-transparent pb-0.5 text-[16px] font-semibold text-[#F1F1F1] outline-none focus:border-white/[0.25]" />
-                          </div>}
-                          {activeTab === 'profile' ? <>
-                          <div className="mb-2 mt-5"><h4 className="text-[17px] font-semibold tracking-[-0.02em] text-[#F1F1F1]">Token activity</h4></div>
-                          <div className="relative z-20 overflow-visible rounded-2xl border border-white/[0.08] bg-[#171717] p-3" aria-busy={tokenStatsLoading}>
-                            <div className="relative z-20 grid w-full grid-flow-col grid-rows-5 grid-cols-[repeat(40,minmax(0,1fr))] gap-x-px gap-y-px" onMouseLeave={() => setHoveredToken(null)}>
-                              {tokenActivityDates.map(date => {
-                                const key = dayKey(date.getTime());
-                                const value = tokenStats.daily[key] || 0;
-                                const intensity = value <= 0 ? 0 : Math.max(1, Math.ceil((value / tokenActivityMax) * 4));
-                                return (
-                                  <span
-                                    key={key}
-                                    aria-label={`${formatTokenMetric(value)} tokens on ${date.toLocaleDateString()}`}
-                                    onMouseEnter={event => setHoveredToken({ value, date: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), cellKey: key, x: event.clientX, y: event.clientY })}
-                                    className={`eterx-token-activity-cell eterx-token-activity-cell-${intensity}${hoveredToken?.cellKey === key ? ' is-hovered' : ''} h-3.5 w-3.5 justify-self-center rounded-[3px]`}
-                                  />
-                                );
-                              })}
-                            </div>
-                            <div className="mt-3 grid w-full grid-cols-7 text-[11px] text-[#858585]">
-                              {Array.from({ length: 7 }, (_, index) => {
-                                const month = new Date(tokenActivityDates[0]);
-                                month.setMonth(tokenActivityDates[0].getMonth() + index);
-                                return <span key={`${month.getFullYear()}-${month.getMonth()}`}>{month.toLocaleString(undefined, { month: 'short' })}</span>;
-                              })}
-                            </div>
-                          </div>
-                          {hoveredToken && (
-                            <div className="pointer-events-none fixed z-[10000] w-max max-w-[220px] whitespace-nowrap rounded-xl border border-white/[0.12] bg-[#292929] px-2.5 py-2 text-[12px] text-[#F1F1F1] shadow-none" style={{ left: Math.min(Math.max(8, hoveredToken.x + 10), window.innerWidth - 240), top: Math.max(8, hoveredToken.y - 48) }}>
-                              {hoveredToken.model ? <div className="space-y-1">
-                                <div className="flex justify-between gap-6"><span className="text-[#999]">Processed</span><span className="font-semibold">{formatTokenMetric(hoveredToken.value)}</span></div>
-                                {hoveredToken.scope !== 'action' && <div className="flex justify-between gap-6"><span className="text-[#999]">Recent run</span><span className="font-semibold">{formatTokenMetric(hoveredToken.recentRunUsage || 0)}</span></div>}
-                                <div className="flex justify-between gap-6"><span className="text-[#999]">Input</span><span className="font-semibold">{formatTokenMetric(hoveredToken.promptTokens || 0)}</span></div>
-                                <div className="flex justify-between gap-6"><span className="text-[#999]">Uncached input</span><span className="font-semibold">{formatTokenMetric(hoveredToken.uncachedPromptTokens || 0)}</span></div>
-                                <div className="flex justify-between gap-6"><span className="text-[#999]">Cached input</span><span className="font-semibold">{formatTokenMetric(hoveredToken.cachedTokens || 0)}</span></div>
-                                <div className="flex justify-between gap-6"><span className="text-[#999]">Output</span><span className="font-semibold">{formatTokenMetric(hoveredToken.outputTokens || 0)}</span></div>
-                                <div className="flex justify-between gap-6"><span className="text-[#999]">Model</span><span className="max-w-[120px] truncate font-semibold">{hoveredToken.model}</span></div>
-                              </div> : `${formatTokenMetric(hoveredToken.value)} processed tokens on ${hoveredToken.date}`}
-                            </div>
-                          )}
-                          </> : (() => {
+                          {activeTab === 'profile' ? <SettingsProfile
+                            name={settings.userName || ''}
+                            onNameChange={value => updateSetting('userName', value)}
+                            stats={tokenStats}
+                            loading={tokenStatsLoading}
+                            error={tokenStatsError}
+                          /> : (() => {
                               const selected = tokenChats.find(chat => chat.id === selectedTokenChatId) || tokenChats[0];
                               const hoverChat = (
                                 event: React.MouseEvent,
@@ -5036,7 +4747,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 x: event.clientX,
                                 y: event.clientY,
                               });
-                              return <div className="mt-4 flex h-[calc(100vh-230px)] min-h-[340px] flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171717]">
+                              return <><div className="mt-4 flex h-[calc(100vh-230px)] min-h-[340px] flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#171717]">
                                 <div className="flex min-h-0 flex-1 flex-col border-b border-white/[0.08] p-2">
                                   <div className="px-3 py-2 text-[11px] font-medium tracking-[0.02em] text-[#777]">All chats</div>
                                   <div className="min-h-0 flex-1 overflow-y-auto eterx-scrollbar pr-1">
@@ -5059,7 +4770,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     )) : <div className="px-3 py-8 text-center text-[13px] text-[#777]">No recorded actions for this chat.</div>}
                                   </div>
                                 </div>
-                              </div>;
+                              </div>
+                              {hoveredToken?.model && <div role="tooltip" className="pointer-events-none fixed z-[10000] w-max max-w-[240px] rounded-xl border border-[var(--border)] bg-[var(--input-bg)] px-3 py-2 text-[12px] text-[var(--foreground)]" style={{ left: Math.max(8, Math.min(hoveredToken.x + 10, window.innerWidth - 256)), top: Math.max(8, hoveredToken.y - 180) }}>
+                                <div className="space-y-1">
+                                  <div className="flex justify-between gap-6"><span>Processed</span><strong>{formatTokenMetric(hoveredToken.value)}</strong></div>
+                                  {hoveredToken.scope !== 'action' && <div className="flex justify-between gap-6"><span>Recent run</span><strong>{formatTokenMetric(hoveredToken.recentRunUsage || 0)}</strong></div>}
+                                  <div className="flex justify-between gap-6"><span>Input</span><strong>{formatTokenMetric(hoveredToken.promptTokens || 0)}</strong></div>
+                                  <div className="flex justify-between gap-6"><span>Uncached input</span><strong>{formatTokenMetric(hoveredToken.uncachedPromptTokens || 0)}</strong></div>
+                                  <div className="flex justify-between gap-6"><span>Cached input</span><strong>{formatTokenMetric(hoveredToken.cachedTokens || 0)}</strong></div>
+                                  <div className="flex justify-between gap-6"><span>Output</span><strong>{formatTokenMetric(hoveredToken.outputTokens || 0)}</strong></div>
+                                  <div className="flex justify-between gap-6"><span>Model</span><strong className="max-w-[140px] truncate">{formatModelName(hoveredToken.model)}</strong></div>
+                                </div>
+                              </div>}
+                              </>;
                             })()}
                         </div>
                       )}
@@ -5993,75 +5716,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       )}
 
                       {activeTab === 'computer' && (
-                        <div>
-                          <SectionHeader title="Browser control" />
-                          <div className="eterx-browser-service-card mb-5">
-                            <div className="eterx-browser-service-card__header">
-                              <div className="min-w-0">
-                                <div className="eterx-browser-runtime-card__title text-[16px] font-semibold text-[#F1F1F1]">{browserRuntimeStatus?.signedBrowser ? 'Signed-in browser connected' : browserRuntimeStatus?.managedBrowser ? 'New isolated browser connected' : 'Choose a browser mode'}</div>
-                                <div className="eterx-browser-runtime-card__message mt-1 text-[12px] leading-5 text-[#A5A5A5]">{browserRuntimeMessage}</div>
-                                {browserRuntimeStatus?.signedBrowserAvailable === false && <div className="eterx-browser-runtime-card__warning mt-1 text-[11px] text-amber-300">Signed-in mode is disabled: {browserRuntimeStatus.signedBrowserReason}</div>}
-                              </div>
-                              <div className="eterx-browser-service-card__status-text">{browserRuntimeStatus?.signedBrowser || browserRuntimeStatus?.managedBrowser ? 'Connected' : 'Needs setup'}</div>
-                            </div>
-                            <div className="eterx-browser-service-card__meta">
-                              <div><span className="eterx-browser-service-card__meta-label">Platform</span><span className="eterx-browser-service-card__meta-value">{browserRuntimeStatus?.platform || terminalPlatform}</span></div>
-                              <div><span className="eterx-browser-service-card__meta-label">Mode</span><span className="eterx-browser-service-card__meta-value">{browserRuntimeStatus?.browser?.mode || 'Not connected'}</span></div>
-                              <div><span className="eterx-browser-service-card__meta-label">Screen</span><span className="eterx-browser-service-card__meta-value">{browserRuntimeStatus?.computer?.screenProvider || 'Checking'}</span></div>
-                              <div><span className="eterx-browser-service-card__meta-label">Input</span><span className="eterx-browser-service-card__meta-value">{browserRuntimeStatus?.computer?.inputProvider || 'Checking'}</span></div>
-                            </div>
-                            <div className="eterx-browser-service-card__actions">
-                              <button type="button" disabled={browserRuntimeBusy || browserRuntimeStatus?.signedBrowserAvailable === false} onClick={() => runBrowserRuntimeAction('connect_signed')} className="eterx-browser-runtime-card__button eterx-browser-runtime-card__button--signed rounded-lg border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-[11px] font-semibold text-emerald-200 transition-colors hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-40">Signed-in existing browser</button>
-                              <button type="button" disabled={browserRuntimeBusy} onClick={() => runBrowserRuntimeAction('launch_managed')} className="eterx-browser-runtime-card__button rounded-lg border border-white/[0.10] bg-white/[0.06] px-3 py-2 text-[11px] font-semibold text-[#D8D8D8] transition-colors hover:bg-white/[0.11] disabled:opacity-50">New isolated browser</button>
-                              <button type="button" disabled={browserRuntimeBusy} onClick={refreshBrowserRuntimeStatus} className="eterx-browser-runtime-card__button rounded-lg border border-white/[0.10] px-3 py-2 text-[11px] font-semibold text-[#A5A5A5] transition-colors hover:bg-white/[0.08] disabled:opacity-50">Refresh status</button>
-                            </div>
-                            <div className="eterx-browser-runtime-card__note mt-3 text-[11px] leading-5 text-[#777]">Uses your existing Chrome, Edge, or Brave profile. Close an unmanaged browser before reconnecting.</div>
-                          </div>
-                          <SettingRow icon={<Globe className="w-4 h-4" />} title="Allow browser control" description="Inspect pages and use signed-in browser sessions.">
-                            <Toggle enabled={settings.browserAccess} onChange={v => updateSetting('browserAccess', v)} />
-                          </SettingRow>
-
-                          <SectionHeader title="Computer use" info="Control native apps and screens. Separate from browser control." />
-                          <div className="eterx-computer-control-plane mb-5 overflow-hidden rounded-2xl border border-white/[0.12] bg-gradient-to-br from-[#202832] via-[#1B2027] to-[#171A1E] shadow-none">
-                            <div className="p-5 sm:p-6">
-                              <div className="eterx-computer-control-plane__header">
-                                <div className="flex min-w-0 items-start gap-3.5">
-                                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-sky-200/20 bg-sky-200/10 text-sky-200"><Monitor className="h-4 w-4" /></div>
-                                  <div className="min-w-0">
-                                    <div className="eterx-computer-control-plane__title">Desktop control</div>
-                                    <p className="eterx-computer-control-plane__description">Native apps and screens on Windows, macOS, and Linux.</p>
-                                  </div>
-                                </div>
-                                <div className={`eterx-computer-state eterx-computer-state--${computerState.tone} inline-flex shrink-0 items-center gap-2 self-start rounded-full border px-3 py-1.5 text-[11px] font-semibold`}><span className="h-1.5 w-1.5 rounded-full bg-current" />{computerState.label}</div>
-                              </div>
-
-                              <div className="eterx-computer-toggle-row mt-5 rounded-xl border border-white/[0.10] bg-black/20 px-4 py-3.5">
-                                <div className="eterx-computer-toggle-icon" aria-hidden="true"><Cpu className="eterx-computer-toggle-glyph text-sky-200" /></div>
-                                <div className="eterx-computer-toggle-copy">
-                                  <div className="text-[13px] font-semibold text-[#F1F1F1]">Allow computer actions</div>
-                                  <div className="mt-0.5 text-[11px] leading-5 text-[#98A2AE]">Required for direct screen input.</div>
-                                </div>
-                                <div className="eterx-computer-toggle-control"><Toggle enabled={settings.computerUse} onChange={v => updateSetting('computerUse', v)} /></div>
-                              </div>
-
-                              <div className="eterx-computer-runtime mt-4">
-                                {[
-                                  ['Platform', browserRuntimeStatus?.platform || terminalPlatform || 'Checking'],
-                                  ['Driver', cuaDriver?.healthy ? (cuaDriver.version ? `Cua ${cuaDriver.version}` : 'Ready') : cuaDriver?.installed ? 'Needs setup' : 'Checking'],
-                                  ['Screen', computerRuntime?.screenProvider || 'Checking'],
-                                  ['Input', computerRuntime?.inputProvider || 'Checking'],
-                                ].map(([label, value]) => <div key={label} className="eterx-computer-runtime__item"><span className="eterx-computer-runtime__label">{label}</span><span className="eterx-computer-runtime__value">{value}</span></div>)}
-                              </div>
-                            </div>
-                            <div className="eterx-computer-driver-note flex flex-col gap-2 border-t border-white/[0.08] bg-black/15 px-5 py-3 text-[11px] leading-5 text-[#9DA8B4] sm:flex-row sm:items-center sm:justify-between sm:px-6"><span>{cuaDriver?.healthy ? 'Desktop runtime ready.' : cuaDriver?.installed ? 'Driver installed; permissions may be required.' : 'Checking desktop runtime.'}</span><button type="button" onClick={refreshBrowserRuntimeStatus} disabled={browserRuntimeBusy} className="shrink-0 rounded-lg border border-white/[0.10] bg-white/[0.05] px-3 py-1.5 font-semibold text-[#D5DCE4] transition-colors hover:bg-white/[0.10] disabled:opacity-50">Refresh</button></div>
-                          </div>
-
-                          <SectionHeader title="Safety & permissions" />
-                          <SettingRow icon={<Shield className="w-4 h-4" />} title="Permission review" description="Review sensitive desktop actions before they run.">
-                            <Toggle enabled={settings.autoReview} onChange={v => updateSetting('autoReview', v)} />
-                          </SettingRow>
-                          <div className="eterx-computer-safety mt-4 flex items-start gap-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] p-4"><Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-200" /><div><div className="text-[12px] font-semibold text-amber-100">Explicit approval required</div><p className="mt-1 text-[11px] leading-5 text-amber-100/65">Computer Use also requires host-control permission in the active run.</p></div></div>
-                        </div>
+                        <ComputerUseSettings
+                          settings={settings}
+                          runtime={browserRuntimeStatus}
+                          runtimeBusy={browserRuntimeBusy}
+                          runtimeMessage={browserRuntimeMessage}
+                          platform={terminalPlatform}
+                          onSettingChange={updateSetting}
+                          onBrowserAction={runBrowserRuntimeAction}
+                          onRefresh={refreshBrowserRuntimeStatus}
+                        />
                       )}
 
 
@@ -6195,11 +5859,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 </div>
                               </div>
                               <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-                                updateState.status === 'ready' || updateState.status === 'installing' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400' :
+                                updateState.status === 'current' || updateState.status === 'ready' || updateState.status === 'installing' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400' :
+                                updateState.status === 'available' || updateState.status === 'downloading' ? 'border-blue-500/25 bg-blue-500/10 text-blue-400' :
+                                updateState.status === 'pending' ? 'border-amber-500/25 bg-amber-500/10 text-amber-400' :
                                 updateState.status === 'error' ? 'border-red-500/25 bg-red-500/10 text-red-400' :
                                 'border-white/[0.08] bg-white/[0.04] text-[#B8B8B8]'
                               }`}>
-                                {updateState.status === 'current' ? 'Up to date' :
+                                {updateState.checking ? 'Checking…' :
+                                  updateState.status === 'pending' ? 'Preparing release' :
+                                  updateState.status === 'current' ? 'Up to date' :
                                   updateState.status === 'ready' ? 'Ready' :
                                   updateState.status === 'installing' ? 'Installing' :
                                   updateState.status.charAt(0).toUpperCase() + updateState.status.slice(1)}
@@ -6223,8 +5891,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   <span>{updateState.availableVersion ? `Version ${updateState.availableVersion}` : 'Update package'}</span>
                                   <span>{Math.round(updateState.percent)}%</span>
                                 </div>
-                                <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
-                                  <div className="h-full rounded-full bg-[#D9D9D9] transition-[width] duration-300" style={{ width: `${Math.max(0, Math.min(100, updateState.percent))}%` }} />
+                                <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.07]" role="progressbar" aria-label="Update download" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(updateState.percent)}>
+                                  <div className="h-full rounded-full bg-[#168eea] transition-[width] duration-300" style={{ width: `${Math.max(0, Math.min(100, updateState.percent))}%` }} />
                                 </div>
                                 {Boolean(updateState.transferred || updateState.total || updateState.bytesPerSecond) && (
                                   <div className="mt-2 flex justify-between text-[11px] text-[#5E5E5E]">
@@ -6236,38 +5904,51 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             )}
                           </div>
 
-                          <div className="flex gap-3">
+                          <div className="flex flex-wrap gap-3">
                             {updateState.status === 'installing' ? (
                               <SoftButton disabled>Installing...</SoftButton>
                             ) : updateState.status === 'ready' || (
                               updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.downloadReady
                             ) ? (
-                              <SoftButton onClick={() => void (window as any)?.electronAPI?.installUpdate?.()}>
+                              <SoftButton disabled={Boolean(updateActionPending)} onClick={() => void runUpdateAction('installUpdate')}>
                                 {updateState.status === 'error' ? 'Retry restart and update' : 'Restart to update'}
                               </SoftButton>
                             ) : updateState.status === 'available' || (
                               updateState.status === 'error' && Boolean(updateState.availableVersion) && !updateState.downloadReady
                             ) ? (
-                              <SoftButton onClick={() => void (window as any)?.electronAPI?.downloadUpdate?.()}>
+                              <SoftButton disabled={Boolean(updateActionPending) || updateState.checking} onClick={() => void runUpdateAction('downloadUpdate')}>
                                 {updateState.status === 'error' ? 'Retry download' : `Download EterX ${updateState.availableVersion}`}
                               </SoftButton>
                             ) : (
                               <SoftButton
-                                disabled={updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'development' || updateState.status === 'unsupported'}
-                                onClick={() => void (window as any)?.electronAPI?.checkForUpdates?.()}
+                                disabled={Boolean(updateActionPending) || updateState.checking || updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'development' || updateState.status === 'unsupported'}
+                                onClick={() => void runUpdateAction('checkForUpdates')}
                               >
-                                {updateState.status === 'checking' ? 'Checking…' : updateState.status === 'downloading' ? 'Downloading…' : updateState.status === 'unsupported' ? 'Updates unavailable' : 'Check for updates'}
+                                {updateState.checking || updateState.status === 'checking' ? 'Checking…' : updateState.status === 'downloading' ? 'Downloading…' : updateState.status === 'unsupported' ? 'Updates unavailable' : 'Check for updates'}
                               </SoftButton>
                             )}
-                            {(updateState.status === 'error' || updateState.status === 'unsupported') && updateState.releasePage && (
-                              <SoftButton onClick={() => void (window as any)?.electronAPI?.openExternal?.(updateState.releasePage)}>
-                                Open official releases
+                            {(updateState.status === 'available' || (updateState.status === 'error' && updateState.availableVersion && !updateState.downloadReady)) && (
+                              <SoftButton disabled={Boolean(updateActionPending) || updateState.checking} onClick={() => void runUpdateAction('checkForUpdates')}>
+                                {updateState.checking ? 'Checking…' : 'Check again'}
                               </SoftButton>
+                            )}
+                            {(updateState.status === 'error' || updateState.status === 'pending' || updateState.status === 'unsupported') && updateState.releasePage && (
+                              <a href={updateState.releasePage} target="_blank" rel="noopener noreferrer" className="inline-flex items-center rounded-lg bg-white/[0.08] px-3 py-2 text-[13px] font-medium text-[#E8E6E3] hover:bg-white/[0.12]">
+                                Open official releases
+                              </a>
                             )}
                           </div>
 
+                          {updateActionError && <p role="alert" className="mt-3 text-[12px] text-red-400">{updateActionError}</p>}
+                          {updateState.checkError && updateState.checkError !== updateState.message && (
+                            <p role="status" className="mt-3 text-[12px] text-amber-400">{updateState.checkError}</p>
+                          )}
+
                           <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
-                            EterX checks silently when the app opens, becomes visible again, and every 30 minutes while it remains open. Checks stop while EterX is closed or hidden. An update replaces the complete installed application—including the interface and internal runtime—while chats, workspaces, encrypted API settings, browser profiles, and preferences stay in the device data directory. Downloads and restart remain under your control. Linux in-app updates use the official AppImage package.
+                            {updateState.automaticChecks
+                              ? 'EterX checks automatically shortly after opening, every 30 minutes while visible, and when returning to the app if the last check was more than 5 minutes ago. Failed checks retry after 1, 2, 5, 10, then 30 minutes; reconnecting also schedules a retry. Scans pause while the app is hidden, minimized, or asleep, and while an update downloads or waits for installation.'
+                              : 'Automatic updates are available in supported desktop installations.'}
+                            {' '}Click the blue Update button to open these settings and start downloading. Restart to update installs the verified package when you are ready. Updates replace the application while keeping chats, workspaces, encrypted API settings, browser profiles, and preferences in the device data directory. Windows uses NSIS, macOS uses ZIP updates, and Linux uses AppImage.
                           </p>
                           {updateState.releaseDate && updateState.availableVersion && (
                             <p className="mt-2 text-[11px] text-[#555]">
@@ -6276,8 +5957,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           )}
                           {updateState.lastCheckedAt && (
                             <p className="mt-2 text-[11px] text-[#555]">
-                              Last checked {new Date(updateState.lastCheckedAt).toLocaleString()}
+                              Last successful check {new Date(updateState.lastCheckedAt).toLocaleString()}
                             </p>
+                          )}
+                          {updateState.checkError && updateState.lastCheckAttemptAt && (
+                            <p className="mt-2 text-[11px] text-[#555]">Last attempt {new Date(updateState.lastCheckAttemptAt).toLocaleString()}</p>
+                          )}
+                          {updateState.nextCheckAt && (
+                            <p className="mt-2 text-[11px] text-[#555]">Next automatic {updateState.checkError ? 'retry' : 'check'} around {new Date(updateState.nextCheckAt).toLocaleTimeString()}</p>
                           )}
                         </div>
                       )}

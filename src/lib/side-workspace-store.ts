@@ -5,8 +5,8 @@ import { compactWorkspaceRoots } from './workspace-paths';
 import type { TurnChanges } from './turn-changes';
 import { recordBrowserHistory } from './browser-history';
 
-export type WorkspaceKind = 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat';
-export type WorkspaceReviewState = { scope: 'chat' | 'working' | 'branch'; selected: string; filter: string; expanded: boolean; split: boolean; showTree: boolean; root: string; wrap?: boolean; loadFull?: boolean; richPreview?: boolean; ignoreWhitespace?: boolean; wordDiffs?: boolean; viewed?: string[]; hideViewed?: boolean; compactFolders?: boolean; baseRefs?: Record<string, string> };
+export type WorkspaceKind = 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat' | 'subagents';
+export type WorkspaceReviewState = { scope: 'chat' | 'working' | 'branch'; selected: string; filter: string; expanded: boolean; split: boolean; showTree: boolean; root: string; wrap?: boolean; loadFull?: boolean; richPreview?: boolean; ignoreWhitespace?: boolean; wordHighlights?: 'enabled' | 'disabled'; viewed?: string[]; hideViewed?: boolean; compactFolders?: boolean; baseRefs?: Record<string, string> };
 export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges };
 type WorkspaceState = { open: boolean; width: number | null; expanded: boolean; tabs: WorkspaceTab[]; activeId: string | null; folders?: string[] };
 const empty: WorkspaceState = { open: false, width: null, expanded: false, tabs: [], activeId: null };
@@ -41,7 +41,7 @@ function releaseBrowserEvents() {
   browserEventsStop?.(); browserEventsStop = undefined;
 }
 const read = (owner: string) => states.get(resolveWorkspaceOwner(owner)) || empty;
-const titles: Record<WorkspaceKind, string> = { review: 'Review', changes: 'Changes', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat' };
+const titles: Record<WorkspaceKind, string> = { review: 'Review', changes: 'Changes', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat', subagents: 'Sub-Agents' };
 function subscribe(owner: string, fn: () => void) {
   const set = listeners.get(owner) || new Set();
   listeners.set(owner, set); set.add(fn);
@@ -89,7 +89,7 @@ export function addWorkspaceTab(owner: string, kind: WorkspaceKind, details: Par
   // Files is a reusable explorer. Selecting a different file updates its preview
   // instead of accumulating a tab for every click in the tree.
   const existing = (kind === 'files' ? state.tabs.find(tab => tab.id === state.activeId && tab.kind === 'files') : undefined)
-    || state.tabs.find(tab => tab.kind === kind && (kind === 'terminal' || kind === 'review' || kind === 'changes' || kind === 'files'));
+    || state.tabs.find(tab => tab.kind === kind && (kind === 'terminal' || kind === 'review' || kind === 'changes' || kind === 'files' || kind === 'subagents'));
   if (existing) {
     const requestedReview = kind === 'review' && details.path ? { reviewPathRequest: (existing.reviewPathRequest || 0) + 1, ...(existing.review ? { review: { ...existing.review, selected: details.path, scope: 'chat' as const } } : {}) } : {};
     updateWorkspace(owner, { open: true, activeId: existing.id, tabs: state.tabs.map(tab => tab.id === existing.id ? { ...tab, ...details, ...requestedReview, id: tab.id, kind, title: details.title || tab.title } : tab) });

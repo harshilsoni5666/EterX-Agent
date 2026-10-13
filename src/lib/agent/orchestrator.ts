@@ -1,5 +1,6 @@
 import { WorkspaceManager } from './workspace/manager';
 import { initializeChatWorkspace } from './workspace/runtime-context';
+import { managedWorkspaces } from './workspace/managed';
 import { globalMemoryManager } from './memory/store';
 import { memoryV2 } from './memory/v2';
 import { getSynapseGraphForChat, flushSynapseGraph } from './memory/synapse-graph';
@@ -23,6 +24,7 @@ import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES } from './tools/security/tool_policy';
 import { MAX_SUB_AGENTS } from './sub-agent-settings';
 import { hasExplicitSubAgentRequest } from './roles/sub_agent_strategy';
+import { isRuntimeSwarmMode } from './swarm-mode';
 import { AGENT_BUILDER_RUNTIME, AGENT_FLOW_RUNTIME, CUSTOM_AGENT_RUNTIME, loadCustomAgentProfile, summarizeAgentBuilderProfile } from './builder-agent';
 import { agentBuilderRunFlowTool } from './tools/automation/agent_builder';
 import { getToolDisplayLabel, normalizeToolTraceName, summarizeTraceValue } from './tool-trace';
@@ -392,6 +394,29 @@ export class AgentOrchestrator {
     leasedApiKey?: string,
     runtimeSettings?: ScopedRuntimeSettings | null
   ): Promise<AgentResponse> {
+    const workspace = await initializeChatWorkspace(projectId, userId, pinnedContext);
+    const release = managedWorkspaces.acquireWorkspaceLease(workspace.workspacePath);
+    try {
+      return await this.executePipelineInWorkspace(userId, projectId, userRequest, history, onTrace, mode,
+        { ...pinnedContext, workspacePath: workspace.workspacePath, runLocation: workspace.runLocation },
+        mediaFiles, imageBackupParts, userName, leasedApiKey, runtimeSettings);
+    } finally { release(); }
+  }
+
+  private async executePipelineInWorkspace(
+    userId: string,
+    projectId: string,
+    userRequest: string,
+    history: any[] = [],
+    onTrace?: (trace: any) => void,
+    mode: MainAgentMode = 'think',
+    pinnedContext: any = null,
+    mediaFiles: any[] = [],
+    imageBackupParts: any[] = [],
+    userName?: string,
+    leasedApiKey?: string,
+    runtimeSettings?: ScopedRuntimeSettings | null
+  ): Promise<AgentResponse> {
     const shouldHydrateMemory = !pinnedContext?.disableMemoryHydration;
     const shouldPersistLongTermMemory = !pinnedContext?.disableLongTermMemory;
     const selfImprovementEnabled = shouldPersistLongTermMemory
@@ -503,10 +528,19 @@ export class AgentOrchestrator {
     Object.assign(context, await initializeChatWorkspace(projectId, userId, pinnedContext));
     // Spawning authority is opt-in per run. Treat omitted/stale pinned fields
     // as disabled instead of silently inheriting the broad Main capability.
-    const explicitlyRequestedDelegation = hasExplicitSubAgentRequest(userRequest);
+    (context as any).rootUserRequest = context.workingContextRequest?.visibleText || userRequest;
+    context.planMode = pinnedContext?.planMode === true;
+    context.swarmMode = isRuntimeSwarmMode(projectId, pinnedContext?.swarmMode === true);
+    context.swarmRunId = context.runId || context.turnId || projectId;
+    context.agentDepth = 0;
+    const explicitlyRequestedDelegation = context.swarmMode || hasExplicitSubAgentRequest(userRequest);
     const agentSpawningEnabled = (pinnedContext?.allowAgentSpawning === true || explicitlyRequestedDelegation)
       && (pinnedContext?.disableSubAgents !== true || explicitlyRequestedDelegation);
     context.disableSubAgents = !agentSpawningEnabled;
+    (context as any)._baseDelegation = {
+      allowed: (pinnedContext?.allowAgentSpawning === true && pinnedContext?.disableSubAgents !== true) || hasExplicitSubAgentRequest(userRequest),
+      disabled: !((pinnedContext?.allowAgentSpawning === true && pinnedContext?.disableSubAgents !== true) || hasExplicitSubAgentRequest(userRequest)),
+    };
     if (pinnedContext) {
       context.disableMemoryHydration = !!pinnedContext.disableMemoryHydration;
       context.disableLongTermMemory = !!pinnedContext.disableLongTermMemory;

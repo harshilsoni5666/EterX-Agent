@@ -6,6 +6,7 @@ import { hydrateServerRuntimeSettings } from './server-runtime-hydration';
 import { buildScopedRuntimeSettings } from './runtime-api-keys';
 import { isModelProvider, isConcreteModelId, MODEL_PROVIDER_MODE } from './model-selector-store';
 import { normalizeThinkingLevelForModel } from './model-routing';
+import { readStoredModelMetadata } from './stored-model-metadata';
 import { getCodingMode } from '../code/coding-modes';
 import { callGateway } from './gateway-client';
 import { formatVisibleWorkNote } from './work-note';
@@ -243,6 +244,7 @@ class TelegramBotRuntime {
       await this.ack(event); return { status: 'needs-agent' };
     }
     const runId = `bot_run_${event.id}`;
+    const modelMetadata = readStoredModelMetadata(bot.model.provider, bot.model.modelId);
     const pinned = {
       triggerSource: 'gateway', source: 'telegram-bot', runLocation: 'local',
       ownerChatId: id, agentSessionId: `telegram_bot_${bot.id}_${id}`, agentName: bot.name,
@@ -257,7 +259,9 @@ class TelegramBotRuntime {
       workspacePath: bot.workspacePath || undefined,
       ...(bot.workspacePath ? { paths: [bot.workspacePath], isFocusedWorkspace: true } : {}),
       selectedModelProvider: bot.model.provider, selectedModelName: bot.model.modelId, strictModelSelection: true,
-      thinkingLevel: normalizeThinkingLevelForModel(bot.thinkingLevel, bot.model.provider, bot.model.modelId),
+      thinkingLevel: normalizeThinkingLevelForModel(bot.thinkingLevel, bot.model.provider, bot.model.modelId, modelMetadata.thinking),
+      modelThinkingCapability: modelMetadata.thinking,
+      modelWireCapabilities: modelMetadata.wire,
       allowBrowserControl: bot.allowBrowserControl, allowHostControl: bot.allowHostControl, computerUseEnabled: bot.allowHostControl,
       disableSharedCache: true, exportTranscript: false,
       ...(coding ? { agentRuntime: 'main_coding_agent', agentProfile: coding.profile, agentId: coding.id } : {}),

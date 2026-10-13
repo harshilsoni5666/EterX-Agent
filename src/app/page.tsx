@@ -1,7 +1,8 @@
 "use client";
 
-import { readChatPlanMode, writeChatPlanMode, summarizeChatUsage } from '../lib/chat-command-state';
+import { readChatPlanMode, writeChatPlanMode, readChatSwarmMode, writeChatSwarmMode, summarizeChatUsage } from '../lib/chat-command-state';
 import { requestJson } from '../lib/request-json';
+import { useDesktopUpdates } from '../lib/desktop-updates';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../lib/app-visibility';
 import Loading from './loading';
 import { reloadApp } from '../lib/reload-app';
@@ -50,6 +51,7 @@ import { DEFAULT_GEMINI_LIVE_MODEL, getDefaultLiveVoice, getLiveModelOptions, is
 import {
   MAIN_AGENT_MODEL_OPTIONS,
   MAIN_AGENT_THINKING_LEVEL_STORAGE_KEY,
+  getModelThinkingOptions,
   normalizeModelThinkingCapabilities,
   normalizeMainAgentThinkingLevel,
   normalizeThinkingLevelForModel,
@@ -91,8 +93,10 @@ import { agentIdentitiesOverlap, areLikelySameFeedActionLifecycle, createStopped
 import { resolveChatSendTarget } from '../lib/chat-send-lifecycle';
 import { projectSteeringDelivery, sameUserAdmission, steeringMessageIds, upsertQueuedSteering, settledQueueAdmissionIds, normalizeAdmissionId, queuedFollowUpKey } from '../lib/steering-delivery';
 import { mergeUserAttachments } from '../lib/chat-user-payload';
-import { contextMeasurementModel, mergeContextCompactionSnapshot, upsertContextUsageSnapshot } from '../lib/context-usage-snapshot';
-import { readContextUsageMeter } from '../lib/context-usage-meter';
+import { mergeContextCompactionSnapshot, upsertContextUsageSnapshot } from '../lib/context-usage-snapshot';
+import { readChatContextUsage } from '../lib/chat-context-usage';
+import { upsertModelUsageReceipt } from '../lib/model-usage';
+import { selectMainContextLogs, selectSubAgentUsageLogs, traceBelongsToUsageChat } from '../lib/chat-usage-scope';
 import { CONTEXT_BUDGET_REVISIONS_KEY, contextWindowLimitNote, normalizeContextWindow, normalizeModelContextWindows, resolveContextWindowBudget, resolveSavedContextBudget } from '../lib/context-window-policy';
 import {
   chatComposerStateKey,
@@ -118,6 +122,8 @@ import { formatUnknownError } from '../lib/agent/error-format';
 import { WorkMenuSectionButton, WorkMenuEmptyState, WorkMenuStatusIndicator, WorkMenuStatusBadge } from '../components/layout/WorkMenuHelpers';
 import { FloatingPetMonitor, PetThinkingLabel, getLatestPetMonitorText } from '../components/chat/FloatingPetMonitor';
 import { SubAgentIdentityIcon } from '../components/chat/agent-icons';
+import { projectSubAgentFeed } from '../lib/sub-agent-feed';
+import { getFeedTraceWorkerScope } from '../lib/chat-feed-lifecycle';
 import {
   computeNextScheduledRun,
   normalizeScheduledTask,
@@ -249,6 +255,8 @@ const getVisibleUserActionText = (log: any): string => {
 };
 
 const traceTurnOwnershipMatches = (left: any, right: any): boolean => {
+  if (getFeedTraceWorkerScope(left) !== getFeedTraceWorkerScope(right)) return false;
+  if (left?.subAgentTurnId && right?.subAgentTurnId && left.subAgentTurnId !== right.subAgentTurnId) return false;
   const leftChatId = String(left?.ownerChatId || left?.chatId || '').trim();
   const rightChatId = String(right?.ownerChatId || right?.chatId || '').trim();
   if (leftChatId && rightChatId && leftChatId !== rightChatId) return false;
@@ -586,7 +594,7 @@ interface ChatSession extends ChatTitleMetadata {
   modelSelection?: string;
   isFavorite?: boolean;
   workspacePath?: string | null;
-  runLocation?: 'local' | 'sandbox';
+  runLocation?: 'local' | 'sandbox' | 'worktree';
 }
 
 type ComposerAttachment = {
@@ -945,6 +953,20 @@ const readRuntimeModelWireCapabilities = (selection = readRuntimeChatModelSelect
   } catch {
     return [];
   }
+};
+
+const readRuntimeThinkingOptions = (selection: string) => {
+  const entry = parseModelEntryKey(selection);
+  return entry ? getModelThinkingOptions(entry.provider, entry.modelId, readRuntimeModelThinkingCapability(selection)) : [];
+};
+
+const runtimeThinkingSelectionError = (selection: string, value: unknown): string | null => {
+  if (value === undefined) return null;
+  const options = readRuntimeThinkingOptions(selection);
+  if (options.some(option => option.id === value)) return null;
+  return options.length
+    ? `This model supports these thinking options: ${options.map(option => option.id).join(', ')}.`
+    : 'This model uses provider defaults and does not expose an adjustable thinking option.';
 };
 
 const readRuntimeModelOverrides = (): Record<string, string> => {
@@ -1338,7 +1360,7 @@ function DeepWorkUI() {
   // Interface for all composer state elements saved per-chat
   interface ChatComposerState {
     inputValue: string;
-    runLocation: 'local' | 'sandbox';
+    runLocation: 'local' | 'sandbox' | 'worktree';
     selectedAgent: SelectedAgentState;
     agentMode: MainAgentMode;
     thinkingLevel: MainAgentThinkingLevel;
@@ -2068,6 +2090,8 @@ function DeepWorkUI() {
     return next;
   }, [chats]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [compactingChats, setCompactingChats] = useState<Record<string, boolean>>({});
+  const manualCompactionJobsRef = useRef(new Map<string, Promise<void>>());
   const [terminalDraftId, setTerminalDraftId] = useState('terminal-draft-initial');
   useEffect(() => {
     setTerminalDraftId(current => current === 'terminal-draft-initial' ? `terminal-draft-${crypto.randomUUID()}` : current);
@@ -2199,7 +2223,7 @@ function DeepWorkUI() {
   } | null>(null);
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
   const workspaceSelectionsRef = useRef(new Map<string, string | null>());
-  const [activeRunLocation, setActiveRunLocation] = useState<'local' | 'sandbox'>('local');
+  const [activeRunLocation, setActiveRunLocation] = useState<'local' | 'sandbox' | 'worktree'>('local');
   const [pinnedItems, setPinnedItems] = useState<PinnedItem[]>([]);
   const [envDropdownOpen, setEnvDropdownOpen] = useState(false);
   const attachmentRevision = useMemo(() => [...traceLogs, ...queuedFollowUps.filter(item => item.chatId === activeChatId)].flatMap(log => [
@@ -2233,7 +2257,13 @@ function DeepWorkUI() {
   const [subAgentsSectionOpen, setSubAgentsSectionOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<string>('general');
-  const [hasUnreadUpdate, setHasUnreadUpdate] = useState(false);
+  const { updateState: desktopUpdate, updateActionError, runUpdateAction, markUpdateViewed } = useDesktopUpdates();
+  const [dismissedUpdateNotice, setDismissedUpdateNotice] = useState<string | null>(null);
+  const handledUpdateSettingsRequest = useRef<number | null>(null);
+  const hasAvailableUpdate = Boolean(desktopUpdate.availableVersion);
+  const updateNoticeKey = desktopUpdate.availableVersion
+    ? `${desktopUpdate.availableVersion}:${desktopUpdate.status === 'error' ? `error:${desktopUpdate.message}` : desktopUpdate.downloadReady ? 'ready' : 'available'}`
+    : null;
   const [activeTopbarMenu, setActiveTopbarMenu] = useState<'theme' | 'help' | null>(null);
   const topbarThemeOpen = activeTopbarMenu === 'theme';
   const topbarHelpOpen = activeTopbarMenu === 'help';
@@ -2241,6 +2271,7 @@ function DeepWorkUI() {
   const setTopbarHelpOpen = (v: boolean) => setActiveTopbarMenu(v ? 'help' : null);
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [subAgentDockOpen, setSubAgentDockOpen] = useState(false);
+  const showHeaderSubAgentDock = subAgentDockOpen && !workspaceControls.open;
   const [activeSubAgentTab, setActiveSubAgentTab] = useState<string | null>(null);
   const [subAgentOrder, setSubAgentOrder] = useState<string[]>([]);
   const attachmentOwnerKey = composerStateKey(activeChatId, activeSubAgentTab || 'main');
@@ -2599,24 +2630,34 @@ function DeepWorkUI() {
     if (tab && typeof tab === 'string') {
       setSettingsInitialTab(tab);
       if (tab === 'updates') {
-        setHasUnreadUpdate(false);
-        void (window as any)?.electronAPI?.markUpdateViewed?.();
+        markUpdateViewed();
+        setDismissedUpdateNotice(updateNoticeKey);
       }
     } else {
       setSettingsInitialTab('general');
     }
     setIsSettingsOpen(true);
-  }, [setSettingsInitialTab, setIsSettingsOpen]);
+  }, [setSettingsInitialTab, setIsSettingsOpen, markUpdateViewed, updateNoticeKey]);
+
+  const openAndStartUpdate = useCallback(() => {
+    openSettingsWindow('updates');
+    if (desktopUpdate.availableVersion && !desktopUpdate.downloadReady &&
+      (desktopUpdate.status === 'available' || desktopUpdate.status === 'error')) {
+      void runUpdateAction('downloadUpdate');
+    }
+  }, [openSettingsWindow, desktopUpdate.availableVersion, desktopUpdate.downloadReady, desktopUpdate.status, runUpdateAction]);
 
   useEffect(() => {
-    const desktopApi = (window as any)?.electronAPI;
-    if (typeof desktopApi?.getUpdateState !== 'function') return;
-    const applyUpdateState = (state: any) => setHasUnreadUpdate(state?.updateAvailableUnread === true);
-    const unsubscribe = typeof desktopApi.onUpdateState === 'function'
-      ? desktopApi.onUpdateState(applyUpdateState)
-      : undefined;
-    desktopApi.getUpdateState().then(applyUpdateState).catch(() => {});
-    return () => unsubscribe?.();
+    const request = desktopUpdate.openSettingsRequest;
+    if (!request || request === handledUpdateSettingsRequest.current) return;
+    handledUpdateSettingsRequest.current = request;
+    openSettingsWindow('updates');
+  }, [desktopUpdate.openSettingsRequest, openSettingsWindow]);
+
+  useEffect(() => {
+    const onOnline = () => (window as any).electronAPI?.notifyUpdateNetworkOnline?.();
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
   }, []);
 
   useEffect(() => {
@@ -5013,6 +5054,7 @@ function DeepWorkUI() {
                   id: modelEntryKey(entry.provider, entry.modelId),
                   provider: entry.provider,
                   modelId: entry.modelId,
+                  thinkingOptions: readRuntimeThinkingOptions(modelEntryKey(entry.provider, entry.modelId)),
                 })),
               };
             }
@@ -5287,6 +5329,8 @@ function DeepWorkUI() {
                 if (!title || !description) return { error: 'A title and task description are required.' };
                 const resolvedModel = resolveTaskModel(args.modelId);
                 if (resolvedModel.error) return { error: resolvedModel.error };
+                const thinkingError = runtimeThinkingSelectionError(resolvedModel.value!, args.thinkingLevel);
+                if (thinkingError) return { error: thinkingError };
                 const resolvedAgent = await resolveTaskAgent(args.agentId, args.agentName);
                 if ('error' in resolvedAgent) return { error: resolvedAgent.error };
                 const requestedTime = args.scheduled_at ? Date.parse(String(args.scheduled_at)) : Date.now();
@@ -5307,7 +5351,7 @@ function DeepWorkUI() {
                   title,
                   description,
                   model: resolvedModel.value,
-                  thinkingLevel: ['minimal', 'low', 'medium', 'high'].includes(String(args.thinkingLevel))
+                  thinkingLevel: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(String(args.thinkingLevel))
                     ? args.thinkingLevel
                     : undefined,
                   agentId: resolvedAgent.agentId,
@@ -5379,8 +5423,13 @@ function DeepWorkUI() {
                 }
                 if (args.thinkingLevel !== undefined) {
                   const level = String(args.thinkingLevel);
-                  if (!['minimal', 'low', 'medium', 'high'].includes(level)) return { error: 'Thinking level must be minimal, low, medium, or high.' };
+                  const thinkingError = runtimeThinkingSelectionError(existingTask.model, level);
+                  if (thinkingError) return { error: thinkingError };
                   existingTask.thinkingLevel = level as ScheduledTaskRecord['thinkingLevel'];
+                }
+                if (args.modelId !== undefined) {
+                  const entry = parseModelEntryKey(existingTask.model);
+                  if (entry) existingTask.thinkingLevel = normalizeThinkingLevelForModel(existingTask.thinkingLevel, entry.provider, entry.modelId, readRuntimeModelThinkingCapability(existingTask.model));
                 }
                 if (args.recurrence !== undefined) {
                   const recurrence = String(args.recurrence).trim().toLowerCase();
@@ -5532,15 +5581,15 @@ function DeepWorkUI() {
                 const selectedModel = resolveAgentModel(args.modelId ?? requestedAgent.preferredModel);
                 if (selectedModel.error) return { error: selectedModel.error };
                 const selectedThinking = args.thinkingLevel !== undefined ? String(args.thinkingLevel) : undefined;
-                if (selectedThinking && !['minimal', 'low', 'medium', 'high'].includes(selectedThinking)) {
-                  return { error: 'Thinking level must be minimal, low, medium, or high.' };
-                }
+                const thinkingError = runtimeThinkingSelectionError(selectedModel.value!, selectedThinking);
+                if (thinkingError) return { error: thinkingError };
                 handleAgentChange(requestedAgent.id, requestedAgent.name);
                 if (args.modelId !== undefined || requestedAgent.preferredModel) {
                   handleModelSelectionChange(selectedModel.value!);
                 }
                 const effectiveThinking = selectedThinking || requestedAgent.preferredThinkingLevel;
-                if (effectiveThinking) setThinkingLevel(effectiveThinking as MainAgentThinkingLevel);
+                const entry = parseModelEntryKey(selectedModel.value!);
+                if (entry) setThinkingLevel(normalizeThinkingLevelForModel(effectiveThinking, entry.provider, entry.modelId, readRuntimeModelThinkingCapability(selectedModel.value!)));
                 return {
                   success: true,
                   agentId: requestedAgentId,
@@ -5559,9 +5608,8 @@ function DeepWorkUI() {
                 const builderModel = resolveAgentModel(args.modelId ?? requestedAgent?.preferredModel);
                 if (builderModel.error) return { error: builderModel.error };
                 const builderThinking = args.thinkingLevel !== undefined ? String(args.thinkingLevel) : undefined;
-                if (builderThinking && !['minimal', 'low', 'medium', 'high'].includes(builderThinking)) {
-                  return { error: 'Thinking level must be minimal, low, medium, or high.' };
-                }
+                const thinkingError = runtimeThinkingSelectionError(builderModel.value!, builderThinking);
+                if (thinkingError) return { error: thinkingError };
                 handleOpenAgentBuilder(agentId, String(args.agentName || requestedAgent?.name || '').trim() || undefined);
                 if (operation === 'create' || operation === 'configure') {
                   const requirements = String(args.requirements || '').trim();
@@ -5686,7 +5734,9 @@ function DeepWorkUI() {
               } else if (args.action === 'set_mode' && args.mode) {
                 handleAgentModeChange(args.mode as any);
               } else if (args.action === 'set_thinking_level' && args.thinkingLevel) {
-                setThinkingLevel(args.thinkingLevel as any);
+                const thinkingError = runtimeThinkingSelectionError(composerRuntimeSelectionRef.current.modelSelection, args.thinkingLevel);
+                if (thinkingError) return { error: thinkingError };
+                setThinkingLevel(args.thinkingLevel as MainAgentThinkingLevel);
               }
               return { success: true, message: 'App UI controls updated.' };
             }
@@ -6619,7 +6669,9 @@ function DeepWorkUI() {
         return;
       }
       const key = stableId
-        ? `${ turnId }:${ log.type }:id:${ stableId }`
+        ? log.type === 'answer'
+          ? `${ turnId }:answer:owner:${ answerOwner }:${ log.subAgentTurnId || '' }:id:${ stableId }`
+          : `${ turnId }:${ log.type }:id:${ stableId }`
         : anonymousAnswerKey || `${ turnId }:${ log.type }:text:${ text }`;
       const previousIndex = transcriptIndexes.get(key);
       if (previousIndex === undefined) {
@@ -7520,7 +7572,7 @@ function DeepWorkUI() {
     }
   }, [activeChatId, terminalDraftId]);
 
-  const handleRunLocationChange = useCallback((location: 'local' | 'sandbox') => {
+  const handleRunLocationChange = useCallback((location: 'local' | 'sandbox' | 'worktree') => {
     setActiveRunLocation(location);
     updateComposerState(state => ({ ...state, runLocation: location }));
     if (activeChatId) {
@@ -8545,18 +8597,7 @@ function DeepWorkUI() {
       } else if (trace.type === 'context_usage') {
         upsertContextUsageSnapshot(logs, processedLog);
       } else if (trace.type === 'model_usage') {
-        // Chat-mode streams provider-measured usage through this same merge
-        // path. Keep one record per usage id so a late stream boundary cannot
-        // hide the token count from the feed summary.
-        const usageId = String(trace.usageId || '').trim();
-        const existingUsageIdx = usageId
-          ? logs.findIndex((log: any) => log?.type === 'model_usage' && String(log.usageId || '').trim() === usageId)
-          : -1;
-        if (existingUsageIdx >= 0) {
-          logs[existingUsageIdx] = { ...logs[existingUsageIdx], ...processedLog };
-        } else {
-          logs.push(processedLog);
-        }
+        upsertModelUsageReceipt(logs, processedLog);
       } else if (trace.type === 'progress' && String(trace.id || '').trim()) {
         const progressId = String(trace.id).trim();
         const progressIdx = logs.findIndex((log: any) =>
@@ -8583,7 +8624,7 @@ function DeepWorkUI() {
         }
       } else if (trace.type === 'task_plan') {
         mergeTaskPlanLog(logs, processedLog);
-      } else if (trace.type === 'answer' && !trace.subAgent) {
+      } else if (trace.type === 'answer') {
         const incomingIsStreaming = isFeedTraceOpen(trace);
         let answerIdx = -1;
         for (let i = logs.length - 1; i >= 0; i--) {
@@ -10172,20 +10213,10 @@ function DeepWorkUI() {
                 } else if (trace.type === 'context_usage') {
                   upsertContextUsageSnapshot(logs, timedTrace);
                 } else if (trace.type === 'model_usage') {
-                  // Usage is a first-class measured event. Replace only the
-                  // same provider usage id; never merge different model turns.
-                  const usageId = String(trace.usageId || '').trim();
-                  const existingUsageIdx = usageId
-                    ? logs.findIndex((log: any) => log?.type === 'model_usage' && String(log.usageId || '').trim() === usageId)
-                    : -1;
-                  if (existingUsageIdx >= 0) {
-                    logs[existingUsageIdx] = { ...logs[existingUsageIdx], ...timedTrace };
-                  } else {
-                    logs.push(timedTrace);
-                  }
+                  upsertModelUsageReceipt(logs, timedTrace);
                 } else if (trace.type === 'task_plan') {
                   mergeTaskPlanLog(logs, timedTrace);
-                } else if (trace.type === 'answer' && !trace.subAgent) {
+                } else if (trace.type === 'answer') {
                   const incomingIsStreaming = isFeedTraceOpen(trace);
                   let answerIdx = -1;
                   for (let i = logs.length - 1; i >= 0; i--) {
@@ -12048,7 +12079,7 @@ function DeepWorkUI() {
       thinkingLevel?: MainAgentThinkingLevel;
       /** Explicit execution target for background/gateway/scheduled dispatches. */
       workspacePath?: string | null;
-      runLocation?: 'local' | 'sandbox';
+      runLocation?: 'local' | 'sandbox' | 'worktree';
       createNewChat?: boolean;
       backgroundChat?: boolean;
       initialTitle?: string;
@@ -12378,6 +12409,7 @@ function DeepWorkUI() {
     if (shouldCreateTargetChat) {
       const createdChatId = String(chatIdToUse);
       writeChatPlanMode(createdChatId, readChatPlanMode(null));
+      writeChatSwarmMode(createdChatId, readChatSwarmMode(null));
       writeChatPlanMode(null, false);
       const createdComposerState: ChatComposerState = {
         inputValue: '',
@@ -12952,6 +12984,7 @@ function DeepWorkUI() {
             runLocation: runLocationVal,
             pinnedContext: {
               planMode: readChatPlanMode(chatIdToUse),
+              swarmMode: readChatSwarmMode(chatIdToUse),
               thinkingLevel: runThinkingLevel,
               // The custom-agent counter and runner must share the same exact
               // per-chat budget. Omitting this made the UI show (for example)
@@ -13208,6 +13241,7 @@ function DeepWorkUI() {
 
     const requestPinnedContext = {
       planMode: readChatPlanMode(chatIdToUse),
+              swarmMode: readChatSwarmMode(chatIdToUse),
       terminalShell: readStoredTerminalShell(),
               workspacePath: executionWorkspacePath || null,
       allowBrowserControl: readStoredBrowserAccess(),
@@ -14566,17 +14600,21 @@ function DeepWorkUI() {
             detail?.subAgentChatId || detail?.subAgentId || detail?.agentId ||
             (detailScope ? `${ detailScope }::legacy-agent::${ detailName }` : detailName)
           );
-          const existing = agentMap.get(detailIdentity);
-          agentMap.set(detailIdentity, {
-            id: detailIdentity,
+          const existingKey = findExistingAgentKey({ ...detail, turnId: log.turnId, runId: log.runId }, detailName) || detailIdentity;
+          const existing = agentMap.get(existingKey);
+          agentMap.set(existingKey, {
+            id: existingKey,
             subAgentId: detail?.subAgentId || detail?.agentId || existing?.subAgentId,
             subAgentChatId: detail?.subAgentChatId || existing?.subAgentChatId,
+            parentAgentId: detail?.parentAgentId || existing?.parentAgentId,
+            parentAgentName: detail?.parentAgentName || existing?.parentAgentName,
+            depth: detail?.depth ?? existing?.depth,
             name: detailName,
             turnScope: detailScope || existing?.turnScope,
             status: ['completed', 'error', 'closed', 'paused'].includes(String(existing?.status))
               ? existing.status
               : String(detail?.status || 'working'),
-            task: detail?.task || existing?.task || '',
+            task: existing?.task || detail?.task || '',
             unreadCount: Number(existing?.unreadCount || 0),
             stepCount: Number(existing?.stepCount || 0),
             durationMs: Number(existing?.durationMs || 0),
@@ -14612,6 +14650,9 @@ function DeepWorkUI() {
           id: agentIdentity,
           subAgentId: log.subAgentId,
           subAgentChatId: log.subAgentChatId,
+          parentAgentId: log.parentAgentId,
+          parentAgentName: log.parentAgentName,
+          depth: log.depth,
           name,
           turnScope,
           status: ['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete'].includes(log.type) ? 'completed'
@@ -14629,16 +14670,21 @@ function DeepWorkUI() {
 
       if (log.type === 'sub_agent_spawn') {
         const existing = agentMap.get(agentIdentity);
+        const isNewExecution = Boolean(existing?.completedAt && getTraceEventTime(log) > existing.completedAt);
         agentMap.set(agentIdentity, {
           id: agentIdentity,
           subAgentId: log.subAgentId || existing?.subAgentId,
           subAgentChatId: log.subAgentChatId || existing?.subAgentChatId,
+          parentAgentId: log.parentAgentId || existing?.parentAgentId,
+          parentAgentName: log.parentAgentName || existing?.parentAgentName,
+          depth: log.depth ?? existing?.depth,
           name,
           turnScope: turnScope || existing?.turnScope,
-          status: ['completed', 'error', 'closed', 'paused'].includes(String(existing?.status)) ? existing.status : 'working',
+          status: !isNewExecution && ['completed', 'error', 'closed', 'paused'].includes(String(existing?.status)) ? existing.status : (log.agentStatus || 'working'),
           task: log.task || log.secondary || log.text || '',
           unreadCount: Number(log.unreadCount ?? existing?.unreadCount ?? 0),
           stepCount: 0, durationMs: 0, startedAt: existing?.startedAt || getTraceEventTime(log) || firstTraceAt,
+          completedAt: isNewExecution ? undefined : existing?.completedAt,
         });
       } else if (log.type === 'sub_agent_action') {
         const a = agentMap.get(agentIdentity);
@@ -14648,8 +14694,9 @@ function DeepWorkUI() {
           a.currentAction = log.text?.substring(0, 80);
           a.stepCount = log.agentStep || (log._teamPollSignature ? a.stepCount : a.stepCount + 1);
           a.unreadCount = Number(log.unreadCount ?? a.unreadCount ?? 0);
-        } else if (a && reportedStatus === 'paused') {
-          a.status = 'paused';
+        } else if (a && ['paused', 'waiting', 'queued', 'planned', 'blocked'].includes(reportedStatus)) {
+          a.status = reportedStatus;
+          a.currentAction = log.text;
         }
       } else if (['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete'].includes(log.type)) {
         const a = agentMap.get(agentIdentity);
@@ -14697,13 +14744,15 @@ function DeepWorkUI() {
   );
   const activeSubAgentRuntime = useMemo(() => {
     if (!activeSubAgentTab) return null;
-    return [...traceLogs].reverse().find((log: any) =>
-      log?.type === 'model_selection' && agentIdentitiesOverlap(log, activeSubAgentTab)
+    return [...selectSubAgentUsageLogs(traceLogs, activeSubAgentInfo || activeSubAgentTab, activeChatId)].reverse().find((log: any) =>
+      ['model_selection', 'model_usage', 'context_usage'].includes(log?.type)
+      && log?.auxiliaryRuntime !== true && log?.phase !== 'chat_title'
+      && log?.provider && (log?.model || log?.modelId)
     ) || null;
-  }, [activeSubAgentTab, traceLogs]);
-  const activeSubAgentModelSelection = activeSubAgentRuntime?.provider && activeSubAgentRuntime?.model
-    ? modelEntryKey(String(activeSubAgentRuntime.provider), String(activeSubAgentRuntime.model))
-    : activeModelSelection;
+  }, [activeChatId, activeSubAgentInfo, activeSubAgentTab, traceLogs]);
+  const activeSubAgentModelSelection = activeSubAgentRuntime?.provider && (activeSubAgentRuntime?.model || activeSubAgentRuntime?.modelId)
+    ? modelEntryKey(String(activeSubAgentRuntime.provider), String(activeSubAgentRuntime.model || activeSubAgentRuntime.modelId))
+    : chats.find(chat => chat.id === activeChatId)?.modelSelection || AUTO_MODEL_SELECTION;
   const activeSubAgentModelSelectionKey = activeChatId && activeSubAgentTab
     ? `${ activeChatId }::${ activeSubAgentTab }`
     : '';
@@ -14771,74 +14820,38 @@ function DeepWorkUI() {
       state => ({ ...state, thinkingLevel: level }),
     );
   }, [activeChatId, activeSubAgentTab, setThinkingLevel, updateComposerStateAtKey]);
+  const chatUsageLogs = useMemo(() => traceLogs.filter(log =>
+    traceBelongsToUsageChat(log, activeChatId)
+  ), [activeChatId, traceLogs]);
+  const mainContextLogs = useMemo(() => selectMainContextLogs(chatUsageLogs, activeChatId, realSubAgents),
+    [activeChatId, chatUsageLogs, realSubAgents]);
+  const activeSubAgentUsageLogs = useMemo(() => selectSubAgentUsageLogs(
+    chatUsageLogs, activeSubAgentInfo || activeSubAgentTab, activeChatId,
+  ), [activeChatId, activeSubAgentInfo, activeSubAgentTab, chatUsageLogs]);
+  const composerChatUsage = useMemo(() => summarizeChatUsage(
+    activeSubAgentTab ? activeSubAgentUsageLogs : chatUsageLogs,
+  ), [activeSubAgentTab, activeSubAgentUsageLogs, chatUsageLogs]);
   const activeSubAgentContextUsage = useMemo(() => {
     if (!activeChatId || !activeSubAgentTab) return null;
-    const agentIdentity = activeSubAgentInfo || activeSubAgentTab;
-    const ownedAgentLogs = traceLogs.filter((log: any) =>
-      traceBelongsToChatFeed(log, activeChatId) && agentIdentitiesOverlap(log, agentIdentity)
-    );
-    const selectedModel = parseModelEntryKey(effectiveSubAgentModelSelection);
-    const meter = readContextUsageMeter(ownedAgentLogs, inputValue, selectedModel);
-    if (!meter.authoritative) return null;
-    let contextWindow = meter.contextWindow;
-    const compactionEvent = meter.latestCompactionEvent;
-    if (compactionEvent?.phase === 'failed'
-      && Number(meter.latestContextUsage?.contextBudgetRevision || 0) <= Number(compactionEvent.contextBudgetRevision || 0)) {
-      const raisedWindow = Number(compactionEvent.nextContextWindow || 0);
-      if (Number.isFinite(raisedWindow) && raisedWindow > contextWindow) contextWindow = raisedWindow;
-    }
-    const modelUsage = meter.latestProviderUsage || meter.latestContextUsage;
-    let contextLimitNote = contextWindowLimitNote(meter.requestedContextWindow, meter.modelContextWindow);
-    if (selectedModel && contextMeasurementModel(meter.latestContextUsage) !== contextMeasurementModel(selectedModel)) {
-      let catalogWindow = 0;
-      let savedSettings: any = {};
-      let chatOverride: unknown;
-      try {
-        catalogWindow = normalizeContextWindow(JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}')?.[effectiveSubAgentModelSelection]);
-        savedSettings = JSON.parse(appStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
-        chatOverride = JSON.parse(appStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}')?.[activeChatId];
-      } catch { }
-      const budget = resolveContextWindowBudget(resolveSavedContextBudget(savedSettings, chatOverride),
-        catalogWindow || resolveClientContextWindow(selectedModel.provider, selectedModel.modelId));
-      // Keep the last observed numerator marked as pending. Never present
-      // the previous model's capacity as the newly selected model's limit.
-      contextWindow = budget.configuredContextWindow;
-      contextLimitNote = contextWindowLimitNote(budget.requestedContextWindow, budget.modelContextWindow);
-    }
-    return {
-      ...meter,
-      contextWindow,
-      contextLimitNote,
-      utilizationPct: contextWindow > 0 ? Math.max(0, Math.min(100, (meter.usedTokens / contextWindow) * 100)) : 0,
-      providerName: String(modelUsage?.provider || '').trim() || undefined,
-      modelName: String(modelUsage?.model || modelUsage?.modelId || '').trim() || undefined,
-      compaction: compactionEvent ? {
-        phase: compactionEvent.phase,
-        beforeTokens: Number(compactionEvent.beforeTokens || 0),
-        afterTokens: Number.isFinite(Number(compactionEvent.afterTokens))
-          ? Number(compactionEvent.afterTokens)
-          : undefined,
-        modelProvider: String(compactionEvent.modelProvider || '').trim() || undefined,
-        modelName: String(compactionEvent.modelName || '').trim() || undefined,
-        failureTier: Number(compactionEvent.failureTier || 0) || undefined,
-        nextAttemptTokens: Number(compactionEvent.nextAttemptTokens || 0)
-          ? Math.min(Number(compactionEvent.nextAttemptTokens), Math.floor(contextWindow * 0.96))
-          : undefined,
-        nextContextWindow: Number(compactionEvent.nextContextWindow || 0)
-          ? Math.min(Number(compactionEvent.nextContextWindow), contextWindow)
-          : undefined,
-        summary: String(compactionEvent.summary || '').trim() || undefined,
-        timestamp: Number(compactionEvent.timestamp || 0) || undefined,
-      } : undefined,
-    };
-  }, [activeChatId, activeSubAgentInfo, activeSubAgentTab, effectiveSubAgentModelSelection, contextSettingsRevision, inputValue, traceLogs]);
-
+    return readChatContextUsage({
+      logs: activeSubAgentUsageLogs,
+      chatId: activeChatId,
+      draft: inputValue,
+      selectedModel: parseModelEntryKey(effectiveSubAgentModelSelection),
+      running: ['planned', 'spawning', 'running', 'working', 'paused'].includes(String(activeSubAgentInfo?.status || '').toLowerCase()),
+    });
+  }, [activeChatId, activeSubAgentInfo?.status, activeSubAgentTab, activeSubAgentUsageLogs,
+    effectiveSubAgentModelSelection, contextSettingsRevision, inputValue]);
   useEffect(() => {
     if (realSubAgents.length > 0) return;
     setSubAgentDockOpen(false);
     setActiveSubAgentTab(null);
     setOverflowDropdownOpen(false);
   }, [realSubAgents.length]);
+
+  useEffect(() => {
+    if (workspaceControls.open) setOverflowDropdownOpen(false);
+  }, [workspaceControls.open]);
 
   useEffect(() => {
     if (!activeChatId || realSubAgents.length === 0 || autoOpenedAgentDockChatsRef.current.has(activeChatId)) return;
@@ -15146,7 +15159,7 @@ function DeepWorkUI() {
           const status = rawStatus === 'running' ? 'working'
             : rawStatus === 'cancelled' ? 'closed'
               : rawStatus;
-          const signature = [identity, status, agent?.progress || '', agent?.task || '', agent?.unreadCount || 0].join('|');
+          const signature = [identity, status, agent?.progress || '', agent?.task || '', agent?.unreadCount || 0, agent?.completedAt || '', String(agent?.result || '').length, agent?.parentAgentId || '', agent?.depth || 0].join('|');
           if (seenSnapshots.get(identity) === signature) return [];
 
           const type = status === 'completed' ? 'sub_agent_complete'
@@ -15160,12 +15173,17 @@ function DeepWorkUI() {
             text: String(agent?.progress || (status === 'working' ? `${ agentName } working` : `${ agentName } ${ status }`)),
             secondary: String(agent?.task || '').substring(0, 160),
             task: agent?.task,
+            result: agent?.result,
+            endTime: agent?.completedAt,
             timestamp: Number(agent?.updatedAt || agent?.registeredAt || Date.now()),
             agentName,
             subAgent: agentName,
             subAgentId: agentId || undefined,
             subAgentChatId: subAgentChatId || undefined,
             agentStatus: status,
+            parentAgentId: agent?.parentAgentId,
+            parentAgentName: agent?.parentAgentName,
+            depth: agent?.depth,
             unreadCount: Number(agent?.unreadCount || 0),
             ownerChatId: agent?.ownerChatId,
             runId: agent?.runId,
@@ -15274,152 +15292,8 @@ function DeepWorkUI() {
   const subAgentDisplayLogs = useMemo(() => {
     if (!activeSubAgentTab) return [];
     const selectedAgent = currentSubAgents.find(agent => agentIdentitiesOverlap(agent, activeSubAgentTab));
-    const selectedAgentName = selectedAgent?.name || activeSubAgentTab;
-    const selectedStrongIds = new Set([
-      selectedAgent?.subAgentChatId,
-      selectedAgent?.subAgentId,
-      String(selectedAgent?.id || '').includes('::sub-agent::') ? selectedAgent?.id : '',
-      String(activeSubAgentTab).includes('::sub-agent::') ? activeSubAgentTab : '',
-      String(activeSubAgentTab).includes('::sub-agent::') ? String(activeSubAgentTab).split('::sub-agent::').pop() : '',
-    ].map(value => String(value || '').trim().toLowerCase()).filter(Boolean));
-    const belongsToSelectedWorker = (log: any) => {
-      if (!log) return false;
-      const logStrongIds = [
-        log.subAgentChatId,
-        log.subAgentId,
-        log.senderSubAgentChatId,
-        log.senderSubAgentId,
-        log.recipientSubAgentChatId,
-        log.recipientAgentId,
-      ].map((value: unknown) => String(value || '').trim().toLowerCase()).filter(Boolean);
-      if (selectedStrongIds.size > 0 && logStrongIds.length > 0) {
-        return logStrongIds.some(identity => selectedStrongIds.has(identity));
-      }
-      if (logStrongIds.length > 0) return false;
-      const agentName = String(log.agentName || log.subAgent || '').trim().toLowerCase();
-      return Boolean(agentName && agentName === String(selectedAgentName || '').trim().toLowerCase());
-    };
-    const ownedLogs = traceLogs
-      .filter(belongsToSelectedWorker)
-      .map((log: any) => {
-        const workerTurnId = String(log?.subAgentTurnId || '').trim();
-        return workerTurnId
-          ? { ...log, turnId: workerTurnId }
-          : log;
-      });
-    const terminalTypes = new Set(['sub_agent_answer', 'sub_agent_result', 'sub_agent_complete']);
-    const terminalPriority: Record<string, number> = { sub_agent_complete: 1, sub_agent_result: 2, sub_agent_answer: 3 };
-    const terminalAnswerText = (log: any) => String(
-      log?.result || log?.content || log?.answer || log?.resultSummary || log?.taskSummary || log?.text || ''
-    ).trim();
-    const terminalCandidates = ownedLogs.filter(log => terminalTypes.has(String(log?.type || '')));
-    const terminalWinners = new Map<string, any>();
-    for (const log of terminalCandidates) {
-      const fullResult = String(log?.result || log?.content || log?.answer || '').trim();
-      const resultIdentity = String(
-        log?.resultHash || log?.answerId || log?.runId || log?.turnId ||
-        `${ log?.subAgentId || selectedAgent?.id || activeSubAgentTab }:${ log?.timestamp || log?.endTime || terminalAnswerText(log).slice(0, 120) }`
-      );
-      const existing = terminalWinners.get(resultIdentity);
-      if (!existing) {
-        terminalWinners.set(resultIdentity, log);
-        continue;
-      }
-      const existingFullResult = String(existing?.result || existing?.content || existing?.answer || '').trim();
-      const shouldReplace = (fullResult && !existingFullResult)
-        || (Boolean(fullResult) === Boolean(existingFullResult)
-          && (terminalPriority[String(log?.type || '')] || 0) > (terminalPriority[String(existing?.type || '')] || 0));
-      if (shouldReplace) terminalWinners.set(resultIdentity, log);
-    }
-    const authoritativeTerminals = new Set(terminalWinners.values());
-    const filtered = ownedLogs.reduce<any[]>((next, log) => {
-      const type = String(log?.type || '');
-      if (['sub_agent_spawn', 'sub_agent_action', 'sub_agent_pause', 'sub_agent_resume', 'sub_agent_close'].includes(type)) return next;
-      if (terminalTypes.has(type)) {
-        if (!authoritativeTerminals.has(log)) return next;
-        const answerText = terminalAnswerText(log);
-        if (!answerText) return next;
-        const answerIdentity = String(
-          log.resultHash || log.answerId || log.runId || log.turnId ||
-          `${ log.subAgentId || selectedAgent?.id || activeSubAgentTab }:${ log.timestamp || log.endTime || answerText.slice(0, 120) }`
-        );
-        next.push({
-          ...log,
-          type: 'answer',
-          text: answerText,
-          answerId: log.answerId || `subagent-answer:${ answerIdentity }`,
-          isStreaming: false,
-          isLiveTyping: false,
-        });
-        return next;
-      }
-      if (type === 'user_action' && ['human_direct', 'direct_user'].includes(String(log?.source || '').toLowerCase())) {
-        next.push({ ...log, source: 'human', directToSubAgent: true });
-        return next;
-      }
-      if (type === 'sub_agent_error') {
-        next.push({ ...log, type: 'error', mainTurnTerminal: false });
-        return next;
-      }
-      if (type === 'inter_agent_message') {
-        const from = String(log.from || log.senderAgentName || '').trim().toLowerCase();
-        const selectedName = String(selectedAgentName || '').trim().toLowerCase();
-        if (from === selectedName) return next;
-        const messageText = String(log.body || log.content || log.text || '').trim();
-        if (messageText) next.push({
-          ...log,
-          type: 'user_action',
-          text: messageText,
-          id: log.messageId || log.id,
-          turnId: log.turnId || `inter-agent-turn-${ log.messageId || log.id }`,
-          source: log.source || 'human',
-        });
-        return next;
-      }
-      next.push(log);
-      return next;
-    }, []);
-
-    // Prepend a synthetic user_action log with the sub-agent's full task brief
-    const agentInfo = selectedAgent;
-    if (
-      agentInfo &&
-      agentInfo.task &&
-      !filtered.some(log =>
-        log?.type === 'user_action' &&
-        String(log?.text || '').trim() === String(agentInfo.task || '').trim()
-      )
-    ) {
-      const taskTurnId = `subagent-task:${ String(agentInfo.id || activeSubAgentTab) }`;
-      const taskTimestamp = Number(agentInfo.startedAt) ||
-        Number(filtered.find(log => Number(log?.startTime || log?.timestamp || 0) > 0)?.startTime ||
-          filtered.find(log => Number(log?.timestamp || 0) > 0)?.timestamp || 1);
-      return [
-        {
-          type: 'user_action',
-          text: agentInfo.task,
-          id: taskTurnId,
-          runId: taskTurnId,
-          turnId: taskTurnId,
-          timestamp: taskTimestamp,
-          startTime: taskTimestamp,
-          endTime: taskTimestamp,
-          source: 'human',
-          agentName: selectedAgentName,
-          subAgent: selectedAgentName,
-          subAgentId: agentInfo.subAgentId || (String(agentInfo.id || '').includes('::sub-agent::') ? String(agentInfo.id).split('::sub-agent::').pop() : agentInfo.id),
-          subAgentChatId: agentInfo.subAgentChatId || (String(agentInfo.id || '').includes('::sub-agent::') ? agentInfo.id : undefined),
-          ...(activeChatId ? { ownerChatId: activeChatId } : {}),
-        },
-        ...filtered.map((log: any) => ({
-          ...log,
-          ...(activeChatId ? { ownerChatId: activeChatId } : {}),
-        }))
-      ];
-    }
-    return filtered;
+    return projectSubAgentFeed(traceLogs, selectedAgent, activeChatId);
   }, [activeChatId, traceLogs, activeSubAgentTab, currentSubAgents]);
-
   // Which logs to show in ChatFeed — main or sub-agent
   const autonomousSelected = selectedAgent === 'autonomous';
   const proxyAgentSelected = proxyEnabled && !buildingAgentId && !activeSubAgentTab;
@@ -15467,133 +15341,20 @@ function DeepWorkUI() {
   }, [displayTraceLogs, isThinking]);
   const composerContextUsage = useMemo(() => {
     const isAgentBuilderComposer = Boolean(
-      buildingAgentId
-      || activeChatId?.startsWith('agent_builder_')
-      || activeChatId?.includes('agent_builder'),
+      buildingAgentId || activeChatId?.startsWith('agent_builder_') || activeChatId?.includes('agent_builder'),
     );
-    // Keep the empty New Chat surface clean. The indicator begins with the
-    // first real user boundary. Agent Builder is a persistent editing surface,
-    // so its context indicator is available immediately in every builder chat.
-    if (!isAgentBuilderComposer && !traceLogs.some((log: any) => log?.type === 'user_action')) return null;
-
-    const ownedLogs = traceLogs.filter((log: any) =>
-      traceBelongsToChatFeed(log, activeChatId)
-      && log?.auxiliaryRuntime !== true
-      && !realSubAgents.some((agent: any) => agentIdentitiesOverlap(log, agent))
-    );
-
-    const selectedEntry = parseModelEntryKey(effectiveMainModelSelection);
-    const latestMeasuredModel = [...ownedLogs].reverse().find((log: any) =>
-      (log?.type === 'model_usage' || log?.type === 'context_usage')
-      && log?.phase !== 'chat_title'
-      && String(log?.provider || '').trim()
-      && String(log?.model || log?.modelId || '').trim()
-    );
-    // Auto/legacy chats may not own a concrete selection yet. Their latest
-    // provider measurement is still an authoritative model identity and must
-    // keep the live meter available instead of disappearing at this point.
-    if (!selectedEntry && !latestMeasuredModel && !isAgentBuilderComposer) return null;
-    const fallbackConfig = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === agentMode) || MAIN_AGENT_MODEL_OPTIONS[0];
-    const provider = selectedEntry?.provider
-      || String(latestMeasuredModel?.provider || '').trim()
-      || fallbackConfig.provider;
-    const modelId = selectedEntry?.modelId
-      || String(latestMeasuredModel?.model || latestMeasuredModel?.modelId || '').trim()
-      || fallbackConfig.modelName;
-
-    const meter = readContextUsageMeter(ownedLogs, inputValue, selectedEntry);
-    const {
-      usedTokens, breakdown, providerMetrics, providerMeasured, hasEstimatedDelta,
-      aggregateSource, providerInputTokens, latestContextUsage, latestProviderUsage,
-      latestCompactionEvent, draftTokens, liveEstimateTokens, updatedAt,
-    } = meter;
-    let discoveredMaximum = 0;
-    let savedSettings: any = {};
-    let chatOverride: unknown;
-    let savedBudgetRevision = 0;
-    try {
-      discoveredMaximum = normalizeContextWindow(
-        JSON.parse(appStorage.getItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY) || '{}')?.[modelEntryKey(provider, modelId)],
-      );
-      savedSettings = JSON.parse(appStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
-      const budgetRevisions = JSON.parse(appStorage.getItem(CONTEXT_BUDGET_REVISIONS_KEY) || '{}');
-      savedBudgetRevision = Math.max(Number(budgetRevisions.global || 0), Number(budgetRevisions.chats?.[activeChatId || ''] || 0));
-      if (activeChatId) {
-        chatOverride = JSON.parse(appStorage.getItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY) || '{}')?.[activeChatId];
-      }
-    } catch { }
-    const measuredModelMatches = latestContextUsage?.provider === provider
-      && String(latestContextUsage?.model || latestContextUsage?.modelId || '') === modelId;
-    const measuredModelWindow = measuredModelMatches ? normalizeContextWindow(latestContextUsage?.modelContextWindow) : 0;
-    const modelContextWindow = (isThinking ? measuredModelWindow || discoveredMaximum : discoveredMaximum || measuredModelWindow)
-      || resolveClientContextWindow(provider, modelId);
-    const budget = resolveContextWindowBudget(resolveSavedContextBudget(savedSettings, chatOverride), modelContextWindow);
-    const configuredContextWindow = budget.configuredContextWindow;
-    let contextWindow = configuredContextWindow;
-    const latestBreakdown = meter.breakdownSource === 'serialized_payload';
-    const authoritativeWindow = meter.contextWindow;
-    // While a run is active, its pinned server window is authoritative. Once
-    // idle, use the current setting so increasing a chat budget is reflected
-    // immediately instead of remaining stuck at an older smaller window.
-    if (isThinking && measuredModelMatches && Number.isFinite(authoritativeWindow) && authoritativeWindow >= 16_000) {
-      contextWindow = authoritativeWindow;
-    } else {
-      contextWindow = configuredContextWindow;
-    }
-    if (latestCompactionEvent?.phase === 'failed'
-      && savedBudgetRevision <= Number(latestCompactionEvent.contextBudgetRevision || 0)) {
-      const raisedWindow = Number(latestCompactionEvent.nextContextWindow || 0);
-      if (Number.isFinite(raisedWindow) && raisedWindow >= 16_000) {
-        contextWindow = Math.min(modelContextWindow, Math.max(contextWindow, raisedWindow));
-      }
-    }
-
-    const runtimeLimitIsPinned = isThinking && measuredModelMatches && normalizeContextWindow(latestContextUsage?.configuredContextWindow) > 0;
-    return {
-      usedTokens,
-      contextWindow,
-      contextLimitNote: contextWindowLimitNote(
-        runtimeLimitIsPinned ? latestContextUsage.requestedContextWindow : budget.requestedContextWindow,
-        runtimeLimitIsPinned ? latestContextUsage.modelContextWindow : modelContextWindow,
-      ),
-      utilizationPct: contextWindow > 0 ? Math.max(0, Math.min(100, (usedTokens / contextWindow) * 100)) : 0,
-      breakdown,
-      providerMetrics,
-      cacheStatus: meter.cacheStatus,
-      isEstimated: meter.isEstimated,
-      awaitingSelectedModelMeasurement: meter.awaitingSelectedModelMeasurement,
-      aggregateSource,
-      breakdownSource: latestBreakdown ? 'serialized_payload' as const : 'unavailable' as const,
-      providerInputTokens,
-      localEstimatedTokens: Number(latestContextUsage?.localEstimatedTokens || 0) || undefined,
-      draftTokens,
-      liveEstimateTokens,
-      providerName: String(latestProviderUsage?.provider || provider || '').trim() || undefined,
-      modelName: String(latestProviderUsage?.model || latestProviderUsage?.modelId || modelId || '').trim() || undefined,
-      compaction: latestCompactionEvent ? {
-        phase: latestCompactionEvent.phase,
-        beforeTokens: Number(latestCompactionEvent.beforeTokens || 0),
-        afterTokens: Number.isFinite(Number(latestCompactionEvent.afterTokens))
-          ? Number(latestCompactionEvent.afterTokens)
-          : undefined,
-        modelProvider: String(latestCompactionEvent.modelProvider || '').trim() || undefined,
-        modelName: String(latestCompactionEvent.modelName || '').trim() || undefined,
-        failureTier: Number(latestCompactionEvent.failureTier || 0) || undefined,
-        nextAttemptTokens: Number(latestCompactionEvent.nextAttemptTokens || 0)
-          ? Math.min(Number(latestCompactionEvent.nextAttemptTokens), Math.floor(modelContextWindow * 0.96))
-          : undefined,
-        nextContextWindow: Number(latestCompactionEvent.nextContextWindow || 0)
-          ? Math.min(Number(latestCompactionEvent.nextContextWindow), modelContextWindow)
-          : undefined,
-        summary: String(latestCompactionEvent.summary || '').trim() || undefined,
-        timestamp: Number(latestCompactionEvent.timestamp || 0) || undefined,
-      } : undefined,
-      providerMeasured,
-      hasDraftEstimate: draftTokens > 0,
-      hasEstimatedDelta,
-      updatedAt,
-    };
-  }, [activeChatId, agentMode, buildingAgentId, contextSettingsRevision, effectiveMainModelSelection, inputValue, isThinking, proxyModelEntries, realSubAgents, traceLogs]);
+    if (!isAgentBuilderComposer && !mainContextLogs.some(log => log?.type === 'user_action')) return null;
+    const fallback = MAIN_AGENT_MODEL_OPTIONS.find(option => option.id === agentMode) || MAIN_AGENT_MODEL_OPTIONS[0];
+    return readChatContextUsage({
+      logs: mainContextLogs,
+      chatId: activeChatId,
+      draft: inputValue,
+      selectedModel: parseModelEntryKey(effectiveMainModelSelection),
+      fallbackModel: isAgentBuilderComposer ? { provider: fallback.provider, modelId: fallback.modelName } : undefined,
+      running: isThinking,
+    });
+  }, [activeChatId, agentMode, buildingAgentId, contextSettingsRevision, effectiveMainModelSelection,
+    inputValue, isThinking, mainContextLogs]);
   // Compute effective thinking state
   const mainAgentState = currentSubAgents.find(agent => agent.name === 'Main');
   const selectedSubAgentState = activeSubAgentTab && !autonomousSelected
@@ -16394,21 +16155,38 @@ function DeepWorkUI() {
           {/* Updates stays in its existing position after Help. */}
           <button type="button"
             data-active={isSettingsOpen && settingsInitialTab === 'updates' ? 'true' : undefined}
-            onClick={() => openSettingsWindow('updates')}
+            data-update-available={hasAvailableUpdate ? 'true' : undefined}
+            onClick={openAndStartUpdate}
+            title={hasAvailableUpdate ? desktopUpdate.message : 'Open application updates'}
+            aria-label={hasAvailableUpdate ? `EterX ${desktopUpdate.availableVersion}: ${desktopUpdate.downloadReady ? 'ready to restart; open Updates' : desktopUpdate.status === 'downloading' ? 'downloading; view progress' : 'download update'}` : 'Open application updates'}
             className="eterx-topbar-btn relative px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
-            Updates
-            {hasUnreadUpdate && (
-              <span
-                aria-label="Update available"
-                className="absolute right-[3px] top-[6px] h-[6px] w-[6px] rounded-full bg-[#3B82F6]"
-                style={{ boxShadow: 'none' }}
-              />
-            )}
+            {hasAvailableUpdate
+              ? desktopUpdate.status === 'installing' ? 'Restarting…'
+                : desktopUpdate.downloadReady ? 'Restart to update'
+                  : desktopUpdate.status === 'downloading' ? `Updating ${Math.round(desktopUpdate.percent)}%`
+                    : 'Update'
+              : 'Updates'}
           </button>
         </div>
         <div className="flex-1 pointer-events-none" />
       </div>
+      {!isSettingsOpen && updateNoticeKey && dismissedUpdateNotice !== updateNoticeKey &&
+        ((desktopUpdate.status === 'available' && desktopUpdate.updateAvailableUnread) || desktopUpdate.status === 'ready' || desktopUpdate.status === 'error') && (
+        <div className="eterx-update-notice fixed right-5 top-14 z-[250] flex w-[380px] max-w-[calc(100vw-2.5rem)] items-center gap-4 rounded-2xl border p-4 shadow-xl" role="status" aria-live="polite">
+          <div className="min-w-0">
+            <p className="text-[13px] font-semibold">{desktopUpdate.status === 'error' ? 'Update needs attention' : `EterX ${desktopUpdate.availableVersion} ${desktopUpdate.downloadReady ? 'is ready' : 'is available'}`}</p>
+            <p className="mt-1 text-[12px] opacity-70">{desktopUpdate.status === 'error' ? desktopUpdate.message : desktopUpdate.downloadReady ? 'Restart when you are ready to install.' : 'Get the latest improvements.'}</p>
+            <button type="button" className="mt-2 rounded-full bg-[#168eea] px-4 py-1.5 text-[12px] font-semibold text-white hover:bg-[#087cd4] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" onClick={openAndStartUpdate}>
+              {desktopUpdate.downloadReady ? 'Open Updates' : desktopUpdate.status === 'error' ? 'Retry download' : 'Update now'}
+            </button>
+          </div>
+          <button type="button" aria-label="Dismiss update notification" className="self-start rounded-md p-1 opacity-60 hover:opacity-100 focus-visible:outline" onClick={() => { setDismissedUpdateNotice(updateNoticeKey); markUpdateViewed(); }}><X size={15} /></button>
+        </div>
+      )}
+      {updateActionError && isSettingsOpen && settingsInitialTab === 'updates' && (
+        <div role="alert" className="fixed bottom-5 left-1/2 z-[10000] -translate-x-1/2 rounded-xl bg-[#402020] px-5 py-3 text-sm text-white">{updateActionError}</div>
+      )}
       <FloatingPetMonitor
         open={petWidgetOpen && !nativePetAvailable}
         isThinking={isThinking}
@@ -16498,7 +16276,7 @@ function DeepWorkUI() {
                     const headerLabel = activeView === 'projects' ? 'Tasks' : activeView === 'channels' ? (gatewayScreen ? 'Gateway' : 'Channels') : 'Agents';
                     return (
                       <div className="relative min-w-0 [-webkit-app-region:no-drag] pl-3.5 py-1">
-                        {activeView === 'channels' && gatewayScreen && <button type="button" aria-label="Back to Channels" onClick={() => window.dispatchEvent(new CustomEvent('eterx_gateway_back'))} className="group -ml-2 mr-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 bg-white text-black/75 shadow-none transition hover:-translate-x-0.5 hover:bg-black/[0.04] hover:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1d8cff]/40 dark:border-white/10 dark:bg-white/[0.06] dark:text-white/85 dark:hover:bg-white/10"><ArrowLeft className="h-5 w-5 stroke-[2.5] transition-transform group-hover:-translate-x-0.5" /></button>}
+                        {activeView === 'channels' && gatewayScreen && <button type="button" aria-label="Back to Channels" onClick={() => window.dispatchEvent(new CustomEvent('eterx_gateway_back'))} className="group -ml-2 mr-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 bg-white text-black/75 shadow-none transition hover:-translate-x-0.5 hover:bg-black/[0.04] hover:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--muted-foreground)] dark:border-white/10 dark:bg-white/[0.06] dark:text-white/85 dark:hover:bg-white/10"><ArrowLeft className="h-5 w-5 stroke-[2.5] transition-transform group-hover:-translate-x-0.5" /></button>}
                         <span className={`eterx-view-header-label ${gatewayScreen && activeView === 'channels' ? 'text-[24px]' : 'text-[20px]'} font-bold text-white tracking-tight select-none`}>{headerLabel}</span>
                       </div>
                     );
@@ -16724,8 +16502,8 @@ function DeepWorkUI() {
               </div>
 
 
-              {/* Sub-Agent Tabs — shown in header when agents are active */}
-              {subAgentDockOpen && realSubAgents.length > 0 && activeView === 'chat' && activeChatId && !autonomousSelected && (
+              {/* The side workspace owns agent navigation when the chat is split. */}
+              {showHeaderSubAgentDock && realSubAgents.length > 0 && activeView === 'chat' && activeChatId && !autonomousSelected && (
                 <div className="eterx-agent-dock pointer-events-auto [-webkit-app-region:no-drag]" role="tablist" aria-label="Agent workspaces">
                   {/* Main agent tab */}
                   <button
@@ -17118,16 +16896,21 @@ function DeepWorkUI() {
                 )}
                 {canUseMonitor && realSubAgents.length > 0 && !autonomousSelected && (
                   <Tooltip
-                    text={subAgentDockOpen ? 'Close subagent tabs' : `Open subagent tabs (${ realSubAgents.length })`}
+                    text={workspaceControls.open ? `Open Sub-Agents (${ realSubAgents.length })` : showHeaderSubAgentDock ? 'Close subagent tabs' : `Open subagent tabs (${ realSubAgents.length })`}
                     side="bottom"
                     delay={450}
                   >
                     <button
                       type="button"
-                      aria-label={subAgentDockOpen ? 'Close subagent tabs' : 'Open subagent tabs'}
+                      aria-label={workspaceControls.open ? 'Open Sub-Agents' : showHeaderSubAgentDock ? 'Close subagent tabs' : 'Open subagent tabs'}
                       onMouseDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation();
+                        if (workspaceControls.open) {
+                          setOverflowDropdownOpen(false);
+                          addWorkspaceTab(terminalChatId, 'subagents');
+                          return;
+                        }
                         setSubAgentDockOpen(previous => {
                           const next = !previous;
                           if (!next) {
@@ -17137,10 +16920,10 @@ function DeepWorkUI() {
                           return next;
                         });
                       }}
-                      className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ subAgentDockOpen ? 'bg-[var(--sidebar-toggle-hover-bg)] text-[var(--sidebar-hover-text)]' : 'text-[var(--sidebar-muted-text)]' }`}
+                      className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ showHeaderSubAgentDock ? 'bg-[var(--sidebar-toggle-hover-bg)] text-[var(--sidebar-hover-text)]' : 'text-[var(--sidebar-muted-text)]' }`}
                     >
                       <AnimatePresence mode="wait" initial={false}>
-                        {subAgentDockOpen ? (
+                        {showHeaderSubAgentDock ? (
                           <motion.span
                             key="close-subagent-tabs"
                             initial={{ opacity: 0, rotate: -45, scale: 0.75 }}
@@ -17470,6 +17253,24 @@ function DeepWorkUI() {
                   >
                     <div className="eterx-workspace-main-column">
                     <div ref={conversationPaneRef} className="eterx-conversation-pane relative flex min-h-0 min-w-0 flex-1 flex-col">
+                    <AnimatePresence>
+                      {activeChatId && compactingChats[activeChatId] && !activeSubAgentTab && (
+                        <motion.div
+                          key={`compacting-${activeChatId}`}
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -4 }}
+                          transition={{ duration: 0.16 }}
+                          className="pointer-events-none absolute inset-x-0 top-3 z-50 flex justify-center"
+                        >
+                          <div role="status" aria-live="polite" aria-busy="true"
+                            className="eterx-floating-compaction inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-[12px] font-medium leading-4 backdrop-blur-md">
+                            <span aria-hidden="true" className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-current border-r-transparent opacity-70" />
+                            Compacting
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                     {proxyAgentSelected && activeChatId && (
                       <div data-controls-open={compactProxyOpen ? 'true' : 'false'} className="eterx-proxy-dock pointer-events-none absolute right-6 top-1/2 z-[60] w-[224px] -translate-y-1/2 transition-all duration-300 ease-in-out">
                         {sideTerminalVisible && (
@@ -18164,14 +17965,23 @@ function DeepWorkUI() {
                       onAgentChange={handleAgentChange}
                       onOpenPet={openPetWidget}
                       workspacePath={activeWorkspacePath}
+                      workspaceOwnerId={terminalChatId}
                       onWorkspacePathChange={handleWorkspacePathChange}
                       runLocation={activeRunLocation}
                       onRunLocationChange={handleRunLocationChange}
                       chatModelSelection={activeSubAgentTab ? effectiveSubAgentModelSelection : effectiveMainModelSelection}
                       onModelSelectionChange={activeSubAgentTab ? handleSubAgentModelSelectionChange : handleModelSelectionChange}
                       onOpenSettingsTab={openSettingsWindow}
-                      chatTitle={chats.find(chat => chat.id === activeChatId)?.title || 'New chat'}
-                      chatUsage={summarizeChatUsage(traceLogs.filter((log: any) => traceBelongsToChatFeed(log, activeChatId)))}
+                      chatTitle={activeSubAgentTab ? activeSubAgentInfo?.name || 'Subagent' : chats.find(chat => chat.id === activeChatId)?.title || 'New chat'}
+                      chatUsage={composerChatUsage}
+                      onSwarmModeChange={async (enabled) => {
+                        if (!activeChatId) return;
+                        const response = await fetch('/api/agent/swarm-mode', {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ chatId: activeChatId, enabled }),
+                        });
+                        if (!response.ok) throw new Error('Swarm mode could not be updated.');
+                      }}
                       onPlanModeChange={async (enabled) => {
                         if (!activeChatId) return;
                         const response = await fetch('/api/agent/plan-mode', {
@@ -18180,14 +17990,35 @@ function DeepWorkUI() {
                         });
                         if (!response.ok) throw new Error('Plan mode could not be updated.');
                       }}
+                      compacting={Boolean(activeChatId && compactingChats[activeChatId])}
                       onCompact={async () => {
                         if (!activeChatId) throw new Error('Send a message first to create chat context.');
-                        const response = await fetch('/api/agent/compact', {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ chatId: activeChatId, contextCompaction: readContextCompactionSettings(parseModelEntryKey(effectiveMainModelSelection), activeChatId) }),
+                        const chatId = activeChatId;
+                        const existing = manualCompactionJobsRef.current.get(chatId);
+                        if (existing) return existing;
+                        setCompactingChats(current => ({ ...current, [chatId]: true }));
+                        const job = (async () => {
+                          const response = await fetch('/api/agent/compact', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              chatId,
+                              modelSelection: effectiveMainModelSelection,
+                              history: buildAgentHistory(chatsRef.current.find(chat => chat.id === chatId)?.traceLogs || traceLogs),
+                              contextCompaction: readContextCompactionSettings(parseModelEntryKey(effectiveMainModelSelection), chatId),
+                            }),
+                          });
+                          const result = await response.json();
+                          if (!response.ok || !result.success) throw new Error(result.error || 'Compaction could not complete.');
+                        })().finally(() => {
+                          manualCompactionJobsRef.current.delete(chatId);
+                          setCompactingChats(current => {
+                            const next = { ...current };
+                            delete next[chatId];
+                            return next;
+                          });
                         });
-                        const result = await response.json();
-                        if (!response.ok || !result.success) throw new Error(result.error || 'Compaction could not complete.');
+                        manualCompactionJobsRef.current.set(chatId, job);
+                        return job;
                       }}
                       contextUsage={activeSubAgentTab ? activeSubAgentContextUsage : composerContextUsage}
                       onOpenAgents={() => {
@@ -18234,7 +18065,33 @@ function DeepWorkUI() {
                     </div>
                     {terminalState.open && terminalState.placement === 'bottom' && <ChatTerminalDock chatId={terminalChatId} cwd={activeWorkspacePath} />}
                     </div>
-                    {workspaceControls.open && workspaceMainPanelRef.current && createPortal(<SideWorkspace key={terminalChatId} owner={terminalChatId} mainChatId={activeChatId} workspacePath={activeWorkspacePath} traceLogs={traceLogs} chats={chats} runningChats={sidebarRunningChats} actions={sideChatActions} onCapture={attachBrowserCapture} />, workspaceMainPanelRef.current)}
+                    {workspaceControls.open && workspaceMainPanelRef.current && createPortal(
+                      <SideWorkspace
+                        key={terminalChatId}
+                        owner={terminalChatId}
+                        mainChatId={activeChatId}
+                        workspacePath={activeWorkspacePath}
+                        traceLogs={traceLogs}
+                        chats={chats}
+                        runningChats={sidebarRunningChats}
+                        actions={sideChatActions}
+                        agentNavigation={{
+                          agents: autonomousSelected ? [] : orderedRealSubAgents,
+                          activeAgentId: activeSubAgentTab,
+                          assetIndexes: subAgentAssetIndexes,
+                          mainChatTitle: chats.find(chat => chat.id === activeChatId)?.title || 'New chat',
+                          mainStatus: mainAgentState?.status || (isThinking ? 'working' : 'idle'),
+                          available: Boolean(activeChatId) && !autonomousSelected,
+                          onSelect: agentId => {
+                            setActiveSubAgentTab(agentId);
+                            setSubAgentDockOpen(true);
+                            setOverflowDropdownOpen(false);
+                          },
+                        }}
+                        onCapture={attachBrowserCapture}
+                      />,
+                      workspaceMainPanelRef.current,
+                    )}
                   </div>
 
                   {isRightPanelVisible && (

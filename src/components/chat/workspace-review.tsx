@@ -17,6 +17,7 @@ import { workspaceChatDiffLines } from '../../lib/workspace-review-data';
 import { WorkspaceTreePane } from './workspace-tree-pane';
 import { WorkspaceImagePreview } from './workspace-image-preview';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
+import { diffWordRanges } from './diff-syntax';
 
 type Line = NonNullable<FilePanelProps['diffLines']>[number];
 type Scope = 'chat' | 'working' | 'branch';
@@ -70,19 +71,6 @@ function ignoreWhitespaceChanges(lines: Line[]): Line[] {
   return result;
 }
 
-function inlineChanges(lines: Line[]) {
-  const ranges = new Map<Line, [number, number]>();
-  for (const row of makeRows(lines, true, true, new Set())) {
-    if (!row.left || !row.right) continue;
-    const before = row.left.content, after = row.right.content;
-    let start = 0, suffix = 0;
-    while (start < Math.min(before.length, after.length) && before[start] === after[start]) start++;
-    while (suffix < Math.min(before.length, after.length) - start && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
-    ranges.set(row.left, [start, before.length - suffix]); ranges.set(row.right, [start, after.length - suffix]);
-  }
-  return ranges;
-}
-
 export function WorkspaceReview({ owner, tab, isActive = true, files, workspacePath, roots, rootsLoading, rootError, onAddFolder, onOpenFile }: { owner: string; tab: WorkspaceTab; isActive?: boolean; files: FilePanelProps[]; workspacePath?: string | null; roots: string[]; rootsLoading: boolean; rootError: string; onAddFolder: (path: string) => void; onOpenFile: (path: string, root?: string) => void }) {
   const [scope, setScope] = useState<Scope>(tab.review?.scope || 'chat');
   const [selected, setSelected] = useState(tab.review?.selected ?? tab.path ?? '');
@@ -94,7 +82,8 @@ export function WorkspaceReview({ owner, tab, isActive = true, files, workspaceP
   const [loadFull, setLoadFull] = useState(tab.review?.loadFull ?? true);
   const [richPreview, setRichPreview] = useState(tab.review?.richPreview ?? true);
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(tab.review?.ignoreWhitespace || false);
-  const [wordDiffs, setWordDiffs] = useState(tab.review?.wordDiffs ?? true);
+  // Only restore an explicit opt-in; older tabs saved the former default on.
+  const [wordDiffs, setWordDiffs] = useState(tab.review?.wordHighlights === 'enabled');
   const [viewed, setViewed] = useState<string[]>(tab.review?.viewed || []);
   const [hideViewed, setHideViewed] = useState(tab.review?.hideViewed || false);
   const [compactFolders, setCompactFolders] = useState(tab.review?.compactFolders ?? true);
@@ -118,7 +107,7 @@ export function WorkspaceReview({ owner, tab, isActive = true, files, workspaceP
   const repository = repositoryState?.key === reviewKey ? repositoryState : null;
 
   useEffect(() => {
-    updateWorkspaceTab(owner, tab.id, { review: { scope, root: '', selected, filter, expanded, split, showTree, wrap, loadFull, richPreview, ignoreWhitespace, wordDiffs, viewed, hideViewed, compactFolders, baseRefs } });
+    updateWorkspaceTab(owner, tab.id, { review: { scope, root: '', selected, filter, expanded, split, showTree, wrap, loadFull, richPreview, ignoreWhitespace, wordHighlights: wordDiffs ? 'enabled' : 'disabled', viewed, hideViewed, compactFolders, baseRefs } });
   }, [owner, tab.id, scope, selected, filter, expanded, split, showTree, wrap, loadFull, richPreview, ignoreWhitespace, wordDiffs, viewed, hideViewed, compactFolders, baseRefs]);
   const lastPathRequest = useRef(tab.reviewPathRequest);
   useEffect(() => {
@@ -190,7 +179,7 @@ export function WorkspaceReview({ owner, tab, isActive = true, files, workspaceP
   const currentDiff = diff?.key === diffKey ? diff : null;
   const sourceLines = useMemo(() => scope === 'chat' ? workspaceChatDiffLines(active, loadFull) : currentDiff?.diffLines || noLines, [scope, active, loadFull, currentDiff]);
   const lines = useMemo(() => ignoreWhitespace ? ignoreWhitespaceChanges(sourceLines) : sourceLines, [sourceLines, ignoreWhitespace]);
-  const wordRanges = useMemo(() => wordDiffs ? inlineChanges(lines) : null, [lines, wordDiffs]);
+  const wordRanges = useMemo(() => wordDiffs ? diffWordRanges(lines) : null, [lines, wordDiffs]);
   useEffect(() => {
     if (!lines.length) return;
     let disposed = false;
@@ -278,7 +267,7 @@ export function WorkspaceReview({ owner, tab, isActive = true, files, workspaceP
           <Tooltip text={viewed.includes(workspacePathKey(active.filepath)) ? 'Mark as unviewed' : 'Mark as viewed'}><button aria-label="Mark file as viewed" aria-pressed={viewed.includes(workspacePathKey(active.filepath))} onClick={() => toggleViewed(active)}><Check size={15} /></button></Tooltip>
         </div>}
         {active && <div className="eterx-workspace-review-navigation"><span>{reviewDisplayPath(active.filepath, roots)}</span><button aria-label="Previous changed file" disabled={activeIndex <= 0} onClick={() => navigate(-1)}><ChevronLeft size={14} /></button><small>{activeIndex >= 0 ? activeIndex + 1 : '–'} / {visibleFiles.length}</small><button aria-label="Next changed file" disabled={activeIndex < 0 || activeIndex >= visibleFiles.length - 1} onClick={() => navigate(1)}><ChevronRight size={14} /></button></div>}
-        <div ref={scroll} className="eterx-workspace-diff-scroll eterx-scrollbar" data-split={split} data-wrap={wrap} style={{ '--ws-diff-line-width': `${splitLineWidth}ch` } as React.CSSProperties}>
+        <div ref={scroll} className="eterx-workspace-diff-scroll eterx-scrollbar" tabIndex={0} role="region" aria-label="File changes" data-split={split} data-wrap={wrap} style={{ '--ws-diff-line-width': `${splitLineWidth}ch` } as React.CSSProperties}>
           {!active && !!changed.length && <div className="eterx-workspace-review-overview">
             <div className="eterx-workspace-review-overview-heading"><strong>Changed files</strong><span>{changed.filter(file => viewed.includes(workspacePathKey(file.filepath))).length} / {changed.length} viewed</span></div>
             {!showTree && <div className="eterx-workspace-search"><FileSearchCorner size={14} /><input aria-label="Filter changes" placeholder="Filter files…" value={filter} onChange={event => setFilter(event.target.value)} /></div>}

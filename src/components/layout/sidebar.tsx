@@ -162,6 +162,8 @@ const handleMenuKeyboardNavigation = (event: React.KeyboardEvent<HTMLElement>) =
 const lightweightSidebarCss = `
 :root[data-theme="dark"] .eterx-sidebar-shell {
     --sidebar-hover-bg: #262626;
+    --sidebar-chat-hover-bg: #282A29;
+    --sidebar-chat-active-bg: #2D302F;
     --sidebar-toggle-hover-bg: #262626;
     --sidebar-active-bg: #262626;
     --sidebar-toggle-active-bg: rgba(255, 255, 255, 0.105);
@@ -180,6 +182,8 @@ const lightweightSidebarCss = `
 
   :root[data-theme="light"] .eterx-sidebar-shell {
     --sidebar-hover-bg: #E8E8E8;
+    --sidebar-chat-hover-bg: #ECEDEC;
+    --sidebar-chat-active-bg: #E2E4E3;
     --sidebar-toggle-hover-bg: #E8E8E8;
     --sidebar-active-bg: #E8E8E8;
     --sidebar-toggle-active-bg: #DEDEDE;
@@ -241,11 +245,21 @@ const lightweightSidebarCss = `
   }
 
   .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
-    /* Keep the scrollbar in its own lane so chat rows never sit underneath it. */
+    /* Slim the visible thumb inside the existing lane without moving chat rows. */
     scrollbar-gutter: stable !important;
+    --eterx-sb-inset: 1px;
+    --eterx-sb-thumb: rgba(255, 255, 255, 0.12);
+    --eterx-sb-thumb-hover: rgba(255, 255, 255, 0.20);
+    --eterx-sb-thumb-active: rgba(255, 255, 255, 0.28);
+    --eterx-sb-arrow-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.3 6.2 5.25 1.35a.95.95 0 0 1 1.5 0L10.7 6.2c.5.62.06 1.55-.75 1.55h-7.9c-.81 0-1.25-.93-.75-1.55Z' fill='%23fff' fill-opacity='.12'/%3E%3C/svg%3E");
+    --eterx-sb-arrow-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='m1.3 1.8 3.95 4.85a.95.95 0 0 0 1.5 0L10.7 1.8c.5-.62.06-1.55-.75-1.55h-7.9c-.81 0-1.25-.93-.75-1.55Z' fill='%23fff' fill-opacity='.12'/%3E%3C/svg%3E");
     --eterx-sidebar-scroll-fade-size: 12px;
     -webkit-mask-image: none !important;
     mask-image: none !important;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-button:single-button:vertical {
+    background-size: 10px 7px !important;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-recents-scroll.eterx-sidebar-scroll-fade-top {
@@ -314,11 +328,21 @@ const lightweightSidebarCss = `
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-row {
-    transition-duration: 140ms !important;
+    --sidebar-hover-bg: var(--sidebar-chat-hover-bg);
+    --sidebar-active-bg: var(--sidebar-chat-active-bg);
+    border-radius: 10px !important;
+    font-weight: 450 !important;
+    transition-duration: 120ms !important;
   }
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-row {
-    border-radius: 12px !important;
+    border-radius: 10px !important;
+  }
+
+  :root[data-theme] .eterx-app-shell .eterx-sidebar-shell .eterx-sidebar-chat-row:focus-visible {
+    background: var(--sidebar-hover-bg) !important;
+    color: var(--sidebar-hover-text) !important;
+    outline: none !important;
   }
 
   .eterx-sidebar-project-menu {
@@ -407,9 +431,11 @@ const lightweightSidebarCss = `
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
     -webkit-backdrop-filter: blur(14px) saturate(1.08) !important;
     backdrop-filter: blur(14px) saturate(1.08) !important;
-    --eterx-sb-thumb: rgba(31, 31, 29, 0.16);
-    --eterx-sb-thumb-hover: rgba(31, 31, 29, 0.26);
-    --eterx-sb-thumb-active: rgba(31, 31, 29, 0.34);
+    --eterx-sb-thumb: rgba(31, 31, 29, 0.12);
+    --eterx-sb-thumb-hover: rgba(31, 31, 29, 0.20);
+    --eterx-sb-thumb-active: rgba(31, 31, 29, 0.28);
+    --eterx-sb-arrow-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1.3 6.2 5.25 1.35a.95.95 0 0 1 1.5 0L10.7 6.2c.5.62.06 1.55-.75 1.55h-7.9c-.81 0-1.25-.93-.75-1.55Z' fill='%231f1f1d' fill-opacity='.12'/%3E%3C/svg%3E");
+    --eterx-sb-arrow-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='m1.3 1.8 3.95 4.85a.95.95 0 0 0 1.5 0L10.7 1.8c.5-.62.06-1.55-.75-1.55h-7.9c-.81 0-1.25-.93-.75-1.55Z' fill='%231f1f1d' fill-opacity='.12'/%3E%3C/svg%3E");
   }
 
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile,
@@ -440,19 +466,17 @@ const lightweightSidebarCss = `
   .eterx-sidebar-resize-handle {
     position: absolute;
     top: calc(var(--eterx-shell-topbar-height) + 6px);
-    right: 0;
+    left: calc(var(--eterx-shell-sidebar-width) - 4px);
     bottom: 8px;
-    z-index: 60;
-    width: 18px;
+    z-index: 135;
+    width: 8px;
     pointer-events: none;
   }
 
   .eterx-sidebar-resize-target {
     position: absolute;
-    top: 0;
-    right: -4px;
-    bottom: 0;
-    width: 8px;
+    inset: 0;
+    outline: none;
     cursor: col-resize;
     touch-action: none;
     pointer-events: auto;
@@ -464,15 +488,17 @@ const lightweightSidebarCss = `
     position: absolute;
     top: 14px;
     bottom: 14px;
-    right: 1px;
+    left: 50%;
+    transform: translateX(-50%);
     width: 1px;
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.16);
-    opacity: 0.12;
+    opacity: 0;
     transition: opacity 160ms ease, background 160ms ease, width 160ms ease;
   }
 
   .eterx-sidebar-resize-handle:hover::before,
+  .eterx-sidebar-resize-handle:has(.eterx-sidebar-resize-target:focus-visible)::before,
   .eterx-sidebar-resize-handle-active::before {
     width: 2px;
     background: rgba(255, 255, 255, 0.42);
@@ -484,6 +510,7 @@ const lightweightSidebarCss = `
   }
 
   :root[data-theme="light"] .eterx-sidebar-resize-handle:hover::before,
+  :root[data-theme="light"] .eterx-sidebar-resize-handle:has(.eterx-sidebar-resize-target:focus-visible)::before,
   :root[data-theme="light"] .eterx-sidebar-resize-handle-active::before {
     background: rgba(31, 31, 29, 0.34);
   }
@@ -546,6 +573,8 @@ const lightweightSidebarCss = `
   .eterx-sidebar-shell .eterx-sidebar-chat-active,
   .eterx-sidebar-shell .eterx-sidebar-chat-selected,
   .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working {
+    /* A current or selected chat keeps its fill when hovered. */
+    --sidebar-hover-bg: var(--sidebar-chat-active-bg);
     background: var(--sidebar-hover-bg) !important;
     border-color: transparent !important;
     box-shadow: none !important;
@@ -554,7 +583,7 @@ const lightweightSidebarCss = `
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-selected,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-active.eterx-sidebar-chat-working {
-    border-radius: 12px !important;
+    border-radius: 10px !important;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-working:not(.eterx-sidebar-chat-active) {
@@ -1245,7 +1274,7 @@ export const Sidebar = React.memo<SidebarProps>(
   const [glassClick, setGlassClick] = React.useState<{ key: string; x: number; y: number; tick: number } | null>(null);
   const glassClickTimeoutRef = React.useRef<number | null>(null);
   const handleSidebarResizePointerDown = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (isMobile) return;
+    if (isMobile || event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
     event.stopPropagation();
     resizeStartRef.current = { x: event.clientX, width: sidebarWidth };
@@ -2116,6 +2145,7 @@ export const Sidebar = React.memo<SidebarProps>(
             </div>
           )}
         </div>
+      </motion.aside>
         {!isMobile && (
           <div
             className={`eterx-sidebar-resize-handle ${ isResizingSidebar ? 'eterx-sidebar-resize-handle-active' : '' }`}
@@ -2134,7 +2164,6 @@ export const Sidebar = React.memo<SidebarProps>(
             />
           </div>
         )}
-      </motion.aside>
 
       {menuState && typeof document !== 'undefined' && createPortal(
         <div

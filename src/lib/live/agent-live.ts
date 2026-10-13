@@ -14,11 +14,13 @@
 import {
   getGeminiThinkingConfig,
   getModelThinkingOptions,
+  normalizeModelThinkingCapabilities,
   normalizeThinkingLevelForModel,
   type MainAgentThinkingLevel,
   type ModelThinkingCapabilities,
 } from '../agent/model-routing';
 import { appStorage } from '../client-storage';
+import { MODEL_THINKING_CAPABILITIES_STORAGE_KEY, modelEntryKey } from '../agent/model-selector-store';
 import { normalizeGeminiLiveModelName } from './live-provider';
 
 export type LiveSessionState = 'idle' | 'connecting' | 'connected' | 'listening' | 'thinking' | 'speaking' | 'error';
@@ -129,7 +131,7 @@ export interface LiveSession {
 
 export interface LiveSessionOptions {
   /** Gemini 3.1 Live native reasoning depth. */
-  thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+  thinkingLevel?: MainAgentThinkingLevel;
   /** Capability metadata for the exact live model selected by discovery. */
   thinkingCapabilities?: ModelThinkingCapabilities | null;
   /** Legacy Gemini 2.5 Live token budget. */
@@ -1229,10 +1231,16 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         const systemText = this.buildSystemInstructionText();
 
         const selectedModel = normalizeGeminiLiveModelName(this.options?.model);
+        let thinkingCapabilities = this.options?.thinkingCapabilities;
+        try {
+          const catalog = JSON.parse(appStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}');
+          const latest = normalizeModelThinkingCapabilities(catalog?.[modelEntryKey('gemini', selectedModel.replace(/^models\//, ''))]);
+          if (latest && (!thinkingCapabilities || (latest.updatedAt || 0) > (thinkingCapabilities.updatedAt || 0))) thinkingCapabilities = latest;
+        } catch { }
         const modelThinkingOptions = getModelThinkingOptions(
           'gemini',
           selectedModel,
-          this.options?.thinkingCapabilities,
+          thinkingCapabilities,
         );
         const requestedThinkingLevel: MainAgentThinkingLevel = this.options?.thinkingLevel || 'medium';
         const effectiveThinkingLevel = modelThinkingOptions.length > 0
@@ -1240,7 +1248,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
               requestedThinkingLevel,
               'gemini',
               selectedModel,
-              this.options?.thinkingCapabilities,
+              thinkingCapabilities,
             )
           : null;
         const thinkingConfig = effectiveThinkingLevel
@@ -1248,7 +1256,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
               effectiveThinkingLevel,
               selectedModel,
               this.options?.includeThoughts !== false,
-              this.options?.thinkingCapabilities,
+              thinkingCapabilities,
             )
           : null;
 
@@ -1570,7 +1578,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                       subAgent: { type: 'STRING', description: 'Optional sub-agent to select for this task' },
                       modelId: { type: 'STRING', description: 'Optional configured model registry ID from any provider' },
                       executionMode: { type: 'STRING', description: 'Optional worker mode: "general", "coding", or "autonomous". Use autonomous for multi-step work that may delegate to multiple sub-agents.' },
-                      thinkingLevel: { type: 'STRING', description: 'Optional external worker thinking level: "minimal", "low", "medium", or "high".' },
+                      thinkingLevel: { type: 'STRING', description: 'Optional external worker thinking level supported by its selected model: off, minimal, low, medium, high, xhigh, or max.' },
                       follow_up_mode: { type: 'STRING', description: 'Optional active-run behavior: "auto", "steer", or "queue". Use steer for corrections/context that belong to current work; queue for a distinct objective that should start after it finishes.' },
                       action_verb: { type: 'STRING', description: 'A short human-readable verb for the UI (e.g., "Dispatching", "Sending")' },
                       action_target: { type: 'STRING', description: 'The target for the UI (e.g., "Main Agent", "Coding Task")' }
@@ -1594,7 +1602,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                       modelId: { type: 'STRING', description: 'Optional configured worker model.' },
                       agentId: { type: 'STRING', description: 'Optional custom agent ID.' },
                       agentName: { type: 'STRING', description: 'Optional custom agent name.' },
-                      thinkingLevel: { type: 'STRING', description: 'Optional worker reasoning level: minimal, low, medium, or high.' },
+                      thinkingLevel: { type: 'STRING', description: 'Optional worker reasoning level supported by its selected model: off, minimal, low, medium, high, xhigh, or max.' },
                       sources: {
                         type: 'ARRAY',
                         description: 'Optional task source files/folders, retained in the Scheduling tab.',

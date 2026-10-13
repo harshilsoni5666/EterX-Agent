@@ -2,7 +2,71 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Floating conversation feedback follows the app's explicit theme selection. */
+:root {
+  --chat-feedback-bg: rgba(255, 255, 255, 0.97);
+  --chat-feedback-text: #292724;
+  --chat-feedback-border: rgba(31, 31, 29, 0.14);
+  --chat-feedback-shadow: 0 4px 16px rgba(31, 31, 29, 0.09);
+  --chat-notice-bg: rgba(255, 249, 247, 0.98);
+  --chat-notice-text: #742d24;
+  --chat-notice-detail: #895349;
+  --chat-notice-accent: #b44232;
+  --chat-notice-border: rgba(180, 66, 50, 0.22);
+  --chat-notice-hover: rgba(180, 66, 50, 0.08);
+}
+
+:root[data-theme="dark"], :root.dark:not([data-theme="light"]) {
+  --chat-feedback-bg: rgba(36, 36, 36, 0.97);
+  --chat-feedback-text: #e8e6e3;
+  --chat-feedback-border: rgba(255, 255, 255, 0.13);
+  --chat-feedback-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  --chat-notice-bg: rgba(53, 20, 17, 0.97);
+  --chat-notice-text: #fff4f1;
+  --chat-notice-detail: #ebc8c1;
+  --chat-notice-accent: #ffb5a8;
+  --chat-notice-border: rgba(255, 181, 168, 0.26);
+  --chat-notice-hover: rgba(255, 181, 168, 0.1);
+}
+
+.eterx-floating-compaction {
+  background: var(--chat-feedback-bg);
+  color: var(--chat-feedback-text);
+  border-color: var(--chat-feedback-border);
+  box-shadow: var(--chat-feedback-shadow);
+}
+
+.eterx-composer-notice {
+  background: var(--chat-notice-bg);
+  color: var(--chat-notice-text);
+  border-color: var(--chat-notice-border);
+  box-shadow: var(--chat-feedback-shadow);
+}
+
+.eterx-composer-notice-detail { color: var(--chat-notice-detail); }
+.eterx-composer-notice-icon {
+  color: var(--chat-notice-accent);
+  border-color: var(--chat-notice-border);
+  background: var(--chat-notice-hover);
+}
+.eterx-composer-notice-dismiss { color: var(--chat-notice-detail); }
+.eterx-composer-notice-dismiss:hover,
+.eterx-composer-notice-dismiss:focus-visible {
+  color: var(--chat-notice-text);
+  background: var(--chat-notice-hover);
+}
+.eterx-composer-notice-dismiss:focus-visible {
+  outline: 2px solid var(--chat-notice-accent);
+  outline-offset: 2px;
+}
+
 @layer base {
+  /* Keep native control focus and default Tailwind rings neutral in both themes. */
+  :is(button, select, [role="button"], [role="switch"], [role="option"], [role="tab"], [role^="menuitem"]) {
+    outline-color: var(--muted-foreground);
+    --tw-ring-color: var(--muted-foreground);
+  }
+
   :root {
     --background: #FAFAF8;
     --foreground: #1F1F1D;
@@ -2759,7 +2823,7 @@
   }
 
   .eterx-pinned-items {
-    max-width: 88px !important;
+    max-width: 100% !important;
   }
 
   .eterx-new-chat-status-rail {
@@ -4783,12 +4847,9 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Channels shares the title-bar surface with the menu and native controls. */
 .eterx-app-shell[data-active-view="channels"] {
-  background: #f8f8f6 !important;
-}
-
-:root[data-theme="dark"] .eterx-app-shell[data-active-view="channels"] {
-  background: #0f0f0e !important;
+  background: var(--sidebar-bg) !important;
 }
 
 :root[data-theme="dark"] .eterx-app-shell[data-active-view="channels"] .eterx-sidebar-shell {
@@ -7724,12 +7785,6 @@
   width: var(--eterx-shell-sidebar-width) !important;
 }
 
-.eterx-app-shell[data-sidebar-open="true"] .eterx-sidebar-resize-handle {
-  /* Keep the resize hit area in the shell's outer 32px buffer so it never
-     covers the recents scrollbar at the real sidebar edge. */
-  right: 0 !important;
-}
-
 .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
   z-index: 2 !important;
   pointer-events: none !important;
@@ -7812,6 +7867,39 @@
 .eterx-topbar-btn:is(:hover, :focus-visible, [data-state="open"], [data-active="true"]) {
   background: var(--eterx-topbar-hover-bg) !important;
   color: var(--eterx-topbar-hover-text) !important;
+}
+
+.eterx-topbar-btn[data-update-available="true"] {
+  height: 24px !important;
+  margin-inline: 5px;
+  padding-inline: 14px !important;
+  border-radius: 999px !important;
+  background: #168eea !important;
+  color: #fff !important;
+  font-weight: 650 !important;
+}
+
+.eterx-topbar-btn[data-update-available="true"]:is(:hover, :focus-visible, [data-active="true"]) {
+  background: #087cd4 !important;
+  color: #fff !important;
+}
+
+.eterx-topbar-btn:focus-visible {
+  /* The shared focus background above already identifies the active control. */
+  outline: none !important;
+}
+
+.eterx-update-notice {
+  background: #202020;
+  border-color: #ffffff1f;
+  color: #f1f1f1;
+  -webkit-app-region: no-drag;
+}
+
+:root[data-theme="light"] .eterx-update-notice {
+  background: #fff;
+  border-color: #0000001f;
+  color: #222;
 }
 
 /* Keep the thread switcher quiet at rest. Its pill surface is feedback for

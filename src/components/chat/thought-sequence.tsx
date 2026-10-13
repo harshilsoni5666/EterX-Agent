@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useLiveFeedFlow } from './use-live-feed-flow';
+import { HighlightedDiffCode, useCodeSyntax, useDiffSyntax } from './diff-syntax';
 import { getActionSummary } from './action-summary';
 import { getTextPlaybackId, usePacedText } from './use-paced-text';
 import { createPortal } from 'react-dom';
@@ -23,6 +24,7 @@ import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { isThoughtStreamOpen, shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
 import { mergeFeedTracePayload } from '../../lib/chat-feed-lifecycle';
+import { reconcileSubAgentLifecycleRows } from '../../lib/sub-agent-feed';
 import { areLikelySameFeedActionLifecycle, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen } from '../../lib/chat-feed-lifecycle';
 import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } from '../../lib/agent/tool-trace';
 import { isTerminalTraceStreaming } from '../../lib/terminal-lifecycle';
@@ -616,7 +618,7 @@ const highlightSyntax = (code: string): string => {
       else if (KW_DECL.has(ident)) out += `<span class="eterx-syntax-keyword eterx-syntax-declaration">${ full }</span>`;
       else if (KW_VAL.has(ident)) out += `<span class="eterx-syntax-value">${ full }</span>`;
       else if (KW_THIS.has(ident)) out += `<span class="eterx-syntax-value">${ full }</span>`;
-      else out += e.slice(last).trimStart().startsWith('(') ? `<span class="eterx-syntax-function">${ full }</span>` : full;
+      else out += e.slice(last).trimStart().startsWith('(') ? `<span class="eterx-syntax-function">${ full }</span>` : `<span class="eterx-syntax-variable">${ full }</span>`;
     }
     else if (flag) out += `<span class="eterx-syntax-flag">${ full }</span>`;
     else out += full;
@@ -1742,6 +1744,7 @@ const InlineMissingDiffView = ({
 
 const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true, flush = false }: { filename: string, filepath?: string, diffLines: any[], showExpand?: boolean, flush?: boolean }) => {
   const [full, setFull] = useState(false);
+  const syntax = useDiffSyntax(diffLines, filepath || filename);
   const { openPanel } = useFilePanelActions();
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(false);
@@ -1837,8 +1840,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
                   <div
                     className={`eterx-inline-diff-content px-3 py-[3px] whitespace-pre ${ isAdd ? 'text-[#B9E7C0]' : isDel ? 'text-[#E6AAA4]' : 'text-[#BDB5AA]'
                       }`}
-                    dangerouslySetInnerHTML={{ __html: highlightSyntax(l.content) }}
-                  />
+                  ><HighlightedDiffCode line={l} tokens={syntax?.get(l)} /></div>
                 </div>
               );
             })}
@@ -1981,6 +1983,8 @@ const InlineCodeView = ({
     return { displayLines: allLines, startLineOffset: 1 };
   }, [effectiveContent, finalStartLine, finalEndLine, isLoading]);
 
+  const previewCode = useMemo(() => displayLines.join('\n'), [displayLines]);
+  const codeSyntax = useCodeSyntax(previewCode, filepath || filename, !streaming);
   const lineCount = displayLines.length;
   const displayStats = created && effectiveContent
     ? { added: lineCount, removed: stats?.removed ?? 0 }
@@ -2044,8 +2048,9 @@ const InlineCodeView = ({
                   {/* Content — whitespace-pre, no per-line overflow */}
                   <div
                     className={`eterx-inline-code-content ${ created ? 'eterx-inline-code-content-created text-[#B9E7C0]' : 'text-[#CDC5BB]' } px-3 py-[3px] whitespace-pre`}
-                    dangerouslySetInnerHTML={{ __html: highlightSyntax(l) }}
-                  />
+                  >{codeSyntax?.[i]
+                    ? <HighlightedDiffCode line={{ type: created ? 'added' : 'unchanged', content: l }} tokens={codeSyntax[i]} />
+                    : <span dangerouslySetInnerHTML={{ __html: highlightSyntax(l) }} />}</div>
                 </div>
               ))}
             </div>
@@ -3961,6 +3966,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
       : {
           name: agent?.name,
           identity: agent?.subAgentChatId || agent?.subAgentId || agent?.agentId || agent?.name,
+          status: agent?.agentStatus || agent?.status,
         }).filter((agent: any) => agent.name)
     : [];
   // If single agent spawn (from spawnAgent), use the direct name
@@ -3968,6 +3974,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
   const displayList = agentList.length > 0
     ? agentList
     : [{ name: singleName || 'Agent', identity: log.subAgentChatId || log.subAgentId || log.agentId || singleName || 'Agent' }];
+  const queued = displayList.every((agent: any) => ['planned', 'spawning'].includes(String(agent.status || '')));
 
   return (
     <div className="my-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#8D877F]">
@@ -3978,7 +3985,8 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
             key={identity}
             type="button"
             onClick={() => onOpenAgentTeam?.(identity)}
-            className="inline-flex h-8 max-w-[190px] items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.025] px-2.5 text-[#BEB8B0] transition-colors hover:border-white/[0.13] hover:bg-white/[0.055] hover:text-[#EEEAE4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
+            title={name}
+            className="inline-flex h-8 max-w-[260px] items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.025] px-2.5 text-[#BEB8B0] transition-colors hover:border-white/[0.13] hover:bg-white/[0.055] hover:text-[#EEEAE4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
             aria-label={`Open ${ name } conversation`}
           >
             <SubAgentIdentityIcon name={name} status="working" size={20} assetIndex={getSubAgentAssetIndex(assetIndexes, name) ?? index} />
@@ -3986,7 +3994,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
           </button>
         );
       })}
-      <span className="ml-0.5 shrink-0">started working</span>
+      <span className="ml-0.5 shrink-0">{queued ? 'queued' : 'started working'}</span>
     </div>
   );
 };
@@ -4998,7 +5006,7 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
   const timelineLogs = useMemo(() => {
     const flowLogs = ensureStableFeedPresentationIds(logs).filter(isFlowLog);
     const liveFlowLogs = ensureStableFeedPresentationIds(liveLogs).filter(isFlowLog);
-    return reconcileLiveActionLogs(flowLogs, liveFlowLogs);
+    return reconcileSubAgentLifecycleRows(reconcileLiveActionLogs(flowLogs, liveFlowLogs));
   }, [logs, liveLogs, isSubAgentTab]);
   const statusLogs = timelineLogs;
   const segs: any[] = [];
@@ -5073,64 +5081,6 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
     aBufKind = nextKind;
     aBuf.push(log);
   };
-  // Group and individual lifecycle events can arrive in either order. Reconcile
-  // by immutable run ID first so reused task names never collapse distinct runs.
-  const groupedSpawnRunIds = new Set<string>();
-  const groupedLegacyNames = new Set<string>();
-  timelineLogs.forEach((log: any) => {
-    if (log.type === 'sub_agent_spawn' && (Array.isArray(log.agentDetails) || Array.isArray(log.spawnedAgents))) {
-      const details = log.agentDetails || log.spawnedAgents || [];
-      if (Array.isArray(details)) details.forEach((agent: any) => {
-        if (typeof agent === 'string') {
-          groupedLegacyNames.add(agent.toLowerCase().trim());
-          return;
-        }
-        const runId = String(agent?.agentId || agent?.subAgentId || agent?.subAgentChatId || '').trim();
-        if (runId) groupedSpawnRunIds.add(runId);
-        else if (agent?.name) groupedLegacyNames.add(String(agent.name).toLowerCase().trim());
-      });
-    }
-  });
-
-  // Live transports often emit both a rich result/answer and a generic
-  // completion event for the same worker. Keep one authoritative terminal
-  // card per worker run so the main timeline does not repeat or flicker.
-  const terminalAgentEventTypes = new Set([
-    'sub_agent_answer', 'sub_agent_result', 'sub_agent_complete',
-    'sub_agent_error', 'sub_agent_close',
-  ]);
-  const terminalAgentEventPriority: Record<string, number> = {
-    sub_agent_complete: 1,
-    sub_agent_close: 2,
-    sub_agent_answer: 3,
-    sub_agent_result: 3,
-    sub_agent_error: 4,
-  };
-  const terminalAgentEventIndex = new Map<string, number>();
-  const agentLifecycleIdentity = (log: any) => String(
-    log?.subAgentChatId || log?.subAgentId || log?.agentId ||
-    log?.taskId || log?.backgroundTaskId || log?.agentName || log?.subAgent || '',
-  ).trim().toLowerCase();
-  timelineLogs.forEach((log: any, index: number) => {
-    if (!terminalAgentEventTypes.has(String(log?.type || ''))) return;
-    const identity = agentLifecycleIdentity(log);
-    if (!identity) return;
-    const previousIndex = terminalAgentEventIndex.get(identity);
-    if (previousIndex === undefined) {
-      terminalAgentEventIndex.set(identity, index);
-      return;
-    }
-    const previous = timelineLogs[previousIndex];
-    const previousPriority = terminalAgentEventPriority[String(previous?.type || '')] || 0;
-    const nextPriority = terminalAgentEventPriority[String(log?.type || '')] || 0;
-    if (nextPriority >= previousPriority) terminalAgentEventIndex.set(identity, index);
-  });
-  const isSupersededTerminalAgentEvent = (log: any, index: number) => {
-    if (!terminalAgentEventTypes.has(String(log?.type || ''))) return false;
-    const identity = agentLifecycleIdentity(log);
-    return Boolean(identity && terminalAgentEventIndex.get(identity) !== index);
-  };
-
   timelineLogs.forEach((log, idx) => {
     if (log.type === 'thought_stream') {
       if (shouldRenderThoughtSegment(log, timelineLogs, idx)) {
@@ -5165,43 +5115,24 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
       flush(idx);
     }
     else if (log.type === 'sub_agent_answer' || log.type === 'sub_agent_result') {
-      if (!isSupersededTerminalAgentEvent(log, idx)) {
-        flush(idx - 1);
-        segs.push({ kind: 'subagent_complete', log, idx });
-      }
+      flush(idx - 1);
+      segs.push({ kind: 'subagent_complete', log, idx });
     }
     else if (log.type === 'sub_agent_complete') {
-      if (!isSupersededTerminalAgentEvent(log, idx)) {
-        flush(idx - 1);
-        segs.push({ kind: 'subagent_complete', log, idx });
-      }
+      flush(idx - 1);
+      segs.push({ kind: 'subagent_complete', log, idx });
     }
     else if (log.type === 'sub_agent_spawn') {
-      // Skip the per-worker event when its exact run is already represented by
-      // the group event. Name fallback is only for legacy events without IDs.
-      const singleName = String(log.agentName || log.subAgent || '').toLowerCase().trim();
-      const singleRunId = String(log.subAgentId || log.agentId || log.subAgentChatId || '').trim();
-      const isTeamEvent = Array.isArray(log.agentDetails) || Array.isArray(log.spawnedAgents);
-      const isDuplicate = !isTeamEvent && (
-        (singleRunId && groupedSpawnRunIds.has(singleRunId)) ||
-        (!singleRunId && singleName && groupedLegacyNames.has(singleName))
-      );
-      if (!isDuplicate) {
-        flush(idx - 1);
-        segs.push({ kind: 'subagent_spawn', log, idx });
-      }
+      flush(idx - 1);
+      segs.push({ kind: 'subagent_spawn', log, idx });
     }
     else if (log.type === 'sub_agent_error') {
-      if (!isSupersededTerminalAgentEvent(log, idx)) {
-        flush(idx - 1);
-        segs.push({ kind: 'subagent_error', log, idx });
-      }
+      flush(idx - 1);
+      segs.push({ kind: 'subagent_error', log, idx });
     }
     else if (['sub_agent_pause', 'sub_agent_resume', 'sub_agent_close'].includes(log.type)) {
-      if (!isSupersededTerminalAgentEvent(log, idx)) {
-        flush(idx - 1);
-        segs.push({ kind: 'subagent_status', log, idx });
-      }
+      flush(idx - 1);
+      segs.push({ kind: 'subagent_status', log, idx });
     }
     else if (log.type === 'sub_agent_action') {
       if (isSubAgentTab) {

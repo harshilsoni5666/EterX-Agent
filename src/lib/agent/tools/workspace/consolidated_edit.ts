@@ -2,6 +2,7 @@ import { z } from 'zod';
 import fs from 'fs/promises';
 import fse from 'fs-extra';
 import path from 'path';
+import { swarmCoordinator } from '../../swarm-coordinator';
 import type { ToolDefinition } from '../../schemas';
 import { resolveWorkspacePathForContext } from '../../workspace/path_resolver';
 import { acquireEditTransaction } from '../../workspace/edit-transaction-lock';
@@ -434,6 +435,9 @@ export const workspaceEditFileTool: ToolDefinition = {
         ...resolvedTargets.map(target => target.filePath),
         ...(invocationKey ? [`\0edit-invocation:${invocationKey}`] : []),
       ]);
+      const releaseFiles = releaseTransaction;
+      const releaseOwnership = swarmCoordinator.holdWrites(context || {}, resolvedTargets.map(target => target.filePath));
+      releaseTransaction = () => { releaseOwnership(); releaseFiles(); };
       assertNotCancelled();
       const receipt = completedEditReceipt(invocationKey, signature);
       if (receipt) {
@@ -442,6 +446,8 @@ export const workspaceEditFileTool: ToolDefinition = {
         return receipt;
       }
       for (const target of resolvedTargets) {
+        const ownershipConflict = swarmCoordinator.writeConflict(context || {}, [target.filePath]);
+        if (ownershipConflict) throw new Error(ownershipConflict);
         const { filePath } = target;
         const key = process.platform === 'win32' ? filePath.toLowerCase() : filePath;
         const duplicateIndex = preparedIndexByPath.get(key);

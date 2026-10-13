@@ -95,7 +95,7 @@ The installer selects the **x64 or ARM64 AppImage**, installs it under the per-u
 
 ### Updates
 
-EterX checks for updates when the desktop window opens or becomes visible, and periodically while it remains visible. **Downloads and installation require your action.** Open **Settings → Updates** to check manually, review an available release, download it, and choose **Restart and install**.
+EterX checks shortly after the desktop window opens, every 30 minutes while visible, and on return if the previous check was more than 5 minutes ago. Failed checks retry with increasing delays; scans pause while hidden, minimized, asleep, downloading, or awaiting installation. The normal **Updates** link becomes a blue **Update** button when a verified release is available. Clicking it opens **Settings → Updates** and starts downloading. In-app notices show availability and readiness; choose **Restart to update** when ready to install. Settings also supports manual checks and retries.
 
 Windows uses the NSIS updater; Linux updates the matching AppImage. Signed macOS builds use the native updater, while unsigned builds use a verified bundle replacement with rollback. Application updates preserve the separate user-data directory described in [Local data and privacy](#local-data-and-privacy).
 

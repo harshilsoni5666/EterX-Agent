@@ -1,14 +1,14 @@
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
-const { spawn, execFile } = require('child_process');
+const { execFile } = require('child_process');
+const { createWorkspaceAppFinder, launchWorkspaceApp } = require('./workspace-open-apps');
 
 exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
   const { shell, dialog } = require('electron');
   const watches = new Map();
   const subscriptions = new Map();
-  const appCache = new Map();
-  const exists = candidate => fsp.access(candidate, process.platform === 'linux' ? fs.constants.X_OK : fs.constants.F_OK).then(() => true, () => false);
+  const applications = createWorkspaceAppFinder(app);
   const send = payload => { const window = getWindow(); if (window && !window.isDestroyed()) window.webContents.send('workspace-files-event', payload); };
   const unwatch = id => {
     const directory = subscriptions.get(id); subscriptions.delete(id);
@@ -47,53 +47,16 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
   ipcMain.on('workspace-files-unwatch', (event, id) => { try { authorize(event); unwatch(id); } catch {} });
   app.on('will-quit', cleanup);
 
-  async function findApplications() {
-    const cached = appCache.get('apps');
-    if (cached && Date.now() - cached.time < 60000) return cached.value;
-    const home = app.getPath('home');
-    const found = [];
-    const definitions = [
-      { id: 'code', name: 'VS Code', mac: 'Visual Studio Code.app', win: ['Microsoft VS Code/Code.exe'], unix: 'code' },
-      { id: 'cursor', name: 'Cursor', mac: 'Cursor.app', win: ['cursor/Cursor.exe', 'Cursor/Cursor.exe'], unix: 'cursor' },
-      { id: 'antigravity', name: 'Antigravity', mac: 'Antigravity.app', win: ['Antigravity/Antigravity.exe'], unix: 'antigravity' },
-      { id: 'sublime', name: 'Sublime Text', mac: 'Sublime Text.app', win: ['Sublime Text/sublime_text.exe', 'Sublime Text 3/sublime_text.exe'], unix: 'subl' },
-      { id: 'notepad', name: 'Notepad', win: [], executable: process.platform === 'win32' ? path.join(process.env.SystemRoot || 'C:\\Windows', 'notepad.exe') : null },
-      { id: 'textedit', name: 'TextEdit', mac: 'TextEdit.app' },
-      { id: 'kate', name: 'Kate', unix: 'kate' },
-      { id: 'gedit', name: 'Text Editor', unix: 'gedit' },
-      { id: 'pycharm', name: 'PyCharm', mac: 'PyCharm.app', unix: 'pycharm' },
-    ];
-    const winRoots = [process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs'), process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean);
-    await Promise.all(definitions.map(async definition => {
-      let candidates = [];
-      if (definition.executable) candidates.push(definition.executable);
-      if (process.platform === 'darwin' && definition.mac) candidates = ['/Applications', path.join(home, 'Applications'), '/System/Applications'].map(root => path.join(root, definition.mac));
-      if (process.platform === 'win32' && definition.win) candidates.push(...winRoots.flatMap(root => definition.win.map(relative => path.join(root, relative))));
-      if (process.platform === 'linux' && definition.unix) candidates = [...new Set([...String(process.env.PATH || '').split(path.delimiter), path.join(home, '.local', 'bin'), '/usr/local/bin', '/usr/bin', '/snap/bin'])].filter(Boolean).map(root => path.join(root, definition.unix));
-      if (definition.id === 'pycharm' && process.platform === 'win32') {
-        for (const root of winRoots) {
-          try { const directory = path.join(root, 'JetBrains'); const entries = await fsp.readdir(directory); candidates.push(...entries.filter(name => /^PyCharm/i.test(name)).map(name => path.join(directory, name, 'bin', 'pycharm64.exe'))); } catch {}
-        }
-      }
-      for (const executable of candidates) {
-        if (!await exists(executable)) continue;
-        let icon;
-        try { icon = (await app.getFileIcon(executable, { size: 'small' })).toDataURL(); } catch {}
-        found.push({ id: definition.id, name: definition.name, executable, icon }); break;
-      }
-    }));
-    found.sort((a, b) => definitions.findIndex(item => item.id === a.id) - definitions.findIndex(item => item.id === b.id));
-    appCache.set('apps', { time: Date.now(), value: found });
-    return found;
-  }
-  ipcMain.handle('workspace-open-apps', async event => {
+  ipcMain.handle('workspace-open-apps', async (event, refresh = false) => {
     authorize(event);
-    return (await findApplications()).map(({ executable, ...app }) => app);
+    return (await applications.find(refresh === true)).map(({ id, name, icon, folders }) => ({ id, name, icon, folders }));
   });
   ipcMain.handle('workspace-open-file', async (event, filePath, application = 'default') => {
     authorize(event);
-    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) throw new Error('Select a local file first.');
-    await fsp.access(filePath);
+    if (typeof filePath !== 'string' || filePath.includes('\0') || !path.isAbsolute(filePath)) throw new Error('Select a local file first.');
+    if (typeof application !== 'string') throw new Error('Choose an application to open this path.');
+    filePath = path.normalize(filePath);
+    const targetStat = await fsp.stat(filePath);
     if (application === 'reveal') { shell.showItemInFolder(filePath); return; }
     if (application === 'save-as') {
       const sourceStat = await fsp.stat(filePath);
@@ -109,12 +72,13 @@ exports.registerWorkspaceFiles = ({ ipcMain, app, getWindow, authorize }) => {
       return;
     }
     if (application === 'default') { const error = await shell.openPath(filePath); if (error) throw new Error(error); return; }
-    const selected = (await findApplications()).find(item => item.id === application);
-    if (!selected) throw new Error('This application is no longer available on this device.');
-    await new Promise((resolve, reject) => {
-      const child = process.platform === 'darwin' ? spawn('/usr/bin/open', ['-a', selected.executable, filePath], { detached: true, stdio: 'ignore' }) : spawn(selected.executable, [filePath], { detached: true, stdio: 'ignore', shell: false, windowsHide: true });
-      child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
-    });
+    let selected = (await applications.find()).find(item => item.id === application);
+    // An app may have moved, updated, or been uninstalled since the menu opened.
+    if (!selected || !await fsp.access(selected.executable).then(() => true, () => false)) selected = (await applications.find(true)).find(item => item.id === application);
+    if (!selected) throw new Error('This application is no longer available on this device. Open the menu to refresh the application list.');
+    if (targetStat.isDirectory() && !selected.folders) throw new Error(`${selected.name} opens files. Choose a file first.`);
+    try { await launchWorkspaceApp(selected, filePath); }
+    catch (error) { applications.invalidate(); throw error; }
   });
 
   // These read-only commands run only for a user-opened working-tree/branch

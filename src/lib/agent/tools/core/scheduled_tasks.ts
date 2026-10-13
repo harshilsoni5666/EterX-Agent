@@ -4,8 +4,25 @@ import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
 import { mutateScheduledTasks, loadScheduledTaskSnapshot } from '../../../scheduled-task-store';
 import { computeNextScheduledRun, normalizeScheduledTask, type ScheduledTaskRecord } from '../../../scheduled-tasks';
+import { isModelProvider, modelEntryKey, parseModelEntryKey } from '../../model-selector-store';
+import { getModelThinkingOptions, normalizeThinkingLevelForModel } from '../../model-routing';
+import { readStoredModelMetadata } from '../../stored-model-metadata';
 
 const recurrenceValues = ['none', 'once', 'hourly', 'daily', 'weekdays', 'weekly'] as const;
+
+function scheduledModelSettings(selection: unknown, requestedLevel: unknown, context?: any) {
+  const inherited = isModelProvider(context?.selectedModelProvider) && context?.selectedModelName
+    ? modelEntryKey(context.selectedModelProvider, context.selectedModelName) : '';
+  const entry = parseModelEntryKey(selection === undefined ? inherited : selection);
+  if (!entry) return { error: 'Choose an exact configured provider:model key. Automatic model substitution is not supported.' };
+  const model = modelEntryKey(entry.provider, entry.modelId);
+  const capability = readStoredModelMetadata(entry.provider, entry.modelId).thinking;
+  const options = getModelThinkingOptions(entry.provider, entry.modelId, capability);
+  if (requestedLevel !== undefined && !options.some(option => option.id === requestedLevel)) {
+    return { error: options.length ? `This model supports thinking levels: ${options.map(option => option.id).join(', ')}.` : 'This model does not expose an adjustable thinking option.' };
+  }
+  return { model, thinkingLevel: normalizeThinkingLevelForModel(requestedLevel ?? context?.selectedThinkingLevel, entry.provider, entry.modelId, capability) };
+}
 
 function validRecurrence(value: string, after: number): boolean {
   return recurrenceValues.includes(value as any) || (value.startsWith('custom:') && computeNextScheduledRun(value, after) !== null);
@@ -33,7 +50,7 @@ export const scheduledTasksTool: ToolDefinition = {
 
 Use this tool when the user naturally asks to do something later or repeatedly. Resolve relative dates from the system temporal context and pass an exact ISO date/time. Inspect/list before changing an ambiguously named task. Prefer update or rename over creating duplicates.
 
-Operations: list, get, create, update, rename, run_now, pause, resume, delete. Creating without scheduledAt runs as soon as the desktop companion is available. Recurrence supports none, once, hourly, daily, weekdays, weekly, custom:<number minutes|hours|days|weeks>, or custom:<5-field cron>. modelSelection accepts auto or an exact configured model key. agentId accepts null/general, coding, autonomous, or an exact custom-agent ID.`,
+Operations: list, get, create, update, rename, run_now, pause, resume, delete. Creating without scheduledAt runs as soon as the desktop companion is available. Recurrence supports none, once, hourly, daily, weekdays, weekly, custom:<number minutes|hours|days|weeks>, or custom:<5-field cron>. modelSelection accepts an exact configured model key; omit it to retain this chat's selected model. agentId accepts null/general, coding, autonomous, or an exact custom-agent ID.`,
   category: 'automation',
   inputSchema: z.object({
     operation: z.enum(['list', 'get', 'create', 'update', 'rename', 'run_now', 'pause', 'resume', 'delete']),
@@ -43,8 +60,8 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
     scheduledAt: z.string().optional().describe('Exact ISO date/time including timezone or offset.'),
     recurrence: z.string().optional().describe('none, once, hourly, daily, weekdays, weekly, custom:<interval>, or custom:<5-field cron>.'),
     priority: z.enum(['low', 'medium', 'high']).optional(),
-    modelSelection: z.string().optional().describe('auto or exact configured provider:model key.'),
-    thinkingLevel: z.enum(['minimal', 'low', 'medium', 'high']).optional(),
+    modelSelection: z.string().optional().describe('Exact configured provider:model key. Omit to use this chat’s selected model.'),
+    thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
     agentId: z.string().nullable().optional().describe('null/general, coding, autonomous, or exact custom-agent ID.'),
     agentName: z.string().optional(),
     sources: z.array(z.object({ path: z.string(), name: z.string().optional(), type: z.string().optional() })).optional(),
@@ -73,6 +90,8 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
       const recurrence = String(input.recurrence || 'none').trim().toLowerCase();
       if (!validRecurrence(recurrence, timestamp)) return { success: false, message: 'Invalid recurrence rule.' };
       const agentId = input.agentId && input.agentId !== 'general' ? String(input.agentId) : null;
+      const modelSettings = scheduledModelSettings(input.modelSelection, input.thinkingLevel, context);
+      if ('error' in modelSettings) return { success: false, message: modelSettings.error };
       const task = normalizeScheduledTask({
         id: `task_${Date.now()}_${randomUUID().slice(0, 8)}`,
         title,
@@ -81,15 +100,15 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
         ...scheduleFields(timestamp),
         recurrence,
         priority: input.priority || 'medium',
-        model: String(input.modelSelection || 'auto'),
-        thinkingLevel: input.thinkingLevel,
+        model: modelSettings.model,
+        thinkingLevel: modelSettings.thinkingLevel,
         agentId,
         agentName: String(input.agentName || (agentId === 'coding' ? 'Coding' : agentId === 'autonomous' ? 'Autonomous' : agentId || 'General')),
         // Schedules are durable background work. Capture the originating
         // chat's device/workspace so a later visible-chat switch cannot send
         // its terminal commands somewhere else.
         workspacePath: typeof context?.workspacePath === 'string' ? context.workspacePath : undefined,
-        runLocation: context?.runLocation === 'sandbox' ? 'sandbox' : context?.runLocation === 'local' ? 'local' : undefined,
+        runLocation: context?.runLocation === 'worktree' ? 'worktree' : context?.runLocation === 'sandbox' ? 'sandbox' : context?.runLocation === 'local' ? 'local' : undefined,
         sources: Array.isArray(input.sources) ? input.sources.map((source: any) => ({
           id: randomUUID(),
           path: String(source.path),
@@ -163,8 +182,12 @@ Operations: list, get, create, update, rename, run_now, pause, resume, delete. C
           task.recurrence = recurrence;
         }
         if (input.priority) task.priority = input.priority;
-        if (input.modelSelection !== undefined) task.model = String(input.modelSelection || 'auto');
-        if (input.thinkingLevel !== undefined) task.thinkingLevel = input.thinkingLevel;
+        if (input.modelSelection !== undefined || input.thinkingLevel !== undefined) {
+          const modelSettings = scheduledModelSettings(input.modelSelection ?? task.model, input.thinkingLevel, { selectedThinkingLevel: task.thinkingLevel });
+          if ('error' in modelSettings) { message = modelSettings.error || 'Invalid model settings.'; return tasks; }
+          task.model = modelSettings.model;
+          task.thinkingLevel = modelSettings.thinkingLevel;
+        }
         if (input.agentId !== undefined) {
           task.agentId = input.agentId && input.agentId !== 'general' ? String(input.agentId) : null;
           task.agentName = String(input.agentName || task.agentId || 'General');

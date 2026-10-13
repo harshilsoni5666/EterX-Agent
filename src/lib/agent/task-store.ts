@@ -22,6 +22,7 @@ import {
 import { formatUnknownError } from './error-format';
 import { sameUserAdmission } from '../steering-delivery';
 import { contextUsageScopeKey, mergeContextCompactionSnapshot, mergeContextUsageSnapshot, upsertContextUsageSnapshot } from '../context-usage-snapshot';
+import { reconcileModelUsageLogs, upsertModelUsageReceipt } from '../model-usage';
 
 /**
  * TaskStore — Persistent Server-Side Task State
@@ -444,7 +445,7 @@ function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
     return undefined;
   };
 
-  for (const log of Array.isArray(traceLogs) ? traceLogs : []) {
+  for (const log of reconcileModelUsageLogs(Array.isArray(traceLogs) ? traceLogs : [])) {
     if (String(log?.type || '') === 'context_usage') {
       const usageKey = contextUsageScopeKey(log);
       const existingUsageIndex = usageKey ? contextUsageIndexes.get(usageKey) : undefined;
@@ -976,6 +977,8 @@ export const taskStore = {
       } else {
         task.traceLogs.push(timedEvent);
       }
+    } else if (timedEvent?.type === 'model_usage') {
+      upsertModelUsageReceipt(task.traceLogs, timedEvent);
     } else if (timedEvent?.type === 'context_usage') {
       upsertContextUsageSnapshot(task.traceLogs, timedEvent);
     } else if (timedEvent?.type === 'context_compaction' && String(timedEvent.compactionId || '').trim()) {

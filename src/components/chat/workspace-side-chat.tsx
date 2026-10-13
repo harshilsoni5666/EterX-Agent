@@ -10,20 +10,13 @@ import type { MainAgentMode, MainAgentThinkingLevel } from '../../lib/agent/mode
 import { updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { FilePanelReveal } from '../../contexts/FilePanelContext';
 import { Tooltip } from '../ui/tooltip';
-import { readContextUsageMeter } from '../../lib/context-usage-meter';
-import { modelEntryKey, parseModelEntryKey } from '../../lib/agent/model-selector-store';
-import { resolveModelContextWindow } from '../../lib/agent/model-context-window';
-import { appStorage } from '../../lib/client-storage';
-import {
-  CONTEXT_BUDGET_REVISIONS_KEY,
-  contextWindowLimitNote,
-  normalizeContextWindow,
-  resolveContextWindowBudget,
-  resolveSavedContextBudget,
-} from '../../lib/context-window-policy';
-
+import { readChatContextUsage } from '../../lib/chat-context-usage';
+import { summarizeChatUsage } from '../../lib/chat-command-state';
+import { selectMainContextLogs, traceBelongsToUsageChat } from '../../lib/chat-usage-scope';
+import { parseModelEntryKey } from '../../lib/agent/model-selector-store';
+import { FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 export type SideChatSession = { id: string; title: string; traceLogs: any[]; workspacePath?: string | null; modelSelection?: string; updatedAt: number; isFavorite?: boolean };
-export type SideChatSettings = { modelSelection: string; selectedAgent: { agentId: string | null; agentName: string; chatMode?: boolean }; thinkingLevel: MainAgentThinkingLevel; agentMode: MainAgentMode; workspacePath: string | null; runLocation: 'local' | 'sandbox' };
+export type SideChatSettings = { modelSelection: string; selectedAgent: { agentId: string | null; agentName: string; chatMode?: boolean }; thinkingLevel: MainAgentThinkingLevel; agentMode: MainAgentMode; workspacePath: string | null; runLocation: 'local' | 'sandbox' | 'worktree' };
 export type SideChatActions = {
   hydrate: (id: string) => Promise<void>;
   settings: (id: string) => SideChatSettings;
@@ -168,112 +161,27 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     };
   }, []);
 
+  const [contextSettingsRevision, setContextSettingsRevision] = useState(0);
+  useEffect(() => {
+    const refresh = () => setContextSettingsRevision(revision => revision + 1);
+    const events = ['focus', 'eterx-settings-updated', FOLDER_STORAGE_READY_EVENT, 'eterx-folder-storage-updated'];
+    events.forEach(event => window.addEventListener(event, refresh));
+    return () => events.forEach(event => window.removeEventListener(event, refresh));
+  }, []);
+  const ownedLogs = useMemo(() => (chat?.traceLogs || emptyLogs).filter(log =>
+    traceBelongsToUsageChat(log, id)
+  ), [chat?.traceLogs, id]);
+  const chatUsage = useMemo(() => summarizeChatUsage(ownedLogs), [ownedLogs]);
   const contextUsage = useMemo(() => {
-    const logs = chat?.traceLogs || emptyLogs;
-    if (!logs.length) return undefined;
-    const selectedEntry = parseModelEntryKey(settings.modelSelection);
-    const meter = readContextUsageMeter(logs, text, selectedEntry);
-    const provider = selectedEntry?.provider || 'google';
-    const modelId = selectedEntry?.modelId || 'gemini-2.5-flash';
-
-    let discoveredMaximum = 0;
-    let savedSettings: any = {};
-    let chatOverride: unknown;
-    let savedBudgetRevision = 0;
-    try {
-      discoveredMaximum = normalizeContextWindow(
-        JSON.parse(appStorage.getItem('eterx_model_context_windows') || '{}')?.[modelEntryKey(provider, modelId)],
-      );
-      savedSettings = JSON.parse(appStorage.getItem('eterx_settings') || '{}');
-      const budgetRevisions = JSON.parse(appStorage.getItem(CONTEXT_BUDGET_REVISIONS_KEY) || '{}');
-      savedBudgetRevision = Math.max(Number(budgetRevisions.global || 0), Number(budgetRevisions.chats?.[id] || 0));
-      chatOverride = JSON.parse(appStorage.getItem('eterx_chat_context_window_overrides') || '{}')?.[id];
-    } catch { }
-
-    const latestContextUsage = meter.latestContextUsage;
-    const latestProviderUsage = meter.latestProviderUsage;
-    const latestCompactionEvent = meter.latestCompactionEvent;
-
-    const measuredModelMatches = latestContextUsage?.provider === provider
-      && String(latestContextUsage?.model || latestContextUsage?.modelId || '') === modelId;
-    const measuredModelWindow = measuredModelMatches ? normalizeContextWindow(latestContextUsage?.modelContextWindow) : 0;
-    const modelContextWindow = (running ? measuredModelWindow || discoveredMaximum : discoveredMaximum || measuredModelWindow)
-      || resolveModelContextWindow(provider, modelId);
-    const budget = resolveContextWindowBudget(resolveSavedContextBudget(savedSettings, chatOverride), modelContextWindow);
-    const configuredContextWindow = budget.configuredContextWindow;
-    let contextWindow = configuredContextWindow;
-
-    const authoritativeWindow = meter.contextWindow;
-    if (running && measuredModelMatches && Number.isFinite(authoritativeWindow) && authoritativeWindow >= 16_000) {
-      contextWindow = authoritativeWindow;
-    } else {
-      contextWindow = configuredContextWindow;
-    }
-    if (latestCompactionEvent?.phase === 'failed'
-      && savedBudgetRevision <= Number(latestCompactionEvent.contextBudgetRevision || 0)) {
-      const raisedWindow = Number(latestCompactionEvent.nextContextWindow || 0);
-      if (Number.isFinite(raisedWindow) && raisedWindow >= 16_000) {
-        contextWindow = Math.min(modelContextWindow, Math.max(contextWindow, raisedWindow));
-      }
-    }
-
-    const safeUsedTokens = Math.max(0, Math.round(Number.isFinite(meter.usedTokens) ? meter.usedTokens : 0));
-    const utilizationPct = contextWindow > 0 ? Math.max(0, Math.min(100, (safeUsedTokens / contextWindow) * 100)) : 0;
-
-    const breakdown = meter.breakdown || {
-      conversation: Math.max(0, safeUsedTokens - (meter.draftTokens || 0)),
-      systemPrompt: Math.min(1500, Math.round(safeUsedTokens * 0.2)),
-      toolDefinitions: Math.min(1200, Math.round(safeUsedTokens * 0.15)),
-      skills: 0,
-      rules: 0,
-      mcpDynamicTools: 0,
-      subagentDefinitions: 0,
-      providerOverhead: 0,
-    };
-
-    return {
-      usedTokens: safeUsedTokens,
-      contextWindow,
-      contextLimitNote: contextWindowLimitNote(budget.requestedContextWindow, modelContextWindow),
-      utilizationPct,
-      breakdown,
-      providerMetrics: meter.providerMetrics,
-      cacheStatus: meter.cacheStatus,
-      isEstimated: meter.isEstimated,
-      awaitingSelectedModelMeasurement: meter.awaitingSelectedModelMeasurement,
-      aggregateSource: meter.aggregateSource,
-      breakdownSource: 'serialized_payload' as const,
-      providerInputTokens: meter.providerInputTokens,
-      localEstimatedTokens: Number(latestContextUsage?.localEstimatedTokens || 0) || undefined,
-      draftTokens: meter.draftTokens,
-      liveEstimateTokens: meter.liveEstimateTokens,
-      providerName: String(latestProviderUsage?.provider || provider || '').trim() || undefined,
-      modelName: String(latestProviderUsage?.model || latestProviderUsage?.modelId || modelId || '').trim() || undefined,
-      compaction: latestCompactionEvent ? {
-        phase: latestCompactionEvent.phase,
-        beforeTokens: Number(latestCompactionEvent.beforeTokens || 0),
-        afterTokens: Number.isFinite(Number(latestCompactionEvent.afterTokens))
-          ? Number(latestCompactionEvent.afterTokens)
-          : undefined,
-        modelProvider: String(latestCompactionEvent.modelProvider || '').trim() || undefined,
-        modelName: String(latestCompactionEvent.modelName || '').trim() || undefined,
-        failureTier: Number(latestCompactionEvent.failureTier || 0) || undefined,
-        nextAttemptTokens: Number(latestCompactionEvent.nextAttemptTokens || 0)
-          ? Math.min(Number(latestCompactionEvent.nextAttemptTokens), Math.floor(modelContextWindow * 0.96))
-          : undefined,
-        nextContextWindow: Number(latestCompactionEvent.nextContextWindow || 0)
-          ? Math.min(Number(latestCompactionEvent.nextContextWindow), modelContextWindow)
-          : undefined,
-        summary: String(latestCompactionEvent.summary || '').trim() || undefined,
-        timestamp: Number(latestCompactionEvent.timestamp || 0) || undefined,
-      } : undefined,
-      providerMeasured: meter.providerMeasured,
-      hasDraftEstimate: (meter.draftTokens || 0) > 0,
-      hasEstimatedDelta: meter.hasEstimatedDelta,
-      updatedAt: meter.updatedAt,
-    };
-  }, [chat?.traceLogs, id, running, settings.modelSelection, text]);
-
+    if (!ownedLogs.length) return null;
+    return readChatContextUsage({
+      logs: selectMainContextLogs(ownedLogs, id),
+      chatId: id,
+      draft: text,
+      selectedModel: parseModelEntryKey(settings.modelSelection),
+      running,
+    });
+  }, [ownedLogs, id, running, settings.modelSelection, text, contextSettingsRevision]);
   const scrollBottom = () => pane.current?.querySelector('.eterx-chat-feed-scroll')?.scrollTo({ top: Number.MAX_SAFE_INTEGER, behavior: 'smooth' });
   const selectWorkspace = (workspacePath: string | null) => {
     // A native picker may finish after this side conversation has unmounted.
@@ -286,7 +194,7 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     {loading && <div className="eterx-workspace-chat-loading"><Loader2 size={15} className="animate-spin" /> Loading conversation…</div>}
     {error && <div className="eterx-workspace-inline-error" role="alert">{error}{loading === false && chat && !chat.traceLogs.length && <button onClick={() => { setError(''); setLoading(true); void actions.hydrate(id).catch(error => setError(String(error))).finally(() => setLoading(false)); }}>Retry</button>}</div>}
     <ChatFeed workspaceOwner={workspaceOwner} scrollContainerId={`side-chat-${tabId}`} traceLogs={chat?.traceLogs || emptyLogs} chatId={id} isThinking={running || sending} messagesEndRef={end} setSidebarOpen={ignore} sidebarOpen={false} handleScroll={event => { const node = event.currentTarget; setShowBottom(node.scrollHeight - node.scrollTop - node.clientHeight > 100); }} showScrollBottom={false} isCompressed workspacePath={settings.workspacePath} onEditUserMessage={setText} onAnswerAskUser={(timestamp, answer, responseKey) => actions.answer(id, timestamp, answer, responseKey)} />
-    <ChatInput inputValue={text} inputValueRevision={textRevision} onInputValueChange={updateTextDraft} setInputValue={setText} isThinking={running || sending} canStop={running} isRecording={isRecording} toggleSpeech={toggleSpeech} showVoiceControls contextUsage={contextUsage} onLiveStart={() => { if (actions.startLive) actions.startLive(id); else actions.openMain(id); }} handleSend={submit} handleSteer={submit} handleStop={() => actions.stop(id)} attachments={attachments} setAttachments={setAttachments} greeting="" traceLogsLength={Math.max(1, chat?.traceLogs.length || 0)} activeChatId={id} isCompressed modelSelectionScope="surface" chatModelSelection={settings.modelSelection} onModelSelectionChange={modelSelection => setSettings(previous => ({ ...previous, modelSelection }))} selectedAgent={settings.selectedAgent.agentId} selectedAgentName={settings.selectedAgent.agentName} chatMode={settings.selectedAgent.chatMode} onAgentChange={(agentId, agentName, chatMode) => setSettings(previous => ({ ...previous, selectedAgent: { agentId, agentName, chatMode } }))} thinkingLevel={settings.thinkingLevel} onThinkingLevelChange={thinkingLevel => setSettings(previous => ({ ...previous, thinkingLevel }))} agentMode={settings.agentMode} onModeChange={agentMode => setSettings(previous => ({ ...previous, agentMode }))} workspacePath={settings.workspacePath} onWorkspacePathChange={selectWorkspace} runLocation={settings.runLocation} onRunLocationChange={runLocation => setSettings(previous => ({ ...previous, runLocation }))} showScrollBottom={showBottom} onScrollToBottom={scrollBottom} />
+    <ChatInput inputValue={text} inputValueRevision={textRevision} onInputValueChange={updateTextDraft} setInputValue={setText} isThinking={running || sending} canStop={running} isRecording={isRecording} toggleSpeech={toggleSpeech} showVoiceControls contextUsage={contextUsage} chatUsage={chatUsage} chatTitle={chat?.title || 'New side chat'} onLiveStart={() => { if (actions.startLive) actions.startLive(id); else actions.openMain(id); }} handleSend={submit} handleSteer={submit} handleStop={() => actions.stop(id)} attachments={attachments} setAttachments={setAttachments} greeting="" traceLogsLength={Math.max(1, chat?.traceLogs.length || 0)} activeChatId={id} isCompressed modelSelectionScope="surface" chatModelSelection={settings.modelSelection} onModelSelectionChange={modelSelection => setSettings(previous => ({ ...previous, modelSelection }))} selectedAgent={settings.selectedAgent.agentId} selectedAgentName={settings.selectedAgent.agentName} chatMode={settings.selectedAgent.chatMode} onAgentChange={(agentId, agentName, chatMode) => setSettings(previous => ({ ...previous, selectedAgent: { agentId, agentName, chatMode } }))} thinkingLevel={settings.thinkingLevel} onThinkingLevelChange={thinkingLevel => setSettings(previous => ({ ...previous, thinkingLevel }))} agentMode={settings.agentMode} onModeChange={agentMode => setSettings(previous => ({ ...previous, agentMode }))} workspacePath={settings.workspacePath} onWorkspacePathChange={selectWorkspace} runLocation={settings.runLocation} onRunLocationChange={runLocation => setSettings(previous => ({ ...previous, runLocation }))} showScrollBottom={showBottom} onScrollToBottom={scrollBottom} />
   </div></FilePanelReveal>;
 });
 

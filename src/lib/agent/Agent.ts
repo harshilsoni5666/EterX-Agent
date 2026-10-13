@@ -1,8 +1,11 @@
 import { isRuntimePlanMode, PLAN_MODE_INSTRUCTION } from './plan-mode';
+import { isRuntimeSwarmMode } from './swarm-mode';
+import { swarmCoordinator, SWARM_LIMITS, SWARM_MODE_INSTRUCTION } from './swarm-coordinator';
 import { buildTelegramBotContext } from './telegram-bot-context';
 import { buildTelegramWorkNoteCue } from './telegram-bot-behavior';
 import { taskDecomposerTool } from './tools/core/task_decomposer';
 import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
+import { latestModelThinkingCapability, readStoredModelMetadata } from './stored-model-metadata';
 import { isPastedText, pastedTextManifest } from '../pasted-text';
 import { buildChatMediaContext, retainChatImageOutput } from '../chat-media-store';
 import { describeTimeout } from './timeout-error';
@@ -53,6 +56,7 @@ import {
   getAnthropicThinkingBudget,
   getGeminiThinkingConfig,
   getModelThinkingOptions,
+  resolveModelThinkingCapabilities,
   isAnthropicAdaptiveThinkingModel,
   isOpenAIMiniReasoningModel,
   isOpenAIReasoningModel,
@@ -100,6 +104,7 @@ import { getRuntimeWorkspaceRoot } from './workspace/path_resolver';
 import { resolveWorkspacePathForContext } from './workspace/path_resolver';
 import * as cognitiveCore from './hooks/cognitive-core';
 import { formatVisibleWorkNote as formatCleanVisibleWorkNote, WORK_NOTE_POLICY } from './work-note';
+import { FINAL_ANSWER_POLICY } from './response-format';
 import { SOURCE_READING_POLICY } from './source-read-policy';
 import { RuntimeEvidenceLedger } from './runtime-evidence';
 import { AdaptiveHarness, type AdaptiveHarnessSnapshot } from './adaptive-harness';
@@ -109,13 +114,16 @@ import { estimateRequestTokenBudget } from './request-token-budget';
 import {
   applyOpenAIPromptCachePolicy,
   applyAnthropicPromptCachePolicy,
-  canUseExplicitGeminiSystemCache,
+  canonicalizeToolDeclarations,
   buildOpenAISystemPromptContent,
   buildProviderConversationCacheId,
   buildPromptCacheIdentity,
   normalizeProviderCacheUsage,
+  mergeProviderUsageSnapshots,
+  providerCacheKeyIndex,
   resolveProviderPromptCacheMode,
 } from './provider-prompt-cache';
+import { appendRuntimeContext, RUNTIME_CONTEXT_POLICY } from './runtime-prompt-context';
 import * as pathLib from 'path';
 import { getEterxAssetPath } from './storage-paths';
 import * as fsExtra from 'fs-extra';
@@ -507,12 +515,13 @@ export class GeminiAgentClient {
     return `${providerName} API Key ${keyIndex + 1} (${poolLabel}) failed: ${reason}. Rotating keys...`;
   }
 
-  private getProviderKeyInfo(provider: MainAgentProvider): { apiKey: string; index: number; poolType: string } {
+  private getProviderKeyInfo(provider: MainAgentProvider, conversationScope?: string): { apiKey: string; index: number; poolType: string } {
     if (isLocalModelProvider(provider)) {
       const runtimeProvider = provider as RuntimeApiKeyProvider;
       const configuredKeys = getScopedRuntimeApiKeyValues(this.runtimeSettings, runtimeProvider);
       if (configuredKeys.length > 0) {
-        const cursor = this.providerKeyCursor[provider] || 0;
+        const cursor = conversationScope ? providerCacheKeyIndex(provider, conversationScope, configuredKeys)
+          : this.providerKeyCursor[provider] || 0;
         const index = cursor % configuredKeys.length;
         this.providerKeyCursor[provider] = (cursor + 1) % configuredKeys.length;
         return {
@@ -529,7 +538,8 @@ export class GeminiAgentClient {
     const poolType = isCustom ? 'custom pool' : 'system pool';
 
     if (scopedKeys.length > 0) {
-      const cursor = this.providerKeyCursor[provider] || 0;
+      const cursor = conversationScope ? providerCacheKeyIndex(provider, conversationScope, scopedKeys)
+        : this.providerKeyCursor[provider] || 0;
       const index = cursor % scopedKeys.length;
       const apiKey = scopedKeys[index] || scopedKeys[0];
       
@@ -795,6 +805,8 @@ export class GeminiAgentClient {
           const u = (response as any).usageMetadata;
           const usageTrace = createProviderUsageTrace('gemini', this.modelName, u, {
             cacheMode: resolveProviderPromptCacheMode('gemini', process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1'),
+            thinkingLevel: getModelThinkingOptions('gemini', this.modelName).length > 0
+              ? normalizeThinkingLevelForModel('minimal', 'gemini', this.modelName) : undefined,
             phase: 'telegram_fast', contextRequestId: fastContextRequestId,
           });
           if (usageTrace) {
@@ -1669,6 +1681,7 @@ export class GeminiAgentClient {
     onTrace?: (t: any) => void,
     currentTask?: string,
     contextFabric?: ContextFabric,
+    includeDirectMessages = true,
   ): string {
     try {
       const projectId = String((context as any).projectId || (context as any).chatId || '').trim();
@@ -1680,7 +1693,7 @@ export class GeminiAgentClient {
         : undefined;
       if (!projectId || !agentName) return '';
 
-      const directMessages = (context as any).isSubAgent && typeof (context as any).drainDirectUserMessages === 'function'
+      const directMessages = includeDirectMessages && (context as any).isSubAgent && typeof (context as any).drainDirectUserMessages === 'function'
         ? ((context as any).drainDirectUserMessages() as Array<any>)
         : [];
       const requestedRuntime = [...directMessages].reverse().find((message: any) =>
@@ -1702,7 +1715,9 @@ export class GeminiAgentClient {
               (context as any).contextCompaction, requestedProvider, requestedModel,
             );
             delete (context as any).modelThinkingCapability;
-            delete (context as any).modelWireCapabilities;
+            const metadata = readStoredModelMetadata(this.activeProvider, requestedModel);
+            (context as any).modelThinkingCapability = metadata.thinking;
+            (context as any).modelWireCapabilities = metadata.wire;
           }
           (context as any).selectedModelProvider = requestedProvider;
           (context as any).selectedModelName = requestedModel;
@@ -1865,10 +1880,21 @@ ${ message.text }
     // retains undrained messages and starts them as sequential continuations
     // after this worker settles.
     if ((context as any).isSubAgent) {
-      return '';
+      await globalSubAgentSpawner.joinChildren(context);
+      if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
+      const inbox = await this.drainInterAgentMessages(context, step, trace, onTrace, currentTask, undefined, false);
+      const outcomes = await globalSubAgentSpawner.drainCompletionEvidence(context);
+      return [inbox, outcomes].filter(Boolean).join('\n\n');
     }
     const projectId = String((context as any).projectId || (context as any).chatId || '').trim();
     if (!projectId) return '';
+
+    if (isRuntimeSwarmMode((context as any).ownerChatId || projectId, context.swarmMode === true)
+      && swarmCoordinator.snapshot(context, 0, 1).total === 0
+      && !(context as any)._swarmCompletionReminder) {
+      (context as any)._swarmCompletionReminder = true;
+      return `${SWARM_MODE_INSTRUCTION}\nNo delegated task has been admitted for this run. Reconcile this before completion: launch a useful bounded assignment, or explicitly explain why delegation cannot help or is unavailable. Do not invent a team or claim work was delegated.`;
+    }
 
     if (globalSubAgentSpawner.getBackgroundCount(projectId) > 0) {
       onTrace?.({
@@ -1882,7 +1908,9 @@ ${ message.text }
       if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
     }
 
-    return this.drainInterAgentMessages(context, step, trace, onTrace, currentTask);
+    const inbox = await this.drainInterAgentMessages(context, step, trace, onTrace, currentTask);
+    const outcomes = await globalSubAgentSpawner.drainCompletionEvidence(context);
+    return [inbox, outcomes].filter(Boolean).join('\n\n');
   }
 
   private formatLiveSteering(messages: Array<{ id?: string; text: string; metadata?: Record<string, any> }>): string {
@@ -1991,8 +2019,18 @@ ${ message.text }
    */
   private async ensureRequiredPlan(context: ProjectContext, message: string, onTrace?: (trace: any) => void) {
     const scope = this.getConversationScope(context);
-    if (!isRuntimePlanMode(scope, (context as any).planMode === true) || isRunCancelled(context)) return;
-    const turn = String((context as any).getActiveTurnId?.() || (context as any).turnId || (context as any).runId || message);
+    const runtime = context as any;
+    const ownerScope = runtime.ownerChatId || context.projectId || scope;
+    if (!runtime.isUserProxy) {
+      runtime._baseDelegation ??= { allowed: runtime.allowAgentSpawning === true, disabled: runtime.disableSubAgents === true };
+      context.swarmMode = isRuntimeSwarmMode(ownerScope, context.swarmMode === true);
+      const depthAvailable = Number(context.agentDepth || 0) < SWARM_LIMITS.maxDepth;
+      runtime.allowAgentSpawning = depthAvailable && (context.swarmMode || runtime._baseDelegation.allowed);
+      runtime.disableSubAgents = !depthAvailable || (!context.swarmMode && runtime._baseDelegation.disabled);
+    }
+    context.planMode = isRuntimePlanMode(ownerScope, context.planMode === true);
+    if (!context.planMode || isRunCancelled(context)) return;
+    const turn = String(runtime.isSubAgent ? (runtime.getActiveAuxiliaryTurnId?.(runtime.subAgentChatId) || runtime.subAgentTurnId || runtime.subAgentId) : (runtime.getActiveTurnId?.() || context.turnId || context.runId || message));
     if ((context as any)._requiredPlanTurn === turn) return;
     const result = await taskDecomposerTool.execute({
       complexTask: resolveWorkingContextRequest(context, message),
@@ -2098,15 +2136,6 @@ ${ message.text }
       shouldUseExistingSessionContext,
       modernContextStack,
     );
-    if (isBuilder) {
-      dynamicContextParts.push(buildAgentBuilderRuntimePrompt(
-        (context as any).agentId || context.projectId,
-        (context as any).agentName,
-      ));
-    }
-    if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
-      dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
-    }
 
     if (
       !(context as any).isUserProxy
@@ -2877,7 +2906,7 @@ ${ message.text }
     let taskDecomposerUsed = infra.taskDecomposerUsed;
     const loadedSkills = new Set<string>();
 
-    let keyInfo = this.getProviderKeyInfo(this.activeProvider);
+    let keyInfo = this.getProviderKeyInfo(this.activeProvider, conversationScopeId);
     if (!keyInfo.apiKey) {
       throw new Error(`Missing ${this.activeProvider.toUpperCase()} API key. Add it in Settings > API Keys before using this provider.`);
     }
@@ -2890,7 +2919,7 @@ ${ message.text }
     let staticSystemPrompt = promptParts.staticPrompt;
     const dynamicSystemSuffix = promptParts.dynamicPrompt;
     const tools = this.buildMistralTools(isBuilder, context, message);
-    const modelWireCapabilities = Array.isArray((context as any).modelWireCapabilities)
+    let modelWireCapabilities = Array.isArray((context as any).modelWireCapabilities)
       ? (context as any).modelWireCapabilities.map((value: unknown) => String(value || '').trim()).filter(Boolean)
       : [];
     assertProviderToolsSupported(this.activeProvider, this.mistralModelName, modelWireCapabilities);
@@ -2962,14 +2991,12 @@ ${ message.text }
       userVisibleMessage,
       isCodingAgentProfile((context as any).agentProfile) ? 12_000 : 4_000,
     );
-    // One runtime-owned system block is refreshed in place, including after
-    // tool results. Its position leaves every call/result pair adjacent and
-    // keeps the provider's static prompt prefix stable across iterations.
+    // Keep the working snapshot outside the system prefix. Changed observations
+    // are appended at request boundaries and retained by the checkpoint.
     const workingContextMessage = {
       role: 'system',
       content: `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${initialFabricContext}\n[END CURRENT RUNTIME CONTINUITY]`,
     };
-    messages.splice(systemMessages.length, 0, workingContextMessage);
 
     let lastAnswer = '';
     const maxLoopIterations = optionalIterationLimit('OPENAI_REACT_MAX_ITERATIONS');
@@ -3117,8 +3144,12 @@ ${ message.text }
       // of this transaction: doing so would prevent real compaction from ever
       // seeing the state it is responsible for preserving.
       {
+        await this.ensureRequiredPlan(context, message, onTrace);
         try {
-          await this.ensureRequiredPlan(context, message, onTrace);
+          appendRuntimeContext(messages, 'compatible', {
+            'run-context': promptParts.runtimeContext,
+            'working-context': workingContextMessage.content,
+          });
           await compactCompatibleContext();
         } catch {
           // Continue with the original, unmodified provider transcript. The
@@ -3127,6 +3158,10 @@ ${ message.text }
       }
       if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
 
+      (context as any).modelThinkingCapability = latestModelThinkingCapability(this.activeProvider, this.mistralModelName, (context as any).modelThinkingCapability);
+      const latestWire = readStoredModelMetadata(this.activeProvider, this.mistralModelName).wire;
+      modelWireCapabilities = latestWire.length ? latestWire : Array.isArray((context as any).modelWireCapabilities) ? (context as any).modelWireCapabilities : [];
+      assertProviderToolsSupported(this.activeProvider, this.mistralModelName, modelWireCapabilities);
       const currentThinkingLevel = normalizeThinkingLevelForModel(
         (context as any).selectedThinkingLevel || 'low',
         this.activeProvider,
@@ -3216,8 +3251,6 @@ ${ message.text }
           delete params.max_tokens;
           delete params.temperature;
         }
-      } else {
-        params.temperature = this.resolveTemperature(adaptiveLearning.classifyTask(message), interactions);
       }
 
       let response: any;
@@ -3247,6 +3280,9 @@ ${ message.text }
           let fallbackToolCallKey: string | number = 0;
           let lastUsage: any = null;
           let lastResponsesOutput: unknown[] | undefined;
+          let nativeProviderMessage: Record<string, unknown> = {};
+          const returnedReasoning: Record<string, any> = {};
+          let rawStringContent = '';
           let mistralStructuredContent: any[] = [];
           let finishReason: unknown;
 
@@ -3261,6 +3297,7 @@ ${ message.text }
             this.activeProvider,
             params,
             (context as any).abortSignal,
+            modelWireCapabilities,
           );
 
           for await (const chunk of stream) {
@@ -3271,14 +3308,20 @@ ${ message.text }
               this.acknowledgeLiveSteering(context.projectId, liveSteering, onTrace);
               steeringAcknowledged = true;
             }
-            if (chunk?.usage) lastUsage = chunk.usage;
+            if (chunk?.usage) lastUsage = mergeProviderUsageSnapshots(lastUsage, chunk.usage);
             if (Array.isArray(chunk?.responses_output)) lastResponsesOutput = chunk.responses_output;
+            if (chunk?.provider_message) nativeProviderMessage = chunk.provider_message;
             const choice = chunk.choices?.[0];
             finishReason = choice?.finish_reason ?? finishReason;
             const delta = choice?.delta;
             if (delta) {
+              if (typeof delta.content === 'string') rawStringContent += delta.content;
+              for (const field of ['reasoning_content', 'reasoning']) {
+                if (typeof delta[field] === 'string') returnedReasoning[field] = (returnedReasoning[field] || '') + delta[field];
+              }
               if (Array.isArray(delta.reasoning_details)) {
                 accumulatedReasoningDetails = accumulatedReasoningDetails.concat(delta.reasoning_details);
+                returnedReasoning.reasoning_details = accumulatedReasoningDetails;
               }
               const reasoningValue =
                 delta.reasoning_content ??
@@ -3429,7 +3472,7 @@ ${ message.text }
           }
 
           if (lastUsage) {
-            const reportedInputTokens = Number(lastUsage.prompt_tokens || lastUsage.input_tokens || 0);
+            const reportedInputTokens = Number(normalizeProviderCacheUsage(this.activeProvider, lastUsage).promptTokens || 0);
             if (Number.isFinite(reportedInputTokens) && reportedInputTokens > 0) {
               lastObservedContextInputTokens = reportedInputTokens;
               lastObservedContextLocalTokens = requestContextLocalTokens;
@@ -3437,6 +3480,7 @@ ${ message.text }
             const usageTrace = createProviderUsageTrace(this.activeProvider, this.mistralModelName, lastUsage, {
               contextRequestId: activeContextRequestId,
               interaction: interactions,
+              thinkingLevel: currentSupportsThinking ? currentThinkingLevel : undefined,
               cacheMode:
                 contextCacheEnabled && this.activeProvider === 'openai' && !params.prompt_cache_key
                   ? 'implicit-prefix'
@@ -3466,11 +3510,15 @@ ${ message.text }
                   content: this.activeProvider === 'mistral' && mistralStructuredContent.length > 0
                     ? mistralStructuredContent
                     : accumulatedContent,
+                  transcript_content: this.activeProvider === 'mistral' && mistralStructuredContent.length > 0
+                    ? mistralStructuredContent : rawStringContent || accumulatedContent,
                   ...reasoningContinuationFields(
                     this.activeProvider,
                     accumulatedReasoning,
                     accumulatedReasoningDetails,
+                    returnedReasoning,
                   ),
+                  ...nativeProviderMessage,
                   ...(lastResponsesOutput ? { responses_output: lastResponsesOutput } : {}),
                   tool_calls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
                 },
@@ -3612,15 +3660,18 @@ ${ message.text }
 
       messages.push({
         role: 'assistant',
-        content: contentText || null,
+        content: assistantMessage.transcript_content || assistantMessage.content || null,
         ...reasoningContinuationFields(
           this.activeProvider,
           String(assistantMessage.reasoning_content || assistantMessage.reasoning || ''),
           assistantMessage.reasoning_details,
+          assistantMessage,
         ),
         ...(Array.isArray(assistantMessage.responses_output)
           ? { responses_output: assistantMessage.responses_output }
           : {}),
+        ...(Array.isArray(assistantMessage.anthropic_content) ? { anthropic_content: assistantMessage.anthropic_content } : {}),
+        ...(Array.isArray(assistantMessage.gemini_content) ? { gemini_content: assistantMessage.gemini_content } : {}),
         tool_calls: toolCalls,
       });
 
@@ -3748,7 +3799,7 @@ ${ message.text }
     let taskDecomposerUsed = infra.taskDecomposerUsed;
     const loadedSkills = new Set<string>();
 
-    let keyInfo = this.getProviderKeyInfo('anthropic');
+    let keyInfo = this.getProviderKeyInfo('anthropic', conversationScopeId);
     if (!keyInfo.apiKey) {
       throw new Error('Missing Anthropic API key. Add it in Settings > API Keys before using this provider.');
     }
@@ -3884,7 +3935,6 @@ ${ message.text }
         type: 'text',
         text: dynamicSystemSuffix,
       },
-      workingContextBlock,
     ];
     const isAnthropicCompactionCarrier = (message: any) =>
       message?.role === 'system'
@@ -4059,12 +4109,16 @@ ${ message.text }
       // request must pass through the safe context boundary before any local
       // tool-result elision changes what the compactor can inspect.
       {
+        await this.ensureRequiredPlan(context, message, onTrace);
         try {
           // The prior capsule is rehydrated from its verified journal on every
           // boundary. Measure only the base provider system prompt; keeping the
           // installed block untouched until a new result is ready also makes an
           // unexpected pre-transaction error non-destructive.
-          await this.ensureRequiredPlan(context, message, onTrace);
+          appendRuntimeContext(messages, 'anthropic', {
+            'run-context': promptParts.runtimeContext,
+            'working-context': workingContextBlock.text,
+          });
           await compactAnthropicContext();
         } catch {
           // Continue with the original, unmodified provider transcript. The
@@ -4073,6 +4127,7 @@ ${ message.text }
       }
       if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
 
+      (context as any).modelThinkingCapability = latestModelThinkingCapability('anthropic', this.mistralModelName, (context as any).modelThinkingCapability);
       const currentThinkingLevel = normalizeThinkingLevelForModel(
         (context as any).selectedThinkingLevel || 'low',
         'anthropic',
@@ -4128,13 +4183,14 @@ ${ message.text }
       }
 
       const isModernClaude = isAnthropicAdaptiveThinkingModel(this.mistralModelName);
+      const thinkingContract = resolveModelThinkingCapabilities('anthropic', this.mistralModelName, (context as any).modelThinkingCapability);
 
       if (currentSupportsThinking && currentThinkingLevel !== 'off') {
-        if (isModernClaude) {
-          params.thinking = { type: 'adaptive' };
+        if (thinkingContract?.parameter === 'output_config.effort') {
+          if (isModernClaude) params.thinking = { type: 'adaptive' };
           params.output_config = { effort: toAnthropicEffort(currentThinkingLevel) };
-          params.max_tokens = Math.max(maxTokens, 16384);
-        } else {
+          params.max_tokens = Math.max(maxTokens, currentThinkingLevel === 'max' || currentThinkingLevel === 'xhigh' ? 65536 : 16384);
+        } else if (thinkingContract?.parameter === 'thinking.budget_tokens') {
           const budget = getAnthropicThinkingBudget(currentThinkingLevel);
           if (budget > 0) {
             params.thinking = { type: 'enabled', budget_tokens: budget };
@@ -4145,6 +4201,7 @@ ${ message.text }
           }
         }
       } else {
+        if (thinkingContract?.parameter === 'thinking.budget_tokens') params.thinking = { type: 'disabled' };
         if (!isModernClaude) {
           params.temperature = this.resolveTemperature(adaptiveLearning.classifyTask(message), interactions);
         }
@@ -4267,9 +4324,7 @@ ${ message.text }
             throw new Error(`MODEL_STREAM_INCOMPLETE: Anthropic ended the stream with stop_reason=${stopReason || 'missing'}.`);
           }
           if (response?.usage) {
-            const reportedInputTokens = Number(response.usage.input_tokens || 0)
-              + Number(response.usage.cache_read_input_tokens || 0)
-              + Number(response.usage.cache_creation_input_tokens || 0);
+            const reportedInputTokens = Number(normalizeProviderCacheUsage('anthropic', response.usage).promptTokens || 0);
             if (Number.isFinite(reportedInputTokens) && reportedInputTokens > 0) {
               lastObservedContextInputTokens = reportedInputTokens;
               lastObservedContextLocalTokens = requestContextLocalTokens;
@@ -4277,6 +4332,7 @@ ${ message.text }
             const usageTrace = createProviderUsageTrace('anthropic', this.mistralModelName, response.usage, {
               contextRequestId: activeContextRequestId,
               interaction: interactions,
+              thinkingLevel: currentSupportsThinking ? currentThinkingLevel : undefined,
               cacheMode: resolveProviderPromptCacheMode('anthropic', cacheEnabled),
             });
             if (usageTrace) {
@@ -4788,7 +4844,7 @@ ${ message.text }
             return false;
           }
         }
-        if (context?.disablePlannerTools && telegramHiddenTools.has(tool.name)) {
+        if (context?.disablePlannerTools && telegramHiddenTools.has(tool.name) && !(context.planMode && ['task_decomposer', 'task_checkpoint'].includes(tool.name))) {
           return false;
         }
         if (!shouldExposeToolToRuntime(tool.name, isBuilder)) {
@@ -4851,7 +4907,7 @@ ${ message.text }
       }
     }
 
-    return declarations;
+    return canonicalizeToolDeclarations(declarations);
   }
 
   /**
@@ -5267,7 +5323,7 @@ ${ message.text }
     return `Current time: ${dateStr}, ${timeStr}, ${tzLabel} (${isoDate}).`;
   }
 
-  public buildDynamicSystemSuffix(context: ProjectContext, dynamicContext: string): string {
+  public buildDynamicSystemSuffix(context: ProjectContext, dynamicContext: string, includeObservations = true): string {
     const userNameTxt = (context as any).userName &&
       (context as any).userName !== 'Developer' &&
       (context as any).userName !== 'User'
@@ -5279,7 +5335,7 @@ ${ message.text }
       : '';
 
     const preferenceEntries = context.userPreferences
-      ? Object.entries(context.userPreferences).slice(0, 30)
+      ? Object.entries(context.userPreferences).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, 30)
       : [];
     const prefsContext = preferenceEntries.length > 0
       ? `\nLearned Preferences:\n${ preferenceEntries.map(([k, v]) => {
@@ -5307,18 +5363,20 @@ ${ message.text }
       ? workspacePath
       : workspacePath || scratchRoot || 'runtime-managed workspace';
     const parts: string[] = [];
-    if (isRuntimePlanMode(this.getConversationScope(context), (context as any).planMode === true)) parts.push(PLAN_MODE_INSTRUCTION);
+    if (isRuntimePlanMode((context as any).ownerChatId || context.projectId, context.planMode === true)) parts.push(PLAN_MODE_INSTRUCTION);
+    if (!(context as any).isSubAgent && isRuntimeSwarmMode((context as any).ownerChatId || context.projectId, context.swarmMode === true)) parts.push(SWARM_MODE_INSTRUCTION);
+    if (context.allowAgentSpawning && !(context as any).disableSubAgents) parts.push('Delegation is task-driven and recursive within shared budgets. Use spawn_sub_agent mode="graph" for bounded dependency/ownership snapshots, mode="join" only when child evidence is needed, and agent_communicate for targeted parent/peer coordination. Read usable evidence before synthesis; queued or completed lifecycle alone is not verification.');
     if ((context as any).chatMediaContext) parts.push((context as any).chatMediaContext);
     if (userNameTxt) parts.push(userNameTxt);
     if (directMainAgentMode) parts.push(directMainAgentMode);
     parts.push(
       `━━━ CONTEXT ━━━`,
       `Project: ${ context.projectId }`,
-      `Files: ${ recentUploadedFiles.join(', ') || 'None' }${ omittedFileCount ? ` (+${omittedFileCount} older)` : '' }`,
+      ...(includeObservations ? [`Files: ${ recentUploadedFiles.join(', ') || 'None' }${ omittedFileCount ? ` (+${omittedFileCount} older)` : '' }`] : []),
       `Writable workspace: ${ workspacePath || 'none selected' }`,
       `Scratch root: ${ scratchRoot || 'runtime-managed workspace' }`,
       `Default artifact root when the user gives no path: ${ defaultArtifactRoot }`,
-      `Current host environment (supplied automatically; no setup call needed): ${JSON.stringify(getRuntimeEnvironment(context))}`,
+      ...(includeObservations ? [`Current host environment (supplied automatically; no setup call needed): ${JSON.stringify(getRuntimeEnvironment(context))}`] : []),
     );
     if (prefsContext) parts.push(prefsContext);
     if (errorContext) parts.push(errorContext);
@@ -5401,11 +5459,10 @@ ${ message.text }
         uploadedFiles: [],
         userPreferences: {},
         errorHistory: [],
-      } as ProjectContext, '');
+      } as ProjectContext, '', true);
     } else {
-      // Builder/custom identity is already carried in the per-run runtime
-      // context. Keeping it out of the base prefix lets every unchanged tool
-      // surface reuse the same prompt cache across turns.
+      // Builder/custom identity is added as stable system policy by
+      // buildUniversalPromptParts, after this common base.
       basePrompt = this.generateCacheableSystemPrompt(context);
     }
     if (isCodingAgentProfile((context as any).agentProfile) && !(context as any).isUserProxy) return basePrompt;
@@ -5422,18 +5479,36 @@ ${ message.text }
     staticPrompt: string;
     dynamicPrompt: string;
     fullPrompt: string;
+    runtimeContext: string;
   } {
     const staticPrompt = [
       this.buildProviderStaticSystemPrompt(context),
+      RUNTIME_CONTEXT_POLICY,
+      isAgentBuilderRuntimeContext(context) ? buildAgentBuilderRuntimePrompt((context as any).agentId || context.projectId, (context as any).agentName) : '',
+      isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile
+        ? buildCustomAgentRuntimePrompt((context as any)._customAgentProfile) : '',
       'IMAGE PRESENTATION: Show images with ![description](displayUrl) using the exact chat attachment catalogue link. For other images use a real absolute local path or actual HTTPS image URL. Multiple images are supported. No display tool call is needed. Displaying is not visual inspection: use native image input to inspect pixels, and never claim visual inspection from a text-only read. For prior attachments use recalled original media and stable IDs; say when unavailable.',
       runtimeProfileContext,
       buildToolAvailabilityPrompt(this.buildFunctionDeclarations(isAgentBuilderRuntimeContext(context), context).map(tool => tool.name)),
     ].filter(Boolean).join('\n\n');
-    const dynamicPrompt = [this.buildDynamicSystemSuffix(context, dynamicContext), buildTelegramBotContext(context)].filter(Boolean).join('\n\n');
+    // Policy, identity and workspace constraints retain system authority.
+    // Changing observations go after history, so they do not invalidate it.
+    const dynamicPrompt = [this.buildDynamicSystemSuffix({
+      ...context, uploadedFiles: [], errorHistory: [], chatMediaContext: '',
+    } as ProjectContext, '', false), buildTelegramBotContext(context)].filter(Boolean).join('\n\n');
+    const runtimeContext = [
+      `Current host environment (supplied automatically; no setup call needed): ${JSON.stringify(getRuntimeEnvironment(context))}`,
+      (context as any).chatMediaContext,
+      context.uploadedFiles?.length ? `Current uploaded files: ${context.uploadedFiles.join(', ')}` : '',
+      !isModernContextStackEnabled(context) && context.errorHistory?.length
+        ? `Recent errors: ${context.errorHistory.slice(-12).map(error => formatUnknownError(error, 'Unknown prior error', 400)).join('\n')}` : '',
+      dynamicContext,
+    ].filter(Boolean).join('\n\n');
     return {
       staticPrompt,
       dynamicPrompt,
       fullPrompt: `${staticPrompt}\n\nDYNAMIC SYSTEM CONTEXT\n${dynamicPrompt}`,
+      runtimeContext,
     };
   }
 
@@ -5490,20 +5565,7 @@ FILE EDITING
 ${enabledToolNames.has('workspace_edit_file') ? WORKSPACE_EDIT_POLICY : 'File editing is disabled. Explain proposed changes in the response; do not bypass this setting through another tool.'}
 
 RESPONSE
-- For final answers, adapt to the user's intent, audience, and requested depth. These principles guide judgment, not a template; requested and specialist deliverable formats take precedence. During tool-assisted work, follow WORK NOTES below instead of producing a completion-style answer.
-- Answer the current request using history for references, constraints, and evidence. Do not present previous work as newly completed. Interpret questions, examples, and corrections by intent.
-- Lead with the answer or useful result, then explain what the user needs to understand or use it. Prefer connected paragraphs in plain language, with enough detail and no padding.
-- Use bullets for useful parallel points and numbering when order matters. Keep connected reasoning in prose; avoid unnecessary nesting.
-- Use short sentence-case headings only for substantial separate topics; H2/H3 usually suffices. Do not force an opening title, section sequence, recap, or report template.
-- Use tables for useful shared-attribute comparisons or when requested. Keep cells concise; explanations, procedures, and ordinary change summaries belong in prose or lists.
-- Use diagrams when they clarify relationships or flow. Mermaid needs a mermaid-tagged fence, valid syntax, quoted complex labels, and readable layout. Avoid redundant tables or prose.
-- Use restrained emphasis, inline code for literals, language-tagged fences, and blank lines around Markdown blocks. Do not fence an ordinary answer.
-- Keep replies professional: no emojis or decorative icons unless explicitly requested or quoted. Use plain words for status.
-- Ground claims in evidence for the current request. Distinguish findings from assumptions; mention what changed, verification, skipped checks, and limitations when relevant. Never invent completion or default to a canned 'done' reply.
-- Use descriptive links beside claims, balanced $...$ inline math, and $$ on separate lines for display math. Escape literal currency dollars; do not rely on renderer repairs.
-- Link a known local artifact once as [filename](#eterx-local-file:<URL-encoded-absolute-path>); never expose raw or file:// paths.
-- Use the exact local path returned by a successful tool result. Never invent sandbox:/mnt/data links, download URLs, or web addresses for local files. If the output path is unknown, say so instead of fabricating a link.
-- End when the answer is complete. Add a next action only when useful; avoid filler and generic closing offers.
+${FINAL_ANSWER_POLICY}
 
 WORK NOTES
 ${WORK_NOTE_POLICY}
@@ -5517,7 +5579,7 @@ Files: ${(context.uploadedFiles || []).slice(-20).join(', ') || 'None'}${workspa
   /**
    * Generates the dynamic system instruction prompt.
    */
-  public generateSystemPrompt(context: ProjectContext, dynamicContext: string = ''): string {
+  public generateSystemPrompt(context: ProjectContext, dynamicContext: string = '', cacheable = false): string {
     const prefsContext = context.userPreferences && Object.keys(context.userPreferences).length > 0
       ? `\nLearned Preferences:\n${ Object.entries(context.userPreferences).map(([k, v]) => `- ${ k }: ${ JSON.stringify(v) }`).join('\n') }`
       : '';
@@ -5584,6 +5646,7 @@ OUTPUT CONTRACT
     if (isCodingAgentProfile((context as any).agentProfile)) {
       const codingTools = this.buildFunctionDeclarations(false, context);
       return buildCodingAgentRootPrompt({
+        cacheable,
         context,
         userNameText: userNameTxt,
         dateText: dateStr,
@@ -6453,15 +6516,6 @@ OUTPUT CONTRACT
     const runtimeProfileParts: string[] = [];
     if (!modernContextStack) await appendRuntimeProfileContext(runtimeProfileParts, context);
     const runtimeProfileContext = runtimeProfileParts.join('\n\n');
-    if (isBuilder) {
-      dynamicContextParts.push(buildAgentBuilderRuntimePrompt(
-        (context as any).agentId || context.projectId,
-        (context as any).agentName,
-      ));
-    }
-    if (isCustomAgentRuntimeContext(context) && (context as any)._customAgentProfile) {
-      dynamicContextParts.push(buildCustomAgentRuntimePrompt((context as any)._customAgentProfile));
-    }
     if (
       !(context as any).isUserProxy
       && !(context as any).isProxyManager
@@ -6644,11 +6698,7 @@ OUTPUT CONTRACT
     const _cacheToolNames = _cacheToolDecls.map(tool => tool.name).join('\0');
     const _canUseContextCache =
       this.activeProvider === 'gemini' &&
-      _runtimeToolDecls.length > 0 &&
       _runtimeToolNames === _cacheToolNames &&
-      // Gemini cannot override a cached system instruction. Dynamic runtime
-      // instructions must retain system authority, so use implicit caching.
-      canUseExplicitGeminiSystemCache(universalPromptParts.dynamicPrompt) &&
       isExplicitGeminiCacheEnabled();
     const _promptCacheIdentity = buildPromptCacheIdentity({
       provider: 'gemini',
@@ -6663,7 +6713,10 @@ OUTPUT CONTRACT
 
     if (_canUseContextCache) {
       try {
-        _cacheableStaticPrompt = universalPromptParts.staticPrompt;
+        // Cache the complete system instructions, including session policy.
+        // Live observations are appended to contents, never sent as a conflicting
+        // systemInstruction override alongside cachedContent.
+        _cacheableStaticPrompt = universalPromptParts.fullPrompt;
         _cachedContentName = await getOrCreateAgentCache(
           this.ai,
           this.getCurrentApiKey(),
@@ -6690,30 +6743,18 @@ OUTPUT CONTRACT
       toolCount: _runtimeToolDecls.length,
     });
 
-    // When a cache is active: system instruction = small dynamic suffix only.
-    // When no cache:          system instruction = full prompt (current behaviour).
-    const baseSystemInstruction = _cachedContentName
-      ? universalPromptParts.dynamicPrompt
-      : universalPromptParts.fullPrompt;
-
     const config: import('@google/genai').GenerateContentConfig = {
       ...(_cachedContentName
         ? { cachedContent: _cachedContentName }   // tools already inside the cache
         : (_runtimeToolDecls.length ? { tools: [{ functionDeclarations: _runtimeToolDecls }] } : {})
       ),
-      systemInstruction: baseSystemInstruction,
+      ...(!_cachedContentName ? { systemInstruction: universalPromptParts.fullPrompt } : {}),
     };
     const fallBackToUncachedGeminiConfig = () => {
-      const currentInstruction = String((config as any).systemInstruction || '');
-      const iterationSuffix = currentInstruction.startsWith(universalPromptParts.fullPrompt)
-        ? currentInstruction.slice(universalPromptParts.fullPrompt.length)
-        : universalPromptParts.dynamicPrompt && currentInstruction.startsWith(universalPromptParts.dynamicPrompt)
-          ? currentInstruction.slice(universalPromptParts.dynamicPrompt.length)
-          : currentInstruction;
       delete (config as any).cachedContent;
       _cachedContentName = null;
       _cachedContentModel = null;
-      config.systemInstruction = `${universalPromptParts.fullPrompt}${iterationSuffix}`;
+      config.systemInstruction = universalPromptParts.fullPrompt;
       if (_runtimeToolDecls.length) config.tools = [{ functionDeclarations: _runtimeToolDecls }];
       else delete config.tools;
     };
@@ -6744,22 +6785,16 @@ OUTPUT CONTRACT
         fallBackToUncachedGeminiConfig();
         return false;
       }
-      const currentInstruction = String((config as any).systemInstruction || '');
-      const iterationSuffix = currentInstruction.startsWith(universalPromptParts.fullPrompt)
-        ? currentInstruction.slice(universalPromptParts.fullPrompt.length)
-        : universalPromptParts.dynamicPrompt && currentInstruction.startsWith(universalPromptParts.dynamicPrompt)
-          ? currentInstruction.slice(universalPromptParts.dynamicPrompt.length)
-          : currentInstruction;
       _cachedContentName = cacheName;
       _cachedContentModel = model;
       config.cachedContent = cacheName;
-      config.systemInstruction = `${universalPromptParts.dynamicPrompt}${iterationSuffix}`;
+      delete config.systemInstruction;
       delete (config as any).tools;
       return true;
     };
 
     const isGemmaModel = this.modelName.toLowerCase().includes('gemma');
-    const plannerToolsDisabled = !!(context as any).disablePlannerTools;
+    const plannerToolsDisabled = !!(context as any).disablePlannerTools && !context.planMode;
     const selectedThinkingLevel = normalizeThinkingLevelForModel(
       (context as any).selectedThinkingLevel || 'low',
       'gemini',
@@ -6905,7 +6940,7 @@ OUTPUT CONTRACT
     });
 
     let lastObservedGeminiContextModel = this.modelName;
-    const compactGeminiContext = async (iterationSystemCue: string) => {
+    const compactGeminiContext = async () => {
       if (lastObservedGeminiContextModel !== this.modelName) {
         contents = rebaseWorkingTranscriptForModel(contents, 'gemini');
         lastObservedContextInputTokens = 0;
@@ -6919,7 +6954,7 @@ OUTPUT CONTRACT
           kind: 'gemini',
           contents,
           // Cached static input and the live suffix both occupy context.
-          systemInstruction: [universalPromptParts.fullPrompt, iterationSystemCue].filter(Boolean).join('\n'),
+          systemInstruction: universalPromptParts.fullPrompt,
           tools: _runtimeToolDecls,
           activeModel: { provider: 'gemini', modelId: this.modelName },
           rawSettings: (context as any).contextCompaction,
@@ -6972,6 +7007,7 @@ OUTPUT CONTRACT
       interactions++;
       await awaitSubAgentControlBoundary(context);
 
+      await this.ensureRequiredPlan(context, message, onTrace);
       const updatedDeclarations = this.buildFunctionDeclarations(isBuilder, context, message);
       const updatedSignature = JSON.stringify(updatedDeclarations);
       if (updatedSignature !== liveToolSignature) {
@@ -6979,7 +7015,7 @@ OUTPUT CONTRACT
         _runtimeToolDecls.splice(0, _runtimeToolDecls.length, ...updatedDeclarations);
         Object.assign(universalPromptParts, this.buildUniversalPromptParts(context, dynamicContext, runtimeProfileContext));
         // A cached tool bundle cannot be reused after access changes.
-        _cacheableStaticPrompt = null;
+        _cacheableStaticPrompt = universalPromptParts.fullPrompt;
         fallBackToUncachedGeminiConfig();
       }
 
@@ -7152,35 +7188,27 @@ OUTPUT CONTRACT
         codingContextProfile ? 1_800 : 1_200,
         codingContextProfile ? 4_500 : 1_200,
       ).parts.join('\n'), buildTelegramWorkNoteCue(context, trace)].filter(Boolean).join('\n');
-      // When cache is active, baseSystemInstruction is already the dynamic suffix;
-      // the cached content holds the static rules + tools so we must NOT override
-      // config.tools (it would conflict with the cache contract).
-      const iterationBaseSystemInstruction = _cachedContentName
-        ? universalPromptParts.dynamicPrompt
-        : universalPromptParts.fullPrompt;
+      appendRuntimeContext(contents, 'gemini', {
+        'run-context': universalPromptParts.runtimeContext,
+        'working-context': iterationSystemCue,
+      });
       if (_cachedContentName) {
-        config.systemInstruction = iterationSystemCue
-          ? `${ iterationBaseSystemInstruction }\n${ iterationSystemCue }`
-          : iterationBaseSystemInstruction;
+        delete config.systemInstruction;
         // Ensure tools NOT in config (they live in the cache)
         delete (config as any).tools;
         config.cachedContent = _cachedContentName;
       } else {
-        config.systemInstruction = iterationSystemCue
-          ? `${ iterationBaseSystemInstruction }\n${ iterationSystemCue }`
-          : iterationBaseSystemInstruction;
-      }
-      if (_cachedContentName) {
-        if (String(config.systemInstruction || '').trim()) fallBackToUncachedGeminiConfig();
-        else delete config.systemInstruction;
+        config.systemInstruction = universalPromptParts.fullPrompt;
       }
       // Measure the actual request after steering, mailbox delivery and runtime
       // context assembly. Cached static input also occupies model capacity.
       await this.ensureRequiredPlan(context, message, onTrace);
-      await compactGeminiContext(iterationSystemCue);
+      await compactGeminiContext();
       if (isRunCancelled(context)) throw new Error('CANCELLED_BY_USER');
       contents = sanitizeGeminiHistory(contents);
 
+      (context as any).modelThinkingCapability = latestModelThinkingCapability('gemini', currentModel, (context as any).modelThinkingCapability);
+      let usageThinkingLevel: string | undefined;
       if (getModelThinkingOptions('gemini', currentModel, (context as any).modelThinkingCapability).length > 0) {
         // Preserve the exact composer level for all tool-loop turns.
         const dynamicThinkingLevel = normalizeThinkingLevelForModel(
@@ -7189,6 +7217,7 @@ OUTPUT CONTRACT
           currentModel,
           (context as any).modelThinkingCapability,
         );
+        usageThinkingLevel = dynamicThinkingLevel;
         const dynamicThinkingConfig = getGeminiThinkingConfig(
           dynamicThinkingLevel,
           currentModel,
@@ -7205,6 +7234,7 @@ OUTPUT CONTRACT
       // by a second hidden Gemini stream loop.
       const maxStreamAttempts = 1;
       let cacheRecoveryAttempted = false;
+      let cacheFallbackAttempted = false;
       let lastStreamError = '';
       let activeStreamAbortController: AbortController | null = null;
       let accumulatedThought = '';
@@ -7297,8 +7327,7 @@ OUTPUT CONTRACT
           };
           const requestTokenBudget = estimateRequestTokenBudget({
             system: config.systemInstruction,
-            staticPrompt: universalPromptParts.staticPrompt,
-            dynamicPrompt: [universalPromptParts.dynamicPrompt, iterationSystemCue].filter(Boolean).join('\n'),
+            staticPrompt: universalPromptParts.fullPrompt,
             includeStaticPromptInEstimate: Boolean(_cachedContentName),
             tools: _runtimeToolDecls,
             messages: contents,
@@ -7384,7 +7413,10 @@ OUTPUT CONTRACT
                 || errMsg.toLowerCase().includes('not found')
                 || errMsg.includes('404');
               if (cacheNotFound) await activateGeminiCacheForRoute(currentModel, true);
-              else fallBackToUncachedGeminiConfig();
+              else {
+                _cacheableStaticPrompt = null;
+                fallBackToUncachedGeminiConfig();
+              }
               if (_cachedContentName) {
                 config.cachedContent = _cachedContentName;
                 delete (config as any).tools;
@@ -7399,6 +7431,14 @@ OUTPUT CONTRACT
             }
             streamAttempts--; // One bounded cache repair does not consume a transport attempt.
             continue; // Retry stream with rebuilt/fallback config
+          }
+
+          if (isCacheRejectedError && !cacheFallbackAttempted) {
+            cacheFallbackAttempted = true;
+            _cacheableStaticPrompt = null;
+            fallBackToUncachedGeminiConfig();
+            streamAttempts--;
+            continue;
           }
 
           console.warn(`[GeminiClient] ⚡ Stream attempt ${ streamAttempts }/${ maxStreamAttempts } failed: ${ errMsg.substring(0, 80) }`);
@@ -7508,7 +7548,7 @@ OUTPUT CONTRACT
               steeringAcknowledged = true;
             }
             if (chunk?.usageMetadata) {
-            lastUsageMetadata = chunk.usageMetadata;
+            lastUsageMetadata = mergeProviderUsageSnapshots(lastUsageMetadata, chunk.usageMetadata);
             const reportedInputTokens = Number(
               chunk.usageMetadata.promptTokenCount ??
               chunk.usageMetadata.inputTokenCount ??
@@ -7622,6 +7662,7 @@ OUTPUT CONTRACT
         const usageTrace = createProviderUsageTrace('gemini', currentModel, lastUsageMetadata, {
           contextRequestId: activeContextRequestId,
           interaction: interactions,
+          thinkingLevel: usageThinkingLevel,
           cacheMode: resolveProviderPromptCacheMode(
             'gemini',
             process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1',

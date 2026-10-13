@@ -1,4 +1,10 @@
+import { isRuntimePlanMode, setRuntimePlanMode, PLAN_MODE_INSTRUCTION } from './plan-mode';
+import { isRuntimeSwarmMode, setRuntimeSwarmMode } from './swarm-mode';
+import { swarmCoordinator, SWARM_MODE_INSTRUCTION } from './swarm-coordinator';
+import { globalSubAgentSpawner } from './roles/sub_agent';
+import { interAgentMailbox } from './roles/inter_agent_comm';
 import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
+import { latestModelThinkingCapability } from './stored-model-metadata';
 /**
  * Agent Runner — Runtime for executing custom-built agents
  * 
@@ -14,6 +20,7 @@ import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
  */
 import path from 'path';
 import { WORK_NOTE_POLICY } from './work-note';
+import { FINAL_ANSWER_POLICY } from './response-format';
 import { buildTelegramBotContext } from './telegram-bot-context';
 import { buildTelegramWorkNoteCue } from './telegram-bot-behavior';
 import { cleanText } from './gateways/telegram-presentation.cjs';
@@ -41,11 +48,13 @@ import { normalizeRegistryToolArgs, validateRegistryToolArgs } from './tools/too
 import { DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES, enforceToolCapability } from './tools/security/tool_policy';
 import { resolveWorkspacePathForContext } from './workspace/path_resolver';
 import { initializeChatWorkspace, resolveChatWorkspaceContext } from './workspace/runtime-context';
+import { managedWorkspaces } from './workspace/managed';
 import { buildRuntimePlatformPrompt } from './runtime/platform-context';
 import { getRuntimeEnvironment } from './runtime/environment';
 import { AGENT_EXECUTION_POLICY } from './execution-operating-policy';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
-import { normalizeProviderCacheUsage, resolveProviderPromptCacheMode } from './provider-prompt-cache';
+import { canonicalizeToolDeclarations, mergeProviderUsageSnapshots, normalizeProviderCacheUsage, resolveProviderPromptCacheMode } from './provider-prompt-cache';
+import { appendRuntimeContext, RUNTIME_CONTEXT_POLICY } from './runtime-prompt-context';
 import { getOrCreateAgentCache, handleAgentCacheNotFound } from './agent-cache';
 import { sanitizeGeminiHistory } from './context-hot-path';
 import { toolResultCompactor } from './memory/tool-result-compactor';
@@ -54,7 +63,6 @@ import { writeRuntimeTrace } from './runtime-trace';
 import type { ScopedRuntimeSettings } from './runtime-api-keys';
 import {
   getGeminiThinkingConfig,
-  normalizeModelThinkingCapabilities,
   normalizeThinkingLevelForModel,
   type MainAgentMode,
 } from './model-routing';
@@ -220,7 +228,7 @@ export class AgentRunner {
 
   private resolveToolsForTask(taskText = ''): ResolvedTool[] {
     void taskText;
-    return this.resolvedTools;
+    return [...this.resolvedTools].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   }
 
   /** Build the complete system instruction for this agent */
@@ -254,6 +262,9 @@ export class AgentRunner {
 ${buildRuntimePlatformPrompt(config?.pinnedContext?.terminalShell || 'auto')}
 
 ${CONTEXT_CONTINUITY_OPERATING_POLICY}
+
+## Final response judgment
+${FINAL_ANSWER_POLICY}
 
 ## Execution contract
 ${AGENT_EXECUTION_POLICY}
@@ -334,18 +345,7 @@ Use file_read for reading files, file_create for creating files, file_edit for e
     parts.push(`
 ## Final response judgment
 
-- Adapt to the user's intent, audience, context, and requested depth. Preserve this agent's specialist deliverable requirements; these principles guide ordinary replies without imposing a template.
-- Answer the current request, using history to resolve references and retain constraints. Do not repeat earlier completed work as a new accomplishment or treat every question, example, or correction as a completion report.
-- Lead with the answer or useful result, then explain what the user needs to understand or use it. Prefer connected paragraphs in plain language; be brief for a simple result and thorough when the explanation requires it.
-- Use bullets for parallel points, numbering when order matters, and short sentence-case headings only when substantial separate topics need navigation. Do not repeat the request as a large title or force Summary, Changes, Verification, Next Steps, or Conclusion sections.
-- Use a table only when items share attributes that are easier to compare in rows and columns, or when requested. Keep cells concise and leave explanations, procedures, code, and derivations outside tables. A few facts or file changes do not need a table.
-- Use diagrams when they clarify relationships or flow, or when requested. Write Mermaid in a mermaid-tagged fence with valid syntax, quoted complex labels, and a readable layout. Do not rely on renderer repairs or duplicate the diagram in a table or prose.
-- Use bold sparingly, inline code for literal code or commands, and language-tagged fences for code blocks. Keep Markdown spacing valid. Avoid decorative formatting, filler, repeated summaries, and generic closing offers.
-- Keep ordinary replies professional: do not add emojis, emoji bullets, decorative icons, ornamental Unicode, or celebratory badges unless explicitly requested or faithfully quoting supplied content. Use plain words for status and emphasis.
-- Ground claims in evidence; distinguish findings from assumptions and preserve material uncertainty. Explain what changed and why, with verification or limitations only when relevant. Do not invent actions or results.
-- Link a known local deliverable once as [filename](#eterx-local-file:<URL-encoded-absolute-path>); never expose or repeat a raw path.
-- Use the exact local path returned by a successful tool result. Never invent sandbox:/mnt/data links, download URLs, or web addresses for local files. If the output path is unknown, say so instead of fabricating a link.
-- End when the answer is complete. Include a next action only when it helps the user use the result or resolve an actual blocker.`);
+${FINAL_ANSWER_POLICY}`);
 
     parts.push(`
 ## Parallel tool execution
@@ -441,7 +441,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       }
     }
 
-    return declarations;
+    return canonicalizeToolDeclarations(declarations);
   }
 
   /** Cancel the running agent */
@@ -465,6 +465,19 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     messages: Array<{ role: 'user' | 'model'; content: string; contextTurnId?: string }>,
     config: AgentRunnerConfig
   ): AsyncGenerator<AgentRunnerEvent> {
+    const workspace = await initializeChatWorkspace(config.chatId || 'custom-agent-' + config.agentId, 'default',
+      { ...config.pinnedContext, runLocation: config.runLocation || config.pinnedContext?.runLocation });
+    const release = managedWorkspaces.acquireWorkspaceLease(workspace.workspacePath);
+    try {
+      yield* this.runInWorkspace(messages, { ...config, runLocation: workspace.runLocation,
+        pinnedContext: { ...config.pinnedContext, workspacePath: workspace.workspacePath, runLocation: workspace.runLocation } });
+    } finally { release(); }
+  }
+
+  private async *runInWorkspace(
+    messages: Array<{ role: 'user' | 'model'; content: string; contextTurnId?: string }>,
+    config: AgentRunnerConfig
+  ): AsyncGenerator<AgentRunnerEvent> {
     // A browser session spans many queries; it is never a dialogue identity.
     // Give standalone callers a fresh run ID while retaining one explicit ID
     // throughout provider retries, flow execution and terminal persistence.
@@ -475,6 +488,10 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         runId: String(config.pinnedContext?.runId || '').trim() || `custom-run-${randomUUID()}`,
       },
     };
+    const modeScope = config.chatId || `custom-agent-${config.agentId}`;
+    if (typeof config.pinnedContext.planMode === 'boolean') setRuntimePlanMode(modeScope, config.pinnedContext.planMode);
+    if (typeof config.pinnedContext.swarmMode === 'boolean') setRuntimeSwarmMode(modeScope, config.pinnedContext.swarmMode);
+    config.pinnedContext.visibleUserRequest ||= messages.filter(message => message.role === 'user').at(-1)?.content || '';
     const isBuilderRuntime = config.runtime === 'agent_builder';
     this.userInitiatedCommunication = isUserInitiatedCommunicationRequest(
       messages.filter(message => message.role === 'user').at(-1)?.content || '',
@@ -711,18 +728,19 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     // Lease an API key
     apiKeyPool.initialize();
     const sessionId = `custom_agent_${config.agentId}_${Date.now()}`;
+    const keyCacheScope = `${config.chatId || 'custom-agent'}:${config.agentId}`;
     const scopedGeminiKeys = config.runtimeSettings?.apiKeys?.gemini || [];
     let lease = config.apiKey ? null : (config.preferredGeminiApiKey
-      ? apiKeyPool.leaseSpecificKey(sessionId, config.preferredGeminiApiKey, 'main_agent')
+      ? apiKeyPool.leaseSpecificKey(sessionId, config.preferredGeminiApiKey, 'main_agent', keyCacheScope)
       : null);
     if (!config.apiKey && !lease) {
       for (const key of scopedGeminiKeys) {
-        lease = apiKeyPool.leaseSpecificKey(sessionId, key, 'main_agent');
+        lease = apiKeyPool.leaseSpecificKey(sessionId, key, 'main_agent', keyCacheScope);
         if (lease) break;
       }
     }
     if (!config.apiKey && !lease) {
-      lease = apiKeyPool.leaseKey(sessionId, 'main_agent');
+      lease = apiKeyPool.leaseKey(sessionId, 'main_agent', undefined, keyCacheScope);
     }
     if (!config.apiKey && !lease) {
       yield { type: 'error', text: 'No API keys available. Please check your API key configuration.', timestamp: Date.now() };
@@ -742,7 +760,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       const currentRequest = resolveWorkingContextRequest(config.pinnedContext, runtimeCurrentRequest);
       let systemInstruction = this.buildSystemInstruction(currentRequest, config);
       let funcDecls = this.buildFunctionDeclarations(currentRequest);
-      let resolvedToolSurfaceSignature = this.resolvedTools.map(tool => tool.name).join('\0');
+      let resolvedToolSurfaceSignature = JSON.stringify(funcDecls);
       const runtimeNow = new Date();
       const dynamicRunContextParts = [
         '[SYSTEM-PROVIDED CURRENT RUNTIME CONTEXT]',
@@ -829,13 +847,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         } catch { /* learned experience is advisory */ }
       }
 
-      let customAgentCachedContent = await getOrCreateAgentCache(
-        ai,
-        effectiveApiKey,
-        resolvedModel,
-        systemInstruction,
-        funcDecls,
-      ).catch(() => null);
+      let customAgentCachedContent: string | null = null;
+      let cachedSystemInstruction = systemInstruction;
 
       // The last user entry owns this request; earlier turns remain the
       // checkpoint's visible lineage, not a substitute for its tool records.
@@ -895,6 +908,9 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       let lastObservedContextLocalTokens = workingCheckpoint.calibration?.localTokens || 0;
       let requestContextLocalTokens = 0;
       let activeContextRequestId = '';
+      let requiredPlanCreated = false;
+      let swarmReminderSent = false;
+      const coordinationContext = { projectId: config.chatId || `custom-agent-${config.agentId}`, runId: config.pinnedContext.runId, swarmRunId: config.pinnedContext.runId };
       let forceContextCompaction = false;
       let contextOverflowRecoveryAttempts = 0;
 
@@ -938,6 +954,18 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         };
 
         try {
+          const planEnabled = isRuntimePlanMode(coordinationContext.projectId, config.pinnedContext?.planMode === true);
+          const swarmEnabled = isRuntimeSwarmMode(coordinationContext.projectId, config.pinnedContext?.swarmMode === true);
+          config.pinnedContext.planMode = planEnabled;
+          config.pinnedContext.swarmMode = swarmEnabled;
+          if (planEnabled && !requiredPlanCreated) {
+            if (!funcDecls.some(tool => tool.name === 'task_decomposer')) throw new Error('Plan mode requires task_decomposer to be enabled for this custom agent.');
+            const planEvents: any[] = [];
+            const plan: any = await this.executeToolSafe('task_decomposer', { complexTask: currentRequest, context: PLAN_MODE_INSTRUCTION, maxSubtasks: 5 }, config, event => planEvents.push(event), runAbortController.signal);
+            for (const event of planEvents) yield { ...event, agentName, timestamp: event.timestamp || Date.now() } as AgentRunnerEvent;
+            if (!plan?.success) throw new Error('The required plan could not be created.');
+            requiredPlanCreated = true;
+          }
           // Builder tools are intentionally mutable. Finalized custom agents
           // are normally stable, but may explicitly attach agent_tool_load;
           // when that changes the real surface, move to the matching
@@ -951,45 +979,36 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             agentName = this.profile.name || agentName;
             const nextSystemInstruction = this.buildSystemInstruction(currentRequest, config);
             const nextFuncDecls = this.buildFunctionDeclarations(currentRequest);
-            const nextSurfaceSignature = `${nextSystemInstruction}\0${nextFuncDecls.map(tool => tool.name).join('\0')}`;
-            const currentSurfaceSignature = `${systemInstruction}\0${funcDecls.map(tool => tool.name).join('\0')}`;
+            const nextSurfaceSignature = `${nextSystemInstruction}\0${JSON.stringify(nextFuncDecls)}`;
+            const currentSurfaceSignature = `${systemInstruction}\0${JSON.stringify(funcDecls)}`;
             if (nextSurfaceSignature !== currentSurfaceSignature) {
               systemInstruction = nextSystemInstruction;
               funcDecls = nextFuncDecls;
-              customAgentCachedContent = await getOrCreateAgentCache(
-                ai,
-                effectiveApiKey,
-                resolvedModel,
-                systemInstruction,
-                funcDecls,
-              ).catch(() => null);
             }
           } else {
-            const nextSurfaceSignature = this.resolvedTools.map(tool => tool.name).join('\0');
+            const nextFuncDecls = this.buildFunctionDeclarations(currentRequest);
+            const nextSurfaceSignature = JSON.stringify(nextFuncDecls);
             if (nextSurfaceSignature !== resolvedToolSurfaceSignature) {
               systemInstruction = this.buildSystemInstruction(currentRequest, config);
-              funcDecls = this.buildFunctionDeclarations(currentRequest);
+              funcDecls = nextFuncDecls;
               resolvedToolSurfaceSignature = nextSurfaceSignature;
-              customAgentCachedContent = await getOrCreateAgentCache(
-                ai,
-                effectiveApiKey,
-                resolvedModel,
-                systemInstruction,
-                funcDecls,
-              ).catch(() => null);
             }
           }
-          // Refresh after every completed tool cycle, outside the reusable
-          // static prompt/tool cache and without adding synthetic user turns.
-          customAgentCachedContent = await getOrCreateAgentCache(
-            ai, effectiveApiKey, resolvedModel, systemInstruction, funcDecls,
-          ).catch(() => null);
           const workingSet = contextFabric.compileWorkingSet(currentRequest, 8_000);
           const workingSetCue = workingSet
             ? `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${workingSet}\n[END CURRENT RUNTIME CONTINUITY]`
             : '';
           const iterationContextCue = [workingSetCue, buildTelegramWorkNoteCue(config.pinnedContext, telegramBehaviorEvents)].filter(Boolean).join('\n');
-          const iterationSystemInstruction = [systemInstruction, iterationContextCue].filter(Boolean).join('\n');
+          const iterationSystemInstruction = [systemInstruction, RUNTIME_CONTEXT_POLICY,
+            planEnabled ? PLAN_MODE_INSTRUCTION : '', swarmEnabled ? SWARM_MODE_INSTRUCTION : '',
+          ].filter(Boolean).join('\n');
+          cachedSystemInstruction = iterationSystemInstruction;
+          appendRuntimeContext(contents, 'gemini', { 'working-context': iterationContextCue });
+          // Cache precisely the instructions sent on the uncached route. A
+          // rejected cache gets one rebuild, then this run uses implicit caching.
+          customAgentCachedContent = cacheRecoveryAttempts < 2
+            ? await getOrCreateAgentCache(ai, effectiveApiKey, resolvedModel, iterationSystemInstruction, funcDecls).catch(() => null)
+            : null;
           const contextEvents: any[] = [];
           let wakeContextEvent: (() => void) | null = null;
           let contextBoundarySettled = false;
@@ -1099,7 +1118,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             model: resolvedModel,
             contents,
             config: {
-              ...(customAgentCachedContent && !iterationContextCue
+              ...(customAgentCachedContent
                 ? { cachedContent: customAgentCachedContent }
                 : { systemInstruction: iterationSystemInstruction }),
               temperature: config.temperature ?? 0.4,
@@ -1107,7 +1126,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             },
           };
 
-          const thinkingCapabilities = normalizeModelThinkingCapabilities(
+          const thinkingCapabilities = latestModelThinkingCapability(
+            'gemini', resolvedModel,
             config.pinnedContext?.modelThinkingCapability,
           );
           const thinkingLevel = normalizeThinkingLevelForModel(
@@ -1155,7 +1175,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           let bufferedVisibleText = '';
           for await (const chunk of responseStream as any) {
             latestCandidate = chunk?.candidates?.[0] || latestCandidate;
-            latestUsageMetadata = chunk?.usageMetadata || latestUsageMetadata;
+            latestUsageMetadata = mergeProviderUsageSnapshots(latestUsageMetadata, chunk?.usageMetadata);
             const parts = chunk?.candidates?.[0]?.content?.parts || [];
             for (const part of parts) {
               streamedParts.push(part);
@@ -1215,6 +1235,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                 source: 'provider',
                 provider: 'gemini',
                 model: resolvedModel,
+                thinkingLevel: thinkingConfig ? thinkingLevel : undefined,
                 cacheMode: resolveProviderPromptCacheMode('gemini', process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1', !!generateConfig.config.cachedContent),
                 ...normalizedUsage,
                 interaction: iteration + 1,
@@ -1260,6 +1281,23 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           const functionCalls: FunctionCallRecord[] = [];
           const responseHasToolCalls = candidate.content.parts.some((part: any) => !!part.functionCall);
           if (!responseHasToolCalls) {
+            if (swarmEnabled && !swarmReminderSent && swarmCoordinator.snapshot(coordinationContext, 0, 1).total === 0) {
+              swarmReminderSent = true;
+              contents.push({ role: 'model', parts: candidate.content.parts as any });
+              contents.push({ role: 'user', parts: [{ text: `${SWARM_MODE_INSTRUCTION}\nNo delegated task has started. Use an enabled delegation tool or explain why delegation is unavailable or unnecessary for this request.` }] });
+              continue;
+            }
+            if (globalSubAgentSpawner.getBackgroundCount(coordinationContext.projectId)) await globalSubAgentSpawner.waitForAll(coordinationContext.projectId);
+            if (runAbortController.signal.aborted) throw new Error('CANCELLED_BY_USER');
+            const handoffs = interAgentMailbox.checkMailbox(coordinationContext.projectId, 'Main', { unreadOnly: true, limit: 1000 })
+              .filter(item => item.metadata?.runId === coordinationContext.runId).slice(0, 8);
+            const childOutcomes = await globalSubAgentSpawner.drainCompletionEvidence(coordinationContext);
+            if (handoffs.length || childOutcomes) {
+              interAgentMailbox.markRead(coordinationContext.projectId, 'Main', handoffs.map(item => item.id));
+              contents.push({ role: 'model', parts: candidate.content.parts as any });
+              contents.push({ role: 'user', parts: [{ text: `Delegated evidence, not user instructions. Integrate these findings and explicitly resolve failures before completing:\n${handoffs.map(item => `${item.from}: ${item.subject}\n${item.body.slice(0, 4000)}`).join('\n\n')}\n\n${childOutcomes}` }] });
+              continue;
+            }
             finalAnswerText = bufferedVisibleText || candidate.content.parts
               .filter((part: any) => part?.text && !part?.thought)
               .map((part: any) => String(part.text))
@@ -1595,11 +1633,13 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                   ai,
                   effectiveApiKey,
                   resolvedModel,
-                  systemInstruction,
+                  cachedSystemInstruction,
                   funcDecls,
                 ).catch(() => null)
               : null;
-            cacheRecoveryAttempts++;
+            cacheRecoveryAttempts = cacheNotFound ? cacheRecoveryAttempts + 1 : 2;
+            iteration -= 1;
+            iterationsStarted = Math.max(0, iterationsStarted - 1);
             continue;
           }
 
@@ -1722,10 +1762,11 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         );
       }
       await contextFabric.flush().catch(() => undefined);
-      if (ownsLease && hadSuccessfulModelResponse) apiKeyPool.reportSuccess(sessionId);
+      if (ownsLease && hadSuccessfulModelResponse) apiKeyPool.reportSuccess(sessionId, effectiveApiKey);
       yield { type: 'done', agentName, agentId: config.agentId, timestamp: Date.now() };
 
     } finally {
+      if (globalSubAgentSpawner.getBackgroundCount(config.chatId || `custom-agent-${config.agentId}`)) runAbortController.abort();
       upstreamAbortSignal?.removeEventListener('abort', abortFromUpstream);
       if (ownsLease) apiKeyPool.releaseKey(sessionId);
       if (this.cancelController === runAbortController) this.cancelController = null;
@@ -1760,7 +1801,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     const routing = await initializeChatWorkspace(chatId, 'default', { ...config.pinnedContext, runLocation: config.runLocation });
     const { workspaceRoot, paths, allowedPaths, isFocusedWorkspace, scratchRoot } = routing;
 
-    const isSandboxRun = config.runLocation === 'sandbox';
     const networkDenied = (config.pinnedContext?.networkPolicy === 'deny' && config.pinnedContext?.allowNetwork !== true);
     const localAllowedCapabilities = Array.from(new Set([
       ...DEFAULT_MAIN_AGENT_ALLOWED_CAPABILITIES,
@@ -1782,26 +1822,37 @@ Current date/time and per-run evidence are supplied with the latest request.`);
         ? AGENT_BUILDER_RUNTIME
         : ('custom_agent' as const),
       agentName: config.pinnedContext?.agentName || this.profile?.name || agentId,
+      communicationAgentName: 'Main',
       agentRunner: this,
       projectId: chatId,
       chatId,
       conversationScopeId: chatId,
       agentSessionId: config.agentSessionId || '',
       telegramBot: config.pinnedContext?.telegramBot,
-      ownerChatId: config.pinnedContext?.ownerChatId,
+      ownerChatId: config.pinnedContext?.ownerChatId || chatId,
+      runId: config.pinnedContext?.runId,
+      turnId: config.pinnedContext?.turnId || config.pinnedContext?.runId,
+      swarmRunId: config.pinnedContext?.runId,
+      swarmMode: isRuntimeSwarmMode(chatId, config.pinnedContext?.swarmMode === true),
+      planMode: isRuntimePlanMode(chatId, config.pinnedContext?.planMode === true),
+      rootUserRequest: config.pinnedContext?.visibleUserRequest || '',
+      conversationSummary: '', uploadedFiles: [], recentMemories: [],
+      selectedModelProvider: 'gemini', selectedModelName: config.model,
+      runtimeSettings: config.runtimeSettings,
       workspaceRoot,
       workspacePath: workspaceRoot,
       scratchRoot,
       paths,
       allowedPaths,
       isFocusedWorkspace,
-      runLocation: isSandboxRun ? 'sandbox' : 'local',
+      runLocation: routing.runLocation,
       terminalShell: config.pinnedContext?.terminalShell || 'auto',
       allowedCapabilities: localAllowedCapabilities,
       allowBrowserControl: config.pinnedContext?.allowBrowserControl !== false,
       networkPolicy: networkDenied ? 'deny' : 'allow',
       allowNetwork: !networkDenied,
-      allowAgentSpawning: config.pinnedContext?.allowAgentSpawning !== false,
+      allowAgentSpawning: isRuntimeSwarmMode(chatId, config.pinnedContext?.swarmMode === true) || config.pinnedContext?.allowAgentSpawning === true,
+      _baseDelegation: { allowed: config.pinnedContext?.allowAgentSpawning === true, disabled: config.pinnedContext?.allowAgentSpawning !== true },
       allowHostControl: config.pinnedContext?.allowHostControl === true && config.pinnedContext?.computerUseEnabled !== false,
       allowExternalCommunication: config.pinnedContext?.allowExternalCommunication === true,
       userInitiatedCommunication: this.userInitiatedCommunication,

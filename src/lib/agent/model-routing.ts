@@ -16,6 +16,10 @@ import {
   getScopedModelOverride,
   type ScopedRuntimeSettings,
 } from './runtime-api-keys';
+import { getDocumentedThinkingCapabilities } from './model-thinking-contracts';
+export { getDocumentedThinkingCapabilities } from './model-thinking-contracts';
+// Compatibility export for existing callers; this no longer guesses support.
+export { getDocumentedThinkingCapabilities as inferModelThinkingCapabilities } from './model-thinking-contracts';
 
 export type MainAgentProvider =
   | 'gemini' | 'mistral' | 'openai' | 'openrouter' | 'anthropic' | 'groq'
@@ -39,18 +43,34 @@ export type ModelThinkingOption = {
 export type ModelThinkingParameter =
   | 'thinkingLevel'
   | 'thinkingBudget'
+  | 'thinking_level'
+  | 'thinking_budget'
   | 'thinking.type'
   | 'enable_thinking'
+  | 'reasoning.enabled'
+  | 'chat_template_kwargs.enable_thinking'
+  | 'chat_template_kwargs.thinking'
   | 'reasoning_effort'
   | 'reasoning'
+  | 'thinking.budget_tokens'
+  | 'chat_template_kwargs.reasoning_effort'
   | 'output_config.effort';
 
 /** Capability metadata returned by a provider's live model catalog. */
 export type ModelThinkingCapabilities = {
+  provider?: MainAgentProvider;
+  modelId?: string;
+  updatedAt?: number;
   levels: MainAgentThinkingLevel[];
   defaultLevel?: MainAgentThinkingLevel;
   parameter?: ModelThinkingParameter;
-  source?: 'provider' | 'inferred';
+  wireValues?: Partial<Record<MainAgentThinkingLevel, string>>;
+  kind?: 'toggle' | 'effort' | 'budget';
+  /** Some APIs require a separate switch as well as an effort value. */
+  toggleParameter?: 'thinking.type' | 'enable_thinking' | 'reasoning.enabled' | 'chat_template_kwargs.enable_thinking';
+  /** Omit the effort field for these levels (for example, provider-default On). */
+  omitLevels?: MainAgentThinkingLevel[];
+  source?: 'provider' | 'documented' | 'inferred';
 };
 
 export type MainAgentModelConfig = {
@@ -142,14 +162,6 @@ export function resolveModelName(mode: MainAgentMode, runtimeSettings?: ScopedRu
   }
 }
 
-/**
- * Get the full fallback chain for a mode.
- * Used by GeminiAgentClient to try next model when primary fails.
- */
-/**
- * Detect if an error message indicates a model is deprecated/not-found.
- * These errors should trigger fallback chain traversal, NOT key rotation.
- */
 // ─── Static mode config (display labels etc.) ────────────────────────────────
 
 export const MAIN_AGENT_MODE_CONFIG: Record<MainAgentMode, MainAgentModelConfig> = {
@@ -255,17 +267,14 @@ export const MAIN_AGENT_THINKING_LEVEL_OPTIONS: ModelThinkingOption[] = [
   { id: 'max', label: 'Max' },
 ];
 
-const thinkingOptions = (...levels: MainAgentThinkingLevel[]): ModelThinkingOption[] =>
-  levels.map(id => MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === id)!);
-
 const normalizeAdvertisedThinkingLevel = (value: unknown): MainAgentThinkingLevel | null => {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '-');
-  if (normalized === 'off' || normalized === 'none' || normalized === 'disabled' || normalized === 'no-thinking') return 'off';
+  if (['off', 'none', 'disabled', 'no-thinking'].includes(normalized)) return 'off';
   if (normalized === 'minimal' || normalized === 'min') return 'minimal';
   if (normalized === 'low') return 'low';
   if (normalized === 'medium' || normalized === 'med') return 'medium';
-  if (normalized === 'high') return 'high';
+  if (['high', 'on', 'enabled', 'adaptive'].includes(normalized)) return 'high';
   if (normalized === 'xhigh' || normalized === 'extra-high') return 'xhigh';
   if (normalized === 'max' || normalized === 'maximum') return 'max';
   return null;
@@ -274,202 +283,45 @@ const normalizeAdvertisedThinkingLevel = (value: unknown): MainAgentThinkingLeve
 export const isOpenAIReasoningModel = (model: string) =>
   /(?:^|[/:_-])(?:o1|o3|o4)(?:$|[/:_-])|gpt-(?:[5-9]|[1-9]\d+)(?:[.-]|$)|gpt-oss/i.test(model);
 
-const isClaudeEffortModel = (model: string) =>
-  /claude-(?:sonnet|opus)-(?:4|5)(?:[.-]|$)|claude-(?:fable|mythos)-(?:5|preview)(?:[.-]|$)/i.test(model);
+/** Explicit live metadata wins, including an empty/unsupported contract. */
+export function resolveModelThinkingCapabilities(
+  provider: MainAgentProvider,
+  modelName: string,
+  discovered?: ModelThinkingCapabilities | null,
+): ModelThinkingCapabilities | null {
+  const live = normalizeModelThinkingCapabilities(discovered);
+  if (live?.source === 'provider') {
+    const canonicalId = (value: string) => provider === 'gemini' ? value.trim().replace(/^models\//, '') : value.trim();
+    if ((live.provider && live.provider !== provider) || (live.modelId && canonicalId(live.modelId) !== canonicalId(modelName))) {
+      return { levels: [], source: 'provider' };
+    }
+    return live;
+  }
+  // Never reuse old inferred lists or cached documentation after an update.
+  return getDocumentedThinkingCapabilities(provider, modelName);
+}
 
-const isClaudeXHighModel = (model: string) =>
-  /claude-(?:sonnet|opus)-5(?:[.-]|$)|claude-haiku-5[.-]5(?:[.-]|$)|claude-opus-4[.-][78](?:[.-]|$)/i.test(model);
-
-const isMistralReasoningModel = (model: string) =>
-  /(?:mistral-small(?:-latest)?|mistral-medium-3-5)/i.test(model);
-
-/**
- * Returns the exact thinking choices for a concrete provider/model pair.
- * Keep this registry client-safe: both composer UIs and server adapters use it.
- */
 export function getModelThinkingOptions(
   provider: MainAgentProvider,
   modelName: string,
   discovered?: ModelThinkingCapabilities | null,
 ): ModelThinkingOption[] {
-  if (discovered?.levels?.length) {
-    return discovered.levels
-      .map(level => MAIN_AGENT_THINKING_LEVEL_OPTIONS.find(option => option.id === level))
-      .filter((option): option is ModelThinkingOption => Boolean(option));
-  }
-  const model = String(modelName || '').trim().toLowerCase();
-  if (!model) return [];
-
-  if (provider === 'gemini') {
-    // Gemini 3 uses thinkingLevel. "minimal" is the lowest effort; these
-    // models do not provide a true thinking-off setting.
-    if (model.includes('gemini-3.1-flash-lite-image')) return thinkingOptions('minimal', 'high');
-    if (/gemini-3\.[78]-flash/.test(model)) return thinkingOptions('low', 'medium', 'high');
-    if (/gemini-3(?:-pro|\.0-pro)/.test(model)) return thinkingOptions('low', 'high');
-    if (/gemini-3\.1-pro/.test(model)) return thinkingOptions('low', 'medium', 'high');
-    if (model.includes('gemini-3')) {
-      return thinkingOptions('minimal', 'low', 'medium', 'high');
+  const capability = resolveModelThinkingCapabilities(provider, modelName, discovered);
+  if (!capability?.parameter) return [];
+  return MAIN_AGENT_THINKING_LEVEL_OPTIONS.filter(option => capability.levels.includes(option.id)).flatMap(option => {
+    const level = option.id;
+    if (capability.wireValues?.[level] === 'default') return [{ ...option, label: 'On (provider default)' }];
+    if (capability.kind === 'toggle' || ['enable_thinking', 'thinking.type', 'reasoning.enabled', 'chat_template_kwargs.enable_thinking', 'chat_template_kwargs.thinking'].includes(capability.parameter!)) return [{ ...option, label: level === 'off' ? 'Off' : 'On' }];
+    if (capability.parameter === 'thinkingBudget' && level !== 'off') {
+      const budget = level === 'low' ? 1024 : level === 'high' ? 24576 : 8192;
+      return [{ ...option, label: `${option.label} (${budget.toLocaleString('en-US')} tokens)` }];
     }
-    // Gemini 2.5 uses thinkingBudget, not thinkingLevel.
-    if (model.includes('gemini-2.5-pro')) return thinkingOptions('low', 'medium', 'high');
-    if (model.includes('gemini-2.5-flash-lite')) return thinkingOptions('off', 'low', 'medium', 'high');
-    if (model.includes('gemini-2.5-flash')) return thinkingOptions('off', 'low', 'medium', 'high');
-    return [];
-  }
-
-  if (provider === 'deepseek') {
-    // DeepSeek V4 is a hybrid model: the native API exposes an explicit
-    // thinking toggle plus high/max effort. The legacy reasoner alias is an
-    // always-thinking route, so it must not advertise a false Off setting.
-    if (/deepseek-v4-(?:flash|pro)/i.test(model)) return thinkingOptions('off', 'high', 'max');
-    if (/deepseek-reasoner|deepseek-r1/i.test(model)) return thinkingOptions('high', 'max');
-    return [];
-  }
-
-  if (provider === 'mistral') {
-    // Adjustable reasoning models expose "none" and "high". Native
-    // Magistral models always reason, so do not offer a fake off switch.
-    if (/magistral/i.test(model)) return thinkingOptions('high');
-    return isMistralReasoningModel(model) ? thinkingOptions('off', 'high') : [];
-  }
-
-  if (provider === 'anthropic') {
-    if (!model.includes('claude')) return [];
-    return isClaudeXHighModel(model)
-      ? thinkingOptions('low', 'medium', 'high', 'xhigh', 'max')
-      : isClaudeEffortModel(model)
-        ? thinkingOptions('low', 'medium', 'high', 'max')
-        : /claude-(?:sonnet|opus|haiku)-4(?:[.-]|$)/i.test(model)
-          ? thinkingOptions('low', 'medium', 'high')
-          : [];
-  }
-
-  if (provider === 'openai') {
-    if (!isOpenAIReasoningModel(model)) return [];
-    if (/gpt-5(?:\.[0-9]+)?[-.]pro(?:$|[-.])/i.test(model)) return thinkingOptions('high');
-    if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
-    if (/gpt-5\.[234](?:$|-)/i.test(model)) return thinkingOptions('off', 'low', 'medium', 'high', 'xhigh');
-    // OpenAI models before GPT-5.1 do not accept `none`; o-series models also
-    // have no true off setting. GPT-5.1+ is the documented family where
-    // reasoning can be disabled.
-    if (/gpt-5\.(?:[1-9]|\d{2,})(?:$|[-.])/i.test(model)) {
-      return thinkingOptions('off', 'low', 'medium', 'high');
+    if (capability.parameter === 'thinking.budget_tokens' && level !== 'off') {
+      return [{ ...option, label: `${option.label} (${getAnthropicThinkingBudget(level).toLocaleString('en-US')} tokens)` }];
     }
-    return thinkingOptions('low', 'medium', 'high');
-  }
-
-  if (provider === 'openrouter') {
-    // OpenRouter normalizes this under its `reasoning` object.  We can infer
-    // the common vendor families from the selected exact model id; unknown
-    // models intentionally do not show a control rather than receive an
-    // unsupported parameter.
-    if (model.includes('claude')) {
-      return isClaudeXHighModel(model)
-        ? thinkingOptions('off', 'low', 'medium', 'high', 'xhigh', 'max')
-        : isClaudeEffortModel(model)
-          ? thinkingOptions('off', 'low', 'medium', 'high', 'max')
-          : [];
-    }
-    if (model.includes('gemini')) {
-      return getModelThinkingOptions('gemini', model.replace(/^google\//, ''));
-    }
-    if (isOpenAIReasoningModel(model) || model.includes('grok')) {
-      if (/gpt-5(?:\.[0-9]+)?[-.]pro(?:$|[-.])/i.test(model)) return thinkingOptions('high');
-      if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
-      return thinkingOptions('off', 'low', 'medium', 'high');
-    }
-  }
-
-  if (provider === 'groq') {
-    if (model.includes('gpt-oss')) return thinkingOptions('low', 'medium', 'high');
-    if (/qwen(?:\/|[-_])?qwen?3|qwen3/i.test(model)) return thinkingOptions('off', 'high');
-  }
-  if ((provider === 'together' || provider === 'nvidia') && model.includes('gpt-oss')) {
-    return thinkingOptions('low', 'medium', 'high');
-  }
-
-  if (provider === 'grok' && /grok-(?:4|3)/.test(model)) {
-    if (/grok-4\.[67](?:$|-)/.test(model)) return thinkingOptions('low', 'medium', 'high', 'xhigh');
-    if (/grok-4\.5(?:$|-)/.test(model)) return thinkingOptions('low', 'medium', 'high');
-    if (/grok-3-mini(?:$|-)/.test(model)) return thinkingOptions('low', 'high');
-    // Other families have no verified adjustable Chat Completions control.
-    // Live provider metadata can advertise additional support above.
-    return !/non-reasoning/.test(model) && /grok-4/.test(model) ? thinkingOptions('high') : [];
-  }
-  if (provider === 'qwen' && /(?:qwen3|qwq|thinking)/.test(model)) {
-    return thinkingOptions('off', 'low', 'medium', 'high');
-  }
-  if (provider === 'llamacpp' && /(?:gpt-oss|deepseek|reason|thinking|qwq|qwen3)/.test(model)) {
-    return thinkingOptions('off', 'low', 'medium', 'high');
-  }
-
-  // A gateway may expose an always-reasoning model without exposing a
-  // controllable wire parameter. Show its truthful fixed state, but do not
-  // invent a request field. Adjustable levels are supplied through live
-  // capability metadata and handled by the discovered branch above.
-  if (/(?:deepseek-(?:r1|reasoner)|\bqwq\b|[-_/]thinking(?:[-_/]|$)|reasoning(?:[-_/]|$))/i.test(model)) {
-    return thinkingOptions('high');
-  }
-
-  return [];
+    return [option];
+  });
 }
-
-/**
- * Produce request-shape metadata only for model/provider combinations whose
- * native control is known. A fixed High option may intentionally have no
- * parameter: it describes an always-reasoning model without sending a field
- * the gateway did not advertise.
- */
-export function inferModelThinkingCapabilities(
-  provider: MainAgentProvider,
-  modelName: string,
-): ModelThinkingCapabilities | null {
-  const model = String(modelName || '').trim().toLowerCase();
-  const levels = getModelThinkingOptions(provider, model).map(option => option.id);
-  if (levels.length === 0) return null;
-
-  let parameter: ModelThinkingParameter | undefined;
-  if (provider === 'gemini') {
-    parameter = model.includes('gemini-2.5') ? 'thinkingBudget' : 'thinkingLevel';
-  } else if (provider === 'deepseek') {
-    parameter = /deepseek-v4-(?:flash|pro)/i.test(model) ? 'thinking.type' : 'reasoning_effort';
-  } else if (provider === 'anthropic') {
-    // output_config.effort belongs to adaptive thinking. Claude 4.5 and
-    // earlier use legacy budget_tokens and must not be routed as adaptive.
-    parameter = isAnthropicAdaptiveThinkingModel(model) ? 'output_config.effort' : undefined;
-  } else if (provider === 'openrouter') {
-    parameter = 'reasoning';
-  } else if (provider === 'qwen') {
-    parameter = 'enable_thinking';
-  } else if (provider === 'grok') {
-    parameter = /grok-(?:3-mini|4\.[567])(?:$|-)/.test(model) ? 'reasoning_effort' : undefined;
-  } else if (provider === 'mistral' || provider === 'openai') {
-    parameter = 'reasoning_effort';
-  } else if (provider === 'groq' && /qwen(?:\/|[-_])?qwen?3|qwen3/i.test(model)) {
-    parameter = 'reasoning_effort';
-  } else if ((provider === 'groq' || provider === 'together' || provider === 'nvidia') && /gpt-oss/i.test(model)) {
-    parameter = 'reasoning_effort';
-  } else if (provider === 'llamacpp') {
-    // llama.cpp expects this inside chat_template_kwargs; its adapter applies
-    // that native shape when no top-level parameter is declared.
-    parameter = undefined;
-  }
-
-  const defaultLevel = levels.includes('medium')
-    ? 'medium'
-    : levels.includes('low')
-      ? 'low'
-      : levels.includes('high')
-        ? 'high'
-        : levels.find(level => level !== 'off') || levels[0];
-  return {
-    levels,
-    defaultLevel,
-    ...(parameter ? { parameter } : {}),
-    source: 'inferred',
-  };
-}
-
 export function doesModelSupportThinking(
   provider: MainAgentProvider,
   modelName: string,
@@ -493,27 +345,16 @@ export function getGeminiThinkingConfig(
   if (!options.length) return null;
   level = normalizeThinkingLevelForModel(level, 'gemini', model, discovered);
 
-  const parameter = discovered?.parameter
-    || (model.includes('gemini-2.5') ? 'thinkingBudget' : 'thinkingLevel');
+  const parameter = resolveModelThinkingCapabilities('gemini', model, discovered)?.parameter;
 
-  if (parameter === 'thinkingBudget' || model.includes('gemini-2.5')) {
-    if (model.includes('gemini-2.5-pro')) {
-      const thinkingBudget = level === 'low' ? 1024 : level === 'high' ? 24576 : 8192;
-      return { thinkingBudget, includeThoughts };
-    }
+  if (parameter === 'thinkingBudget') {
     if (level === 'off') return { thinkingBudget: 0, includeThoughts };
     const thinkingBudget = level === 'low' ? 1024 : level === 'high' ? 24576 : 8192;
     return { thinkingBudget, includeThoughts };
   }
 
-  const thinkingLevel = level === 'minimal'
-    ? 'minimal'
-    : level === 'low'
-      ? 'low'
-      : level === 'high'
-        ? 'high'
-        : 'medium';
-  return { thinkingLevel, includeThoughts };
+  if (parameter !== 'thinkingLevel') return null;
+  return { thinkingLevel: resolveModelThinkingCapabilities('gemini', model, discovered)?.wireValues?.[level] ?? level, includeThoughts };
 }
 
 export function normalizeModelThinkingCapabilities(value: unknown): ModelThinkingCapabilities | null {
@@ -529,15 +370,26 @@ export function normalizeModelThinkingCapabilities(value: unknown): ModelThinkin
   const levels = Array.from(new Set(rawLevels
     .map(level => normalizeAdvertisedThinkingLevel(level))
     .filter((level): level is MainAgentThinkingLevel => Boolean(level))));
-  if (levels.length === 0) return null;
+  // An explicitly empty list means unsupported, not missing metadata.
+  if (levels.length === 0 && !Array.isArray(source.levels) && !Array.isArray(source.supported_efforts) && !Array.isArray(source.supportedThinkingLevels)) return null;
 
   const rawDefault = source.defaultLevel ?? source.default_effort ?? source.defaultThinkingLevel;
   const defaultLevel = rawDefault === undefined ? undefined : normalizeAdvertisedThinkingLevel(rawDefault);
-  const parameter = source.parameter === 'thinkingLevel' || source.parameter === 'thinkingBudget' || source.parameter === 'thinking.type' || source.parameter === 'enable_thinking' || source.parameter === 'reasoning_effort' || source.parameter === 'reasoning' || source.parameter === 'output_config.effort'
+  const parameter = source.parameter === 'thinkingLevel' || source.parameter === 'thinkingBudget' || source.parameter === 'thinking_level' || source.parameter === 'thinking_budget' || source.parameter === 'thinking.type' || source.parameter === 'enable_thinking' || source.parameter === 'reasoning.enabled' || source.parameter === 'chat_template_kwargs.enable_thinking' || source.parameter === 'chat_template_kwargs.thinking' || source.parameter === 'reasoning_effort' || source.parameter === 'reasoning' || source.parameter === 'output_config.effort' || source.parameter === 'thinking.budget_tokens' || source.parameter === 'chat_template_kwargs.reasoning_effort'
     ? source.parameter
     : undefined;
-  const sourceKind = source.source === 'inferred' ? 'inferred' : 'provider';
-  return { levels, ...(defaultLevel && levels.includes(defaultLevel) ? { defaultLevel } : {}), ...(parameter ? { parameter } : {}), source: sourceKind };
+  const sourceKind = source.source === 'inferred' ? 'inferred' : source.source === 'documented' ? 'documented' : 'provider';
+  const wireValues = source.wireValues && typeof source.wireValues === 'object'
+    ? Object.fromEntries(Object.entries(source.wireValues).filter(([key, value]) => levels.includes(key as MainAgentThinkingLevel) && typeof value === 'string'))
+    : undefined;
+  const provider = typeof source.provider === 'string' && Object.values(MAIN_AGENT_MODE_CONFIG).some(config => config.provider === source.provider)
+    ? source.provider as MainAgentProvider : undefined;
+  const modelId = typeof source.modelId === 'string' ? source.modelId.trim() : undefined;
+  const kind = source.kind === 'toggle' || source.kind === 'effort' || source.kind === 'budget' ? source.kind : undefined;
+  const toggleParameter = source.toggleParameter === 'thinking.type' || source.toggleParameter === 'enable_thinking' || source.toggleParameter === 'reasoning.enabled' || source.toggleParameter === 'chat_template_kwargs.enable_thinking' ? source.toggleParameter : undefined;
+  const omitLevels = Array.isArray(source.omitLevels) ? levels.filter(level => (source.omitLevels as unknown[]).includes(level)) : undefined;
+  const updatedAt = typeof source.updatedAt === 'number' && Number.isFinite(source.updatedAt) ? source.updatedAt : undefined;
+  return { levels, ...(provider ? { provider } : {}), ...(modelId ? { modelId } : {}), ...(updatedAt ? { updatedAt } : {}), ...(defaultLevel && levels.includes(defaultLevel) ? { defaultLevel } : {}), ...(parameter ? { parameter } : {}), ...(wireValues ? { wireValues } : {}), ...(kind ? { kind } : {}), ...(toggleParameter ? { toggleParameter } : {}), ...(omitLevels ? { omitLevels } : {}), source: sourceKind };
 }
 
 /**
@@ -551,14 +403,15 @@ export function normalizeThinkingLevelForModel(
   discovered?: ModelThinkingCapabilities | null,
 ): MainAgentThinkingLevel {
   const requested = normalizeMainAgentThinkingLevel(value);
+  const capability = resolveModelThinkingCapabilities(provider, modelName, discovered);
   const options = getModelThinkingOptions(provider, modelName, discovered);
   if (options.some(option => option.id === requested)) return requested;
-  return (discovered?.defaultLevel && options.some(option => option.id === discovered.defaultLevel) ? discovered.defaultLevel : undefined)
+  return (capability?.defaultLevel && options.some(option => option.id === capability.defaultLevel) ? capability.defaultLevel : undefined)
     || options.find(option => option.id === 'medium')?.id
     || options.find(option => option.id === 'low')?.id
     || options.find(option => option.id !== 'off')?.id
     || options[0]?.id
-    || requested;
+    || 'off';
 }
 
 /** Provider adapters use this to turn the persisted level into API values. */
@@ -593,12 +446,8 @@ export function getAnthropicThinkingBudget(level: MainAgentThinkingLevel): numbe
 }
 
 export function isAnthropicAdaptiveThinkingModel(modelName: string): boolean {
-  const model = String(modelName || '').toLowerCase();
-  if (/claude-haiku-5[.-]5(?:[.-]|$)/i.test(model)) return true;
-  if (/claude-(?:fable|mythos)-(?:5|preview)(?:[.-]|$)/i.test(model)) return true;
-  if (/claude-(?:sonnet|opus)-5(?:[.-]|$)/i.test(model)) return true;
-  const version = model.match(/claude-(?:sonnet|opus)-4[.-](\d+)(?:[.-]|$)/i);
-  return Boolean(version && Number(version[1]) >= 6);
+  const capability = getDocumentedThinkingCapabilities('anthropic', modelName);
+  return capability?.parameter === 'output_config.effort' && !/claude-opus-4[.-]5(?:[.-]|$)/i.test(modelName);
 }
 
 export function isOpenAIMiniReasoningModel(modelName: string): boolean {
