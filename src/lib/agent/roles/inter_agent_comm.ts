@@ -551,6 +551,9 @@ class InterAgentMailbox {
     runId?: string;
     turnId?: string;
     subAgentTurnId?: string;
+    parentAgentId?: string;
+    parentAgentName?: string;
+    depth?: number;
   }): void {
     this.getMailbox(projectId, agentName);
     const now = Date.now();

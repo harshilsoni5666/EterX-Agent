@@ -324,7 +324,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         const graph = swarmCoordinator.snapshot(context, 0, SWARM_LIMITS.maxNodes);
         if (graph.total || input.agentId) {
           const exact = input.agentId ? swarmCoordinator.get(input.agentId) : undefined;
-          const matches = input.agentId ? (exact?.projectId === context.projectId ? [exact] : [])
+          const matches = input.agentId ? (exact && exact.projectId === context.projectId ? [exact] : [])
             : graph.nodes.filter(node => !input.agentName || node.name.toLowerCase() === input.agentName.toLowerCase());
           const offset = input.offset || 0, limit = input.limit || 20;
           const agents: any[] = matches.slice(offset, offset + limit).map(node => ({

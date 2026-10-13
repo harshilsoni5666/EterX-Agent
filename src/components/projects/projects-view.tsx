@@ -1189,7 +1189,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                                 Thinking level
                                               </span>
                                               <span className="truncate text-[11px] font-medium leading-4 text-white/50">
-                                                {selectedThinkingLevel.label}
+                                                {selectedThinkingLevel?.label ?? activeThinkingOptions[0]?.label ?? 'Default'}
                                               </span>
                                             </span>
                                             <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/50 transition-transform duration-150 ${ showThinkingLevels ? 'rotate-90' : '' }`} strokeWidth={2.2} />
