@@ -86,6 +86,8 @@ export type ContextCompactionEvent = {
   compactionId: string;
   chatId: string;
   beforeTokens: number;
+  /** Preflight payload accounting includes locally estimated tool/output deltas. */
+  beforeTokensEstimated?: boolean;
   afterTokens?: number;
   contextWindow: number;
   modelProvider: MainAgentProvider;
@@ -686,6 +688,9 @@ export const normalizeContextCompactionSettings = (
 };
 
 export { resolveModelContextWindow } from '../model-context-window';
+
+export const isContextCapacityError = (error: unknown): boolean =>
+  (error as { code?: string } | null)?.code === 'CONTEXT_CAPACITY_BLOCKED';
 
 export const measureRuntimeContext = (input: {
   contents: unknown[];
@@ -2247,6 +2252,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         model: input.activeModel.modelId,
       } : {
         ...event,
+        beforeTokensEstimated: true,
         contextBudgetRevision: Number((input.rawSettings as any)?.contextBudgetRevision || 0),
         contextRequestId,
         ...(event.usage ? { usage: {
@@ -3145,6 +3151,21 @@ export const compactContextAtBoundary = async (input: CompactInput) => {
         if (!manual || event.type !== 'context_compaction') onEvent?.(event);
       },
     });
+    const policy = input.rawSettings as any;
+    const matchingPolicy = policy?.activeContextModelProvider === input.activeModel.provider
+      && policy?.activeContextModelId === input.activeModel.modelId;
+    const maximum = (matchingPolicy && normalizeContextWindow(policy.activeModelContextWindow))
+      || normalizeContextWindow(input.activeModel.contextWindow)
+      || normalizeContextWindow(input.modelContextWindowOverride)
+      || rebaseContextCompactionWindow(policy, input.activeModel.provider, input.activeModel.modelId).activeModelContextWindow;
+    if (result.failed && result.usage.usedTokens >= maximum) {
+      // A raised retry threshold is not a larger provider window. Preserve
+      // the transcript, but never submit the same multi-million-token payload
+      // after recovery failed and start another provider/compaction retry loop.
+      const error = new Error(`Context recovery failed. The retained payload is estimated at ${Math.round(result.usage.usedTokens).toLocaleString('en-US')} tokens, above this model's ${maximum.toLocaleString('en-US')}-token capacity. The original context is preserved; retry compaction or use a smaller working context before continuing.`);
+      Object.assign(error, { code: 'CONTEXT_CAPACITY_BLOCKED' });
+      throw error;
+    }
     request?.finish(result.failed ? new Error('Context compaction failed. The original context was preserved.') : undefined);
     return result;
   } catch (error) {

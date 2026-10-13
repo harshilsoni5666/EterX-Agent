@@ -115,4 +115,16 @@ Turning Swarm Mode off restores the underlying delegation setting at native prov
 
 ## Implementation status
 
+### Context delivery and worker isolation
+
+The October 13 context investigation found an actual payload blowup, not a million-token display unit error. In the saved UI-lineage worker run, two terminal searches produced 5,616,679 and 25,468,681 characters. Both requested a 24,000-character response, but `outputKind="read"` bypassed the terminal limit and every read-result/batch compactor. The next local context estimate was 8,471,638 tokens; the last provider-reported input was 20,890 tokens.
+
+Terminal reads now retain their exact chronological output on disk and deliver bounded verbatim pages. `maxOutputChars` applies to reads as well as logs; the default is 24,000 characters, capped further at 8% of the active window using the existing four-character token estimate. `hasMoreOutput`, `outputStart`, `outputEnd`, and `nextOutputOffset` describe delivery, independently of process completion. Use `workspace_run_command` with `mode="check"`, the original `taskId`, and `sinceOffset=outputEnd` to continue. A completed command may still have unread pages. Disk/read failures are explicitly marked incomplete. Saved read output can be paged after a process restart without loading the entire file into the tool response.
+
+Terminal command batches share a response allowance. Provider tool batches also account for read results, including JSON escaping, and preserve continuation handles when further reductions are needed. `context_memory open` defaults to bounded pages as well, so recalling a large archive cannot immediately refill the context. Exact original output is not a model summary; unread pages must not be treated as inspected evidence.
+
+Live terminal buffers and UI snapshots are bounded for all output kinds. Subprocess streams pause when pending disk output grows too large and resume as it drains. This bounds working buffers; exact read archives remain subject to available disk space.
+
+Each worker copies mutable compaction settings before execution, preserving policy isolation across model switches, descendants, and direct continuations. Parent force-compaction flags do not transfer to new children. Custom-agent tools receive the same context policy. Compaction terminal events may still pass through cancellation so a worker's notice can settle. The feed and composer label preflight counts as estimates and distinguish cancelled compaction from failure. A failed recovery whose retained payload is still above the active model's capacity stops before another provider submission; the original context is preserved.
+
 This change was made without Git commands, builds, type checks, lint, automated tests, or runtime/UI checks, as requested. The limits above describe the implementation; no load, throughput, or production-readiness claim is made.

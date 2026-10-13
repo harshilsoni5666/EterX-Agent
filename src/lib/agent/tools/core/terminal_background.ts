@@ -15,7 +15,7 @@ import { authorizeToolCommand } from '../security/command_broker';
 import { buildTerminalShellInvocation } from './shell_resolver';
 import { getEterxWorkspaceDir } from '../../storage-paths';
 import { managedWorkspaces } from '../../workspace/managed';
-import { resolveTerminalOutputKind, type TerminalOutputKind } from '../../source-read-policy';
+import { resolveTerminalOutputKind, terminalOutputPageChars, type TerminalOutputKind } from '../../source-read-policy';
 
 type TerminalTaskStatus = 'running' | 'completed' | 'failed' | 'killed';
 
@@ -98,6 +98,7 @@ export interface TerminalBackgroundTask {
   statusTimer?: NodeJS.Timeout;
   pendingFileOutput: string;
   outputWrite?: Promise<void>;
+  outputPersistenceError?: string;
   statusWrite?: Promise<void>;
   stop?: (exitCode?: number) => Promise<void>;
   stopping?: Promise<void>;
@@ -105,7 +106,8 @@ export interface TerminalBackgroundTask {
 }
 
 const TASKS_DIR = getEterxWorkspaceDir('terminal_tasks');
-const DEFAULT_MAX_OUTPUT_CHARS = 10 * 1024 * 1024;
+const MAX_LIVE_TRACE_CHARS = 256_000;
+const MAX_PENDING_OUTPUT_CHARS = 512_000;
 const MAX_PERSISTED_OUTPUT_BYTES = 25 * 1024 * 1024;
 const PERSISTED_OUTPUT_RETAIN_BYTES = 16 * 1024 * 1024;
 const DEFAULT_TRACE_THROTTLE_MS = 100;
@@ -230,7 +232,7 @@ export async function runTerminalCommandWithCheckIn(options: TerminalCommandRunO
     totalOutputChars: 0,
     traceOutputOffset: 0,
     droppedOutputChars: 0,
-    maxOutputChars: options.maxOutputChars || DEFAULT_MAX_OUTPUT_CHARS,
+    maxOutputChars: terminalOutputPageChars(options.maxOutputChars, options.context?.contextCompaction?.activeContextWindow),
     outputKind: resolveTerminalOutputKind(options.command, options.outputKind),
     checkInMs,
     hardTimeoutMs,
@@ -481,9 +483,13 @@ export async function getTerminalBackgroundTaskStatus(
   const inMemory = terminalTasks.get(taskId);
   if (inMemory) {
     if (requestedOwner && inMemory.ownerChatId !== requestedOwner) return null;
-    return buildStatusResult(maxOutputChars && inMemory.output.length > maxOutputChars
-      ? { ...inMemory, output: inMemory.output.slice(-maxOutputChars) }
-      : inMemory, sinceOffset);
+    const limit = terminalOutputPageChars(maxOutputChars ?? inMemory.maxOutputChars);
+    if (resolveTerminalOutputKind(inMemory.command, inMemory.outputKind) === 'read') {
+      await waitForTaskOutputWrites(inMemory);
+      return withReadOutputPage(buildStatusResult({ ...inMemory, output: inMemory.output.slice(-limit) }, sinceOffset), inMemory.outputFile,
+        sinceOffset, limit, inMemory.outputPersistenceError);
+    }
+    return buildStatusResult({ ...inMemory, output: inMemory.output.slice(-limit) }, sinceOffset);
   }
 
   const statusFile = resolveUnder(TASKS_DIR, `${taskId}_status.json`);
@@ -494,9 +500,9 @@ export async function getTerminalBackgroundTaskStatus(
   const outputFile = status.outputFile && isPathInside(TASKS_DIR, path.resolve(status.outputFile))
     ? status.outputFile
     : resolveUnder(TASKS_DIR, `${taskId}_output.txt`);
-  const persistedOutputLimit = Math.max(4_000, Math.min(256_000, Number(status.maxOutputChars) || 24_000));
+  const persistedOutputLimit = terminalOutputPageChars(maxOutputChars ?? status.maxOutputChars);
   const outputKind = resolveTerminalOutputKind(String(status.command || ''), status.outputKind);
-  const output = await readOutputTail(outputFile, maxOutputChars || (outputKind === 'read' ? Number.POSITIVE_INFINITY : persistedOutputLimit));
+  const output = outputKind === 'read' ? '' : await readOutputTail(outputFile, persistedOutputLimit);
   // Saved output survives a restart; an active execution handle does not.
   // PID existence alone cannot establish identity or recover an exit status.
   const persistedStatus = status.status === 'running' ? 'unknown' : status.status || 'unknown';
@@ -505,7 +511,7 @@ export async function getTerminalBackgroundTaskStatus(
     Number(status.totalOutputChars) || output.length,
     sinceOffset,
   );
-  return {
+  const result = {
     success: persistedStatus === 'completed',
     terminalTask: true,
     taskId,
@@ -542,6 +548,9 @@ export async function getTerminalBackgroundTaskStatus(
       ? 'The original execution handle is unavailable. Read the retained output and current task state before deciding what remains; do not infer success, failure, or automatically replay a mutation.'
       : 'Read the final output and continue from the result.'
   };
+  return outputKind === 'read'
+    ? withReadOutputPage(result, outputFile, sinceOffset, persistedOutputLimit, status.outputPersistenceError)
+    : result;
 }
 
 // Share history across route bundles and hot reloads. A menu refresh never waits
@@ -620,9 +629,9 @@ export function getLiveTerminalTaskContext(ownerChatId: string): any[] {
     }));
 }
 
-export async function waitTerminalTask(taskId: string, ownerChatId: string, timeoutMs: number, sinceOffset?: number, signal?: AbortSignal): Promise<any | null> {
+export async function waitTerminalTask(taskId: string, ownerChatId: string, timeoutMs: number, sinceOffset?: number, signal?: AbortSignal, maxOutputChars?: number): Promise<any | null> {
   const deadline = Date.now() + Math.max(1000, Math.min(120_000, timeoutMs));
-  let result = await getTerminalBackgroundTaskStatus(taskId, ownerChatId, sinceOffset);
+  let result = await getTerminalBackgroundTaskStatus(taskId, ownerChatId, sinceOffset, maxOutputChars);
   while (result?.running && !result.hasNewOutput && !signal?.aborted && Date.now() < deadline) {
     await new Promise<void>(resolve => {
       const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
@@ -630,7 +639,7 @@ export async function waitTerminalTask(taskId: string, ownerChatId: string, time
       signal?.addEventListener('abort', done, { once: true });
       if (signal?.aborted) done();
     });
-    result = await getTerminalBackgroundTaskStatus(taskId, ownerChatId, sinceOffset);
+    result = await getTerminalBackgroundTaskStatus(taskId, ownerChatId, sinceOffset, maxOutputChars);
   }
   return result;
 }
@@ -675,9 +684,10 @@ function appendTaskOutput(task: TerminalBackgroundTask, stream: 'stdout' | 'stde
   if (!text) return;
   task.lastActivityAt = Date.now();
   task.totalOutputChars += text.length;
-  task.pendingTraceOutput += text;
-  const outputLimit = resolveTerminalOutputKind(task.command, task.outputKind) === 'read'
-    ? Number.POSITIVE_INFINITY : task.maxOutputChars;
+  task.pendingTraceOutput = (task.pendingTraceOutput + text).slice(-MAX_LIVE_TRACE_CHARS);
+  // Disk is the exact archive. Neither a read nor an explicit retention hint
+  // grants an unbounded heap buffer, trace payload, or provider response.
+  const outputLimit = terminalOutputPageChars(task.maxOutputChars);
   task[stream] = trimOutput(task[stream] + text, outputLimit).text;
 
   const combined = trimOutput(task.output + text, outputLimit);
@@ -685,6 +695,10 @@ function appendTaskOutput(task: TerminalBackgroundTask, stream: 'stdout' | 'stde
   task.droppedOutputChars += combined.dropped;
 
   task.pendingFileOutput += text;
+  if (task.pendingFileOutput.length >= MAX_PENDING_OUTPUT_CHARS) {
+    task.process?.stdout?.pause();
+    task.process?.stderr?.pause();
+  }
   scheduleTaskOutputWrite(task);
 }
 
@@ -697,6 +711,10 @@ function scheduleTaskOutputWrite(task: TerminalBackgroundTask) {
       const batch = task.pendingFileOutput;
       task.pendingFileOutput = '';
       await fs.appendFile(task.outputFile, batch);
+      if (task.pendingFileOutput.length < MAX_PENDING_OUTPUT_CHARS) {
+        task.process?.stdout?.resume();
+        task.process?.stderr?.resume();
+      }
     }
 
     const stats = await fs.stat(task.outputFile).catch(() => null);
@@ -711,9 +729,12 @@ function scheduleTaskOutputWrite(task: TerminalBackgroundTask) {
       await fs.writeFile(task.outputFile, content.subarray(retainFrom));
     }
   })()
-    .catch(() => undefined)
+    .catch(error => { task.outputPersistenceError = String(error?.message || error); })
     .finally(() => {
       task.outputWrite = undefined;
+      // Disk failure must not leave a subprocess permanently paused.
+      task.process?.stdout?.resume();
+      task.process?.stderr?.resume();
       if (task.pendingFileOutput) scheduleTaskOutputWrite(task);
     });
 }
@@ -752,7 +773,7 @@ function scheduleTaskStatusPersist(task: TerminalBackgroundTask) {
 
 function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?: number | null, force = false) {
   const outputChunk = task.pendingTraceOutput;
-  const outputStart = task.traceOutputOffset;
+  const outputStart = Math.max(task.traceOutputOffset, task.totalOutputChars - outputChunk.length);
   const outputEnd = task.totalOutputChars;
   if (!outputChunk && !final && !force) return;
   const emittedAt = Date.now();
@@ -788,6 +809,7 @@ function flushTaskOutput(task: TerminalBackgroundTask, final = false, exitCode?:
     outputEnd,
     totalOutputChars: task.totalOutputChars,
     droppedOutputChars: task.droppedOutputChars,
+    outputFile: task.outputFile,
     ...(final ? {
       exitCode: exitCode ?? task.exitCode ?? 0,
       durationMs: Math.max(0, Number(settledAt) - task.startedAt),
@@ -936,6 +958,60 @@ function visibleOutput(task: TerminalBackgroundTask): string {
   return `...[${task.droppedOutputChars} earlier chars truncated from terminal buffer]...\n${task.output}`;
 }
 
+/** Read character ranges without loading a multi-megabyte transcript into memory. */
+async function withReadOutputPage(
+  result: any,
+  outputFile: string,
+  sinceOffset: number | undefined,
+  limit: number,
+  persistenceError?: string,
+): Promise<any> {
+  const total = Math.max(0, Math.floor(Number(result.totalOutputChars) || 0));
+  const start = Math.min(total, Math.max(0, Number.isFinite(sinceOffset) ? Math.floor(sinceOffset!) : 0));
+  const end = Math.min(total, start + terminalOutputPageChars(limit));
+  let text = '';
+  try {
+    if (persistenceError) throw new Error(persistenceError);
+    if (end > start) {
+      // setEncoding preserves UTF-8 code points across disk chunks. Offsets
+      // are JS string characters, matching the existing terminal protocol.
+      const stream = fs.createReadStream(outputFile, { encoding: 'utf8', highWaterMark: 64 * 1024 });
+      let cursor = 0;
+      try {
+        for await (const chunk of stream) {
+          const value = String(chunk);
+          const next = cursor + value.length;
+          if (next > start) text += value.slice(Math.max(0, start - cursor), Math.max(0, end - cursor));
+          cursor = next;
+          if (cursor >= end) break;
+        }
+      } finally { stream.destroy(); }
+      if (text.length !== end - start) throw new Error('The saved terminal output is incomplete.');
+    }
+    const hasMoreOutput = end < total;
+    return {
+      ...result,
+      stdout: text, stderr: '', output: text,
+      outputFile,
+      outputStart: start, outputEnd: end, hasNewOutput: text.length > 0,
+      hasMoreOutput, nextOutputOffset: hasMoreOutput ? end : undefined,
+      outputLimited: start > 0 || hasMoreOutput,
+      // Paging is not data loss. Retention on disk is separate from the live buffer.
+      droppedOutputChars: 0,
+      nextActionNote: hasMoreOutput
+        ? `Output page ${start}-${end} of ${total} characters. Exact output is retained. Read the next page with workspace_run_command mode="check", taskId="${result.taskId}", sinceOffset=${end}; or narrow the search. Do not rerun the command to page its output.`
+        : result.nextActionNote,
+    };
+  } catch (error: any) {
+    return {
+      ...result,
+      outputLimited: true,
+      outputReadError: String(error?.message || error),
+      nextActionNote: 'Exact retained output could not be read. This response is incomplete; use a narrow read of the original source for missing evidence. Do not infer that omitted content was inspected.',
+    };
+  }
+}
+
 function buildOutputWindow(
   retainedOutput: string,
   totalOutputChars: number,
@@ -957,7 +1033,6 @@ function buildOutputWindow(
 
 function terminalTraceSnapshotOutput(task: TerminalBackgroundTask, maxChars = 1024 * 1024): string {
   const output = visibleOutput(task);
-  if (resolveTerminalOutputKind(task.command, task.outputKind) === 'read') return output;
   if (output.length <= maxChars) return output;
   const headChars = Math.floor(maxChars * 0.2);
   const tailChars = maxChars - headChars;
@@ -1016,6 +1091,7 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
     // Exact read output lives in outputFile; do not duplicate it in status JSON.
     stderr: resolveTerminalOutputKind(task.command, task.outputKind) === 'read' ? undefined : task.stderr.slice(-12_000),
     outputFile: task.outputFile,
+    outputPersistenceError: task.outputPersistenceError,
     statusFile: task.statusFile,
     droppedOutputChars: task.droppedOutputChars,
     totalOutputChars: task.totalOutputChars,
@@ -1030,7 +1106,7 @@ function serializeTask(task: TerminalBackgroundTask): Record<string, any> {
 }
 
 async function readOutputTail(filePath: string, maxChars = 24_000): Promise<string> {
-  if (!Number.isFinite(maxChars)) return fs.readFile(filePath, 'utf8').catch(() => '');
+  maxChars = terminalOutputPageChars(maxChars);
   let handle: number | undefined;
   try {
     handle = await fs.open(filePath, 'r');

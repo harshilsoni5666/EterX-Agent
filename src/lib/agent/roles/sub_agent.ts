@@ -1090,8 +1090,20 @@ export class SubAgentSpawner {
     };
     this.directConversationStates.set(agentId, directConversationState);
     const directUserMessages = directConversationState.queue;
+    // Compaction updates the admitted policy in place at provider boundaries.
+    // Each worker owns its policy; model changes and failure recovery must not
+    // mutate the parent's or a sibling's window through a shallow context copy.
+    const inheritedCompaction = (context as any).contextCompaction;
+    const workerCompaction = inheritedCompaction && typeof inheritedCompaction === 'object'
+      ? { ...inheritedCompaction,
+          model: inheritedCompaction.model ? { ...inheritedCompaction.model } : inheritedCompaction.model,
+          modelContextWindows: { ...inheritedCompaction.modelContextWindows },
+        }
+      : inheritedCompaction;
     const subAgentContext = {
       ...(context as any),
+      contextCompaction: workerCompaction,
+      forceContextCompaction: false,
       agentName: name,
       subAgentName: name,
       communicationAgentName: name,
@@ -1164,6 +1176,7 @@ export class SubAgentSpawner {
       directUserMessageIds: directConversationState.acceptedIds, directUserMessages,
       // Direct worker model changes must never mutate the parent's context.
       originContext: { ...context,
+        contextCompaction: subAgentContext.contextCompaction,
         selectedModelProvider: subAgentContext.selectedModelProvider,
         selectedModelName: subAgentContext.selectedModelName,
         selectedModelMode: subAgentContext.selectedModelMode,
@@ -1239,12 +1252,14 @@ export class SubAgentSpawner {
         deepBrief,
         [],
         (trace) => {
+          const compactionSettled = trace.type === 'context_compaction'
+            && (trace.phase === 'failed' || trace.phase === 'compacted');
           // Check per-agent close flag first
-          if (isAgentClosed(context.projectId, name, agentId)) {
+          if (isAgentClosed(context.projectId, name, agentId) && !compactionSettled) {
             return;
           }
           // Check cancellation on every trace event for this specific chat
-          if (isCancelled(context.projectId) || abortController.signal.aborted) {
+          if ((isCancelled(context.projectId) || abortController.signal.aborted) && !compactionSettled) {
             return;
           }
 

@@ -8,7 +8,7 @@
 
 import { distillEvidence } from './evidence-distiller';
 import { getToolResultOutcome } from '../tool-semantics';
-import { resolveTerminalOutputKind } from '../source-read-policy';
+import { resolveTerminalOutputKind, terminalOutputPageChars } from '../source-read-policy';
 
 function isSourceRead(toolName: string, args: Record<string, any>, result?: any): boolean {
   if (toolName === 'context_memory' && args.action === 'open') return true;
@@ -76,7 +76,7 @@ export class ToolResultCompactor {
    */
   compact(toolName: string, args: Record<string, any>, result: any): any {
     if (result === null || result === undefined) return result;
-    if (isSourceRead(toolName, args, result)) return this.preserveReadOutput(result);
+    if (isSourceRead(toolName, args, result)) return this.pageReadOutput(toolName, result, terminalOutputPageChars(args.maxOutputChars ?? args.maxChars));
     
     // Estimate size
     const size = this.estimateSize(result);
@@ -134,28 +134,30 @@ export class ToolResultCompactor {
   }
 
   /**
-   * Bound non-reading output only. A log sibling must never shrink a file
-   * read, and a file read must never expand a log sibling's allowance.
+   * Bound the whole provider tool cycle, including reads. Read reductions
+   * update exact continuation offsets instead of summarizing source text.
    */
-  compactBatch(toolNames: string[], argsList: Record<string, any>[], results: any[]): any[] {
-    if (results.length <= 1) return results;
+  compactBatch(toolNames: string[], argsList: Record<string, any>[], results: any[], contextWindow?: number): any[] {
+    if (results.length === 0) return results;
     const reads = results.map((result, index) => isSourceRead(toolNames[index], argsList[index] || {}, result));
-    const sizes = results.map((result, index) => reads[index] ? 0 : this.estimateSize(result));
+    const sizes = results.map(result => this.estimateSize(result));
     const total = sizes.reduce((sum, size) => sum + size, 0);
-    const batchBudget = MAX_TOOL_BATCH_SIZE;
+    const batchBudget = Math.min(reads.some(Boolean) ? 48_000 : MAX_TOOL_BATCH_SIZE,
+      terminalOutputPageChars(48_000, contextWindow));
     if (total <= batchBudget) return results;
 
     // Water-fill: keep small siblings exact and give their unused allowance
     // to larger reads. A batch cannot multiply a minimum per-result budget.
     const allocations = sizes.map(() => 0);
     let remaining = batchBudget;
-    const bounded = sizes.map((size, index) => ({ size, index })).filter(item => !reads[item.index]);
+    const bounded = sizes.map((size, index) => ({ size, index }));
     bounded.sort((a, b) => a.size - b.size)
       .forEach((item, index) => {
         allocations[item.index] = Math.min(item.size, Math.floor(remaining / (bounded.length - index)));
         remaining -= allocations[item.index];
       });
-    return results.map((result, index) => reads[index] || sizes[index] <= allocations[index] ? result
+    return results.map((result, index) => sizes[index] <= allocations[index] ? result
+      : reads[index] ? this.pageReadOutput(toolNames[index], result, allocations[index])
       : this.compactToBudget(toolNames[index] || 'tool', argsList[index] || {}, result, allocations[index]));
   }
 
@@ -165,7 +167,7 @@ export class ToolResultCompactor {
     result: any,
     maxChars: number,
   ): any {
-    if (isSourceRead(toolName, args, result)) return this.preserveReadOutput(result);
+    if (isSourceRead(toolName, args, result)) return this.pageReadOutput(toolName, result, maxChars);
     const exactContextPageRef = typeof result?.exactContextPageRef === 'string'
       ? result.exactContextPageRef
       : undefined;
@@ -269,6 +271,59 @@ export class ToolResultCompactor {
     // Removing an identical alias is lossless, unlike clipping source text.
     if (output.output === output.stdout || output.output === output.stderr) delete output.output;
     return output;
+  }
+
+  private pageReadOutput(toolName: string, result: any, budget: number): any {
+    const output = this.preserveReadOutput(result);
+    if (this.estimateSize(output) <= budget || !output || typeof output !== 'object') return output;
+    // Apply to recoverable protocols only. Unknown read formats must not lose
+    // content merely because they contain a string named "content" or "stdout".
+    let build: ((chars: number) => any) | undefined;
+    let length = 0;
+    if (toolName === 'context_memory' && output.pageRef && typeof output.content === 'string') {
+      length = output.content.length;
+      build = chars => {
+        const end = Number(output.offset || 0) + chars;
+        const complete = end >= Number(output.totalChars || length);
+        return { ...output, content: output.content.slice(0, chars), complete, nextOffset: complete ? null : end };
+      };
+    } else if (toolName === 'workspace_run_command' && output.taskId
+      && output.outputKind === 'read' && typeof output.stdout === 'string' && !output.stderr && !output.outputReadError) {
+      length = output.stdout.length;
+      build = chars => {
+        const end = Number(output.outputStart || 0) + chars;
+        const hasMoreOutput = end < Number(output.totalOutputChars || length);
+        return { ...output, stdout: output.stdout.slice(0, chars), outputEnd: end,
+          hasMoreOutput, nextOutputOffset: hasMoreOutput ? end : undefined,
+          outputLimited: output.outputLimited || hasMoreOutput,
+          nextActionNote: hasMoreOutput
+            ? `Read more with workspace_run_command mode="check", taskId="${output.taskId}", sinceOffset=${end}. Output is partial; do not rerun the command to retrieve it.`
+            : output.nextActionNote,
+        };
+      };
+    } else if (toolName === 'workspace_run_command' && output.batch && Array.isArray(output.results)
+      && output.results.every((item: any) => item.taskId && !item.outputReadError)) {
+      // Aggregated text has command headers, so shortening it without rewriting
+      // every child's cursor would skip evidence. Return recovery handles instead.
+      return { ...output, stdout: '', stderr: '', outputLimited: true, hasMoreOutput: true,
+        results: output.results.map((item: any) => ({ ...item, outputEnd: item.outputStart || 0,
+          nextOutputOffset: item.outputStart || 0, hasMoreOutput: Number(item.totalOutputChars || 0) > 0,
+          nextActionNote: `Read retained output with mode="check", taskId="${item.taskId}", sinceOffset=${item.outputStart || 0}.`,
+        })),
+        nextActionNote: 'Batch output is retained. Open only the relevant command pages using their task IDs and outputEnd offsets below.',
+      };
+    }
+    if (!build) return output;
+    // JSON escaping affects the actual wire size. Find the largest verbatim
+    // prefix that fits, rather than assuming one source character is one byte.
+    let low = 0;
+    let high = length;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (this.estimateSize(build(middle)) <= budget) low = middle;
+      else high = middle - 1;
+    }
+    return build(low);
   }
 
   /** Compact shell output — keep exit code + head + tail of stdout/stderr */

@@ -71,7 +71,7 @@ import { adaptiveExperience, resolveSelfImprovementEnabled } from './self-improv
 import { isUserInitiatedCommunicationRequest } from './tools/communication/outbound_approval';
 import { executeParallelToolCalls } from './parallel-tool-calls';
 import { buildFilePreviewTraceId, buildLineDiffPreview, languageFromFilename } from './tool-trace';
-import { compactContextAtBoundary } from './resilience/context-compaction';
+import { compactContextAtBoundary, isContextCapacityError } from './resilience/context-compaction';
 import { openWorkingContextCheckpoint, resolveWorkingContextRequest } from './working-context-checkpoint';
 import { getSearchRouteBrief } from '../search/search-runtime';
 import { formatUnknownError } from './error-format';
@@ -1075,6 +1075,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           }
 
           const contextBoundaryResult = await contextBoundary;
+          if (isContextCapacityError(contextBoundaryError)) throw contextBoundaryError;
           requestContextLocalTokens = Number(contextBoundaryResult?.usage.localEstimatedTokens || 0);
           if (
             runAbortController.signal.aborted
@@ -1563,6 +1564,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                 functionCalls.map(call => call.name),
                 functionCalls.map(call => call.args),
                 individuallyBoundedResults,
+                config.pinnedContext?.contextCompaction?.activeContextWindow,
               );
               for (let callIndex = 0; callIndex < functionCalls.length; callIndex++) {
                 const call = functionCalls[callIndex];
@@ -1838,6 +1840,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       rootUserRequest: config.pinnedContext?.visibleUserRequest || '',
       conversationSummary: '', uploadedFiles: [], recentMemories: [],
       selectedModelProvider: 'gemini', selectedModelName: config.model,
+      contextCompaction: config.pinnedContext?.contextCompaction,
       runtimeSettings: config.runtimeSettings,
       workspaceRoot,
       workspacePath: workspaceRoot,

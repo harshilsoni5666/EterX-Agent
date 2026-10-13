@@ -459,6 +459,7 @@ interface ChatInputProps {
     compaction?: {
       phase?: 'compacting' | 'retrying' | 'compacted' | 'failed';
       beforeTokens?: number;
+      beforeTokensEstimated?: boolean;
       afterTokens?: number;
       modelProvider?: string;
       modelName?: string;
@@ -3311,8 +3312,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
             const utilization = Math.max(0, Math.min(100, (safeUsedTokens / safeContextWindow) * 100));
             const remainingTokens = Math.max(0, safeContextWindow - safeUsedTokens);
             const compaction = contextUsage.compaction;
+            const compactionCancelled = compaction?.phase === 'failed'
+              && /cancelled|canceled|stopped by user/i.test(compaction.summary || '');
             const compactionTitle = compaction?.phase === 'failed'
-              ? 'Failed to compact'
+              ? compactionCancelled ? 'Context compaction stopped' : 'Failed to compact'
               : compaction?.phase === 'compacted'
                 ? ''
                 : compaction?.phase === 'retrying'
@@ -3422,12 +3425,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       {compaction.phase === 'failed' ? (
                         <>
                           Full context preserved.
-                          {compaction.nextAttemptTokens ? ` Next attempt at ${formatContextTokenCount(compaction.nextAttemptTokens)} tokens.` : ''}
-                          {compaction.nextContextWindow ? ` Chat budget raised to ${formatContextTokenCount(compaction.nextContextWindow)}.` : ''}
+                          {!compactionCancelled && compaction.nextAttemptTokens ? ` Next attempt at ${formatContextTokenCount(compaction.nextAttemptTokens)} tokens.` : ''}
+                          {!compactionCancelled && compaction.nextContextWindow ? ` Chat budget raised to ${formatContextTokenCount(compaction.nextContextWindow)}.` : ''}
                         </>
                       ) : (
                         <>
-                          Preserving continuity from {formatContextTokenCount(compaction.beforeTokens || 0)} tokens.
+                          Preserving continuity from {compaction.beforeTokensEstimated === false ? '' : 'approximately '}{formatContextTokenCount(compaction.beforeTokens || 0)} tokens.
                         </>
                       )}
                     </div>

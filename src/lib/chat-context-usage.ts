@@ -68,6 +68,7 @@ export function readChatContextUsage({ logs, chatId, draft = '', selectedModel, 
     compaction: compaction ? {
       phase: compaction.phase,
       beforeTokens: Number(compaction.beforeTokens || 0),
+      beforeTokensEstimated: compaction.beforeTokensEstimated !== false,
       afterTokens: compaction.afterTokens != null && Number.isFinite(Number(compaction.afterTokens))
         ? Number(compaction.afterTokens) : undefined,
       modelProvider: String(compaction.modelProvider || '').trim() || undefined,

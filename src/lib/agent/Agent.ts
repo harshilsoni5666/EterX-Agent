@@ -9,7 +9,7 @@ import { latestModelThinkingCapability, readStoredModelMetadata } from './stored
 import { isPastedText, pastedTextManifest } from '../pasted-text';
 import { buildChatMediaContext, retainChatImageOutput } from '../chat-media-store';
 import { describeTimeout } from './timeout-error';
-import { compactContextAtBoundary } from './resilience/context-compaction';
+import { compactContextAtBoundary, isContextCapacityError } from './resilience/context-compaction';
 import { rebaseContextCompactionWindow } from './model-context-window';
 import { getOrCreateAgentCache, handleAgentCacheNotFound, isExplicitGeminiCacheEnabled } from './agent-cache';
 import { getLedgerForChat, flushLedgerForChat } from './memory/conversation-ledger';
@@ -770,7 +770,7 @@ export class GeminiAgentClient {
     try {
       await compactFastContext();
     } catch (error: any) {
-      if (String(error?.message || error) === 'CANCELLED_BY_USER') throw error;
+      if (isContextCapacityError(error) || String(error?.message || error) === 'CANCELLED_BY_USER') throw error;
       // Keep the complete original transcript on unexpected boundary errors.
     }
 
@@ -843,7 +843,7 @@ export class GeminiAgentClient {
           try {
             createdCapsule = await compactFastContext(true);
           } catch (compactionError: any) {
-            if (String(compactionError?.message || compactionError).includes('CANCELLED_BY_USER')) {
+            if (isContextCapacityError(compactionError) || String(compactionError?.message || compactionError).includes('CANCELLED_BY_USER')) {
               throw compactionError;
             }
           }
@@ -3151,7 +3151,8 @@ ${ message.text }
             'working-context': workingContextMessage.content,
           });
           await compactCompatibleContext();
-        } catch {
+        } catch (error) {
+          if (isContextCapacityError(error)) throw error;
           // Continue with the original, unmodified provider transcript. The
           // compaction transaction is responsible for surfacing known failures.
         }
@@ -3547,7 +3548,7 @@ ${ message.text }
             try {
               createdCapsule = await compactCompatibleContext(true);
             } catch (compactionError: any) {
-              if (String(compactionError?.message || compactionError).includes('CANCELLED_BY_USER')) {
+              if (isContextCapacityError(compactionError) || String(compactionError?.message || compactionError).includes('CANCELLED_BY_USER')) {
                 throw compactionError;
               }
             }
@@ -3743,6 +3744,7 @@ ${ message.text }
           this.parseMistralToolArguments(toolCall?.function?.arguments),
         )),
         toolOutputs,
+        (context as any).contextCompaction?.activeContextWindow,
       );
       const toolMessages = toolCalls.map((toolCall: any, index: number) => ({
           role: 'tool',
@@ -4120,7 +4122,8 @@ ${ message.text }
             'working-context': workingContextBlock.text,
           });
           await compactAnthropicContext();
-        } catch {
+        } catch (error) {
+          if (isContextCapacityError(error)) throw error;
           // Continue with the original, unmodified provider transcript. The
           // compaction transaction is responsible for surfacing known failures.
         }
@@ -4373,7 +4376,7 @@ ${ message.text }
             try {
               createdCapsule = await compactAnthropicContext(true);
             } catch (compactionError: any) {
-              if (String(compactionError?.message || compactionError).includes('CANCELLED_BY_USER')) {
+              if (isContextCapacityError(compactionError) || String(compactionError?.message || compactionError).includes('CANCELLED_BY_USER')) {
                 throw compactionError;
               }
             }
@@ -4569,6 +4572,7 @@ ${ message.text }
           normalizeRegistryToolName(String(toolUse?.name || 'tool')), toolUse?.input || {},
         )),
         toolOutputs,
+        (context as any).contextCompaction?.activeContextWindow,
       );
       const toolResultBlocks = toolUses.map((toolUse: any, index: number) => ({
           type: 'tool_result',
@@ -6995,7 +6999,7 @@ OUTPUT CONTRACT
           }
         }
       } catch (error: any) {
-        if (String(error?.message || error).includes('CANCELLED_BY_USER')) throw error;
+        if (isContextCapacityError(error) || String(error?.message || error).includes('CANCELLED_BY_USER')) throw error;
         // Preserve the original transcript; the transaction surfaces failures.
       }
       await workingCheckpoint.save(contents, this.modelName, 'gemini', {
@@ -8906,6 +8910,7 @@ OUTPUT CONTRACT
         functionCalls.map((call: any) => String(call?.name || 'tool')),
         functionCalls.map((call: any) => call?.args || {}),
         functionResponseParts.map((part: any) => part?.functionResponse?.response?.output),
+        (context as any).contextCompaction?.activeContextWindow,
       );
       for (let index = 0; index < functionResponseParts.length; index++) {
         const response = functionResponseParts[index]?.functionResponse?.response;

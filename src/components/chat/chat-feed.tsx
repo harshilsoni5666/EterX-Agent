@@ -1566,20 +1566,22 @@ const ContextCompactionNotice = ({ log }: { log: any }) => {
   const phase = ['compacting', 'retrying', 'compacted', 'failed'].includes(String(log?.phase || ''))
     ? String(log.phase)
     : 'compacting';
-  const before = Number(log?.beforeTokens || 0);
-  const hasAfter = Number.isFinite(Number(log?.afterTokens));
+  const before = Number.isFinite(Number(log?.beforeTokens)) ? Math.max(0, Number(log.beforeTokens)) : 0;
+  const hasAfter = log?.afterTokens != null && Number.isFinite(Number(log.afterTokens)) && Number(log.afterTokens) >= 0;
   const after = hasAfter ? Number(log.afterTokens) : 0;
   const nextAttempt = Number(log?.nextAttemptTokens || 0);
   const nextWindow = Number(log?.nextContextWindow || 0);
   const active = phase === 'compacting' || phase === 'retrying';
+  const cancelled = phase === 'failed' && /cancelled|canceled|stopped by user/i.test(String(log?.summary || ''));
+  const estimatePrefix = log?.beforeTokensEstimated === false ? '' : '≈';
   const label = phase === 'failed'
-    ? 'Failed to compact'
+    ? cancelled ? 'Context compaction stopped' : 'Failed to compact'
     : phase === 'compacted'
       ? 'Context successfully compacted'
       : phase === 'retrying'
         ? 'Retrying context compaction'
         : 'Compacting context';
-  const detail = phase === 'failed'
+  const detail = cancelled ? 'Context preserved.' : phase === 'failed'
     ? [
         'Full context preserved.',
         nextAttempt > 0 ? `Next attempt at ${formatProviderTokenCount(nextAttempt)} tokens.` : '',
@@ -1587,17 +1589,17 @@ const ContextCompactionNotice = ({ log }: { log: any }) => {
       ].filter(Boolean).join(' ')
     : phase === 'compacted'
       ? before > 0 && hasAfter
-        ? `${formatProviderTokenCount(before)} → ${formatProviderTokenCount(after)} tokens`
+        ? `${estimatePrefix}${formatProviderTokenCount(before)} → ≈${formatProviderTokenCount(after)} tokens`
         : ''
       : phase === 'retrying'
         ? String(log?.summary || '').trim()
-        : before > 0 ? `${formatProviderTokenCount(before)} tokens` : '';
+        : before > 0 ? `${estimatePrefix}${formatProviderTokenCount(before)} tokens` : '';
 
   return (
     <div
       className="eterx-context-compaction my-2 flex w-full items-center gap-2"
       data-phase={phase}
-      role={phase === 'failed' ? 'alert' : 'status'}
+      role={phase === 'failed' && !cancelled ? 'alert' : 'status'}
       aria-live={active || phase === 'failed' ? 'polite' : undefined}
     >
       <Info className="h-[15px] w-[15px] shrink-0 text-[var(--muted-foreground)]" strokeWidth={1.7} aria-hidden="true" />
