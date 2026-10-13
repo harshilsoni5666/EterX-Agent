@@ -82,18 +82,18 @@ async function main() {
     ] }],
   };
   applyAnthropicPromptCachePolicy(claude, true);
-  assert.equal(JSON.stringify(claude).match(/cache_control/g)?.length, 3);
+  assert.equal(JSON.stringify(claude).match(/cache_control/g)?.length, 4);
   assert.equal(claude.messages[1].content[1].cache_control, undefined);
   assert.equal(claude.messages[1].content[2].cache_control, undefined);
   assert.ok(claude.messages[1].content[0].cache_control);
   applyAnthropicPromptCachePolicy(claude, true);
-  assert.equal(JSON.stringify(claude).match(/cache_control/g)?.length, 3);
+  assert.equal(JSON.stringify(claude).match(/cache_control/g)?.length, 4);
   applyAnthropicPromptCachePolicy(claude, false);
   assert.equal(JSON.stringify(claude).includes('cache_control'), false);
 
   assert.equal(canUseExplicitGeminiSystemCache('dynamic system rules'), false);
   assert.equal(canUseExplicitGeminiSystemCache(''), true);
-  assert.deepEqual(getGeminiThinkingConfig('medium', 'gemini-3-pro-preview', true), { thinkingLevel: 'low', includeThoughts: true });
+  assert.deepEqual(getGeminiThinkingConfig('medium', 'gemini-3-pro-preview', true), { thinkingLevel: 'high', includeThoughts: true });
   assert.deepEqual(getGeminiThinkingConfig('minimal', 'gemini-3.8-flash', true), { thinkingLevel: 'medium', includeThoughts: true });
   assert.equal(getGeminiThinkingConfig('off', 'gemini-2.5-pro', false)?.thinkingBudget, 8192);
 

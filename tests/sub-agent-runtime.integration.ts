@@ -13,6 +13,8 @@ import {
 } from '../src/lib/agent/roles/sub_agent';
 import { interAgentMailbox } from '../src/lib/agent/roles/inter_agent_comm';
 import { spawnSubAgentTool } from '../src/lib/agent/tools/core/spawn_sub_agent';
+import { swarmCoordinator } from '../src/lib/agent/swarm-coordinator';
+import { assessDelegatedAgent } from '../src/lib/agent/delegation-evidence';
 
 const uniqueId = (prefix: string) =>
   `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -70,7 +72,7 @@ function testAdviceDoesNotTurnDomainKeywordsIntoRandomSpawns(): void {
     uniqueId('deep_work'),
   ) as string;
   assert.match(brief, /work (?:deeply|as one deep)|deepest useful solution/i);
-  assert.match(brief, /never call task_decomposer or spawn_sub_agent/i);
+  assert.match(brief, /may plan and delegate narrower independent outcomes with spawn_sub_agent/i);
   assert.match(brief, /verify (?:your work|behavior in proportion to risk)/i);
   assert.ok(
     brief.includes(explicit.recommendedAgents[0].task),
@@ -128,6 +130,10 @@ async function testConfiguredLimitIsAConcurrencyCapNotTaskLoss(): Promise<void> 
     );
     assert.equal(whileFull.agents.length, 1, 'new work must join the queue while all slots are occupied');
     assert.deepEqual(whileFull.notStartedTasks.map(task => task.task), []);
+    const startDeadline = Date.now() + 2_000;
+    while ((inFlight < 2 || spawner.getOccupiedSlotCount(projectId) < 2) && Date.now() < startDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
     assert.equal(spawner.getOccupiedSlotCount(projectId), 2);
 
     release();
@@ -337,16 +343,11 @@ async function testCollectionIsNonBlockingAndExposesExactResultPayloads(): Promi
   const agentId = 'lifecycle-run-current';
   const subAgentChatId = `${projectId}::sub-agent::${agentId}`;
   const execute = spawnSubAgentTool.execute as any;
+  const task = 'Inspect the lifecycle state.';
 
   try {
-    await agentMessageBus.writeAgentStatus(name, {
-      status: 'running',
-      task: 'Inspect the lifecycle state.',
-      agentId,
-      subAgentChatId,
-      progress: 'Inspecting',
-      startedAt: Date.now(),
-    }, projectId);
+    swarmCoordinator.admit([{ id: agentId, name, task }], { projectId });
+    swarmCoordinator.start(agentId);
 
     const running = await execute(
       { mode: 'collect', agentName: name, agentId },
@@ -360,16 +361,30 @@ async function testCollectionIsNonBlockingAndExposesExactResultPayloads(): Promi
 
     const exactResult = 'Root cause: stale run IDs reached the successor mailbox. Verified: yes.';
     const completedAt = Date.now();
-    await agentMessageBus.writeAgentStatus(name, {
-      status: 'completed',
-      task: 'Inspect the lifecycle state.',
+    const retained = {
+      projectId,
       agentId,
       subAgentChatId,
-      progress: 'Done',
+      name,
+      task,
       result: exactResult,
+      success: true,
+      status: 'completed' as const,
       traceLog: ['inspected', 'verified'],
-      startedAt: completedAt - 50,
       completedAt,
+      durationMs: 50,
+      attempt: swarmCoordinator.get(agentId)!.attempt,
+      delegationEvidence: assessDelegatedAgent({
+        agentId, subAgentChatId, name, task, status: 'completed', success: true,
+        result: exactResult, traceLog: ['inspected', 'verified'], completedAt,
+      }),
+    };
+    await agentMessageBus.writeRetainedResult(retained);
+    swarmCoordinator.settle(agentId, 'completed', undefined, exactResult);
+    await agentMessageBus.writeAgentStatus(name, {
+      status: 'completed', task, agentId, subAgentChatId,
+      result: exactResult, traceLog: ['inspected', 'verified'],
+      startedAt: completedAt - 50, completedAt,
     }, projectId);
 
     const completedContext = { projectId, allowAgentSpawning: true };
@@ -392,6 +407,13 @@ async function testCollectionIsNonBlockingAndExposesExactResultPayloads(): Promi
     );
     assert.equal(staleRun.agents.length, 0, 'collection by run ID must not expose a successor payload');
     assert.equal(staleRun.evidenceReady, false);
+
+    const firstStatus = await execute(
+      { mode: 'status', agentName: name, agentId },
+      completedContext,
+    );
+    assert.equal(firstStatus.agents[0].status, 'completed');
+    assert.equal(firstStatus.shouldPoll, false);
 
     const repeated = await execute(
       { mode: 'status', agentName: name, agentId },

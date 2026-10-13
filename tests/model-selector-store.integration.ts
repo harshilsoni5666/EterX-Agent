@@ -77,11 +77,11 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-  getModelThinkingOptions('gemini', 'gemini-3.5-flash').map(option => option.id),
+  getModelThinkingOptions('gemini', 'gemini-3.6-flash').map(option => option.id),
   ['minimal', 'low', 'medium', 'high'],
 );
 assert.deepEqual(
-  getModelThinkingOptions('gemini', 'gemini-3.7-flash').map(option => option.id),
+  getModelThinkingOptions('gemini', 'gemini-3.8-flash').map(option => option.id),
   ['low', 'medium', 'high'],
 );
 assert.deepEqual(
@@ -97,7 +97,7 @@ assert.deepEqual(
   ['off', 'low', 'medium', 'high'],
 );
 assert.deepEqual(
-  getGeminiThinkingConfig('high', 'gemini-3.7-flash', true),
+  getGeminiThinkingConfig('high', 'gemini-3.8-flash', true),
   { thinkingLevel: 'high', includeThoughts: true },
 );
 assert.deepEqual(
@@ -106,15 +106,15 @@ assert.deepEqual(
 );
 assert.deepEqual(
   getModelThinkingOptions('deepseek', 'deepseek-v4-flash').map(option => option.id),
-  ['off', 'high', 'max'],
+  ['off', 'low', 'high', 'max'],
 );
 assert.deepEqual(
   getModelThinkingOptions('deepseek', 'deepseek-reasoner').map(option => option.id),
-  ['high', 'max'],
+  [],
 );
 assert.equal(
   inferModelThinkingCapabilities('deepseek', 'deepseek-v4-pro')?.parameter,
-  'thinking.type',
+  'reasoning_effort',
 );
 
 const advertisedThinking: ModelThinkingCapabilities = {
@@ -137,7 +137,7 @@ applyCompatibleThinkingParameters(deepSeekOff, 'deepseek', 'deepseek-v4-flash', 
   level: 'off',
   capabilities: inferModelThinkingCapabilities('deepseek', 'deepseek-v4-flash'),
 });
-assert.deepEqual(deepSeekOff, { thinking: { type: 'disabled' } });
+assert.deepEqual(deepSeekOff, { reasoning_effort: 'none' });
 
 const deepSeekMax: Record<string, unknown> = {};
 applyCompatibleThinkingParameters(deepSeekMax, 'deepseek', 'deepseek-v4-pro', {
@@ -145,7 +145,6 @@ applyCompatibleThinkingParameters(deepSeekMax, 'deepseek', 'deepseek-v4-pro', {
   capabilities: inferModelThinkingCapabilities('deepseek', 'deepseek-v4-pro'),
 });
 assert.deepEqual(deepSeekMax, {
-  thinking: { type: 'enabled' },
   reasoning_effort: 'max',
 });
 

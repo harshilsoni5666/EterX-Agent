@@ -12,17 +12,19 @@ const readBody = async (request: http.IncomingMessage): Promise<string> => {
 async function main(): Promise<void> {
   let sawAuthorization = '';
   let sawPath = '';
+  let sawStreamingRequest = false;
   const server = http.createServer(async (request, response) => {
     sawAuthorization = String(request.headers.authorization || '');
     sawPath = String(request.url || '');
-    await readBody(request);
-    response.setHeader('content-type', 'application/json');
-    response.end(JSON.stringify({
-      id: 'chatcmpl-local-test',
-      object: 'chat.completion',
-      choices: [{ index: 0, message: { role: 'assistant', content: 'local connector ok' }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 3, completion_tokens: 3, total_tokens: 6 },
-    }));
+    const body = JSON.parse(await readBody(request));
+    sawStreamingRequest = body.stream === true;
+    response.setHeader('content-type', 'text/event-stream');
+    const chunk = (choice: unknown) => `data: ${JSON.stringify({
+      id: 'chatcmpl-local-test', object: 'chat.completion.chunk', choices: [choice],
+    })}\n\n`;
+    response.write(chunk({ index: 0, delta: { role: 'assistant', content: 'local connector ok' }, finish_reason: null }));
+    response.write(chunk({ index: 0, delta: {}, finish_reason: 'stop' }));
+    response.end('data: [DONE]\n\n');
   });
 
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -42,6 +44,7 @@ async function main(): Promise<void> {
     assert.equal(result.text, 'local connector ok');
     assert.equal(sawPath, '/v1/chat/completions');
     assert.equal(sawAuthorization, 'Bearer local-token');
+    assert.equal(sawStreamingRequest, true);
   } finally {
     applyRuntimeProviderBaseURLs({});
     await new Promise<void>(resolve => server.close(() => resolve()));
