@@ -123,7 +123,8 @@ import {
   providerCacheKeyIndex,
   resolveProviderPromptCacheMode,
 } from './provider-prompt-cache';
-import { appendRuntimeContext, RUNTIME_CONTEXT_POLICY } from './runtime-prompt-context';
+import { appendRuntimeContext, buildRuntimeContextSections, RUNTIME_CONTEXT_POLICY } from './runtime-prompt-context';
+import { beginPromptCacheDiagnostics } from './prompt-cache-diagnostics';
 import * as pathLib from 'path';
 import { getEterxAssetPath } from './storage-paths';
 import * as fsExtra from 'fs-extra';
@@ -133,11 +134,14 @@ import {
   providerAcceptsDirectVideo,
 } from './attachment-pipeline';
 import {
+  applyAnthropicThinkingDisplay,
   applyCompatibleThinkingParameters,
   appendMistralStructuredContent,
   assertSuccessfulCompatibleFinish,
   assertProviderToolsSupported,
   createCompatibleTaggedReasoningSplitter,
+  createAnthropicContentStreamReader,
+  extractCompatibleReasoningText,
   providerSupportsParallelToolCalls,
   providerSupportsStreamUsage,
   reasoningContinuationFields,
@@ -160,7 +164,7 @@ import {
   normalizeToolTraceText,
   normalizeTracePath,
 } from './tool-trace';
-import { extractProviderText, mergeStreamingText } from '../streaming-lifecycle';
+import { mergeStreamingText } from '../streaming-lifecycle';
 import { getAgentConversationScope } from './context-scope';
 import { createProviderChatStream } from './provider-stream-adapter';
 import { formatUnknownError } from './error-format';
@@ -170,12 +174,13 @@ const closeThoughtStream = (
   text: unknown,
   thoughtId: unknown,
   startTime: unknown,
+  trace?: any[],
 ): void => {
   const fullText = String(text || '').trim();
   const startedAt = Number(startTime);
-  if (!onTrace || !thoughtId || !fullText || !Number.isFinite(startedAt) || startedAt <= 0) return;
+  if (!thoughtId || !fullText || !Number.isFinite(startedAt) || startedAt <= 0) return;
   const endedAt = Date.now();
-  onTrace({
+  const event = {
     type: 'thought_stream',
     text: fullText,
     isLive: false,
@@ -189,7 +194,11 @@ const closeThoughtStream = (
     startTime: startedAt,
     endTime: endedAt,
     timestamp: endedAt,
-  });
+  };
+  // Retain the final readable summary in returned histories as well as live
+  // callbacks. Every provider and agent profile uses the same visible trace.
+  trace?.push(event);
+  onTrace?.(event);
 };
 
 const createProviderUsageTrace = (
@@ -256,7 +265,7 @@ async function awaitSubAgentControlBoundary(context: any): Promise<void> {
   }
 }
 
-function getMissingRequiredToolArguments(toolName: string, args: any): { missing: string[]; inputSchema?: any } {
+function getMissingRequiredToolArguments(toolName: string, args: any, recoverableGaps?: string[]): { missing: string[]; inputSchema?: any } {
   const declaration = globalToolRegistry.getFunctionDeclaration(toolName);
   if (toolName === 'workspace_edit_file') {
     return { missing: getRecoverableToolArgumentGaps(toolName, args), inputSchema: declaration?.parameters };
@@ -268,7 +277,7 @@ function getMissingRequiredToolArguments(toolName: string, args: any): { missing
     const value = args?.[key];
     return value === undefined || value === null || (typeof value === 'string' && value.trim().length === 0);
   });
-  return { missing, inputSchema: declaration?.parameters };
+  return { missing: [...new Set([...missing, ...(recoverableGaps || getRecoverableToolArgumentGaps(toolName, args))])], inputSchema: declaration?.parameters };
 }
 
 type GeminiAgentClientOptions = {
@@ -2623,7 +2632,7 @@ ${ message.text }
     if (tool) {
       const validation = validateRegistryToolArgs(tool, effectiveArgs);
       if (!validation.success) {
-        const missingArguments = getMissingRequiredToolArguments(canonicalToolName, effectiveArgs);
+        const missingArguments = getMissingRequiredToolArguments(canonicalToolName, effectiveArgs, validation.missing);
         if (missingArguments.missing.length > 0) {
           return recordRejectedTool({
             success: false,
@@ -2632,7 +2641,7 @@ ${ message.text }
             toolName: canonicalToolName,
             requiredArguments: missingArguments.missing,
             inputSchema: missingArguments.inputSchema,
-            message: `Supply ${missingArguments.missing.join(', ')} and call ${canonicalToolName} again.`,
+            message: canonicalToolName === 'spawn_sub_agent' ? validation.error : `Supply ${missingArguments.missing.join(', ')} and call ${canonicalToolName} again.`,
           });
         }
         return recordRejectedTool({ error: validation.error });
@@ -2993,10 +3002,7 @@ ${ message.text }
     );
     // Keep the working snapshot outside the system prefix. Changed observations
     // are appended at request boundaries and retained by the checkpoint.
-    const workingContextMessage = {
-      role: 'system',
-      content: `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${initialFabricContext}\n[END CURRENT RUNTIME CONTINUITY]`,
-    };
+    let workingContextSections = buildRuntimeContextSections([initialFabricContext]);
 
     let lastAnswer = '';
     const maxLoopIterations = optionalIterationLimit('OPENAI_REACT_MAX_ITERATIONS');
@@ -3088,9 +3094,7 @@ ${ message.text }
       const mailboxText = this.drainInterAgentMessages(context, interactions, trace, onTrace, message, contextFabric);
       if (mailboxText) messages.push({ role: 'user', content: mailboxText });
 
-      // Refresh evidence after every completed tool cycle. Runtime state lives
-      // in the system block, so no synthetic conversation turn interrupts the
-      // provider's call/result continuation.
+      // Refresh independent observations after every completed tool cycle.
       {
         const contextParts: string[] = [];
         try {
@@ -3129,13 +3133,12 @@ ${ message.text }
             codingContextProfile ? 1_800 : 1_200,
             codingContextProfile ? 4_500 : 1_200,
           ).parts;
-          workingContextMessage.content = `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${boundedContextParts.join('\n')}\n[END CURRENT RUNTIME CONTINUITY]`;
+          workingContextSections = buildRuntimeContextSections(boundedContextParts);
+        } else {
+          workingContextSections = buildRuntimeContextSections([]);
         }
         const telegramCue = buildTelegramWorkNoteCue(context, trace);
-        if (telegramCue) {
-          workingContextMessage.content = workingContextMessage.content.split('\n[TELEGRAM COMMUNICATION BOUNDARY]')[0]
-            + `\n[TELEGRAM COMMUNICATION BOUNDARY]\n${telegramCue}`;
-        }
+        workingContextSections['working-context:communication'] = telegramCue;
       }
 
       // A single large tool result can cross the hard limit, so every model
@@ -3148,7 +3151,7 @@ ${ message.text }
         try {
           appendRuntimeContext(messages, 'compatible', {
             'run-context': promptParts.runtimeContext,
-            'working-context': workingContextMessage.content,
+            ...workingContextSections,
           });
           await compactCompatibleContext();
         } catch (error) {
@@ -3231,6 +3234,7 @@ ${ message.text }
           model: this.mistralModelName,
           staticPrompt: staticSystemPrompt,
           tools,
+          conversationScope: conversationScopeId,
         });
       }
       if (tools.length > 0 && providerSupportsParallelToolCalls(this.activeProvider, this.mistralModelName)) {
@@ -3261,15 +3265,36 @@ ${ message.text }
       const maxApiAttempts = this.getProviderKeyCount(this.activeProvider) * (configuredRetries + 1);
       while (apiAttempts < maxApiAttempts) {
         let accumulatedReasoning = '';
+        let thoughtPhaseText = '';
         let accumulatedReasoningDetails: unknown[] = [];
         const taggedReasoning = createCompatibleTaggedReasoningSplitter();
         let thoughtStartTime = 0;
         let thoughtId = '';
         let thoughtClosed = false;
+        let thoughtPhase = 0;
         const closeActiveThought = () => {
           if (thoughtClosed) return;
           thoughtClosed = true;
-          closeThoughtStream(onTrace, accumulatedReasoning, thoughtId, thoughtStartTime);
+          closeThoughtStream(onTrace, thoughtPhaseText, thoughtId, thoughtStartTime, trace);
+        };
+        const appendActiveThought = (text: string) => {
+          if (!text) return;
+          if (thoughtClosed) {
+            // Interleaved thinking starts a new phase. Reusing the closed ID
+            // would leave its timer stopped and merge into the previous card.
+            thoughtClosed = false;
+            thoughtStartTime = 0;
+            thoughtPhaseText = '';
+            thoughtId = `thought_${this.activeProvider}_${interactions}_${Date.now()}_${++thoughtPhase}_${Math.random().toString(36).slice(2, 8)}`;
+          }
+          if (!thoughtStartTime) thoughtStartTime = Date.now();
+          accumulatedReasoning += text;
+          thoughtPhaseText += text;
+          onTrace?.({
+            type: 'thought_stream', text: thoughtPhaseText, isDelta: false,
+            uiOnly: true, isStreaming: true, isLiveTyping: true, streamState: 'open',
+            thoughtId, startTime: thoughtStartTime, endTime: Date.now(),
+          });
         };
         try {
           let accumulatedContent = '';
@@ -3280,6 +3305,7 @@ ${ message.text }
           let fallbackToolCallSequence = 0;
           let fallbackToolCallKey: string | number = 0;
           let lastUsage: any = null;
+          let lastCacheDiagnostics: any;
           let lastResponsesOutput: unknown[] | undefined;
           let nativeProviderMessage: Record<string, unknown> = {};
           const returnedReasoning: Record<string, any> = {};
@@ -3299,6 +3325,7 @@ ${ message.text }
             params,
             (context as any).abortSignal,
             modelWireCapabilities,
+            conversationScopeId,
           );
 
           for await (const chunk of stream) {
@@ -3310,6 +3337,7 @@ ${ message.text }
               steeringAcknowledged = true;
             }
             if (chunk?.usage) lastUsage = mergeProviderUsageSnapshots(lastUsage, chunk.usage);
+            if (chunk?.prompt_cache_diagnostics) lastCacheDiagnostics = chunk.prompt_cache_diagnostics;
             if (Array.isArray(chunk?.responses_output)) lastResponsesOutput = chunk.responses_output;
             if (chunk?.provider_message) nativeProviderMessage = chunk.provider_message;
             const choice = chunk.choices?.[0];
@@ -3324,15 +3352,6 @@ ${ message.text }
                 accumulatedReasoningDetails = accumulatedReasoningDetails.concat(delta.reasoning_details);
                 returnedReasoning.reasoning_details = accumulatedReasoningDetails;
               }
-              const reasoningValue =
-                delta.reasoning_content ??
-                delta.reasoning ??
-                delta.thinking ??
-                delta.thought ??
-                delta.analysis ??
-                delta.reasoning_details ??
-                delta.reasoningDetails ??
-                delta.reasoningContent;
               const splitContent = splitCompatibleDeltaContent(delta.content, taggedReasoning);
               if (this.activeProvider === 'mistral') {
                 mistralStructuredContent = appendMistralStructuredContent(
@@ -3340,27 +3359,8 @@ ${ message.text }
                   delta.content,
                 );
               }
-              const reasoningText = extractProviderText(reasoningValue) || splitContent.reasoning;
-              if (reasoningText && !thoughtClosed) {
-                // The visible Thought clock measures actual streamed reasoning,
-                // not DNS/queue/connection latency before the first token.
-                if (!thoughtStartTime) thoughtStartTime = Date.now();
-                accumulatedReasoning += reasoningText;
-                if (onTrace) {
-                  onTrace({
-                    type: 'thought_stream',
-                    text: accumulatedReasoning,
-                    isDelta: false,
-                    uiOnly: true,
-                    isStreaming: true,
-                    isLiveTyping: true,
-                    streamState: 'open',
-                    thoughtId,
-                    startTime: thoughtStartTime,
-                    endTime: Date.now()
-                  });
-                }
-              }
+              appendActiveThought(extractCompatibleReasoningText(delta) || splitContent.reasoning);
+              if (delta.reasoning_boundary) closeActiveThought();
               const contentText = splitContent.text;
               if (contentText) {
                 closeActiveThought();
@@ -3437,22 +3437,7 @@ ${ message.text }
           // it is the beginning of a cross-chunk reasoning tag. Flush it at
           // the provider boundary through the same Thought/answer lifecycles.
           const taggedTail = taggedReasoning.flush();
-          if (taggedTail.reasoning && !thoughtClosed) {
-            if (!thoughtStartTime) thoughtStartTime = Date.now();
-            accumulatedReasoning += taggedTail.reasoning;
-            onTrace?.({
-              type: 'thought_stream',
-              text: accumulatedReasoning,
-              isDelta: false,
-              uiOnly: true,
-              isStreaming: true,
-              isLiveTyping: true,
-              streamState: 'open',
-              thoughtId,
-              startTime: thoughtStartTime,
-              endTime: Date.now(),
-            });
-          }
+          appendActiveThought(taggedTail.reasoning);
           if (taggedTail.text) {
             closeActiveThought();
             accumulatedContent += taggedTail.text;
@@ -3479,6 +3464,7 @@ ${ message.text }
               lastObservedContextLocalTokens = requestContextLocalTokens;
             }
             const usageTrace = createProviderUsageTrace(this.activeProvider, this.mistralModelName, lastUsage, {
+              cacheDiagnostics: lastCacheDiagnostics,
               contextRequestId: activeContextRequestId,
               interaction: interactions,
               thinkingLevel: currentSupportsThinking ? currentThinkingLevel : undefined,
@@ -3883,10 +3869,7 @@ ${ message.text }
       userVisibleMessage,
       isCodingAgentProfile((context as any).agentProfile) ? 12_000 : 4_000,
     );
-    const workingContextBlock = {
-      type: 'text',
-      text: `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${initialFabricContext}\n[END CURRENT RUNTIME CONTINUITY]`,
-    };
+    let workingContextSections = buildRuntimeContextSections([initialFabricContext]);
 
     let lastAnswer = '';
     const maxLoopIterations = optionalIterationLimit('ANTHROPIC_REACT_MAX_ITERATIONS');
@@ -4098,13 +4081,12 @@ ${ message.text }
             codingContextProfile ? 1_800 : 1_200,
             codingContextProfile ? 4_500 : 1_200,
           ).parts;
-          workingContextBlock.text = `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${boundedContextParts.join('\n')}\n[END CURRENT RUNTIME CONTINUITY]`;
+          workingContextSections = buildRuntimeContextSections(boundedContextParts);
+        } else {
+          workingContextSections = buildRuntimeContextSections([]);
         }
         const telegramCue = buildTelegramWorkNoteCue(context, trace);
-        if (telegramCue) {
-          workingContextBlock.text = workingContextBlock.text.split('\n[TELEGRAM COMMUNICATION BOUNDARY]')[0]
-            + `\n[TELEGRAM COMMUNICATION BOUNDARY]\n${telegramCue}`;
-        }
+        workingContextSections['working-context:communication'] = telegramCue;
       }
 
       // A single large tool result can cross the hard limit, so every model
@@ -4119,7 +4101,7 @@ ${ message.text }
           // unexpected pre-transaction error non-destructive.
           appendRuntimeContext(messages, 'anthropic', {
             'run-context': promptParts.runtimeContext,
-            'working-context': workingContextBlock.text,
+            ...workingContextSections,
           });
           await compactAnthropicContext();
         } catch (error) {
@@ -4185,14 +4167,15 @@ ${ message.text }
         });
       }
 
-      const isModernClaude = isAnthropicAdaptiveThinkingModel(this.mistralModelName);
+      const isModernClaude = isAnthropicAdaptiveThinkingModel(this.mistralModelName, (context as any).modelThinkingCapability);
       const thinkingContract = resolveModelThinkingCapabilities('anthropic', this.mistralModelName, (context as any).modelThinkingCapability);
 
       if (currentSupportsThinking && currentThinkingLevel !== 'off') {
         if (thinkingContract?.parameter === 'output_config.effort') {
           if (isModernClaude) params.thinking = { type: 'adaptive' };
+          else params.thinking = { type: 'enabled', budget_tokens: getAnthropicThinkingBudget(currentThinkingLevel) };
           params.output_config = { effort: toAnthropicEffort(currentThinkingLevel) };
-          params.max_tokens = Math.max(maxTokens, currentThinkingLevel === 'max' || currentThinkingLevel === 'xhigh' ? 65536 : 16384);
+          params.max_tokens = Math.max(maxTokens, currentThinkingLevel === 'max' || currentThinkingLevel === 'xhigh' ? 65536 : 16384, Number(params.thinking?.budget_tokens || 0) + 2048);
         } else if (thinkingContract?.parameter === 'thinking.budget_tokens') {
           const budget = getAnthropicThinkingBudget(currentThinkingLevel);
           if (budget > 0) {
@@ -4210,6 +4193,7 @@ ${ message.text }
         }
       }
 
+      applyAnthropicThinkingDisplay(params);
       applyAnthropicPromptCachePolicy(params, cacheEnabled);
 
       let response: any;
@@ -4225,7 +4209,23 @@ ${ message.text }
         const closeActiveThought = () => {
           if (thoughtClosed) return;
           thoughtClosed = true;
-          closeThoughtStream(onTrace, accumulatedThought, thoughtId, thoughtStartTime);
+          closeThoughtStream(onTrace, accumulatedThought, thoughtId, thoughtStartTime, trace);
+        };
+        const appendActiveThought = (text: string) => {
+          if (!text) return;
+          if (thoughtClosed) {
+            thoughtClosed = false;
+            accumulatedThought = '';
+            thoughtStartTime = 0;
+            thoughtId = `thought_anthropic_${interactions}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          }
+          if (!thoughtStartTime) thoughtStartTime = Date.now();
+          accumulatedThought += text;
+          onTrace?.({
+            type: 'thought_stream', text: accumulatedThought, isDelta: false,
+            uiOnly: true, isStreaming: true, isLiveTyping: true, streamState: 'open',
+            thoughtId, startTime: thoughtStartTime, endTime: Date.now(),
+          });
         };
         try {
           let accumulatedText = '';
@@ -4256,6 +4256,11 @@ ${ message.text }
           const runner = requestUsesFilesApi
             ? client.beta.messages.stream(params, requestOptions)
             : client.messages.stream(params, requestOptions);
+          const cacheObservation = beginPromptCacheDiagnostics({
+            provider: 'anthropic', model: this.mistralModelName, scope: conversationScopeId,
+            endpoint: client.baseURL, apiKey: keyInfo.apiKey, request: params,
+          });
+          const readContent = createAnthropicContentStreamReader();
 
           for await (const event of runner) {
             if (isRunCancelled(context)) {
@@ -4269,28 +4274,13 @@ ${ message.text }
               hasToolUseBlock = true;
               closeActiveThought();
               cancelProvisionalAnswer(`anthropic_work_stream_${ interactions }`);
-            } else if (event.type === 'content_block_delta') {
-              const delta = event.delta as any;
-              if (delta.type === 'thinking_delta' && delta.thinking && !thoughtClosed) {
-                if (!thoughtStartTime) thoughtStartTime = Date.now();
-                accumulatedThought += delta.thinking;
-                if (onTrace) {
-                  onTrace({
-                    type: 'thought_stream',
-                    text: accumulatedThought,
-                    isDelta: false,
-                    uiOnly: true,
-                    isStreaming: true,
-                    isLiveTyping: true,
-                    streamState: 'open',
-                    thoughtId,
-                    startTime: thoughtStartTime,
-                    endTime: Date.now()
-                  });
-                }
-              } else if (delta.type === 'text_delta' && delta.text) {
+            } else if (['content_block_start', 'content_block_delta', 'content_block_stop'].includes(event.type)) {
+              const content = readContent(event);
+              appendActiveThought(content.reasoning);
+              if (content.reasoningBoundary) closeActiveThought();
+              if (content.text) {
                 closeActiveThought();
-                accumulatedText += delta.text;
+                accumulatedText += content.text;
                 if (!hasToolUseBlock) {
                   provisionalAnswerId = `answer_stream_anthropic_${ interactions }`;
                   onTrace?.({
@@ -4317,6 +4307,10 @@ ${ message.text }
           closeActiveThought();
 
           response = await runner.finalMessage();
+          for (const reasoning of readContent.remainingReasoning(response?.content)) {
+            appendActiveThought(reasoning);
+            closeActiveThought();
+          }
           const stopReason = String(response?.stop_reason || '');
           if (
             !stopReason
@@ -4333,6 +4327,7 @@ ${ message.text }
               lastObservedContextLocalTokens = requestContextLocalTokens;
             }
             const usageTrace = createProviderUsageTrace('anthropic', this.mistralModelName, response.usage, {
+              cacheDiagnostics: cacheObservation?.report,
               contextRequestId: activeContextRequestId,
               interaction: interactions,
               thinkingLevel: currentSupportsThinking ? currentThinkingLevel : undefined,
@@ -4344,6 +4339,7 @@ ${ message.text }
               writeRuntimeTrace('model_usage', usageTrace);
             }
             logProviderTokenUsage('anthropic', response.usage);
+            cacheObservation?.complete(response.usage);
           }
           if (response && response.stop_reason === 'refusal') {
             const explanation = (response as any).stop_details?.explanation || 'No explanation provided.';
@@ -7186,15 +7182,15 @@ OUTPUT CONTRACT
       );
       const iterationSystemParts = [executionGovernorCue, adaptiveHarnessCue, contextFabricCue, workingMemoryCue].filter(Boolean);
       const codingContextProfile = isCodingAgentProfile((context as any).agentProfile);
-      const iterationSystemCue = [federateDynamicContextParts(
+      const iterationContextParts = federateDynamicContextParts(
         iterationSystemParts,
         userVisibleMessage,
         codingContextProfile ? 1_800 : 1_200,
         codingContextProfile ? 4_500 : 1_200,
-      ).parts.join('\n'), buildTelegramWorkNoteCue(context, trace)].filter(Boolean).join('\n');
+      ).parts;
       appendRuntimeContext(contents, 'gemini', {
         'run-context': universalPromptParts.runtimeContext,
-        'working-context': iterationSystemCue,
+        ...buildRuntimeContextSections(iterationContextParts, buildTelegramWorkNoteCue(context, trace)),
       });
       if (_cachedContentName) {
         delete config.systemInstruction;
@@ -8266,7 +8262,7 @@ OUTPUT CONTRACT
               preflightError = capabilityDecision.reason || `Tool ${ canonicalToolName } is not allowed`;
             }
           } else {
-            const missingArguments = getMissingRequiredToolArguments(canonicalToolName, effectiveArgs);
+            const missingArguments = getMissingRequiredToolArguments(canonicalToolName, effectiveArgs, validation.missing);
             if (missingArguments.missing.length > 0) {
               argumentRequest = {
                 success: false,
@@ -8275,7 +8271,7 @@ OUTPUT CONTRACT
                 toolName: canonicalToolName,
                 requiredArguments: missingArguments.missing,
                 inputSchema: missingArguments.inputSchema,
-                message: `Supply ${missingArguments.missing.join(', ')} and call ${canonicalToolName} again.`,
+                message: canonicalToolName === 'spawn_sub_agent' ? validation.error : `Supply ${missingArguments.missing.join(', ')} and call ${canonicalToolName} again.`,
               };
             } else {
               preflightError = validation.error || `Invalid arguments for ${canonicalToolName}`;

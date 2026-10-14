@@ -93,7 +93,7 @@ export function resolveProviderPromptCacheMode(
 
 export function applyOpenAIPromptCachePolicy(
   params: Record<string, any>,
-  input: Omit<PromptCacheIdentityInput, 'provider'>,
+  input: Omit<PromptCacheIdentityInput, 'provider'> & { conversationScope?: string },
 ): string {
   const identity = buildPromptCacheIdentity({ provider: 'openai', ...input });
   params.prompt_cache_key = identity;
@@ -103,12 +103,21 @@ export function applyOpenAIPromptCachePolicy(
   const retention = process.env.OPENAI_PROMPT_CACHE_RETENTION?.trim().replace('-', '_');
   const version = input.model.match(/(?:^|\/)gpt-(\d+)(?:\.(\d+))?/i);
   const modernCache = version && (Number(version[1]) > 5 || (Number(version[1]) === 5 && Number(version[2]) >= 6));
+  // Older OpenAI models can overflow a cache route when a swarm shares one
+  // hot key. Keep each conversation on a deterministic shard, while allowing
+  // conversations within that shard to share the common instruction prefix.
+  const configuredShards = Number.parseInt(process.env.OPENAI_PROMPT_CACHE_SHARDS || '8', 10);
+  const shards = Number.isFinite(configuredShards) ? Math.max(1, Math.min(64, configuredShards)) : 8;
+  if (!modernCache && input.conversationScope && shards > 1) {
+    const shard = createHash('sha256').update(input.conversationScope).digest().readUInt32BE(0) % shards;
+    params.prompt_cache_key = `${identity}-s${shards}-${shard}`;
+  }
   const extendedOnly = /(?:^|\/)gpt-5\.5(?:$|-)/i.test(input.model);
   if (!modernCache && (retention === '24h' || (retention === 'in_memory' && !extendedOnly))) {
     params.prompt_cache_retention = retention;
   }
   params.stream_options = { ...params.stream_options, include_usage: true };
-  return identity;
+  return params.prompt_cache_key;
 }
 
 const openAIResponseCacheBoundaries = new WeakMap<any[], { item: number; field: 'content' | 'output'; block: number; signature: string }>();

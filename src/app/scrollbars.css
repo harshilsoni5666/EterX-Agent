@@ -8,7 +8,10 @@
 
 :root {
   --eterx-sb-size: 9px;
-  --eterx-sb-inset: 0px;
+  /* Unitless ratios let each surface retain its own rail width. */
+  --eterx-sb-inset-ratio: calc(1 / 9);
+  --eterx-sb-arrow-long-ratio: calc(10 / 9);
+  --eterx-sb-arrow-short-ratio: calc(7 / 9);
   --eterx-sb-radius: 999px;
   --eterx-sb-thumb: rgba(0, 0, 0, 0.12);
   --eterx-sb-thumb-hover: rgba(0, 0, 0, 0.20);
@@ -80,19 +83,19 @@
    spacious native rail geometry used throughout the reference UI. */
 ::-webkit-scrollbar-track:vertical,
 *::-webkit-scrollbar-track:vertical {
-  margin-block: 7px !important;
+  margin-block: calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-short-ratio)) !important;
 }
 
 ::-webkit-scrollbar-track:horizontal,
 *::-webkit-scrollbar-track:horizontal {
-  margin-inline: 7px !important;
+  margin-inline: calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-short-ratio)) !important;
 }
 
 ::-webkit-scrollbar-thumb,
 *::-webkit-scrollbar-thumb {
   min-width: var(--eterx-sb-size) !important;
-  min-height: 72px !important;
-  border: var(--eterx-sb-inset) solid transparent !important;
+  min-height: calc(var(--eterx-sb-size) * 8) !important;
+  border: calc(var(--eterx-sb-size) * var(--eterx-sb-inset-ratio)) solid transparent !important;
   border-radius: var(--eterx-sb-radius) !important;
   background: var(--eterx-sb-thumb) !important;
   background-clip: padding-box !important;
@@ -136,7 +139,7 @@
   background-image: var(--eterx-sb-arrow-up) !important;
   background-position: center !important;
   background-repeat: no-repeat !important;
-  background-size: 10px 7px !important;
+  background-size: calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-long-ratio)) calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-short-ratio)) !important;
 }
 
 ::-webkit-scrollbar-button:single-button:vertical:increment,
@@ -148,7 +151,7 @@
   background-image: var(--eterx-sb-arrow-down) !important;
   background-position: center !important;
   background-repeat: no-repeat !important;
-  background-size: 10px 7px !important;
+  background-size: calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-long-ratio)) calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-short-ratio)) !important;
 }
 
 ::-webkit-scrollbar-button:single-button:horizontal:decrement,
@@ -160,7 +163,7 @@
   background-image: var(--eterx-sb-arrow-left) !important;
   background-position: center !important;
   background-repeat: no-repeat !important;
-  background-size: 7px 10px !important;
+  background-size: calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-short-ratio)) calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-long-ratio)) !important;
 }
 
 ::-webkit-scrollbar-button:single-button:horizontal:increment,
@@ -172,7 +175,7 @@
   background-image: var(--eterx-sb-arrow-right) !important;
   background-position: center !important;
   background-repeat: no-repeat !important;
-  background-size: 7px 10px !important;
+  background-size: calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-short-ratio)) calc(var(--eterx-sb-size) * var(--eterx-sb-arrow-long-ratio)) !important;
 }
 
 /* These surfaces deliberately scroll without a visible rail. */
@@ -195,7 +198,7 @@
 
 .monaco-editor .scrollbar > .slider,
 .monaco-scrollable-element > .scrollbar > .slider {
-  border: var(--eterx-sb-inset) solid transparent !important;
+  border: calc(var(--eterx-sb-size) * var(--eterx-sb-inset-ratio)) solid transparent !important;
   border-radius: var(--eterx-sb-radius) !important;
   background: var(--eterx-sb-thumb) !important;
   background-clip: padding-box !important;
@@ -222,7 +225,7 @@
 }
 .eterx-terminal-dock .xterm .scrollbar.vertical > .slider {
   width: var(--eterx-sb-size) !important;
-  border: var(--eterx-sb-inset) solid transparent !important;
+  border: calc(var(--eterx-sb-size) * var(--eterx-sb-inset-ratio)) solid transparent !important;
   border-radius: var(--eterx-sb-radius) !important;
   background: var(--eterx-sb-thumb) !important;
   background-clip: padding-box !important;
@@ -293,7 +296,6 @@ html[data-theme][class][lang] body .eterx-terminal-dock .eterx-terminal-surface[
 /* Composer menu rails stay inside the rounded panel, without native arrows. */
 :root :is(.eterx-composer-shell [data-adaptive-menu="true"], .eterx-model-thinking-popout) {
   --eterx-sb-size: 6px;
-  --eterx-sb-inset: 1px;
   scrollbar-width: thin !important;
 }
 

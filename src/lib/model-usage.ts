@@ -178,6 +178,19 @@ export function summarizeModelUsage(logs: any[]) {
   let input = 0, output = 0, total = 0, cached = 0, cacheMeasuredInput = 0, receipts = 0;
   let cacheMeasuredRequests = 0, cacheHitRequests = 0, cacheWrites = 0;
   let latestCacheHitRate: number | null = null, latestCacheAt = -1;
+  let latestCacheOwner = '', latestCacheModel = '', latestCacheExplanation = '';
+  const compactedRequests = new Set(logs.filter(log => log?.type === 'context_compaction'
+    && log.phase === 'compacted' && log.contextRequestId).map(log => log.contextRequestId));
+  const explanations: Record<string, string> = {
+    first_observation: 'No recent request is available for comparison. Provider-reported cache hits still count.',
+    model_changed: 'The model changed; cached prefixes are model-specific.',
+    route_changed: 'The endpoint, credential, or cache-routing key changed. Cache availability can differ on the new route.',
+    tools_changed: 'Tool definitions changed before the conversation prefix.',
+    settings_changed: 'Prompt-affecting model settings changed before the conversation prefix.',
+    system_changed: 'System instructions changed before some or all of the conversation.',
+    history_changed: 'A previously sent conversation block changed. Its earlier portion may still be reusable.',
+    prefix_preserved: 'The earlier request prefix is unchanged. New input and provider cache availability still affect the hit rate.',
+  };
   let inputMeasured = false, outputMeasured = false;
   for (const log of uniqueModelUsageLogs(logs)) {
     const usage = readModelUsage(log);
@@ -186,6 +199,11 @@ export function summarizeModelUsage(logs: any[]) {
       latestCacheAt = at;
       latestCacheHitRate = usage.cacheMeasured && usage.inputMeasured && usage.promptTokens > 0
         ? usage.cachedTokens / usage.promptTokens : null;
+      latestCacheOwner = String(log.subAgent || log.agentName || (log.subAgentId || log.subAgentChatId ? 'Worker agent' : 'Main agent'));
+      latestCacheModel = String(log.model || log.modelId || '');
+      latestCacheExplanation = compactedRequests.has(log.contextRequestId)
+        ? 'This request follows context compaction, which changed part of the reusable prefix.'
+        : log.cacheDiagnostics?.version === 1 ? explanations[log.cacheDiagnostics.reason] || '' : '';
     }
     if (!usage.totalMeasured) continue;
     receipts += 1;
@@ -206,6 +224,7 @@ export function summarizeModelUsage(logs: any[]) {
   }
   return { input, output, total, cached, receipts, inputMeasured, outputMeasured,
     cacheMeasuredInput, cacheMeasuredRequests, cacheHitRequests, cacheWrites, latestCacheHitRate,
+    latestCacheOwner, latestCacheModel, latestCacheExplanation,
     cacheReportingCoverage: input > 0 ? cacheMeasuredInput / input : null,
     cacheHitRate: cacheMeasuredInput > 0 ? cached / cacheMeasuredInput : null };
 }

@@ -1005,7 +1005,10 @@ export class AgentOrchestrator {
       } else if (context.agentRuntime === AGENT_FLOW_RUNTIME && pinnedContext?.flowId) {
         let flowTraceSequence = 0;
         const flowTrace = (trace: any) => {
-          const subAgent = trace?.agentName || pinnedContext?.flowName || 'Workflow';
+          // A selected workflow runs in this chat. A step's display name is
+          // not a delegated child identity: inventing subAgent here hides its
+          // thought stream from Main even though no worker tab owns it.
+          const agentName = trace?.agentName || pinnedContext?.flowName || 'Workflow';
           if (trace?.type === 'status' || trace?.type === 'progress') {
             const at = Number(trace.timestamp || Date.now());
             const sourceEventId = String(
@@ -1019,7 +1022,7 @@ export class AgentOrchestrator {
               ...trace,
               type: 'work_note',
               text: trace.text || 'Workflow is running',
-              subAgent,
+              agentName,
               id: sourceEventId,
               noteId: sourceEventId,
               isDelta: false,
@@ -1028,7 +1031,7 @@ export class AgentOrchestrator {
             });
             return;
           }
-          onTrace?.({ ...trace, subAgent });
+          onTrace?.({ ...trace, agentName });
         };
         const flowResult = await agentBuilderRunFlowTool.execute(
           { flowId: String(pinnedContext.flowId), input: userRequest },

@@ -79,8 +79,9 @@ clients already at that version do not require a `latest*.yml` asset. For newer
 versions, it pins downloads to the release tag and selects the installed OS and
 architecture. If channel metadata is missing, a matching installer in the
 official `SHA256SUMS.txt` permits a full download verified by electron-updater.
-Missing packages or checksums remain pending and retry automatically; network
-errors never count as a successful up-to-date check. This compatibility fallback
+Missing packages, checksums, and release-host failures retry quietly without an
+error message or badge in Settings. Diagnostics remain in the desktop log, and
+failed checks never count as a successful up-to-date check. This compatibility fallback
 does not replace the requirement to publish every metadata file for new releases.
 
 The packaged `app-update.yml` points at the `harshilsoni5666/EterX-Agent`

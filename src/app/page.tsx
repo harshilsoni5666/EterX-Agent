@@ -2,6 +2,7 @@
 
 import { readChatPlanMode, writeChatPlanMode, readChatSwarmMode, writeChatSwarmMode, summarizeChatUsage } from '../lib/chat-command-state';
 import { requestJson } from '../lib/request-json';
+import { captureMicrophone } from '../lib/microphone';
 import { useDesktopUpdates } from '../lib/desktop-updates';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../lib/app-visibility';
 import Loading from './loading';
@@ -4161,6 +4162,7 @@ function DeepWorkUI() {
   // clean PCM here and sends it to the bundled local whisper.cpp runtime.
   const speechRecognitionRef = useRef<any>(null);
   const dictationShouldRunRef = useRef(false);
+  const [dictationStatus, setDictationStatus] = useState('');
   const dictationSessionRef = useRef<string | null>(null);
   const dictationRevisionRef = useRef(0);
   const dictationOwnerRef = useRef<string | null>(null);
@@ -4225,6 +4227,7 @@ function DeepWorkUI() {
     speechRecognitionRef.current = null;
     try { recognition?.stop?.(); } catch { }
     setIsRecording(false);
+    setDictationStatus(discard ? '' : 'Finishing transcription…');
     if (!sessionId) return;
     // Stopping via the mic drains the final audio. Sending, navigating or
     // switching voice modes discards pending results before the draft changes.
@@ -4233,6 +4236,7 @@ function DeepWorkUI() {
       .finally(() => {
         if (dictationSessionRef.current !== sessionId) return;
         dictationSessionRef.current = null;
+        setDictationStatus('');
         lastDictationRenderRef.current = null;
         dictationRenderedValuesRef.current.clear();
       });
@@ -4257,7 +4261,12 @@ function DeepWorkUI() {
       }
       const type = String(event?.type || '');
       const text = String(event?.text || '');
-      if (type === 'partial' || type === 'final') {
+      if (type === 'loading') {
+        setDictationStatus(text || 'Preparing speech recognition…');
+      } else if (type === 'capture-limit') {
+        stopSpeechDictation(false);
+        setDictationStatus(text || 'Finishing buffered dictation…');
+      } else if (type === 'partial' || type === 'final') {
         if (event.revision !== dictationRevisionRef.current) return;
         // Native events are full snapshots, including revisions of the current
         // audio window. Never concatenate two versions of the same utterance.
@@ -4283,6 +4292,7 @@ function DeepWorkUI() {
         lastDictationRenderRef.current = null;
         dictationRenderedValuesRef.current.clear();
         setIsRecording(false);
+        setDictationStatus('');
       }
     });
   }, [rememberDictationRender, stopSpeechDictation, updateInputValue]);
@@ -5812,6 +5822,7 @@ function DeepWorkUI() {
           includeThoughts: true,
           voice: resolvedLiveVoice,
           audioInputEnabled: storedLiveSettings.liveConvoAudioInput !== false,
+          microphoneDeviceId: typeof storedLiveSettings.microphoneDeviceId === 'string' ? storedLiveSettings.microphoneDeviceId : 'default',
           audioOutputEnabled: storedLiveSettings.liveConvoAudioOutput !== false,
           interactionPolicy: {
             notificationLevel: ['all', 'important', 'critical'].includes(storedLiveSettings.liveConvoNotificationLevel)
@@ -11685,6 +11696,7 @@ function DeepWorkUI() {
     dictationRenderedValuesRef.current.clear();
     dictationShouldRunRef.current = true;
     setIsRecording(true);
+    setDictationStatus('Preparing speech recognition…');
     const isCurrentRecording = () => dictationSessionRef.current === sessionId && dictationShouldRunRef.current &&
       dictationOwnerRef.current === getDictationOwner();
 
@@ -11703,50 +11715,84 @@ function DeepWorkUI() {
     };
     speechRecognitionRef.current = { stop: releaseMicrophone };
     try {
+      // Create/resume during the click gesture. Some desktop audio stacks
+      // suspend contexts created only after a long model-download await.
+      try {
+        audioContext = new AudioContext({ latencyHint: 'interactive', sampleRate: 16000 });
+      } catch {
+        audioContext = new AudioContext({ latencyHint: 'interactive' });
+      }
+      await audioContext.resume();
+      if (!isCurrentRecording()) { releaseMicrophone(); return; }
       const desktopPermission = await desktopApi.requestLiveMediaPermissions?.();
       if (!isCurrentRecording()) return;
       if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
         throw new Error('Microphone permission is blocked. Allow EterX to use the microphone in system settings.');
       }
-      microphoneStream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-      if (!isCurrentRecording()) { releaseMicrophone(); return; }
-      const nativeResult = await desktopApi.startSpeechDictation(navigator.language || 'auto', sessionId);
+      await appStorageReady;
+      if (!isCurrentRecording()) return;
+      let speechModel = 'large-v3-q5_0';
+      let speechLanguage = 'auto';
+      let microphoneDeviceId = 'default';
+      try {
+        const savedSettings = JSON.parse(appStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
+        if (typeof savedSettings.dictationModel === 'string' && savedSettings.dictationModel) speechModel = savedSettings.dictationModel;
+        if (typeof savedSettings.dictationLanguage === 'string') speechLanguage = savedSettings.dictationLanguage;
+        if (typeof savedSettings.microphoneDeviceId === 'string') microphoneDeviceId = savedSettings.microphoneDeviceId;
+      } catch {}
+      // Auto-detection remains the default; an explicit language comes from
+      // General settings, independently of the desktop's display language.
+      const nativeResult = await desktopApi.startSpeechDictation(speechLanguage, sessionId, speechModel);
       if (!isCurrentRecording()) {
         releaseMicrophone();
         void desktopApi.stopSpeechDictation(sessionId, true).catch(() => {});
         return;
       }
+      if (nativeResult?.cancelled) { stopSpeechDictation(); return; }
       if (!nativeResult?.started) throw new Error(nativeResult?.error || 'Local whisper.cpp could not start.');
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone capture is unavailable. Open EterX in the desktop app and allow microphone access.');
+      setDictationStatus('Opening microphone…');
+      microphoneStream = await captureMicrophone(microphoneDeviceId);
+      if (!isCurrentRecording()) { releaseMicrophone(); return; }
       // Edits may have happened while the native engine was starting.
       desktopApi.resetSpeechDictation?.(sessionId, dictationRevisionRef.current);
-      audioContext = new AudioContext({ latencyHint: 'interactive' });
       sourceNode = audioContext.createMediaStreamSource(microphoneStream);
       processorNode = audioContext.createScriptProcessor(4096, 1, 1);
       silentGain = audioContext.createGain();
       silentGain.gain.value = 0;
+      // Native 16 kHz is preferred. When the audio device cannot provide it,
+      // retain fractional averaging state across callbacks (e.g. 44.1 kHz).
+      let sampleSum = 0;
+      let sampleWeight = 0;
       processorNode.onaudioprocess = event => {
         if (!isCurrentRecording() || !audioContext) return;
         const input = event.inputBuffer.getChannelData(0);
         const ratio = audioContext.sampleRate / 16000;
-        const outputLength = Math.max(1, Math.floor(input.length / ratio));
-        const pcm = new Int16Array(outputLength);
-        for (let index = 0; index < outputLength; index++) {
-          const start = Math.floor(index * ratio);
-          const end = Math.min(input.length, Math.max(start + 1, Math.floor((index + 1) * ratio)));
-          let sum = 0;
-          for (let sourceIndex = start; sourceIndex < end; sourceIndex++) sum += input[sourceIndex];
-          const sample = Math.max(-1, Math.min(1, sum / (end - start)));
-          pcm[index] = sample < 0 ? sample * 32768 : sample * 32767;
+        const pcm = new Int16Array(Math.ceil(input.length / ratio) + 1);
+        let outputLength = 0;
+        for (let index = 0; index < input.length; index++) {
+          let remaining = 1;
+          while (remaining > 1e-8) {
+            const weight = Math.min(remaining, ratio - sampleWeight);
+            sampleSum += input[index] * weight;
+            sampleWeight += weight;
+            remaining -= weight;
+            if (sampleWeight >= ratio - 1e-8) {
+              const sample = Math.max(-1, Math.min(1, sampleSum / sampleWeight));
+              pcm[outputLength++] = sample < 0 ? sample * 32768 : sample * 32767;
+              sampleSum = 0;
+              sampleWeight = 0;
+            }
+          }
         }
-        desktopApi.pushSpeechDictationAudio(pcm.buffer, sessionId, dictationRevisionRef.current);
+        if (outputLength) desktopApi.pushSpeechDictationAudio(pcm.slice(0, outputLength).buffer, sessionId, dictationRevisionRef.current);
       };
       sourceNode.connect(processorNode);
       processorNode.connect(silentGain);
       silentGain.connect(audioContext.destination);
       await audioContext.resume();
       if (!isCurrentRecording()) { releaseMicrophone(); return; }
+      setDictationStatus('Listening…');
       microphoneStream.getAudioTracks().forEach(track => track.addEventListener('ended', () => {
         if (isCurrentRecording()) stopSpeechDictation(false);
       }, { once: true }));
@@ -14908,7 +14954,7 @@ function DeepWorkUI() {
   }, [orderedRealSubAgents]);
 
   const headerSubAgentTabs = useMemo(() => {
-    const maxVisibleTabs = 4;
+    const maxVisibleTabs = 2;
     if (prioritizedRealSubAgents.length <= maxVisibleTabs) return prioritizedRealSubAgents;
 
     const activeIndex = prioritizedRealSubAgents.findIndex((agent: any) => agentIdentitiesOverlap(agent, activeSubAgentTab));
@@ -17838,11 +17884,13 @@ function DeepWorkUI() {
                                         onClick={() => void toggleSpeech('proxy')}
                                         aria-label={isRecording && dictationTargetRef.current === 'proxy' ? 'Stop proxy dictation' : 'Start proxy dictation'}
                                         aria-pressed={isRecording && dictationTargetRef.current === 'proxy'}
+                                        title={dictationTargetRef.current === 'proxy' && dictationStatus ? dictationStatus : 'Microphone dictation'}
                                         style={isRecording && dictationTargetRef.current === 'proxy' ? { color: 'var(--foreground)', background: 'var(--muted)' } : undefined}
                                         className="h-7 w-7 rounded-full flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/[0.06] active:bg-white/[0.12] transition-colors focus:outline-none"
                                       >
                                         <Mic className="h-4 w-4" />
                                       </button>
+                                      {dictationTargetRef.current === 'proxy' && dictationStatus && <span role="status" className="max-w-[150px] truncate text-[11px] text-white/60">{dictationStatus}</span>}
                                       {/* Send button */}
                                       <button
                                         type="submit"
@@ -17906,6 +17954,7 @@ function DeepWorkUI() {
                       isThinking={composerIsThinking}
                       canStop={Boolean(canStopSelectedFeed)}
                       isRecording={isRecording && dictationTargetRef.current === 'main'}
+                      dictationStatus={dictationTargetRef.current === 'main' ? dictationStatus : ''}
                       handleSend={activeSubAgentTab ? handleSendSubAgentMessage : handleSend}
                       handleStop={handleStopSelectedFeed}
                       handleSteer={activeSubAgentTab ? handleSendSubAgentMessage : handleSteer}

@@ -10,7 +10,7 @@ import type { ChatMediaItem } from '../chat/chat-media';
 import { requestJson } from '../../lib/request-json';
 import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Info, ChevronLeft, BookText, BarChart3, Route, FolderCog, Network } from 'lucide-react';
+import { Info, ChevronLeft, BookText, BarChart3, Route, FolderCog, Network, Lightbulb } from 'lucide-react';
 import { CODING_MODES, getCodingMode, type CodingAgentId } from '../../lib/code/coding-modes';
 import { CodingModeDetails } from './coding-mode-details';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -367,6 +367,7 @@ interface ChatInputProps {
   isThinking: boolean;
   canStop?: boolean;
   isRecording: boolean;
+  dictationStatus?: string;
   handleSend: () => void;
   handleStop: () => void | Promise<boolean>;
   handleSteer?: () => void;  // Send live steering to running agent
@@ -1065,7 +1066,7 @@ const TaskTrackerDock = React.memo(({
 
 export const ChatInput: React.FC<ChatInputProps> = ({
   showVoiceControls = true,
-  inputValue, inputValueRevision = 0, setInputValue, onInputValueChange, isThinking, canStop = false, isRecording, handleSend, handleStop, handleSteer = () => { },
+  inputValue, inputValueRevision = 0, setInputValue, onInputValueChange, isThinking, canStop = false, isRecording, dictationStatus = '', handleSend, handleStop, handleSteer = () => { },
   toggleSpeech, attachments, setAttachments, greeting, traceLogsLength,
   agentMode = 'think', onModeChange = () => { },
   thinkingLevel = 'low', onThinkingLevelChange = () => { },
@@ -3560,11 +3561,14 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   ['Total output tokens', chatUsage?.outputMeasured ? chatUsage.output.toLocaleString() : 'Not reported'],
                   ['Cache hit rate', chatUsage?.cacheHitRate == null ? 'Not reported' : `${(chatUsage.cacheHitRate * 100).toFixed(1)}%`],
                   ['Latest request cache hit', chatUsage?.latestCacheHitRate == null ? 'Not reported' : `${(chatUsage.latestCacheHitRate * 100).toFixed(1)}%`],
+                  ['Latest request agent', chatUsage?.latestCacheOwner || 'Not reported'],
+                  ['Latest request model', chatUsage?.latestCacheModel || 'Not reported'],
                   ['Cache reporting coverage', chatUsage?.cacheReportingCoverage == null ? 'Not reported' : `${(chatUsage.cacheReportingCoverage * 100).toFixed(1)}% of input tokens`],
-                  ['Current context', contextUsage && contextUsage.contextWindow > 0 ? `${contextUsage.isEstimated ? '≈ ' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
+                  ['Current context (active agent)', contextUsage && contextUsage.contextWindow > 0 ? `${contextUsage.isEstimated ? '≈ ' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
                 ].map(([label, value]) => <div key={label} className="flex items-center justify-between gap-4"><dt className="opacity-65">{label}</dt><dd className="text-right font-medium tabular-nums">{value}</dd></div>)}
               </dl>
-              <p className="mt-3 text-[11px] leading-relaxed opacity-60">Cache hit rate is cached input tokens divided by input tokens on requests with provider cache reporting. It includes cold requests. Cache writes and output tokens do not count as hits; missing reports are excluded.</p>
+              {chatUsage?.latestCacheExplanation && <p className="mt-3 text-xs leading-relaxed opacity-75">{chatUsage.latestCacheExplanation}</p>}
+              <p className="mt-3 text-[11px] leading-relaxed opacity-60">Cache hit rate is cached input tokens divided by input tokens on requests with provider cache reporting. Chat totals include worker requests; a selected worker shows its own usage. Cold and post-compaction requests remain included. Cache writes and output tokens do not count as hits; missing reports are excluded. Current context belongs to the active agent.</p>
             </> : <>
               <div className="flex items-center gap-3 rounded-xl bg-white/[0.04] p-3">
                 <Folder className="h-5 w-5 shrink-0 opacity-65" />
@@ -3590,21 +3594,26 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               {filteredSlashCommands.length > 0 ? (
                 filteredSlashCommands.map((command, index) => {
                   const active = index === slashActiveIndex;
+                  const isModeCommand = command.action === 'plan' || command.action === 'swarm';
+                  const modeEnabled = command.action === 'plan' ? planModeActive : command.action === 'swarm' ? swarmModeActive : false;
                   return (
                     <button
                       key={command.id}
                       type="button"
                       role="option"
                       aria-selected={active}
+                      aria-label={isModeCommand ? `${command.label}, ${modeEnabled ? 'enabled' : 'disabled'}` : undefined}
+                      data-mode-enabled={modeEnabled ? 'true' : undefined}
                       disabled={Boolean((command.action === 'plan' || command.action === 'swarm') && pendingModes.has(`${activeChatId || 'new_chat'}:${command.action}`))}
                       onMouseEnter={() => setSlashActiveIndex(index)}
                       onMouseDown={event => event.preventDefault()}
                       onClick={() => selectSlashCommand(command)}
-                      className={`flex min-h-[32px] w-full items-center gap-2 rounded-[9px] px-2.5 py-1 text-left transition-colors duration-75 ${ active ? 'bg-white/[0.07] text-white' : 'text-[#D7D4CE] hover:bg-white/[0.045] hover:text-white' }`}
+                      className={`${isModeCommand ? 'eterx-composer-mode-option' : ''} flex min-h-[32px] w-full items-center gap-2 rounded-[9px] px-2.5 py-1 text-left transition-colors duration-75 ${ active ? 'bg-white/[0.07] text-white' : 'text-[#D7D4CE] hover:bg-white/[0.045] hover:text-white' }`}
                     >
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center">
                         {command.action === 'compact' ? <BookText className={`h-4 w-4 ${compacting ? 'animate-pulse' : ''}`} />
-                          : command.action === 'swarm' ? <Network className="h-4 w-4" />
+                          : command.action === 'plan' ? <Lightbulb className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+                          : command.action === 'swarm' ? <Network className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
                           : command.action === 'usage' ? <BarChart3 className="h-4 w-4" />
                           : command.action === 'workspace' ? <FolderCog className="h-4 w-4" /> : <Route className="h-4 w-4" />}
                       </span>
@@ -3612,10 +3621,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         <span className="shrink-0 text-[12px] font-medium tracking-normal">
                           {command.label}
                         </span>
-                        <span className="min-w-0 truncate text-[11.5px] font-normal text-[#8C8984]">
-                          {command.action === 'compact' && compacting ? 'Compacting context…' : ((command.action === 'plan' && planModeActive) || (command.action === 'swarm' && swarmModeActive)) ? 'Enabled · click to turn off' : command.description}
+                        <span className="eterx-composer-command-description min-w-0 truncate text-[11.5px] font-normal text-[#8C8984]">
+                          {command.action === 'compact' && compacting ? 'Compacting context…' : modeEnabled ? 'Enabled · click to turn off' : command.description}
                         </span>
                       </span>
+                      {modeEnabled && <Check className="eterx-composer-mode-check h-4 w-4 shrink-0" strokeWidth={1.75} aria-hidden="true" />}
                     </button>
                   );
                 })
@@ -3864,20 +3874,37 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               ) : (
                 <div className="eterx-composer-textarea-wrap relative w-full">
                   {(planModeActive || swarmModeActive) && (
-                    <div className="mb-2 flex flex-wrap items-center gap-2">
-                      {([{ kind: 'plan', active: planModeActive, label: 'Plan mode', Icon: Route, toggle: setPlanModeActive },
-                        { kind: 'swarm', active: swarmModeActive, label: 'Swarm Mode', Icon: Network, toggle: setSwarmModeActive }] as const).filter(mode => mode.active).map(mode => (
-                        <span key={mode.kind} className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-current/10 bg-white/[0.05] pl-2 pr-1 text-[11.5px] font-medium text-[var(--context-panel-title,inherit)]">
-                          <mode.Icon className="h-3.5 w-3.5" aria-hidden="true" /> {mode.label}
-                          <button type="button" aria-label={`Turn off ${mode.label}`} disabled={pendingModes.has(`${activeChatId || 'new_chat'}:${mode.kind}`)} onClick={() => mode.toggle(false)} className="ml-1 grid h-5 w-5 place-items-center rounded hover:bg-white/10 disabled:opacity-40"><X className="h-3 w-3" /></button>
-                        </span>
-                      ))}
+                    <div className="eterx-composer-mode-row" role="group" aria-label="Active modes">
+                      {([{ kind: 'plan', active: planModeActive, label: 'Plan', tooltip: 'Create a plan', Icon: Lightbulb, toggle: setPlanModeActive },
+                        { kind: 'swarm', active: swarmModeActive, label: 'Swarm', tooltip: 'Coordinate a team', Icon: Network, toggle: setSwarmModeActive }] as const).filter(mode => mode.active).map(mode => {
+                        const pending = pendingModes.has(`${activeChatId || 'new_chat'}:${mode.kind}`);
+                        return (
+                          <Tooltip key={mode.kind} text={mode.tooltip} side="top" delay={350} contentHeight={30} cardClassName="eterx-composer-mode-tooltip" showOnFocus>
+                            <span className="eterx-composer-mode-chip" data-mode={mode.kind} data-pending={pending ? 'true' : undefined} aria-busy={pending}>
+                              <mode.Icon className="eterx-composer-mode-icon" strokeWidth={1.75} aria-hidden="true" />
+                              <span className="eterx-composer-mode-label">{mode.label}</span>
+                              <button
+                                type="button"
+                                aria-label={`Turn off ${mode.label} mode`}
+                                disabled={pending}
+                                onClick={() => {
+                                  mode.toggle(false);
+                                  window.requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+                                }}
+                                className="eterx-composer-mode-remove"
+                              >
+                                <X className="h-3 w-3" strokeWidth={1.75} aria-hidden="true" />
+                              </button>
+                            </span>
+                          </Tooltip>
+                        );
+                      })}
                     </div>
                   )}
 
                   {/* Folders, Files, and Attachments rendered in a unified upper row */}
                   {(pinnedItems.length > 0 || attachments.length > 0) && (
-                    <div className="eterx-pinned-items flex flex-nowrap items-start gap-4 px-0 pt-0.5 pb-4 bg-transparent min-w-0 overflow-x-auto w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+                    <div className="eterx-pinned-items flex flex-nowrap items-start gap-3 px-0 pt-0.5 pb-3 bg-transparent min-w-0 overflow-x-auto w-full [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                       {/* Pinned Folders and Files */}
                       {pinnedItems.map((item) => {
                         const isFolder = item.type === 'folder';
@@ -3976,7 +4003,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           return (
                             <div
                               key={att.id || i}
-                              className={`relative w-[184px] h-[184px] shrink-0 rounded-[12px] bg-black/40 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.08]' } shadow-none select-none group ${ isPreparing ? 'cursor-default' : 'cursor-pointer' }`}
+                              className={`relative w-24 h-24 shrink-0 overflow-hidden rounded-2xl bg-black/40 border ${ isErrored ? 'border-[#E2765A]/45' : 'border-white/[0.08]' } shadow-none select-none group ${ isPreparing ? 'cursor-default' : 'cursor-pointer' }`}
                               onClick={() => {
                                 if (isPreparing) return;
                                 if (att.preview) {
@@ -3988,21 +4015,21 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                               }}
                             >
                               {isVideo ? (
-                                <video src={att.preview} muted playsInline preload="metadata" className={`h-full w-full rounded-[12px] object-cover ${ isErrored ? 'opacity-40 grayscale' : 'opacity-100' }`} />
+                                <video src={att.preview} muted playsInline preload="metadata" className={`h-full w-full object-cover ${ isErrored ? 'opacity-40 grayscale' : 'opacity-100' }`} />
                               ) : (
                                 <img
                                   src={att.preview}
                                   alt={displayName}
-                                  className={`w-full h-full object-cover rounded-[12px] ${ isErrored ? 'opacity-40 grayscale' : 'opacity-100' }`}
+                                  className={`w-full h-full object-cover ${ isErrored ? 'opacity-40 grayscale' : 'opacity-100' }`}
                                 />
                               )}
                               {isPreparing && (
-                                <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-[12px] bg-black/25">
+                                <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-2xl bg-black/25">
                                   <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white/85" />
                                 </div>
                               )}
                               {isErrored && (
-                                <div className="absolute inset-0 flex items-center justify-center bg-black/28 rounded-[12px]">
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/28 rounded-2xl">
                                   <AlertCircle className="w-6 h-6 text-[#F0B6A7]" strokeWidth={2.2} />
                                 </div>
                               )}
@@ -4014,9 +4041,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                   e.stopPropagation();
                                   removeAttachment(i);
                                 }}
-                                className="absolute top-2 right-2 w-6 h-6 flex items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-neutral-200 shrink-0 shadow-none z-10"
+                                className="absolute top-1.5 right-1.5 w-5 h-5 flex items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-neutral-200 shrink-0 shadow-none z-10"
                               >
-                                <X className="w-3 h-3" strokeWidth={3} />
+                                <X className="w-2.5 h-2.5" strokeWidth={3} />
                               </button>
                             </div>
                           );
@@ -4702,7 +4729,8 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 document.body,
               )}
 
-               {showVoiceControls && <Tooltip text={isRecording ? "Stop voice dictation" : "Voice dictation"} side="top">
+               {showVoiceControls && dictationStatus && <span role="status" className="max-w-[180px] truncate text-[11px] text-neutral-400" title={dictationStatus}>{dictationStatus}</span>}
+               {showVoiceControls && <Tooltip text={dictationStatus || (isRecording ? "Stop voice dictation" : "Voice dictation")} side="top">
                 <button type="button" onClick={toggleSpeech} aria-pressed={isRecording} aria-label={isRecording ? "Stop voice dictation" : "Start voice dictation"} data-active={isRecording ? 'true' : undefined} className="eterx-control-button eterx-composer-dictation-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group">
                   <PremiumMic className={`eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out ${ isRecording ? 'scale-[1.04]' : '' }`} strokeWidth={1.85} />
                 </button>
@@ -5226,9 +5254,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           }}
         >
           {/* Top-Right Modern Close Button */}
-          <span className="absolute left-5 top-16 text-xs font-medium tabular-nums opacity-70" aria-live="polite">
-            {previewImages.length > 1 ? `${previewImages.indexOf(previewImage) + 1} / ${previewImages.length}` : 'Image preview'}
-          </span>
+          {previewImages.length > 1 && (
+            <span className="absolute left-5 top-16 text-xs font-medium tabular-nums opacity-70" aria-live="polite">
+              {previewImages.indexOf(previewImage) + 1} / {previewImages.length}
+            </span>
+          )}
             <button
               type="button"
               autoFocus
@@ -5240,7 +5270,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 setZoomScale(1);
                 setPanPos({ x: 0, y: 0 });
               }}
-              className="eterx-image-viewer-close absolute z-[100005] grid h-11 w-11 place-items-center rounded-xl cursor-pointer pointer-events-auto transition-all active:scale-95"
+              className="eterx-image-viewer-close absolute z-[100005] grid h-11 w-11 place-items-center rounded-full cursor-pointer pointer-events-auto transition-all active:scale-95"
             >
               <X className="h-5 w-5" strokeWidth={2} />
             </button>

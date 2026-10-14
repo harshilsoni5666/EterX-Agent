@@ -1,0 +1,185 @@
+/* Rich chat content shares a quiet, continuous surface at every panel width. */
+.eterx-code-card {
+  --eterx-code-card-padding: 20px;
+  --eterx-code-card-surface: #232323;
+  --eterx-code-card-border: rgba(255, 255, 255, 0.055);
+  --eterx-code-card-foreground: #ececec;
+  --eterx-code-card-muted: #b5b5b5;
+  --eterx-code-card-hover: #333333;
+  --eterx-md-code-bg: var(--eterx-code-card-surface);
+  --eterx-md-code-header: var(--eterx-code-card-surface);
+  --eterx-md-border: var(--eterx-code-card-border);
+  border: 1px solid var(--eterx-code-card-border);
+  border-radius: 20px;
+  color: var(--eterx-code-card-foreground);
+  text-wrap: wrap;
+}
+
+:root[data-theme="light"] .eterx-code-card {
+  --eterx-code-card-surface: #f7f8fa;
+  --eterx-code-card-border: #e4e7eb;
+  --eterx-code-card-foreground: #24292f;
+  --eterx-code-card-muted: #66707c;
+  --eterx-code-card-hover: #e9ecf1;
+}
+
+:root[data-theme] .eterx-code-card,
+:root[data-theme] .eterx-code-card .eterx-markdown-code-header,
+:root[data-theme] .eterx-code-card .eterx-markdown-code-scroll,
+:root[data-theme] .eterx-code-card .eterx-markdown-code-content,
+:root[data-theme] .eterx-code-card .eterx-markdown-code-content code {
+  background: var(--eterx-code-card-surface) !important;
+  border-color: var(--eterx-code-card-border) !important;
+}
+
+.eterx-code-card-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 10px 12px 6px var(--eterx-code-card-padding);
+  border: 0;
+}
+
+.eterx-code-card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--eterx-code-card-foreground);
+  font-family: var(--font-sans), sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+:root[data-theme] .eterx-code-card .eterx-code-card-actions {
+  position: static;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  opacity: 1;
+}
+
+:root[data-theme] .eterx-code-card .eterx-code-card-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 50%;
+  background: transparent !important;
+  color: var(--eterx-code-card-muted) !important;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+:root[data-theme] .eterx-code-card .eterx-code-card-copy,
+:root[data-theme] .eterx-code-card .eterx-code-card-action:hover,
+:root[data-theme] .eterx-code-card .eterx-code-card-action:focus-visible,
+:root[data-theme] .eterx-code-card .eterx-code-card-wrap[aria-pressed="true"] {
+  background: var(--eterx-code-card-hover) !important;
+  color: var(--eterx-code-card-foreground) !important;
+}
+
+:root[data-theme] .eterx-code-card .eterx-code-card-copy:hover {
+  background: color-mix(in srgb, var(--eterx-code-card-hover) 85%, var(--eterx-code-card-foreground)) !important;
+}
+
+.eterx-code-card-action svg {
+  width: 17px;
+  height: 17px;
+  color: currentColor !important;
+}
+
+.eterx-code-card .eterx-markdown-code-content,
+.eterx-code-card .eterx-markdown-code-content code {
+  color: var(--eterx-code-card-foreground);
+  font-variant-ligatures: none;
+}
+
+.eterx-code-card-expand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px var(--eterx-code-card-padding);
+  border-top: 1px solid var(--eterx-code-card-border);
+  background: transparent;
+  color: var(--eterx-code-card-muted);
+  font-family: var(--font-sans), sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.eterx-code-card-expand:hover {
+  background: var(--eterx-code-card-hover);
+  color: var(--eterx-code-card-foreground);
+}
+
+.eterx-code-card-action:focus-visible,
+.eterx-code-card-expand:focus-visible {
+  outline: 2px solid var(--eterx-code-card-muted);
+  outline-offset: -3px;
+}
+
+.eterx-chat-feed {
+  --eterx-chat-inline-code-surface: #2b2b2b;
+  --eterx-chat-inline-code-text: #ededed;
+}
+
+:root[data-theme="light"] .eterx-chat-feed {
+  --eterx-chat-inline-code-surface: #edf0f4;
+  --eterx-chat-inline-code-text: #30363e;
+}
+
+:root[data-theme] .eterx-chat-feed .eterx-markdown-inline-code {
+  padding: 0.1em 0.4em !important;
+  border-radius: 6px !important;
+  background: var(--eterx-chat-inline-code-surface) !important;
+  color: var(--eterx-chat-inline-code-text) !important;
+  font-size: 0.9em !important;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.eterx-chat-feed .eterx-professional-answer .eterx-answer-paragraph {
+  margin-bottom: 1rem !important;
+  line-height: 1.65;
+}
+
+.eterx-chat-feed .eterx-professional-answer .eterx-answer-paragraph:last-child {
+  margin-bottom: 0 !important;
+}
+
+@container eterx-conversation (max-width: 520px) {
+  .eterx-code-card {
+    --eterx-code-card-padding: 14px;
+    border-radius: 16px;
+  }
+
+  .eterx-code-card-header {
+    gap: 8px;
+    padding-right: 8px;
+  }
+
+  .eterx-code-card-title { gap: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme] .eterx-code-card .eterx-code-card-action,
+  .eterx-code-card-expand { transition: none; }
+}

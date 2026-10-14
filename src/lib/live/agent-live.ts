@@ -11,6 +11,7 @@
  * 5. Barge-in (interruption) is handled automatically via VAD
  */
 
+import { captureMicrophone } from '../microphone';
 import {
   getGeminiThinkingConfig,
   getModelThinkingOptions,
@@ -144,6 +145,7 @@ export interface LiveSessionOptions {
   model?: string;
   voice?: string;
   audioInputEnabled?: boolean;
+  microphoneDeviceId?: string;
   audioOutputEnabled?: boolean;
   interactionPolicy?: Partial<LiveInteractionPolicy>;
   initialContext?: {
@@ -2768,15 +2770,7 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
       if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
         throw new Error('Microphone access is blocked by the operating system. Enable it for EterX in system privacy settings.');
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          sampleRate: 16000,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        }
-      });
+      const stream = await captureMicrophone(this.options?.microphoneDeviceId, { sampleRate: 16000 });
       if (!expectedSocket || this.ws !== expectedSocket || this.manualDisconnect) {
         stream.getTracks().forEach(track => track.stop());
         return false;

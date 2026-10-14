@@ -5,16 +5,13 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
-const { pipeline } = require('stream/promises');
+const { getModel, LANGUAGES, RUNTIME_REVISION } = require('./whisper-config');
+const { SpeechModelStore } = require('./speech-model-store');
 
 const SAMPLE_RATE = 16000;
 const INFERENCE_INTERVAL_SAMPLES = Math.round(SAMPLE_RATE * 2.4);
 const MAX_WINDOW_SAMPLES = SAMPLE_RATE * 14;
 const MIN_RMS = 0.006;
-const MODEL_NAME = 'ggml-base.bin';
-const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin';
-const MODEL_BYTES = 147951465;
-const MODEL_SHA256 = '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe';
 
 function delay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -22,7 +19,7 @@ function delay(milliseconds) {
 
 function normalizeLanguage(value) {
   const language = String(value || '').trim().toLowerCase().split(/[-_]/)[0];
-  return /^[a-z]{2,3}$/.test(language) ? language : 'auto';
+  return Object.hasOwn(LANGUAGES, language) ? language : 'auto';
 }
 
 function wavFromPcm16(samples) {
@@ -78,38 +75,36 @@ function findAvailablePort() {
   });
 }
 
-function canConnect(port) {
-  return new Promise(resolve => {
-    const socket = net.createConnection({ host: '127.0.0.1', port });
-    socket.setTimeout(500);
-    socket.once('connect', () => {
-      socket.destroy();
-      resolve(true);
-    });
-    const failed = () => {
-      socket.destroy();
-      resolve(false);
-    };
-    socket.once('timeout', failed);
-    socket.once('error', failed);
-  });
+async function serverReady(port, requestPath) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}${requestPath}/health`, { signal: AbortSignal.timeout(1500) });
+    return response.ok && (await response.json()).status === 'ok';
+  } catch {
+    return false;
+  }
 }
 
 function samplesHaveSpeech(samples) {
   if (!samples.length) return false;
-  const stride = Math.max(1, Math.floor(samples.length / 12000));
-  let energy = 0;
-  let count = 0;
-  for (let index = 0; index < samples.length; index += stride) {
-    const value = samples[index] / 32768;
-    energy += value * value;
-    count += 1;
+  // Measure short frames so a brief word is not diluted by a long pause.
+  const frameSize = Math.round(SAMPLE_RATE * 0.03);
+  let speechFrames = 0;
+  for (let start = 0; start < samples.length; start += frameSize) {
+    const end = Math.min(samples.length, start + frameSize);
+    let energy = 0;
+    for (let index = start; index < end; index++) {
+      const value = samples[index] / 32768;
+      energy += value * value;
+    }
+    if (Math.sqrt(energy / (end - start)) >= MIN_RMS) {
+      if (++speechFrames >= 2) return true;
+    } else speechFrames = 0;
   }
-  return Math.sqrt(energy / Math.max(1, count)) >= MIN_RMS;
+  return false;
 }
 
 class WhisperDictation {
-  constructor({ app, spawn, log, send }) {
+  constructor({ app, spawn, log, send, onModelState }) {
     this.app = app;
     this.spawn = spawn;
     this.log = log;
@@ -120,8 +115,14 @@ class WhisperDictation {
     this.serverStarting = null;
     this.session = null;
     this.drainingSessions = new Map();
-    this.modelDownload = null;
-    this.modelAbort = null;
+    this.models = new SpeechModelStore({ app, onState: state => {
+      onModelState?.(state);
+      if (this.pendingStart?.modelId !== state.id) return;
+      if (state.status === 'downloading') this.loading(`Downloading ${getModel(state.id).name}… ${state.progress}%`, state.progress);
+      else if (state.status === 'preparing' || state.status === 'verifying') this.loading(`Preparing ${getModel(state.id).name}…`, state.progress);
+    } });
+    this.serverModel = null;
+    this.pendingStart = null;
     this.closed = false;
   }
 
@@ -129,151 +130,164 @@ class WhisperDictation {
     const relative = path.join('runtime', 'assets', 'native', 'whisper', `${process.platform}-${process.arch}`);
     const candidates = this.app.isPackaged
       ? [
+          path.join(process.resourcesPath, relative),
           path.join(process.resourcesPath, 'app.asar.unpacked', relative),
-          path.join(this.app.getAppPath(), relative),
         ]
       : [path.join(this.app.getAppPath(), 'desktop-runtime', 'assets', 'native', 'whisper', `${process.platform}-${process.arch}`)];
-    return candidates.find(candidate => fs.existsSync(path.join(candidate, process.platform === 'win32' ? 'whisper-server.exe' : 'whisper-server'))) || null;
-  }
+    const executable = process.platform === 'win32' ? 'whisper-server.exe' : 'whisper-server';
+    const available = candidates.find(candidate => fs.existsSync(path.join(candidate, executable)));
+    if (available) return available;
+    if (!this.app.isPackaged) return null;
 
-  modelPath() {
-    return path.join(this.app.getPath('userData'), 'models', 'whisper.cpp', MODEL_NAME);
-  }
-
-  bundledModelPath() {
-    const relative = path.join('runtime', 'assets', 'native', 'whisper', 'models', MODEL_NAME);
-    const candidates = this.app.isPackaged
-      ? [
-          path.join(process.resourcesPath, 'app.asar.unpacked', relative),
-          path.join(this.app.getAppPath(), relative),
-        ]
-      : [path.join(this.app.getAppPath(), 'desktop-runtime', 'assets', 'native', 'whisper', 'models', MODEL_NAME)];
-    return candidates.find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).size === MODEL_BYTES) || null;
-  }
-
-  async verifyFile(filePath, expectedBytes, expectedHash) {
-    if (!fs.existsSync(filePath) || fs.statSync(filePath).size !== expectedBytes) return false;
-    const hash = crypto.createHash('sha256');
-    await pipeline(fs.createReadStream(filePath), hash);
-    return hash.digest('hex') === expectedHash;
-  }
-
-  async ensureModel(owner) {
-    const bundled = this.bundledModelPath();
-    if (bundled) return bundled;
-    const destination = this.modelPath();
-    if (await this.verifyFile(destination, MODEL_BYTES, MODEL_SHA256)) return destination;
-    if (this.modelDownload) return this.modelDownload;
-
-    this.modelDownload = (async () => {
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      const temporary = `${destination}.download`;
-      fs.rmSync(temporary, { force: true });
-      this.send(owner, { type: 'loading', text: 'Preparing local speech model…', progress: 0 });
-      const controller = new AbortController();
-      this.modelAbort = controller;
-      let idleTimer;
-      const progress = () => {
-        clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => controller.abort(new Error('Speech model download stalled. Please retry.')), 90_000);
-        idleTimer.unref?.();
+    // Older installers stored the executable and its DLLs inside app.asar.
+    // Electron's fs can read those files, but the OS cannot spawn them there
+    // (nor use an archive directory as cwd). Materialize the entire runtime.
+    const archived = path.join(this.app.getAppPath(), relative);
+    if (!fs.existsSync(path.join(archived, executable))) return null;
+    const destination = path.join(this.app.getPath('userData'), 'speech-runtime', `${this.app.getVersion()}-${RUNTIME_REVISION}`, `${process.platform}-${process.arch}`);
+    const marker = path.join(destination, '.complete');
+    if (!fs.existsSync(marker) || !fs.existsSync(path.join(destination, executable))) {
+      const copyDirectory = (source, target) => {
+        fs.mkdirSync(target, { recursive: true });
+        for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+          const output = path.join(target, entry.name);
+          if (entry.isDirectory()) copyDirectory(path.join(source, entry.name), output);
+          else fs.copyFileSync(path.join(source, entry.name), output);
+        }
       };
-      progress();
-      try {
-        const response = await fetch(MODEL_URL, { redirect: 'follow', signal: controller.signal });
-        if (!response.ok || !response.body) throw new Error(`Speech model download failed (${response.status}).`);
-        let received = 0;
-        let lastProgress = -1;
-        const progressStream = new TransformStream({
-          transform: (chunk, controller) => {
-            progress();
-            received += chunk.byteLength;
-            const percent = Math.min(99, Math.floor((received / MODEL_BYTES) * 100));
-            if (percent >= lastProgress + 2) {
-              lastProgress = percent;
-              this.send(owner, { type: 'loading', text: `Preparing local speech model… ${percent}%`, progress: percent });
-            }
-            controller.enqueue(chunk);
-          },
-        });
-        await pipeline(response.body.pipeThrough(progressStream), fs.createWriteStream(temporary));
-        if (!(await this.verifyFile(temporary, MODEL_BYTES, MODEL_SHA256))) {
-          fs.rmSync(temporary, { force: true });
-          throw new Error('The downloaded speech model did not pass verification.');
-        }
-        fs.rmSync(destination, { force: true });
-        fs.renameSync(temporary, destination);
-        return destination;
-      } finally {
-        clearTimeout(idleTimer);
-        if (this.modelAbort === controller) this.modelAbort = null;
-        fs.rmSync(temporary, { force: true });
-      }
-    })().finally(() => {
-      this.modelDownload = null;
-    });
-    return this.modelDownload;
+      copyDirectory(archived, destination);
+      if (process.platform !== 'win32') fs.chmodSync(path.join(destination, executable), 0o755);
+      fs.writeFileSync(marker, RUNTIME_REVISION);
+    }
+    return destination;
   }
 
-  async ensureServer(owner) {
+  loading(text, progress) {
+    const pending = this.pendingStart;
+    if (pending) this.send(pending.owner, { type: 'loading', text, progress, sessionId: pending.sessionId });
+  }
+
+  ensureModel(model) {
+    return this.models.ensure(model.id);
+  }
+
+  async terminateServer() {
+    const child = this.server;
+    this.server = null;
+    this.serverPort = 0;
+    this.serverRequestPath = '';
+    this.serverModel = null;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise(resolve => {
+      const finish = () => { clearTimeout(timer); child.removeListener('exit', finish); resolve(); };
+      const timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch {}
+        finish();
+      }, 2000);
+      child.once('exit', finish);
+      try { child.kill(); } catch { finish(); }
+    });
+  }
+
+  async launchServer(runtime, modelPath, model, cpuOnly) {
+    const executable = path.join(runtime, process.platform === 'win32' ? 'whisper-server.exe' : 'whisper-server');
+    if (/\.asar[\\/]/i.test(executable)) throw new Error('The speech engine must be installed outside the application archive. Reinstall EterX.');
+    if (process.platform !== 'win32') fs.accessSync(executable, fs.constants.X_OK);
+    const port = await findAvailablePort();
     if (this.closed) throw new Error('Local speech recognition is shutting down.');
-    if (this.serverStarting) return this.serverStarting;
-    if (this.server && this.server.exitCode === null && this.serverPort) return;
+    const requestPath = `/eterx-${crypto.randomBytes(18).toString('hex')}`;
+    const cores = os.availableParallelism?.() || os.cpus().length || 1;
+    const threadCount = Math.max(1, Math.min(8, Math.floor(cores * 0.75)));
+    const environment = { ...process.env };
+    if (process.platform === 'linux') environment.LD_LIBRARY_PATH = [runtime, environment.LD_LIBRARY_PATH].filter(Boolean).join(path.delimiter);
+    if (process.platform === 'darwin') environment.DYLD_LIBRARY_PATH = [runtime, environment.DYLD_LIBRARY_PATH].filter(Boolean).join(path.delimiter);
+    // DLLs and dynamically selected CPU backends live beside the executable.
+    const pathKey = Object.keys(environment).find(key => key.toLowerCase() === 'path') || 'PATH';
+    environment[pathKey] = [runtime, environment[pathKey]].filter(Boolean).join(path.delimiter);
+    const child = this.spawn(executable, [
+      '--model', modelPath,
+      '--host', '127.0.0.1',
+      '--port', String(port),
+      '--request-path', requestPath,
+      '--threads', String(threadCount),
+      '--language', 'auto',
+      '--no-timestamps',
+      '--suppress-nst',
+      ...(cpuOnly ? ['--no-gpu'] : []),
+    ], { cwd: runtime, env: environment, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+    this.server = child;
+    let startupError;
+    let diagnostics = '';
+    child.once('error', error => { startupError = error; });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => {
+      diagnostics = (diagnostics + String(chunk || '')).slice(-4000);
+      const message = String(chunk || '').trim();
+      if (message) this.log(`[whisper.cpp] ${message.slice(0, 800)}`);
+    });
+    child.once('exit', (code, signal) => {
+      if (this.server !== child) return;
+      this.server = null;
+      this.serverPort = 0;
+      this.serverRequestPath = '';
+      this.serverModel = null;
+      this.log(`[whisper.cpp] Server exited: ${code ?? signal ?? 'unknown'}`);
+      for (const active of [this.session, ...this.drainingSessions.values()]) {
+        if (!active) continue;
+        this.emit(active, { type: 'error', code: 'whisper-exit', text: 'Local speech recognition stopped. Your existing text is kept. Try the microphone again, or choose the lightweight speech model in Settings → General.' });
+        active.cancelled = true;
+        active.inferenceController?.abort();
+      }
+      this.session = null;
+    });
+    const startedAt = Date.now();
+    try {
+      while (true) {
+        if (startupError) throw startupError;
+        if (this.closed || child.exitCode !== null || child.signalCode !== null) throw new Error('The local speech engine could not load.');
+        if (Date.now() - startedAt > 180000) throw new Error('The local speech engine took too long to load.');
+        if (await serverReady(port, requestPath)) {
+          if (this.closed || this.server !== child || child.exitCode !== null || child.signalCode !== null) throw new Error('The local speech engine stopped while loading.');
+          this.serverPort = port;
+          this.serverRequestPath = requestPath;
+          this.serverModel = model.id;
+          return;
+        }
+        await delay(250);
+      }
+    } catch (error) {
+      if (this.server === child) await this.terminateServer();
+      this.log(`[whisper.cpp] Startup failed: ${error?.message || error}\n${diagnostics}`);
+      if (error?.code === 'ENOENT') throw new Error('The speech executable or a required library is missing. Reinstall EterX to restore its local speech runtime.');
+      if (error?.code === 'EACCES' || error?.code === 'EPERM') throw new Error('The operating system blocked the speech engine. Allow EterX to run and try again.');
+      if (/out of memory|alloc.*fail|bad_alloc/i.test(diagnostics)) throw new Error('There is not enough memory for this speech model. Choose Whisper Small in Settings → General.');
+      throw error;
+    }
+  }
+
+  async ensureServer(model) {
+    if (this.closed) throw new Error('Local speech recognition is shutting down.');
+    if (this.serverStarting) {
+      await this.serverStarting.catch(() => {});
+      return this.ensureServer(model);
+    }
+    if (this.server && this.server.exitCode === null && this.server.signalCode === null && this.serverPort && this.serverModel === model.id) return;
     this.serverStarting = (async () => {
-      const runtime = this.runtimeDirectory();
-      if (!runtime) throw new Error('The local whisper.cpp runtime is missing from this EterX build.');
-      const model = await this.ensureModel(owner);
+      await this.terminateServer();
       if (this.closed) throw new Error('Local speech recognition is shutting down.');
-      const executable = path.join(runtime, process.platform === 'win32' ? 'whisper-server.exe' : 'whisper-server');
-      const port = await findAvailablePort();
-      const requestPath = `/eterx-${crypto.randomBytes(18).toString('hex')}`;
-      const threadCount = Math.max(2, Math.min(8, Math.floor(os.cpus().length * 0.65)));
-      const environment = { ...process.env };
-      if (process.platform === 'linux') environment.LD_LIBRARY_PATH = [runtime, environment.LD_LIBRARY_PATH].filter(Boolean).join(path.delimiter);
-      if (process.platform === 'darwin') environment.DYLD_LIBRARY_PATH = [runtime, environment.DYLD_LIBRARY_PATH].filter(Boolean).join(path.delimiter);
-      const child = this.spawn(executable, [
-        '--model', model,
-        '--host', '127.0.0.1',
-        '--port', String(port),
-        '--request-path', requestPath,
-        '--threads', String(threadCount),
-        '--no-timestamps',
-        '--suppress-nst',
-      ], { cwd: runtime, env: environment, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
-      this.server = child;
-      this.serverPort = port;
-      this.serverRequestPath = requestPath;
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', chunk => {
-        const message = String(chunk || '').trim();
-        if (message) this.log(`[whisper.cpp] ${message.slice(0, 800)}`);
-      });
-      child.once('exit', code => {
-        if (this.server !== child) return;
-        this.server = null;
-        this.serverPort = 0;
-        this.serverRequestPath = '';
-        const active = this.session;
-        if (active) {
-          this.session = null;
-          this.emit(active, { type: 'error', code: 'whisper-exit', text: `Local speech recognition stopped unexpectedly${code == null ? '.' : ` (${code}).`}` });
-        }
-      });
-      let startupError;
-      child.once('error', error => { startupError = error; this.log(`[whisper.cpp] ${String(error?.message || error)}`); });
-      const startedAt = Date.now();
+      const runtime = this.runtimeDirectory();
+      if (!runtime) throw new Error(`The local speech runtime for ${process.platform}/${process.arch} is missing. Reinstall EterX to restore it.`);
+      this.loading(`Preparing ${model.name}…`);
+      const modelPath = await this.ensureModel(model);
+      if (this.closed) throw new Error('Local speech recognition is shutting down.');
+      if (!this.pendingStart) return;
+      this.loading(`Loading ${model.name}…`);
       try {
-        while (true) {
-          if (startupError) throw startupError;
-          if (this.closed || child.exitCode !== null || child.signalCode !== null) throw new Error('The local speech engine could not load.');
-          if (Date.now() - startedAt > 90000) throw new Error('The local speech engine took too long to load.');
-          if (await canConnect(port)) break;
-          await delay(250);
-        }
+        await this.launchServer(runtime, modelPath, model, process.platform !== 'darwin');
       } catch (error) {
-        if (this.server === child) { this.server = null; this.serverPort = 0; this.serverRequestPath = ''; }
-        try { child.kill(); } catch {}
-        throw error;
+        if (process.platform !== 'darwin' || this.closed || !this.pendingStart) throw error;
+        this.loading('Retrying local speech recognition on the CPU…');
+        await this.launchServer(runtime, modelPath, model, true);
       }
     })().finally(() => {
       this.serverStarting = null;
@@ -281,22 +295,37 @@ class WhisperDictation {
     return this.serverStarting;
   }
 
-  async start(owner, language, sessionId = crypto.randomUUID()) {
+  async start(owner, language, sessionId = crypto.randomUUID(), modelId) {
+    const model = getModel(modelId);
+    const selectedLanguage = normalizeLanguage(language);
+    if (model.englishOnly && selectedLanguage !== 'auto' && selectedLanguage !== 'en') {
+      throw new Error('This speech model supports English only. Select a multilingual model or change the dictation language in Settings → General.');
+    }
+    if (this.session) this.emit(this.session, { type: 'stopped' });
     const previousStop = this.stop(null, false, null, true);
-    const request = { ownerId: owner.id, sessionId, revision: 0 };
+    const request = { owner, ownerId: owner.id, sessionId, modelId: model.id, revision: 0 };
     this.pendingStart = request;
     await previousStop;
-    await this.ensureServer(owner);
+    if (this.pendingStart !== request || owner.isDestroyed()) return { started: false, cancelled: true };
+    try {
+      await this.ensureServer(model);
+    } catch (error) {
+      if (this.pendingStart !== request || owner.isDestroyed()) return { started: false, cancelled: true };
+      this.pendingStart = null;
+      throw error;
+    }
     if (this.pendingStart !== request || owner.isDestroyed()) return { started: false, cancelled: true };
     this.pendingStart = null;
     this.session = {
       owner, ownerId: owner.id, sessionId, revision: request.revision,
-      language: normalizeLanguage(language), chunks: [], sampleCount: 0,
+      modelId: model.id,
+      language: model.englishOnly ? 'en' : selectedLanguage, chunks: [], sampleCount: 0,
       samplesSinceInference: 0, inferenceRunning: false, inferencePending: false,
+      inferenceInterval: INFERENCE_INTERVAL_SAMPLES,
       committedText: '', transcript: '', stopping: false, cancelled: false,
     };
     this.emit(this.session, { type: 'ready' });
-    return { started: true, sessionId, supported: true, engine: 'whisper.cpp', local: true };
+    return { started: true, sessionId, supported: true, engine: 'whisper.cpp', model: model.id, local: true };
   }
 
   emit(active, payload) {
@@ -320,11 +349,14 @@ class WhisperDictation {
     active.committedText = '';
     active.transcript = '';
     active.inferencePending = false;
+    active.inferenceController?.abort();
   }
 
   push(owner, payload, sessionId, revision) {
     const active = this.session;
-    if (!active || active.ownerId !== owner.id || active.stopping || active.sessionId !== sessionId || active.revision !== revision) return;
+    if (!active || active.cancelled || active.ownerId !== owner.id || active.stopping || active.sessionId !== sessionId || active.revision !== revision) return;
+    if (!(payload instanceof ArrayBuffer) && !ArrayBuffer.isView(payload)) return;
+    if (payload.byteLength > SAMPLE_RATE * 2 * 5) return;
     const bytes = Buffer.from(payload instanceof ArrayBuffer ? new Uint8Array(payload) : payload || []);
     if (bytes.length < 2) return;
     const copy = new Int16Array(Math.floor(bytes.length / 2));
@@ -333,12 +365,14 @@ class WhisperDictation {
     active.sampleCount += copy.length;
     active.samplesSinceInference += copy.length;
     // Keep unprocessed audio instead of silently dropping the oldest words.
-    if (active.sampleCount > SAMPLE_RATE * 60) {
-      this.emit(active, { type: 'error', text: 'Dictation could not keep up. Please restart recording.' });
-      void this.stop(owner, true, sessionId, true);
+    if (active.sampleCount > SAMPLE_RATE * 120) {
+      // Stop capture and drain the queue on slower hardware instead of
+      // discarding spoken words when a large model falls behind real time.
+      active.stopping = true;
+      this.emit(active, { type: 'capture-limit', text: 'Finishing buffered dictation…' });
       return;
     }
-    if (active.samplesSinceInference >= INFERENCE_INTERVAL_SAMPLES) {
+    if (active.samplesSinceInference >= active.inferenceInterval) {
       active.samplesSinceInference = 0;
       void this.infer(active, false);
     }
@@ -379,15 +413,18 @@ class WhisperDictation {
     const revision = active.revision;
     const samples = this.flattenedSamples(active);
     if (!samples.length) return;
-    const commitWindow = final || samples.length >= MAX_WINDOW_SAMPLES;
-    if (samples.length < SAMPLE_RATE / 2 || !samplesHaveSpeech(samples)) {
+    const endsWithPause = samples.length >= INFERENCE_INTERVAL_SAMPLES
+      && !samplesHaveSpeech(samples.subarray(samples.length - Math.round(SAMPLE_RATE * 0.6)));
+    const commitWindow = final || samples.length >= MAX_WINDOW_SAMPLES || endsWithPause;
+    if (samples.length < SAMPLE_RATE * 0.16 || !samplesHaveSpeech(samples)) {
       if (commitWindow) this.consumeSamples(active, samples.length);
       return;
     }
     active.inferenceRunning = true;
+    const inferenceStarted = Date.now();
     const controller = new AbortController();
     active.inferenceController = controller;
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    const timeout = setTimeout(() => controller.abort(), /^(large|medium)/.test(active.modelId) ? 300000 : 120000);
     try {
       const wav = wavFromPcm16(samples);
       const multipart = multipartInferenceBody(wav, active.language, active.committedText);
@@ -399,6 +436,7 @@ class WhisperDictation {
       if (!response.ok) throw new Error('whisper.cpp inference failed (' + response.status + ').');
       const result = await response.json();
       if (active.cancelled || revision !== active.revision) return;
+      if (result?.error || typeof result?.text !== 'string') throw new Error('The local speech engine returned an invalid transcription. Try the microphone again.');
       const text = String(result?.text || '').replace(/\s+/g, ' ').trim();
       // Every event is a full snapshot. A revised partial replaces the current
       // window; only non-overlapping audio windows are committed permanently.
@@ -410,13 +448,20 @@ class WhisperDictation {
       this.emit(active, { type: final ? 'final' : 'partial', text: active.transcript });
     } catch (error) {
       if (!active.cancelled && revision === active.revision) {
-        this.emit(active, { type: 'error', code: 'whisper-inference', text: String(error?.message || error) });
+        const message = controller.signal.aborted
+          ? 'Transcription took too long. Your existing text is kept. Try Whisper Small in Settings → General for faster CPU dictation.'
+          : 'Local transcription failed. Your existing text is kept. Try the microphone again.';
+        this.log(`[whisper.cpp] Inference failed: ${error?.message || error}`);
+        this.emit(active, { type: 'error', code: 'whisper-inference', text: message });
         active.cancelled = true;
       }
     } finally {
       clearTimeout(timeout);
       active.inferenceController = null;
       active.inferenceRunning = false;
+      // Slow CPUs should spend their time on new audio, rather than repeatedly
+      // transcribing the same growing partial window every 2.4 seconds.
+      active.inferenceInterval = Math.max(INFERENCE_INTERVAL_SAMPLES, Math.min(MAX_WINDOW_SAMPLES, Math.ceil((Date.now() - inferenceStarted) / 1000 * SAMPLE_RATE)));
       if (active.inferencePending && !active.stopping && !active.cancelled) {
         active.inferencePending = false;
         void this.infer(active, false);
@@ -426,9 +471,13 @@ class WhisperDictation {
 
   async stop(owner = null, emitStopped = true, sessionId = null, discard = false) {
     const pending = this.pendingStart;
-    if (pending && (!owner || pending.ownerId === owner.id) && (!sessionId || pending.sessionId === sessionId)) this.pendingStart = null;
-    if (!owner && discard) {
+    if (pending && (!owner || pending.ownerId === owner.id) && (!sessionId || pending.sessionId === sessionId)) {
+      this.pendingStart = null;
+      this.models.cancel(pending.modelId, { preserveBackground: true });
+    }
+    if (discard) {
       for (const draining of this.drainingSessions.values()) {
+        if ((owner && draining.ownerId !== owner.id) || (sessionId && draining.sessionId !== sessionId)) continue;
         draining.cancelled = true;
         draining.inferenceController?.abort();
       }
@@ -457,7 +506,7 @@ class WhisperDictation {
 
   shutdown() {
     this.closed = true;
-    this.modelAbort?.abort();
+    this.models.shutdown();
     this.pendingStart = null;
     for (const draining of this.drainingSessions.values()) {
       draining.cancelled = true;

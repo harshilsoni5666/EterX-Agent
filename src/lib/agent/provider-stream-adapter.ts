@@ -1,8 +1,11 @@
 import type OpenAI from 'openai';
 import type { MainAgentProvider } from './model-routing';
-import { applyOpenAIResponsesCachePolicy, withOpenAICacheFallback } from './provider-prompt-cache';
+import { applyOpenAIResponsesCachePolicy, mergeProviderUsageSnapshots, withOpenAICacheFallback } from './provider-prompt-cache';
+import { beginPromptCacheDiagnostics } from './prompt-cache-diagnostics';
 import { getProviderProtocol } from './provider-protocol';
 import { streamMessagesBridge, streamGenerateContentBridge } from './provider-native-bridge';
+import { getDocumentedThinkingCapabilities } from './model-thinking-contracts';
+import { extractCompatibleReasoningText, extractProviderReasoningText, reasoningContinuationFields } from './provider-capabilities';
 
 const toResponsesTools = (tools: any[] = []) => tools.map(tool => ({
   type: 'function',
@@ -71,13 +74,23 @@ function responsesRequest(params: Record<string, any>, provider: MainAgentProvid
   const reasoning = { ...params.reasoning };
   if (params.reasoning_effort !== undefined) reasoning.effort = params.reasoning_effort;
   delete reasoning.exclude;
+  const nativeOpenAI = provider === 'openai' || (provider === 'opencode' && /^gpt-/i.test(params.model));
+  const modelId = String(params.model || '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
+  const supportsSummary = (getDocumentedThinkingCapabilities('openai', modelId)?.levels.length
+    && !/^(?:o1|o3-mini)(?:-|$)/i.test(modelId))
+    || ['o3-pro', 'o3-deep-research', 'o4-mini-deep-research', 'codex-mini-latest', 'computer-use-preview'].includes(modelId);
+  if (nativeOpenAI && supportsSummary && reasoning.effort !== 'none') {
+    // Thinking effort alone does not return readable reasoning. Opt in to
+    // summaries on the models whose documented contract supports them.
+    reasoning.summary ??= 'auto';
+  }
   if (Object.keys(reasoning).length) body.reasoning = reasoning;
   const maxTokens = params.max_output_tokens ?? params.max_completion_tokens ?? params.max_tokens;
   if (maxTokens !== undefined) body.max_output_tokens = maxTokens;
   for (const field of ['parallel_tool_calls', 'temperature', 'top_p', 'service_tier', 'user', 'metadata', 'prompt_cache_key', 'prompt_cache_retention']) {
     if (params[field] !== undefined) body[field] = params[field];
   }
-  if (provider === 'openai' || (provider === 'opencode' && /^gpt-/i.test(params.model))) {
+  if (nativeOpenAI) {
     // Tool continuations need the complete reasoning items even when account
     // policy disables storage. A reasoning summary cannot replace them.
     body.store = false;
@@ -97,6 +110,19 @@ async function* streamProviderResponses(
   const calls: Call[] = [];
   const callKeys = new Map<string, Call>();
   const textByItem = new Map<string, string>();
+  const reasoningByPart = new Map<string, string>();
+  const outputIndexes = new Map<string, number>();
+  let lastReasoningPart = '';
+
+  const itemKey = (id: unknown, index: unknown): string => {
+    const itemId = String(id || '');
+    if (Number.isInteger(index)) {
+      if (itemId) outputIndexes.set(itemId, index as number);
+      return `output:${index}`;
+    }
+    const knownIndex = outputIndexes.get(itemId);
+    return knownIndex !== undefined ? `output:${knownIndex}` : itemId;
+  };
 
   const registerCall = (item: any = {}, event: any = {}): Call => {
     const keys = [item.id, item.call_id, event.item_id, event.call_id,
@@ -126,20 +152,65 @@ async function* streamProviderResponses(
     textByItem.set(key, full);
     return remaining ? { choices: [{ delta: { content: remaining } }] } : null;
   };
+  const appendReasoning = (key: string, delta: string): any | null => {
+    if (!delta) return null;
+    const previous = reasoningByPart.get(key) || '';
+    reasoningByPart.set(key, previous + delta);
+    // Summary parts have independent deltas. Preserve a paragraph boundary
+    // so a new provider heading cannot run into the preceding summary text.
+    const separator = !previous && lastReasoningPart && lastReasoningPart !== key ? '\n\n' : '';
+    lastReasoningPart = key;
+    return { choices: [{ delta: { reasoning: separator + delta } }] };
+  };
+  const finishReasoning = (key: string, full: string): any | null => {
+    const streamed = reasoningByPart.get(key) || '';
+    return full.startsWith(streamed) ? appendReasoning(key, full.slice(streamed.length)) : null;
+  };
+  const reasoningKey = (event: any, summary: boolean) =>
+    `${summary ? 'summary' : 'content'}:${itemKey(event.item_id, event.output_index)}:${summary ? event.summary_index ?? 0 : event.content_index ?? 0}`;
+  function* finishReasoningItem(item: any, index: number): Generator<any> {
+    const key = itemKey(item.id, index);
+    for (const [partIndex, part] of (Array.isArray(item.summary) ? item.summary : []).entries()) {
+      const chunk = finishReasoning(`summary:${key}:${partIndex}`, extractProviderReasoningText(part));
+      if (chunk) yield chunk;
+    }
+    for (const [partIndex, part] of (Array.isArray(item.content) ? item.content : []).entries()) {
+      if (part.type !== 'reasoning_text') continue;
+      const chunk = finishReasoning(`content:${key}:${partIndex}`, extractProviderReasoningText(part));
+      if (chunk) yield chunk;
+    }
+  }
 
   for await (const event of events) {
     const type = String(event?.type || '');
+    // A gateway may omit item_id on deltas but include it in the final item.
+    // Use the stable output position for both so snapshots do not duplicate
+    // a streamed heading or open a second thought card for the same summary.
+    itemKey(event.item?.id || event.item_id, event.output_index);
     if (type === 'response.output_text.delta' || type === 'response.refusal.delta') {
-      const key = `${event.item_id || event.output_index}:${event.content_index ?? 0}`;
+      const key = `${itemKey(event.item_id, event.output_index)}:${event.content_index ?? 0}`;
       const delta = String(event.delta || '');
       textByItem.set(key, `${textByItem.get(key) || ''}${delta}`);
       if (delta) yield { choices: [{ delta: { content: delta } }] };
     } else if (type === 'response.output_text.done' || type === 'response.refusal.done') {
-      const key = `${event.item_id || event.output_index}:${event.content_index ?? 0}`;
+      const key = `${itemKey(event.item_id, event.output_index)}:${event.content_index ?? 0}`;
       const chunk = finishText(key, String(event.text ?? event.refusal ?? ''));
       if (chunk) yield chunk;
-    } else if ((type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') && event.delta) {
-      yield { choices: [{ delta: { reasoning: event.delta } }] };
+    } else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') {
+      const chunk = appendReasoning(reasoningKey(event, type === 'response.reasoning_summary_text.delta'), String(event.delta || ''));
+      if (chunk) yield chunk;
+    } else if (type === 'response.reasoning_summary_text.done' || type === 'response.reasoning_text.done') {
+      const chunk = finishReasoning(reasoningKey(event, type === 'response.reasoning_summary_text.done'), String(event.text || ''));
+      if (chunk) yield chunk;
+    } else if (type === 'response.reasoning_summary_part.added' || type === 'response.reasoning_summary_part.done') {
+      const chunk = finishReasoning(reasoningKey(event, true), extractProviderReasoningText(event.part));
+      if (chunk) yield chunk;
+    } else if ((type === 'response.content_part.added' || type === 'response.content_part.done') && event.part?.type === 'reasoning_text') {
+      const chunk = finishReasoning(reasoningKey(event, false), extractProviderReasoningText(event.part));
+      if (chunk) yield chunk;
+    } else if ((type === 'response.output_item.added' || type === 'response.output_item.done') && event.item?.type === 'reasoning') {
+      yield* finishReasoningItem(event.item, event.output_index);
+      if (type === 'response.output_item.done') yield { choices: [{ delta: { reasoning_boundary: true } }] };
     } else if (type === 'response.output_item.added' && event.item?.type === 'function_call') {
       const call = registerCall(event.item, event);
       call.arguments = String(event.item.arguments || '');
@@ -159,10 +230,13 @@ async function* streamProviderResponses(
         if (item.type === 'function_call') {
           const chunk = finishCall(item, { output_index: index });
           if (chunk) yield chunk;
+        } else if (item.type === 'reasoning') {
+          yield* finishReasoningItem(item, index);
+          yield { choices: [{ delta: { reasoning_boundary: true } }] };
         } else if (item.type === 'message') {
           for (const [contentIndex, part] of (item.content || []).entries()) {
             if (part.type !== 'output_text' && part.type !== 'refusal') continue;
-            const chunk = finishText(`${item.id || index}:${contentIndex}`, String(part.text ?? part.refusal ?? ''));
+            const chunk = finishText(`${itemKey(item.id, index)}:${contentIndex}`, String(part.text ?? part.refusal ?? ''));
             if (chunk) yield chunk;
           }
         }
@@ -188,18 +262,76 @@ async function* streamCompatibleChat(
   // Responses metadata can remain in a checkpoint after switching models.
   body.messages = (params.messages || []).map(({ responses_output: _output, anthropic_content: _anthropic, gemini_content: _gemini, ...message }: any) => message);
   if (provider === 'minimax') body.reasoning_split = true;
+  if (provider === 'openrouter' && body.reasoning && body.reasoning.enabled !== false && body.reasoning.effort !== 'none') {
+    body.reasoning = { ...body.reasoning, exclude: false };
+  }
   const send = (request: Record<string, any>) => client.chat.completions.create(request as any, signal ? { signal } : undefined) as any;
   const stream: AsyncIterable<any> = await (provider === 'openai' ? withOpenAICacheFallback(body, send) : send(body));
-  yield* stream;
+  const textByChoice = new Map<number, string>();
+  const reasoningByChoice = new Map<number, string>();
+  for await (const chunk of stream) {
+    if (!Array.isArray(chunk?.choices)) { yield chunk; continue; }
+    let snapshotFields: Record<string, unknown> | undefined;
+    const choices = chunk.choices.map((choice: any, position: number) => {
+      const index = choice.index ?? position;
+      const delta = { ...choice.delta };
+      const reasoningDelta = extractCompatibleReasoningText(delta);
+      if (reasoningDelta) {
+        reasoningByChoice.set(index, (reasoningByChoice.get(index) || '') + reasoningDelta);
+      } else {
+        const snapshot = extractCompatibleReasoningText(choice.message);
+        const previous = reasoningByChoice.get(index) || '';
+        if (snapshot && snapshot.startsWith(previous)) {
+          const remaining = snapshot.slice(previous.length);
+          const field = typeof choice.message?.reasoning_content === 'string' ? 'reasoning_content' : 'reasoning';
+          if (remaining) delta[field] = remaining;
+          reasoningByChoice.set(index, snapshot);
+          if (position === 0) snapshotFields = reasoningContinuationFields(provider, snapshot, choice.message?.reasoning_details, choice.message);
+        }
+      }
+      // Local gateways sometimes stream cumulative message objects. Convert
+      // explicit snapshots into deltas before the Agent's tagged parser sees
+      // them, keeping reasoning and the visible answer on the same UI path.
+      if (typeof delta.content === 'string' && delta.content) {
+        textByChoice.set(index, (textByChoice.get(index) || '') + delta.content);
+      } else if (typeof choice.message?.content === 'string') {
+        const previous = textByChoice.get(index) || '';
+        if (choice.message.content.startsWith(previous)) {
+          delta.content = choice.message.content.slice(previous.length);
+          textByChoice.set(index, choice.message.content);
+        }
+      }
+      return { ...choice, delta };
+    });
+    yield { ...chunk, choices, ...(snapshotFields ? { provider_message: { ...chunk.provider_message, ...snapshotFields } } : {}) };
+  }
 }
 
 export function createProviderChatStream(
   client: OpenAI, provider: MainAgentProvider, params: Record<string, any>, signal?: AbortSignal, capabilities: string[] = [],
+  conversationScope?: string,
 ): AsyncIterable<any> {
-  switch (getProviderProtocol(provider, String(params.model || ''), capabilities)) {
-    case 'responses': return streamProviderResponses(client, provider, params, signal);
-    case 'messages': return streamMessagesBridge(client, params, signal);
-    case 'generateContent': return streamGenerateContentBridge(client, params, signal);
-    default: return streamCompatibleChat(client, provider, params, signal);
+  const protocol = getProviderProtocol(provider, String(params.model || ''), capabilities);
+  let stream: AsyncIterable<any>;
+  switch (protocol) {
+    case 'responses': stream = streamProviderResponses(client, provider, params, signal); break;
+    case 'messages': return streamMessagesBridge(client, params, signal, conversationScope);
+    case 'generateContent': return streamGenerateContentBridge(client, params, signal, conversationScope);
+    default: stream = streamCompatibleChat(client, provider, params, signal);
   }
+  const observation = beginPromptCacheDiagnostics({
+    provider, model: String(params.model || ''), scope: conversationScope,
+    endpoint: client.baseURL, apiKey: client.apiKey,
+    request: protocol === 'responses' ? responsesRequest(params, provider) : params,
+  });
+  if (!observation) return stream;
+  return (async function* () {
+    let usage: any;
+    for await (const chunk of stream) {
+      if (chunk?.usage) usage = mergeProviderUsageSnapshots(usage, chunk.usage);
+      yield chunk?.usage ? { ...chunk, prompt_cache_diagnostics: observation.report } : chunk;
+    }
+    // Failed or cancelled streams never replace a successful request baseline.
+    if (usage) observation.complete(usage);
+  })();
 }

@@ -1,6 +1,7 @@
 import { normalizeRegistryToolName, getToolInputJsonSchema } from './registry';
 import type { ToolDefinition } from '../schemas';
 import { normalizeWorkspaceEditChunk } from '../workspace/edit-input';
+import { getSubAgentCreationArgumentGaps, SUB_AGENT_SPAWN_GUIDANCE } from '../sub-agent-spawn-guidance';
 
 type ToolArgValidationResult = {
   success: boolean;
@@ -10,7 +11,9 @@ type ToolArgValidationResult = {
 };
 
 export function getRecoverableToolArgumentGaps(toolName: string, args: any): string[] {
-  if (normalizeRegistryToolName(toolName) !== 'workspace_edit_file') return [];
+  const canonicalToolName = normalizeRegistryToolName(toolName);
+  if (canonicalToolName === 'spawn_sub_agent') return getSubAgentCreationArgumentGaps(args);
+  if (canonicalToolName !== 'workspace_edit_file') return [];
   const files = Array.isArray(args?.files) ? args.files : [];
   const missing: string[] = [];
   if (files.length > 0) {
@@ -385,7 +388,7 @@ export function validateRegistryToolArgs(
 
     return {
       success: false,
-      error: `Invalid arguments for ${tool.name} after alias normalization: ${formatValidationIssues(result.error)}`,
+      error: `Invalid arguments for ${tool.name} after alias normalization: ${formatValidationIssues(result.error)}${normalizeRegistryToolName(tool.name) === 'spawn_sub_agent' ? `\n${SUB_AGENT_SPAWN_GUIDANCE}` : ''}`,
       missing: getRecoverableToolArgumentGaps(tool.name, decoded),
     };
   } catch (err: any) {

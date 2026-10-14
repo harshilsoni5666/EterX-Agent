@@ -68,7 +68,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readClipboardImage: () => ipcRenderer.invoke('clipboard-read-image'),
   requestLiveMediaPermissions: () => ipcRenderer.invoke('live-media-permissions'),
   showMicrophonePermissionHelp: () => ipcRenderer.invoke('microphone-permission-help'),
-  startSpeechDictation: (language, sessionId) => ipcRenderer.invoke('speech-dictation-start', String(language || ''), sessionId),
+  startSpeechDictation: (language, sessionId, modelId) => ipcRenderer.invoke('speech-dictation-start', String(language || 'auto'), sessionId, modelId),
+  getSpeechModelCatalog: () => ipcRenderer.invoke('speech-model-catalog'),
+  downloadSpeechModel: modelId => ipcRenderer.invoke('speech-model-download', modelId),
+  cancelSpeechModelDownload: modelId => ipcRenderer.invoke('speech-model-cancel', modelId),
+  onSpeechModelState: callback => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('speech-model-state', listener);
+    return () => ipcRenderer.removeListener('speech-model-state', listener);
+  },
   stopSpeechDictation: (sessionId, discard = false) => ipcRenderer.invoke('speech-dictation-stop', sessionId, discard),
   pushSpeechDictationAudio: (samples, sessionId, revision) => ipcRenderer.send('speech-dictation-audio', samples, sessionId, revision),
   resetSpeechDictation: (sessionId, revision) => ipcRenderer.send('speech-dictation-reset', sessionId, revision),

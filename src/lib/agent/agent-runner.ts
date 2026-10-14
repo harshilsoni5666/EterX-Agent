@@ -54,7 +54,7 @@ import { getRuntimeEnvironment } from './runtime/environment';
 import { AGENT_EXECUTION_POLICY } from './execution-operating-policy';
 import { createToolExecutionContext, isToolCancellationError } from './cancellation';
 import { canonicalizeToolDeclarations, mergeProviderUsageSnapshots, normalizeProviderCacheUsage, resolveProviderPromptCacheMode } from './provider-prompt-cache';
-import { appendRuntimeContext, RUNTIME_CONTEXT_POLICY } from './runtime-prompt-context';
+import { appendRuntimeContext, buildRuntimeContextSections, RUNTIME_CONTEXT_POLICY } from './runtime-prompt-context';
 import { getOrCreateAgentCache, handleAgentCacheNotFound } from './agent-cache';
 import { sanitizeGeminiHistory } from './context-hot-path';
 import { toolResultCompactor } from './memory/tool-result-compactor';
@@ -995,15 +995,13 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             }
           }
           const workingSet = contextFabric.compileWorkingSet(currentRequest, 8_000);
-          const workingSetCue = workingSet
-            ? `[CURRENT RUNTIME CONTINUITY - REFERENCE DATA]\n${workingSet}\n[END CURRENT RUNTIME CONTINUITY]`
-            : '';
-          const iterationContextCue = [workingSetCue, buildTelegramWorkNoteCue(config.pinnedContext, telegramBehaviorEvents)].filter(Boolean).join('\n');
           const iterationSystemInstruction = [systemInstruction, RUNTIME_CONTEXT_POLICY,
             planEnabled ? PLAN_MODE_INSTRUCTION : '', swarmEnabled ? SWARM_MODE_INSTRUCTION : '',
           ].filter(Boolean).join('\n');
           cachedSystemInstruction = iterationSystemInstruction;
-          appendRuntimeContext(contents, 'gemini', { 'working-context': iterationContextCue });
+          appendRuntimeContext(contents, 'gemini', buildRuntimeContextSections(
+            [workingSet], buildTelegramWorkNoteCue(config.pinnedContext, telegramBehaviorEvents),
+          ));
           // Cache precisely the instructions sent on the uncached route. A
           // rejected cache gets one rebuild, then this run uses implicit caching.
           customAgentCachedContent = cacheRecoveryAttempts < 2
@@ -1886,7 +1884,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
             needsArguments: true,
             toolName: canonicalToolName,
             requiredArguments: validation.missing,
-            message: `Supply ${validation.missing.join(', ')} and call ${canonicalToolName} again.`,
+            message: canonicalToolName === 'spawn_sub_agent' ? validation.error : `Supply ${validation.missing.join(', ')} and call ${canonicalToolName} again.`,
           };
         }
         return { error: validation.error };

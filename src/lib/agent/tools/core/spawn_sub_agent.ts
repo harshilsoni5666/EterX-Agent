@@ -8,6 +8,8 @@ import { MODEL_PROVIDER_ORDER } from '../../model-selector-store';
 import type { MainAgentMode, MainAgentProvider } from '../../model-routing';
 import { MAX_SUB_AGENTS } from '../../sub-agent-settings';
 import { swarmCoordinator, SWARM_LIMITS, type SwarmContract } from '../../swarm-coordinator';
+import { SUB_AGENT_MODEL_SELECTION_GUIDANCE } from '../../sub-agent-model-guidance';
+import { getSubAgentCreationArgumentGaps, SUB_AGENT_SPAWN_EXAMPLE, SUB_AGENT_SPAWN_GUIDANCE } from '../../sub-agent-spawn-guidance';
 import {
   assessDelegatedAgent,
   formatDelegationCollection,
@@ -21,23 +23,32 @@ const SUB_AGENT_TASK_SCHEMA = z.object({
   task: z.string().min(1).max(200_000).describe('Detailed task description for this sub-agent'),
   name: z.string().optional().describe('Optional agent name (auto-assigned if not provided)'),
   key: z.string().min(1).max(100).optional().describe('Unique task key within this run, usable by dependsOn in the same batch'),
-  dependsOn: z.array(z.string()).max(64).optional().describe('Task keys or run IDs whose usable evidence must arrive before this task starts'),
+  dependsOn: z.array(z.string()).max(64).optional().describe('Task keys in this batch or existing task IDs in this run whose usable evidence must arrive before this task starts'),
   acceptance: z.string().max(4000).optional().describe('Concrete evidence or deliverable that makes this assignment complete'),
   rationale: z.string().max(2000).optional().describe('Why this independent outcome justifies another agent; avoid duplicating an existing task'),
   resources: z.array(z.object({ path: z.string().min(1), access: z.enum(['read', 'write']) })).max(64).optional()
     .describe('File or directory ownership. Overlapping writers/readers are serialized. Omission inherits the parent scope; [] permits no file writes. Paths are relative to the workspace. Declare all shared writes.'),
   priority: z.number().int().min(0).max(10).optional().describe('Scheduling priority; waiting tasks gain priority with age'),
   mode: z.enum(MODEL_MODE_ENUM).optional()
-    .describe('Optional provider mode for this worker; otherwise inherit the parent mode'),
+    .describe('Optional worker provider mode. Strongly prefer omission to inherit your current model; use thinkingLevel for a reasoning-depth change. For a deliberate model change, prefer exact provider plus model.'),
   provider: z.enum(MODEL_PROVIDER_ENUM).optional()
-    .describe('Optional exact provider; use together with model'),
-  model: z.string().min(1).optional().describe('Optional exact model ID; use together with provider'),
+    .describe('Optional exact provider chosen by the spawning agent; use together with model. Prefer your current provider and model by default. Override for a concrete task benefit or recovery, not model variety.'),
+  model: z.string().min(1).optional().describe('Optional exact model ID chosen by the spawning agent; use together with provider. Usually omit to inherit your current model. Another available model may be chosen before any failure when its task benefit is clear.'),
   thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional()
     .describe('Optional thinking level for this worker')
 }).refine(
   task => Boolean(task.provider) === Boolean(task.model),
   { message: 'provider and model must be provided together' },
 );
+
+function rejectAgentAction(mode: string, message: string, requiredArguments: string[] = []) {
+  return {
+    mode, agents: [], success: false, executed: false, error: message,
+    message: requiredArguments.length ? `${message}\n${SUB_AGENT_SPAWN_GUIDANCE}` : message,
+    shouldPoll: false,
+    ...(requiredArguments.length ? { needsArguments: true, requiredArguments, argumentExample: SUB_AGENT_SPAWN_EXAMPLE } : {}),
+  };
+}
 
 function buildCollectionPayload(agents: any[], prefix = '', options: { resultOffset?: number; resultLimit?: number } = {}) {
   const perReportLimit = Math.min(options.resultLimit || 12000, Math.max(1, Math.floor(48000 / Math.max(1, agents.length))));
@@ -123,6 +134,10 @@ CRITICAL WORKFLOW:
 4. Workers automatically hand off to their parent, which owns integration. Call mode="collect" when retained distinct results are needed and synthesize them with your own work.
 5. Lifecycle is not evidence. Read collection.fullyGrounded and each agent.delegationEvidence. Never infer a finding from started/running/completed status, and never merge a pending, empty, failed, cancelled, or unavailable payload.
 
+${SUB_AGENT_MODEL_SELECTION_GUIDANCE}
+
+${SUB_AGENT_SPAWN_GUIDANCE}
+
 WHEN TO SPAWN: 2+ independent parts, each worth meaningful work.
 WHEN NOT TO SPAWN: simple tasks, strictly sequential edits, or one shared mutable file that needs careful single-threaded changes.
 WHEN TO USE DEBATE: high-stakes choices where assumptions need challenge and rebuttal.
@@ -131,7 +146,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
   inputSchema: z.object({
     mode: z.enum(['advise', 'spawn', 'graph', 'join', 'status', 'collect', 'clear', 'consensus', 'debate', 'specialist', 'pause', 'resume', 'close'])
       .describe('advise = choose the right orchestration pattern without spawning, spawn = fire-and-forget launch, status = check progress, collect = get results, clear = cleanup, consensus = 3-agent panel, debate = multi-round adversarial panel, specialist = one expert role, pause/resume/close = control an agent'),
-    tasks: z.array(SUB_AGENT_TASK_SCHEMA).max(SWARM_LIMITS.maxBatch).optional().describe('Task graph frontier; concurrency is bounded independently of batch size'),
+    tasks: z.array(SUB_AGENT_TASK_SCHEMA).max(SWARM_LIMITS.maxBatch).optional().describe('REQUIRED nonempty array for spawn, consensus, debate, and specialist, even for one worker. Every entry requires task; put name and worker options inside the entry. Swarm spawn also requires rationale and acceptance. Panels/specialist accept exactly one topic; ordinary spawn accepts a bounded frontier.'),
     offset: z.number().int().min(0).optional().describe('Pagination offset for graph, status, collect, or join'),
     limit: z.number().int().min(1).max(100).optional().describe('Maximum entries per page; default 50 for graph and 20 for reports/status'),
     resultOffset: z.number().int().min(0).optional().describe('Character offset for reading a retained report; use with exact agentId'),
@@ -139,13 +154,26 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     request: z.string().optional().describe('Original user request for advise mode. Falls back to the first task if omitted.'),
     specialistRole: z.enum(SPECIALIST_ROLES).optional().describe('Required for specialist mode.'),
     maxAgents: z.number().int().min(1).max(MAX_SUB_AGENTS).optional().describe('Maximum agents to recommend in advise mode.'),
-    agentName: z.string().optional().describe('Specific agent name to check status/collect/control for (or omit for all)'),
+    agentName: z.string().optional().describe('Existing agent name to check status/collect/control for; not a new worker name. Use tasks[i].name when spawning.'),
     agentId: z.string().optional().describe('Exact run ID for unambiguous status, collection, or control when a task name has been reused')
+  }).superRefine((input, ctx) => {
+    for (const argument of getSubAgentCreationArgumentGaps(input)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: argument.split('.'), message: `Required for ${input.mode}: ${argument}. Creation modes require a nonempty tasks array of task objects; provider and model must be supplied or omitted together.` });
+    }
+    if (['consensus', 'debate', 'specialist'].includes(input.mode) && input.tasks && input.tasks.length > 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['tasks'], message: `${input.mode} accepts exactly one topic in tasks. Use mode="spawn" for multiple independent assignments.` });
+    }
   }),
   outputSchema: z.object({
     mode: z.string(),
     agents: z.array(z.any()),
     message: z.string(),
+    success: z.boolean().optional(),
+    executed: z.boolean().optional(),
+    error: z.string().optional(),
+    needsArguments: z.boolean().optional(),
+    requiredArguments: z.array(z.string()).optional(),
+    argumentExample: z.any().optional(),
     collection: z.any().optional(),
     graph: z.any().optional(),
     total: z.number().optional(),
@@ -184,27 +212,33 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     resultOffset?: number,
     resultLimit?: number,
   }, context: any) => {
+    const argumentGaps = getSubAgentCreationArgumentGaps(input);
+    if (argumentGaps.length) {
+      return rejectAgentAction(input.mode, `No workers started. Supply ${argumentGaps.join(', ')} using the required tasks array.`, argumentGaps);
+    }
+    if (['consensus', 'debate', 'specialist'].includes(input.mode) && input.tasks && input.tasks.length > 1) {
+      return rejectAgentAction(input.mode, `${input.mode} requires exactly one topic in tasks; use mode="spawn" for multiple assignments.`, ['tasks']);
+    }
     if (context?.isUserProxy) {
       if (input.mode !== 'specialist') {
-        return { mode: input.mode, agents: [], message: 'User Proxy may only create one temporary specialist.' };
+        return rejectAgentAction(input.mode, 'User Proxy may only create one temporary specialist.');
       }
       if (context._userProxyHelperUsed) {
-        return { mode: input.mode, agents: [], message: 'User Proxy specialist allowance has already been used.' };
+        return rejectAgentAction(input.mode, 'User Proxy specialist allowance has already been used.');
       }
       if (!input.tasks || input.tasks.length !== 1) {
-        return { mode: input.mode, agents: [], message: 'User Proxy must provide exactly one focused specialist task.' };
+        return rejectAgentAction(input.mode, 'User Proxy must provide exactly one focused specialist task.', ['tasks']);
       }
-      context._userProxyHelperUsed = true;
     }
     const decision = enforceToolCapability('spawn_sub_agent', input, context);
     if (!decision.allowed) {
-      return { mode: input.mode || 'blocked', agents: [], message: decision.reason || 'Sub-agent spawning is not allowed' };
+      return rejectAgentAction(input.mode || 'blocked', decision.reason || 'Sub-agent spawning is not allowed');
     }
 
     if (context?.isSubAgent && ['pause', 'resume', 'close', 'clear'].includes(input.mode)) {
       const target = input.agentId || (input.agentName ? globalSubAgentSpawner.findActiveAgentId(context.projectId, input.agentName) : undefined);
       if (input.mode === 'clear' || !target || !swarmCoordinator.descendants(context.subAgentId).some(node => node.id === target)) {
-        return { mode: input.mode, agents: [], message: 'Workers may control only their descendants. Ask the parent to coordinate changes to another branch.' };
+        return rejectAgentAction(input.mode, 'Workers may control only their descendants. Ask the parent to coordinate changes to another branch.');
       }
     }
 
@@ -278,10 +312,14 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       // ═══ SPAWN: Fire-and-forget launch ═══
       case 'spawn': {
         if (!input.tasks || input.tasks.length === 0) {
-          return { mode: 'spawn', agents: [], message: 'ERROR: No tasks provided. Pass tasks array with {task, name?} objects.' };
+          return rejectAgentAction('spawn', 'No workers started. Pass a nonempty tasks array containing {task, name?} objects.', ['tasks']);
         }
         if (context.swarmMode && input.tasks.some(task => !task.rationale?.trim() || !task.acceptance?.trim())) {
-          return { mode: 'spawn', agents: [], message: 'Swarm Mode requires a rationale and acceptance condition for each task. Define why the independent outcome helps and what evidence will complete it.', shouldPoll: false };
+          const required = input.tasks.flatMap((task, index) => [
+            ...(!task.rationale?.trim() ? [`tasks.${index}.rationale`] : []),
+            ...(!task.acceptance?.trim() ? [`tasks.${index}.acceptance`] : []),
+          ]);
+          return rejectAgentAction('spawn', 'No workers started. Swarm Mode requires a rationale and acceptance condition for each task.', required);
         }
 
         const taskList = input.tasks.map(t => ({
@@ -304,12 +342,17 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
           parentContext,
           onTrace
         ); } catch (error) {
-          return { mode: 'spawn', agents: [], message: error instanceof Error ? error.message : 'Task graph admission failed', shouldPoll: false };
+          const message = error instanceof Error ? error.message : 'Task graph admission failed';
+          // Admission errors normally precede side effects, but a launch-time
+          // exception can occur later. Do not promise executed=false here.
+          return { mode: 'spawn', agents: [], success: false, error: message, message, shouldPoll: false,
+            nextRecommendedAction: 'Inspect the task graph before retrying; do not duplicate assignments already admitted.' };
         }
         const { agentNames, agents, notStartedTasks, message } = launch;
 
         return {
           mode: 'spawn',
+          success: true,
           agents: agents.map(agent => ({ ...agent, status: swarmCoordinator.get(agent.agentId)?.state || 'queued' })),
           message: message + '\n\nContinue independent work. Join when a dependent step needs child evidence; collect reads retained snapshots without waiting. Every parent must integrate its required branches before finishing.',
           shouldPoll: false,
@@ -502,7 +545,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       // ═══ CONSENSUS: 3-Agent Debate Panel ═══
       case 'consensus': {
         if (!input.tasks || input.tasks.length === 0) {
-          return { mode: 'consensus', agents: [], message: 'ERROR: No task provided. Pass tasks array with at least one {task} describing the analysis needed.' };
+          return rejectAgentAction('consensus', 'Pass tasks with exactly one {task} describing the analysis needed.', ['tasks']);
         }
 
         const consensusTask = input.tasks[0].task; // Use the first task as the consensus topic
@@ -532,7 +575,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       // === DEBATE: Multi-round adversarial panel ===
       case 'debate': {
         if (!input.tasks || input.tasks.length === 0) {
-          return { mode: 'debate', agents: [], message: 'ERROR: No task provided. Pass tasks array with at least one {task} describing the decision or analysis.' };
+          return rejectAgentAction('debate', 'Pass tasks with exactly one {task} describing the decision or analysis.', ['tasks']);
         }
 
         const debateResult = await globalSubAgentSpawner.spawnDebate(
@@ -562,12 +605,13 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       // === SPECIALIST: One focused expert role ===
       case 'specialist': {
         if (!input.specialistRole) {
-          return { mode: 'specialist', agents: [], message: `ERROR: specialistRole is required. Use one of: ${SPECIALIST_ROLES.join(', ')}.` };
+          return rejectAgentAction('specialist', `specialistRole is required. Use one of: ${SPECIALIST_ROLES.join(', ')}.`, ['specialistRole']);
         }
         if (!input.tasks || input.tasks.length === 0) {
-          return { mode: 'specialist', agents: [], message: 'ERROR: No task provided. Pass tasks array with at least one {task}.' };
+          return rejectAgentAction('specialist', 'Pass tasks with exactly one {task}.', ['tasks']);
         }
 
+        if (context?.isUserProxy) context._userProxyHelperUsed = true;
         const specialistResult = await globalSubAgentSpawner.spawnSpecialist(
           input.specialistRole,
           input.tasks[0].task,
@@ -595,7 +639,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       // === PAUSE: Pause a specific sub-agent ===
       case 'pause': {
         if (!input.agentName) {
-          return { mode: 'pause', agents: [], message: 'ERROR: agentName is required for pause mode.' };
+          return rejectAgentAction('pause', 'agentName is required for pause mode.');
         }
         const targetAgentId = input.agentId || resolveActiveAgentId(input.agentName);
         const paused = pauseAgent(context?.projectId, input.agentName, onTrace, targetAgentId);
@@ -609,7 +653,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       // === RESUME: Resume a paused sub-agent ===
       case 'resume': {
         if (!input.agentName) {
-          return { mode: 'resume', agents: [], message: 'ERROR: agentName is required for resume mode.' };
+          return rejectAgentAction('resume', 'agentName is required for resume mode.');
         }
         const targetAgentId = input.agentId || resolveActiveAgentId(input.agentName);
         const resumed = resumeAgent(context?.projectId, input.agentName, onTrace, targetAgentId);
@@ -623,7 +667,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       // === CLOSE: Terminate a specific sub-agent ===
       case 'close': {
         if (!input.agentName) {
-          return { mode: 'close', agents: [], message: 'ERROR: agentName is required for close mode.' };
+          return rejectAgentAction('close', 'agentName is required for close mode.');
         }
         const targetAgentId = input.agentId || resolveActiveAgentId(input.agentName);
         const closed = closeAgent(context?.projectId, input.agentName, onTrace, targetAgentId);
@@ -635,7 +679,7 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       }
 
       default:
-        return { mode: input.mode, agents: [], message: `Unknown mode: ${ input.mode }` };
+        return rejectAgentAction(input.mode, `Unknown mode: ${ input.mode }`);
     }
   }
 };

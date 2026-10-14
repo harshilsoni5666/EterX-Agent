@@ -4063,6 +4063,16 @@
 .eterx-markdown-code-content code {
   display: block;
   min-width: 0;
+  tab-size: 4;
+}
+
+.eterx-markdown-code-scroll {
+  overscroll-behavior-inline: contain;
+}
+
+.eterx-markdown-code-scroll:focus-visible {
+  outline: 2px solid var(--eterx-md-muted);
+  outline-offset: -2px;
 }
 
 .eterx-markdown-inline-code {
@@ -7962,7 +7972,9 @@
 .dark .eterx-thread-switcher-item:hover,
 .dark .eterx-thread-switcher-item:focus-visible,
 .dark .eterx-thread-switcher-item[data-active="true"] {
-  border: 0 !important;
+  /* Keep row geometry unchanged when hover or selection styles switch on. */
+  box-sizing: border-box !important;
+  border: 1px solid transparent !important;
   border-radius: 999px !important;
   outline: none;
 }

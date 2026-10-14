@@ -15,6 +15,10 @@
   --composer-control-surface: #2B2B2B;
   --composer-control-hover: #333333;
   --composer-control-pressed: #383838;
+  --composer-mode-surface: #2C2C2C;
+  --composer-mode-hover: #353535;
+  --composer-mode-remove-hover: #434343;
+  --composer-mode-tooltip: rgba(47, 47, 47, 0.97);
   --composer-focus: #858585;
   --composer-selection: #FFFFFF26;
   --composer-send-surface: #E5E5E5;
@@ -41,6 +45,10 @@
   --composer-control-surface: #E7E7E7;
   --composer-control-hover: #DEDEDE;
   --composer-control-pressed: #D6D6D6;
+  --composer-mode-surface: #E8E8E8;
+  --composer-mode-hover: #DDDDDD;
+  --composer-mode-remove-hover: #CFCFCF;
+  --composer-mode-tooltip: rgba(241, 241, 241, 0.97);
   --composer-focus: #8A8A8A;
   --composer-selection: #DEDEDE;
   --composer-send-surface: #292929;
@@ -53,8 +61,6 @@
 
 :root[data-theme] .eterx-composer-shell {
   --composer-corner: 26px;
-  --composer-top-corner: var(--composer-corner);
-  --composer-bottom-corner: var(--composer-corner);
   background: transparent !important;
   border-color: transparent !important;
   border-radius: var(--composer-corner);
@@ -64,8 +70,6 @@
 }
 
 :root[data-theme] .eterx-composer-shell[data-compressed="true"] { --composer-corner: 24px; }
-
-:root[data-theme] .eterx-composer-shell[data-task-tracker="true"] { --composer-top-corner: 0px; }
 
 :root[data-theme] .eterx-composer-shell .eterx-composer-main.eterx-composer-surface:not([data-live="true"]) {
   --eterx-composer-fog-solid: var(--composer-surface);
@@ -101,10 +105,10 @@
   background: linear-gradient(0deg, var(--composer-surface), color-mix(in srgb, var(--composer-surface) 95%, transparent) 52%, transparent) !important;
 }
 
-/* Progress joins above the input; the workspace rail extends behind it below. */
+/* Both rails extend behind the input, preserving all four input corners. */
 :root[data-theme] .eterx-composer-shell[data-task-tracker="true"] .eterx-task-tracker-dock {
-  margin-bottom: 0 !important;
-  padding-bottom: 0 !important;
+  margin-bottom: calc(-1 * var(--composer-corner)) !important;
+  padding-bottom: var(--composer-corner) !important;
   border-radius: var(--composer-corner) var(--composer-corner) 0 0 !important;
   border: 0 !important;
   background: var(--composer-rail-surface) !important;
@@ -180,17 +184,9 @@
   background: var(--eterx-titlebar-bg, var(--sidebar-bg)) !important;
 }
 
-/* Progress and input share the same geometry in both palettes. */
+/* Only the Progress palette changes between themes; its curved join is shared. */
 :root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-task-tracker-dock {
-  margin-bottom: 0 !important;
-  padding-bottom: 0;
   background: #FAFAFA !important;
-}
-
-:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main.eterx-composer-surface:not([data-live="true"]),
-:root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main.eterx-composer-surface:not([data-live="true"]):is(:hover, :focus-within) {
-  border-radius: 0 0 var(--composer-corner) var(--composer-corner) !important;
-  border-top: 1px solid var(--composer-outline) !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell[data-task-tracker="true"]:hover :is(.eterx-task-tracker-dock, .eterx-composer-main.eterx-composer-surface:not([data-live="true"])) {
@@ -288,18 +284,18 @@
 
 /* Shared curvature and spacing apply to home, active, and side composers. */
 :root[data-theme] body .eterx-app-shell .eterx-composer-shell .eterx-composer-main.eterx-composer-surface:not([data-live="true"]) {
-  border-radius: var(--composer-top-corner) var(--composer-top-corner) var(--composer-bottom-corner) var(--composer-bottom-corner) !important;
+  border-radius: var(--composer-corner) !important;
   min-height: 100px !important;
   padding-top: 12px !important;
   padding-bottom: 10px !important;
 }
 
-/* Preserve the input's bottom curve while filling the space behind it. */
-:root[data-theme] body .eterx-app-shell .eterx-composer-shell[data-status-rail="true"] .eterx-composer-main.eterx-composer-surface:not([data-live="true"]) {
+/* Keep the rounded input above both rail fills. Menus remain free to pop out. */
+:root[data-theme] body .eterx-app-shell .eterx-composer-shell:is([data-task-tracker="true"], [data-status-rail="true"]) .eterx-composer-main.eterx-composer-surface:not([data-live="true"]) {
   z-index: 2;
 }
 
-/* The flat progress join no longer needs decorative corner patches. */
+/* Extended rails replace rectangular corner patches. */
 :root[data-theme] body .eterx-app-shell .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::before,
 :root[data-theme] body .eterx-app-shell .eterx-composer-shell[data-task-tracker="true"] .eterx-composer-main:not([data-live="true"])::after {
   content: none !important;
@@ -515,4 +511,123 @@
   outline-offset: -2px;
   --tw-ring-shadow: 0 0 transparent !important;
   --tw-ring-offset-shadow: 0 0 transparent !important;
+}
+
+/* Active modes share a compact, borderless pill row in every composer. */
+:root[data-theme] .eterx-composer-shell .eterx-composer-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:root[data-theme] .eterx-composer-shell .eterx-composer-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 32px;
+  gap: 6px;
+  padding: 0 4px 0 12px;
+  box-sizing: border-box;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: var(--composer-mode-surface) !important;
+  color: var(--composer-menu-ink) !important;
+  box-shadow: none !important;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  transition: background-color 120ms ease, opacity 120ms ease;
+}
+
+:root[data-theme] .eterx-composer-shell .eterx-composer-mode-chip:is(:hover, :focus-within) {
+  background: var(--composer-mode-hover) !important;
+}
+
+:root[data-theme] .eterx-composer-shell .eterx-composer-mode-chip[data-pending="true"] {
+  opacity: 0.6;
+}
+
+:root[data-theme] .eterx-composer-shell .eterx-composer-mode-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: inherit !important;
+  opacity: 0.85;
+}
+
+:root[data-theme] .eterx-composer-shell .eterx-composer-mode-label {
+  color: inherit !important;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+}
+
+:root[data-theme] body .eterx-app-shell .eterx-composer-shell .eterx-composer-mode-chip .eterx-composer-mode-remove {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  color: var(--composer-menu-muted) !important;
+  outline: none !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+:root[data-theme] body .eterx-app-shell .eterx-composer-shell .eterx-composer-mode-chip .eterx-composer-mode-remove:not(:disabled):is(:hover, :focus-visible) {
+  background: var(--composer-mode-remove-hover) !important;
+  color: var(--composer-menu-ink) !important;
+}
+
+:root[data-theme] body .eterx-app-shell .eterx-composer-shell .eterx-composer-mode-chip .eterx-composer-mode-remove:disabled {
+  cursor: wait;
+  opacity: 0.45;
+}
+
+/* This tooltip is portalled to body, so it reads the palette from the root. */
+:root[data-theme] .eterx-tooltip-card.eterx-composer-mode-tooltip {
+  min-height: 30px;
+  padding: 6px 12px !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: var(--composer-mode-tooltip) !important;
+  color: var(--composer-menu-ink) !important;
+  box-shadow: none !important;
+  font-size: 12px !important;
+  font-weight: 500;
+  line-height: 18px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+:root[data-theme] .eterx-composer-shell .eterx-composer-mode-check {
+  color: inherit !important;
+}
+
+/* Mode choices keep the same neutral styling in the slash menu. The check
+   represents enabled state; the row fill represents pointer/keyboard focus. */
+:root[data-theme] body .eterx-app-shell .eterx-composer-shell .eterx-slash-menu .eterx-composer-mode-option {
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  color: var(--composer-menu-ink) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme] body .eterx-app-shell .eterx-composer-shell .eterx-slash-menu .eterx-composer-mode-option:not(:disabled):is(:hover, [aria-selected="true"]) {
+  background: var(--composer-menu-active) !important;
+}
+
+:root[data-theme] .eterx-composer-shell .eterx-composer-mode-option .eterx-composer-command-description {
+  color: var(--composer-menu-muted) !important;
 }

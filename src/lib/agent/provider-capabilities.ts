@@ -62,6 +62,80 @@ const thinkingBudget = (level: MainAgentThinkingLevel): number => {
   return 8192;
 };
 
+/** Request readable Claude thinking without touching signed history blocks. */
+export function applyAnthropicThinkingDisplay(params: Record<string, any>): void {
+  if (params.thinking?.type === 'adaptive' || params.thinking?.type === 'enabled') {
+    params.thinking = { ...params.thinking, display: 'summarized' };
+  }
+}
+
+/** Read both initial blocks and deltas, and close thinking before tool output. */
+export function createAnthropicContentStreamReader() {
+  const blocks = new Map<number, string>();
+  const reasoningByBlock = new Map<number, string>();
+  const read = (event: any): { text: string; reasoning: string; reasoningBoundary: boolean } => {
+    const result = { text: '', reasoning: '', reasoningBoundary: false };
+    if (event?.type === 'content_block_start') {
+      const block = event.content_block;
+      blocks.set(event.index, String(block?.type || ''));
+      if (block?.type === 'thinking') result.reasoning = extractProviderReasoningText(block);
+      if (block?.type === 'text') result.text = extractProviderText(block);
+    } else if (event?.type === 'content_block_delta') {
+      if (event.delta?.type === 'thinking_delta') result.reasoning = extractProviderReasoningText(event.delta.thinking);
+      if (event.delta?.type === 'text_delta') result.text = extractProviderText(event.delta.text);
+    } else if (event?.type === 'content_block_stop') {
+      result.reasoningBoundary = blocks.get(event.index) === 'thinking';
+      blocks.delete(event.index);
+    }
+    if (result.reasoning) {
+      reasoningByBlock.set(event.index, (reasoningByBlock.get(event.index) || '') + result.reasoning);
+    }
+    return result;
+  };
+  return Object.assign(read, {
+    remainingReasoning(content: unknown): string[] {
+      if (!Array.isArray(content)) return [];
+      return content.flatMap((block, index) => {
+        if (block?.type !== 'thinking') return [];
+        const full = extractProviderReasoningText(block);
+        const streamed = reasoningByBlock.get(index) || '';
+        if (!full.startsWith(streamed)) return [];
+        reasoningByBlock.set(index, full);
+        const remaining = full.slice(streamed.length);
+        // Some Messages gateways deliver readable thinking only in the final
+        // block. Preserve it, without replaying already streamed Markdown or
+        // treating opaque signatures/redacted blocks as visible thoughts.
+        return remaining ? [remaining] : [];
+      });
+    },
+  });
+}
+
+/** Extract only readable reasoning; signatures and encrypted data are opaque. */
+export function extractProviderReasoningText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(extractProviderReasoningText).join('');
+  if (!value || typeof value !== 'object') return '';
+  const part = value as Record<string, any>;
+  if (/encrypted|redacted|signature/i.test(String(part.type || ''))) return '';
+  for (const key of ['text', 'thinking', 'reasoning', 'summary', 'content', 'value', 'output_text', 'outputText']) {
+    const text = extractProviderReasoningText(part[key]);
+    if (text) return text;
+  }
+  return '';
+}
+
+export function extractCompatibleReasoningText(payload: Record<string, any> | null | undefined): string {
+  if (!payload) return '';
+  for (const key of ['reasoning_content', 'reasoning', 'thinking', 'thought', 'analysis', 'reasoning_details', 'reasoningDetails', 'reasoningContent']) {
+    const text = extractProviderReasoningText(payload[key]);
+    // Empty aliases must not hide another provider's populated field. Several
+    // gateways return both readable text and its mirror in reasoning_details.
+    if (text) return text;
+  }
+  return '';
+}
+
 /** Apply only a provider-native reasoning control. No retry-without fallback. */
 export function applyCompatibleThinkingParameters(
   params: Record<string, any>,
@@ -299,7 +373,7 @@ export function splitCompatibleDeltaContent(
     const type = String((part as any)?.type || '').toLowerCase();
     const isReasoning = /think|reason|analysis/.test(type);
     const value = isReasoning
-      ? extractProviderText((part as any)?.thinking ?? (part as any)?.reasoning ?? part)
+      ? extractProviderReasoningText(part)
       : extractProviderText(part);
     if (isReasoning) {
       reasoning += value;

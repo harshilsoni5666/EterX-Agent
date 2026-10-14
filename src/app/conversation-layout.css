@@ -13,6 +13,19 @@
   min-height: 0;
   position: relative;
 }
+
+.eterx-chat-feed,
+.eterx-chat-feed-scroll,
+.eterx-chat-feed-content {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+/* Reserve equal scrollbar space on both sides so the main transcript stays
+   centered on the composer. Side chat compensates its own scrollbar width. */
+.eterx-conversation-pane:not(.eterx-workspace-side-conversation) .eterx-chat-feed-scroll {
+  scrollbar-gutter: stable both-edges;
+}
 .eterx-chat-column[data-terminal-placement="right"] > .eterx-conversation-pane {
   flex: 1 1 0%;
   overflow: clip;

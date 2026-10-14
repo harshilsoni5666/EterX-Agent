@@ -14,6 +14,8 @@ import { getVideoGenerationRouteBrief } from '../../video/video-generation-runti
 import { formatUnknownError } from '../error-format';
 import { rebaseContextCompactionWindow } from '../model-context-window';
 import { swarmCoordinator, SWARM_LIMITS, type SwarmContract } from '../swarm-coordinator';
+import { SUB_AGENT_MODEL_SELECTION_GUIDANCE } from '../sub-agent-model-guidance';
+import { SUB_AGENT_SPAWN_GUIDANCE } from '../sub-agent-spawn-guidance';
 
 function boundedHandoffPayload(value: string, maxChars = 20_000): { body: string; truncated: boolean } {
   if (value.length <= maxChars) return { body: value, truncated: false };
@@ -992,6 +994,7 @@ export class SubAgentSpawner {
     let teamSection = otherAgents
       ? `\nTEAM - Other agents planned or running:\n${otherAgents}\nCoordinate only for a concrete dependency, conflict, or shared finding; do not poll team status.\n`
       : '\nTEAM - You are the only delegated worker for this request. Work as one deep, focused lane and report back to Main.\n';
+    teamSection += `\n${SUB_AGENT_MODEL_SELECTION_GUIDANCE}\n\n${SUB_AGENT_SPAWN_GUIDANCE}\n`;
     const controlSection = `\nUNIFIED CONTROL:\n- Incoming messages are delivered automatically at safe execution boundaries; do not poll check/status.\n- Use agent_communicate action="ask_parent" for scope or integration decisions. Escalate to Main only when the parent cannot resolve the issue.\n- Broadcast only blockers or discoveries that affect other agents.\n- Handoff concise partial results with action="handoff_parent". Automatic final reports go to the parent that delegated this task.\n- Use workspace_edit_file for every file creation, edit, deletion, or related multi-file mutation. Single file: filename plus edits/delete. Multiple files: files=[{filename, edits/delete}]. Never duplicate an edit just to refresh its live preview.\n`;
     const contract = swarmCoordinator.get(runtimeContext?.subAgentId);
     if (contract) {

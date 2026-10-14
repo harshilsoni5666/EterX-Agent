@@ -37,13 +37,18 @@ import {
   providerAcceptsDirectVideo,
 } from '../agent/attachment-pipeline';
 import {
+  applyAnthropicThinkingDisplay,
   applyCompatibleThinkingParameters,
   assertSuccessfulCompatibleFinish,
   createCompatibleTaggedReasoningSplitter,
+  createAnthropicContentStreamReader,
+  extractCompatibleReasoningText,
+  extractProviderReasoningText,
   providerSupportsStreamUsage,
   splitCompatibleDeltaContent,
 } from '../agent/provider-capabilities';
 import { normalizeProviderCacheUsage, mergeProviderUsageSnapshots, applyOpenAIPromptCachePolicy, applyAnthropicPromptCachePolicy, buildProviderConversationCacheId, providerCacheKeyIndex, resolveProviderPromptCacheMode } from '../agent/provider-prompt-cache';
+import { beginPromptCacheDiagnostics, type PromptCacheDiagnostics } from '../agent/prompt-cache-diagnostics';
 import {
   executeSearchWithFailover,
   type NormalizedSearchResult,
@@ -134,6 +139,20 @@ const appendProviderText = (
   const delta = merged.startsWith(previous) ? merged.slice(previous.length) : incomingText;
   if (delta) onDelta(delta);
   return merged;
+};
+
+const appendReasoningText = (
+  previous: string,
+  incoming: unknown,
+  onDelta: (delta: string) => void,
+  isSnapshot = false,
+) => {
+  const text = extractProviderReasoningText(incoming);
+  // Native reasoning events are true deltas: repeated tokens and Markdown
+  // markers must survive. Only explicit message/final snapshots are deduped.
+  const delta = isSnapshot ? text.startsWith(previous) ? text.slice(previous.length) : '' : text;
+  if (delta) onDelta(delta);
+  return previous + delta;
 };
 
 const toProviderText = (value: unknown): string => {
@@ -564,15 +583,18 @@ const applyAnthropicThinking = (params: Record<string, any>, model: string, thin
   if (!thinking || thinking.level === 'off') return;
   const capabilities = resolveModelThinkingCapabilities('anthropic', model, thinking.capabilities);
   if (capabilities?.parameter === 'output_config.effort') {
-    if (isAnthropicAdaptiveThinkingModel(model)) params.thinking = { type: 'adaptive' };
+    if (isAnthropicAdaptiveThinkingModel(model, thinking.capabilities)) params.thinking = { type: 'adaptive' };
+    else params.thinking = { type: 'enabled', budget_tokens: getAnthropicThinkingBudget(thinking.level) };
     params.output_config = { effort: capabilities.wireValues?.[thinking.level] ?? toAnthropicEffort(thinking.level) };
-    params.max_tokens = Math.max(Number(params.max_tokens) || 0, ['xhigh', 'max'].includes(thinking.level) ? 64_000 : 16_384);
+    params.max_tokens = Math.max(Number(params.max_tokens) || 0, ['xhigh', 'max'].includes(thinking.level) ? 64_000 : 16_384, Number(params.thinking?.budget_tokens || 0) + 2048);
+    applyAnthropicThinkingDisplay(params);
     return;
   }
   if (capabilities?.parameter !== 'thinking.budget_tokens') return;
   const budget = getAnthropicThinkingBudget(thinking.level);
   if (budget <= 0) return;
   params.thinking = { type: 'enabled', budget_tokens: budget };
+  applyAnthropicThinkingDisplay(params);
   params.max_tokens = Math.max(Number(params.max_tokens) || 0, budget + 2_048);
   params.temperature = 1.0;
 };
@@ -654,10 +676,10 @@ async function runOpenAiCompatibleDirect(
   };
   applyOpenAiCompatibleThinking(params, provider, model, thinking);
   if (provider === 'openai' && process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1') {
-    applyOpenAIPromptCachePolicy(params, { model, staticPrompt: systemInstruction, tools: [] });
+    applyOpenAIPromptCachePolicy(params, { model, staticPrompt: systemInstruction, tools: [], conversationScope });
     delete params.stream_options;
   }
-  const stream = createProviderChatStream(client, provider, params, undefined, readStoredModelMetadata(provider, model).wire);
+  const stream = createProviderChatStream(client, provider, params, undefined, readStoredModelMetadata(provider, model).wire, conversationScope);
   let text = '';
   let finishReason: unknown;
   const taggedReasoning = createCompatibleTaggedReasoningSplitter();
@@ -680,6 +702,7 @@ async function runAnthropicDirect(
   attachments: PreparedAttachment[],
   thinking: DirectThinking,
   systemInstruction: string,
+  conversationScope = '',
 ) {
   const client = new Anthropic({ timeout: MODEL_REQUEST_TIMEOUT_MS,
     apiKey: key,
@@ -701,6 +724,9 @@ async function runAnthropicDirect(
   };
   applyAnthropicThinking(params, model, thinking);
   applyAnthropicPromptCachePolicy(params);
+  const cacheObservation = beginPromptCacheDiagnostics({
+    provider: 'anthropic', model, scope: conversationScope, endpoint: client.baseURL, apiKey: key, request: params,
+  });
   const response: any = attachments.some(item => item.fileId)
     ? await client.beta.messages.create(params)
     : await client.messages.create(params);
@@ -708,6 +734,7 @@ async function runAnthropicDirect(
   if (!stopReason || (stopReason !== 'end_turn' && stopReason !== 'stop_sequence')) {
     throw new Error(`MODEL_STREAM_INCOMPLETE: Anthropic ended the response with stop_reason=${stopReason || 'missing'}.`);
   }
+  cacheObservation?.complete(response.usage);
   return response.content
     .filter((block: any) => block?.type === 'text')
     .map((block: any) => block.text || '')
@@ -755,7 +782,7 @@ export async function runDirectChat(request: DirectChatRequest): Promise<{
           return provider === 'gemini'
             ? runGeminiDirect(model, key, history, currentText, attachments, thinking, systemInstruction)
             : provider === 'anthropic'
-              ? runAnthropicDirect(model, key, history, currentText, attachments, thinking, systemInstruction)
+              ? runAnthropicDirect(model, key, history, currentText, attachments, thinking, systemInstruction, request.chatId || request.runId)
               : runOpenAiCompatibleDirect(provider, model, key, history, currentText, attachments, thinking, systemInstruction, request.chatId || request.runId);
         },
         undefined,
@@ -900,6 +927,7 @@ const createDirectUsageTrace = (
   usage: unknown,
   request: DirectChatRequest,
   thinking: DirectThinking,
+  cacheDiagnostics?: PromptCacheDiagnostics,
 ) => {
   const normalized = normalizeProviderCacheUsage(provider, usage);
   const promptTokens = Number(normalized.promptTokens || 0);
@@ -922,6 +950,7 @@ const createDirectUsageTrace = (
     ...normalized,
     cacheMode: resolveProviderPromptCacheMode(provider, process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1'),
     phase: 'chat_direct',
+    cacheDiagnostics,
     thinkingLevel: thinking?.level,
     runId: request.runId,
     turnId: request.runId,
@@ -932,7 +961,7 @@ const createDirectUsageTrace = (
   };
 };
 
-type DirectProviderStreamResult = { text: string; usage?: unknown };
+type DirectProviderStreamResult = { text: string; usage?: unknown; cacheDiagnostics?: PromptCacheDiagnostics };
 
 const streamGeminiDirect = async (
   model: string,
@@ -992,7 +1021,7 @@ const streamOpenAiCompatibleDirect = async (
   attachments: PreparedAttachment[],
   thinking: DirectThinking,
   onDelta: (delta: string) => void,
-  onReasoningDelta: (delta: string) => void,
+  onReasoningDelta: (delta: string, boundary?: boolean) => void,
   systemInstruction: string,
   signal?: AbortSignal,
   conversationScope = '',
@@ -1027,13 +1056,14 @@ const streamOpenAiCompatibleDirect = async (
   };
   applyOpenAiCompatibleThinking(params, provider, model, thinking);
   if (provider === 'openai' && process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1') {
-    applyOpenAIPromptCachePolicy(params, { model, staticPrompt: systemInstruction, tools: [] });
+    applyOpenAIPromptCachePolicy(params, { model, staticPrompt: systemInstruction, tools: [], conversationScope });
   }
-  const stream: any = await createProviderChatStream(client, provider, params, signal, readStoredModelMetadata(provider, model).wire);
+  const stream: any = await createProviderChatStream(client, provider, params, signal, readStoredModelMetadata(provider, model).wire, conversationScope);
   let text = '';
   let reasoningText = '';
   let usage: unknown;
   let finishReason: unknown;
+  let cacheDiagnostics: PromptCacheDiagnostics | undefined;
   const taggedReasoning = createCompatibleTaggedReasoningSplitter();
   for await (const chunk of stream as any) {
     throwIfAborted(signal);
@@ -1047,6 +1077,7 @@ const streamOpenAiCompatibleDirect = async (
       ? deltaPayload.length > 0
       : toProviderText(deltaPayload).length > 0;
     let deltaContent: { text: string; reasoning: string };
+    const contentIsSnapshot = !hasDeltaPayload && choice?.message?.content !== undefined;
     if (!hasDeltaPayload && choice?.message?.content !== undefined) {
       // A few gateways replay the complete message on every frame. Feed only
       // one isolated parser per full snapshot. Reusing the delta parser would
@@ -1063,26 +1094,23 @@ const streamOpenAiCompatibleDirect = async (
     } else {
       deltaContent = splitCompatibleDeltaContent(deltaPayload, taggedReasoning);
     }
-    const reasoningChunk = toProviderText(
-      choice?.delta?.reasoning_content
-      ?? choice?.delta?.reasoning
-      ?? choice?.delta?.thinking
-      ?? choice?.delta?.thought
-      ?? choice?.delta?.analysis
-      ?? choice?.message?.reasoning_content
-      ?? choice?.message?.reasoning,
-    ) || deltaContent.reasoning;
-    reasoningText = appendProviderText(reasoningText, reasoningChunk, onReasoningDelta);
+    const nativeReasoning = extractCompatibleReasoningText(choice?.delta);
+    const snapshotReasoning = extractCompatibleReasoningText(choice?.message);
+    const reasoningChunk = nativeReasoning || snapshotReasoning || deltaContent.reasoning;
+    reasoningText = appendReasoningText(reasoningText, reasoningChunk, onReasoningDelta,
+      !nativeReasoning && (Boolean(snapshotReasoning) || contentIsSnapshot));
+    if (choice?.delta?.reasoning_boundary) onReasoningDelta('', true);
     const chunkText = deltaContent.text;
     text = appendProviderText(text, chunkText, onDelta);
     if (chunk?.usage) usage = mergeProviderUsageSnapshots(usage, chunk.usage);
+    if (chunk?.prompt_cache_diagnostics) cacheDiagnostics = chunk.prompt_cache_diagnostics;
     finishReason = choice?.finish_reason ?? finishReason;
   }
   const taggedTail = taggedReasoning.flush();
-  reasoningText = appendProviderText(reasoningText, taggedTail.reasoning, onReasoningDelta);
+  reasoningText = appendReasoningText(reasoningText, taggedTail.reasoning, onReasoningDelta);
   text = appendProviderText(text, taggedTail.text, onDelta);
   assertSuccessfulCompatibleFinish(finishReason, false);
-  return { text, usage };
+  return { text, usage, cacheDiagnostics };
 };
 
 const streamAnthropicDirect = async (
@@ -1093,9 +1121,10 @@ const streamAnthropicDirect = async (
   attachments: PreparedAttachment[],
   thinking: DirectThinking,
   onDelta: (delta: string) => void,
-  onReasoningDelta: (delta: string) => void,
+  onReasoningDelta: (delta: string, boundary?: boolean) => void,
   systemInstruction: string,
   signal?: AbortSignal,
+  conversationScope = '',
 ): Promise<DirectProviderStreamResult> => {
   const client = new Anthropic({ timeout: MODEL_REQUEST_TIMEOUT_MS,
     apiKey: key,
@@ -1118,42 +1147,36 @@ const streamAnthropicDirect = async (
   applyAnthropicThinking(params, model, thinking);
   applyAnthropicPromptCachePolicy(params);
   const requestOptions = signal ? { signal } : undefined;
+  const cacheObservation = beginPromptCacheDiagnostics({
+    provider: 'anthropic', model, scope: conversationScope, endpoint: client.baseURL, apiKey: key, request: params,
+  });
   const runner: any = attachments.some(item => item.fileId)
     ? client.beta.messages.stream(params, requestOptions)
     : client.messages.stream(params, requestOptions);
   let text = '';
   let reasoningText = '';
   let usage: unknown;
+  const readContent = createAnthropicContentStreamReader();
   for await (const event of runner as any) {
     throwIfAborted(signal);
-    if (event?.type === 'content_block_delta' && event?.delta?.type === 'text_delta') {
-      text = appendProviderText(text, event.delta.text, onDelta);
-    }
-    if (event?.type === 'content_block_delta' && event?.delta?.type === 'thinking_delta') {
-      reasoningText = appendProviderText(reasoningText, event.delta.thinking, onReasoningDelta);
-    }
+    const content = readContent(event);
+    reasoningText = appendReasoningText(reasoningText, content.reasoning, onReasoningDelta);
+    if (content.reasoningBoundary) onReasoningDelta('', true);
+    text = appendProviderText(text, content.text, onDelta);
     if (event?.type === 'message_delta' && event?.usage) usage = event.usage;
   }
   const finalMessage = await (runner as any).finalMessage();
-  const finalReasoning = Array.isArray(finalMessage?.content)
-    ? finalMessage.content
-      .filter((block: any) => block?.type === 'thinking')
-      .map((block: any) => String(block?.thinking || ''))
-      .join('')
-    : '';
-  // The final Anthropic message is a reconciliation snapshot, not a live
-  // stream event. Use it only to complete a Thought that was already visible;
-  // otherwise it would manufacture the whole Thought card after generation
-  // had ended, with a misleading newly-started clock.
-  if (reasoningText) {
-    reasoningText = appendProviderText(reasoningText, finalReasoning, onReasoningDelta);
+  for (const reasoning of readContent.remainingReasoning(finalMessage?.content)) {
+    reasoningText = appendReasoningText(reasoningText, reasoning, onReasoningDelta);
+    onReasoningDelta('', true);
   }
   if (finalMessage?.usage) usage = finalMessage.usage;
   const stopReason = String(finalMessage?.stop_reason || '');
   if (!stopReason || (stopReason !== 'end_turn' && stopReason !== 'stop_sequence')) {
     throw new Error(`MODEL_STREAM_INCOMPLETE: Anthropic ended the stream with stop_reason=${stopReason || 'missing'}.`);
   }
-  return { text, usage };
+  cacheObservation?.complete(usage);
+  return { text, usage, cacheDiagnostics: cacheObservation?.report };
 };
 
 /**
@@ -1367,10 +1390,17 @@ export async function streamDirectChat(
       endTime: Date.now(),
     });
   };
-  const onReasoningDelta = (delta: string) => {
-    if (!delta || thinkingClosed) return;
+  const onReasoningDelta = (delta: string, boundary = false) => {
+    if (boundary) { closeThinkingStream(); return; }
+    if (!delta) return;
+    if (thinkingClosed) {
+      thinkingClosed = false;
+      reasoningText = '';
+      thinkingStartedAt = 0;
+      thinkingNoteId = `direct_thinking_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    }
     if (!thinkingStartedAt) thinkingStartedAt = Date.now();
-    reasoningText = mergeStreamingText(reasoningText, delta, true);
+    reasoningText += delta;
     emit({
       type: 'thought_stream',
       thoughtId: thinkingNoteId,
@@ -1459,7 +1489,7 @@ export async function streamDirectChat(
             return provider === 'gemini'
               ? streamGeminiDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal)
               : provider === 'anthropic'
-                ? streamAnthropicDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal)
+                ? streamAnthropicDirect(model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal, request.chatId || request.runId)
                 : streamOpenAiCompatibleDirect(provider, model, attemptKey, history, attemptText, attemptAttachments, thinking, onDelta, onReasoningDelta, systemInstruction, signal, request.chatId || request.runId);
           },
           signal,
@@ -1534,7 +1564,7 @@ export async function streamDirectChat(
     startTime: answerStartedAt,
     endTime: Date.now(),
   });
-  const usageTrace = createDirectUsageTrace(provider, model, providerResult.usage, request, thinking);
+  const usageTrace = createDirectUsageTrace(provider, model, providerResult.usage, request, thinking, providerResult.cacheDiagnostics);
   if (usageTrace) emit(usageTrace);
   if (continuity.fabric) {
     continuity.fabric.recordAssistantResponse(finalText, 'completed', request.runId || '');

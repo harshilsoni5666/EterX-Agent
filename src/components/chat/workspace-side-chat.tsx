@@ -15,6 +15,7 @@ import { summarizeChatUsage } from '../../lib/chat-command-state';
 import { selectMainContextLogs, traceBelongsToUsageChat } from '../../lib/chat-usage-scope';
 import { parseModelEntryKey } from '../../lib/agent/model-selector-store';
 import { FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
+import { useLocalDictation } from '../../lib/use-local-dictation';
 export type SideChatSession = { id: string; title: string; traceLogs: any[]; workspacePath?: string | null; modelSelection?: string; updatedAt: number; isFavorite?: boolean };
 export type SideChatSettings = { modelSelection: string; selectedAgent: { agentId: string | null; agentName: string; chatMode?: boolean }; thinkingLevel: MainAgentThinkingLevel; agentMode: MainAgentMode; workspacePath: string | null; runLocation: 'local' | 'sandbox' | 'worktree' };
 export type SideChatActions = {
@@ -52,6 +53,7 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
   const [settings, setSettings] = useState(initial.current.settings);
   const [loading, setLoading] = useState(Boolean(chat));
   const [error, setError] = useState('');
+  const dictation = useLocalDictation({ getText: () => textRef.current, onText: setText, onError: setError });
   const [sending, setSending] = useState(false);
   const [showBottom, setShowBottom] = useState(false);
   const end = useRef<HTMLDivElement>(null);
@@ -61,6 +63,7 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
   const alive = useRef(true);
   const latest = useRef({ text, attachments, settings }); latest.current = { text: textRef.current, attachments, settings };
   const updateTextDraft = useCallback((value: string) => {
+    dictation.reset(value);
     textRef.current = value;
     latest.current = { ...latest.current, text: value };
     drafts.set(id, latest.current);
@@ -71,7 +74,7 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
       draftTimer.current = null;
       setTextState(textRef.current);
     }, 180);
-  }, [id]);
+  }, [id, dictation.reset]);
   const actionsRef = useRef(actions); actionsRef.current = actions;
   useLayoutEffect(() => {
     const surface = pane.current, feed = surface?.querySelector<HTMLElement>('.eterx-chat-feed-scroll');
@@ -103,8 +106,9 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     }
   }, [loading, chat, id]);
   const submit = () => {
-    const current = latest.current;
+    const current = { ...latest.current, text: textRef.current };
     if (loading || submitLock.current || (!current.text.trim() && !current.attachments.length)) return;
+    dictation.stop();
     const sequence = ++submitSequence.current;
     submitLock.current = true; setSending(true); setError(''); setText(''); setAttachments([]);
     void actionsRef.current.send(id, current.text, current.attachments, current.settings).then(accepted => {
@@ -115,52 +119,6 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
       if (alive.current) { setError(String(error.message || error)); setText(value => value || current.text); setAttachments(value => value.length ? value : current.attachments); }
     }).finally(() => { if (sequence === submitSequence.current) { submitLock.current = false; if (alive.current) setSending(false); } });
   };
-  const [isRecording, setIsRecording] = useState(false);
-  const recognitionRef = useRef<any>(null);
-
-  const toggleSpeech = () => {
-    if (isRecording) {
-      try { recognitionRef.current?.stop?.(); } catch { }
-      setIsRecording(false);
-      return;
-    }
-    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRec) {
-      alert('Voice dictation is available in browsers supporting Web Speech API or in the main chat window.');
-      return;
-    }
-    try {
-      const rec = new SpeechRec();
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.lang = navigator.language || 'en-US';
-      const baseText = latest.current.text;
-      rec.onresult = (e: any) => {
-        let transcript = '';
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          transcript += e.results[i][0].transcript;
-        }
-        if (transcript) {
-          setText(baseText ? `${baseText} ${transcript}` : transcript);
-        }
-      };
-      rec.onend = () => setIsRecording(false);
-      rec.onerror = () => setIsRecording(false);
-      rec.start();
-      recognitionRef.current = rec;
-      setIsRecording(true);
-    } catch (e) {
-      console.error('Dictation error:', e);
-      setIsRecording(false);
-    }
-  };
-
-  useEffect(() => {
-    return () => {
-      try { recognitionRef.current?.stop?.(); } catch { }
-    };
-  }, []);
-
   const [contextSettingsRevision, setContextSettingsRevision] = useState(0);
   useEffect(() => {
     const refresh = () => setContextSettingsRevision(revision => revision + 1);
@@ -194,7 +152,7 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     {loading && <div className="eterx-workspace-chat-loading"><Loader2 size={15} className="animate-spin" /> Loading conversation…</div>}
     {error && <div className="eterx-workspace-inline-error" role="alert">{error}{loading === false && chat && !chat.traceLogs.length && <button onClick={() => { setError(''); setLoading(true); void actions.hydrate(id).catch(error => setError(String(error))).finally(() => setLoading(false)); }}>Retry</button>}</div>}
     <ChatFeed workspaceOwner={workspaceOwner} scrollContainerId={`side-chat-${tabId}`} traceLogs={chat?.traceLogs || emptyLogs} chatId={id} isThinking={running || sending} messagesEndRef={end} setSidebarOpen={ignore} sidebarOpen={false} handleScroll={event => { const node = event.currentTarget; setShowBottom(node.scrollHeight - node.scrollTop - node.clientHeight > 100); }} showScrollBottom={false} isCompressed workspacePath={settings.workspacePath} onEditUserMessage={setText} onAnswerAskUser={(timestamp, answer, responseKey) => actions.answer(id, timestamp, answer, responseKey)} />
-    <ChatInput inputValue={text} inputValueRevision={textRevision} onInputValueChange={updateTextDraft} setInputValue={setText} isThinking={running || sending} canStop={running} isRecording={isRecording} toggleSpeech={toggleSpeech} showVoiceControls contextUsage={contextUsage} chatUsage={chatUsage} chatTitle={chat?.title || 'New side chat'} onLiveStart={() => { if (actions.startLive) actions.startLive(id); else actions.openMain(id); }} handleSend={submit} handleSteer={submit} handleStop={() => actions.stop(id)} attachments={attachments} setAttachments={setAttachments} greeting="" traceLogsLength={Math.max(1, chat?.traceLogs.length || 0)} activeChatId={id} isCompressed modelSelectionScope="surface" chatModelSelection={settings.modelSelection} onModelSelectionChange={modelSelection => setSettings(previous => ({ ...previous, modelSelection }))} selectedAgent={settings.selectedAgent.agentId} selectedAgentName={settings.selectedAgent.agentName} chatMode={settings.selectedAgent.chatMode} onAgentChange={(agentId, agentName, chatMode) => setSettings(previous => ({ ...previous, selectedAgent: { agentId, agentName, chatMode } }))} thinkingLevel={settings.thinkingLevel} onThinkingLevelChange={thinkingLevel => setSettings(previous => ({ ...previous, thinkingLevel }))} agentMode={settings.agentMode} onModeChange={agentMode => setSettings(previous => ({ ...previous, agentMode }))} workspacePath={settings.workspacePath} onWorkspacePathChange={selectWorkspace} runLocation={settings.runLocation} onRunLocationChange={runLocation => setSettings(previous => ({ ...previous, runLocation }))} showScrollBottom={showBottom} onScrollToBottom={scrollBottom} />
+    <ChatInput inputValue={text} inputValueRevision={textRevision} onInputValueChange={updateTextDraft} setInputValue={setText} isThinking={running || sending} canStop={running} isRecording={dictation.isRecording} dictationStatus={dictation.status} toggleSpeech={() => void dictation.toggle()} showVoiceControls contextUsage={contextUsage} chatUsage={chatUsage} chatTitle={chat?.title || 'New side chat'} onLiveStart={() => { dictation.stop(); if (actions.startLive) actions.startLive(id); else actions.openMain(id); }} handleSend={submit} handleSteer={submit} handleStop={() => actions.stop(id)} attachments={attachments} setAttachments={setAttachments} greeting="" traceLogsLength={Math.max(1, chat?.traceLogs.length || 0)} activeChatId={id} isCompressed modelSelectionScope="surface" chatModelSelection={settings.modelSelection} onModelSelectionChange={modelSelection => setSettings(previous => ({ ...previous, modelSelection }))} selectedAgent={settings.selectedAgent.agentId} selectedAgentName={settings.selectedAgent.agentName} chatMode={settings.selectedAgent.chatMode} onAgentChange={(agentId, agentName, chatMode) => setSettings(previous => ({ ...previous, selectedAgent: { agentId, agentName, chatMode } }))} thinkingLevel={settings.thinkingLevel} onThinkingLevelChange={thinkingLevel => setSettings(previous => ({ ...previous, thinkingLevel }))} agentMode={settings.agentMode} onModeChange={agentMode => setSettings(previous => ({ ...previous, agentMode }))} workspacePath={settings.workspacePath} onWorkspacePathChange={selectWorkspace} runLocation={settings.runLocation} onRunLocationChange={runLocation => setSettings(previous => ({ ...previous, runLocation }))} showScrollBottom={showBottom} onScrollToBottom={scrollBottom} />
   </div></FilePanelReveal>;
 });
 

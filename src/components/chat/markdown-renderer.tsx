@@ -12,7 +12,7 @@ import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 // @ts-ignore
 import { createPrismCodeTheme } from '../../lib/code-theme';
-import { Check, ChevronDown, Copy, Download, Globe2, Maximize2, Minimize2, MoreHorizontal, WrapText } from 'lucide-react';
+import { Check, ChevronDown, Code2, Copy, Download, Globe2, Maximize2, Minimize2, MoreHorizontal, WrapText } from 'lucide-react';
 import { CopyButton, safeCopyTextToClipboard, safeCopyPngToClipboard } from '../ui/copy-button';
 import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
@@ -855,44 +855,100 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
 
 const codeHighlightThemes = {
   light: createPrismCodeTheme('light'),
-  dark: createPrismCodeTheme('dark'),
+  dark: {
+    ...createPrismCodeTheme('dark'),
+    comment: { color: '#9CA3AD' },
+    punctuation: { color: '#E1E3E6' },
+    property: { color: '#EBCB6B' },
+    string: { color: '#82D39B' },
+    boolean: { color: '#EFA3C5' },
+    number: { color: '#97C9ED' },
+  },
+};
+
+const codeLanguageLabels: Record<string, string> = {
+  text: 'Text', txt: 'Text', plaintext: 'Text',
+  js: 'JavaScript', javascript: 'JavaScript', jsx: 'JSX',
+  ts: 'TypeScript', typescript: 'TypeScript', tsx: 'TSX',
+  json: 'JSON', jsonc: 'JSON', py: 'Python', python: 'Python',
+  html: 'HTML', css: 'CSS', scss: 'SCSS', sql: 'SQL',
+  sh: 'Shell', shell: 'Shell', bash: 'Bash', powershell: 'PowerShell',
+  yml: 'YAML', yaml: 'YAML', md: 'Markdown', markdown: 'Markdown',
+  c: 'C', cpp: 'C++', csharp: 'C#', go: 'Go', rust: 'Rust', java: 'Java',
 };
 
 const CodeBlock = React.memo(({ language, content, forceSource = false, ...props }: { language: string; content: string; forceSource?: boolean;[key: string]: any }) => {
   const streaming = React.useContext(MarkdownStreamContext);
-  const [wrapLines, setWrapLines] = useState(false);
+  const displayLanguage = language || 'text';
+  const languageLabel = codeLanguageLabels[displayLanguage.toLowerCase()] || displayLanguage.toUpperCase();
+  const [wrapLines, setWrapLines] = useState(() => ['text', 'txt', 'plaintext'].includes(displayLanguage.toLowerCase()));
   const [expanded, setExpanded] = useState(false);
   const theme = useResolvedTheme();
   const lineCount = Math.max(1, content.split(/\r?\n/).length);
   const isLong = lineCount > 32 || content.length > 3200;
-  const displayLanguage = language || 'text';
 
   if (!streaming && !forceSource && MERMAID_LANGUAGE_ALIASES.has(displayLanguage.toLowerCase())) {
     return <MermaidDiagram chart={content} />;
   }
 
   const highlightStyle = codeHighlightThemes[theme];
+  const codeContentStyle: React.CSSProperties = {
+    margin: 0,
+    background: 'var(--eterx-md-code-bg)',
+    padding: '0.25rem var(--eterx-code-card-padding, 1.25rem) 1.1rem',
+    width: wrapLines ? '100%' : 'max-content',
+    minWidth: '100%',
+    boxSizing: 'border-box',
+    fontSize: '13px',
+    lineHeight: 1.65,
+    textAlign: 'left',
+  };
+  const codeTextStyle: React.CSSProperties = {
+    fontFamily: 'var(--font-mono)',
+    whiteSpace: wrapLines ? 'pre-wrap' : 'pre',
+    overflowWrap: wrapLines ? 'anywhere' : 'normal',
+    wordBreak: 'normal',
+  };
 
   return (
     <div
-      className={`eterx-markdown-code-block group/code relative my-5 flex max-w-full flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#1C1B1A] shadow-none ${ expanded ? 'eterx-code-expanded' : '' }`}
+      className={`eterx-markdown-code-block eterx-code-card group/code relative my-5 flex min-w-0 w-full max-w-full flex-col overflow-hidden shadow-none ${ expanded ? 'eterx-code-expanded' : '' }`}
       data-language={displayLanguage}
     >
-      <div className="eterx-markdown-code-actions absolute right-2 top-2 z-20 flex items-center gap-1 rounded-lg border border-white/[0.08] bg-[#1C1B1A]/86 p-1 opacity-55 shadow-none backdrop-blur-md transition-opacity duration-200 group-hover/code:opacity-100">
-        <ToolbarButton label={wrapLines ? 'Disable wrap' : 'Wrap lines'} active={wrapLines} onClick={() => setWrapLines(value => !value)}>
-          <WrapText className="h-4 w-4" />
-        </ToolbarButton>
-        <CopyButton
-          text={content}
-          side="bottom"
-          className="eterx-markdown-copy-button h-8 w-8 border border-white/[0.08] bg-white/[0.035] text-[#8C8A88] hover:bg-white/[0.07] hover:text-[#E8E6E3]"
-        />
+      <div className="eterx-markdown-code-header eterx-code-card-header">
+        <div className="eterx-code-card-title">
+          <Code2 aria-hidden="true" className="h-[18px] w-[18px] shrink-0" strokeWidth={1.8} />
+          <span className="truncate">{languageLabel}</span>
+        </div>
+        <div className="eterx-markdown-code-actions eterx-code-card-actions">
+          <Tooltip text={wrapLines ? 'Disable wrap' : 'Wrap lines'} side="top" showOnFocus>
+            <button
+              type="button"
+              className="eterx-code-card-action eterx-code-card-wrap"
+              onClick={() => setWrapLines(value => !value)}
+              aria-label={wrapLines ? 'Disable wrap' : 'Wrap lines'}
+              aria-pressed={wrapLines}
+            >
+              <WrapText className="h-[17px] w-[17px]" strokeWidth={1.8} />
+            </button>
+          </Tooltip>
+          <CopyButton
+            text={content}
+            side="top"
+            className="eterx-markdown-copy-button eterx-code-card-action eterx-code-card-copy"
+          />
+        </div>
       </div>
-      <div className={`eterx-markdown-code-scroll eterx-scrollbar overflow-auto ${ isLong && !expanded ? 'max-h-[520px]' : '' }`}>
+      <div
+        className={`eterx-markdown-code-scroll eterx-scrollbar min-w-0 w-full max-w-full overflow-auto ${ isLong && !expanded ? 'max-h-[520px]' : '' }`}
+        tabIndex={0}
+        role="region"
+        aria-label={`${languageLabel} code block`}
+      >
         {streaming ? (
           <div className="eterx-markdown-code-content code-span min-w-full text-[12.5px] leading-relaxed font-mono"
-            style={{ margin: 0, background: 'var(--eterx-md-code-bg)', padding: '0.85rem 4rem 0.9rem 0.9rem', minWidth: '100%' }}>
-            <code style={{ fontFamily: 'var(--font-mono)', whiteSpace: wrapLines ? 'pre-wrap' : 'pre', overflowWrap: wrapLines ? 'anywhere' : 'normal' }}>{content}</code>
+            style={codeContentStyle}>
+            <code style={codeTextStyle}>{content}</code>
           </div>
         ) : <SyntaxHighlighter
           style={highlightStyle as any}
@@ -901,24 +957,24 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
           showLineNumbers={false}
           wrapLongLines={wrapLines}
           className="eterx-markdown-code-content code-span min-w-full text-[12.5px] leading-relaxed font-mono"
-          customStyle={{
-            margin: 0,
-            background: 'var(--eterx-md-code-bg)',
-            padding: '0.85rem 4rem 0.9rem 0.9rem',
-            minWidth: '100%',
-          }}
-          codeTagProps={{
-            style: {
-              fontFamily: 'var(--font-mono)',
-              whiteSpace: wrapLines ? 'pre-wrap' : 'pre',
-              overflowWrap: wrapLines ? 'anywhere' : 'normal',
-            },
-          }}
+          customStyle={codeContentStyle}
+          codeTagProps={{ style: codeTextStyle }}
           {...props}
         >
           {content}
         </SyntaxHighlighter>}
       </div>
+      {isLong && (
+        <button
+          type="button"
+          className="eterx-code-card-expand"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(value => !value)}
+        >
+          <span>{expanded ? 'Collapse code' : 'Show full code'}</span>
+          <ChevronDown aria-hidden="true" className={`h-3.5 w-3.5 ${expanded ? 'rotate-180' : ''}`} />
+        </button>
+      )}
     </div>
   );
 }, (prevProps, nextProps) => prevProps.content === nextProps.content && prevProps.language === nextProps.language && prevProps.forceSource === nextProps.forceSource);

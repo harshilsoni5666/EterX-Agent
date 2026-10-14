@@ -247,7 +247,6 @@ const lightweightSidebarCss = `
   .eterx-sidebar-shell .eterx-sidebar-recents-scroll {
     /* Slim the visible thumb inside the existing lane without moving chat rows. */
     scrollbar-gutter: stable !important;
-    --eterx-sb-inset: 1px;
     --eterx-sb-thumb: rgba(255, 255, 255, 0.12);
     --eterx-sb-thumb-hover: rgba(255, 255, 255, 0.20);
     --eterx-sb-thumb-active: rgba(255, 255, 255, 0.28);
@@ -256,10 +255,6 @@ const lightweightSidebarCss = `
     --eterx-sidebar-scroll-fade-size: 12px;
     -webkit-mask-image: none !important;
     mask-image: none !important;
-  }
-
-  .eterx-sidebar-shell .eterx-sidebar-recents-scroll::-webkit-scrollbar-button:single-button:vertical {
-    background-size: 10px 7px !important;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-recents-scroll.eterx-sidebar-scroll-fade-top {

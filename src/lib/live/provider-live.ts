@@ -1,4 +1,5 @@
 import { requestJson } from '../request-json';
+import { captureMicrophone } from '../microphone';
 import {
   AgentLiveSession,
   type LiveSession,
@@ -672,9 +673,7 @@ export class ProviderLiveSession implements LiveSession {
       if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
         throw new Error('Microphone access is blocked by the operating system. Enable it for EterX in system privacy settings.');
       }
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
+      const mediaStream = await captureMicrophone(this.options.microphoneDeviceId);
       if (!this.isCurrentAttempt(attempt) || this.peerConnection !== peer) {
         mediaStream.getTracks().forEach(track => track.stop());
         throw new Error('OpenAI Live microphone capture was cancelled.');
@@ -947,9 +946,7 @@ export class ProviderLiveSession implements LiveSession {
     if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
       throw new Error('Microphone access is blocked by the operating system. Enable it for EterX in system privacy settings.');
     }
-    const mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    const mediaStream = await captureMicrophone(this.options.microphoneDeviceId);
     if (!this.isCurrentAttempt(attempt)) {
       mediaStream.getTracks().forEach(track => track.stop());
       throw new Error(`${this.provider.label} microphone capture was cancelled.`);

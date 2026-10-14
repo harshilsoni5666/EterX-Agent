@@ -445,8 +445,8 @@ export function getAnthropicThinkingBudget(level: MainAgentThinkingLevel): numbe
   }
 }
 
-export function isAnthropicAdaptiveThinkingModel(modelName: string): boolean {
-  const capability = getDocumentedThinkingCapabilities('anthropic', modelName);
+export function isAnthropicAdaptiveThinkingModel(modelName: string, discovered?: ModelThinkingCapabilities | null): boolean {
+  const capability = resolveModelThinkingCapabilities('anthropic', modelName, discovered);
   return capability?.parameter === 'output_config.effort' && !/claude-opus-4[.-]5(?:[.-]|$)/i.test(modelName);
 }
 

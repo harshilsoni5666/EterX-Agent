@@ -40,6 +40,7 @@ export const Tooltip = React.memo(({
   variant = 'dark',
   disabled = false,
   delay = 600,
+  showOnFocus = false,
 }: {
   children: React.ReactNode;
   text?: string;
@@ -51,16 +52,22 @@ export const Tooltip = React.memo(({
   variant?: 'light' | 'dark';
   disabled?: boolean;
   delay?: number;
+  showOnFocus?: boolean;
 }) => {
   const [visible, setVisible] = useState(false);
   const [isPositioned, setIsPositioned] = useState(false);
   const [coords, setCoords] = useState({ left: 0, top: 0, width: 96, arrowLeft: 43, arrowTop: 10 });
   const ref = useRef<HTMLDivElement>(null);
   const hoverTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const hoveredRef = useRef(false);
+  const focusedRef = useRef(false);
+  const dismissedRef = useRef(false);
   const tooltipFontFamily = '"Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif';
 
   const handleMouseEnter = () => {
+    hoveredRef.current = true;
     if (disabled) return;
+    dismissedRef.current = false;
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
     if (delay <= 0) {
       setVisible(true);
@@ -72,11 +79,44 @@ export const Tooltip = React.memo(({
   };
 
   const handleMouseLeave = () => {
+    hoveredRef.current = false;
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = null;
+    if (showOnFocus && focusedRef.current) return;
     hoverTimerRef.current = setTimeout(() => {
       setVisible(false);
       setIsPositioned(false);
     }, 40);
+  };
+
+  const handleFocus = () => {
+    if (!showOnFocus || disabled) return;
+    focusedRef.current = true;
+    dismissedRef.current = false;
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = null;
+    setVisible(true);
+  };
+
+  const handleBlur = (event: React.FocusEvent<HTMLDivElement>) => {
+    if (!showOnFocus) return;
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
+    focusedRef.current = false;
+    if (hoveredRef.current && !dismissedRef.current && !disabled) return;
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = null;
+    setVisible(false);
+    setIsPositioned(false);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!showOnFocus || event.key !== 'Escape' || (!visible && !hoverTimerRef.current)) return;
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = null;
+    dismissedRef.current = true;
+    setVisible(false);
+    setIsPositioned(false);
+    event.stopPropagation();
   };
 
   useEffect(() => {
@@ -119,7 +159,7 @@ export const Tooltip = React.memo(({
           ? Math.max(68, contentWidth || 248)
           : Math.max(68, Math.ceil(measuredTextWidth + 32))
       );
-      const height = content ? Math.max(28, contentHeight || 96) : 28;
+      const height = content ? Math.max(28, contentHeight || 96) : Math.max(28, contentHeight || 28);
       const centerX = rect.left + rect.width / 2;
       const centerY = rect.top + rect.height / 2;
       let left = centerX - width / 2;
@@ -177,7 +217,7 @@ export const Tooltip = React.memo(({
   const hotkey = hotkeyMatch ? hotkeyMatch[0].trim() : '';
 
   return (
-    <div ref={ref} className="relative flex items-center justify-center shrink-0" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+    <div ref={ref} className="relative flex items-center justify-center shrink-0" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onFocusCapture={handleFocus} onBlurCapture={handleBlur} onKeyDownCapture={handleKeyDown}>
       {children}
       {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>

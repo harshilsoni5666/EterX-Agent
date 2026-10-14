@@ -7,6 +7,7 @@ import { beginModelCatalogRequest } from '../../lib/model-catalog-client';
 import { useDesktopUpdates } from '../../lib/desktop-updates';
 import { AgentToolsSettings } from './agent-tools-settings';
 import { ComputerUseSettings } from './computer-use-settings';
+import { MicrophoneSettings } from './microphone-settings';
 import { SettingsProfile } from './settings-profile';
 import { buildProfileActivity, EMPTY_PROFILE_ACTIVITY, type ProfileActivityStats } from '../../lib/profile-activity';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
@@ -395,6 +396,11 @@ export interface AppSettings {
   showTokenCount: boolean;
   archiveRetention: '30' | '90' | 'forever';
 
+  // Local microphone dictation
+  dictationModel: string;
+  dictationLanguage: string;
+  microphoneDeviceId: string;
+
   // Live Convo
   liveConvoEnabled: boolean;
   liveConvoProvider: string;
@@ -464,6 +470,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   computerUse: false,
   showTokenCount: true,
   archiveRetention: '90',
+  dictationModel: 'large-v3-q5_0',
+  dictationLanguage: 'auto',
+  microphoneDeviceId: 'default',
   liveConvoEnabled: true,
   liveConvoProvider: 'agent-live-convo',
   liveConvoModel: 'auto',
@@ -494,6 +503,12 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
     ? value as Partial<AppSettings>
     : {};
   const next = { ...DEFAULT_SETTINGS, ...stored } as AppSettings;
+  next.dictationModel = typeof stored.dictationModel === 'string' && stored.dictationModel.trim()
+    ? stored.dictationModel : DEFAULT_SETTINGS.dictationModel;
+  next.dictationLanguage = typeof stored.dictationLanguage === 'string' && /^(auto|[a-z]{2,3})$/.test(stored.dictationLanguage)
+    ? stored.dictationLanguage : 'auto';
+  next.microphoneDeviceId = typeof stored.microphoneDeviceId === 'string' && stored.microphoneDeviceId.trim()
+    ? stored.microphoneDeviceId : 'default';
   next.scratchRetentionDays = normalizeScratchRetention(stored.scratchRetentionDays);
   next.theme = stored.theme === 'dark' || stored.theme === 'system' || stored.theme === 'light'
     ? stored.theme
@@ -2130,6 +2145,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const providerBaseURLSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const providerBaseURLDirtyRef = useRef(false);
   const { updateState, updateActionError, updateActionPending, runUpdateAction, markUpdateViewed } = useDesktopUpdates(isOpen);
+  const quietUpdateCheck = !updateState.availableVersion && (
+    updateState.status === 'idle' || updateState.status === 'pending' ||
+    (updateState.status === 'error' && Boolean(updateState.checkError))
+  );
   apiKeysRef.current = apiKeys;
   modelEntriesRef.current = modelEntries;
   searchSettingsRef.current = searchSettings;
@@ -4515,6 +4534,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
 
 
+                          <SectionHeader title="Microphone and speech" />
+                          <MicrophoneSettings
+                            microphoneDeviceId={settings.microphoneDeviceId || 'default'}
+                            language={settings.dictationLanguage || 'auto'}
+                            modelId={settings.dictationModel || 'large-v3-q5_0'}
+                            onMicrophoneChange={value => updateSetting('microphoneDeviceId', value)}
+                            onLanguageChange={value => updateSetting('dictationLanguage', value)}
+                            onModelChange={value => updateSetting('dictationModel', value)}
+                            Select={ModernSelect}
+                          />
+
                           <SectionHeader title="Notifications" />
                           <SettingsStack>
                             <SettingsStackRow title="Turn completion notifications" description="Get notified when long-running agent work completes.">
@@ -5854,10 +5884,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             <div className="flex items-start justify-between gap-5">
                               <div>
                                 <div className="text-[15px] font-semibold text-[#F1F1F1]">EterX {updateState.currentVersion}</div>
-                                <div className={`mt-1.5 text-[13px] leading-relaxed ${updateState.status === 'error' ? 'text-red-400' : 'text-[#9A9A9A]'}`}>
-                                  {updateState.message}
-                                </div>
+                                {!quietUpdateCheck && updateState.message && (
+                                  <div className={`mt-1.5 text-[13px] leading-relaxed ${updateState.status === 'error' ? 'text-red-400' : 'text-[#9A9A9A]'}`}>
+                                    {updateState.message}
+                                  </div>
+                                )}
                               </div>
+                              {(!quietUpdateCheck || updateState.checking) && (
                               <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
                                 updateState.status === 'current' || updateState.status === 'ready' || updateState.status === 'installing' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400' :
                                 updateState.status === 'available' || updateState.status === 'downloading' ? 'border-blue-500/25 bg-blue-500/10 text-blue-400' :
@@ -5872,6 +5905,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   updateState.status === 'installing' ? 'Installing' :
                                   updateState.status.charAt(0).toUpperCase() + updateState.status.slice(1)}
                               </span>
+                              )}
                             </div>
 
                             <div className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#666]">
@@ -5932,7 +5966,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 {updateState.checking ? 'Checking…' : 'Check again'}
                               </SoftButton>
                             )}
-                            {(updateState.status === 'error' || updateState.status === 'pending' || updateState.status === 'unsupported') && updateState.releasePage && (
+                            {!quietUpdateCheck && (updateState.status === 'error' || updateState.status === 'pending' || updateState.status === 'unsupported') && updateState.releasePage && (
                               <a href={updateState.releasePage} target="_blank" rel="noopener noreferrer" className="inline-flex items-center rounded-lg bg-white/[0.08] px-3 py-2 text-[13px] font-medium text-[#E8E6E3] hover:bg-white/[0.12]">
                                 Open official releases
                               </a>
@@ -5940,9 +5974,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </div>
 
                           {updateActionError && <p role="alert" className="mt-3 text-[12px] text-red-400">{updateActionError}</p>}
-                          {updateState.checkError && updateState.checkError !== updateState.message && (
-                            <p role="status" className="mt-3 text-[12px] text-amber-400">{updateState.checkError}</p>
-                          )}
 
                           <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
                             {updateState.automaticChecks
@@ -5960,11 +5991,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               Last successful check {new Date(updateState.lastCheckedAt).toLocaleString()}
                             </p>
                           )}
-                          {updateState.checkError && updateState.lastCheckAttemptAt && (
-                            <p className="mt-2 text-[11px] text-[#555]">Last attempt {new Date(updateState.lastCheckAttemptAt).toLocaleString()}</p>
-                          )}
                           {updateState.nextCheckAt && (
-                            <p className="mt-2 text-[11px] text-[#555]">Next automatic {updateState.checkError ? 'retry' : 'check'} around {new Date(updateState.nextCheckAt).toLocaleTimeString()}</p>
+                            <p className="mt-2 text-[11px] text-[#555]">Next automatic check around {new Date(updateState.nextCheckAt).toLocaleTimeString()}</p>
                           )}
                         </div>
                       )}

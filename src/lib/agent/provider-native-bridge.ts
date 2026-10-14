@@ -4,6 +4,9 @@ import { GoogleGenAI } from '@google/genai';
 import { Anthropic } from './model-clients';
 import { MODEL_REQUEST_TIMEOUT_MS } from './model-request-policy';
 import { applyAnthropicPromptCachePolicy, normalizeProviderCacheUsage } from './provider-prompt-cache';
+import { applyAnthropicThinkingDisplay, createAnthropicContentStreamReader } from './provider-capabilities';
+import { getAnthropicThinkingBudget } from './model-routing';
+import { beginPromptCacheDiagnostics } from './prompt-cache-diagnostics';
 
 const textContent = (content: any): string => typeof content === 'string' ? content
   : Array.isArray(content) ? content.map(part => part?.text || '').join('\n') : '';
@@ -25,7 +28,7 @@ function anthropicContent(content: any): any[] {
   });
 }
 
-export async function* streamMessagesBridge(client: OpenAI, params: Record<string, any>, signal?: AbortSignal): AsyncGenerator<any> {
+export async function* streamMessagesBridge(client: OpenAI, params: Record<string, any>, signal?: AbortSignal, conversationScope?: string): AsyncGenerator<any> {
   const native = new Anthropic({ apiKey: client.apiKey, baseURL: client.baseURL.replace(/\/v1\/?$/, ''), timeout: MODEL_REQUEST_TIMEOUT_MS, maxRetries: 0 });
   const messages: any[] = [];
   const system: string[] = [];
@@ -44,14 +47,38 @@ export async function* streamMessagesBridge(client: OpenAI, params: Record<strin
     if (messages.at(-1)?.role === role) messages.at(-1).content.push(...content);
     else messages.push({ role, content });
   }
+  // Compatible transcripts carry runtime observations in separate user
+  // blocks. Keep these inside the preceding native tool result, consistently
+  // on every replay, so older Claude/Haiku tool continuations retain thinking.
+  for (const message of messages) {
+    if (message.role !== 'user') continue;
+    let lastResult = message.content.length - 1;
+    while (lastResult >= 0 && message.content[lastResult]?.type !== 'tool_result') lastResult--;
+    if (lastResult < 0) continue;
+    const updates = message.content.slice(lastResult + 1).filter((block: any) => block?.type === 'text'
+      && /^\[RUNTIME CONTEXT UPDATE: [^\n]+ - REFERENCE DATA\]\n/.test(block.text)
+      && /\n\[END RUNTIME CONTEXT UPDATE: [^\n]+\]$/.test(block.text));
+    if (!updates.length) continue;
+    const result = message.content[lastResult];
+    const content = typeof result.content === 'string' ? [{ type: 'text', text: result.content }]
+      : Array.isArray(result.content) ? result.content : [];
+    message.content = message.content.filter((block: any) => !updates.includes(block));
+    message.content[lastResult] = { ...result, content: [...content, ...updates] };
+  }
   const body: any = { model: params.model, messages, max_tokens: params.max_completion_tokens ?? params.max_tokens ?? 32768 };
   if (system.length) body.system = system.map(text => ({ type: 'text', text }));
   if (params.tools?.length) body.tools = params.tools.map((tool: any) => ({ name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters }));
   if (params.thinking) body.thinking = params.thinking;
   if (params.output_config) {
     body.output_config = params.output_config;
-    if (!/^claude-opus-4[.-]5(?:-|$)/.test(params.model)) body.thinking = { type: 'adaptive' };
+    if (/^claude-opus-4[.-]5(?:-|$)/.test(params.model)) {
+      body.thinking ??= { type: 'enabled', budget_tokens: getAnthropicThinkingBudget(params.output_config.effort) };
+    } else if (body.thinking?.type !== 'disabled') {
+      body.thinking = { ...body.thinking, type: 'adaptive' };
+    }
   }
+  if (/(?:^|\/)claude-/i.test(params.model)) applyAnthropicThinkingDisplay(body);
+  if (body.thinking?.type === 'enabled') body.max_tokens = Math.max(body.max_tokens, Number(body.thinking.budget_tokens || 0) + 2048);
   if (!body.thinking && params.temperature !== undefined) body.temperature = params.temperature;
   if (params.tool_choice === 'required') body.tool_choice = { type: 'any' };
   else if (params.tool_choice?.type === 'function') body.tool_choice = { type: 'tool', name: params.tool_choice.function.name };
@@ -59,17 +86,27 @@ export async function* streamMessagesBridge(client: OpenAI, params: Record<strin
   // Claude models reached through a compatible gateway need native cache
   // breakpoints too. Other Messages implementations keep their own defaults.
   if (/(?:^|\/)claude-/i.test(params.model)) applyAnthropicPromptCachePolicy(body, undefined, params.messages);
+  const cacheObservation = beginPromptCacheDiagnostics({
+    provider: 'anthropic', model: params.model, scope: conversationScope,
+    endpoint: native.baseURL, apiKey: client.apiKey, request: body,
+  });
   const stream = native.messages.stream(body, signal ? { signal } : undefined);
+  const readContent = createAnthropicContentStreamReader();
   for await (const event of stream) {
-    if (event.type !== 'content_block_delta') continue;
-    const delta: any = event.delta;
-    if (delta.type === 'text_delta') yield { choices: [{ delta: { content: delta.text } }] };
-    if (delta.type === 'thinking_delta') yield { choices: [{ delta: { reasoning: delta.thinking } }] };
+    const content = readContent(event);
+    if (content.reasoning) yield { choices: [{ delta: { reasoning: content.reasoning } }] };
+    if (content.reasoningBoundary) yield { choices: [{ delta: { reasoning_boundary: true } }] };
+    if (content.text) yield { choices: [{ delta: { content: content.text } }] };
   }
   const message = await stream.finalMessage();
+  for (const reasoning of readContent.remainingReasoning(message.content)) {
+    yield { choices: [{ delta: { reasoning } }] };
+    yield { choices: [{ delta: { reasoning_boundary: true } }] };
+  }
   if (!['end_turn', 'tool_use', 'stop_sequence'].includes(String(message.stop_reason))) throw new Error(`MODEL_STREAM_INCOMPLETE: Messages endpoint ended with ${message.stop_reason}.`);
+  cacheObservation?.complete(message.usage);
   const calls = message.content.filter((part: any) => part.type === 'tool_use').map((part: any, index: number) => ({ index, id: part.id, type: 'function', function: { name: part.name, arguments: JSON.stringify(part.input) } }));
-  yield { choices: [{ delta: { tool_calls: calls }, finish_reason: calls.length ? 'tool_calls' : 'stop' }], usage: normalizeProviderCacheUsage('anthropic', message.usage), provider_message: { anthropic_content: message.content } };
+  yield { choices: [{ delta: { tool_calls: calls }, finish_reason: calls.length ? 'tool_calls' : 'stop' }], usage: normalizeProviderCacheUsage('anthropic', message.usage), prompt_cache_diagnostics: cacheObservation?.report, provider_message: { anthropic_content: message.content } };
 }
 
 function geminiParts(content: any): any[] {
@@ -83,7 +120,7 @@ function geminiParts(content: any): any[] {
   });
 }
 
-export async function* streamGenerateContentBridge(client: OpenAI, params: Record<string, any>, signal?: AbortSignal): AsyncGenerator<any> {
+export async function* streamGenerateContentBridge(client: OpenAI, params: Record<string, any>, signal?: AbortSignal, conversationScope?: string): AsyncGenerator<any> {
   const native = new GoogleGenAI({ apiKey: client.apiKey, httpOptions: { baseUrl: client.baseURL.replace(/\/v1\/?$/, ''), apiVersion: 'v1', timeout: MODEL_REQUEST_TIMEOUT_MS } });
   const contents: any[] = [];
   const system: string[] = [];
@@ -109,6 +146,10 @@ export async function* streamGenerateContentBridge(client: OpenAI, params: Recor
   if (params.thinkingBudget !== undefined) config.thinkingConfig = { thinkingBudget: params.thinkingBudget, includeThoughts: true };
   if (params.max_completion_tokens ?? params.max_tokens) config.maxOutputTokens = params.max_completion_tokens ?? params.max_tokens;
   if (params.temperature !== undefined) config.temperature = params.temperature;
+  const cacheObservation = beginPromptCacheDiagnostics({
+    provider: 'gemini', model: params.model, scope: conversationScope,
+    endpoint: client.baseURL, apiKey: client.apiKey, request: { ...config, contents },
+  });
   const stream = await native.models.generateContentStream({ model: params.model, contents, config });
   const parts: any[] = [];
   const calls: any[] = [];
@@ -130,5 +171,6 @@ export async function* streamGenerateContentBridge(client: OpenAI, params: Recor
     }
   }
   if (finishReason !== 'STOP') throw new Error(`MODEL_STREAM_INCOMPLETE: GenerateContent endpoint ended with ${finishReason || 'no finish reason'}.`);
-  yield { choices: [{ delta: { tool_calls: calls }, finish_reason: calls.length ? 'tool_calls' : 'stop' }], usage, provider_message: { gemini_content: parts } };
+  if (usage) cacheObservation?.complete(usage);
+  yield { choices: [{ delta: { tool_calls: calls }, finish_reason: calls.length ? 'tool_calls' : 'stop' }], usage, prompt_cache_diagnostics: cacheObservation?.report, provider_message: { gemini_content: parts } };
 }

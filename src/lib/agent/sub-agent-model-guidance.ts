@@ -1,0 +1,6 @@
+/** Prompt guidance for the agent assigning workers; model overrides remain optional. */
+export const SUB_AGENT_MODEL_SELECTION_GUIDANCE = `WORKER MODEL SELECTION:
+- The agent spawning a worker chooses its model before launch. Strongly prefer your currently selected provider and exact model as the default for each worker, including nested delegation. Usually leave the task's provider, model, and mode unset so it inherits your current selection.
+- Form independent assignments and approaches using that model. A different role, another perspective, or a larger team alone is not a reason to choose a different model. Adjust thinkingLevel when reasoning depth alone needs to change.
+- You may deliberately select another available model for a concrete task benefit, such as a required capability, expected quality, cost, latency, or recovery from failure. Failure is not a prerequisite. Briefly explain the benefit in the assignment rationale and provide the exact provider and model together.
+- A worker carries out its assignment using the model selected for it. This guidance concerns models for workers you spawn; it does not ask an assigned worker to change its own model. Respect explicit user model choices and available provider permissions.`;

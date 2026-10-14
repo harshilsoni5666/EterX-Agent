@@ -130,11 +130,7 @@ export const isThoughtStreamOpen = (trace: any): boolean => {
 export const shouldRenderThoughtStream = (trace: any): boolean => {
   if (!trace || trace.type !== 'thought_stream') return false;
   const text = String(trace.text || '').replace(/<\/?(?:thought|work_note)>/gi, '').trim();
-  // Keep an explicitly open UI shell visible while a direct turn is live so
-  // the feed can show the provider's active thought lifecycle. Once closed,
-  // an empty shell is noise; real thought text remains visible regardless of
-  // whether the provider marked it as UI-only.
-  return Boolean(text) || (trace.uiOnly === true && isThoughtStreamOpen(trace));
+  return Boolean(text);
 };
 
 const getThoughtStreamChatIds = (trace: any): string[] => Array.from(new Set(

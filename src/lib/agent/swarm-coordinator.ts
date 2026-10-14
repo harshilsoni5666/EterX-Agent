@@ -1,6 +1,8 @@
 import path from 'path';
 import fs from 'fs';
 import { assessDelegatedAgent } from './delegation-evidence';
+import { SUB_AGENT_MODEL_SELECTION_GUIDANCE } from './sub-agent-model-guidance';
+import { SUB_AGENT_SPAWN_GUIDANCE } from './sub-agent-spawn-guidance';
 
 export type WorkClaim = { path: string; access: 'read' | 'write' };
 export type SwarmContract = {
@@ -288,4 +290,8 @@ class SwarmCoordinator {
 const state = globalThis as typeof globalThis & { __eterxSwarmCoordinator?: SwarmCoordinator };
 export const swarmCoordinator = state.__eterxSwarmCoordinator ||= new SwarmCoordinator();
 
-export const SWARM_MODE_INSTRUCTION = `The user selected Swarm Mode. Deliberately organize this request as a coordinated task graph using spawn_sub_agent. Delegate at least one useful, bounded outcome when tools and the request permit it; explain a genuine inability instead of fabricating busywork. Team size is not a goal. Identify uncertainty, independent outcomes, critical dependencies, acceptance evidence and shared resources before expansion. Use task-specific roles, not a preset frontend/backend/reviewer team. Supply a rationale and acceptance condition for each assignment, task keys and dependsOn for ordered work, and read/write resources for shared files. Start a small frontier and expand only when new independent work justifies its cost. Every worker may delegate a narrower outcome and remains accountable for integrating its children. Use targeted messages and parent handoffs; broadcast only discoveries that change the whole team's work. Never treat lifecycle completion as proof of correctness. Reuse evidence, reconcile disagreements and integrate all required branches before answering. User restrictions, tool permissions and model selection remain in force.`;
+export const SWARM_MODE_INSTRUCTION = `The user selected Swarm Mode. Deliberately organize this request as a coordinated task graph using spawn_sub_agent. Delegate at least one useful, bounded outcome when tools and the request permit it; explain a genuine inability instead of fabricating busywork. Team size is not a goal. Identify uncertainty, independent outcomes, critical dependencies, acceptance evidence and shared resources before expansion. Use task-specific roles, not a preset frontend/backend/reviewer team. Supply a rationale and acceptance condition for each assignment, task keys and dependsOn for ordered work, and read/write resources for shared files. Start a small frontier and expand only when new independent work justifies its cost. Every worker may delegate a narrower outcome and remains accountable for integrating its children. Use targeted messages and parent handoffs; broadcast only discoveries that change the whole team's work. Never treat lifecycle completion as proof of correctness. Reuse evidence, reconcile disagreements and integrate all required branches before answering. User restrictions, tool permissions and model selection remain in force.
+
+${SUB_AGENT_MODEL_SELECTION_GUIDANCE}
+
+${SUB_AGENT_SPAWN_GUIDANCE}`;

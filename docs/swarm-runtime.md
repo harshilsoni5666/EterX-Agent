@@ -15,7 +15,11 @@ Ordinary delegation remains available according to the chat's settings and reque
 
 There are no required frontend/backend/reviewer departments. Agents choose outcomes from the task, uncertainty, dependencies, and shared resources. A worker can delegate a narrower outcome and remains responsible for integrating its children.
 
+The spawning agent's current provider and exact model are the strongly preferred default for its workers. Shared prompt guidance teaches Main and nested delegating agents to omit model overrides for ordinary assignments and use different tasks or approaches on the same model. Another available model may still be chosen for a concrete task benefit or failure recovery; failure is not required first. The spawning agent chooses the worker's model before launch. This is prompt guidance, and explicit model overrides remain available. Assigned workers are not instructed to change their own model.
+
 ## Task contracts
+
+Creation calls always use a nonempty `tasks` array, even for one worker. Worker names, assignments, contracts, and model options belong inside each entry; top-level `agentName` and `agentId` address existing workers. The shared call example reaches the tool description, Swarm instruction, orchestration advice, and nested worker briefs. Native and custom-agent preflight validation rejects missing or empty assignments before a launch action is published and returns corrective guidance. Consensus, debate, and specialist modes accept exactly one topic; specialist also requires its role. Runtime contract and admission rejections return explicit failure metadata, so an unsuccessful spawn is not displayed as "Started agents."
 
 An assignment accepts:
 

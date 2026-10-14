@@ -1,3 +1,6 @@
+import { SUB_AGENT_MODEL_SELECTION_GUIDANCE } from '../sub-agent-model-guidance';
+import { SUB_AGENT_SPAWN_GUIDANCE } from '../sub-agent-spawn-guidance';
+
 export type SpecialistRole =
   | 'security_auditor'
   | 'performance_analyst'
@@ -147,6 +150,8 @@ export function buildSubAgentStrategy(request: string, options?: { maxAgents?: n
 
   const rationale: string[] = [];
   const guardrails = [
+    SUB_AGENT_MODEL_SELECTION_GUIDANCE,
+    SUB_AGENT_SPAWN_GUIDANCE,
     'Do not spawn agents for tiny sequential tasks or tasks requiring one shared mutable edit at a time.',
     'Define each outcome, dependency and resource owner explicitly. Children may delegate narrower outcomes and must integrate their descendants.',
     'A broad request is not evidence that more agents will help. Expand only for useful independent work; reused evidence and local work can be cheaper.',

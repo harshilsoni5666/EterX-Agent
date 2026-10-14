@@ -4,8 +4,14 @@ export type ProviderProtocol = 'chat' | 'responses' | 'messages' | 'generateCont
 
 /** Endpoint contracts are independent of model effort controls. */
 export function getProviderProtocol(provider: MainAgentProvider, model: string, capabilities: string[] = []): ProviderProtocol {
+  // Native reasoning models need Responses for readable summaries (and GPT-6
+  // tool calls with thinking). Older catalog snapshots may list only Chat.
+  if (provider === 'openai' && /^(?:gpt-(?:[5-9]|[1-9]\d+)|o[134](?:-|$))|codex/i.test(model)) return 'responses';
   const endpoints = capabilities.filter(value => value.startsWith('api:')).map(value => value.slice(4));
   if (endpoints.length) {
+    // Reasoning summaries are available through Responses. A catalog that
+    // advertises both endpoints must not send OpenAI thinking through Chat.
+    if (provider === 'openai' && endpoints.includes('responses')) return 'responses';
     for (const protocol of ['chat', 'responses', 'messages', 'generateContent'] as const) {
       if (endpoints.includes(protocol)) return protocol;
     }
@@ -21,6 +27,5 @@ export function getProviderProtocol(provider: MainAgentProvider, model: string, 
     if (/^gemini-/i.test(model)) return 'generateContent';
     if (/^(?:gpt-|grok-|muse-spark-)/i.test(model)) return 'responses';
   }
-  if (provider === 'openai' && /^(?:gpt-(?:[5-9]|[1-9]\d+)|o[134](?:-|$))|codex/i.test(model)) return 'responses';
   return 'chat';
 }

@@ -192,6 +192,8 @@
     "buildDependenciesFromSource": false,
     "files": [
       "electron/*.js",
+      "electron/whisper-models.json",
+      "electron/whisper-languages.json",
       "electron/splash.html",
       "electron/splash.css",
       "package.json",
@@ -206,6 +208,7 @@
           ".next/**/*",
           "public/**/*",
           "assets/**/*",
+          "!assets/native/whisper/**/*",
           "!**/*.map",
           "!.next/cache/**/*",
           "!**/.env*",
@@ -216,6 +219,18 @@
       "!node_modules/**/*"
     ],
     "extraResources": [
+      {
+        "from": "desktop-runtime/assets/native/whisper",
+        "to": "runtime/assets/native/whisper",
+        "filter": [
+          "**/*",
+          "!models{,/**/*}"
+        ]
+      },
+      {
+        "from": "desktop-runtime/assets/native/whisper/models/ggml-large-v3-q5_0.bin",
+        "to": "runtime/assets/native/whisper/models/ggml-large-v3-q5_0.bin"
+      },
       {
         "from": "public/icon.ico",
         "to": "icon.ico"

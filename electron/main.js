@@ -1153,13 +1153,13 @@ async function performDesktopUpdateCheck({ silent = false } = {}) {
       desktopUpdateNextCheckAt = Date.now() + retryMinutes * 60_000;
       const message = describeDesktopUpdateError(error, 'Update check');
       logToFile(`[update] ${message}`);
-      // Retain a known release through a transient offline check. Never claim
-      // "up to date" after a failed request, including silent startup scans.
+      // Keep release discovery failures quiet and retry in the background.
+      // Retain a known update, but never claim "up to date" after a failed check.
       publishDesktopUpdateState({
         checkError: message,
         ...(!desktopUpdateState.availableVersion ? {
-          status: error?.code === 'ERR_ETERX_RELEASE_PENDING' ? 'pending' : 'error',
-          message,
+          status: 'idle',
+          message: '',
         } : {}),
       });
     } finally {
@@ -2911,11 +2911,21 @@ function sendDesktopDictationEvent(target, payload) {
   target.send('speech-dictation-event', payload);
 }
 
+const speechModelSubscribers = new Set();
 const desktopSpeechDictation = new WhisperDictation({
   app,
   spawn,
   log: logToFile,
   send: sendDesktopDictationEvent,
+  onModelState: state => {
+    for (const target of speechModelSubscribers) {
+      if (target.isDestroyed()) { speechModelSubscribers.delete(target); continue; }
+      // A settings window closing during a download must not interrupt it.
+      if (isTrustedRenderer(target)) {
+        try { target.send('speech-model-state', state); } catch {}
+      }
+    }
+  },
 });
 
 function delay(ms) {
@@ -4230,11 +4240,43 @@ ipcMain.on('pet-reply', (_event, message) => {
   }
 });
 
-ipcMain.handle('speech-dictation-start', async (event, requestedLanguage, sessionId) => {
+const speechOwners = new WeakSet();
+ipcMain.handle('speech-model-catalog', event => {
+  if (!isTrustedRenderer(event.sender)) return { error: 'Untrusted renderer origin.' };
+  if (!speechModelSubscribers.has(event.sender)) {
+    speechModelSubscribers.add(event.sender);
+    event.sender.once('destroyed', () => speechModelSubscribers.delete(event.sender));
+  }
+  return desktopSpeechDictation.models.catalog();
+});
+
+ipcMain.handle('speech-model-download', async (event, modelId) => {
+  if (!isTrustedRenderer(event.sender)) return { success: false, error: 'Untrusted renderer origin.' };
+  try {
+    await desktopSpeechDictation.models.ensure(modelId, { background: true });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: String(error?.message || error) };
+  }
+});
+
+ipcMain.handle('speech-model-cancel', (event, modelId) => {
+  if (!isTrustedRenderer(event.sender)) return { success: false, error: 'Untrusted renderer origin.' };
+  if (desktopSpeechDictation.pendingStart?.modelId === modelId) {
+    return { success: false, error: 'This model is preparing for dictation. Stop the microphone before cancelling.' };
+  }
+  try { return { success: desktopSpeechDictation.models.cancel(modelId) }; }
+  catch (error) { return { success: false, error: String(error?.message || error) }; }
+});
+
+ipcMain.handle('speech-dictation-start', async (event, requestedLanguage, sessionId, modelId) => {
   if (!isTrustedRenderer(event.sender)) {
     return { started: false, supported: false, error: 'Untrusted renderer origin.' };
   }
-  const microphone = typeof systemPreferences.getMediaAccessStatus === 'function'
+  if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 128) {
+    return { started: false, supported: true, error: 'Invalid speech session. Try the microphone again.' };
+  }
+  const microphone = process.platform !== 'linux' && typeof systemPreferences.getMediaAccessStatus === 'function'
     ? systemPreferences.getMediaAccessStatus('microphone')
     : 'unknown';
   if (microphone === 'denied' || microphone === 'restricted') {
@@ -4246,8 +4288,11 @@ ipcMain.handle('speech-dictation-start', async (event, requestedLanguage, sessio
     };
   }
   try {
-    const result = await desktopSpeechDictation.start(event.sender, requestedLanguage, sessionId);
-    event.sender.once('destroyed', () => void desktopSpeechDictation.stop(event.sender, false, sessionId, true));
+    if (!speechOwners.has(event.sender)) {
+      speechOwners.add(event.sender);
+      event.sender.once('destroyed', () => void desktopSpeechDictation.stop(event.sender, false, null, true));
+    }
+    const result = await desktopSpeechDictation.start(event.sender, requestedLanguage, sessionId, modelId);
     return { ...result, microphone };
   } catch (error) {
     logToFile(`[whisper.cpp] ${String(error?.stack || error?.message || error)}`);

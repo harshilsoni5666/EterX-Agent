@@ -1281,6 +1281,7 @@ const generateCapsulePartWithKey = async (
   model: ContextCompactionModel,
   apiKey: string,
   abortSignal?: AbortSignal,
+  conversationScope?: string,
 ): Promise<string> => {
   const systemInstruction = 'Perform exact, loss-aware agent state transfer. Output only the requested continuation capsule.';
   // The shared instructions end before per-part state. Preserve this boundary
@@ -1358,7 +1359,7 @@ const generateCapsulePartWithKey = async (
     ],
   };
   if (model.provider === 'openai' && process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1') {
-    applyOpenAIPromptCachePolicy(params, { model: model.modelId, staticPrompt: systemInstruction, tools: [] });
+    applyOpenAIPromptCachePolicy(params, { model: model.modelId, staticPrompt: systemInstruction, tools: [], conversationScope });
   }
   const stream = await createProviderChatStream(client, model.provider, params, abortSignal);
   const splitter = createCompatibleTaggedReasoningSplitter();
@@ -1436,7 +1437,7 @@ const generateCapsulePart = async (
       const attemptPrompt = offset > 0 && needsShapeRepair
         ? `${prompt}\n\n[COMPACTOR RETRY REQUIREMENT]\nThe previous attempt did not produce a complete valid state transfer. Produce all nine required sections with non-empty bodies. Shorten repeated prose and use existing exact references for bulky evidence so the final section finishes within the output budget. Keep active constraints, pending work and the next safe action intact. Do not repeat the incomplete output or explain this retry.\n[END COMPACTOR RETRY REQUIREMENT]`
         : prompt;
-      const result = await generateCapsulePartWithKey(attemptPrompt, model, apiKey, attemptController.signal);
+      const result = await generateCapsulePartWithKey(attemptPrompt, model, apiKey, attemptController.signal, `${chatId}:compaction`);
       if (abortSignal?.aborted) throw new Error('CANCELLED_BY_USER');
       if (!result) throw new Error('The context compaction model returned an empty capsule.');
       validateCapsuleShape(result);

@@ -141,12 +141,12 @@ jobs:
       - name: Install locked dependencies
         run: npm ci --legacy-peer-deps --no-audit --fund=false
 
-      - name: Compile application
-        run: npm run desktop:prepare-whisper && npm run build
-
-      - name: Install Linux ARM64 terminal toolchain
+      - name: Install Linux native toolchains
         if: matrix.target == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Compile application and native speech runtimes
+        run: npm run desktop:prepare-whisper && npm run build
 
       - name: Prepare self-contained desktop runtime
         run: npm run desktop:prepare-runtime

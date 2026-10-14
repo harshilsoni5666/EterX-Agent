@@ -326,18 +326,32 @@ LiveMarkdown.displayName = 'LiveMarkdown';
 
 // Use only explicit provider headings, never turn a reasoning paragraph or
 // code sample into a status. Incomplete streamed headings keep the prior one.
-const getThoughtHeading = (text: unknown): string => {
+const getThoughtHeading = (text: unknown, isStreaming = true): string => {
   if (typeof text !== 'string') return '';
-  const lines = text.split('\n');
-  let fenced = false;
+  const lines = text.replace(/<\/?(?:thought|work_note)>/gi, '').split(/\r?\n/);
+  let fence = '';
   let heading = '';
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index].trim();
-    if (/^(?:```|~~~)/.test(line)) { fenced = !fenced; continue; }
-    if (fenced) continue;
-    const match = line.match(/^\*\*([^*\n]+)\*\*\s*:?:?$/)
-      || (index < lines.length - 1 ? line.match(/^#{1,6}\s+(.+?)(?:\s+#+)?$/) : null);
-    const candidate = match?.[1]?.trim();
+    const marker = line.match(/^(`{3,}|~{3,})/);
+    if (marker) {
+      if (!fence) fence = marker[1];
+      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length && !line.slice(marker[1].length).trim()) fence = '';
+      continue;
+    }
+    if (fence) continue;
+    // OpenAI, Claude and compatible providers use several explicit Markdown
+    // title forms. Keep the prior heading while a streamed title is incomplete.
+    const bold = line.match(/^(?:\*\*([^*\n]+)\*\*|__([^_\n]+)__)\s*[:：]?\s*$/)
+      || line.match(/^(?:\*\*([^*\n]+)\*\*|__([^_\n]+)__)\s*[:：]\s+\S/)
+      || line.match(/^(?:\*\*([^*\n]+[:：])\*\*|__([^_\n]+[:：])__)\s+\S/);
+    const atx = index < lines.length - 1 || !isStreaming
+      ? line.match(/^#{1,6}\s+(.+?)(?:\s+#+)?$/) : null;
+    const setext = /^(?:={3,}|-{3,})\s*$/.test(lines[index + 1]?.trim() || '')
+      ? line : '';
+    const candidate = String(bold?.[1] || bold?.[2] || atx?.[1] || setext)
+      .replace(/\*\*([^*]+)\*\*|__([^_]+)__|`([^`]+)`/g, '$1$2$3')
+      .replace(/[:：]\s*$/, '').trim();
     if (candidate && candidate.length <= 120) heading = candidate;
   }
   return heading;
@@ -369,7 +383,7 @@ const getRecentThoughtHeading = (logs: any[]): string => {
 
 const getThoughtEventHeading = (log: any): string => {
   // Prefer the latest heading in the stream over an initial provider title.
-  const streamedHeading = getThoughtHeading(log?.text);
+  const streamedHeading = getThoughtHeading(log?.text, isThoughtStreamOpen(log));
   if (streamedHeading) return streamedHeading;
   return [log?.thinkingTitle, log?.reasoningTitle, log?.heading, log?.title, log?.currentAction, log?.statusText, log?.label]
     .find(value => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 120 && !value.includes('\n') && !/^(?:thinking|thought|working)$/i.test(value.trim()))?.trim() || '';
@@ -3720,7 +3734,20 @@ const ActionChip = ({
     };
     return { ...base, verbDone: base.verb, verbLive: LIVE_VERBS[base.verb] || base.verb };
   }, [displayToolName, isEdit, log.text, log.type, log.icon, log.iconCategory, preview, previewLooksEdited]);
-  const displayVerb = actionIsLive ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
+  const spawnArgs = log.toolArgs || log.args || preview?.toolArgs || {};
+  const spawnResult = preview?.result ?? log.toolResult;
+  const spawnRejected = displayToolName === 'spawn_sub_agent'
+    && (spawnArgs.mode || spawnResult?.mode) === 'spawn'
+    && (
+      log.status === 'failed'
+      || Boolean(spawnResult?.error)
+      || spawnResult?.success === false
+      || (Array.isArray(spawnResult?.agents) && spawnResult.agents.length === 0
+        && /^(?:ERROR:|Swarm Mode requires)/i.test(String(spawnResult.message || '').trim()))
+    );
+  const displayVerb = spawnRejected
+    ? 'Could not start agents'
+    : actionIsLive ? (meta.verbLive || meta.verbDone) : (meta.verbDone || (meta as any).verb);
   const cleanVerb = displayVerb.replace(/\s+files?$/i, '').trim();
   const displayVerbLabel = hasFile ? stripTrailingFileName(cleanVerb, fileName) : cleanVerb;
   const fileDisplayVerb = isRead ? (actionIsLive ? 'Reading' : 'Read') : displayVerbLabel;
