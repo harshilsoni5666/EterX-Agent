@@ -15,30 +15,30 @@ const BLOCKED_PORTS = new Set([22, 25, 465, 587, 3306, 5432, 6379, 27017]);
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { port: string; path: string[] } }
+  { params }: { params: Promise<{ port: string; path: string[] }> }
 ) {
-  return proxyRequest(req, params, 'GET');
+  return proxyRequest(req, await params, 'GET');
 }
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { port: string; path: string[] } }
+  { params }: { params: Promise<{ port: string; path: string[] }> }
 ) {
-  return proxyRequest(req, params, 'POST');
+  return proxyRequest(req, await params, 'POST');
 }
 
 export async function PUT(
   req: NextRequest,
-  { params }: { params: { port: string; path: string[] } }
+  { params }: { params: Promise<{ port: string; path: string[] }> }
 ) {
-  return proxyRequest(req, params, 'PUT');
+  return proxyRequest(req, await params, 'PUT');
 }
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { port: string; path: string[] } }
+  { params }: { params: Promise<{ port: string; path: string[] }> }
 ) {
-  return proxyRequest(req, params, 'DELETE');
+  return proxyRequest(req, await params, 'DELETE');
 }
 
 async function proxyRequest(

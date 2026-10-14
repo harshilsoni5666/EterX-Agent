@@ -59,7 +59,7 @@ fs.mkdirSync(buildDataRoot, { recursive: true });
 for (const directory of ['Desktop', 'Documents', 'Downloads']) {
   fs.mkdirSync(path.join(buildHome, directory), { recursive: true });
 }
-const child = spawn(process.execPath, [fileURLToPath(nextCli), 'build'], {
+const child = spawn(process.execPath, [fileURLToPath(nextCli), 'build', '--webpack'], {
   cwd: repositoryRoot,
   stdio: 'inherit',
   shell: false,

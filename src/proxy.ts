@@ -5,7 +5,7 @@ import {
   serializeAgentSessionCookie,
 } from './lib/agent-api-session-cookie';
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const response = NextResponse.next();
   if (!isSafeAgentSessionId(request.cookies.get(AGENT_SESSION_COOKIE)?.value)) {
     // The browser stores document response cookies before running the app.

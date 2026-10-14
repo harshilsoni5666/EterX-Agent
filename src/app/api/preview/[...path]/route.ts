@@ -75,7 +75,7 @@ function streamFile(filename: string, req: NextRequest, start?: number, end?: nu
   return body;
 }
 
-export async function GET(req: NextRequest, { params }: { params: { path: string[] } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
   try {
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
@@ -87,7 +87,7 @@ export async function GET(req: NextRequest, { params }: { params: { path: string
     const queryPath = req.nextUrl.searchParams.get('path');
     // Next.js has already decoded route parameters. Decoding again changes
     // literal filenames such as report%20final.html into different paths.
-    const parts = params.path;
+    const parts = (await params).path;
     let absolutePath = queryPath || '';
     if (absolutePath.includes('\0')) return new NextResponse('Invalid path', { status: 400 });
 
@@ -164,7 +164,7 @@ export async function GET(req: NextRequest, { params }: { params: { path: string
       
       const baseParts = queryPath
         ? [path.parse(absolutePath).root, ...path.dirname(absolutePath).slice(path.parse(absolutePath).root.length).split(path.sep)].filter(Boolean)
-        : params.path.slice(0, -1);
+        : (await params).path.slice(0, -1);
       const basePath = `/api/preview/${baseParts.map(p => encodeURIComponent(p)).join('/')}/`;
       
       if (!html.includes('<base ')) {

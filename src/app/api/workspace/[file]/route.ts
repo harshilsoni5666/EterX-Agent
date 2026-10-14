@@ -13,9 +13,10 @@ function resolveTempFile(filename: string): string {
   return resolved;
 }
 
-export async function GET(req: NextRequest, { params }: { params: { file: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ file: string }> }) {
   try {
-    const filename = String(params.file || '');
+    const routeParams = await params;
+    const filename = String(routeParams.file || '');
     const filePath = resolveTempFile(filename);
 
     if (!fs.existsSync(filePath)) {

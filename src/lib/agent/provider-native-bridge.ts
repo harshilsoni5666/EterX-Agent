@@ -88,7 +88,7 @@ export async function* streamMessagesBridge(client: OpenAI, params: Record<strin
   if (/(?:^|\/)claude-/i.test(params.model)) applyAnthropicPromptCachePolicy(body, undefined, params.messages);
   const cacheObservation = beginPromptCacheDiagnostics({
     provider: 'anthropic', model: params.model, scope: conversationScope,
-    endpoint: native.baseURL, apiKey: client.apiKey, request: body,
+    endpoint: native.baseURL, apiKey: client.apiKey ?? '', request: body,
   });
   const stream = native.messages.stream(body, signal ? { signal } : undefined);
   const readContent = createAnthropicContentStreamReader();
@@ -121,7 +121,7 @@ function geminiParts(content: any): any[] {
 }
 
 export async function* streamGenerateContentBridge(client: OpenAI, params: Record<string, any>, signal?: AbortSignal, conversationScope?: string): AsyncGenerator<any> {
-  const native = new GoogleGenAI({ apiKey: client.apiKey, httpOptions: { baseUrl: client.baseURL.replace(/\/v1\/?$/, ''), apiVersion: 'v1', timeout: MODEL_REQUEST_TIMEOUT_MS } });
+  const native = new GoogleGenAI({ apiKey: client.apiKey ?? '', httpOptions: { baseUrl: client.baseURL.replace(/\/v1\/?$/, ''), apiVersion: 'v1', timeout: MODEL_REQUEST_TIMEOUT_MS } });
   const contents: any[] = [];
   const system: string[] = [];
   const callNames = new Map<string, { name: string; id?: string }>();
@@ -148,7 +148,7 @@ export async function* streamGenerateContentBridge(client: OpenAI, params: Recor
   if (params.temperature !== undefined) config.temperature = params.temperature;
   const cacheObservation = beginPromptCacheDiagnostics({
     provider: 'gemini', model: params.model, scope: conversationScope,
-    endpoint: client.baseURL, apiKey: client.apiKey, request: { ...config, contents },
+    endpoint: client.baseURL, apiKey: client.apiKey ?? '', request: { ...config, contents },
   });
   const stream = await native.models.generateContentStream({ model: params.model, contents, config });
   const parts: any[] = [];

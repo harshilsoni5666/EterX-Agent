@@ -1,6 +1,6 @@
 {
   "name": "eterx",
-  "version": "0.1.39",
+  "version": "0.1.40",
   "description": "EterX autonomous AI agent desktop application",
   "author": {
     "name": "Harshil Soni",
@@ -14,7 +14,7 @@
   },
   "private": true,
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=24.0.0",
     "npm": ">=10.0.0"
   },
   "main": "electron/main.js",
@@ -62,7 +62,6 @@
     "framer-motion": "^11.18.2",
     "fs-extra": "^11.3.4",
     "geist": "^1.7.2",
-    "googlethis": "^1.8.0",
     "groq-sdk": "^1.1.2",
     "gsap": "^3.15.0",
     "imapflow": "^1.2.3",
@@ -73,7 +72,7 @@
     "mathjs": "^12.4.3",
     "mermaid": "^11.15.0",
     "nanoid": "^5.1.7",
-    "next": "14.1.4",
+    "next": "16.4.0",
     "node-pty": "^1.1.0",
     "nodemailer": "^8.0.4",
     "openai": "^6.33.0",
@@ -98,14 +97,13 @@
     "three": "^0.183.2",
     "topojson-client": "^3.1.0",
     "typescript": "^5",
-    "userland": "^0.4.3",
     "ws": "^8.20.0",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.1",
     "zustand": "^5.0.12"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
     "desktop": "npm run desktop:prepare-whisper && node scripts/run-desktop-dev.mjs",
     "desktop:prepare-whisper": "node scripts/prepare-whisper-runtime.mjs",
     "desktop:prepare-runtime": "node scripts/prepare-desktop-runtime.mjs",
@@ -165,7 +163,7 @@
     "test:local-openai-compat": "tsx tests/local-openai-compat.integration.ts",
     "benchmark:context-resonance": "tsx scripts/run-context-resonance-benchmark.ts",
     "test:gaia": "tsx scripts/run-gaia.ts",
-    "lint": "next lint"
+    "lint": "eslint ."
   },
   "build": {
     "appId": "com.eterx.agent",
@@ -342,10 +340,10 @@
     "cross-env": "^7.0.3",
     "dotenv": "^17.3.1",
     "electron": "^30.0.8",
-    "electron-builder": "^24.13.3",
+    "electron-builder": "26.15.3",
     "electron-reloader": "^1.2.3",
-    "eslint": "^8",
-    "eslint-config-next": "14.1.4",
+    "eslint": "10.12.0",
+    "eslint-config-next": "16.4.0",
     "postcss": "^8.5.9",
     "tailwindcss": "^3.4.19",
     "telegraf": "^4.16.3",

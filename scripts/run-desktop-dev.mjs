@@ -384,7 +384,7 @@ async function main() {
     ETERX_DEV_PREWARMED: '0',
   });
 
-  nextProcess = trackChild(spawn(process.execPath, [nextCli, 'dev', '--hostname', '127.0.0.1', '--port', String(port)], {
+  nextProcess = trackChild(spawn(process.execPath, [nextCli, 'dev', '--webpack', '--hostname', '127.0.0.1', '--port', String(port)], {
     cwd: repositoryRoot,
     env: devEnvironment,
     stdio: 'inherit',

@@ -6,5 +6,5 @@ export const runtime = 'nodejs';
 
 /** Handle query-encoded preview paths when no catch-all route segment exists. */
 export async function GET(req: NextRequest) {
-  return getPreviewFile(req, { params: { path: [] } });
+  return getPreviewFile(req, { params: Promise.resolve({ path: [] }) });
 }

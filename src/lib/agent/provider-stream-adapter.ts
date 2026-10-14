@@ -321,7 +321,7 @@ export function createProviderChatStream(
   }
   const observation = beginPromptCacheDiagnostics({
     provider, model: String(params.model || ''), scope: conversationScope,
-    endpoint: client.baseURL, apiKey: client.apiKey,
+    endpoint: client.baseURL, apiKey: client.apiKey ?? '',
     request: protocol === 'responses' ? responsesRequest(params, provider) : params,
   });
   if (!observation) return stream;
