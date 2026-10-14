@@ -115,6 +115,17 @@ fs.writeFileSync(
     + `const fs = require('fs');\n`
     + `const path = require('path');\n`
     + `const Module = require('module');\n`
+    + `// Next joins cwd with a relative application path. Across Windows drives,\n`
+    + `// path.relative returns an absolute path, which path.join corrupts. Use\n`
+    + `// the physical archive parent on that drive; data stays in ETERX_DATA_DIR.\n`
+    + `if (process.platform === 'win32' && path.isAbsolute(path.relative(process.cwd(), __dirname))) {\n`
+    + `  let physicalRoot = __dirname;\n`
+    + `  while (physicalRoot.toLowerCase().includes('.asar' + path.sep)) {\n`
+    + `    physicalRoot = path.dirname(physicalRoot);\n`
+    + `  }\n`
+    + `  if (path.extname(physicalRoot).toLowerCase() === '.asar') physicalRoot = path.dirname(physicalRoot);\n`
+    + `  process.chdir(physicalRoot);\n`
+    + `}\n`
     + `// Never leave the agent runtime alive after its desktop owner exits.\n`
     + `const desktopParentPid = Number(process.env.ETERX_DESKTOP_PARENT_PID);\n`
     + `if (Number.isInteger(desktopParentPid) && desktopParentPid > 0) {\n`

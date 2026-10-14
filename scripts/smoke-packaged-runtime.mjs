@@ -9,6 +9,12 @@ import { spawn } from 'node:child_process';
 const searchRoot = path.resolve(process.argv[2] || 'dist');
 
 function findArchive(root) {
+  // Exercise the host architecture when a Windows job packages both targets.
+  if (process.platform === 'win32') {
+    const directory = process.arch === 'arm64' ? 'win-arm64-unpacked' : 'win-unpacked';
+    const nativeArchive = path.join(root, directory, 'resources', 'app.asar');
+    if (fs.existsSync(nativeArchive)) return nativeArchive;
+  }
   const queue = [root];
   while (queue.length) {
     const current = queue.shift();
