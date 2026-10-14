@@ -12,19 +12,19 @@ import {
 import { terminalBackgroundHandoffNote, terminalTimeoutNote } from '../src/lib/agent/tools/core/terminal_timeout';
 
 assert.equal(resolveModelOutputChars('npm test', undefined), 24_000);
-assert.equal(resolveModelOutputChars('Get-Content src/app.ts', undefined), Infinity);
-assert.equal(resolveModelOutputChars('cat src/app.ts', undefined), Infinity);
+assert.equal(resolveModelOutputChars('Get-Content src/app.ts', undefined), 24_000);
+assert.equal(resolveModelOutputChars('cat src/app.ts', undefined), 24_000);
 assert.equal(resolveModelOutputChars('git diff -- src/app.ts', undefined), 24_000);
 assert.equal(resolveModelOutputChars('powershell -Command "Get-Content src/app.ts"', undefined), 24_000);
-assert.equal(resolveModelOutputChars('nl -ba src/app.ts', undefined), Infinity);
+assert.equal(resolveModelOutputChars('nl -ba src/app.ts', undefined), 24_000);
 
 assert.equal(isSourceReadCommand('rg -n "thing" src'), true);
 assert.equal(isSourceReadCommand('npm run build'), false);
 assert.equal(isSourceReadCommand('Write-Output type'), false);
 assert.equal(isSourceReadCommand('Get-Content app.ts | Select-Object -Skip 100 -First 50'), true);
 
-// Source reads stay complete even when a caller supplies a log-size limit.
-assert.equal(resolveModelOutputChars('Get-Content huge.ts', 8_000), Infinity);
+// Source reads use the same bounded response pages as other command output.
+assert.equal(resolveModelOutputChars('Get-Content huge.ts', 8_000), 8_000);
 assert.equal(normalizeModelOutputChars(1), 4_000);
 assert.equal(normalizeModelOutputChars(999_999), 256_000);
 
@@ -54,8 +54,8 @@ async function main(): Promise<void> {
   assert.ok(compacted.text.includes('middle output omitted'));
   assert.equal(compacted.dropped, source.length - (4_000 - compacted.text.match(/\n\.\.\.\[.*\]\.\.\.\n/)![0].length));
 
-  // Exercise the real terminal path with content that exceeded the former
-  // 24,000-character default. A regression would silently lose BEGIN again.
+  // Request a page above the default limit and verify that a large source read
+  // still returns the exact beginning and end without dropping characters.
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eterx-terminal-output-'));
   const filename = path.join(root, 'large-source.txt');
   try {
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
     const command = process.platform === 'win32'
       ? `Get-Content -Raw -LiteralPath '${quoted}'`
       : `cat -- '${quoted}'`;
-    const result: any = await workspaceRunCommandTool.execute({ command, cwd: root }, {
+    const result: any = await workspaceRunCommandTool.execute({ command, cwd: root, maxOutputChars: 50_000 }, {
       workspaceRoot: root,
       workspacePath: root,
       allowedPaths: [root],

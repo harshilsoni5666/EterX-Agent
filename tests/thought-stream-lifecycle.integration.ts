@@ -41,8 +41,8 @@ const thought = (
       isStreaming: true,
       streamState: 'open',
     }),
-    true,
-    'an open UI-only shell should remain available while a direct turn is live',
+    false,
+    'an open empty UI-only shell must stay hidden until actual reasoning text arrives',
   );
   assert.equal(
     shouldRenderThoughtStream({ type: 'thought_stream', text: 'Reasoning', isStreaming: false }),
