@@ -261,6 +261,7 @@
       ]
     },
     "nsis": {
+      "buildUniversalInstaller": false,
       "oneClick": false,
       "perMachine": false,
       "allowElevation": true,
