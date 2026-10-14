@@ -155,7 +155,7 @@ async function prepareReleaseRuntime(target) {
   }
 }
 
-function windowsSourceGenerator() {
+function windowsSourceGenerator(targets) {
   const explicit = String(process.env.ETERX_WHISPER_CMAKE_GENERATOR || '').trim();
   const inherited = String(process.env.CMAKE_GENERATOR || '').trim();
   const isVisualStudio = value => /^Visual Studio \d+ \d{4}$/.test(value);
@@ -169,8 +169,16 @@ function windowsSourceGenerator() {
   // option. Discover an installed C++ toolchain and select its generator.
   const programFiles = process.env['ProgramFiles(x86)'] || process.env.ProgramFiles || 'C:\\Program Files (x86)';
   const vswhere = path.join(programFiles, 'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
+  const requiredComponents = ['Microsoft.VisualStudio.Component.VC.Tools.x86.x64'];
+  if (targets.includes('win32-arm64')) {
+    requiredComponents.push(
+      'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+      'Microsoft.VisualStudio.Component.VC.Llvm.Clang',
+      'Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset',
+    );
+  }
   const installations = fs.existsSync(vswhere) ? spawnSync(vswhere, [
-    '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-format', 'json', '-utf8',
+    '-products', '*', '-requires', ...requiredComponents, '-format', 'json', '-utf8',
   ], { encoding: 'utf8', windowsHide: true, shell: false }) : null;
   const capabilities = spawnSync('cmake', ['-E', 'capabilities'], { encoding: 'utf8', windowsHide: true, shell: false });
   if (capabilities.error || capabilities.status !== 0) throw new Error('CMake is required for source builds of the speech engine. Windows x64 uses a prebuilt runtime unless ETERX_WHISPER_BUILD_FROM_SOURCE is enabled.');
@@ -185,11 +193,11 @@ function windowsSourceGenerator() {
   } catch {
     // Report a setup issue rather than falling back to an incompatible generator.
   }
-  throw new Error('A compatible Visual Studio C++ toolchain is required for native Windows source builds. Install Visual Studio Build Tools with Desktop development with C++ and the ARM64 components when targeting ARM64. Windows x64 can use the prebuilt runtime with ETERX_WHISPER_BUILD_FROM_SOURCE unset.');
+  throw new Error('A compatible Visual Studio C++ toolchain is required for native Windows source builds. Install Visual Studio Build Tools with Desktop development with C++; ARM64 also requires the ARM64 build tools, C++ Clang compiler, and MSBuild support for LLVM (ClangCL). Windows x64 can use the prebuilt runtime with ETERX_WHISPER_BUILD_FROM_SOURCE unset.');
 }
 
 async function prepareSourceRuntimes(targets) {
-  const windowsGenerator = targets.some(target => target.startsWith('win32-')) ? windowsSourceGenerator() : null;
+  const windowsGenerator = targets.some(target => target.startsWith('win32-')) ? windowsSourceGenerator(targets) : null;
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'eterx-whisper-'));
   try {
     const archivePath = path.join(temporaryRoot, 'source.tar.gz');
@@ -221,7 +229,11 @@ async function prepareSourceRuntimes(targets) {
       if (platform === 'darwin') {
         args.push(`-DCMAKE_OSX_ARCHITECTURES=${arch === 'arm64' ? 'arm64' : 'x86_64'}`, '-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0');
       } else if (platform === 'win32') {
-        args.push('-G', windowsGenerator, '-A', arch === 'arm64' ? 'ARM64' : 'x64', '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded');
+        args.push('-G', windowsGenerator, '-A', arch === 'arm64' ? 'ARM64' : 'x64',
+          '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW', '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded');
+        // ggml rejects Microsoft's ARM compiler. ClangCL uses the same
+        // Visual Studio ARM64 SDK and linker with Clang's ARM intrinsics.
+        if (arch === 'arm64') args.push('-T', 'ClangCL');
       } else {
         args.push('-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++ -static-libgcc', '-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc');
         if (arch !== process.arch) {

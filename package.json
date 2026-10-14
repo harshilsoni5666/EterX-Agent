@@ -112,6 +112,7 @@
     "desktop:build:linux": "cross-env ETERX_RUNTIME_TARGETS=linux:x64,linux:arm64 npm run desktop:prepare-whisper && npm run build && cross-env ETERX_RUNTIME_TARGETS=linux:x64,linux:arm64 npm run desktop:prepare-runtime && electron-builder --linux --x64 --arm64",
     "desktop:build:mac": "cross-env ETERX_RUNTIME_TARGETS=darwin:x64,darwin:arm64 npm run desktop:prepare-whisper && npm run build && cross-env ETERX_RUNTIME_TARGETS=darwin:x64,darwin:arm64 npm run desktop:prepare-runtime && electron-builder --mac --x64 --arm64",
     "build": "node scripts/build-production.mjs",
+    "check:release-config": "node scripts/check-release-config.mjs",
     "start": "next start",
     "test": "npm run test:ci",
     "test:ci": "npm run test:reference-evals && npm run test:markdown-renderer && npm run test:path-utils && npm run test:platform-shortcuts && npm run test:file-icon-utils && npm run test:model-selector && npm run test:title-generation && npm run test:api-retry && npm run test:live-provider && npm run test:nova-sonic && npm run test:credential-storage && npm run test:connector-storage && npm run test:workspace-tools && npm run test:terminal-output-policy && npm run test:execution-governor && npm run test:adaptive-harness && npm run test:context-fabric && npm run test:agent-cache && npm run test:request-token-budget && npm run test:context-resonance && npm run test:context-compaction-policy && npm run test:context-scope && npm run test:agent-lifecycle && npm run test:tool-schema-router && npm run test:skill-routing && npm run test:parallel-key-pool && npm run test:polling-coordinator && npm run test:search-runtime && npm run test:image-runtime && npm run test:video-runtime && npm run test:external-service-check && npm run test:sub-agent-runtime && npm run test:chat-feed-lifecycle && npm run test:chat-store-recovery && npm run test:chat-send-lifecycle && npm run test:chat-media-store && npm run test:chat-agent-selection && npm run test:thought-stream-lifecycle && npm run test:trace-visibility && npm run test:streaming-lifecycle && npm run test:terminal-live-trace && npm run test:scheduled-task-store && npm run test:agent-builder-quality && npm run test:provider-runtime && npm run test:local-openai-compat && npx tsc --noEmit --pretty false",
@@ -287,12 +288,7 @@
       ],
       "category": "Development",
       "icon": "public/logo.png",
-      "executableName": "eterx",
-      "desktop": {
-        "Name": "EterX",
-        "Comment": "Autonomous AI Agent",
-        "Categories": "Development;Utility;"
-      }
+      "executableName": "eterx"
     },
     "mac": {
       "target": [

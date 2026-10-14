@@ -5,7 +5,7 @@
 const MODELS = require('./whisper-models.json');
 const LANGUAGES = require('./whisper-languages.json');
 const DEFAULT_MODEL = 'large-v3-q5_0';
-const RUNTIME_REVISION = 'b4938-portable-2';
+const RUNTIME_REVISION = 'b4938-portable-3';
 
 function getModel(id) {
   const key = Object.hasOwn(MODELS, id) ? id : DEFAULT_MODEL;
