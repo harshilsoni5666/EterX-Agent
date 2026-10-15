@@ -50,8 +50,20 @@ export const safeCopyTextToClipboard = async (text: string): Promise<boolean> =>
   // Tier 2: Modern Navigator Clipboard API
   try {
     if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      await navigator.clipboard.writeText(value);
-      return true;
+      // Chromium can expose the Clipboard API in contexts where writing is
+      // explicitly denied. Skip it in that case so the legacy fallback can
+      // run without generating a rejected permission request.
+      let writeDenied = false;
+      try {
+        const permission = await navigator.permissions?.query?.({ name: 'clipboard-write' as PermissionName });
+        writeDenied = permission?.state === 'denied';
+      } catch {
+        // Permission queries are not supported consistently; try the API.
+      }
+      if (!writeDenied) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
     }
   } catch {
     // Fall back to legacy execCommand below
