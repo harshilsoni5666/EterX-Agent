@@ -731,6 +731,9 @@ export class GeminiAgentClient {
       },
     ];
     let fastContextRequestId = '';
+    let fastRequestLocalTokens = 0;
+    let fastRequestEstimatedTokens = 0;
+    let fastContextCalibration = workingCheckpoint.calibration;
     if (workingCheckpoint.currentRequestIncluded) contents.pop();
     const compactFastContext = async (forceCompaction = false): Promise<boolean> => {
       await fastFabric.flushLedger().catch(() => undefined);
@@ -744,6 +747,8 @@ export class GeminiAgentClient {
         contextWindowOverride: (context as any).contextCompaction?.activeContextWindow,
         modelContextWindowOverride: (context as any).contextCompaction?.activeModelContextWindow,
         runtimeSettings: this.runtimeSettings,
+        providerReportedInputTokens: fastContextCalibration?.inputTokens,
+        providerReportedLocalEstimatedTokens: fastContextCalibration?.localTokens,
         abortSignal: (context as any).abortSignal,
         continuityManifestFactory: () => fastFabric.buildContinuityManifest(),
         semanticBoundary: 'safe',
@@ -755,7 +760,9 @@ export class GeminiAgentClient {
         },
       });
       if (compacted.compacted) contents = compacted.contents;
-      await workingCheckpoint.save(contents, this.modelName);
+      fastRequestLocalTokens = Number(compacted.usage.localEstimatedTokens || 0);
+      fastRequestEstimatedTokens = compacted.usage.usedTokens;
+      await workingCheckpoint.save(contents, this.modelName, 'gemini', fastContextCalibration);
       if (compacted.capsule && compacted.continuityManifest) {
         const continuityManifest = compacted.continuityManifest;
         const restoredFactIds = compacted.capsule.restoredContinuityFactIds || [];
@@ -812,11 +819,18 @@ export class GeminiAgentClient {
 
         if ((response as any)?.usageMetadata) {
           const u = (response as any).usageMetadata;
+          const inputTokens = Number(normalizeProviderCacheUsage('gemini', u).promptTokens || 0);
+          if (inputTokens > 0 && fastRequestLocalTokens > 0) {
+            fastContextCalibration = { inputTokens, localTokens: fastRequestLocalTokens };
+            await workingCheckpoint.save(contents, this.modelName, 'gemini', fastContextCalibration);
+          }
           const usageTrace = createProviderUsageTrace('gemini', this.modelName, u, {
             cacheMode: resolveProviderPromptCacheMode('gemini', process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1'),
             thinkingLevel: getModelThinkingOptions('gemini', this.modelName).length > 0
               ? normalizeThinkingLevelForModel('minimal', 'gemini', this.modelName) : undefined,
             phase: 'telegram_fast', contextRequestId: fastContextRequestId,
+            contextEstimatedTokens: fastRequestEstimatedTokens,
+            contextLocalEstimatedTokens: fastRequestLocalTokens,
           });
           if (usageTrace) {
             trace.push(usageTrace);
@@ -827,7 +841,7 @@ export class GeminiAgentClient {
         }
 
         const text = String((response as any).text || '').trim() || 'Done.';
-        const answerTrace = { type: 'answer', text, answerId: 'telegram_fast_answer' };
+        const answerTrace = { type: 'answer', text, answerId: 'telegram_fast_answer', responseComplete: !(context as any).isSubAgent };
         trace.push(answerTrace);
         onTrace?.(answerTrace);
         fastFabric.recordAssistantResponse(text, 'completed', String((context as any).runId || ''));
@@ -3019,6 +3033,7 @@ ${ message.text }
     let lastObservedContextInputTokens = workingCheckpoint.calibration?.inputTokens || 0;
     let lastObservedContextLocalTokens = workingCheckpoint.calibration?.localTokens || 0;
     let requestContextLocalTokens = 0;
+    let requestContextEstimatedTokens = 0;
     let activeContextRequestId = '';
     const compactCompatibleContext = async (forceCompaction = false): Promise<boolean> => {
       const activeContextModelKey = `${this.activeProvider}:${this.mistralModelName}`;
@@ -3053,10 +3068,9 @@ ${ message.text }
       });
       if (compacted.compacted) {
         messages.splice(0, messages.length, ...compacted.contents);
-        lastObservedContextInputTokens = 0;
-        lastObservedContextLocalTokens = 0;
       }
       requestContextLocalTokens = Number(compacted.usage.localEstimatedTokens || 0);
+      requestContextEstimatedTokens = compacted.usage.usedTokens;
       await workingCheckpoint.save(messages, this.mistralModelName, this.activeProvider, {
         inputTokens: lastObservedContextInputTokens, localTokens: lastObservedContextLocalTokens,
       });
@@ -3466,6 +3480,8 @@ ${ message.text }
             const usageTrace = createProviderUsageTrace(this.activeProvider, this.mistralModelName, lastUsage, {
               cacheDiagnostics: lastCacheDiagnostics,
               contextRequestId: activeContextRequestId,
+              contextEstimatedTokens: requestContextEstimatedTokens,
+              contextLocalEstimatedTokens: requestContextLocalTokens,
               interaction: interactions,
               thinkingLevel: currentSupportsThinking ? currentThinkingLevel : undefined,
               cacheMode:
@@ -3620,6 +3636,7 @@ ${ message.text }
           isLiveTyping: false,
           wasStreaming: Boolean(provisionalAnswerId),
           answerId: provisionalAnswerId || `mistral_final_answer_${ interactions }`,
+          responseComplete: !(context as any).isSubAgent,
         };
         trace.push(answerEvt);
         onTrace?.(answerEvt);
@@ -3629,7 +3646,7 @@ ${ message.text }
         }
         await workingCheckpoint.save(messages, this.mistralModelName, this.activeProvider, {
           inputTokens: lastObservedContextInputTokens, localTokens: lastObservedContextLocalTokens,
-        });
+        }).catch(error => console.warn('[Agent] Could not save completed response checkpoint:', error));
         contextFabric.markCompleted(finalText, String((context as any).runId || ''));
         await contextFabric.flush().catch(() => undefined);
         return { text: finalText, trace };
@@ -3887,6 +3904,7 @@ ${ message.text }
     let lastObservedContextInputTokens = workingCheckpoint.calibration?.inputTokens || 0;
     let lastObservedContextLocalTokens = workingCheckpoint.calibration?.localTokens || 0;
     let requestContextLocalTokens = 0;
+    let requestContextEstimatedTokens = 0;
     let activeContextRequestId = '';
     // Generate static and dynamic system prompts for caching
     const cacheEnabled = process.env.ETERX_DISABLE_CONTEXT_CACHE !== '1';
@@ -3995,10 +4013,9 @@ ${ message.text }
       });
       if (compacted.compacted) {
         messages.splice(0, messages.length, ...installAnthropicCapsuleFrom(compacted.contents));
-        lastObservedContextInputTokens = 0;
-        lastObservedContextLocalTokens = 0;
       }
       requestContextLocalTokens = Number(compacted.usage.localEstimatedTokens || 0);
+      requestContextEstimatedTokens = compacted.usage.usedTokens;
       await saveAnthropicWorkingContext();
       if (compacted.capsule && compacted.continuityManifest) {
         const continuityManifest = compacted.continuityManifest;
@@ -4329,6 +4346,8 @@ ${ message.text }
             const usageTrace = createProviderUsageTrace('anthropic', this.mistralModelName, response.usage, {
               cacheDiagnostics: cacheObservation?.report,
               contextRequestId: activeContextRequestId,
+              contextEstimatedTokens: requestContextEstimatedTokens,
+              contextLocalEstimatedTokens: requestContextLocalTokens,
               interaction: interactions,
               thinkingLevel: currentSupportsThinking ? currentThinkingLevel : undefined,
               cacheMode: resolveProviderPromptCacheMode('anthropic', cacheEnabled),
@@ -4470,10 +4489,12 @@ ${ message.text }
           isLiveTyping: false,
           wasStreaming: Boolean(provisionalAnswerId),
           answerId: provisionalAnswerId || `anthropic_final_answer_${ interactions }`,
+          responseComplete: !(context as any).isSubAgent,
         };
-        await saveAnthropicWorkingContext();
         trace.push(answerEvt);
         onTrace?.(answerEvt);
+        await saveAnthropicWorkingContext()
+          .catch(error => console.warn('[Agent] Could not save completed response checkpoint:', error));
         if (!sessionPersistenceDisabled) {
           globalSessionManager.setLastAgentOutputForChat(conversationScopeId, finalText);
           globalSessionManager.saveForChat(conversationScopeId).catch(() => { });
@@ -6913,6 +6934,7 @@ OUTPUT CONTRACT
     let lastObservedContextInputTokens = resumedContextCalibration?.inputTokens || 0;
     let lastObservedContextLocalTokens = resumedContextCalibration?.localTokens || 0;
     let requestContextLocalTokens = 0;
+    let requestContextEstimatedTokens = 0;
     let activeContextRequestId = '';
     const captureContextSurvivorState = (text = loopAccumulatedText) => ({
       contents: [...contents],
@@ -6973,11 +6995,11 @@ OUTPUT CONTRACT
           },
         });
         requestContextLocalTokens = Number(ctxResult.usage.localEstimatedTokens || 0);
+        requestContextEstimatedTokens = ctxResult.usage.usedTokens;
         if (ctxResult.compacted) {
           contents = ctxResult.contents;
-          // Retire the old provider count after a committed state transfer.
-          lastObservedContextInputTokens = 0;
-          lastObservedContextLocalTokens = 0;
+          // Keep the same model's token-density estimate until its next
+          // receipt. The current payload is still measured independently.
           if (ctxResult.capsule) delete (context as any).forceContextCompaction;
           if (ctxResult.capsule && ctxResult.continuityManifest) {
             const continuityManifest = ctxResult.continuityManifest;
@@ -7661,6 +7683,8 @@ OUTPUT CONTRACT
       if (lastUsageMetadata) {
         const usageTrace = createProviderUsageTrace('gemini', currentModel, lastUsageMetadata, {
           contextRequestId: activeContextRequestId,
+          contextEstimatedTokens: requestContextEstimatedTokens,
+          contextLocalEstimatedTokens: requestContextLocalTokens,
           interaction: interactions,
           thinkingLevel: usageThinkingLevel,
           cacheMode: resolveProviderPromptCacheMode(
@@ -7849,6 +7873,7 @@ OUTPUT CONTRACT
             isLiveTyping: false,
             wasStreaming: Boolean(provisionalAnswerId),
             answerId: provisionalAnswerId || `gemini_final_answer_${ interactions }`,
+            responseComplete: !(context as any).isSubAgent,
           };
           const existingIdx = trace.findIndex(t => t.type === 'answer');
           if (existingIdx >= 0) trace[existingIdx] = answerEvt;
@@ -7862,7 +7887,7 @@ OUTPUT CONTRACT
           }
           await workingCheckpoint.save(contents, this.modelName, 'gemini', {
             inputTokens: lastObservedContextInputTokens, localTokens: lastObservedContextLocalTokens,
-          });
+          }).catch(error => console.warn('[Agent] Could not save completed response checkpoint:', error));
           contextFabric.markCompleted(cleanText, String((context as any).runId || ''));
           await contextFabric.flush().catch(() => undefined);
           if (!(context as any).isSubAgent) {

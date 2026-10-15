@@ -153,8 +153,8 @@ const hasThoughtStreamScope = (trace: any): boolean => Boolean(
   getThoughtStreamChatId(trace) || getThoughtStreamRunId(trace)
 );
 
-const thoughtStreamScopesMatch = (left: any, right: any): boolean => {
-  if (getThoughtStreamOwner(left) !== getThoughtStreamOwner(right)) return false;
+const thoughtStreamScopesMatch = (left: any, right: any, matchOwner = true): boolean => {
+  if (matchOwner && getThoughtStreamOwner(left) !== getThoughtStreamOwner(right)) return false;
 
   const leftChatIds = getThoughtStreamChatIds(left);
   const rightChatIds = getThoughtStreamChatIds(right);
@@ -186,6 +186,15 @@ const thoughtStreamScopesMatch = (left: any, right: any): boolean => {
   return true;
 };
 
+/** Consecutive provider segments can share a disclosure within one visible phase. */
+export const canGroupThoughtStreams = (left: any, right: any): boolean => {
+  if (left?.type !== 'thought_stream' || right?.type !== 'thought_stream') return false;
+  const leftBoundary = String(left._feedBoundaryId || '').trim();
+  const rightBoundary = String(right._feedBoundaryId || '').trim();
+  if (leftBoundary && rightBoundary && leftBoundary !== rightBoundary) return false;
+  return thoughtStreamScopesMatch(left, right);
+};
+
 /**
  * Close reasoning at a real lifecycle boundary. Provider final payloads may
  * arrive after the visible boundary; mergeThoughtStreamTrace keeps those
@@ -201,7 +210,6 @@ export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void
   const boundaryOwner = getThoughtStreamOwner(boundary);
   const boundaryHasScope = hasThoughtStreamScope(boundary);
   const endedAt = getTraceTimestamp(boundary);
-  const ownersClosed = new Set<string>();
 
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const log = logs[index];
@@ -218,15 +226,14 @@ export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void
       boundary.type !== 'user_action' &&
       boundary.type !== 'steering_received' &&
       boundaryHasScope &&
-      !thoughtStreamScopesMatch(log, boundary)
+      !thoughtStreamScopesMatch(log, boundary, !closeAll)
     ) continue;
     if (!closeAll && owner !== boundaryOwner) continue;
-    if (ownersClosed.has(owner)) continue;
-
     if (log.type !== 'thought_stream') continue;
     if (log.isStreaming === false || log.streamState === 'closed') continue;
 
-    ownersClosed.add(owner);
+    // Recovery can leave multiple open rows for one owner. A real boundary
+    // closes all of them, including child owners at a global terminal event.
     logs[index] = closeThoughtAt(log, endedAt);
   }
 };
@@ -432,6 +439,9 @@ export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
     if (log?.type === 'user_action' || log?.type === 'steering_received') thoughtIndexes.clear();
     const identity = getCanonicalThoughtIdentity(log);
     if (!identity) {
+      // Restored histories need the same close boundaries as live ingestion.
+      // A persisted stop/answer must not leave earlier cards ticking forever.
+      closeThoughtStreamsForBoundary(canonical, log);
       canonical.push(log);
       continue;
     }

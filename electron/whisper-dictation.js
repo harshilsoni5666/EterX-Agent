@@ -9,9 +9,10 @@ const { getModel, LANGUAGES, RUNTIME_REVISION } = require('./whisper-config');
 const { SpeechModelStore } = require('./speech-model-store');
 
 const SAMPLE_RATE = 16000;
-const INFERENCE_INTERVAL_SAMPLES = Math.round(SAMPLE_RATE * 2.4);
+const INFERENCE_INTERVAL_SAMPLES = Math.round(SAMPLE_RATE * 1.2);
 const MAX_WINDOW_SAMPLES = SAMPLE_RATE * 14;
 const MIN_RMS = 0.006;
+const FINISH_TIMEOUT_MS = 300000;
 
 function delay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -301,7 +302,12 @@ class WhisperDictation {
     if (model.englishOnly && selectedLanguage !== 'auto' && selectedLanguage !== 'en') {
       throw new Error('This speech model supports English only. Select a multilingual model or change the dictation language in Settings → General.');
     }
-    if (this.session) this.emit(this.session, { type: 'stopped' });
+    // Every renderer using the shared engine must release its microphone,
+    // including a chat that is still preparing or draining its last words.
+    if (this.pendingStart) this.emit(this.pendingStart, { type: 'stopped' });
+    for (const previous of [this.session, ...this.drainingSessions.values()]) {
+      if (previous) this.emit(previous, { type: 'stopped' });
+    }
     const previousStop = this.stop(null, false, null, true);
     const request = { owner, ownerId: owner.id, sessionId, modelId: model.id, revision: 0 };
     this.pendingStart = request;
@@ -322,7 +328,7 @@ class WhisperDictation {
       language: model.englishOnly ? 'en' : selectedLanguage, chunks: [], sampleCount: 0,
       samplesSinceInference: 0, inferenceRunning: false, inferencePending: false,
       inferenceInterval: INFERENCE_INTERVAL_SAMPLES,
-      committedText: '', transcript: '', stopping: false, cancelled: false,
+      committedText: '', transcript: '', cachedWindow: null, stopping: false, cancelled: false,
     };
     this.emit(this.session, { type: 'ready' });
     return { started: true, sessionId, supported: true, engine: 'whisper.cpp', model: model.id, local: true };
@@ -340,7 +346,7 @@ class WhisperDictation {
     if (pending?.ownerId === owner.id && pending.sessionId === sessionId) {
       pending.revision = Math.max(pending.revision, revision);
     }
-    const active = this.session;
+    const active = this.session?.sessionId === sessionId ? this.session : this.drainingSessions.get(sessionId);
     if (!active || active.ownerId !== owner.id || active.sessionId !== sessionId || revision <= active.revision) return;
     active.revision = revision;
     active.chunks = [];
@@ -348,6 +354,7 @@ class WhisperDictation {
     active.samplesSinceInference = 0;
     active.committedText = '';
     active.transcript = '';
+    active.cachedWindow = null;
     active.inferencePending = false;
     active.inferenceController?.abort();
   }
@@ -391,6 +398,7 @@ class WhisperDictation {
   }
 
   consumeSamples(active, count) {
+    active.cachedWindow = null;
     active.sampleCount -= count;
     while (count > 0 && active.chunks.length) {
       const chunk = active.chunks[0];
@@ -416,10 +424,21 @@ class WhisperDictation {
     const endsWithPause = samples.length >= INFERENCE_INTERVAL_SAMPLES
       && !samplesHaveSpeech(samples.subarray(samples.length - Math.round(SAMPLE_RATE * 0.6)));
     const commitWindow = final || samples.length >= MAX_WINDOW_SAMPLES || endsWithPause;
+    // A stopped microphone may leave exactly the window already shown live.
+    // Commit that result without running the large model over it a second time.
+    if (active.cachedWindow?.revision === revision && active.cachedWindow.samples === samples.length) {
+      if (commitWindow) {
+        active.committedText = active.transcript;
+        this.consumeSamples(active, samples.length);
+        this.emit(active, { type: final ? 'final' : 'partial', text: active.transcript });
+      }
+      return;
+    }
     if (samples.length < SAMPLE_RATE * 0.16 || !samplesHaveSpeech(samples)) {
       if (commitWindow) this.consumeSamples(active, samples.length);
       return;
     }
+    if (final) this.emit(active, { type: 'processing' });
     active.inferenceRunning = true;
     const inferenceStarted = Date.now();
     const controller = new AbortController();
@@ -441,9 +460,14 @@ class WhisperDictation {
       // Every event is a full snapshot. A revised partial replaces the current
       // window; only non-overlapping audio windows are committed permanently.
       active.transcript = [active.committedText, text].filter(Boolean).join(' ');
-      if (commitWindow) {
+      // Reuse an in-flight result when it covers all audio at stop. If more
+      // audio arrived, retain the window so the final decode can finish words
+      // across that boundary instead of cutting the utterance in two.
+      if (commitWindow || (active.stopping && active.sampleCount === samples.length)) {
         active.committedText = active.transcript;
         this.consumeSamples(active, samples.length);
+      } else {
+        active.cachedWindow = { revision, samples: samples.length };
       }
       this.emit(active, { type: final ? 'final' : 'partial', text: active.transcript });
     } catch (error) {
@@ -460,7 +484,7 @@ class WhisperDictation {
       active.inferenceController = null;
       active.inferenceRunning = false;
       // Slow CPUs should spend their time on new audio, rather than repeatedly
-      // transcribing the same growing partial window every 2.4 seconds.
+      // transcribing the same growing partial window on every audio interval.
       active.inferenceInterval = Math.max(INFERENCE_INTERVAL_SAMPLES, Math.min(MAX_WINDOW_SAMPLES, Math.ceil((Date.now() - inferenceStarted) / 1000 * SAMPLE_RATE)));
       if (active.inferencePending && !active.stopping && !active.cancelled) {
         active.inferencePending = false;
@@ -474,6 +498,7 @@ class WhisperDictation {
     if (pending && (!owner || pending.ownerId === owner.id) && (!sessionId || pending.sessionId === sessionId)) {
       this.pendingStart = null;
       this.models.cancel(pending.modelId, { preserveBackground: true });
+      if (emitStopped) this.emit(pending, { type: 'stopped' });
     }
     if (discard) {
       for (const draining of this.drainingSessions.values()) {
@@ -491,17 +516,28 @@ class WhisperDictation {
       active.inferenceController?.abort();
       return true;
     }
-    if (this.drainingSessions.has(active.sessionId)) return false;
+    if (active.stopPromise) return active.stopPromise;
     this.drainingSessions.set(active.sessionId, active);
-    try {
-      while (active.inferenceRunning) await delay(50);
-      active.inferencePending = false;
-      while (active.sampleCount > 0 && !active.cancelled) await this.infer(active, true);
-      if (emitStopped) this.emit(active, { type: 'stopped' });
-      return true;
-    } finally {
-      this.drainingSessions.delete(active.sessionId);
-    }
+    active.stopPromise = (async () => {
+      const timeout = setTimeout(() => {
+        if (active.cancelled) return;
+        this.emit(active, { type: 'error', code: 'whisper-finish-timeout', text: 'Finishing transcription took too long. Your existing text is kept. Try a smaller Whisper model in Settings → General.' });
+        active.cancelled = true;
+        active.inferenceController?.abort();
+      }, FINISH_TIMEOUT_MS);
+      try {
+        if (active.inferenceRunning) this.emit(active, { type: 'processing' });
+        while (active.inferenceRunning && !active.cancelled) await delay(50);
+        active.inferencePending = false;
+        while (active.sampleCount > 0 && !active.cancelled) await this.infer(active, true);
+        if (emitStopped) this.emit(active, { type: 'stopped' });
+        return true;
+      } finally {
+        clearTimeout(timeout);
+        this.drainingSessions.delete(active.sessionId);
+      }
+    })();
+    return active.stopPromise;
   }
 
   shutdown() {

@@ -1588,7 +1588,10 @@ export const taskStore = {
     const task = taskCache.get(chatId);
     if (!task) return;
     if (expectedRunId && task.runId !== expectedRunId) return;
-    
+    // The first terminal outcome owns this run. Late cleanup/cancellation
+    // cannot rewrite a completed response (or turn a stopped run into success).
+    if (task.status !== 'running') return;
+
     task.status = statusOverride || (success ? 'completed' : 'failed');
     task.finalAnswer = finalAnswer;
     task.completedAt = Date.now();

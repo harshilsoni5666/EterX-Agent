@@ -82,6 +82,13 @@ const contextTraceEstimateIdentity = (log: any): string => {
   return `${String(log?.runId || log?.turnId || '')}|${toolId ? 'tool' : String(log?.type || '')}|${toolId || eventId}`;
 };
 
+const sameContextRequest = (left: any, right: any): boolean => {
+  if (!left?.contextRequestId || left.contextRequestId !== right?.contextRequestId) return false;
+  if (left.runId && right.runId && left.runId !== right.runId) return false;
+  const leftModel = contextMeasurementModel(left), rightModel = contextMeasurementModel(right);
+  return !leftModel || !rightModel || leftModel === rightModel;
+};
+
 /**
  * One context meter for every agent surface. Input measurements replace prior
  * payloads; response and draft estimates only extend the latest measurement.
@@ -138,6 +145,32 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
       }
     }
   }
+  // A reconnect can deliver a request's estimate after its provider receipt.
+  // Replay from that receipt so late preflight metadata cannot erase an exact
+  // count or the tool results observed since that response.
+  const replayBaseline = orderedLogs[baselineIndex];
+  const replayPayload = terminalPayload(replayBaseline)
+    ? { ...replayBaseline, ...replayBaseline.usage, type: 'context_usage' } : replayBaseline;
+  for (let index = baselineIndex - 1; replayPayload?.contextRequestId && index >= 0; index -= 1) {
+    const previous = orderedLogs[index];
+    if (previous?.type === 'model_usage' && previous.phase !== 'chat_title'
+      && sameContextRequest(replayPayload, previous) && readModelUsage(previous).inputMeasured) {
+      baselineIndex = index;
+      break;
+    }
+  }
+  // Older saved feeds can contain provider receipts without any preflight
+  // sample. Start from the latest receipt instead of adding old responses or
+  // pinning the meter to the first identified request in that history.
+  if (baselineIndex < 0) {
+    for (let index = orderedLogs.length - 1; index >= 0; index -= 1) {
+      const log = orderedLogs[index];
+      if (log?.type === 'model_usage' && log.phase !== 'chat_title' && readModelUsage(log).inputMeasured) {
+        baselineIndex = index;
+        break;
+      }
+    }
+  }
   let displayTokens = 0;
   let measuredContextWindow = 0;
   let authoritative: any = null;
@@ -149,19 +182,34 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
   let liveEstimateTokens = 0;
   let retainedProviderOutputTokens = 0;
   let liveOutputEstimateTokens = 0;
+  let liveTokenScale = 1;
   let updatedAt = 0;
   let awaitingModelCount = false;
   const estimatedByIdentity = new Map<string, number>();
   const providerCoveredEstimateIdentities = new Set<string>();
   const seenProviderUsage = new Set<string>();
+  const updateLiveTokenScale = (scale: number) => {
+    if (!Number.isFinite(scale) || scale <= 0) return;
+    const previousLiveTokens = liveEstimateTokens;
+    const ratio = scale / liveTokenScale;
+    liveEstimateTokens *= ratio;
+    liveOutputEstimateTokens *= ratio;
+    displayTokens += liveEstimateTokens - previousLiveTokens;
+    liveTokenScale = scale;
+  };
   const resetPayload = (log: any, usedTokens: number, allowPendingModelCount = false) => {
+    const window = Number(log.contextWindow || 0);
+    if (Number.isFinite(window) && window > 0) measuredContextWindow = window;
+    const localTokens = Number(log.localEstimatedTokens || 0);
+    if (providerMeasured && sameContextRequest(latestProviderUsage, log)) {
+      if (localTokens > 0) updateLiveTokenScale(readModelUsage(latestProviderUsage).promptTokens / localTokens);
+      return;
+    }
     const previousModel = contextMeasurementModel(authoritative);
     const nextModel = contextMeasurementModel(log);
     awaitingModelCount = allowPendingModelCount && log.contextReplaced !== true && !calibratedPayload(log)
       && (awaitingModelCount || Boolean(previousModel && nextModel && previousModel !== nextModel));
     if (!awaitingModelCount) displayTokens = usedTokens;
-    const window = Number(log.contextWindow || 0);
-    if (Number.isFinite(window) && window > 0) measuredContextWindow = window;
     authoritative = log;
     latestProviderUsage = null;
     providerMeasured = false;
@@ -169,6 +217,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     liveEstimateTokens = 0;
     retainedProviderOutputTokens = 0;
     liveOutputEstimateTokens = 0;
+    liveTokenScale = localTokens > 0 && usedTokens > 0 ? usedTokens / localTokens : 1;
     estimatedByIdentity.clear();
     providerCoveredEstimateIdentities.clear();
     updatedAt = contextMeasurementTime(log);
@@ -209,13 +258,12 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
       const inputTokens = measuredUsage.promptTokens;
       // A delayed usage report for the old request is billing data, not the
       // current context. Keep it in the trace ledger but out of this meter.
-      if (authoritative?.contextRequestId && log.contextRequestId
+      if (authoritative?.contextRequestId
         && authoritative.contextRequestId !== log.contextRequestId) continue;
-      const measuredModel = contextMeasurementModel(latestContextUsage);
+      const measuredModel = contextMeasurementModel(authoritative);
       const incomingModel = contextMeasurementModel(log);
       if (measuredModel && incomingModel && measuredModel !== incomingModel) continue;
-      if (latestContextUsage?.contextRequestId && latestContextUsage.runId && log.runId
-        && latestContextUsage.runId !== log.runId) continue;
+      if (authoritative?.runId && log.runId && authoritative.runId !== log.runId) continue;
       const usageId = String(log.usageId || '');
       const usageKey = JSON.stringify([log.runId || '', usageId]);
       if (usageId && seenProviderUsage.has(usageKey)) continue;
@@ -229,6 +277,9 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
         liveEstimateTokens = Math.max(0, liveEstimateTokens - liveOutputEstimateTokens);
         liveOutputEstimateTokens = 0;
       }
+      const localTokens = Number(log.contextLocalEstimatedTokens
+        ?? (sameContextRequest(log, latestContextUsage) ? latestContextUsage?.localEstimatedTokens : 0));
+      if (localTokens > 0) updateLiveTokenScale(inputTokens / localTokens);
       displayTokens = inputTokens + retainedProviderOutputTokens + liveEstimateTokens;
       authoritative = log;
       awaitingModelCount = false;
@@ -247,7 +298,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
       const previous = identity ? estimatedByIdentity.get(identity) || 0 : 0;
       if (identity) estimatedByIdentity.set(identity, Math.max(previous, estimate));
       if (identity && providerCoveredEstimateIdentities.has(identity)) continue;
-      const delta = identity ? Math.max(0, estimate - previous) : estimate;
+      const delta = (identity ? Math.max(0, estimate - previous) : estimate) * liveTokenScale;
       if (component === 'output') {
         // Completion usage covers the whole response, not a token allowance
         // against differently tokenized UI text. Its final rendered duplicate
@@ -264,7 +315,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     }
   }
 
-  const draftTokens = draft.trim() ? Math.ceil(draft.length / 4) + 4 : 0;
+  const draftTokens = draft.trim() ? Math.ceil((Math.ceil(draft.length / 4) + 4) * liveTokenScale) : 0;
   const selectedModelKey = contextMeasurementModel(selectedModel);
   const measurementModelKey = contextMeasurementModel(authoritative);
   const awaitingSelectedModelMeasurement = awaitingModelCount
@@ -295,6 +346,23 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
   const aggregateSource: 'provider' | 'provider_plus_live_estimate' | 'runtime_estimate' = providerMeasured
     ? (draftTokens > 0 || liveEstimateTokens > 0 || hasEstimatedDelta ? 'provider_plus_live_estimate' : 'provider')
     : 'runtime_estimate';
+  const requestEstimate = Number(latestProviderUsage?.contextEstimatedTokens
+    ?? (sameContextRequest(latestProviderUsage, latestContextUsage) ? latestContextUsage?.usedTokens : 0));
+  const providerInput = providerMeasured ? readModelUsage(latestProviderUsage).promptTokens : 0;
+  const formatTokens = (tokens: number) => Math.round(tokens).toLocaleString('en-US');
+  const measurementNote = awaitingSelectedModelMeasurement
+    ? 'Waiting for an input count from the selected model.'
+    : providerMeasured
+      ? requestEstimate > 0 && Math.abs(requestEstimate - providerInput) >= Math.max(1_000, requestEstimate * 0.02)
+        ? `The provider measured ${formatTokens(providerInput)} input tokens; the request estimate was ${formatTokens(requestEstimate)}. The meter now uses the provider count.`
+        : aggregateSource === 'provider_plus_live_estimate'
+          ? 'Provider input count plus the response, with an estimate for new content.'
+          : 'Provider input count plus the response.'
+      : latestContextUsage?.contextReplaced === true || authoritative?.phase === 'compacted'
+        ? 'Post-compaction estimate. The provider will measure the next request.'
+        : calibratedPayload(latestContextUsage) && Number(latestContextUsage?.providerInputTokens) > 0
+          ? `Estimate based on the provider’s last input count (${formatTokens(Number(latestContextUsage.providerInputTokens))} tokens) and the current context.`
+          : 'Local estimate. The provider count may differ when the request completes.';
   return {
     usedTokens, breakdown, draftTokens, liveEstimateTokens, providerMeasured, hasEstimatedDelta, updatedAt,
     authoritative, latestContextUsage, latestProviderUsage, latestCompactionEvent,
@@ -304,6 +372,7 @@ export const readContextUsageMeter = (logs: any[], draft = '', selectedModel?: {
     isEstimated: awaitingSelectedModelMeasurement || !providerMeasured || draftTokens > 0 || hasEstimatedDelta,
     awaitingSelectedModelMeasurement,
     aggregateSource,
+    measurementNote,
     breakdownSource: latestBreakdown ? 'serialized_payload' as const : 'unavailable' as const,
     providerMetrics: cacheMetrics,
     cacheStatus,

@@ -1,8 +1,9 @@
 "use client";
 
 import { readChatPlanMode, writeChatPlanMode, readChatSwarmMode, writeChatSwarmMode, summarizeChatUsage } from '../lib/chat-command-state';
-import { requestJson } from '../lib/request-json';
-import { captureMicrophone } from '../lib/microphone';
+import { isRequestTimeout, requestJson } from '../lib/request-json';
+import { createDictationCapture, DICTATION_FINISH_TIMEOUT_MS, type DictationPhase } from '../lib/microphone';
+import { DictationButton } from '../components/ui/dictation-button';
 import { useDesktopUpdates } from '../lib/desktop-updates';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../lib/app-visibility';
 import Loading from './loading';
@@ -2642,7 +2643,10 @@ function DeepWorkUI() {
 
   const openAndStartUpdate = useCallback(() => {
     openSettingsWindow('updates');
-    if (desktopUpdate.availableVersion && !desktopUpdate.downloadReady &&
+    if (desktopUpdate.status === 'installing') return;
+    if (desktopUpdate.downloadReady) {
+      void runUpdateAction('installUpdate');
+    } else if (desktopUpdate.availableVersion &&
       (desktopUpdate.status === 'available' || desktopUpdate.status === 'error')) {
       void runUpdateAction('downloadUpdate');
     }
@@ -4160,9 +4164,9 @@ function DeepWorkUI() {
 
   // Dictation stays live until the user turns it off. The desktop app captures
   // clean PCM here and sends it to the bundled local whisper.cpp runtime.
-  const speechRecognitionRef = useRef<any>(null);
+  const speechRecognitionRef = useRef<ReturnType<typeof createDictationCapture> | null>(null);
   const dictationShouldRunRef = useRef(false);
-  const [dictationStatus, setDictationStatus] = useState('');
+  const [dictationPhase, setDictationPhase] = useState<DictationPhase>('idle');
   const dictationSessionRef = useRef<string | null>(null);
   const dictationRevisionRef = useRef(0);
   const dictationOwnerRef = useRef<string | null>(null);
@@ -4170,7 +4174,7 @@ function DeepWorkUI() {
   const getDictationOwner = () => dictationTargetRef.current === 'proxy'
     ? `${activeChatIdRef.current || 'new_chat'}::proxy-manager`
     : composerStateKey(activeChatIdRef.current || 'new_chat', activeComposerSurfaceRef.current);
-  const dictationRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dictationFinishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dictationBaseTextRef = useRef('');
   const dictationCommittedTextRef = useRef('');
   const lastDictationRenderRef = useRef<string | null>(null);
@@ -4217,26 +4221,48 @@ function DeepWorkUI() {
 
   const stopSpeechDictation = useCallback((discard = true) => {
     const sessionId = dictationSessionRef.current;
+    // A second stop must not resolve before the first drain and drop its text.
+    if (!discard && sessionId && !dictationShouldRunRef.current) return;
     dictationShouldRunRef.current = false;
     if (discard) dictationSessionRef.current = null;
-    if (dictationRestartTimerRef.current) {
-      clearTimeout(dictationRestartTimerRef.current);
-      dictationRestartTimerRef.current = null;
+    if (dictationFinishTimerRef.current) {
+      clearTimeout(dictationFinishTimerRef.current);
+      dictationFinishTimerRef.current = null;
     }
     const recognition = speechRecognitionRef.current;
     speechRecognitionRef.current = null;
     try { recognition?.stop?.(); } catch { }
     setIsRecording(false);
-    setDictationStatus(discard ? '' : 'Finishing transcription…');
+    setDictationPhase('idle');
+    if (discard) {
+      lastDictationRenderRef.current = null;
+      dictationRenderedValuesRef.current.clear();
+    }
     if (!sessionId) return;
+    if (!discard) {
+      dictationFinishTimerRef.current = setTimeout(() => {
+        if (dictationSessionRef.current !== sessionId) return;
+        dictationFinishTimerRef.current = null;
+        dictationSessionRef.current = null;
+        lastDictationRenderRef.current = null;
+        dictationRenderedValuesRef.current.clear();
+        setDictationPhase('idle');
+        void Promise.resolve((window as any).electronAPI?.stopSpeechDictation?.(sessionId, true)).catch(() => {});
+        alert('Transcription took too long. Your existing text is kept. Try the microphone again.');
+      }, DICTATION_FINISH_TIMEOUT_MS);
+    }
     // Stopping via the mic drains the final audio. Sending, navigating or
     // switching voice modes discards pending results before the draft changes.
     void Promise.resolve((window as any).electronAPI?.stopSpeechDictation?.(sessionId, discard))
-      .catch(() => {})
+      .catch(() => {
+        if (dictationSessionRef.current === sessionId) alert('Could not finish transcription. Your existing text is kept. Try the microphone again.');
+      })
       .finally(() => {
         if (dictationSessionRef.current !== sessionId) return;
+        if (dictationFinishTimerRef.current) clearTimeout(dictationFinishTimerRef.current);
+        dictationFinishTimerRef.current = null;
         dictationSessionRef.current = null;
-        setDictationStatus('');
+        setDictationPhase('idle');
         lastDictationRenderRef.current = null;
         dictationRenderedValuesRef.current.clear();
       });
@@ -4261,11 +4287,10 @@ function DeepWorkUI() {
       }
       const type = String(event?.type || '');
       const text = String(event?.text || '');
-      if (type === 'loading') {
-        setDictationStatus(text || 'Preparing speech recognition…');
+      if (type === 'processing' && !dictationShouldRunRef.current) {
+        setDictationPhase('finishing');
       } else if (type === 'capture-limit') {
         stopSpeechDictation(false);
-        setDictationStatus(text || 'Finishing buffered dictation…');
       } else if (type === 'partial' || type === 'final') {
         if (event.revision !== dictationRevisionRef.current) return;
         // Native events are full snapshots, including revisions of the current
@@ -4284,6 +4309,8 @@ function DeepWorkUI() {
         stopSpeechDictation();
         alert(text || 'Local voice dictation could not start. Check microphone permission and try again.');
       } else if (type === 'stopped') {
+        if (dictationFinishTimerRef.current) clearTimeout(dictationFinishTimerRef.current);
+        dictationFinishTimerRef.current = null;
         dictationShouldRunRef.current = false;
         dictationSessionRef.current = null;
         const recognition = speechRecognitionRef.current;
@@ -4292,7 +4319,7 @@ function DeepWorkUI() {
         lastDictationRenderRef.current = null;
         dictationRenderedValuesRef.current.clear();
         setIsRecording(false);
-        setDictationStatus('');
+        setDictationPhase('idle');
       }
     });
   }, [rememberDictationRender, stopSpeechDictation, updateInputValue]);
@@ -6136,7 +6163,13 @@ function DeepWorkUI() {
     let restoreInFlight = false;
     let lastRestoreAt = 0;
     let restoreRetryTimer: number | null = null;
+    let restoreRetryAttempt = 0;
     const restoreController = new AbortController();
+    // The initial loading screen has a shorter budget than the storage read.
+    // Let a cold local server finish loading history after the workspace opens.
+    const restoreLoadingTimer = window.setTimeout(() => {
+      if (!cancelled) setIsChatHistoryLoading(false);
+    }, 10_000);
 
     const applyRestoredChats = (
       restoredChats: ChatSession[],
@@ -6153,22 +6186,36 @@ function DeepWorkUI() {
       setChats(cleanChats);
     };
 
+    const scheduleRestoreRetry = (persistRestoredSnapshot: boolean) => {
+      if (cancelled || restoreRetryTimer !== null) return;
+      const delay = Math.min(30_000, 2_000 * (2 ** Math.min(restoreRetryAttempt, 4)));
+      restoreRetryAttempt += 1;
+      restoreRetryTimer = window.setTimeout(() => {
+        restoreRetryTimer = null;
+        void restoreChats(true, persistRestoredSnapshot);
+      }, delay);
+    };
+
     const restoreChats = async (force = false, persistRestoredSnapshot = true) => {
       if (cancelled || restoreInFlight || (!force && chatSnapshotReadyRef.current)) return;
       if (force && Date.now() - lastRestoreAt < 1500) return;
+      if (restoreRetryTimer !== null) {
+        window.clearTimeout(restoreRetryTimer);
+        restoreRetryTimer = null;
+      }
       restoreInFlight = true;
       lastRestoreAt = Date.now();
 
       try {
         let snapshot: any = null;
         let lastError: unknown = null;
-        // Keep the initial screen bounded; retries continue in the workspace.
+        // Loading the entire history can outlast the startup screen's budget.
         // The durable-write gate stays closed until a snapshot actually loads.
         try {
           const response = await requestJson('/api/chats', {
             cache: 'no-store',
             signal: restoreController.signal,
-          }, 10_000);
+          }, 30_000);
           if (!response.ok) throw new Error(`Chat restore HTTP ${ response.status }`);
           snapshot = await response.json();
           if (!Array.isArray(snapshot?.chats)) throw new Error('Chat restore returned an invalid snapshot');
@@ -6179,13 +6226,14 @@ function DeepWorkUI() {
         if (lastError || cancelled) {
           if (!cancelled) setIsChatHistoryLoading(false);
           if (lastError && !cancelled) {
-            console.error('[Chats] Durable restore failed:', lastError);
-            if (restoreRetryTimer === null) {
-              restoreRetryTimer = window.setTimeout(() => {
-                restoreRetryTimer = null;
-                void restoreChats(true);
-              }, 2000);
+            if (isRequestTimeout(lastError)) {
+              // Expected recovery must not open Next's fatal console overlay.
+              // Keep the diagnostic while retaining the saved-data write gate.
+              console.warn('[Chats] History restore timed out; retrying in the background.');
+            } else {
+              console.error('[Chats] Durable restore failed:', lastError);
             }
+            scheduleRestoreRetry(persistRestoredSnapshot);
           }
           return;
         }
@@ -6222,21 +6270,18 @@ function DeepWorkUI() {
         }
         const restoredChats = removeGeneratedEmptyChats(sortChats(Array.from(mergedById.values())));
         applyRestoredChats(restoredChats);
+        restoreRetryAttempt = 0;
         chatSnapshotReadyRef.current = true;
         setIsChatHistoryLoading(false);
         if (persistRestoredSnapshot) persistChats(restoredChats);
       } catch (error) {
         if (!cancelled) {
           console.error('[Chats] Could not apply the restored workspace:', error);
-          if (restoreRetryTimer === null) {
-            restoreRetryTimer = window.setTimeout(() => {
-              restoreRetryTimer = null;
-              void restoreChats(true);
-            }, 2000);
-          }
+          scheduleRestoreRetry(persistRestoredSnapshot);
         }
       } finally {
         restoreInFlight = false;
+        window.clearTimeout(restoreLoadingTimer);
         if (!cancelled) setIsChatHistoryLoading(false);
         const pendingRevision = pendingChatRestoreRevisionRef.current;
         if (!cancelled && pendingRevision > lastChatSnapshotAtRef.current && restoreRetryTimer === null) {
@@ -6281,6 +6326,7 @@ function DeepWorkUI() {
     return () => {
       cancelled = true;
       restoreController.abort();
+      window.clearTimeout(restoreLoadingTimer);
       if (restoreRetryTimer !== null) {
         window.clearTimeout(restoreRetryTimer);
         restoreRetryTimer = null;
@@ -9146,7 +9192,9 @@ function DeepWorkUI() {
         // cannot remain truncated or appear to change after reconnect.
         mergedLogs[answerIndex] = {
           ...previousAnswer,
-          text: String(data.finalAnswer),
+          text: isSettledAnswerTrace(previousAnswer)
+            ? mergeVisibleNarrativeText(previousAnswer.text, data.finalAnswer)
+            : mergeStreamingText(previousAnswer.text, data.finalAnswer),
           isLive: false,
           isStreaming: false,
           isLiveTyping: false,
@@ -9189,7 +9237,7 @@ function DeepWorkUI() {
 
     if ((data.status === 'failed' || data.status === 'stopped') && !hasVisibleTerminalNotice) {
       const detail = formatAgentErrorDetail(
-        data.finalAnswer ?? data.error,
+        data.status === 'stopped' ? data.error : data.error ?? data.finalAnswer,
         data.status === 'stopped' ? 'The agent was stopped.' : 'The run ended with an error.',
       );
       insertIntoOwningTurn({
@@ -11001,6 +11049,10 @@ function DeepWorkUI() {
         if (!response.ok || payload?.success !== true) {
           throw new Error(payload.error || payload.message || `Stop failed (${ response.status })`);
         }
+        // Install every already-received token before cancelling the poller.
+        // The Stop response then merges its authoritative answer into that
+        // same ledger instead of racing a pending renderer update.
+        flushBackgroundChatUpdates(chatId);
         const currentPollRunId = String(pollRunIdRef.current.get(chatId) || '').trim();
         const successorOwnsChat = Boolean(
           stopRunId &&
@@ -11059,6 +11111,7 @@ function DeepWorkUI() {
             ...clean.slice(insertionIndex),
           ];
         });
+        flushBackgroundChatUpdates(chatId);
         return true;
       } catch (error: any) {
         queuedMessages.forEach(message => stoppingQueuedFollowUpsRef.current.delete(queuedFollowUpKey(chatId, message.id)));
@@ -11670,6 +11723,7 @@ function DeepWorkUI() {
   };
 
   const toggleSpeech = async (target: 'main' | 'proxy' = 'main') => {
+    if (dictationSessionRef.current && !dictationShouldRunRef.current && dictationTargetRef.current === target) return;
     if (dictationShouldRunRef.current) {
       const sameTarget = dictationTargetRef.current === target;
       stopSpeechDictation(!sameTarget);
@@ -11678,7 +11732,8 @@ function DeepWorkUI() {
     if (dictationSessionRef.current) stopSpeechDictation();
     if (liveSessionTokenRef.current || liveSessionRef.current) stopLiveSession();
     const desktopApi = (window as any).electronAPI;
-    if (typeof desktopApi?.startSpeechDictation !== 'function' || typeof desktopApi?.pushSpeechDictationAudio !== 'function') {
+    if (typeof desktopApi?.startSpeechDictation !== 'function' || typeof desktopApi?.pushSpeechDictationAudio !== 'function'
+      || typeof desktopApi?.stopSpeechDictation !== 'function' || typeof desktopApi?.onSpeechDictationEvent !== 'function') {
       alert('Local whisper.cpp dictation is available in the EterX desktop app.');
       return;
     }
@@ -11696,34 +11751,18 @@ function DeepWorkUI() {
     dictationRenderedValuesRef.current.clear();
     dictationShouldRunRef.current = true;
     setIsRecording(true);
-    setDictationStatus('Preparing speech recognition…');
+    setDictationPhase('starting');
     const isCurrentRecording = () => dictationSessionRef.current === sessionId && dictationShouldRunRef.current &&
       dictationOwnerRef.current === getDictationOwner();
 
-    let microphoneStream: MediaStream | null = null;
-    let audioContext: AudioContext | null = null;
-    let sourceNode: MediaStreamAudioSourceNode | null = null;
-    let processorNode: ScriptProcessorNode | null = null;
-    let silentGain: GainNode | null = null;
-    const releaseMicrophone = () => {
-      if (processorNode) processorNode.onaudioprocess = null;
-      try { processorNode?.disconnect(); } catch { }
-      try { sourceNode?.disconnect(); } catch { }
-      try { silentGain?.disconnect(); } catch { }
-      microphoneStream?.getTracks().forEach(track => track.stop());
-      if (audioContext && audioContext.state !== 'closed') void audioContext.close().catch(() => {});
-    };
-    speechRecognitionRef.current = { stop: releaseMicrophone };
+    let capture: ReturnType<typeof createDictationCapture> | null = null;
     try {
-      // Create/resume during the click gesture. Some desktop audio stacks
-      // suspend contexts created only after a long model-download await.
-      try {
-        audioContext = new AudioContext({ latencyHint: 'interactive', sampleRate: 16000 });
-      } catch {
-        audioContext = new AudioContext({ latencyHint: 'interactive' });
-      }
-      await audioContext.resume();
-      if (!isCurrentRecording()) { releaseMicrophone(); return; }
+      capture = createDictationCapture(pcm => {
+        if (isCurrentRecording()) desktopApi.pushSpeechDictationAudio(pcm, sessionId, dictationRevisionRef.current);
+      }, () => { if (isCurrentRecording()) stopSpeechDictation(false); });
+      speechRecognitionRef.current = capture;
+      await capture.ready;
+      if (!isCurrentRecording()) { capture.stop(); return; }
       const desktopPermission = await desktopApi.requestLiveMediaPermissions?.();
       if (!isCurrentRecording()) return;
       if (['denied', 'restricted'].includes(String(desktopPermission?.microphone || ''))) {
@@ -11744,60 +11783,17 @@ function DeepWorkUI() {
       // General settings, independently of the desktop's display language.
       const nativeResult = await desktopApi.startSpeechDictation(speechLanguage, sessionId, speechModel);
       if (!isCurrentRecording()) {
-        releaseMicrophone();
+        capture.stop();
         void desktopApi.stopSpeechDictation(sessionId, true).catch(() => {});
         return;
       }
       if (nativeResult?.cancelled) { stopSpeechDictation(); return; }
       if (!nativeResult?.started) throw new Error(nativeResult?.error || 'Local whisper.cpp could not start.');
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone capture is unavailable. Open EterX in the desktop app and allow microphone access.');
-      setDictationStatus('Opening microphone…');
-      microphoneStream = await captureMicrophone(microphoneDeviceId);
-      if (!isCurrentRecording()) { releaseMicrophone(); return; }
       // Edits may have happened while the native engine was starting.
       desktopApi.resetSpeechDictation?.(sessionId, dictationRevisionRef.current);
-      sourceNode = audioContext.createMediaStreamSource(microphoneStream);
-      processorNode = audioContext.createScriptProcessor(4096, 1, 1);
-      silentGain = audioContext.createGain();
-      silentGain.gain.value = 0;
-      // Native 16 kHz is preferred. When the audio device cannot provide it,
-      // retain fractional averaging state across callbacks (e.g. 44.1 kHz).
-      let sampleSum = 0;
-      let sampleWeight = 0;
-      processorNode.onaudioprocess = event => {
-        if (!isCurrentRecording() || !audioContext) return;
-        const input = event.inputBuffer.getChannelData(0);
-        const ratio = audioContext.sampleRate / 16000;
-        const pcm = new Int16Array(Math.ceil(input.length / ratio) + 1);
-        let outputLength = 0;
-        for (let index = 0; index < input.length; index++) {
-          let remaining = 1;
-          while (remaining > 1e-8) {
-            const weight = Math.min(remaining, ratio - sampleWeight);
-            sampleSum += input[index] * weight;
-            sampleWeight += weight;
-            remaining -= weight;
-            if (sampleWeight >= ratio - 1e-8) {
-              const sample = Math.max(-1, Math.min(1, sampleSum / sampleWeight));
-              pcm[outputLength++] = sample < 0 ? sample * 32768 : sample * 32767;
-              sampleSum = 0;
-              sampleWeight = 0;
-            }
-          }
-        }
-        if (outputLength) desktopApi.pushSpeechDictationAudio(pcm.slice(0, outputLength).buffer, sessionId, dictationRevisionRef.current);
-      };
-      sourceNode.connect(processorNode);
-      processorNode.connect(silentGain);
-      silentGain.connect(audioContext.destination);
-      await audioContext.resume();
-      if (!isCurrentRecording()) { releaseMicrophone(); return; }
-      setDictationStatus('Listening…');
-      microphoneStream.getAudioTracks().forEach(track => track.addEventListener('ended', () => {
-        if (isCurrentRecording()) stopSpeechDictation(false);
-      }, { once: true }));
+      if (await capture.start(microphoneDeviceId) && isCurrentRecording()) setDictationPhase('listening');
     } catch (error: any) {
-      releaseMicrophone();
+      capture?.stop();
       if (dictationSessionRef.current !== sessionId) return;
       stopSpeechDictation();
       const message = formatAgentErrorDetail(error, 'Local voice dictation could not start.');
@@ -16204,7 +16200,7 @@ function DeepWorkUI() {
             data-update-available={hasAvailableUpdate ? 'true' : undefined}
             onClick={openAndStartUpdate}
             title={hasAvailableUpdate ? desktopUpdate.message : 'Open application updates'}
-            aria-label={hasAvailableUpdate ? `EterX ${desktopUpdate.availableVersion}: ${desktopUpdate.downloadReady ? 'ready to restart; open Updates' : desktopUpdate.status === 'downloading' ? 'downloading; view progress' : 'download update'}` : 'Open application updates'}
+            aria-label={hasAvailableUpdate ? `EterX ${desktopUpdate.availableVersion}: ${desktopUpdate.downloadReady ? 'restart to update' : desktopUpdate.status === 'downloading' ? 'downloading; view progress' : 'download update'}` : 'Open application updates'}
             className="eterx-topbar-btn relative px-[10px] h-full text-[13px] font-normal tracking-[0.01em] cursor-pointer select-none outline-none bg-transparent border-0 transition-colors duration-150"
             style={{ color: 'var(--eterx-topbar-text, #9A9590)' }}>
             {hasAvailableUpdate
@@ -16219,15 +16215,15 @@ function DeepWorkUI() {
       </div>
       {!isSettingsOpen && updateNoticeKey && dismissedUpdateNotice !== updateNoticeKey &&
         ((desktopUpdate.status === 'available' && desktopUpdate.updateAvailableUnread) || desktopUpdate.status === 'ready' || desktopUpdate.status === 'error') && (
-        <div className="eterx-update-notice fixed right-5 top-14 z-[250] flex w-[380px] max-w-[calc(100vw-2.5rem)] items-center gap-4 rounded-2xl border p-4 shadow-xl" role="status" aria-live="polite">
+        <div className="eterx-update-notice fixed right-4 top-14 z-[250] w-[320px] max-w-[calc(100vw-2rem)] rounded-xl border p-3.5 shadow-xl" role="status" aria-live="polite">
           <div className="min-w-0">
-            <p className="text-[13px] font-semibold">{desktopUpdate.status === 'error' ? 'Update needs attention' : `EterX ${desktopUpdate.availableVersion} ${desktopUpdate.downloadReady ? 'is ready' : 'is available'}`}</p>
-            <p className="mt-1 text-[12px] opacity-70">{desktopUpdate.status === 'error' ? desktopUpdate.message : desktopUpdate.downloadReady ? 'Restart when you are ready to install.' : 'Get the latest improvements.'}</p>
-            <button type="button" className="mt-2 rounded-full bg-[#168eea] px-4 py-1.5 text-[12px] font-semibold text-white hover:bg-[#087cd4] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" onClick={openAndStartUpdate}>
-              {desktopUpdate.downloadReady ? 'Open Updates' : desktopUpdate.status === 'error' ? 'Retry download' : 'Update now'}
+            <p className="pr-7 text-[13px] font-semibold leading-5 break-words">{desktopUpdate.status === 'error' ? 'Update needs attention' : `EterX ${desktopUpdate.availableVersion} ${desktopUpdate.downloadReady ? 'is ready' : 'is available'}`}</p>
+            <p className="mt-1 pr-5 text-[12px] leading-[18px] opacity-70 break-words [overflow-wrap:anywhere]">{desktopUpdate.status === 'error' ? desktopUpdate.message : desktopUpdate.downloadReady ? 'Restart when you are ready to install.' : 'Get the latest improvements.'}</p>
+            <button type="button" className="mt-3 inline-flex min-h-8 max-w-full items-center justify-center rounded-lg bg-[#168eea] px-3 py-1.5 text-[12px] font-medium leading-4 text-white transition-colors hover:bg-[#087cd4] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" onClick={openAndStartUpdate}>
+              {desktopUpdate.downloadReady ? 'Restart to update' : desktopUpdate.status === 'error' ? 'Retry download' : 'Update now'}
             </button>
           </div>
-          <button type="button" aria-label="Dismiss update notification" className="self-start rounded-md p-1 opacity-60 hover:opacity-100 focus-visible:outline" onClick={() => { setDismissedUpdateNotice(updateNoticeKey); markUpdateViewed(); }}><X size={15} /></button>
+          <button type="button" aria-label="Dismiss update notification" className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" onClick={() => { setDismissedUpdateNotice(updateNoticeKey); markUpdateViewed(); }}><X size={15} /></button>
         </div>
       )}
       {updateActionError && isSettingsOpen && settingsInitialTab === 'updates' && (
@@ -17879,18 +17875,7 @@ function DeepWorkUI() {
                                       </div>
 
                                       {/* Speech (Mic) Icon */}
-                                      <button
-                                        type="button"
-                                        onClick={() => void toggleSpeech('proxy')}
-                                        aria-label={isRecording && dictationTargetRef.current === 'proxy' ? 'Stop proxy dictation' : 'Start proxy dictation'}
-                                        aria-pressed={isRecording && dictationTargetRef.current === 'proxy'}
-                                        title={dictationTargetRef.current === 'proxy' && dictationStatus ? dictationStatus : 'Microphone dictation'}
-                                        style={isRecording && dictationTargetRef.current === 'proxy' ? { color: 'var(--foreground)', background: 'var(--muted)' } : undefined}
-                                        className="h-7 w-7 rounded-full flex items-center justify-center text-white/40 hover:text-white/80 hover:bg-white/[0.06] active:bg-white/[0.12] transition-colors focus:outline-none"
-                                      >
-                                        <Mic className="h-4 w-4" />
-                                      </button>
-                                      {dictationTargetRef.current === 'proxy' && dictationStatus && <span role="status" className="max-w-[150px] truncate text-[11px] text-white/60">{dictationStatus}</span>}
+                                      <DictationButton compact phase={dictationTargetRef.current === 'proxy' ? dictationPhase : 'idle'} onClick={() => void toggleSpeech('proxy')} />
                                       {/* Send button */}
                                       <button
                                         type="submit"
@@ -17954,7 +17939,7 @@ function DeepWorkUI() {
                       isThinking={composerIsThinking}
                       canStop={Boolean(canStopSelectedFeed)}
                       isRecording={isRecording && dictationTargetRef.current === 'main'}
-                      dictationStatus={dictationTargetRef.current === 'main' ? dictationStatus : ''}
+                      dictationPhase={dictationTargetRef.current === 'main' ? dictationPhase : 'idle'}
                       handleSend={activeSubAgentTab ? handleSendSubAgentMessage : handleSend}
                       handleStop={handleStopSelectedFeed}
                       handleSteer={activeSubAgentTab ? handleSendSubAgentMessage : handleSteer}

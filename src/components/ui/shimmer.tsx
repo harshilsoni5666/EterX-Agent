@@ -1,3 +1,4 @@
+// @refresh reset
 import React, { useLayoutEffect, useRef } from 'react';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
@@ -18,7 +19,7 @@ function updateShimmerVisibility(element: HTMLElement) {
     const phase = performance.now() % state.duration;
     for (const animation of element.getAnimations({ subtree: true })) {
       const name = (animation as CSSAnimation).animationName;
-      if (name === 'tw-shimmer' || name === 'eterx-shimmer-band' || name === 'eterx-shimmer-copy') animation.currentTime = phase;
+      if (name === 'tw-shimmer' || name === 'eterx-shimmer-stable' || name === 'eterx-shimmer-band' || name === 'eterx-shimmer-copy') animation.currentTime = phase;
     }
   }
 }
@@ -47,12 +48,14 @@ function observeShimmer(element: HTMLElement, duration: number, once: boolean) {
     });
     stopAppVisibility = subscribeAppVisibility(resumeShimmers);
   }
-  const inChat = Boolean(element.closest('.eterx-chat-column'));
-  shimmerLabels.set(element, { visible: !shimmerVisibility, duration: inChat ? 2400 : duration, once });
+  // Follow the rendered duration, including scoped heading styles, on resume.
+  const cssDuration = getComputedStyle(element).getPropertyValue('--shimmer-duration').trim();
+  const cssDurationMs = Number.parseFloat(cssDuration) * (cssDuration.endsWith('ms') ? 1 : 1000);
+  shimmerLabels.set(element, { visible: !shimmerVisibility, duration: Number.isFinite(cssDurationMs) && cssDurationMs > 0 ? cssDurationMs : duration, once });
   updateShimmerVisibility(element);
   shimmerVisibility?.observe(element);
   const measuredText = element.querySelector<HTMLElement>('.eterx-shimmer-base') || element;
-  shimmerSizes?.observe(measuredText);
+  if (element.classList.contains('eterx-shimmer-composite')) shimmerSizes?.observe(measuredText);
   return () => {
     shimmerVisibility?.unobserve(element);
     shimmerSizes?.unobserve(measuredText);
@@ -82,6 +85,8 @@ type ShimmerProps = {
   active?: boolean;
   as?: 'span' | 'div' | 'p';
   durationMs?: number;
+  /** Keep the sweep distance fixed when a live label changes length. */
+  stableSweep?: boolean;
   angle?: number;
   spread?: string;
   color?: string;
@@ -114,6 +119,7 @@ export const Shimmer = React.memo(({
   active = true,
   as: Tag = 'span',
   durationMs,
+  stableSweep = false,
   angle,
   spread,
   color,
@@ -125,14 +131,16 @@ export const Shimmer = React.memo(({
 }: ShimmerProps) => {
   const elementRef = useRef<HTMLElement | null>(null);
   const plainText = plainShimmerText(children);
-  const composite = plainText !== null && !once;
+  const composite = plainText !== null && !once && !stableSweep;
+  const observationMode = stableSweep ? 'stable' : composite ? 'composite' : 'text';
   useLayoutEffect(() => {
     if (!active || !elementRef.current) return;
     return observeShimmer(elementRef.current, Math.max(1, durationMs ?? 2400), once);
-  }, [active, durationMs, once, composite]);
+  }, [active, durationMs, once, observationMode]);
   const classes = [
     active ? 'shimmer' : '',
     active && composite ? 'eterx-shimmer-composite' : '',
+    active && stableSweep ? 'eterx-shimmer-stable' : '',
     active && once ? 'shimmer-once' : '',
     active && reverse ? 'shimmer-reverse' : '',
     className,

@@ -1,0 +1,486 @@
+/* The group heading sits on the transcript. The activity list is a quiet
+   scroll region; only expanded tool details receive a visible surface. */
+.eterx-activity-panel {
+  --activity-surface: var(--background, #111111);
+  --activity-border: #2b2b2b;
+  --activity-divider: #252525;
+  --activity-hover: rgba(255, 255, 255, 0.025);
+  --activity-ink: #b8b6b2;
+  --activity-muted: #8e8d89;
+  --activity-detail: #a3a29e;
+  --activity-focus: #a6a6a2;
+  --activity-alert: #e6ac97;
+  --activity-height: min(320px, 42dvh);
+  --activity-font: "Segoe UI Variable Text", var(--font-sans), -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  min-width: 0;
+  isolation: isolate;
+}
+
+:root[data-theme="light"] .eterx-activity-panel {
+  --activity-surface: var(--background, #ffffff);
+  --activity-border: #e4e4e2;
+  --activity-divider: #ededeb;
+  --activity-hover: rgba(0, 0, 0, 0.025);
+  --activity-ink: #53534f;
+  --activity-muted: #74746e;
+  --activity-detail: #62625e;
+  --activity-focus: #666660;
+  --activity-alert: #a0412a;
+}
+
+/* No outer card or header bar, including on hover and in the side chat. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel[data-open] {
+  overflow: visible;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--activity-ink) !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-sequence-header, .eterx-browser-activity-header) {
+  display: flex;
+  gap: 8px;
+  width: fit-content !important;
+  max-width: 100%;
+  min-height: 32px !important;
+  height: auto !important;
+  padding: 4px 0 !important;
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  color: var(--activity-ink) !important;
+  font-family: var(--activity-font) !important;
+  font-size: 13.5px !important;
+  font-weight: 500;
+  line-height: 22px;
+  letter-spacing: -0.01em;
+}
+
+:root[data-theme] .eterx-activity-panel .eterx-action-sequence-header[hidden] { display: none; }
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-sequence-heading {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: none;
+  height: auto;
+  min-height: 22px;
+  line-height: 22px;
+}
+
+:root[data-theme] .eterx-activity-panel .eterx-sequence-heading > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--activity-font) !important;
+}
+
+:root[data-theme] .eterx-activity-panel .eterx-browser-activity-header > .shimmer {
+  flex: 0 1 auto;
+  font: inherit !important;
+}
+
+:root[data-theme] .eterx-activity-panel :is(.eterx-action-sequence-header, .eterx-browser-activity-header) .shimmer,
+:root[data-theme] .eterx-live-working-indicator .shimmer {
+  --shimmer-duration: 3s !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-sequence-caret {
+  margin-left: 0;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-sequence-icon {
+  flex: 0 0 18px;
+  width: 18px;
+  margin: 0;
+}
+
+:root[data-theme] .eterx-activity-panel .eterx-sequence-icon[data-visible="false"] {
+  display: none;
+}
+
+:root[data-theme] .eterx-activity-panel .eterx-sequence-icon :is(svg, img) { top: 0 !important; }
+
+.eterx-activity-disclosure { border: 0; padding-top: 2px; }
+.eterx-activity-disclosure[hidden] { display: none; }
+.eterx-activity-body, .eterx-activity-scroll-frame { position: relative; min-width: 0; }
+
+.eterx-activity-viewport {
+  --eterx-sb-size: 6px;
+  --eterx-sb-thumb: color-mix(in srgb, var(--activity-muted) 34%, transparent);
+  --eterx-sb-thumb-hover: color-mix(in srgb, var(--activity-muted) 60%, transparent);
+  --eterx-sb-thumb-active: var(--activity-muted);
+  max-height: var(--activity-height);
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* The chat can continue scrolling at the ends of a short activity region. */
+  overscroll-behavior-y: auto;
+  scrollbar-gutter: stable;
+  scroll-padding-block: 18px;
+  overflow-anchor: none;
+}
+
+.eterx-activity-body[data-expanded="true"] > .eterx-activity-scroll-frame > .eterx-activity-viewport {
+  max-height: none;
+  overflow-y: visible;
+}
+
+.eterx-activity-contents { min-width: 0; padding: 0 2px 2px 0; }
+
+/* Fade only overflowing history; the outside heading stays fully visible. */
+.eterx-activity-edge {
+  position: absolute;
+  z-index: 2;
+  inset-inline: 0 8px;
+  height: 16px;
+  pointer-events: none;
+}
+.eterx-activity-edge-top {
+  top: 0;
+  background: linear-gradient(to bottom, var(--activity-surface), transparent);
+}
+.eterx-activity-edge-bottom {
+  bottom: 0;
+  background: linear-gradient(to top, var(--activity-surface), transparent);
+}
+
+.eterx-activity-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 4px 0 0;
+  border: 0;
+  background: transparent;
+}
+
+.eterx-activity-footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px;
+  border-radius: 5px;
+  color: var(--activity-muted);
+  font-size: 11px;
+  font-family: var(--activity-font) !important;
+  line-height: 18px;
+}
+.eterx-activity-footer button:hover { color: var(--activity-ink); background: var(--activity-hover); }
+.eterx-activity-footer svg { width: 13px; height: 13px; }
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-action-sequence-content {
+  gap: 2px;
+}
+
+/* Embedded rows do not create a second stack of cards. Preview content keeps
+   its own typography, copy buttons and file-opening actions. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-card, .eterx-action-group, .eterx-terminal-trace, .eterx-file-change-trace),
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-card, .eterx-action-group, .eterx-terminal-trace, .eterx-file-change-trace):hover {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+}
+
+:root[data-theme] .eterx-activity-panel .eterx-action-row-divider { border: 0 !important; }
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
+  min-height: 28px !important;
+  height: auto !important;
+  padding: 3px 0 !important;
+  gap: 6px;
+  border: 0 !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  color: var(--activity-ink) !important;
+  font-family: var(--activity-font) !important;
+  font-size: 13.5px !important;
+  line-height: 22px !important;
+  letter-spacing: -0.01em;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row):is(:hover, :focus-visible) {
+  background: var(--activity-hover) !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-sequence-header, .eterx-browser-activity-header):is([aria-expanded="true"], :focus-visible) {
+  background: transparent !important;
+  color: var(--activity-ink) !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-sequence-header, .eterx-browser-activity-header):hover {
+  background: transparent !important;
+  color: var(--foreground) !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-sequence-header, .eterx-browser-activity-header) :is(.shimmer, svg) {
+  color: inherit !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-trace-label, .eterx-action-verb, .eterx-file-change-title, .eterx-file-change-filename) {
+  color: var(--activity-ink) !important;
+  font-family: var(--activity-font) !important;
+  font-size: 13.5px !important;
+  font-weight: 400 !important;
+  line-height: 22px !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-trace-command,
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-terminal-trace-row, .eterx-action-chip, .eterx-file-change-row) > .font-mono {
+  color: var(--activity-detail) !important;
+  font-family: var(--activity-font) !important;
+  font-size: 13.5px !important;
+  font-weight: 400 !important;
+  line-height: 22px !important;
+  letter-spacing: -0.01em;
+}
+
+.eterx-trace-duration {
+  min-width: 0;
+  color: var(--activity-muted, var(--muted-foreground));
+  font-size: 10.5px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+:root[data-theme] .eterx-activity-panel .eterx-terminal-trace-row > .eterx-trace-label {
+  max-width: 13rem;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-trace-duration {
+  color: var(--activity-muted) !important;
+  font-size: 10.5px !important;
+  font-weight: 400 !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-terminal-trace[data-status="failed"] > .eterx-terminal-trace-row > :is(.eterx-action-icon, .eterx-trace-label),
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-terminal-trace[data-status="unknown"] > .eterx-terminal-trace-row > .eterx-trace-label {
+  color: var(--activity-alert) !important;
+}
+
+/* Thinking retains its original disclosure, spacing, chevron and reading
+   container. This stylesheet only changes the tool activity presentation. */
+.eterx-activity-note { margin-block: 4px; }
+
+/* Tool output is the visible card inside the otherwise unframed list.
+   Keep its existing command, copy action, output and status-footer layout. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-terminal-console {
+  margin: 4px 0 10px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--foreground) 13%, transparent) !important;
+  border-radius: 10px !important;
+  background: color-mix(in srgb, var(--activity-surface) 93%, var(--foreground)) !important;
+}
+
+:root[data-theme] .eterx-activity-panel :is(.eterx-terminal-console-command, .eterx-terminal-console-output, .eterx-terminal-console-body),
+:root[data-theme] .eterx-activity-panel .eterx-terminal-console-body * {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Consolas, monospace !important;
+  font-size: 12px !important;
+  font-weight: 400;
+  line-height: 1.65 !important;
+  font-variant-ligatures: none;
+}
+
+/* Compact groups own vertical scrolling for expanded tool output as well.
+   Full activity restores each result's own limit. Horizontal code/table
+   scrolling remains available, and native scrolling passes through at ends. */
+.eterx-activity-body[data-expanded="false"] :is(.eterx-terminal-console-output, .eterx-inline-code-scroll, .eterx-inline-diff-scroll, .eterx-tool-result-scroll) {
+  max-height: none !important;
+  overflow-y: visible !important;
+  overscroll-behavior: auto !important;
+}
+
+.eterx-trp-card {
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--activity-font, var(--font-sans));
+}
+
+.eterx-tool-result-scroll {
+  --eterx-sb-size: 6px;
+  min-width: 0;
+  max-height: min(320px, 42dvh);
+  overflow: auto;
+  overscroll-behavior: auto;
+  scrollbar-gutter: stable;
+  scroll-padding-block: 12px;
+}
+
+.eterx-tool-result-scroll:focus-visible {
+  outline: 2px solid var(--activity-focus, var(--muted-foreground));
+  outline-offset: -2px;
+}
+
+.eterx-tool-result-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--activity-ink, var(--foreground));
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+/* One vertical reading area per result, rather than a separate rail for each
+   paragraph, source list, object and table inside it. */
+.eterx-tool-result-content .eterx-scrollbar {
+  max-height: none !important;
+  overflow-y: visible !important;
+  overscroll-behavior: auto !important;
+}
+
+.eterx-result-prose {
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.eterx-result-caption {
+  margin: 0 0 8px;
+  color: var(--activity-muted, var(--muted-foreground));
+  font-size: 11px;
+}
+
+.eterx-result-error {
+  margin: 0 0 10px;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--activity-alert, #d47565);
+  color: var(--activity-alert, #d47565);
+  white-space: pre-wrap;
+}
+
+.eterx-result-details {
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.eterx-result-details > summary {
+  width: fit-content;
+  max-width: 100%;
+  padding-block: 4px;
+  color: var(--activity-muted, var(--muted-foreground));
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.eterx-result-details > summary:hover {
+  color: var(--foreground);
+}
+
+.eterx-result-details > summary:focus-visible {
+  outline: 2px solid var(--activity-focus, var(--muted-foreground));
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.eterx-result-code {
+  margin: 6px 0 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono), ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--activity-detail, var(--muted-foreground));
+}
+
+.eterx-result-fields {
+  display: grid;
+  gap: 4px;
+  margin-block: 10px;
+}
+
+.eterx-result-fields > div {
+  display: grid;
+  grid-template-columns: minmax(80px, 25%) minmax(0, 1fr);
+  gap: 12px;
+  padding-block: 3px;
+}
+
+.eterx-result-fields dt {
+  color: var(--activity-muted, var(--muted-foreground));
+}
+
+.eterx-result-fields dd {
+  margin: 0;
+  min-width: 0;
+  white-space: pre-wrap;
+}
+
+.eterx-agent-result-list {
+  margin-block: 10px;
+}
+
+.eterx-agent-result {
+  margin: 0;
+  border-top: 1px solid color-mix(in srgb, var(--foreground) 7%, transparent);
+  padding-block: 3px;
+}
+
+.eterx-agent-result > summary {
+  width: auto;
+  color: var(--activity-ink, var(--foreground));
+}
+
+.eterx-agent-result-name { font-weight: 500; }
+.eterx-agent-result-status {
+  display: inline-block;
+  margin-inline-start: 12px;
+  color: var(--activity-muted, var(--muted-foreground));
+  font-size: 11px;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(button, [role="button"], .eterx-activity-viewport):focus-visible {
+  outline: 2px solid var(--activity-focus) !important;
+  outline-offset: -2px;
+}
+
+/* Scoped scrollbar rules override the app-wide arrow buttons without changing
+   the main transcript or source editor rails. */
+:root .eterx-activity-viewport::-webkit-scrollbar-button,
+:root .eterx-activity-viewport::-webkit-scrollbar-button:single-button,
+:root .eterx-tool-result-scroll::-webkit-scrollbar-button,
+:root .eterx-tool-result-scroll::-webkit-scrollbar-button:single-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  background: none !important;
+}
+:root .eterx-activity-viewport::-webkit-scrollbar-track:vertical { margin-block: 6px !important; }
+
+@container eterx-conversation (max-width: 520px) {
+  .eterx-activity-panel { --activity-height: min(280px, 40dvh); }
+  .eterx-activity-panel .eterx-trace-duration { display: none; }
+  :root[data-theme] .eterx-activity-panel .eterx-terminal-trace-row > .eterx-trace-label { max-width: 8.5rem; }
+  .eterx-activity-panel button.eterx-terminal-trace-row[aria-expanded="false"] {
+    grid-template-columns: 20px auto minmax(0, 1fr) 14px;
+  }
+  .eterx-activity-panel button.eterx-terminal-trace-row[aria-expanded="true"] {
+    grid-template-columns: 20px minmax(0, 1fr) 14px;
+  }
+}
+
+@media (pointer: coarse) {
+  :root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
+    min-height: 40px !important;
+  }
+  .eterx-activity-footer button { min-height: 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eterx-activity-panel, .eterx-activity-panel * { scroll-behavior: auto !important; }
+}
+
+@media (forced-colors: active) {
+  :root[data-theme] .eterx-activity-panel {
+    --activity-surface: Canvas;
+    --activity-border: ButtonText;
+    --activity-divider: GrayText;
+    --activity-hover: Canvas;
+    --activity-ink: CanvasText;
+    --activity-muted: CanvasText;
+    --activity-detail: CanvasText;
+    --activity-focus: Highlight;
+    --activity-alert: CanvasText;
+  }
+  .eterx-activity-edge { display: none; }
+}

@@ -1,3 +1,8 @@
+/** Expected deadline failures can be recovered without a fatal UI error. */
+export const isRequestTimeout = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null &&
+  'code' in error && error.code === 'ETERX_REQUEST_TIMEOUT';
+
 /** For finite settings/storage endpoints only; never use for generation or edits. */
 export async function requestJson(
   input: string,

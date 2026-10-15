@@ -16,6 +16,7 @@ import './dropdown-polish.css';
 import './code-review.css';
 import './composer-surfaces.css';
 import './chat-content.css';
+import './activity-feed.css';
 import '../../electron/splash.css';
 import 'katex/dist/katex.min.css';
 import './scrollbars.css';

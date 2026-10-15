@@ -1526,6 +1526,7 @@ class AgentRegistry {
     if (existing?.settled) this.archiveExecution(existing);
     this.executions.set(chatId, execution);
 
+    let terminalPersistence: Promise<void> = Promise.resolve();
     // Build the trace callback that writes to the buffer
     const onTrace = (traceEvent: any) => {
       if (traceEvent && typeof traceEvent === 'object') {
@@ -1557,7 +1558,7 @@ class AgentRegistry {
         });
       }
       // Check per-chat cancellation
-      if (execution.cancelled) {
+      if (execution.cancelled || execution.status !== 'running') {
         return;
       }
       const currentExecution = this.executions.get(chatId);
@@ -1591,7 +1592,25 @@ class AgentRegistry {
         }
       }
 
+      // Only the owning runtime can commit completion. A closed answer alone
+      // is insufficient: providers also close provisional text before tools.
+      const completesResponse = traceEvent?.responseComplete === true &&
+        !traceEvent.subAgent && !traceEvent.subAgentId && !traceEvent.subAgentChatId &&
+        !traceEvent.isSubAgent && !traceEvent.auxiliaryRuntime &&
+        (!traceEvent.turnId || traceEvent.turnId === execution.activeTurnId);
+      if (completesResponse && traceEvent.type === 'done') {
+        publishTerminalResponse(
+          String(traceEvent.data?.finalAnswer || ''),
+          traceEvent.status === 'stopped' ? 'stopped' : traceEvent.status === 'failed' ? 'failed' : 'completed',
+          traceEvent.data,
+        );
+        return;
+      }
       this.appendTrace(execution, traceEvent, !pinnedContext?.disableTaskStore);
+      if (completesResponse && traceEvent.type === 'answer') {
+        publishTerminalResponse(String(traceEvent.text || ''), 'completed');
+        return;
+      }
       if (execution.orchestratorProjectId) {
         observeUserProxy(execution.orchestratorProjectId, traceEvent);
       }
@@ -1625,6 +1644,51 @@ class AgentRegistry {
           );
           continue;
         }
+      }
+    };
+
+    const publishTerminalResponse = (
+      text: string,
+      status: 'completed' | 'failed' | 'stopped',
+      response?: Record<string, any>,
+    ) => {
+      if (execution.status !== 'running' || execution.cancelled) return;
+      execution.finalAnswer = text;
+      execution.status = status;
+      execution.completedAt = Date.now();
+      if (status === 'failed') execution.error = text;
+      preserveUndrainedHumanSteering();
+      const completedProxyTaskId = execution.launchSpec.pinnedContext?.autonomy?.proxyTaskId;
+      if (completedProxyTaskId) {
+        try { completeProxyTask(chatId, completedProxyTaskId, execution.runId, status, text); }
+        catch (error) { console.warn('[AgentRegistry] Could not save the delegated task result.', error); }
+      }
+      if (execution.orchestratorProjectId) {
+        try { stopUserProxyRuntime(execution.orchestratorProjectId); } catch { }
+      }
+      const terminalType = status === 'failed' ? 'error' : 'done';
+      const detail = status === 'failed'
+        ? text.replace(/^Agent (?:Execution Failed|Builder failed)\s*:\s*/i, '').trim()
+        : '';
+      this.appendTrace(execution, {
+        id: `run-terminal:${ execution.runId }:${ execution.activeTurnId || execution.runId }:${ terminalType }`,
+        type: terminalType,
+        ...(detail ? { text: detail, detail } : {}),
+        data: response || { finalAnswer: text, success: status === 'completed' },
+        status,
+        mainTurnTerminal: true,
+        ownerChatId: chatId,
+        runId: execution.runId,
+        turnId: execution.activeTurnId || execution.runId,
+        timestamp: execution.completedAt,
+        endTime: execution.completedAt,
+      }, !pinnedContext?.disableTaskStore);
+      this.notifyTraceWaiters(chatId);
+      // Start durable result persistence at the same boundary as the live
+      // result. Keep the execution lease until the pipeline finishes cleanup.
+      if (!pinnedContext?.disableTaskStore) {
+        terminalPersistence = taskStore.completeTask(chatId, text, status === 'completed', status, execution.runId)
+          .catch(error => console.warn('[AgentRegistry] Could not persist terminal response:', error));
       }
     };
 
@@ -2012,22 +2076,12 @@ class AgentRegistry {
         const wasCancelledByResponse = execution.cancelled || responseText === 'Stopped by user.';
         const responseFailed = response.success === false || /^Agent (Execution Failed|Error):/i.test(responseText);
 
-        terminalStatus = wasCancelledByResponse ? 'stopped' : responseFailed ? 'failed' : 'completed';
-        execution.finalAnswer = responseText;
-        if (responseFailed) execution.error = responseText;
-        preserveUndrainedHumanSteering();
-        // Publish the terminal state before task/key/sub-agent cleanup. A new
-        // user follow-up must never be steered into a run that has already
-        // produced its final response and is only unwinding resources.
-        execution.status = terminalStatus;
-        execution.completedAt = execution.completedAt || Date.now();
-        this.notifyTraceWaiters(chatId);
-        const completedProxyTaskId = execution.launchSpec.pinnedContext?.autonomy?.proxyTaskId;
-        if (completedProxyTaskId) {
-          try { completeProxyTask(chatId, completedProxyTaskId, execution.runId, execution.status === 'completed' ? 'completed' : execution.status === 'stopped' ? 'stopped' : 'failed', execution.finalAnswer); }
-          catch (error) { console.warn('[AgentRegistry] Could not save the delegated task result.', error); }
-        }
-
+        publishTerminalResponse(
+          responseText,
+          wasCancelledByResponse ? 'stopped' : responseFailed ? 'failed' : 'completed',
+          response,
+        );
+        terminalStatus = execution.status;
         // Update effective model with the model mode resolved by the orchestrator!
         const actualModelConfig = getMainAgentModelConfig(response.modelMode, runtimeSettings);
         execution.effectiveModel = typeof pinnedContext?.selectedModelName === 'string'
@@ -2036,37 +2090,13 @@ class AgentRegistry {
           ? pinnedContext.selectedModelName.trim()
           : actualModelConfig.modelName;
 
-        // Emit one canonical terminal lifecycle. A failed custom/builder
-        // runtime can report its provider error before the orchestrator
-        // returns; publishing a second `done(status=failed)` produced two
-        // failure notices for one query. Failed completion enriches the same
-        // stable error row, while successful/stopped completion remains done.
-        if (!execution.cancelled) {
-          const terminalTraceType = terminalStatus === 'failed' ? 'error' : 'done';
-          const terminalDetail = terminalStatus === 'failed'
-            ? responseText.replace(/^Agent (?:Execution Failed|Builder failed)\s*:\s*/i, '').trim()
-            : '';
-          onTrace({
-            id: `run-terminal:${ execution.runId }:${ execution.activeTurnId || execution.runId }:${ terminalTraceType }`,
-            type: terminalTraceType,
-            ...(terminalDetail ? { text: terminalDetail, detail: terminalDetail } : {}),
-            data: response,
-            status: terminalStatus,
-            mainTurnTerminal: true,
-            timestamp: execution.completedAt,
-            endTime: execution.completedAt,
-          });
-        }
-
         // Store the exact terminal assistant page before any task-local state
         // is cleaned up. Agent paths that already recorded it are idempotent by
         // run ID; early-return and custom-agent paths are covered here.
         await persistTerminalContext();
 
         // Persist to TaskStore
-        if (!pinnedContext?.disableTaskStore) {
-          await taskStore.completeTask(chatId, execution.finalAnswer, terminalStatus === 'completed', terminalStatus, execution.runId);
-        }
+        await terminalPersistence;
 
         // Report success to key pool
         if (!isExternalProvider && terminalStatus === 'completed') {
@@ -2077,11 +2107,22 @@ class AgentRegistry {
 
       } catch (error: any) {
         const errorMessage = formatUnknownError(error, 'Unknown agent error');
+        if (execution.status === 'completed' || execution.status === 'failed') {
+          // The response was already committed. A failed checkpoint, memory
+          // flush or cleanup must not downgrade it or erase its answer.
+          terminalStatus = execution.status;
+          console.warn('[AgentRegistry] Post-response cleanup failed:', errorMessage);
+          await terminalPersistence;
+          await persistTerminalContext();
+          return;
+        }
         const wasCancelled = errorMessage === 'CANCELLED_BY_USER' || execution.cancelled;
 
         terminalStatus = wasCancelled ? 'stopped' : 'failed';
         execution.error = errorMessage;
-        execution.finalAnswer = wasCancelled ? 'Stopped by user.' : `Agent Error: ${ errorMessage }`;
+        execution.finalAnswer = wasCancelled
+          ? execution.finalAnswer || this.latestMainAnswer(execution) || 'Stopped by user.'
+          : `Agent Error: ${ errorMessage }`;
         if (wasCancelled) execution.steeringQueue = [];
         else preserveUndrainedHumanSteering();
         // API failures (including exhausted/rate-limited keys) are terminal
@@ -2169,6 +2210,7 @@ class AgentRegistry {
 
         // Flush ledger so no pending writes are lost when the agent finishes,
         // crashes, or is stopped. Non-blocking — errors are swallowed.
+        await terminalPersistence;
         await flushLedgerForChat(chatId).catch(() => {});
         execution.settled = true;
         if (execution.status === 'running') execution.status = terminalStatus;
@@ -2342,6 +2384,19 @@ class AgentRegistry {
     };
   }
 
+  private latestMainAnswer(execution: AgentExecution): string {
+    const turnId = execution.activeTurnId || execution.runId;
+    for (let index = execution.traceBuffer.length - 1; index >= 0; index -= 1) {
+      const trace = execution.traceBuffer[index].data;
+      if (trace?.type !== 'answer' || trace.subAgent || trace.subAgentId ||
+        trace.subAgentChatId || trace.isSubAgent || trace.auxiliaryRuntime) continue;
+      if (trace.runId && trace.runId !== execution.runId) continue;
+      if (trace.turnId && trace.turnId !== turnId) continue;
+      if (String(trace.text || '').trim()) return String(trace.text);
+    }
+    return '';
+  }
+
   /**
    * Stop a specific chat's agent. Per-chat — doesn't affect other chats.
    * IDEMPOTENT: Calling this multiple times for the same chat is safe.
@@ -2365,6 +2420,9 @@ class AgentRegistry {
     } else if (expectedRunId && execution && execution.runId !== expectedRunId) {
       return false;
     }
+    // Completion wins once published. A delayed Stop must not mutate its
+    // cancellation flag, pending successors, result, or child runtime state.
+    if (execution && execution.status !== 'running') return true;
     const cancelledQueuedFollowUps = !metadata?._autonomyProxy
       ? this.clearQueuedFollowUps(chatId, queuedAdmissionCutoff)
       : 0;
@@ -2389,14 +2447,7 @@ class AgentRegistry {
       });
     }
 
-    // Already stopped/completed/failed — idempotent, don't re-process
-    if (execution.status !== 'running') {
-      // Still set cancel flag in case sub-agents are lingering
-      execution.cancelled = true;
-      execution.steeringQueue = [];
-      return true;
-    }
-
+    execution.finalAnswer = execution.finalAnswer || this.latestMainAnswer(execution);
     execution.cancelled = true;
     execution.steeringQueue = [];
     execution.abortController.abort(new Error('CANCELLED_BY_USER'));
@@ -2418,7 +2469,8 @@ class AgentRegistry {
       ...(metadata || {}),
     });
 
-    taskStore.stopTask(chatId, reason, execution.runId).catch(() => { });
+    this.notifyTraceWaiters(chatId);
+    taskStore.stopTask(chatId, execution.finalAnswer || reason, execution.runId).catch(() => { });
 
     // Flush the ledger so the last tool calls are not lost on stop.
     flushLedgerForChat(chatId).catch(() => {});
@@ -2621,6 +2673,8 @@ class AgentRegistry {
           chatId, kind: checkpoint.kind === 'gemini' ? 'gemini' : 'provider',
           contents: checkpoint.contents,
           activeModel: { provider: checkpoint.provider as any, modelId: checkpoint.model },
+          providerReportedInputTokens: checkpoint.calibration?.inputTokens,
+          providerReportedLocalEstimatedTokens: checkpoint.calibration?.localTokens,
           rawSettings: rawSettings || execution?.launchSpec.pinnedContext?.contextCompaction,
           runtimeSettings: execution?.launchSpec.runtimeSettings || buildScopedRuntimeSettings(),
           forceCompaction: true, semanticBoundary: 'safe', manualCompaction: true,

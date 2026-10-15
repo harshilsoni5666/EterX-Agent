@@ -299,7 +299,8 @@ export async function POST(req: NextRequest) {
               } else if (result.status === 'stopped') {
                 sendEvent({ type: 'done', data: { 
                   success: false, 
-                  finalAnswer: 'Stopped by user.',
+                  finalAnswer: result.finalAnswer || 'Stopped by user.',
+                  status: 'stopped',
                   taskId: chatId,
                   executionTimeMs: 0,
                   artifactsGenerated: []

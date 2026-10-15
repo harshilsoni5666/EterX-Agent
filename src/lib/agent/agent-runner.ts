@@ -907,6 +907,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       let lastObservedContextInputTokens = workingCheckpoint.calibration?.inputTokens || 0;
       let lastObservedContextLocalTokens = workingCheckpoint.calibration?.localTokens || 0;
       let requestContextLocalTokens = 0;
+      let requestContextEstimatedTokens = 0;
       let activeContextRequestId = '';
       let requiredPlanCreated = false;
       let swarmReminderSent = false;
@@ -1075,6 +1076,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           const contextBoundaryResult = await contextBoundary;
           if (isContextCapacityError(contextBoundaryError)) throw contextBoundaryError;
           requestContextLocalTokens = Number(contextBoundaryResult?.usage.localEstimatedTokens || 0);
+          requestContextEstimatedTokens = Number(contextBoundaryResult?.usage.usedTokens || 0);
           if (
             runAbortController.signal.aborted
             || isToolCancellationError(contextBoundaryError)
@@ -1085,8 +1087,6 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           if (contextBoundaryResult?.compacted) {
             const compacted = contextBoundaryResult;
             contents = normalizeConversationTurns(compacted.contents);
-            lastObservedContextInputTokens = 0;
-            lastObservedContextLocalTokens = 0;
             if (compacted.capsule && compacted.continuityManifest) {
               const continuityManifest = compacted.continuityManifest;
               forceContextCompaction = false;
@@ -1230,6 +1230,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
               yield {
                 type: 'model_usage',
                 contextRequestId: activeContextRequestId,
+                contextEstimatedTokens: requestContextEstimatedTokens,
+                contextLocalEstimatedTokens: requestContextLocalTokens,
                 usageId: `usage_gemini_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
                 source: 'provider',
                 provider: 'gemini',

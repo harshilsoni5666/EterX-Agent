@@ -413,7 +413,9 @@ export async function compactSavedWorkingContext(chatId: string, transform: (che
     };
   }
   const contents = await transform(checkpoint);
-  const next = { ...checkpoint, contents, calibration: undefined };
+  // Compaction changes the payload, not the model's observed token density.
+  // Keep the paired sample as an estimate until the next provider receipt.
+  const next = { ...checkpoint, contents };
   const serialized = JSON.stringify(next);
   if (Buffer.byteLength(serialized) > MAX_BYTES - 1024) throw new Error('Compacted context exceeds the safe checkpoint size.');
   await fs.ensureDir(directory);

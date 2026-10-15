@@ -1108,6 +1108,23 @@ export class AgentOrchestrator {
     }
 
 
+    const success = finalAnswer !== 'Stopped by user.'
+      && !/^Agent Execution Failed:/i.test(finalAnswer)
+      && !/^Agent Builder failed:/i.test(finalAnswer)
+      && !/^Agent Builder returned no response\.?$/i.test(finalAnswer.trim());
+
+    // This is the execution boundary, before session, memory, transcript and
+    // reflection persistence. Those operations cannot keep a finished turn
+    // steerable or replace its result if maintenance subsequently fails.
+    onTrace?.({
+      type: 'done',
+      responseComplete: true,
+      mainTurnTerminal: true,
+      status: finalAnswer === 'Stopped by user.' ? 'stopped' : success ? 'completed' : 'failed',
+      data: { finalAnswer, success },
+      timestamp: Date.now(),
+    });
+
     if (shouldPersistSession) {
       await globalSessionManager.saveForChat(projectId).catch(error => {
         persistenceWarnings.push('The response is available, but session state could not be saved.');
@@ -1133,11 +1150,6 @@ export class AgentOrchestrator {
     }
 
     const executionTime = Date.now() - startTime;
-    const success = finalAnswer !== 'Stopped by user.'
-      && !/^Agent Execution Failed:/i.test(finalAnswer)
-      && !/^Agent Builder failed:/i.test(finalAnswer)
-      && !/^Agent Builder returned no response\.?$/i.test(finalAnswer.trim());
-
     if (shouldPersistLongTermMemory) {
       globalMemoryManager.saveEpisodicMemory(
         projectId,

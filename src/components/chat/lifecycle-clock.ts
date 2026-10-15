@@ -120,12 +120,14 @@ export const useLifecycleElapsedMs = ({
   endedAt,
   durationMs,
   allowLiveFallback = true,
+  lifecycleKey,
 }: {
   active: boolean;
   startedAt?: unknown;
   endedAt?: unknown;
   durationMs?: unknown;
   allowLiveFallback?: boolean;
+  lifecycleKey?: string;
 }): number | null => {
   const normalizedStart = normalizeLifecycleTimestamp(startedAt);
   // A few adapters publish the live action before its timestamp metadata.
@@ -134,13 +136,22 @@ export const useLifecycleElapsedMs = ({
   // through its settlement frame; when the real immutable start arrives it
   // immediately becomes authoritative.
   const firstVisibleActiveAtRef = useRef<number | null>(null);
+  const wasActiveRef = useRef(false);
+  const observedSettlementRef = useRef<number | null>(null);
+  const lifecycleKeyRef = useRef(lifecycleKey);
+  if (lifecycleKeyRef.current !== lifecycleKey) {
+    // A grouped disclosure keeps its component while its active segment
+    // changes. Missing metadata must not reuse the preceding segment's clock.
+    lifecycleKeyRef.current = lifecycleKey;
+    firstVisibleActiveAtRef.current = null;
+    wasActiveRef.current = false;
+    observedSettlementRef.current = null;
+  }
   if (allowLiveFallback && active && normalizedStart === null && firstVisibleActiveAtRef.current === null) {
     firstVisibleActiveAtRef.current = Date.now();
   } else if (normalizedStart !== null) {
     firstVisibleActiveAtRef.current = normalizedStart;
   }
-  const wasActiveRef = useRef(false);
-  const observedSettlementRef = useRef<number | null>(null);
   if (active) observedSettlementRef.current = null;
   else if (wasActiveRef.current) observedSettlementRef.current = Date.now();
   wasActiveRef.current = active;

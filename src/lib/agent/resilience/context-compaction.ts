@@ -738,10 +738,11 @@ export const measureRuntimeContext = (input: {
   const conversationTokens = Object.values(measuredSections.conversation).reduce((sum, value) => sum + value, 0)
     + additionalEstimatedTokens;
   const toolTokens = Object.values(measuredSections.tools).reduce((sum, value) => sum + value, 0);
-  // A previous request's provider count is not a measurement of this payload.
-  // Calibrate only against its matching local baseline, then estimate the
-  // actual payload delta. Taking max(previous input, new raw estimate) caused
-  // a sawtooth on every response and treated old context as still retained.
+  // Learn token density from a provider count and the local estimate of that
+  // exact request. Apply it to the entire current payload, including newly
+  // appended tools and a compacted tail. Mixing calibrated history with raw
+  // /4 deltas, or dropping the ratio after compaction, causes large sawtooth
+  // jumps. This remains an estimate; it never preserves removed token usage.
   const localEstimatedTokens = systemTokens + conversationTokens + toolTokens;
   const rawProviderInputTokens = Number(input.providerReportedInputTokens || 0);
   const providerInputTokens = Number.isFinite(rawProviderInputTokens)
@@ -751,9 +752,7 @@ export const measureRuntimeContext = (input: {
   const hasCalibration = providerInputTokens > 0
     && Number.isFinite(previousLocalTokens) && previousLocalTokens > 0;
   const usedTokens = Math.max(0, Math.round(hasCalibration
-    ? localEstimatedTokens >= previousLocalTokens
-      ? providerInputTokens + localEstimatedTokens - previousLocalTokens
-      : providerInputTokens * (localEstimatedTokens / previousLocalTokens)
+    ? providerInputTokens * (localEstimatedTokens / previousLocalTokens)
     : localEstimatedTokens));
   const measuredBreakdown = buildContextUsageBreakdown({
     contents: measuredConversationContents,
@@ -786,8 +785,10 @@ export const deriveContextCompactionPolicy = (input: {
 }) => {
   const { usage } = input;
   const window = Math.max(1, usage.contextWindow);
-  const fixedRatio = (usage.systemTokens + usage.toolTokens) / window;
-  const conversationRatio = usage.conversationTokens / window;
+  const tokenScale = Number(usage.localEstimatedTokens) > 0
+    ? usage.usedTokens / usage.localEstimatedTokens! : 1;
+  const fixedRatio = (usage.systemTokens + usage.toolTokens) * tokenScale / window;
+  const conversationRatio = usage.conversationTokens * tokenScale / window;
   const growthRatio = Math.max(0, input.averageGrowthTokens) / window;
   let softRatio = TRIGGER_RATIO;
   let profile: 'standard' | 'fast_growth' | 'fixed_heavy' | 'weak_reduction' | 'history_heavy' = 'standard';
@@ -2577,8 +2578,8 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
     systemInstruction: input.systemInstruction,
     tools: input.tools,
     contextWindow,
-    providerReportedInputTokens: restoredPriorCapsule ? undefined : input.providerReportedInputTokens,
-    providerReportedLocalEstimatedTokens: restoredPriorCapsule ? undefined : input.providerReportedLocalEstimatedTokens,
+    providerReportedInputTokens: input.providerReportedInputTokens,
+    providerReportedLocalEstimatedTokens: input.providerReportedLocalEstimatedTokens,
     breakdownSources: input.breakdownSources,
   });
   if (restoredPriorCapsule) usage.contextReplaced = true;
@@ -2859,6 +2860,12 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
       );
       const adaptiveTargetRatio = Math.min(densityTargetRatio, forecastTargetCeiling);
       const targetTokens = Math.floor(contextWindow * adaptiveTargetRatio);
+      // Tail selection uses raw local estimates. Convert the provider-sized
+      // target back to those units before subtracting fixed local costs;
+      // otherwise calibration can retain far less history than the target.
+      const targetLocalTokens = usage.usedTokens > 0 && Number(usage.localEstimatedTokens) > 0
+        ? Math.floor(targetTokens * usage.localEstimatedTokens! / usage.usedTokens)
+        : targetTokens;
       const additionalConversationTokens = input.additionalConversationContent === undefined
         ? 0
         : estimateContextValueTokens(input.additionalConversationContent);
@@ -2883,7 +2890,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         8_000,
         Math.max(2_500, Math.floor(contextWindow * 0.08)),
       );
-      const tailTokenBudget = Math.max(preferredMinimumTailBudget, targetTokens - fixedTokens);
+      const tailTokenBudget = Math.max(preferredMinimumTailBudget, targetLocalTokens - fixedTokens);
       let retainedTailTokenBudget = tailTokenBudget;
       const nextContents = input.kind === 'gemini'
         ? injectGeminiCapsule(compactionContents, summary, compactionId, tailTokenBudget)
@@ -2896,6 +2903,8 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         tools: input.tools,
         breakdownSources: input.breakdownSources,
         contextWindow,
+        providerReportedInputTokens: input.providerReportedInputTokens,
+        providerReportedLocalEstimatedTokens: input.providerReportedLocalEstimatedTokens,
       });
       // If the selected tail is still too large, retry assembly with the same
       // validated model capsule and a smaller protocol-safe tail. Never replace
@@ -2922,6 +2931,8 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         tools: input.tools,
         breakdownSources: input.breakdownSources,
         contextWindow,
+        providerReportedInputTokens: input.providerReportedInputTokens,
+        providerReportedLocalEstimatedTokens: input.providerReportedLocalEstimatedTokens,
       });
       if (
         finalUsage.usedTokens >= usage.usedTokens ||
@@ -3005,7 +3016,7 @@ const compactContextAtBoundaryImpl = async (input: CompactInput): Promise<{
         contextWindow,
         modelProvider: usedModel.provider,
         modelName: usedModel.modelId,
-        summary: `Reduced context from ${Math.round(usage.usedTokens / 1000)}k to ${Math.round(finalUsage.usedTokens / 1000)}k tokens${recoveryMode === 'active_model' ? ' using the active agent model after the explicitly selected compaction model failed' : ''}.`,
+        summary: `Reduced estimated context from ${Math.round(usage.usedTokens / 1000)}k to ${Math.round(finalUsage.usedTokens / 1000)}k tokens${recoveryMode === 'active_model' ? ' using the active agent model after the explicitly selected compaction model failed' : ''}. The provider will measure the next request.`,
         timestamp: Date.now(),
       });
       emit({ type: 'context_usage', chatId: input.chatId, timestamp: Date.now(), ...finalUsage });

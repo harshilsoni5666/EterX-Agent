@@ -3729,12 +3729,12 @@
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button[data-active="true"] {
-  background: #242424 !important;
-  color: #FFFFFF !important;
+  background: rgba(31, 41, 55, 0.055) !important;
+  color: #111111 !important;
 }
 
 :root[data-theme="light"] .eterx-composer-shell .eterx-composer-dictation-button[data-active="true"] .eterx-composer-control-icon {
-  color: #FFFFFF !important;
+  color: #111111 !important;
 }
 
 :root[data-theme="light"] .eterx-pinned-items > div {

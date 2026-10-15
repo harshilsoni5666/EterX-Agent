@@ -1692,7 +1692,8 @@ const isHiddenStatusOnlyLog = (log: any) => {
 
 const formatWorkElapsed = (seconds: number | null) => {
   if (seconds === null) return '';
-  const safeSeconds = Math.max(1, seconds);
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  if (safeSeconds === 0) return '<1s';
   const hours = Math.floor(safeSeconds / 3600);
   const minutes = Math.floor((safeSeconds % 3600) / 60);
   const rest = safeSeconds % 60;
@@ -1786,16 +1787,16 @@ const useWorkElapsedSeconds = (active: boolean, logs: any[], endedAt?: number | 
     endedAt: recordedEnd,
     allowLiveFallback: hasTimedWork,
   });
-  if (elapsedMs === null) return hasTimedWork ? 1 : null;
-  return Math.max(1, Math.round(elapsedMs / 1_000));
+  if (elapsedMs === null) return null;
+  return Math.max(0, Math.floor(elapsedMs / 1_000));
 };
 
 const renderFeedContextCompaction = (log: any) => <ContextCompactionNotice log={log} />;
 const EMPTY_LIVE_SEQUENCE_LOGS: any[] = [];
 
 const ThoughtSequence = ({
-  logs, liveLogs = EMPTY_LIVE_SEQUENCE_LOGS, isThinking, isLast, hasAnswer, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
+  logs, liveLogs = EMPTY_LIVE_SEQUENCE_LOGS, isThinking, isLast, hasAnswer, showLiveIndicator = false, showStartupIndicator = false, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, showLiveIndicator?: boolean, showStartupIndicator?: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
   // The trace stream is more precise than the briefly stale global running
   // flag. Scan the whole turn: terminal events are often followed by late
   // cleanup traces, and a final answer itself conclusively ends work timing.
@@ -1887,7 +1888,9 @@ const ThoughtSequence = ({
             className="eterx-worked-summary-button inline-flex shrink-0 items-center gap-1.5 rounded-md py-1 text-left outline-none transition-colors"
           >
             <span className="eterx-worked-summary-label py-[1px] text-[13px] font-semibold leading-[1.4] tracking-normal text-[var(--muted-foreground)]">
-              <span>{isLiveThinking ? 'Working for\u00a0' : 'Worked for\u00a0'}</span>
+              <span>{workElapsedLabel
+                ? isLiveThinking ? 'Working for\u00a0' : 'Worked for\u00a0'
+                : isLiveThinking ? 'Working' : 'Worked'}</span>
               {workElapsedLabel && <RollingTimeDisplay label={workElapsedLabel} />}
             </span>
             <ChevronDown className={`eterx-worked-summary-chevron h-3.5 w-3.5 transition-transform ${ isOpen ? '' : '-rotate-90' }`} aria-hidden="true" />
@@ -1903,6 +1906,8 @@ const ThoughtSequence = ({
             liveLogs={liveLogs}
             isThinking={isLiveThinking}
             isLast={isLast}
+            showLiveIndicator={showLiveIndicator}
+            showStartupIndicator={showStartupIndicator}
             onOpenAgentTeam={onOpenAgentTeam}
             assetIndexes={subAgentAssetIndexes}
             isSubAgentTab={isSubAgentTab}
@@ -2474,6 +2479,8 @@ const ChatFeedMessageGroup = React.memo(({
             isThinking={groupIsThinking && isLastThoughts}
             isLast={isLastThoughts}
             hasAnswer={hasSettledAnswer && isLastThoughts}
+            showLiveIndicator={!displayFinalAnswer && segIdx === segments.length - 1}
+            showStartupIndicator={segIdx === 0}
             stepCount={stepCount}
             turnStartedAt={seg.phaseKey === 'root' ? turnStartedAt : undefined}
             turnEndedAt={terminalTurnEndedAt}

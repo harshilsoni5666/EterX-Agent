@@ -17,6 +17,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { FileText, X, Check, Activity, CheckCircle2, XCircle, Folder, FolderClosed, File as FileIcon, ChevronDown, ChevronRight, Image as ImageIcon, AlertCircle, ListTodo, ArrowUpRight, LaptopMinimal, GitBranch, Search, FolderPlus, FolderOpen, Cloud, CloudOff, ExternalLink, Gauge, Plus, Minus, RotateCcw, Download, Copy, CircleSlash, GitFork, Terminal, Bot } from 'lucide-react';
 import { PremiumMic, PremiumSend, PremiumPlus, PremiumAudioLines, PremiumVolume2, PremiumVolumeX, PremiumMicOff } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
+import { DictationButton } from '../ui/dictation-button';
+import type { DictationPhase } from '../../lib/microphone';
 import { Shimmer } from '../ui/shimmer';
 import { AdaptiveMenu } from '../ui/adaptive-menu';
 import { safeCopyPngToClipboard, safeCopyTextToClipboard, safeReadImageFromClipboard, safeReadTextFromClipboard } from '../ui/copy-button';
@@ -367,7 +369,7 @@ interface ChatInputProps {
   isThinking: boolean;
   canStop?: boolean;
   isRecording: boolean;
-  dictationStatus?: string;
+  dictationPhase?: DictationPhase;
   handleSend: () => void;
   handleStop: () => void | Promise<boolean>;
   handleSteer?: () => void;  // Send live steering to running agent
@@ -437,6 +439,7 @@ interface ChatInputProps {
     usedTokens: number;
     contextWindow: number;
     contextLimitNote?: string;
+    measurementNote?: string;
     utilizationPct: number;
     breakdown?: ContextUsageBreakdown;
     cacheStatus?: { label: string; detail: string };
@@ -1066,7 +1069,7 @@ const TaskTrackerDock = React.memo(({
 
 export const ChatInput: React.FC<ChatInputProps> = ({
   showVoiceControls = true,
-  inputValue, inputValueRevision = 0, setInputValue, onInputValueChange, isThinking, canStop = false, isRecording, dictationStatus = '', handleSend, handleStop, handleSteer = () => { },
+  inputValue, inputValueRevision = 0, setInputValue, onInputValueChange, isThinking, canStop = false, isRecording, dictationPhase = isRecording ? 'listening' : 'idle', handleSend, handleStop, handleSteer = () => { },
   toggleSpeech, attachments, setAttachments, greeting, traceLogsLength,
   agentMode = 'think', onModeChange = () => { },
   thinkingLevel = 'low', onThinkingLevelChange = () => { },
@@ -3375,6 +3378,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     {contextUsage.contextLimitNote}
                   </div>
                 )}
+                {contextUsage.measurementNote && (
+                  <div className="eterx-context-panel-meta mt-1 text-[10.5px] leading-4">
+                    {contextUsage.measurementNote}
+                  </div>
+                )}
 
                 <div className="eterx-context-panel-track mt-2 h-1.5 overflow-hidden rounded-full">
                   <div className="flex h-full min-w-[2px] overflow-hidden rounded-full" style={{ width: `${utilization}%` }}>
@@ -4258,7 +4266,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         {usedPercent}% used <span className="eterx-context-usage-muted font-medium">({leftPercent}% left)</span>
                       </div>
                       <div className="eterx-context-usage-secondary whitespace-nowrap text-[11.5px] font-medium leading-[15px] tabular-nums">
-                        {formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens used
+                        {contextUsage!.isEstimated ? '≈ ' : ''}{formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens used
                       </div>
                     </div>
                   )}
@@ -4729,14 +4737,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 document.body,
               )}
 
-               {showVoiceControls && dictationStatus && <span role="status" className="max-w-[180px] truncate text-[11px] text-neutral-400" title={dictationStatus}>{dictationStatus}</span>}
-               {showVoiceControls && <Tooltip text={dictationStatus || (isRecording ? "Stop voice dictation" : "Voice dictation")} side="top">
-                <button type="button" onClick={toggleSpeech} aria-pressed={isRecording} aria-label={isRecording ? "Stop voice dictation" : "Start voice dictation"} data-active={isRecording ? 'true' : undefined} className="eterx-control-button eterx-composer-dictation-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white transition-all duration-150 ease-out hover:text-white hover:bg-[#333333] hover:border-transparent active:bg-[#333333] relative group">
-                  <PremiumMic className={`eterx-composer-control-icon w-[18px] h-[18px] group-hover:scale-[1.04] transition-transform duration-200 ease-out ${ isRecording ? 'scale-[1.04]' : '' }`} strokeWidth={1.85} />
-                </button>
-              </Tooltip>
-
-              }
+              {showVoiceControls && <DictationButton phase={dictationPhase} onClick={toggleSpeech} />}
               {false && <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : isThinking ? "Wait for this run to finish" : "Start Live Conversation"} side="top">
                 <button
                   onClick={isLiveActive ? onLiveStop : onLiveStart}

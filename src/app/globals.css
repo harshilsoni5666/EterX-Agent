@@ -1641,6 +1641,19 @@
   --shimmer-text-fill: currentColor;
 }
 
+/* Changing live headings use a fixed-distance sweep. Its position and speed
+   do not depend on the current text width, so new labels never restart it. */
+.shimmer.eterx-shimmer-stable {
+  --_spread: 38px;
+  background-size: 640px 100%;
+  animation-name: eterx-shimmer-stable;
+}
+
+@keyframes eterx-shimmer-stable {
+  from { background-position: 0 0; }
+  to { background-position: 320px 0; }
+}
+
 /* Plain text uses counter-moving masked layers: the glyphs remain fixed,
    while only transforms advance the highlight. Width is observed on resize,
    never measured during the sweep. Rich children retain the CSS fallback. */
@@ -12906,13 +12919,12 @@ body.eterx-gateway-view section.mt-8 > main {
   border: 0 !important;
   border-radius: 6px !important;
   background: transparent !important;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 88%, transparent) !important;
-  transition: box-shadow 160ms ease, background-color 160ms ease;
+  box-shadow: none !important;
 }
 
 :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card:hover,
 :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-card[data-open="true"] {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 5%, var(--border)) !important;
+  box-shadow: none !important;
 }
 
 :is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle {
@@ -12920,7 +12932,9 @@ body.eterx-gateway-view section.mt-8 > main {
   height: 30px !important;
   min-height: 30px !important;
   gap: 6px !important;
-  padding: 1px 9px !important;
+  width: fit-content !important;
+  max-width: 100%;
+  padding: 1px 2px !important;
   background: transparent !important;
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
 }

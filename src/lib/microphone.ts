@@ -1,3 +1,9 @@
+export type DictationPhase = 'idle' | 'starting' | 'listening' | 'finishing';
+
+// The desktop engine has a five-minute limit for draining buffered speech.
+// Allow time for its terminal event, then recover even if IPC is interrupted.
+export const DICTATION_FINISH_TIMEOUT_MS = 315_000;
+
 export function microphoneConstraints(deviceId?: string, extra: MediaTrackConstraints = {}): MediaTrackConstraints {
   return {
     channelCount: 1,
@@ -50,7 +56,7 @@ export function createDictationCapture(onAudio: (pcm: ArrayBuffer) => void, onEn
       stream = await captureMicrophone(deviceId);
       if (stopped) { stream.getTracks().forEach(track => track.stop()); return false; }
       source = context.createMediaStreamSource(stream);
-      processor = context.createScriptProcessor(4096, 1, 1);
+      processor = context.createScriptProcessor(1024, 1, 1);
       gain = context.createGain();
       gain.gain.value = 0;
       let sum = 0;

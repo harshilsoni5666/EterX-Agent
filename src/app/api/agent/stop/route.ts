@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
         expectedRunId,
         requestedAt,
       );
-      if (stopped) cancelAgent(chatId); // Also set per-chat cancel flag for sub-agents
+      if (stopped && beforeStop.status === 'running') cancelAgent(chatId);
       const afterStop = agentRegistry.getTraces(chatId, -1);
       const success = stopped || afterStop.status !== 'running';
       console.log(`[API] 🛑 Stop requested for chat ${chatId.substring(0, 8)}... — ${stopped ? 'stopped' : 'not running'}`);
@@ -76,8 +76,8 @@ export async function POST(req: NextRequest) {
         success,
         chatId,
         runId: afterStop.runId,
-        status: stopped ? 'stopping' : 'already_stopped',
-        message: stopped ? 'Agent stopped' : 'Agent was already stopped',
+        status: beforeStop.status === 'completed' ? 'already_completed' : stopped ? 'stopping' : 'already_stopped',
+        message: beforeStop.status === 'completed' ? 'Agent already completed' : stopped ? 'Agent stopped' : 'Agent was already stopped',
         // Return the actual terminal outcome, not another client-generated
         // stop. Completion may have won the race before cancellation arrived.
         ...(['stopped', 'completed', 'failed'].includes(afterStop.status) ? {
@@ -88,7 +88,12 @@ export async function POST(req: NextRequest) {
             completedAt: afterStop.completedAt,
             finalAnswer: afterStop.finalAnswer,
             error: afterStop.error,
-            traces: afterStop.traces.filter(trace => isTerminalWorkTrace(trace) &&
+            // Include the answer snapshot as well as lifecycle markers. Stop
+            // can beat the poll carrying the last tokens to the renderer.
+            traces: afterStop.traces.filter(trace =>
+              (isTerminalWorkTrace(trace) || trace.type === 'answer' &&
+                !trace.subAgent && !trace.subAgentId && !trace.subAgentChatId &&
+                !trace.isSubAgent && !trace.auxiliaryRuntime) &&
               (!afterStop.terminalTurnId || trace.turnId === afterStop.terminalTurnId)),
           },
         } : {}),

@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useLiveFeedFlow } from './use-live-feed-flow';
+import { ActivityViewport } from './activity-viewport';
+import { ToolResultScroll } from './tool-result-scroll';
 import { HighlightedDiffCode, useCodeSyntax, useDiffSyntax } from './diff-syntax';
 import { getActionSummary } from './action-summary';
 import { getTextPlaybackId, usePacedText } from './use-paced-text';
+import { LivePendingIndicator, useLiveFallbackLabel } from './live-pending-indicator';
 import { createPortal } from 'react-dom';
 import { InlineRunNotice } from './inline-run-notice';
 import { useFilePanelActions } from '../../contexts/FilePanelContext';
@@ -22,7 +25,7 @@ import { ReplyImage } from './image-gallery';
 import { AGENT_ICONS, resolveAgentIcon, resolveToolTraceIcon, TerminalIcon as ToolTerminalIcon, AgentAssetIcon, SubAgentIdentityIcon, ConnectorIcon, getConnectorId, isConnectorTrace, FileAddIcon, FileEditIcon, FileDeleteIcon, SkillIcon, MonitorPlayIcon, MouseIcon, MousePointerClickIcon, W } from './agent-icons';
 import { Shimmer } from '../ui/shimmer';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
-import { isThoughtStreamOpen, shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
+import { canGroupThoughtStreams, isThoughtStreamOpen, shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
 import { mergeFeedTracePayload } from '../../lib/chat-feed-lifecycle';
 import { reconcileSubAgentLifecycleRows } from '../../lib/sub-agent-feed';
 import { areLikelySameFeedActionLifecycle, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen } from '../../lib/chat-feed-lifecycle';
@@ -30,7 +33,7 @@ import { getToolDisplayLabel, normalizeToolTraceName, normalizeToolTraceText } f
 import { isTerminalTraceStreaming } from '../../lib/terminal-lifecycle';
 import { terminalInvocationText, terminalResultText } from '../../lib/agent/terminal-result-trace';
 import { formatTerminalProgram } from '../../lib/agent/terminal-invocation';
-import { normalizeLifecycleTimestamp, useLifecycleElapsedMs } from './lifecycle-clock';
+import { normalizeLifecycleTimestamp, resolveLifecycleDurationMs, useLifecycleElapsedMs } from './lifecycle-clock';
 import { formatUnknownError } from '../../lib/agent/error-format';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 
@@ -252,13 +255,45 @@ const formatThoughtElapsed = (seconds: number) => {
   return `${ visibleSeconds }s`;
 };
 
-const useThoughtElapsed = (isLive: boolean, startedAt?: number, updatedAt?: number) => {
+const useThoughtElapsed = (isLive: boolean, startedAt?: number, updatedAt?: number, thoughtLogs?: any[]) => {
+  const history = useMemo(() => {
+    let durationMs = 0;
+    let hasDuration = false;
+    for (let index = 0; index < (thoughtLogs?.length ?? 0) - 1; index += 1) {
+      const log = thoughtLogs![index];
+      const nextStart = asTimestamp(thoughtLogs![index + 1]?.startTime);
+      const recordedEnd = asTimestamp(log.endTime) ?? asTimestamp(log.timestamp);
+      const end = nextStart === null ? recordedEnd
+        : isThoughtStreamOpen(log) || recordedEnd === null ? nextStart
+        : Math.min(recordedEnd, nextStart);
+      const duration = resolveLifecycleDurationMs({
+        active: false,
+        startedAt: log.startTime,
+        endedAt: end,
+        durationMs: log.durationMs,
+      });
+      if (duration === null) continue;
+      const start = asTimestamp(log.startTime);
+      // Count actual reasoning intervals, excluding gaps and overlapping
+      // checkpoints between segments. Never charge tool/network wait time.
+      durationMs += start !== null && nextStart !== null
+        ? Math.min(duration, Math.max(0, nextStart - start))
+        : duration;
+      hasDuration = true;
+    }
+    return { durationMs, hasDuration };
+  }, [thoughtLogs]);
   const elapsedMs = useLifecycleElapsedMs({
     active: isLive,
     startedAt,
     endedAt: updatedAt,
+    durationMs: thoughtLogs?.[thoughtLogs.length - 1]?.durationMs,
+    lifecycleKey: thoughtLogs?.length
+      ? getStreamRowIdentity(thoughtLogs[thoughtLogs.length - 1], thoughtLogs.length - 1)
+      : undefined,
   });
-  return Math.round((elapsedMs ?? 0) / 1_000);
+  if (elapsedMs === null && !history.hasDuration) return null;
+  return Math.floor((history.durationMs + (elapsedMs ?? 0)) / 1_000);
 };
 
 const getThoughtScrollEdges = (element: HTMLDivElement) => {
@@ -389,7 +424,7 @@ const getThoughtEventHeading = (log: any): string => {
     .find(value => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 120 && !value.includes('\n') && !/^(?:thinking|thought|working)$/i.test(value.trim()))?.trim() || '';
 };
 
-export const ProfessionalThought = React.memo((props: { text: string, playbackId?: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode, startedAt?: number, updatedAt?: number, reveal?: boolean }) => {
+export const ProfessionalThought = React.memo((props: { text: string, playbackId?: string, isLatest: boolean, isThinking: boolean, variant?: 'thought' | 'answer' | 'note', suffix?: React.ReactNode, startedAt?: number, updatedAt?: number, thoughtLogs?: any[], reveal?: boolean }) => {
   const { text, isLatest, isThinking, variant = 'thought', suffix } = props;
   const requestedLive = isLatest && isThinking;
   const thoughtIsLive = variant === 'thought' && requestedLive;
@@ -401,8 +436,9 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
   const thoughtScrollRef = useRef<HTMLDivElement>(null);
   const thoughtContentRef = useRef<HTMLDivElement>(null);
   const thoughtAutoScrollRef = useRef(true);
+  const thoughtDetailsId = React.useId();
   const isLive = thoughtIsLive;
-  const elapsed = useThoughtElapsed(isLive, props.startedAt, props.updatedAt);
+  const elapsed = useThoughtElapsed(isLive, props.startedAt, props.updatedAt, props.thoughtLogs);
 
   const syncThoughtScrollEdges = React.useCallback((element = thoughtScrollRef.current) => {
     if (!element) return;
@@ -416,6 +452,15 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
     if (variant === 'thought' && !open) return '';
     return normalizeMarkdownForRendering(text);
   }, [text, variant, open]);
+  const thoughtSections = useMemo(() => {
+    if (variant !== 'thought' || !open) return [];
+    return props.thoughtLogs
+      ? props.thoughtLogs.map((log, index) => ({
+        id: getStreamRowIdentity(log, index),
+        text: normalizeMarkdownForRendering(String(log.text || '')),
+      }))
+      : [{ id: 'thought', text: renderText }];
+  }, [variant, open, props.thoughtLogs, renderText]);
   const paced = usePacedText(renderText, requestedLive, variant !== 'thought', props.playbackId);
 
   const handleThoughtScroll = () => {
@@ -459,8 +504,8 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
     };
   }, [variant, open, isLive, Boolean(renderText), syncThoughtScrollEdges]);
 
-  const elapsedLabel = formatThoughtElapsed(elapsed);
-  const thoughtLabel = isLive ? 'Thinking' : `Thought for ${ elapsedLabel }`;
+  const thoughtLabel = isLive ? 'Thinking'
+    : elapsed === null ? 'Thought' : `Thought for ${ formatThoughtElapsed(elapsed) }`;
   const isNote = variant === 'note';
   // Only the visible prose uses pacing. The event ledger and copy/export
   // content retain the complete provider snapshot at every point.
@@ -497,6 +542,7 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
             type="button"
             onClick={() => setOpen(value => !value)}
             aria-expanded={open}
+            aria-controls={open ? thoughtDetailsId : undefined}
             aria-label={`${ thoughtLabel }. ${ open ? 'Hide' : 'Show' } thought details`}
             className="eterx-thought-toggle group flex h-[30px] min-h-[30px] w-full items-center gap-1.5 px-0 py-0 text-left transition-colors focus-visible:outline-none"
           >
@@ -523,6 +569,7 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
             {open && renderText && (
               <motion.div
                 key="thought-details"
+                id={thoughtDetailsId}
                 className="eterx-thought-details overflow-hidden"
                 initial={prefersReducedMotion ? false : { height: 0, opacity: 0 }}
                 animate={{ height: 'auto', opacity: 1 }}
@@ -534,7 +581,11 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
                 <div className="eterx-thought-scroll-frame relative">
                   <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' }`} style={{ maxHeight: 'min(44vh, 380px)' }}>
                     <div ref={thoughtContentRef} className="eterx-thought-reading-content">
-                      <LiveMarkdown text={renderText} streaming={isLive} components={thoughtMarkdownComponents} />
+                      {thoughtSections.map((section, index) => (
+                        <div key={section.id} className={index > 0 ? 'mt-3' : undefined}>
+                          <LiveMarkdown text={section.text} streaming={isLive && index === thoughtSections.length - 1} components={thoughtMarkdownComponents} />
+                        </div>
+                      ))}
                     </div>
                   </div>
                   {thoughtScrollFades.top && <div className="eterx-thought-scroll-fade eterx-thought-scroll-fade-top" aria-hidden="true" />}
@@ -559,6 +610,21 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
     </div>
   );
 });
+
+// Provider item boundaries are internal segments, not separate UI cards.
+// Keep every segment's content and timing behind one stable disclosure.
+const ThoughtStreamGroup = ({ logs, isActive }: { logs: any[]; isActive: boolean }) => {
+  const tail = logs[logs.length - 1];
+  const live = isActive && isThoughtStreamOpen(tail);
+  return <ProfessionalThought
+    text={logs.map(log => String(log.text || '')).join('\n\n')}
+    thoughtLogs={logs}
+    isLatest={live}
+    isThinking={live}
+    startedAt={tail?.startTime}
+    updatedAt={tail?.endTime ?? tail?.timestamp}
+  />;
+};
 
 // VS Code GitHub Dark — clean single-pass syntax highlighter
 const ProxyStatusDivider = ({ text, isActive = false }: { text: string; isActive?: boolean }) => {
@@ -591,7 +657,7 @@ const ProxyStatusDivider = ({ text, isActive = false }: { text: string; isActive
   );
 };
 
-const WorkNoteBlock = ({ text, playbackId, isActive = false, isProxyStatus = false }: { text: string; playbackId?: string; isActive?: boolean; isProxyStatus?: boolean }) => {
+const WorkNoteBlock = ({ text, playbackId, isActive = false, isProxyStatus = false, showPendingIndicator = false }: { text: string; playbackId?: string; isActive?: boolean; isProxyStatus?: boolean; showPendingIndicator?: boolean }) => {
   const note = useMemo(() => String(text || '').trim(), [text]);
   if (!note) return null;
 
@@ -606,6 +672,9 @@ const WorkNoteBlock = ({ text, playbackId, isActive = false, isProxyStatus = fal
         isThinking={isActive}
         variant="note"
         reveal={isActive}
+        suffix={showPendingIndicator && isActive
+          ? <LivePendingIndicator mode="waiting" activityVersion={note} className="mt-3" />
+          : undefined}
       />
     </div>
   );
@@ -1126,7 +1195,7 @@ const TrpCard = React.memo(({ icon, title, badge, children, flush = false }: {
         {badge && <span className="shrink-0">{badge}</span>}
       </div>
     )}
-    <div className={flush ? "px-3 py-2.5" : "px-3.5 py-3"}>{children}</div>
+    <ToolResultScroll label={title || 'Tool result'} className={flush ? "px-3 py-2.5" : "px-3.5 py-3"}>{children}</ToolResultScroll>
   </div>
 ));
 TrpCard.displayName = 'TrpCard';
@@ -1238,8 +1307,76 @@ const ObjectCard = React.memo(({ item, primaryKey, secondaryKey, metaKeys }: {
 });
 ObjectCard.displayName = 'ObjectCard';
 
+const ResultDetails = ({ result, label = 'Raw result' }: { result: any; label?: string }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="eterx-result-details" onToggle={event => setOpen(event.currentTarget.open)}>
+      <summary>{label}</summary>
+      {open && <pre className="eterx-result-code">{JSON.stringify(result, null, 2)}</pre>}
+    </details>
+  );
+};
+
+// Compaction envelopes describe retained evidence, not a grid of user-facing fields.
+const CondensedToolResult = ({ result, flush }: { result: any; flush: boolean }) => {
+  const message = typeof result.message === 'string' ? result.message : '';
+  const evidence = typeof result.evidence === 'string' ? result.evidence : '';
+  const failed = result.success === false || result.isError === true || Boolean(result.error);
+  return (
+    <TrpCard flush={flush}>
+      <div className="eterx-result-caption">Condensed output</div>
+      {failed && <p className="eterx-result-error">{formatDisplayValue(result.error, 'The action did not complete successfully.')}</p>}
+      {message && <p className="eterx-result-prose">{message}</p>}
+      {evidence && (
+        <details className="eterx-result-details" open={!message || undefined}>
+          <summary>Retained output</summary>
+          <pre className="eterx-result-code">{evidence}</pre>
+        </details>
+      )}
+      <ResultDetails result={result} />
+    </TrpCard>
+  );
+};
+
+const AgentWorkResult = ({ result, flush }: { result: any; flush: boolean }) => {
+  const agents = (Array.isArray(result.agents) ? result.agents : Array.isArray(result.graph?.nodes) ? result.graph.nodes : [])
+    .filter((agent: any) => agent && typeof agent === 'object');
+  return (
+    <TrpCard flush={flush}>
+      {(result.error || result.success === false) && <p className="eterx-result-error">{formatDisplayValue(result.error, 'The action did not complete successfully.')}</p>}
+      {typeof result.message === 'string' && <p className="eterx-result-prose">{result.message}</p>}
+      {agents.length > 0 && (
+        <div className="eterx-agent-result-list">
+          {agents.map((agent: any, index: number) => (
+            <details className="eterx-result-details eterx-agent-result" key={`${agent.agentId || agent.id || agent.name || 'agent'}-${index}`}>
+              <summary>
+                <span className="eterx-agent-result-name">{formatDisplayValue(agent.name || agent.agentName || agent.agentId, `Agent ${index + 1}`)}</span>
+                {agent.status && <span className="eterx-agent-result-status">{formatDisplayValue(agent.status, '')}</span>}
+              </summary>
+              {agent.task && <p className="eterx-result-prose">{formatDisplayValue(agent.task, '')}</p>}
+              {agent.reason && <p className="eterx-result-prose">{formatDisplayValue(agent.reason, '')}</p>}
+              {agent.error && <p className="eterx-result-error">{formatDisplayValue(agent.error, '')}</p>}
+              {typeof agent.result === 'string' && agent.result.trim() && <TrpMarkdown content={agent.result} />}
+              {agent.payloadTruncated && <p className="eterx-result-caption">Partial report — more output is available.</p>}
+              <ResultDetails result={agent} label="Agent details" />
+            </details>
+          ))}
+        </div>
+      )}
+      {Number(result.unresolvedCount) > 0 && <p className="eterx-result-caption">{result.unresolvedCount} unresolved agent{Number(result.unresolvedCount) === 1 ? '' : 's'}</p>}
+      {result.nextOffset != null && <p className="eterx-result-caption">More agents are available beyond this page.</p>}
+      <ResultDetails result={result} />
+    </TrpCard>
+  );
+};
+
 // ─── Main component ────────────────────────────────────────────────────────
 const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }: { toolName: string; args: any; result: any; flush?: boolean }) => {
+  toolName = normalizeToolTraceName(toolName);
+  if (result?.__eterxContextDigest === true) return <CondensedToolResult result={result} flush={flush} />;
+  if (toolName === 'spawn_sub_agent' && result && typeof result === 'object' && !Array.isArray(result)) {
+    return <AgentWorkResult result={result} flush={flush} />;
+  }
 
   if (toolName.startsWith('agent_builder_')) {
     const success = result?.success !== false;
@@ -1384,7 +1521,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
     const items: any[] = Array.isArray(result?.results) ? result.results : Array.isArray(result) ? result : [];
     const images: any[] = Array.isArray(result?.images) ? result.images : [];
     return (
-      <TrpCard>
+      <TrpCard flush={flush}>
         {summary && (
           <div className="mb-3 rounded-[8px] bg-white/[0.025] border border-white/[0.05] p-2.5 text-[12.5px] leading-[1.65] text-[#C0B8B0]">
             <div className="text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46] mb-1.5">Summary</div>
@@ -1434,7 +1571,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
     const isError = !!(result?.error || result?.success === false);
     const errorMsg = formatDisplayValue(result?.message ?? result?.error, 'Unknown database error');
     return (
-      <TrpCard>
+      <TrpCard flush={flush}>
         {query && (
           <div className="mb-2.5 rounded-[7px] bg-black/25 border border-white/[0.05] px-2.5 py-2 font-mono text-[11px] text-[#D0C8C0] whitespace-pre-wrap">{query}</div>
         )}
@@ -1509,11 +1646,12 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
   }
   if (rootArr && rootArr.length > 0) arrayFields.push({ key: '', items: rootArr });
 
-  // Scalar fields to show as key-value tiles
+  // Secondary scalar fields use compact definition rows.
   const SKIP_SCALAR = new Set([
     'success', 'passed', 'ok', 'error', 'message', 'content', 'guidelines', 'text',
     'output', 'stdout', 'stderr', 'logs', 'response', 'result', 'summary',
-    'answer', 'report', '_cached', '_traceIdx', 'timestamp', 'data'
+    'answer', 'report', '_cached', '_traceIdx', 'timestamp', 'data',
+    '__eterxContextDigest', '_compacted', 'originalChars', 'exactContextPageRef', 'recovery'
   ]);
   const scalarFields: [string, any][] = Object.entries(obj).filter(
     ([k, v]) => !SKIP_SCALAR.has(k) && !Array.isArray(v) && typeof v !== 'object' && v !== null && v !== undefined && String(v).trim().length > 0
@@ -1566,7 +1704,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
   const hasAnyContent = hasPrimaryText || arrayFields.length > 0 || scalarFields.length > 0;
 
   return (
-    <TrpCard>
+    <TrpCard flush={flush}>
       {/* Error banner */}
       {obj.error && (
         <div className="mb-3 rounded-[7px] bg-red-500/8 border border-red-500/15 px-3 py-2 text-[11.5px] font-mono text-red-300/80">
@@ -1579,7 +1717,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
         <div className="mb-3 max-h-[280px] overflow-y-auto overflow-x-hidden eterx-scrollbar">
           {primaryIsMd ? (
             <TrpMarkdown content={primaryText} />
-          ) : primaryText.includes('\n') || primaryText.length > 80 ? (
+          ) : ['stdout', 'stderr', 'logs'].some(key => obj[key] === primaryText) ? (
             <pre className="font-mono text-[11px] leading-[1.6] text-[#9A9288] whitespace-pre-wrap break-words select-text rounded-[7px] bg-black/20 border border-white/[0.04] p-2.5 max-h-[240px] overflow-y-auto eterx-scrollbar">{primaryText}</pre>
           ) : (
             <p className="text-[12.5px] leading-[1.7] text-[#C0B8B0] whitespace-pre-wrap break-words select-text">{primaryText}</p>
@@ -1695,16 +1833,16 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
         return null;
       })}
 
-      {/* Scalar key-value tiles (only if there IS some structured data above or no arrays at all) */}
+      {/* Quiet metadata rows keep long values readable without creating a tile grid. */}
       {scalarFields.length > 0 && (
-        <div className={`grid grid-cols-2 gap-1.5 ${ hasPrimaryText || arrayFields.length > 0 ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : '' }`}>
+        <dl className="eterx-result-fields">
           {scalarFields.map(([k, v]) => (
-            <div key={k} className="flex flex-col gap-0.5 rounded-[6px] bg-white/[0.02] border border-white/[0.04] px-2 py-1.5">
-              <span className="text-[9.5px] font-semibold uppercase tracking-widest text-[#4E4A46]">{k.replace(/_/g, ' ')}</span>
-              <span className="text-[12px] font-medium text-[#C0B8B0] select-all break-all">{String(v)}</span>
+            <div key={k}>
+              <dt>{k.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')}</dt>
+              <dd>{String(v)}</dd>
             </div>
           ))}
-        </div>
+        </dl>
       )}
 
       {/* Absolute last resort: raw JSON if nothing was rendered */}
@@ -1715,6 +1853,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
       )}
 
       <TrpSources sources={linkSources} />
+      {hasAnyContent && typeof result === 'object' && result !== null && <ResultDetails result={result} />}
     </TrpCard>
   );
 });
@@ -3105,6 +3244,7 @@ const TerminalTraceCard = ({
   // Terminal output is always opt-in. Streaming output must never expand the
   // inline console or steal attention from the live action sequence.
   const [isExpanded, setIsExpanded] = useState(false);
+  const outputId = React.useId();
 
   // If this is a timer/schedule log, render an unopenable static status row with seconds/mins
   if (isTimer) {
@@ -3139,14 +3279,16 @@ const TerminalTraceCard = ({
     ? isStreaming ? 'Managing process' : isFailed ? 'Process request failed' : controlLabels[mode]
     : isStreaming ? 'Running command' : isStopped ? 'Command stopped' : isFailed ? 'Command failed' : resultStatus === 'unknown' ? 'Command result unavailable' : 'Ran command';
 
-  const headerLabel = durationLabel ? `${ title } · ${ durationLabel }` : title;
-
+  const compactControlLabels: Record<string, string> = { list: 'Processes', check: 'Status', wait: 'Waited', background: 'Backgrounded', kill: 'Stopped' };
+  const compactTitle = isProcessControl ? isStreaming || isFailed ? title : compactControlLabels[mode] || title
+    : isStreaming ? 'Running' : isStopped ? 'Stopped' : isFailed ? 'Failed'
+    : resultStatus === 'unknown' ? 'Result unavailable' : 'Ran';
   const rowGridClass = isExpanded
-    ? 'grid-cols-[20px_minmax(0,1fr)_14px]'
-    : 'grid-cols-[20px_auto_minmax(0,1fr)_14px]';
+    ? 'grid-cols-[20px_minmax(0,1fr)_auto_14px]'
+    : 'grid-cols-[20px_auto_minmax(0,1fr)_auto_14px]';
 
   return (
-    <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
+    <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`} data-status={resultStatus}>
       <button
         type="button"
         onClick={(event) => {
@@ -3154,35 +3296,40 @@ const TerminalTraceCard = ({
           setIsExpanded(open => !open);
         }}
         aria-expanded={isExpanded}
+        aria-controls={isExpanded ? outputId : undefined}
+        aria-label={`${title}${durationLabel ? `, ${durationLabel}` : ''}: ${command}. ${isExpanded ? 'Hide' : 'Show'} output`}
         className={`eterx-terminal-trace-row group grid w-full ${ rowGridClass } items-center gap-1.5 py-0.5 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'min-h-[29px] px-1 hover:bg-white/[0.024]' : 'min-h-[34px] px-2.5 hover:bg-white/[0.024]' }`}
       >
         <span className="eterx-action-icon eterx-terminal-icon flex h-5 w-5 shrink-0 items-center justify-center text-[#A39B91]">
           {connectorAction ? <ConnectorIcon connectorId={connectorId} size={15} title={`${ connectorId || 'connected service' } connector`} /> : <ToolTerminalIcon size={15} color="currentColor" />}
         </span>
         <Shimmer active={isStreaming} className="eterx-trace-label min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
-          {headerLabel}
+          {isExpanded ? title : compactTitle}
         </Shimmer>
         {!isExpanded && (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] leading-tight text-[#857E73] select-text">
+          <span title={command} className="eterx-trace-command min-w-0 flex-1 truncate text-[13.5px] leading-tight select-text">
             {collapsedCommand || '(no command)'}
           </span>
         )}
+        <span className="eterx-trace-duration" aria-hidden="true">{durationLabel}</span>
         <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#898176] transition-transform ${ isExpanded ? 'rotate-90 text-[#C8C1B8]' : '' }`} />
       </button>
       {isExpanded && (
-        <InlineConsole
-          command={command}
-          program={getTerminalInvocation(log, preview)?.program}
-          args={getTerminalInvocation(log, preview)?.args}
-          content={output}
-          exitCode={displayedExitCode}
-          status={resultStatus}
-          durationMs={durationMs}
-          cwd={cwd}
-          shell={shell}
-          pid={pid}
-          flush={true}
-        />
+        <div id={outputId}>
+          <InlineConsole
+            command={command}
+            program={getTerminalInvocation(log, preview)?.program}
+            args={getTerminalInvocation(log, preview)?.args}
+            content={output}
+            exitCode={displayedExitCode}
+            status={resultStatus}
+            durationMs={durationMs}
+            cwd={cwd}
+            shell={shell}
+            pid={pid}
+            flush={true}
+          />
+        </div>
       )}
     </div>
   );
@@ -4227,6 +4374,8 @@ const BrowserActivityGroup = ({
   // one click/navigation must not close and immediately reopen the parent.
   const activityIsActive = isActive;
   const [open, setOpen] = useState(activityIsActive || keepOpenWhileRunning);
+  const contentId = React.useId();
+  const prefersReducedMotion = useReducedMotion();
   const browserManuallyToggledRef = useRef(false);
   useEffect(() => {
     if (browserManuallyToggledRef.current) return;
@@ -4249,10 +4398,11 @@ const BrowserActivityGroup = ({
   let actionIndex = 0;
 
   return (
-    <div className={`${ ACTION_CARD_CLASS } eterx-browser-activity-group`} data-active={activityIsActive ? 'true' : undefined}>
+    <div className="eterx-activity-panel eterx-browser-activity-group" data-open={open ? 'true' : 'false'} data-active={activityIsActive ? 'true' : undefined}>
       <button
         type="button"
         aria-expanded={open}
+        aria-controls={open ? contentId : undefined}
         onClick={() => {
           browserManuallyToggledRef.current = true;
           setOpen(value => !value);
@@ -4263,11 +4413,13 @@ const BrowserActivityGroup = ({
           {activityIsActive ? (
             <span className="eterx-trace-spinner" />
           ) : (
-            <BrowserIcon size={15} color="#DAD6CF" />
+            <BrowserIcon size={15} color="currentColor" />
           )}
         </span>
         <Shimmer
           active={activityIsActive}
+          stableSweep
+          durationMs={3000}
           className="min-w-0 flex-1 truncate text-[12.75px] font-medium tracking-[-0.01em] text-[#D5CFC7]"
         >
           Browser use
@@ -4282,19 +4434,21 @@ const BrowserActivityGroup = ({
         {open && (
           <motion.div
             key="browser-activity-content"
-            initial={{ height: 0, opacity: 0 }}
+            id={contentId}
+            initial={prefersReducedMotion ? false : { height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-            className="overflow-hidden border-t border-white/[0.055]"
+            transition={{ duration: prefersReducedMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}
+            className="eterx-activity-disclosure overflow-hidden"
           >
+            <ActivityViewport active={activityIsActive} label="Browser activity" onInspect={() => { browserManuallyToggledRef.current = true; }}>
             {items.map((item, itemIndex) => {
               if (item.kind === 'note') {
                 const noteIsLatest = itemIndex === items.length - 1;
                 return (
                   <div
                     key={`browser-note-${ getStreamRowIdentity(item.log, item.idx) }`}
-                    className="border-b border-white/[0.045] px-3 py-2 last:border-b-0"
+                    className="eterx-activity-note px-3 py-2"
                   >
                     <WorkNoteBlock
                       text={item.log.text}
@@ -4328,6 +4482,7 @@ const BrowserActivityGroup = ({
                 );
               });
             })}
+            </ActivityViewport>
           </motion.div>
         )}
       </AnimatePresence>
@@ -4348,7 +4503,8 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
   const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
   const sequenceRef = useRef<HTMLDivElement>(null);
   const contentId = React.useId();
-  const hasGroup = logs.reduce((count, log) => count + (log.type === 'thought_stream' ? 0 : Math.max(1, Number(log.occurrenceCount) || 1)), 0) > 1;
+  const actionCount = logs.reduce((count, log) => count + (log.type === 'thought_stream' ? 0 : Math.max(1, Number(log.occurrenceCount) || 1)), 0);
+  const hasGroup = actionCount > 1 || logs.length > 1;
   React.useLayoutEffect(() => {
     if (manualDisclosureRef.current) return;
     if (isActive || keepOpenWhileRunning) {
@@ -4428,7 +4584,6 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
     .find(value => value && value.length <= 96);
   const thinking = currentAction?.type === 'thought_stream';
   const runningCommand = Boolean(currentAction && shouldUseTerminalIcon(currentAction));
-  const liveCommand = runningCommand ? getTerminalCommandText(currentAction).replace(/\s+/g, ' ').trim() : '';
   const liveFileTargets = useMemo(() => currentAction ? dedupeFileTraceTargetsForDisplay(collectFileTargets(currentAction)) : [], [currentAction]);
   const liveFileLabel = liveFileTargets.length
     ? liveFileTargets.slice(0, 2).map(target => target.filename).join(', ') + (liveFileTargets.length > 2 ? ` +${liveFileTargets.length - 2} more` : '')
@@ -4443,7 +4598,7 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
     ? currentAction.type === 'file_edit'
       ? liveFileLabel ? `Editing ${liveFileTargets.length > 1 ? 'files: ' : ''}${liveFileLabel}` : Math.max(Number(currentAction.fileCount) || 0, Number(currentAction.filesCount) || 0, Number(currentAction.count) || 0) > 1 ? 'Editing files' : 'Editing file'
       : currentAction.iconCategory === 'file_read' && liveFileLabel ? `Reading ${liveFileLabel}`
-      : runningCommand ? liveCommand ? `Running ${liveCommand}` : 'Running command'
+      : runningCommand ? recentThoughtHeading || (actionCount > 1 ? 'Running commands' : 'Running command')
       : liveSummary?.key === 'skill' ? `Loading skill${skillName && skillName.length <= 80 ? `: ${skillName}` : ''}`
       : liveSummary?.live || 'Working'
     : 'Working';
@@ -4452,7 +4607,9 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
   const rawHeading = isActive
     ? hasLiveHeading ? currentAction?.type === 'file_edit' || runningCommand || thinking || liveSummary?.key === 'skill' ? liveLabel : activityLabel || liveLabel : idleHeading
     : label || 'Thought';
-  const heading = rawHeading.charAt(0).toUpperCase() + rawHeading.slice(1);
+  const fallbackHeading = useLiveFallbackLabel(isActive && hasGroup && rawHeading === 'Working', 'group');
+  const displayHeading = fallbackHeading || rawHeading;
+  const heading = displayHeading.charAt(0).toUpperCase() + displayHeading.slice(1);
   const iconLog = isActive ? currentAction : logs.find(log => log.type === 'file_edit') || logs.find(log => log.type !== 'thought_stream');
   const showIcon = Boolean(iconLog && iconLog.type !== 'thought_stream' && !/^(?:working|thinking)(?:\s|$)/i.test(heading));
   const isSkillAction = liveSummary?.key === 'skill' || /skill/i.test(heading) || iconLog?.toolName === 'get_skill_guidelines';
@@ -4478,7 +4635,7 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
   const { Icon: SummaryIcon } = resolvedHeaderEntry;
 
   return (
-    <div ref={sequenceRef} className="eterx-action-sequence w-full" data-live={isActive ? 'true' : undefined}>
+    <div ref={sequenceRef} className="eterx-action-sequence eterx-activity-panel w-full" data-open={!hasGroup || open ? 'true' : 'false'} data-has-header={hasGroup ? 'true' : 'false'} data-live={isActive ? 'true' : undefined}>
       <button
         type="button"
         hidden={!hasGroup}
@@ -4505,23 +4662,27 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
             : <SummaryIcon size={15} color="currentColor" />)}
         </span>
         <span className="eterx-sequence-heading min-w-0 truncate select-text" title={heading}>
-          <Shimmer active={isActive} className="block">{heading}</Shimmer>
+          <Shimmer active={isActive} stableSweep durationMs={3000} className="block">{heading}</Shimmer>
         </span>
         <span className="eterx-sequence-caret" aria-hidden="true">
           <ChevronDown className={`h-3.5 w-3.5 ${ open ? '' : '-rotate-90' }`} />
         </span>
       </button>
-      <div id={contentId} hidden={hasGroup && !open}>
-        {(!hasGroup || open) && <div className={`eterx-sequence-reveal${hasGroup ? ' pt-1' : ''}`}>{children}</div>}
+      <div id={contentId} hidden={hasGroup && !open} className={hasGroup ? 'eterx-activity-disclosure' : undefined}>
+        {(!hasGroup || open) && (
+          <ActivityViewport active={isActive} label="Tool activity" onInspect={() => { manualDisclosureRef.current = true; }}>
+            {children}
+          </ActivityViewport>
+        )}
       </div>
     </div>
   );
 };
 
 const ActionGroupRows = ({
-  logs, isActiveGroup, allLogs
+  logs, isActiveGroup, allLogs, embedded = false
 }: {
-  logs: any[], isActiveGroup: boolean, allLogs: any[]
+  logs: any[], isActiveGroup: boolean, allLogs: any[], embedded?: boolean
 }) => {
   const visibleLogs = logs.filter(Boolean);
   if (visibleLogs.length === 0) return null;
@@ -4531,7 +4692,7 @@ const ActionGroupRows = ({
 
   const terminalOnly = cardLogs.length === 1 && isTerminalActionLike(cardLogs[0]);
   const fileChangeOnly = cardLogs.length === 1 && cardLogs[0]?.type === 'file_edit';
-  const useStandaloneRows = terminalOnly || fileChangeOnly;
+  const useStandaloneRows = !embedded && (terminalOnly || fileChangeOnly);
   const explicitLiveCardIndex = cardLogs.findLastIndex(isLiveActionEvent);
   const currentCardIndex = isActiveGroup
     ? (explicitLiveCardIndex >= 0 ? explicitLiveCardIndex : cardLogs.length - 1)
@@ -4543,7 +4704,7 @@ const ActionGroupRows = ({
 
   const cards = cardLogs.length > 0 ? (
         <div
-          className={useStandaloneRows ? 'w-full' : `${ ACTION_CARD_CLASS } eterx-action-group`}
+          className={embedded ? 'eterx-activity-rows w-full' : useStandaloneRows ? 'w-full' : `${ ACTION_CARD_CLASS } eterx-action-group`}
         >
           {cardLogs.map((log, i) => (
             <div
@@ -4594,10 +4755,12 @@ const JoinedActionGroup = React.memo(({ logs, isActiveGroup, keepOpenWhileRunnin
   }
   const parts: { kind: 'actions' | 'thought'; logs: any[]; index: number }[] = [];
   logs.forEach((log, index) => {
+    const tail = parts[parts.length - 1];
     if (log.type === 'thought_stream') {
-      parts.push({ kind: 'thought', logs: [log], index });
+      if (tail?.kind === 'thought' && canGroupThoughtStreams(tail.logs[0], log) && canGroupThoughtStreams(tail.logs[tail.logs.length - 1], log)) {
+        tail.logs.push(log);
+      } else parts.push({ kind: 'thought', logs: [log], index });
     } else {
-      const tail = parts[parts.length - 1];
       if (tail?.kind === 'actions') tail.logs.push(log);
       else parts.push({ kind: 'actions', logs: [log], index });
     }
@@ -4608,10 +4771,9 @@ const JoinedActionGroup = React.memo(({ logs, isActiveGroup, keepOpenWhileRunnin
         {parts.map((part, index) => {
           const log = part.logs[0];
           if (part.kind === 'thought') {
-            const live = isActiveGroup && isThoughtStreamOpen(log);
-            return <ProfessionalThought key={`t-${ getStreamRowIdentity(log, part.index) }`} text={log.text} isLatest={live} isThinking={live} startedAt={log.startTime} updatedAt={log.endTime} />;
+            return <ThoughtStreamGroup key={`t-${ getStreamRowIdentity(log, part.index) }`} logs={part.logs} isActive={isActiveGroup && index === parts.length - 1} />;
           }
-          return <ActionGroupRows key={`a-${ getActionIdentity(log, part.index) }`} logs={part.logs} isActiveGroup={isActiveGroup && index === parts.length - 1} allLogs={allLogs} />;
+          return <ActionGroupRows key={`a-${ getActionIdentity(log, part.index) }`} logs={part.logs} isActiveGroup={isActiveGroup && index === parts.length - 1} allLogs={allLogs} embedded />;
         })}
       </div>
     </ActionSequenceSummary>
@@ -4631,75 +4793,6 @@ const JoinedActionGroup = React.memo(({ logs, isActiveGroup, keepOpenWhileRunnin
   }
   return true;
 });
-
-// Live working indicator — real-time log-state-connected
-// 3 modes: thinking (visible note last), acting (real action last), idle (between)
-
-const LiveWorkingIndicator = ({ logs }: { logs: any[] }) => {
-  // Derive real-time state from the last log
-  const getLogState = (ls: any[]): { mode: 'thinking' | 'acting' | 'idle'; label: string | null } => {
-    if (ls.length === 0) return { mode: 'thinking', label: 'Working' };
-    const last = ls[ls.length - 1];
-    const retainedHeading = getRecentThoughtHeading(ls);
-    if (!isLiveActionEvent(last)) return { mode: 'idle', label: retainedHeading || 'Working' };
-    const customLabel = [last.currentAction, last.statusText, last.label]
-      .map(value => String(value || '').trim())
-      .find(value => value && value.length <= 72);
-    if (customLabel) return { mode: 'acting', label: customLabel };
-    if (last.type === 'thought_stream' || last.type === 'work_note') {
-      return isLiveThoughtFresh(last)
-        ? { mode: 'thinking', label: getThoughtEventHeading(last) || retainedHeading || 'Thinking' }
-        : { mode: 'idle', label: retainedHeading || 'Working' };
-    }
-    if (['command', 'tool_call', 'exploration', 'file_edit', 'communication', 'browser'].includes(last.type)) {
-      const meta = getToolMeta(last.text, last.type, last.icon);
-      const fileName = (last.filename || '').split(/[\\/]/).pop() || '';
-      const LIVE_VERBS: Record<string, string> = {
-        Ran: 'Running',
-        Read: 'Reading',
-        Listed: 'Listing',
-        Edited: 'Editing',
-        Created: 'Creating',
-        Searched: 'Searching',
-        Analyzed: 'Analyzing',
-        Refactored: 'Refactoring',
-        Verified: 'Verifying',
-        Generated: 'Generating',
-        'Used browser': 'Using browser',
-        'Launched browser': 'Launching browser',
-        'Right clicked': 'Right clicking',
-        'Left clicked': 'Left clicking',
-        'Clicked': 'Clicking',
-        'Double clicked': 'Double clicking',
-      };
-      const verb = LIVE_VERBS[meta.verb] || meta.verb || 'Working';
-      const label = fileName ? `${ verb } ${ fileName }` : verb;
-      return { mode: 'acting', label };
-    }
-    return { mode: 'idle', label: 'Working' };
-  };
-
-  // Derive the label from the current snapshot, with no delayed effect or phrase timer.
-  const displayLabel = getLogState(logs).label || 'Working';
-
-  return (
-    <div className="eterx-live-working-indicator flex h-6 w-fit max-w-full items-center pl-[22px]" role="status" aria-live="polite">
-      <Shimmer
-        active
-        durationMs={2600}
-        angle={12}
-        spread="2.4ch"
-        baseColor="var(--eterx-ui-working-text)"
-        color="var(--eterx-ui-working-highlight)"
-        surfaceColor="var(--background)"
-        textColor="var(--eterx-ui-working-text)"
-        className="eterx-thinking-shimmer min-w-0 truncate text-[15.5px] font-normal leading-[1.2] tracking-[0.005em] text-[var(--eterx-ui-working-text)]"
-      >
-        {displayLabel}
-      </Shimmer>
-    </div>
-  );
-};
 
 // ═══════════════════════════════════════════════════════════════════
 // HtmlPreviewCard — Renders visual UI previews with browser chrome,
@@ -5004,7 +5097,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
 };
 
 
-export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes, renderContextCompaction }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes, renderContextCompaction?: (log: any) => React.ReactNode }) => {
+export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, isLast, showLiveIndicator = false, showStartupIndicator = false, onOpenAgentTeam, isSubAgentTab = false, onEditUserMessage, assetIndexes, renderContextCompaction }: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, showLiveIndicator?: boolean, showStartupIndicator?: boolean, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, assetIndexes?: SubAgentAssetIndexes, renderContextCompaction?: (log: any) => React.ReactNode }) => {
   const containerRef = useLiveFeedFlow(isThinking && isLast);
   const isFlowLog = (l: any) => {
     if (l?.type === 'progress' && String(l?.text || '').startsWith('This chat history differs from its saved working context.')) return false;
@@ -5035,7 +5128,6 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
     const liveFlowLogs = ensureStableFeedPresentationIds(liveLogs).filter(isFlowLog);
     return reconcileSubAgentLifecycleRows(reconcileLiveActionLogs(flowLogs, liveFlowLogs));
   }, [logs, liveLogs, isSubAgentTab]);
-  const statusLogs = timelineLogs;
   const segs: any[] = [];
   let aBuf: any[] = [];
   let aBufFirstIdx = -1;
@@ -5116,7 +5208,10 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
         if (aBuf.length > 0 && aBufKind === 'standard') pushActionLog(log, idx);
         else {
           flush(idx - 1);
-          segs.push({ kind: 'thought', log, idx });
+          const tail = segs[segs.length - 1];
+          if (tail?.kind === 'thought' && canGroupThoughtStreams(tail.log, log) && canGroupThoughtStreams(tail.logs[tail.logs.length - 1], log)) {
+            tail.logs.push(log);
+          } else segs.push({ kind: 'thought', log, logs: [log], idx });
         }
       }
     }
@@ -5235,29 +5330,6 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
     });
     index = cursor - 1;
   }
-  const latestDisplaySegment = displaySegs[displaySegs.length - 1];
-  const latestBrowserActions = latestDisplaySegment?.kind === 'browser_phase'
-    ? [...latestDisplaySegment.items]
-      .reverse()
-      .find((item: any) => item.kind === 'browser_action_group')
-    : null;
-  const latestBrowserAction = latestBrowserActions?.logs?.[latestBrowserActions.logs.length - 1];
-  const latestBrowserActivityLog = latestDisplaySegment?.kind === 'browser_phase'
-    ? (() => {
-      const tail = latestDisplaySegment.items?.[latestDisplaySegment.items.length - 1];
-      if (tail?.kind === 'note') return tail.log;
-      if (tail?.kind === 'browser_action_group') return tail.logs?.[tail.logs.length - 1];
-      return latestBrowserAction;
-    })()
-    : latestBrowserAction;
-  const browserPhaseOwnsLiveIndicator = Boolean(
-    isThinking &&
-    isLast &&
-    latestDisplaySegment?.kind === 'browser_phase' &&
-    (isFeedTraceOpen(latestBrowserActivityLog) || !isExplicitlySettledAction(latestBrowserActivityLog))
-  );
-  const actionSequenceOwnsLiveIndicator = latestDisplaySegment?.kind === 'action_group' &&
-    latestDisplaySegment.logs?.some((log: any) => !['progress', 'task_plan'].includes(log.type));
   return (
     <div ref={containerRef} className="eterx-thinking-process-stack w-full flex flex-col gap-3 py-0">
       {displaySegs.map((seg, i) => {
@@ -5265,11 +5337,10 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
         const phaseIsActive = isThinking && isLast && phaseIsLastVisible;
 
         if (seg.kind === 'thought') {
-          // Provider state is authoritative. The global turn flag can lag
-          // behind a final API chunk while polling commits the answer.
-          const thoughtIsLive = isThoughtStreamOpen(seg.log);
           const thoughtIdentity = getStreamRowIdentity(seg.log, seg.idx);
-          return <ProfessionalThought key={`t-${ thoughtIdentity }`} text={seg.log.text} isLatest={thoughtIsLive} isThinking={thoughtIsLive} startedAt={seg.log.startTime} updatedAt={seg.log.endTime} />;
+          // Both the owning turn and the latest provider segment must be
+          // active. Stale open history cannot keep a stopped turn animated.
+          return <ThoughtStreamGroup key={`t-${ thoughtIdentity }`} logs={seg.logs} isActive={phaseIsActive} />;
         }
         if (seg.kind === 'note') {
           return (
@@ -5287,6 +5358,7 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
                 // to a transient provider status flag.
                 isActive={phaseIsActive}
                 isProxyStatus={seg.log.type === 'autonomy_proxy_status'}
+                showPendingIndicator={showLiveIndicator && phaseIsActive && !isLiveThoughtFresh(seg.log)}
               />
             </div>
           );
@@ -5354,7 +5426,9 @@ export const ThinkingProcess = React.memo(({ logs, liveLogs = [], isThinking, is
         const groupKey = `g-${ getActionIdentity(seg.logs[0], firstIdx) }`;
         return <JoinedActionGroup key={groupKey} logs={seg.logs} isActiveGroup={isThinking && isLast && i === displaySegs.length - 1} keepOpenWhileRunning={isThinking && isLast} allLogs={timelineLogs} />;
       })}
-      {showLiveIndicator && isThinking && isLast && !browserPhaseOwnsLiveIndicator && !actionSequenceOwnsLiveIndicator && <LiveWorkingIndicator key="live-working" logs={statusLogs} />}
+      {showLiveIndicator && showStartupIndicator && isThinking && isLast && displaySegs.length === 0 && timelineLogs.length === 0 && (
+        <LivePendingIndicator key="task-startup" mode="startup" />
+      )}
     </div>
   );
 });
