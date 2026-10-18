@@ -5,8 +5,6 @@ import ReactMarkdown from 'react-markdown';
 // @ts-ignore
 import remarkGfm from 'remark-gfm';
 // @ts-ignore
-import remarkMath from 'remark-math';
-// @ts-ignore
 import rehypeKatex from 'rehype-katex';
 // @ts-ignore
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -18,43 +16,12 @@ import { Tooltip } from '../ui/tooltip';
 import { LiveArtifact } from './live-artifact';
 import { LocalFileLinkChip, LocalFilePathsContext, getLocalFileName, decodeLocalFileHref, isLocalFilePath, normalizeLocalImageMarkdown } from './local-file-link';
 import { ReplyImage } from './image-gallery';
+import { remarkRichMath } from '../../lib/markdown/remark-rich-math';
+import { remarkAnswerStructure } from '../../lib/markdown/remark-answer-structure';
 
 // Text paints immediately. Expensive code/diagram work is settled once its
 // stream closes instead of retokenizing a growing block on every word.
 export const MarkdownStreamContext = React.createContext(false);
-
-// Two currency amounts can be parsed as one $...$ equation. Restore the
-// original dollars before KaTeX runs, while keeping actual equations intact.
-function remarkCurrencyText() {
-  return (tree: any, file: any) => {
-    const source = String(file.value || '');
-    const visit = (parent: any) => {
-      if (!Array.isArray(parent.children)) return;
-      parent.children.forEach((node: any, index: number) => {
-        if (node.type === 'inlineMath') {
-          const value = String(node.value || '');
-          const next = parent.children[index + 1];
-          const nextStartsAmount = next?.type === 'text' && /^\d/.test(String(next.value || ''));
-          const startsAmount = /^\d[\d,.]*(?:\s|[),;:])/.test(value);
-          const hasProse = /\b[A-Za-z]{2,}\b/.test(value);
-          const hasMathSyntax = /[\\^_=+<>]/.test(value);
-          if (nextStartsAmount && startsAmount && !hasMathSyntax
-            && (hasProse || /^[\d,.\s()\-;:]+$/.test(value))) {
-            const start = node.position?.start?.offset;
-            const end = node.position?.end?.offset;
-            parent.children[index] = {
-              type: 'text',
-              value: typeof start === 'number' && typeof end === 'number'
-                ? source.slice(start, end) : `$${value}$`,
-              position: node.position,
-            };
-          }
-        } else if (node.type !== 'code' && node.type !== 'inlineCode') visit(node);
-      });
-    };
-    visit(tree);
-  };
-}
 
 // A provider may pause or stop midway through a native link. Keep its label
 // readable until the destination is complete; never invent a clickable path.
@@ -76,23 +43,32 @@ function remarkIncompleteLocalLinks() {
 /** Re-export remark/rehype plugins for use in other components */
 export const remarkPlugins: any[] = [
   remarkGfm,
-  [remarkMath, { singleDollarTextMath: true }],
-  remarkCurrencyText,
+  remarkRichMath,
+  remarkAnswerStructure,
   remarkIncompleteLocalLinks,
 ];
-export const rehypePlugins: any[] = [[rehypeKatex, {
-  throwOnError: false,
-  strict: 'ignore',
-  trust: false,
-  output: 'htmlAndMathml',
-  macros: {
-    '\\RR': '\\mathbb{R}',
-    '\\NN': '\\mathbb{N}',
-    '\\ZZ': '\\mathbb{Z}',
-    '\\QQ': '\\mathbb{Q}',
-    '\\CC': '\\mathbb{C}',
-  },
-}]];
+function rehypeAnswerMath() {
+  return (tree: any, file: any) => rehypeKatex({
+    // rehype-katex catches parse errors and renders them inline.
+    strict: 'ignore',
+    trust: false,
+    errorColor: 'currentColor',
+    output: 'htmlAndMathml',
+    maxExpand: 1000,
+    maxSize: 20,
+    globalGroup: false,
+    // KaTeX can mutate macros through \gdef. A fresh map per document keeps
+    // one reply from changing another reply's equations on subsequent renders.
+    macros: {
+      '\\RR': '\\mathbb{R}',
+      '\\NN': '\\mathbb{N}',
+      '\\ZZ': '\\mathbb{Z}',
+      '\\QQ': '\\mathbb{Q}',
+      '\\CC': '\\mathbb{C}',
+    },
+  })(tree, file);
+}
+export const rehypePlugins: any[] = [rehypeAnswerMath];
 
 const MERMAID_LANGUAGE_ALIASES = new Set(['mermaid', 'mmd']);
 const MERMAID_FONT_FAMILY = '"Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif';
@@ -194,55 +170,25 @@ export const WebsiteLink = React.memo(({
 });
 WebsiteLink.displayName = 'WebsiteLink';
 
-const ResponsiveMath = React.memo(({
-  children,
-  className = '',
-  ...props
-}: React.HTMLAttributes<HTMLSpanElement>) => {
-  const ref = useRef<HTMLSpanElement>(null);
+const getMathSource = (node: any): string => {
+  if (node?.tagName === 'annotation' && node.properties?.encoding === 'application/x-tex') return getNodeText(node);
+  for (const child of node?.children || []) {
+    const source = getMathSource(child);
+    if (source) return source;
+  }
+  return '';
+};
 
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-
-    let animationFrame = 0;
-    let lastAvailableWidth = 0;
-    const fitEquation = () => {
-      window.cancelAnimationFrame(animationFrame);
-      animationFrame = window.requestAnimationFrame(() => {
-        const equation = element.querySelector<HTMLElement>(':scope > .katex');
-        if (!equation) return;
-
-        const availableWidth = Math.max(1, element.clientWidth - 12);
-        if (Math.abs(availableWidth - lastAvailableWidth) < 0.5) return;
-        lastAvailableWidth = availableWidth;
-        element.style.setProperty('--eterx-math-scale', '1');
-        const naturalWidth = Math.max(equation.scrollWidth, equation.getBoundingClientRect().width);
-        const scale = naturalWidth > availableWidth
-          ? Math.max(0.01, Math.min(1, availableWidth / naturalWidth))
-          : 1;
-        element.style.setProperty('--eterx-math-scale', scale.toFixed(4));
-      });
-    };
-
-    fitEquation();
-    const observer = typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(fitEquation)
-      : null;
-    observer?.observe(element);
-
-    return () => {
-      window.cancelAnimationFrame(animationFrame);
-      observer?.disconnect();
-    };
-  }, [children]);
-
-  return (
-    <span ref={ref} className={className} {...props}>
+const ResponsiveMath = React.memo(({ children, className = '', source, ...props }:
+  React.HTMLAttributes<HTMLSpanElement> & { source: string }) => (
+  <span className="eterx-math-block">
+    <span className={`${className} eterx-math-display eterx-scrollbar`} {...props}
+      role="region" aria-label="Mathematical expression" tabIndex={0}>
       {children}
     </span>
-  );
-});
+    {source && <span className="eterx-math-actions"><MarkdownCopyAction text={source} label="Copy equation" /></span>}
+  </span>
+));
 ResponsiveMath.displayName = 'ResponsiveMath';
 
 // Preserve the model's Markdown. Presentation rules belong in prompts;
@@ -309,6 +255,33 @@ export const useClipboard = (text: string, timeout = 2000) => {
 
   return { copied, copy };
 };
+
+// Keep phrasing content valid when a display equation occurs inside a
+// paragraph or list. The shared tooltip mounts a div, so use a native title
+// here and a real keyboard-accessible button with a quiet live announcement.
+const MarkdownCopyAction = ({ text, label }: { text: string; label: string }) => {
+  const { copied, copy } = useClipboard(text);
+  return <>
+    <button type="button" className="eterx-content-copy" onClick={copy}
+      title={copied ? 'Copied' : label} aria-label={copied ? 'Copied' : label}>
+      {copied ? <Check aria-hidden="true" size={15} /> : <Copy aria-hidden="true" size={15} />}
+    </button>
+    <span className="sr-only" role="status">{copied ? 'Copied to clipboard' : ''}</span>
+  </>;
+};
+
+const MarkdownTable = ({ children, copyText, label, ...props }:
+  React.TableHTMLAttributes<HTMLTableElement> & { copyText: string; label: string }) => (
+  <div className="eterx-table-block">
+    <div className="eterx-table-toolbar">
+      <span>Table</span>
+      <MarkdownCopyAction text={copyText} label="Copy table" />
+    </div>
+    <div className="eterx-markdown-table-wrap eterx-scrollbar" role="region" aria-label={label} tabIndex={0}>
+      <table className="eterx-markdown-table" {...props}>{children}</table>
+    </div>
+  </div>
+);
 
 const ToolbarButton = ({
   label,
@@ -980,7 +953,7 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
 }, (prevProps, nextProps) => prevProps.content === nextProps.content && prevProps.language === nextProps.language && prevProps.forceSource === nextProps.forceSource);
 
 export const makeMarkdownHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
-  const Heading = ({ node, children, ...props }: any) => {
+  const Heading = ({ node, children, className: authoredClassName = '', ...props }: any) => {
     const text = getNodeText(children);
     const sourceLine = Number(node?.position?.start?.line || 0);
     const stableSuffix = sourceLine > 0 ? `-${ sourceLine }` : '';
@@ -990,7 +963,7 @@ export const makeMarkdownHeading = (Tag: keyof JSX.IntrinsicElements, className:
       {
         ...props,
         id,
-        className: `${ className } eterx-answer-heading eterx-md-heading scroll-mt-28`,
+        className: `${ className } eterx-answer-heading eterx-md-heading scroll-mt-28 ${authoredClassName}`,
       },
       children,
     );
@@ -999,26 +972,27 @@ export const makeMarkdownHeading = (Tag: keyof JSX.IntrinsicElements, className:
 };
 
 export const markdownComponents = {
-  span: ({ node, className = '', title: _title, children, ...props }: any) => {
+  span: ({ node, className = '', children, ...props }: any) => {
     const classes = String(className).split(/\s+/).filter(Boolean);
     // rehype-katex intentionally keeps rendering after a parse failure. Its
     // default error span exposes a red parser message and a browser tooltip;
     // keep the source readable as ordinary answer text instead.
     if (classes.includes('katex-error')) {
-      const { style: _errorStyle, ...fallbackProps } = props;
-      return <span className="eterx-katex-fallback" {...fallbackProps}>{children}</span>;
+      const { style: _errorStyle, title: _errorTitle, ...fallbackProps } = props;
+      return <span className="eterx-katex-fallback" title="Math source — this expression could not be rendered" {...fallbackProps}>{children}</span>;
     }
     return classes.includes('katex-display')
-      ? <ResponsiveMath className={className} {...props}>{children}</ResponsiveMath>
+      ? <ResponsiveMath className={className} source={getMathSource(node)} {...props}>{children}</ResponsiveMath>
       : <span className={className} {...props}>{children}</span>;
   },
-  code: function MarkdownCode({ inline, className, children, node, ...props }: any) {
+  code: function MarkdownCode({ inline, className, children, node, 'data-block-code': blockCode, ...props }: any) {
     const streaming = React.useContext(MarkdownStreamContext);
     const match = /language-([^\s]+)/.exec(className || '');
     const language = match ? match[1].toLowerCase() : '';
     const content = String(children).replace(/\n$/, '');
     const isInlineCode = inline === true || (
       inline !== false &&
+      !blockCode && !node?.properties?.['data-block-code'] &&
       !language &&
       node?.position?.start?.line === node?.position?.end?.line
     );
@@ -1065,11 +1039,11 @@ export const markdownComponents = {
     }
     return <WebsiteLink href={href} {...props}>{children}</WebsiteLink>;
   },
-  ul: ({ node, ...props }: any) => <ul className="eterx-markdown-list mb-3 list-disc space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
-  ol: ({ node, ...props }: any) => <ol className="eterx-markdown-list mb-3 list-decimal space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6]" {...props} />,
-  li: ({ node, ...props }: any) => <li className="eterx-markdown-list-item leading-[1.6] pl-0.5" {...props} />,
-  input: ({ type, ...props }: any) => type === 'checkbox'
-    ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-3.5 w-3.5 translate-y-[2px] rounded border-white/20 accent-[#E2765A] cursor-pointer" {...props} />
+  ul: ({ node, className = '', ...props }: any) => <ul className={`eterx-markdown-list mb-3 list-disc space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6] ${className}`} {...props} />,
+  ol: ({ node, className = '', ...props }: any) => <ol className={`eterx-markdown-list mb-3 list-decimal space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6] ${className}`} {...props} />,
+  li: ({ node, className = '', ...props }: any) => <li className={`eterx-markdown-list-item leading-[1.6] pl-0.5 ${className}`} {...props} />,
+  input: ({ node, type, ...props }: any) => type === 'checkbox'
+    ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-3.5 w-3.5 translate-y-[2px] rounded border-white/20 accent-[#E2765A]" {...props} disabled aria-label={props.checked ? 'Completed task' : 'Incomplete task'} />
     : <input type={type} {...props} />,
   h1: makeMarkdownHeading('h1', 'eterx-answer-heading-1'),
   h2: makeMarkdownHeading('h2', 'eterx-answer-heading-2'),
@@ -1077,8 +1051,8 @@ export const markdownComponents = {
   h4: makeMarkdownHeading('h4', 'eterx-answer-heading-4'),
   h5: makeMarkdownHeading('h5', 'eterx-answer-heading-5'),
   h6: makeMarkdownHeading('h6', 'eterx-answer-heading-6'),
-  strong: ({ ...props }: any) => <strong className="font-semibold tracking-normal" {...props} />,
-  em: ({ ...props }: any) => <em className="italic" {...props} />,
+  strong: ({ node, ...props }: any) => <strong className="font-semibold tracking-normal" {...props} />,
+  em: ({ node, ...props }: any) => <em className="italic" {...props} />,
   blockquote: ({ node, ...props }: any) => {
     const quoteText = getNodeText(node).trim().toLowerCase();
     const callout = quoteText.startsWith('warning:') || quoteText.startsWith('caution:')
@@ -1094,21 +1068,14 @@ export const markdownComponents = {
       />
     );
   },
-  hr: ({ ...props }: any) => <hr className="eterx-markdown-hr my-4 border-white/[0.08]" {...props} />,
-  table: ({ node, ...props }: any) => (
-    <div
-      className="eterx-markdown-table-wrap my-4 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-lg border border-white/[0.10] bg-[#1A1918]/90 shadow-none"
-      role="region"
-      aria-label="Data table"
-      tabIndex={0}
-    >
-      <table className="eterx-markdown-table w-full min-w-full border-collapse text-left text-[12.5px]" {...props} />
-    </div>
+  hr: ({ node, ...props }: any) => <hr className="eterx-markdown-hr my-4 border-white/[0.08]" {...props} />,
+  table: ({ node, 'data-table-copy': copyText = '', 'data-table-label': label = 'Data table', ...props }: any) => (
+    <MarkdownTable copyText={String(copyText)} label={String(label)} {...props} />
   ),
   thead: ({ node, ...props }: any) => <thead className="eterx-markdown-thead bg-white/[0.04] border-b border-white/[0.08]" {...props} />,
   tbody: ({ node, ...props }: any) => <tbody className="eterx-markdown-tbody" {...props} />,
-  th: ({ node, ...props }: any) => <th className="eterx-markdown-th border-b border-r border-white/[0.06] last:border-r-0 px-3 py-2 text-left font-semibold text-[#F4F3EF] bg-white/[0.03]" {...props} />,
-  td: ({ node, ...props }: any) => <td className="eterx-markdown-td border-b border-r border-white/[0.04] last:border-r-0 px-3 py-2 align-top text-[#E0DDD7] font-normal" {...props} />,
+  th: ({ node, style, ...props }: any) => <th scope="col" className="eterx-markdown-th border-b border-r border-white/[0.06] last:border-r-0 px-3 py-2 font-semibold" style={{ textAlign: 'start', ...style }} {...props} />,
+  td: ({ node, style, ...props }: any) => <td className="eterx-markdown-td border-b border-r border-white/[0.04] last:border-r-0 px-3 py-2 align-top font-normal" style={{ textAlign: 'start', ...style }} {...props} />,
   tr: ({ node, ...props }: any) => <tr className="eterx-markdown-tr transition-colors hover:bg-white/[0.035] even:bg-white/[0.015]" {...props} />,
   img: ({ alt, src }: any) => <ReplyImage alt={alt} src={src} />,
 };

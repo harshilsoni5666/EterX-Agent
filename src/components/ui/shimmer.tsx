@@ -107,10 +107,11 @@ type ShimmerStyle = React.CSSProperties & {
 };
 
 /**
- * Thin React wrapper around the shadcn shimmer CSS utility.
+ * Local React adaptation of the shadcn-style shimmer CSS utility.
+ * Reference: https://www.shadcn-svelte.com/docs/utils/shimmer
  *
- * Text color intentionally remains inherited from the call site so status,
- * accent, and muted labels keep their semantic color in both themes.
+ * Call sites can override the palette and timing; activity-feed.css supplies
+ * the shared live-activity colors. Text updates do not restart a stable sweep.
  */
 export const Shimmer = React.memo(({
   children,

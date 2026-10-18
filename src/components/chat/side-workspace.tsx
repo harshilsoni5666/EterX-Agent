@@ -1,41 +1,61 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { FolderOpen, GitFork, Globe, Loader2, Maximize2, Minimize2, Plus, TerminalSquare, X } from 'lucide-react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
+import { FolderOpen, GitBranch, GitFork, Globe, Loader2, Maximize2, Minimize2, Plus, TerminalSquare, X } from 'lucide-react';
 import { addWorkspaceFolder, addWorkspaceTab, closeWorkspaceTab, resolveWorkspaceOwner, updateWorkspace, useSideWorkspace, type WorkspaceKind } from '../../lib/side-workspace-store';
 import { createTerminal, showTerminal, useChatTerminalControls } from '../../lib/chat-terminal-store';
 import { ChatTerminalDock } from './chat-terminal-dock';
 import type { SideChatActions, SideChatSession } from './workspace-side-chat';
+import type { LiveChatLedger } from '../../lib/live-chat-ledger';
 import type { BrowserCapture } from './workspace-browser';
 import { WorkspaceFileIcon, WorkspaceSiteIcon } from './workspace-file-icon';
 import { FileCodeCorner, MessagesCircle } from './workspace-icons';
-import { WorkspaceFiles as Files } from './workspace-files';
-import { WorkspaceBrowser as Browser } from './workspace-browser';
+import { WorkspaceFiles } from './workspace-files';
+import { WorkspaceBrowser } from './workspace-browser';
 import { WorkspaceSideChat as SideChat } from './workspace-side-chat';
 import { WorkspaceSubAgents, type WorkspaceSubAgentsProps } from './workspace-sub-agents';
-import { WorkspaceReview as Review } from './workspace-review';
+import { WorkspaceReview } from './workspace-review';
+import { useGitPreferences } from '../../lib/git/client';
 import { WorkspaceTurnChanges } from './turn-changes';
-import { collectWorkspaceReviewFiles } from '../../lib/workspace-review-data';
+import { collectWorkspaceReviewFiles, isWorkspaceReviewTrace } from '../../lib/workspace-review-data';
+import { useTraceSelection } from '../../lib/use-trace-selection';
 import { useWorkspaceRoots } from '../../lib/use-workspace-roots';
 import { useWorkspaceScrollBoundary } from './use-workspace-scroll-boundary';
 import { revealInWorkspaceScroller } from './workspace-scroll';
 
-const choices = [
+const workspaceChoices = [
   { kind: 'chat', title: 'Side chat', detail: 'Keep two conversations in view', icon: MessagesCircle, key: 'S' },
   { kind: 'subagents', title: 'Sub-Agents', detail: 'Follow agents and switch between their chats', icon: GitFork, key: 'A' },
   { kind: 'files', title: 'Files', detail: 'Explore your project and read files', icon: FolderOpen, key: 'F' },
   { kind: 'review', title: 'Review', detail: 'See the changes made in this chat', icon: FileCodeCorner, key: 'R' },
+  { kind: 'git', title: 'Git', detail: 'Stage, commit, and manage your branches', icon: GitBranch, key: 'G' },
   { kind: 'terminal', title: 'Terminal', detail: 'Use your local shell', icon: TerminalSquare, key: 'T' },
   { kind: 'browser', title: 'Browser', detail: 'Open websites and preview your work', icon: Globe, key: 'B' },
 ] as const;
 const name = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() || path;
+const Files = memo(WorkspaceFiles);
+const Browser = memo(WorkspaceBrowser);
+const Review = memo(WorkspaceReview);
+const Git = dynamic(() => import('./workspace-git').then(module => module.WorkspaceGit), {
+  ssr: false,
+  loading: () => <div className="eterx-workspace-empty"><Loader2 size={22} className="animate-spin" /><p>Opening Git…</p></div>,
+});
+const emptyFolders: string[] = [];
 
-export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, chats, runningChats, actions, agentNavigation, onCapture }: { owner: string; mainChatId: string | null; workspacePath?: string | null; traceLogs: any[]; chats: SideChatSession[]; runningChats: Set<string>; actions: SideChatActions; agentNavigation: WorkspaceSubAgentsProps; onCapture: (capture: BrowserCapture, tabId: string) => Promise<void> }) {
+export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, chats, liveChatLedger, runningChats, actions, agentNavigation, onCapture }: { owner: string; mainChatId: string | null; workspacePath?: string | null; traceLogs: any[]; chats: SideChatSession[]; liveChatLedger?: LiveChatLedger; runningChats: Set<string>; actions: SideChatActions; agentNavigation: WorkspaceSubAgentsProps; onCapture: (capture: BrowserCapture, tabId: string) => Promise<void> }) {
   const state = useSideWorkspace(owner);
-  const reviewFiles = useMemo(() => collectWorkspaceReviewFiles(traceLogs, owner), [traceLogs, owner]);
+  const gitPreferences = useGitPreferences();
+  const gitEnabled = gitPreferences.ready && gitPreferences.gitIntegration && gitPreferences.gitWorkspaceEnabled;
+  const choices = useMemo(() => workspaceChoices.filter(choice => choice.kind !== 'git' || gitEnabled), [gitEnabled]);
+  const reviewLogs = useTraceSelection(traceLogs, isWorkspaceReviewTrace);
+  const reviewFiles = useMemo(() => collectWorkspaceReviewFiles(reviewLogs, owner), [reviewLogs, owner]);
   const openedPaths = useMemo(() => state.tabs.filter(tab => tab.kind === 'files' && tab.path).map(tab => tab.path!), [state.tabs]);
-  const folderState = useWorkspaceRoots(owner, workspacePath, traceLogs, openedPaths, state.folders || []);
-  const addFolder = (path: string) => addWorkspaceFolder(owner, path);
+  const folderState = useWorkspaceRoots(owner, workspacePath, traceLogs, openedPaths, state.folders || emptyFolders);
+  const addFolder = useCallback((path: string) => addWorkspaceFolder(owner, path), [owner]);
+  const captureRef = useRef(onCapture);
+  captureRef.current = onCapture;
+  const capture = useCallback((value: BrowserCapture, tabId: string) => captureRef.current(value, tabId), []);
   const terminal = useChatTerminalControls(owner);
   const [menu, setMenu] = useState(false);
   const [nativeMenu, setNativeMenu] = useState(false);
@@ -84,7 +104,7 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
       if (!rect) return;
       setNativeMenu(true); setMenu(true);
       try {
-        const kind = await api.workspaceBrowserMenu(active.id, { x: rect.left, y: rect.bottom + 5 });
+        const kind = await api.workspaceBrowserMenu(active.id, { x: rect.left, y: rect.bottom + 5, gitEnabled });
         if (choices.some(choice => choice.kind === kind)) choose(kind as WorkspaceKind);
       } catch { /* A closed or restarting browser can dismiss its menu. */ }
       finally { setMenu(false); setNativeMenu(false); }
@@ -129,7 +149,7 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
-  }, [owner, workspacePath, terminal.tabCount, candidates]);
+  }, [owner, workspacePath, terminal.tabCount, candidates, choices]);
   useEffect(() => () => { if (drag.current) cancelAnimationFrame(drag.current.frame); }, []);
   const finish = (cancel = false) => {
     const movement = drag.current;
@@ -141,10 +161,10 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
     panel.current.parentElement?.style.setProperty('--eterx-side-workspace-width', state.width === null ? '50%' : `${state.width}px`);
     if (!cancel) updateWorkspace(owner, movement.next < 100 ? { open: false } : { width: Math.max(260, movement.next) });
   };
-  const openFile = (path: string, root?: string) => {
+  const openFile = useCallback((path: string, root?: string) => {
     if (!workspacePath && !path && root) addWorkspaceFolder(owner, root);
     return addWorkspaceTab(owner, 'files', { path, root, title: path ? name(path) : 'Files' });
-  };
+  }, [owner, workspacePath]);
   useLayoutEffect(() => {
     if (!menu || !panel.current || !menuRef.current) return;
     const bounds = panel.current.getBoundingClientRect();
@@ -169,7 +189,7 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
     <div className="eterx-workspace-toolbar" data-empty={!state.tabs.length}>
       
       <div ref={strip} className="eterx-workspace-tabs" role="tablist" aria-label="Workspace tabs">
-        {state.tabs.map(tab => { const Icon = (tab.kind === 'changes' ? FileCodeCorner : choices.find(choice => choice.kind === tab.kind)?.icon || FileCodeCorner); return <div key={tab.id} className={`eterx-workspace-tab ${state.activeId === tab.id ? 'is-active' : ''}`}><button role="tab" tabIndex={state.activeId === tab.id ? 0 : -1} aria-selected={state.activeId === tab.id} onClick={() => updateWorkspace(owner, { activeId: tab.id })} onKeyDown={event => { const index = state.tabs.indexOf(tab); if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 0 : event.key === 'End' ? state.tabs.length - 1 : (index + (event.key === 'ArrowLeft' ? -1 : 1) + state.tabs.length) % state.tabs.length; updateWorkspace(owner, { activeId: state.tabs[next].id }); strip.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus(); } }}><>{tab.kind === 'browser' ? <WorkspaceSiteIcon url={tab.favicon} /> : tab.kind === 'files' ? <WorkspaceFileIcon path={tab.path} /> : <Icon size={15} />}</><span>{tab.kind === 'chat' && tab.chatId ? chats.find(chat => chat.id === tab.chatId)?.title || tab.title : tab.title}</span>{tab.kind === 'chat' && tab.chatId && runningChats.has(tab.chatId) && <Loader2 size={13} className="animate-spin" />}</button><button aria-label={`Close ${tab.title}`} onClick={() => closeWorkspaceTab(owner, tab.id)}><X size={13} /></button></div>; })}
+        {state.tabs.map(tab => { const Icon = (tab.kind === 'changes' ? FileCodeCorner : workspaceChoices.find(choice => choice.kind === tab.kind)?.icon || FileCodeCorner); return <div key={tab.id} className={`eterx-workspace-tab ${state.activeId === tab.id ? 'is-active' : ''}`}><button role="tab" tabIndex={state.activeId === tab.id ? 0 : -1} aria-selected={state.activeId === tab.id} onClick={() => updateWorkspace(owner, { activeId: tab.id })} onKeyDown={event => { const index = state.tabs.indexOf(tab); if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 0 : event.key === 'End' ? state.tabs.length - 1 : (index + (event.key === 'ArrowLeft' ? -1 : 1) + state.tabs.length) % state.tabs.length; updateWorkspace(owner, { activeId: state.tabs[next].id }); strip.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus(); } }}><>{tab.kind === 'browser' ? <WorkspaceSiteIcon url={tab.favicon} /> : tab.kind === 'files' ? <WorkspaceFileIcon path={tab.path} /> : <Icon size={15} />}</><span>{tab.kind === 'chat' && tab.chatId ? chats.find(chat => chat.id === tab.chatId)?.title || tab.title : tab.title}</span>{tab.kind === 'chat' && tab.chatId && runningChats.has(tab.chatId) && <Loader2 size={13} className="animate-spin" />}</button><button aria-label={`Close ${tab.title}`} onClick={() => closeWorkspaceTab(owner, tab.id)}><X size={13} /></button></div>; })}
       </div>
       {state.tabs.length > 0 && <div ref={menuRef} className="eterx-workspace-add"><button aria-label="Add workspace tab" aria-haspopup="menu" aria-expanded={menu} onClick={() => void toggleMenu()}><Plus size={18} /></button>{menu && !nativeMenu && <div className="eterx-workspace-add-menu" role="menu" onKeyDown={event => { if (event.key === 'Escape') { setMenu(false); menuRef.current?.querySelector('button')?.focus(); } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')); const index = items.indexOf(document.activeElement as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length; items[next]?.focus(); } }}>{choices.map(choice => <button role="menuitem" key={choice.kind} onClick={() => choose(choice.kind)}><choice.icon size={17} /><span>{choice.title}</span></button>)}</div>}</div>}
       <button aria-label={state.expanded ? 'Restore split view' : 'Expand workspace'} onClick={() => updateWorkspace(owner, { expanded: !state.expanded })}>{state.expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
@@ -178,11 +198,11 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
     <div className="eterx-workspace-content" role="tabpanel">
       {!active ? <div className="eterx-workspace-launcher eterx-scrollbar"><div className="eterx-workspace-launcher-grid">{choices.map(choice => <button key={choice.kind} onClick={() => choose(choice.kind)}><span className="eterx-workspace-launcher-icon"><choice.icon size={20} /></span><span><strong>{choice.title}</strong></span></button>)}</div></div>
         : active.kind === 'terminal' ? terminal.open && terminal.placement === 'right' ? <ChatTerminalDock chatId={owner} cwd={terminalRoot} embedded /> : <div className="eterx-workspace-empty"><TerminalSquare size={32} /><h3>Your terminal sessions</h3><p>{terminal.open ? 'The terminal is currently docked below the chat.' : 'Open your local shell in this workspace.'}</p><button onClick={() => void openTerminal()}>Open terminal here</button></div>
-        : active.kind === 'browser' ? <Browser key={active.id} owner={owner} tab={active} occluded={menu && !nativeMenu} onCapture={onCapture} />
+        : active.kind === 'browser' ? <Browser key={active.id} owner={owner} tab={active} occluded={menu && !nativeMenu} onCapture={capture} />
         : active.kind === 'subagents' ? <WorkspaceSubAgents key={active.id} {...agentNavigation} onSelect={agentId => { agentNavigation.onSelect(agentId); if (state.expanded) updateWorkspace(owner, { expanded: false }); }} />
-        : active.kind === 'chat' ? <SideChat key={active.id} owner={owner} tab={active} chats={chats} mainChatId={mainChatId} runningChats={runningChats} actions={actions} /> : null}
-      {state.tabs.filter(tab => tab.kind === 'files' || tab.kind === 'review' || tab.kind === 'changes').map(tab => <div key={tab.id} className="eterx-workspace-retained-panel" hidden={tab.id !== state.activeId}>
-        {tab.kind === 'changes' ? <WorkspaceTurnChanges key={tab.changes?.id || tab.id} owner={owner} tab={tab} isActive={tab.id === state.activeId} /> : tab.kind === 'files' ? <Files owner={owner} tab={tab} isActive={tab.id === state.activeId} workspacePath={workspacePath} roots={folderState.roots} rootsLoading={folderState.loading} rootError={folderState.error} onAddFolder={addFolder} onOpenFile={openFile} />
+        : active.kind === 'chat' ? <SideChat key={active.id} owner={owner} tab={active} chats={chats} liveChatLedger={liveChatLedger} mainChatId={mainChatId} runningChats={runningChats} actions={actions} /> : null}
+      {state.tabs.filter(tab => tab.kind === 'files' || tab.kind === 'review' || tab.kind === 'changes' || tab.kind === 'git').map(tab => <div key={tab.id} className="eterx-workspace-retained-panel" hidden={tab.id !== state.activeId}>
+        {tab.kind === 'git' ? <Git owner={owner} tab={tab} isActive={tab.id === state.activeId} workspacePath={workspacePath} roots={folderState.roots} rootsLoading={folderState.loading} rootError={folderState.error} onAddFolder={addFolder} onOpenFile={openFile} /> : tab.kind === 'changes' ? <WorkspaceTurnChanges key={tab.changes?.id || tab.id} owner={owner} tab={tab} isActive={tab.id === state.activeId} /> : tab.kind === 'files' ? <Files owner={owner} tab={tab} isActive={tab.id === state.activeId} workspacePath={workspacePath} roots={folderState.roots} rootsLoading={folderState.loading} rootError={folderState.error} onAddFolder={addFolder} onOpenFile={openFile} />
           : <Review owner={owner} tab={tab} isActive={tab.id === state.activeId} files={reviewFiles} workspacePath={workspacePath} roots={folderState.roots} rootsLoading={folderState.loading} rootError={folderState.error} onAddFolder={addFolder} onOpenFile={openFile} />}
       </div>)}
     </div>

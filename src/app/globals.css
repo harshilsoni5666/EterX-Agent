@@ -1073,7 +1073,9 @@
   .eterx-action-scroll,
   .eterx-review-scrollbar {
     scroll-behavior: smooth;
-    scrollbar-gutter: stable;
+    /* Compact menus should not reserve an empty scrollbar lane on the right.
+       Surfaces that need stable scroll geometry opt in separately. */
+    scrollbar-gutter: auto;
     overscroll-behavior: contain;
   }
 }
@@ -1567,8 +1569,8 @@
 }
 
 :root[data-theme="light"] .shimmer {
-  --shimmer-base: #858585;
-  --shimmer-color: #bdbdbd;
+  --shimmer-base: currentColor;
+  --shimmer-color: #242422;
   --_highlight: var(--shimmer-color);
 }
 
@@ -3374,6 +3376,7 @@
 .eterx-agent-dock {
   position: relative;
   display: flex;
+  flex: 0 1 auto;
   align-items: center;
   gap: 4px;
   min-width: 0;
@@ -3513,7 +3516,8 @@
   border: 0;
 }
 
-.eterx-agent-tab-overflow:hover {
+.eterx-agent-tab-overflow:hover,
+.eterx-agent-tab-overflow[aria-expanded="true"] {
   color: #FFFFFF;
   background: rgba(255, 255, 255, 0.05);
   border-color: transparent;
@@ -3526,6 +3530,111 @@
   background: #252525;
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.34);
 }
+
+/* Git menus share the agent dropdown's soft surface and compact rhythm. */
+.eterx-github-menu,
+.eterx-github-submenu {
+  width: 232px;
+  max-width: calc(100vw - 24px);
+  padding: 6px;
+  gap: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  background: #252525;
+  color: #e8e6e3;
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.34);
+  font-size: 13px;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+
+.eterx-github-submenu {
+  width: 100%;
+  min-width: 0;
+  margin: 4px 0 0;
+  padding: 4px 0 0;
+  border: 0;
+  border-top: 1px solid rgba(128, 128, 128, 0.18);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.eterx-github-menu {
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: auto;
+}
+
+.eterx-git-menu-row[aria-expanded="true"] > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.eterx-git-section-label {
+  padding: 5px 8px 3px;
+  color: #96938e;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.eterx-git-menu-row {
+  min-width: 0;
+  min-height: 32px;
+  padding: 6px 8px;
+  gap: 8px;
+  border: 0;
+  border-radius: 8px;
+  color: #c9c7c3;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.eterx-git-menu-row:is(:hover, :focus-visible, [aria-expanded="true"]) {
+  background: rgba(255, 255, 255, 0.065);
+  color: #fff;
+}
+
+.eterx-git-menu-row:focus-visible {
+  outline: 1px solid #96938e;
+  outline-offset: -1px;
+}
+
+.eterx-git-menu-row svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  stroke-width: 1.7;
+}
+
+.eterx-git-branch-label { flex-shrink: 0; }
+.eterx-git-branch-name {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.055);
+  color: #aaa7a2;
+  font-size: 11px;
+}
+
+.eterx-git-branch-form {
+  min-height: 38px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.eterx-git-branch-form:focus-within { border-color: #77746f; }
+.eterx-git-branch-form input { min-width: 0; font-size: 13px; }
 
 .eterx-agent-overflow-item {
   min-height: 40px;
@@ -4781,63 +4890,6 @@
   overflow-wrap: anywhere;
 }
 
-.katex-display {
-  --eterx-math-scale: 1;
-  margin: 1.1rem 0;
-  width: 100%;
-  max-width: 100%;
-  overflow: hidden;
-  padding: 0.55rem 0.3rem 0.65rem;
-  font-size: calc(1em * var(--eterx-math-scale));
-}
-
-.katex {
-  color: var(--eterx-md-strong);
-  font-size: 1.02em;
-  line-height: 1.35;
-}
-
-.katex-display > .katex {
-  display: block;
-  width: 100%;
-  min-width: 100%;
-  padding-inline: 0.4rem;
-  text-align: center;
-}
-
-.katex-display > .katex > .katex-html {
-  white-space: nowrap;
-}
-
-.katex-error {
-  border-bottom: 1px dotted color-mix(in srgb, #E57373 72%, transparent);
-  color: color-mix(in srgb, #E57373 82%, var(--eterx-md-text)) !important;
-  font-family: var(--font-mono), "Cascadia Code", Consolas, monospace;
-  font-size: 0.9em;
-}
-
-.eterx-katex-fallback {
-  color: inherit;
-  font-family: inherit;
-  font-size: inherit;
-}
-
-.eterx-markdown-th .katex,
-.eterx-markdown-td .katex {
-  font-size: 0.98em;
-}
-
-.eterx-markdown-th .katex-display,
-.eterx-markdown-td .katex-display {
-  margin: 0.35rem 0;
-  padding-block: 0.25rem;
-}
-
-.eterx-professional-thought>.katex-display,
-.eterx-professional-thought .katex-display {
-  margin: 1.1rem 0;
-}
-
 .footnotes {
   margin-top: 1.25rem;
   border-top: 1px solid var(--eterx-md-border);
@@ -5760,8 +5812,8 @@
 }
 
 .eterx-context-compaction-state[data-phase="compacted"] {
-  border-color: rgba(93, 173, 117, 0.20);
-  background: rgba(61, 135, 84, 0.10);
+  border-color: rgba(180, 180, 176, 0.20);
+  background: rgba(180, 180, 176, 0.07);
 }
 
 .eterx-context-compaction-state[data-phase="failed"] {
@@ -5848,8 +5900,8 @@
 }
 
 :root[data-theme="light"] body .eterx-context-compaction-state[data-phase="compacted"] {
-  border-color: rgba(52, 126, 76, 0.17);
-  background: rgba(69, 145, 93, 0.065);
+  border-color: rgba(60, 60, 55, 0.17);
+  background: rgba(60, 60, 55, 0.045);
 }
 
 :root[data-theme="light"] body .eterx-context-compaction-state[data-phase="failed"] {
@@ -11819,11 +11871,11 @@ body.eterx-gateway-view section.mt-8 > main {
 }
 
 .eterx-context-compaction-label {
-  color: #AEB9C8 !important;
+  color: #B8B6B2 !important;
 }
 
 .eterx-context-compaction[data-phase="compacted"] .eterx-context-compaction-label {
-  color: #87C99B !important;
+  color: #B8B6B2 !important;
 }
 
 .eterx-context-compaction[data-phase="failed"] .eterx-context-compaction-label {
@@ -11831,7 +11883,7 @@ body.eterx-gateway-view section.mt-8 > main {
 }
 
 .eterx-context-compaction-label .shimmer {
-  color: #AEB9C8 !important;
+  color: #B8B6B2 !important;
 }
 
 .eterx-context-compaction-detail {
@@ -12466,7 +12518,7 @@ body.eterx-gateway-view section.mt-8 > main {
 
 :root[data-theme="light"] .eterx-context-compaction-label,
 :root[data-theme="light"] .eterx-context-compaction-label .shimmer {
-  color: #526579 !important;
+  color: #53534F !important;
 }
 
 .eterx-terminal-console {
@@ -12932,7 +12984,7 @@ body.eterx-gateway-view section.mt-8 > main {
   height: 30px !important;
   min-height: 30px !important;
   gap: 6px !important;
-  width: fit-content !important;
+  width: 100% !important;
   max-width: 100%;
   padding: 1px 2px !important;
   background: transparent !important;
@@ -13031,24 +13083,23 @@ body.eterx-gateway-view section.mt-8 > main {
   .eterx-thought-scroll-fade { left: 16px; }
 }
 
-/* One live-text treatment, including legacy call sites with inline overrides.
-   Keep the animation on the same span as its text changes; never fade it out. */
+/* Chat defaults stay overridable by the component's explicit configuration.
+   Activity-specific colors are owned by activity-feed.css. */
 :is(.eterx-chat-column, .eterx-workspace-side-conversation) .shimmer {
-  --shimmer-duration: 2.4s !important;
-  --shimmer-angle: 12deg !important;
-  --shimmer-spread: clamp(18px, 12%, 120px) !important;
-  --shimmer-base: currentColor !important;
+  --shimmer-duration: 3s;
+  --shimmer-angle: 12deg;
+  --shimmer-spread: clamp(18px, 12%, 120px);
+  --shimmer-base: currentColor;
 }
 
 :root[data-theme="dark"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .shimmer {
-  --shimmer-color: #eaeaea !important;
-  --shimmer-base: currentColor !important;
+  --shimmer-color: #e8e9e6;
+  --shimmer-base: currentColor;
 }
 
 :root[data-theme="light"] :is(.eterx-chat-column, .eterx-workspace-side-conversation) .shimmer {
-  --shimmer-base: #858585 !important;
-  --shimmer-color: #bdbdbd !important;
-  color: #858585 !important;
+  --shimmer-base: currentColor;
+  --shimmer-color: #242422;
 }
 
 .eterx-sequence-reveal {

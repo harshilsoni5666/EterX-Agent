@@ -27,7 +27,7 @@ export function ToolResultScroll({ children, label, className = '' }: {
   }, []);
 
   return (
-    <div ref={viewportRef} className="eterx-tool-result-scroll eterx-scrollbar" role="region" aria-label={label} tabIndex={overflow ? 0 : undefined}>
+    <div ref={viewportRef} className="eterx-tool-result-scroll eterx-activity-child-scroll eterx-scrollbar" role="region" aria-label={label} tabIndex={overflow ? 0 : undefined}>
       <div ref={contentRef} className={`eterx-tool-result-content ${className}`}>{children}</div>
     </div>
   );

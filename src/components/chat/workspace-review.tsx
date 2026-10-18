@@ -111,9 +111,14 @@ export function WorkspaceReview({ owner, tab, isActive = true, files, workspaceP
   }, [owner, tab.id, scope, selected, filter, expanded, split, showTree, wrap, loadFull, richPreview, ignoreWhitespace, wordDiffs, viewed, hideViewed, compactFolders, baseRefs]);
   const lastPathRequest = useRef(tab.reviewPathRequest);
   useEffect(() => {
-    if (tab.path && tab.reviewPathRequest !== lastPathRequest.current) { setSelected(tab.path); setScope('chat'); }
+    if (tab.reviewPathRequest !== lastPathRequest.current) {
+      if (tab.review) {
+        setSelected(tab.review.selected); setScope(tab.review.scope); setFilter(tab.review.filter);
+        setBaseRefs(tab.review.baseRefs || {});
+      } else if (tab.path) { setSelected(tab.path); setScope('chat'); }
+    }
     lastPathRequest.current = tab.reviewPathRequest;
-  }, [tab.path, tab.reviewPathRequest]);
+  }, [tab.path, tab.review, tab.reviewPathRequest]);
   useEffect(() => {
     if (!isActive) return;
     if (scope === 'chat' || !roots.length) { setLoading(false); setError(''); return; }

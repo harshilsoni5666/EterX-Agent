@@ -1,0 +1,248 @@
+/* Shared answer/document typography. Loaded after the vendor math stylesheet
+   and surface themes so formulas never inherit KaTeX's oversized default. */
+.eterx-professional-answer,
+.eterx-professional-note,
+.eterx-workspace-markdown,
+.eterx-thought-reading-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.katex {
+  color: inherit;
+  font-size: 1.03em;
+  line-height: 1.2;
+  text-indent: 0;
+  direction: ltr;
+  overflow-wrap: normal;
+  word-break: normal;
+  text-wrap: initial;
+}
+
+/* The expression owns horizontal overflow; the conversation keeps its width.
+   Natural font metrics preserve fractions, matrices, tags and tall operators. */
+.eterx-math-block {
+  display: block;
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  margin-block: 1em;
+}
+
+.eterx-math-display.katex-display {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 !important;
+  padding: 0.55em 2.5em 0.75em;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  overscroll-behavior-inline: contain;
+  font-size: 1em;
+  direction: ltr;
+  text-align: center;
+  scrollbar-width: thin;
+}
+
+.eterx-math-display.katex-display > .katex {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  padding-inline: 0.25em;
+  text-align: center;
+}
+
+.eterx-math-display.katex-display > .katex > .katex-html {
+  white-space: nowrap;
+}
+
+/* KaTeX positions equation numbers absolutely; reserve room so a wide
+   expression and its number cannot occupy the same horizontal space. */
+.eterx-math-display .katex-html:has(> .tag) {
+  padding-inline: 3em;
+}
+
+.eterx-math-actions {
+  position: absolute;
+  inset-block-start: 0.2em;
+  inset-inline-end: 0;
+  display: inline-flex;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.eterx-math-block:hover .eterx-math-actions,
+.eterx-math-block:focus-within .eterx-math-actions {
+  opacity: 1;
+}
+
+.eterx-content-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--eterx-md-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.eterx-content-copy:hover,
+.eterx-content-copy:focus-visible {
+  color: var(--eterx-md-strong);
+  background: var(--eterx-md-table-row-hover);
+}
+
+.eterx-content-copy:focus-visible,
+.eterx-math-display:focus-visible {
+  outline: 2px solid var(--eterx-md-accent);
+  outline-offset: -2px;
+  border-radius: 5px;
+}
+
+.eterx-katex-fallback {
+  color: inherit;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.9em;
+  white-space: break-spaces;
+  overflow-wrap: anywhere;
+}
+
+.eterx-table-block {
+  min-width: 0;
+  max-width: 100%;
+  margin-block: 1.15em;
+  border: 1px solid var(--eterx-md-border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--eterx-md-card);
+}
+
+.eterx-table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  gap: 12px;
+  padding: 3px 8px 3px 14px;
+  border-bottom: 1px solid var(--eterx-md-border);
+  color: var(--eterx-md-muted);
+  background: var(--eterx-md-card-soft);
+  font-family: var(--font-sans), sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.eterx-table-block .eterx-markdown-table-wrap {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  scrollbar-width: thin;
+}
+
+.eterx-table-block .eterx-markdown-table-wrap:focus-visible {
+  outline-offset: -2px;
+}
+
+.eterx-table-block .eterx-markdown-table {
+  text-align: start;
+  font-size: 0.94em;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.eterx-table-block :is(.eterx-markdown-th, .eterx-markdown-td) {
+  padding: 0.7em 1em;
+  font-size: inherit;
+  line-height: inherit;
+  vertical-align: top;
+  border-inline-end: 0;
+}
+
+.eterx-table-block [data-numeric="true"] {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.eterx-table-block .eterx-math-block {
+  margin-block: 0.25em;
+}
+
+.eterx-table-block .katex {
+  font-size: 1em;
+}
+
+/* Markdown checklists are a record, not interactive controls. Preserve the
+   renderer's task-list classes alongside the chat's custom list classes. */
+:is(.eterx-professional-answer, .eterx-professional-note, .eterx-thought-reading-content, .eterx-workspace-markdown) .contains-task-list {
+  list-style: none;
+  padding-inline-start: 0.2em;
+}
+
+.eterx-markdown-checkbox {
+  cursor: default;
+  opacity: 1;
+  vertical-align: baseline;
+}
+
+:is(.eterx-answer-list-item, .eterx-markdown-list-item, .eterx-thought-list-item) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+:is(.eterx-answer-list-item, .eterx-markdown-list-item, .eterx-thought-list-item) > :is(.eterx-answer-list, .eterx-markdown-list, .eterx-thought-list) {
+  margin-block: 0.35em !important;
+  font-size: inherit;
+}
+
+:is(.eterx-answer-list-item, .eterx-markdown-list-item, .eterx-thought-list-item) > :is(.eterx-answer-paragraph, .eterx-markdown-paragraph, .eterx-thought-paragraph) {
+  margin-block: 0.3em !important;
+  line-height: inherit;
+}
+
+.eterx-markdown-callout > :is(.eterx-answer-paragraph, .eterx-markdown-paragraph) {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.eterx-markdown-callout > :last-child {
+  margin-bottom: 0 !important;
+}
+
+.footnotes .eterx-answer-heading.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (hover: none) {
+  .eterx-math-actions { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eterx-math-actions { transition: none; }
+}
+
+@media print {
+  .eterx-math-actions,
+  .eterx-table-toolbar { display: none; }
+  .eterx-math-display.katex-display { padding-inline: 0; }
+  .eterx-table-block { break-inside: avoid; }
+}

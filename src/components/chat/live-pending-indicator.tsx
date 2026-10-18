@@ -79,9 +79,8 @@ export function LivePendingIndicator({ mode, activityVersion, className = '' }: 
       aria-atomic="true"
     >
       <Shimmer
-        stableSweep
-        durationMs={3000}
-        className="eterx-thinking-shimmer min-w-0 truncate text-[15.5px] font-normal leading-[1.2] tracking-[0.005em] text-[var(--eterx-ui-working-text)]"
+        durationMs={2400}
+        className="eterx-live-status-label min-w-0 truncate"
       >
         {label}
       </Shimmer>

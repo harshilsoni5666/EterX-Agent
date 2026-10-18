@@ -352,11 +352,13 @@ export const ConnectorIcon = ({
   connectorId,
   size = 18,
   title,
+  showTooltip = true,
   className = '',
 }: {
   connectorId?: string | null;
   size?: number;
   title?: string;
+  showTooltip?: boolean;
   className?: string;
 }) => {
   const id = resolveConnectorId(connectorId);
@@ -365,8 +367,8 @@ export const ConnectorIcon = ({
     <img
       src={`/icons/connectors/${id}.svg`}
       alt=""
-      aria-hidden={title ? undefined : true}
-      title={title || id.replace(/_/g, ' ')}
+      aria-hidden={title && showTooltip ? undefined : true}
+      title={showTooltip ? title || id.replace(/_/g, ' ') : undefined}
       width={size}
       height={size}
       draggable={false}

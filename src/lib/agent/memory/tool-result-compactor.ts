@@ -36,6 +36,7 @@ function outcomeEnvelope(result: any): Record<string, any> {
       'taskId', 'backgroundTaskId', 'streamId', 'outputEnd', 'hasNewOutput',
       'cwd', 'shell', 'nextActionNote', 'message', 'mode', '_consoleTraceEmitted',
       'operation', 'editsApplied', 'stateChanged', 'rollbackIncomplete', 'rolledBack',
+      'replayed', 'committedPreviously',
     ]) {
       const value = result[key];
       if (value === null || ['string', 'boolean', 'number'].includes(typeof value)) {
@@ -200,6 +201,7 @@ export class ToolResultCompactor {
         errors: Array.isArray(compacted?.errors) ? compacted.errors.slice(0, 20) : [],
         rolledBack: Boolean(compacted?.rolledBack),
         editsApplied: compacted?.editsApplied,
+        ...(Array.isArray(compacted?.previousTargets) ? { previousTargets: compacted.previousTargets } : {}),
         __eterxContextDigest: true,
         originalChars: this.estimateSize(result),
         recovery: 'Use a narrow workspace read if the exact edited content is needed.',

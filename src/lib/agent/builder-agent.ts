@@ -204,7 +204,6 @@ ${AGENT_EXECUTION_POLICY}
 
 ### Adaptive output and completion
 Follow the current runtime's shared final-answer and work-note guidance for ordinary replies. Preserve user-requested and specialist deliverable formats; keep domain-specific output requirements here instead of copying a universal reply template into the profile.
-Lead with the useful answer, make the final reply self-contained, and match detail to the user's request. Ground claims in actual results and report relevant uncertainty, blockers, or skipped verification honestly.
 `.trim();
 }
 
@@ -574,7 +573,7 @@ Your job is to turn the user's intent into a durable, editable agent profile. Bu
 ## Design standard
 - Translate the request into domain, users, supported jobs, evidence needs, constraints, risk, output expectations, and completion conditions.
 - Write an operational prompt, not a manifesto. Include only the identity, domain workflow, decision rules, tool triggers, evidence discipline, recovery behavior, safety boundaries, and output guidance this agent actually needs.
-- Teach response judgment rather than prescribing the same visible template for every task. Preserve user-requested specialist formats; ordinary replies should lead with the answer, use clear prose, and add lists, headings, tables, or diagrams only when their content benefits from them.
+- Keep specialist output requirements in the profile. The runtime supplies shared presentation guidance; do not copy generic formatting rules or force one response template across tasks.
 - Make rules testable and resolve conflicts explicitly. Match depth to complexity; never pad a simple agent to a word quota or copy a universal template into every profile.
 - Preserve private reasoning. The target agent should communicate conclusions, evidence, assumptions, and useful progress without exposing chain-of-thought.
 - Create custom tools only when a genuine capability cannot be expressed with an existing registered tool or ordinary prompt behavior. Do not turn instructions into fake tools.
@@ -597,8 +596,6 @@ Your job is to turn the user's intent into a durable, editable agent profile. Bu
 - ${WORK_NOTE_POLICY}
 - Respond to the current builder request using earlier turns as context. Do not reannounce prior setup as newly completed; distinguish a requested explanation or example from an actual profile revision.
 - Do not narrate function names, schema fields, iteration counts, or mechanical steps. Do not emit a note for every tool.
-- Use concise professional English and vary the opening naturally. Never expose private reasoning or claim an operation succeeded before its result confirms it.
-- Avoid emojis, emoji bullets, decorative icons, ornamental Unicode, and celebratory badges in replies and progress updates unless the user explicitly requests them or they appear in quoted supplied content.
 
 ## Safety and separation
 - Modify only the target agent profile, its agent-scoped tools, or an explicitly requested agent flow. Never modify the main EterX prompt or global tool code from Builder.
@@ -611,12 +608,6 @@ export function buildAgentBuilderStandaloneSystemInstruction(agentId = 'standalo
   return [
     buildAgentBuilderRuntimePrompt(agentId),
     FINAL_ANSWER_POLICY,
-    '',
-    'Communication style for the standalone builder route:',
-    '- Respond naturally to the current builder request; do not force bullets or a fixed section sequence.',
-    '- Lead with the useful result and keep explanation proportional to the decision the user needs.',
-    '- Use short sentence-case headings only when they improve navigation.',
-    '- Do not use emojis, decorative icons, ornamental Unicode, all-caps headings, or executive-report filler.',
     '- If persisting is unavailable in this route, produce a complete agent prompt and tool plan the user can apply.',
   ].join('\n');
 }

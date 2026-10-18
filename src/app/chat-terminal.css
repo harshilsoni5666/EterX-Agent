@@ -1,11 +1,11 @@
-.eterx-terminal-dock { --terminal-bg: #111111; --terminal-fg: #dedbd6; --terminal-muted: #979797; --terminal-tab: #232323; --terminal-hover: #ffffff0d; --terminal-error: #e78284; position: relative; flex-shrink: 0; min-height: 140px; max-height: 60%; display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--terminal-bg); color: var(--terminal-fg); overflow: visible; }
+.eterx-terminal-dock { --terminal-bg: #111111; --terminal-fg: #dedbd6; --terminal-muted: #979797; --terminal-tab: #232323; --terminal-hover: #ffffff0d; --terminal-error: #e78284; position: relative; flex-shrink: 0; min-width: 0; min-height: min(140px, 60%); max-height: min(650px, 60%); display: flex; flex-direction: column; border-top: 1px solid var(--border); background: var(--terminal-bg); color: var(--terminal-fg); overflow: visible; container: eterx-terminal / inline-size; color-scheme: dark; }
 :root[data-theme="light"] .eterx-terminal-dock { --terminal-bg: #fafafa; --terminal-fg: #292d35; --terminal-muted: #737780; --terminal-tab: #eaecef; --terminal-hover: #20253009; --terminal-error: #be3548; color-scheme: light; }
 .eterx-terminal-resize { position: absolute; top: -7px; left: 0; right: 0; height: 14px; cursor: row-resize; z-index: 40; touch-action: none; user-select: none; outline: none; }
 .eterx-terminal-resize::after { content: ''; position: absolute; left: 0; right: 0; top: 6px; height: 2px; background: var(--terminal-muted); opacity: 0; transition: opacity 120ms; }
 .eterx-terminal-resize:hover::after, .eterx-terminal-resize:focus-visible::after, .eterx-terminal-dock[data-resizing] .eterx-terminal-resize::after { opacity: .55; }
 .eterx-terminal-dock[data-resizing] { user-select: none; }
-.eterx-terminal-toolbar { display: flex; align-items: center; gap: 6px; padding: 7px 12px; min-height: 44px; flex-shrink: 0; }
-.eterx-terminal-tabs { position: relative; display: flex; gap: 5px; overflow-x: auto; overflow-y: hidden; min-width: 0; max-width: 100%; scrollbar-width: none; overscroll-behavior-x: contain; }
+.eterx-terminal-toolbar { display: flex; align-items: center; gap: 6px; padding: 7px 12px; min-width: 0; min-height: 44px; flex-shrink: 0; }
+.eterx-terminal-tabs { position: relative; display: flex; flex: 0 1 auto; gap: 5px; overflow-x: auto; overflow-y: hidden; min-width: 0; max-width: 100%; scrollbar-width: none; overscroll-behavior-x: contain; scroll-padding-inline: 18px; }
 .eterx-terminal-tabs::-webkit-scrollbar { display: none; }
 .eterx-terminal-tabs[data-fade-left="true"][data-fade-right="false"] { mask-image: linear-gradient(to right, transparent, #000 18px); }
 .eterx-terminal-tabs[data-fade-left="false"][data-fade-right="true"] { mask-image: linear-gradient(to left, transparent, #000 18px); }
@@ -16,19 +16,20 @@
 .eterx-terminal-tab:hover { background: var(--terminal-hover); }
 .eterx-terminal-tab.is-active:hover { background: var(--terminal-tab); }
 .eterx-terminal-tab > button[role="tab"] { background:transparent !important; border:0; box-shadow:none; flex:1; min-width:0; }
-.eterx-terminal-tab > button:last-child { flex-shrink:0; width:24px; height:26px; padding:5px; border-radius:6px; opacity:0; pointer-events:none; }
+.eterx-terminal-tab > button:last-child { flex-shrink:0; width:26px; height:28px; padding:5px; border-radius:6px; opacity:0; pointer-events:none; }
 .eterx-terminal-tab:hover > button:last-child,.eterx-terminal-tab:focus-within > button:last-child { opacity:1; pointer-events:auto; }
-@media (hover:none),(pointer:coarse) { .eterx-terminal-tab > button:last-child { opacity:1; pointer-events:auto; } }
 .eterx-terminal-tab button { display: flex; align-items: center; gap: 6px; padding: 6px 5px; border-radius: 8px; font-size: 12px; }
 .eterx-terminal-tab span { min-width:0; flex:1; overflow:hidden; white-space:nowrap; text-align:left; }
 .eterx-terminal-tab span[data-overflow="true"] { mask-image:linear-gradient(to right,#000 calc(100% - 10px),transparent); }
 .eterx-terminal-tab svg { flex-shrink: 0; }
 .eterx-terminal-tab button:hover, .eterx-terminal-action:hover { background: var(--terminal-hover); color: var(--terminal-fg); }
 .eterx-terminal-dock button:focus-visible { outline: 2px solid var(--terminal-muted); outline-offset: -2px; }
+.eterx-terminal-dock button { -webkit-app-region: no-drag; touch-action: manipulation; }
 .eterx-terminal-action { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 28px; height: 28px; border-radius: 8px; color: var(--terminal-muted); }
 .eterx-terminal-action:disabled { opacity: .4; }
 .eterx-terminal-folder { margin-left: auto; min-width: 0; max-width: 35%; font-size: 11px; color: var(--terminal-muted); overflow: hidden; white-space: nowrap; padding-left: 14px; direction: rtl; text-align: right; mask-image: linear-gradient(to right, transparent, #000 14px); }
-.eterx-terminal-host { flex: 1; min-height: 0; min-width: 0; padding: 5px 12px 10px; overflow: hidden; background: var(--terminal-bg); }
+.eterx-terminal-body { position: relative; display: flex; flex: 1 1 0%; min-width: 0; min-height: 0; overflow: hidden; }
+.eterx-terminal-host { flex: 1; min-height: 0; min-width: 0; padding: 5px 12px max(10px, env(safe-area-inset-bottom, 0px)); overflow: hidden; background: var(--terminal-bg); overscroll-behavior: contain; }
 .eterx-terminal-surface { height: 100%; width: 100%; min-width: 0; background: var(--terminal-bg); }
 .eterx-terminal-surface .xterm { height: 100%; overflow: hidden; background: var(--terminal-bg); }
 /* The viewport extends below the last complete terminal row. Match that area
@@ -38,9 +39,15 @@
 .eterx-terminal-dock .xterm .xterm-scrollable-element > .scrollbar.horizontal { display: none !important; }
 .eterx-terminal-dock .xterm .xterm-scrollable-element > .shadow { display: none !important; }
 .eterx-terminal-dock .xterm .xterm-helper-textarea { min-height: 0 !important; min-width: 0 !important; box-shadow: none !important; background: transparent !important; }
-.eterx-terminal-empty { position: absolute; inset: 65px 0 15px; display: grid; place-items: center; pointer-events: none; font-size: 13px; color: var(--terminal-muted); }
-.eterx-terminal-empty button { pointer-events: auto; padding: 8px 14px; border-radius: 8px; background: var(--terminal-tab); }
-.eterx-terminal-error { padding: 4px 14px; color: var(--terminal-error); font-size: 12px; flex-shrink: 0; overflow-wrap: anywhere; }
+.eterx-terminal-empty { position: absolute; inset: 0; display: grid; place-items: center; overflow: auto; padding: 12px; font-size: 13px; color: var(--terminal-muted); text-align: center; }
+.eterx-terminal-empty p { max-width: 32ch; margin: 0; overflow-wrap: anywhere; }
+.eterx-terminal-empty button { min-height: 36px; padding: 8px 14px; border-radius: 8px; background: var(--terminal-tab); }
+.eterx-terminal-opening { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; }
+.eterx-terminal-notices { flex: 0 1 auto; min-height: 0; max-height: 30%; overflow: auto; overscroll-behavior: contain; }
+.eterx-terminal-error { display: flex; align-items: flex-start; gap: 8px; padding: 4px 12px; color: var(--terminal-error); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.eterx-terminal-error > span { flex: 1; min-width: 0; }
+.eterx-terminal-dock .eterx-terminal-connecting { display: flex; align-items: center; gap: 6px; top: 8px; right: 12px; max-width: calc(100% - 24px); padding: 5px 8px; border-radius: 6px; background: var(--terminal-bg); font-size: 12px; }
+.eterx-terminal-connecting svg, .eterx-terminal-opening svg { flex-shrink: 0; }
 
 /* Reuse the live terminal surface when changing placement; only geometry
    changes, so the shell, scrollback, tabs and current command stay intact. */
@@ -49,8 +56,8 @@
   height: 100%;
   min-height: 0;
   max-height: none;
-  min-width: 240px;
-  max-width: max(240px, calc(100% - 280px));
+  min-width: min(240px, 45%);
+  max-width: calc(100% - min(320px, 55%));
   border-top: 0;
   border-left: 1px solid var(--border);
 }
@@ -78,3 +85,28 @@
 }
 .eterx-terminal-dock[data-placement="right"] .eterx-terminal-folder { display: none; }
 .eterx-terminal-toolbar > .eterx-terminal-action:last-child { margin-left: auto; }
+
+/* Respond to the pane width, including split views on large displays. */
+@container eterx-terminal (max-width: 360px) {
+  .eterx-terminal-toolbar { gap: 4px; padding-inline: 6px; }
+  .eterx-terminal-tab { flex-basis: 128px; width: 128px; }
+  .eterx-terminal-host { padding-inline: 6px; }
+  .eterx-terminal-error { padding-inline: 6px; }
+}
+@media (hover: none), (pointer: coarse) {
+  .eterx-terminal-toolbar { padding-block: 4px; }
+  .eterx-terminal-action { width: 44px; height: 44px; }
+  .eterx-terminal-tab { flex-basis: 172px; width: 172px; padding-block: 0; }
+  .eterx-terminal-tab > button[role="tab"] { min-height: 44px; }
+  .eterx-terminal-tab > button:last-child { width: 44px; height: 44px; padding: 12px; opacity: 1; pointer-events: auto; }
+  .eterx-terminal-empty button { min-height: 44px; }
+  .eterx-terminal-resize { top: -10px; height: 20px; }
+  .eterx-terminal-resize::after { top: 9px; }
+  .eterx-terminal-dock[data-placement="right"] .eterx-terminal-resize { left: -10px; width: 20px; }
+  .eterx-terminal-dock[data-placement="right"] .eterx-terminal-resize::after { left: 9px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eterx-terminal-dock .animate-spin { animation: none !important; }
+  .eterx-terminal-tab, .eterx-terminal-resize::after { transition: none; }
+  html[data-theme][class][lang] body .eterx-terminal-dock .xterm .xterm-cursor-bar.xterm-cursor-blink::after { animation: none !important; opacity: 1; }
+}

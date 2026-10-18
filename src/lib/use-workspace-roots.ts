@@ -1,9 +1,14 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import { collectWorkspaceTouches, compactWorkspaceRoots, type WorkspaceTouch } from './workspace-paths';
+import { collectWorkspaceTouches, compactWorkspaceRoots, isWorkspaceTouchTrace, type WorkspaceTouch } from './workspace-paths';
+import { useTraceSelection } from './use-trace-selection';
+
+const empty: any[] = [];
 
 export function useWorkspaceRoots(owner: string, workspacePath: string | null | undefined, logs: any[], openedPaths: string[], folders: string[]) {
-  const touches = useMemo(() => workspacePath ? [] : collectWorkspaceTouches(logs, owner), [logs, owner, workspacePath]);
+  const workspaceLogs = useTraceSelection(workspacePath ? empty : logs, isWorkspaceTouchTrace);
+  const touches = useMemo(() => workspacePath ? [] : collectWorkspaceTouches(workspaceLogs, owner), [workspaceLogs, owner, workspacePath]);
+  const explicitRoots = useMemo(() => workspacePath ? [workspacePath] : [], [workspacePath]);
   const touched = workspacePath ? [] : [...touches, ...openedPaths.map(path => ({ path, kind: 'file' as const })), ...folders.map(path => ({ path, kind: 'directory' as const }))];
   const signature = JSON.stringify({ chatId: owner, workspacePath: workspacePath || null, touched });
   const basis = owner + ':' + (workspacePath || '');
@@ -27,6 +32,6 @@ export function useWorkspaceRoots(owner: string, workspacePath: string | null | 
   // Never expose another owner's (or a previous selected workspace's) results
   // during an asynchronous resolution. Explicit folders can display immediately.
   // Keep still-supported folders mounted while this same chat gains a new file.
-  const retained = resolved?.basis === basis ? resolved.roots : [];
-  return resolved?.key === key ? { roots: resolved.roots, error: resolved.error, loading: false } : { roots: workspacePath ? [workspacePath] : retained, error: '', loading: !!(owner || workspacePath || touched.length) };
+  const retained = resolved?.basis === basis ? resolved.roots : empty;
+  return resolved?.key === key ? { roots: resolved.roots, error: resolved.error, loading: false } : { roots: workspacePath ? explicitRoots : retained, error: '', loading: !!(owner || workspacePath || touched.length) };
 }

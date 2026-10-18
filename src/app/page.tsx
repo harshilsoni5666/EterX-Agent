@@ -8,7 +8,7 @@ import { useDesktopUpdates } from '../lib/desktop-updates';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../lib/app-visibility';
 import Loading from './loading';
 import { reloadApp } from '../lib/reload-app';
-import React, { startTransition, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { createLazyPanel } from '../components/ui/lazy-panel';
@@ -141,6 +141,8 @@ import {
   normalizeSubAgentRuntimeSettings,
 } from '../lib/agent/sub-agent-settings';
 import { PollingConcurrencyGate } from '../lib/agent/polling-coordinator';
+import { LiveChatLedger, projectChatMetadata } from '../lib/live-chat-ledger';
+import { yieldToMainThread } from '../lib/yield-to-main';
 import { fetchBatchedAgentPoll, reconnectAgentPollStreams } from '../lib/agent/poll-transport';
 
 const SettingsPanel = dynamic(
@@ -2010,6 +2012,11 @@ function DeepWorkUI() {
   const [startupVisualsReady, setStartupVisualsReady] = useState(false);
 
   const [chats, setChatsState] = useState<ChatSession[]>([]);
+  const [liveChatLedger] = useState(() => new LiveChatLedger());
+  const publishChatMetadata = useCallback((snapshot: ChatSession[]) => {
+    setChatsState(previous => projectChatMetadata(previous, snapshot));
+  }, []);
+  useEffect(() => () => liveChatLedger.cancelPendingPaint(), [liveChatLedger]);
   const [isChatHistoryLoading, setIsChatHistoryLoading] = useState(true);
   const workspaceStartupReady = startupPreferencesReady && !isChatHistoryLoading;
 
@@ -2200,7 +2207,7 @@ function DeepWorkUI() {
   const [proxyLiveTurn, setProxyLiveTurn] = useState<ProxyLiveTurn | null>(null);
   const [proxyChatWindow, setProxyChatWindow] = useState({ x: 0, y: 0, width: 340, height: 460 });
   const [isProxyExpanded, setIsProxyExpanded] = useState(false);
-  
+
   const toggleProxyExpanded = useCallback(() => {
     setIsProxyExpanded(prev => {
       const next = !prev;
@@ -2925,7 +2932,6 @@ function DeepWorkUI() {
     touchUpdatedAt: boolean;
   }>>>(new Map());
   const backgroundFlushPendingRef = useRef(false);
-  const chatLedgerRenderTimerRef = useRef<number | null>(null);
   const selectedFeedRenderFrameRef = useRef<number | null>(null);
   const selectedFeedRenderOwnerRef = useRef<string | null>(null);
   const immediateChatFlushesRef = useRef<Set<string>>(new Set());
@@ -2934,8 +2940,9 @@ function DeepWorkUI() {
   const durableSnapshotTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingDurableSnapshotWrite = useRef(false);
   const lastChatSnapshotAtRef = useRef(0);
-  const persistedChatSignaturesRef = useRef<Map<string, string>>(new Map());
-  const chatObjectSignaturesRef = useRef<WeakMap<object, string>>(new WeakMap());
+  const persistedChatVersionsRef = useRef<Map<string, number>>(new Map());
+  const chatObjectVersionsRef = useRef<WeakMap<object, number>>(new WeakMap());
+  const nextChatObjectVersionRef = useRef(0);
   const durableChatWriteChainRef = useRef<Promise<void>>(Promise.resolve());
   const chatWriteReservationRef = useRef(0);
   const chatSnapshotReadyRef = useRef(false);
@@ -2958,11 +2965,12 @@ function DeepWorkUI() {
       ? (next as (value: ChatSession[]) => ChatSession[])(previous)
       : next;
     chatsRef.current = resolved;
-    setChatsState(resolved);
-  }, []);
+    liveChatLedger.replace(resolved);
+    publishChatMetadata(resolved);
+  }, [liveChatLedger, publishChatMetadata]);
   // These refs are the imperative source read by concurrent pollers. Do not
   // copy `chats` into its ref during render: an urgent active-feed render can
-  // legitimately run while a `startTransition(setChats(...))` commit is still
+  // legitimately run while a metadata state commit is still
   // pending, and copying that older render snapshot here briefly rolls the
   // authoritative ledger backwards. That was the source of rows disappearing
   // and then returning under simultaneous chat activity.
@@ -6360,7 +6368,8 @@ function DeepWorkUI() {
       reconnectAgentPollStreams();
       flushBackgroundChatUpdates();
       if (isAppVisible()) {
-        setChatsState(chatsRef.current);
+        liveChatLedger.replace(chatsRef.current);
+        publishChatMetadata(chatsRef.current);
         const visible = chatsRef.current.find(chat => chat.id === activeChatIdRef.current);
         if (visible) setTraceLogs(visible.traceLogs || []);
       }
@@ -6377,10 +6386,6 @@ function DeepWorkUI() {
         if (selectedFeedRenderFrameRef.current !== null) {
           window.cancelAnimationFrame(selectedFeedRenderFrameRef.current);
           selectedFeedRenderFrameRef.current = null;
-        }
-        if (chatLedgerRenderTimerRef.current !== null) {
-          window.clearTimeout(chatLedgerRenderTimerRef.current);
-          chatLedgerRenderTimerRef.current = null;
         }
       }
     };
@@ -6453,6 +6458,9 @@ function DeepWorkUI() {
       || String(ownerChatId || '').startsWith('agent_builder_')
       || /^builder_(?:note|answer)_/.test(String(chatOwnedLog.noteId || chatOwnedLog.answerId || ''));
     if (hasRealChildIdentity || (!isCustomRuntime && !isBuilderRuntime)) return chatOwnedLog;
+    if (!Object.prototype.hasOwnProperty.call(chatOwnedLog, 'subAgent') && chatOwnedLog.agentRuntime) {
+      return chatOwnedLog;
+    }
 
     // Older custom and Builder traces used `subAgent` for the selected
     // runtime itself. That field is reserved for actual delegated workers.
@@ -6589,12 +6597,11 @@ function DeepWorkUI() {
       }
       const strongKeys = strongActionKeys(log);
       const replayKey = actionReplaySignature(log);
-      const likelyReplayIndex = findLikelyActionIndex(log);
       const correlatedIndex = strongKeys
         .map(key => actionIndexes.get(key))
         .find(index => index !== undefined) ??
         (replayKey ? actionIndexes.get(`replay:${ replayKey }`) : undefined) ??
-        likelyReplayIndex;
+        findLikelyActionIndex(log);
       const existingIndex = correlatedIndex !== undefined &&
         haveConflictingFeedActionInvocations(canonicalActionLogs[correlatedIndex], log)
         ? undefined
@@ -6876,12 +6883,19 @@ function DeepWorkUI() {
     const output = getConsoleOutputText(log);
     const wasCompacted = output.length > 120_000;
     const compactOutput = compactLiveConsoleOutput(output, 120_000);
+    const contentStripped = log?._contentStripped === true || wasCompacted;
+    if (
+      log.output === compactOutput &&
+      log.content === undefined &&
+      log.outputPreview === undefined &&
+      log._contentStripped === contentStripped
+    ) return log;
     return {
       ...log,
       output: compactOutput,
       content: undefined,
       outputPreview: undefined,
-      _contentStripped: log?._contentStripped === true || wasCompacted,
+      _contentStripped: contentStripped,
     };
   };
   const findMergeableConsoleOutputIndex = (logs: any[], trace: any) => {
@@ -7070,32 +7084,28 @@ function DeepWorkUI() {
     let sliceStartedAt = performance.now();
     const yieldToInteraction = async () => {
       if (keepalive || performance.now() - sliceStartedAt < 6) return;
-      await new Promise<void>(resolve => window.setTimeout(resolve, 0));
+      await yieldToMainThread();
       sliceStartedAt = performance.now();
     };
-    const persistenceSignature = (chat: ChatSession) => {
-      const cached = chatObjectSignaturesRef.current.get(chat);
-      if (cached) return cached;
-      const serialized = JSON.stringify(chat);
-      let first = 2166136261;
-      let second = 2246822519;
-      for (let index = 0; index < serialized.length; index += 1) {
-        const code = serialized.charCodeAt(index);
-        first = Math.imul(first ^ code, 16777619);
-        second = Math.imul(second ^ code, 3266489917);
-      }
-      const signature = `${serialized.length}:${first >>> 0}:${second >>> 0}`;
-      chatObjectSignaturesRef.current.set(chat, signature);
-      return signature;
+    const persistenceVersion = (chat: ChatSession) => {
+      const cached = chatObjectVersionsRef.current.get(chat);
+      if (cached !== undefined) return cached;
+      // Installed chat snapshots are immutable (the previous signature cache
+      // already depended on that contract). Track object revisions instead of
+      // encoding and hashing every transcript just to decide whether to save
+      // it, then encoding the same history again for the actual request.
+      const version = ++nextChatObjectVersionRef.current;
+      chatObjectVersionsRef.current.set(chat, version);
+      return version;
     };
-    const nextSignatures = new Map<string, string>();
+    const nextVersions = new Map<string, number>();
     for (const chat of chatList) {
-      nextSignatures.set(chat.id, persistenceSignature(chat));
+      nextVersions.set(chat.id, persistenceVersion(chat));
       await yieldToInteraction();
     }
-    const previousSignatures = persistedChatSignaturesRef.current;
-    const changedChats = chatList.filter(chat => previousSignatures.get(chat.id) !== nextSignatures.get(chat.id));
-    const hasDeletion = Array.from(previousSignatures.keys()).some(id => !nextSignatures.has(id));
+    const previousVersions = persistedChatVersionsRef.current;
+    const changedChats = chatList.filter(chat => previousVersions.get(chat.id) !== nextVersions.get(chat.id));
+    const hasDeletion = Array.from(previousVersions.keys()).some(id => !nextVersions.has(id));
     // Never report a successful flush before the authoritative AppData
     // snapshot has been restored. This matters when the app is closed during
     // the first render and a new chat was created before the GET completed.
@@ -7104,7 +7114,16 @@ function DeepWorkUI() {
 
     const serializedChats: string[] = [];
     for (const chat of forceFull ? chatList : changedChats) {
-      serializedChats.push(JSON.stringify(stripChatsForStorage([chat])[0]));
+      const { traceLogs: storedLogs, ...metadata } = stripChatsForStorage([chat])[0];
+      const serializedLogs: string[] = [];
+      for (const log of storedLogs) {
+        // Encode complete rows without one uninterruptible stringify of a
+        // long conversation. JSON arrays represent undefined entries as null.
+        serializedLogs.push(JSON.stringify(log) ?? 'null');
+        await yieldToInteraction();
+      }
+      const serializedMetadata = JSON.stringify(metadata);
+      serializedChats.push(`${serializedMetadata.slice(0, -1)},"traceLogs":[${serializedLogs.join(',')}]}`);
       await yieldToInteraction();
     }
     const chatIds = chatList.map(chat => chat.id);
@@ -7133,7 +7152,7 @@ function DeepWorkUI() {
           && Number.isFinite(durableSavedAt) && durableSavedAt >= savedAt;
         if (saved) {
           lastChatSnapshotAtRef.current = Math.max(lastChatSnapshotAtRef.current, durableSavedAt);
-          persistedChatSignaturesRef.current = nextSignatures;
+          persistedChatVersionsRef.current = nextVersions;
           deletedChatIds.forEach(chatId => pendingChatDeletionIdsRef.current.delete(chatId));
           notifyDurableChatSync(durableSavedAt);
           window.dispatchEvent(new CustomEvent('eterx_chats_updated', { detail: { savedAt: durableSavedAt, durable: true } }));
@@ -9361,6 +9380,7 @@ function DeepWorkUI() {
       // publish at normal priority: repeated background chat updates can
       // otherwise keep interrupting its transition and leave it visibly stale.
       chatsRef.current = committed;
+      liveChatLedger.replace(committed);
       // The selected ledger remains current synchronously. Paint the newest
       // cumulative snapshot once per frame instead of once per network chunk.
       if (visibleChatLogs && activeChatIdRef.current) {
@@ -9377,15 +9397,10 @@ function DeepWorkUI() {
           });
         }
       }
-      // Sidebar/history snapshots do not need token cadence. Bound all-chat
-      // publication independently of agent count, without delaying ledger
-      // commits, polling cursors, terminal events, or durable writes.
-      if (isAppVisible() && chatLedgerRenderTimerRef.current === null) {
-        chatLedgerRenderTimerRef.current = window.setTimeout(() => {
-          chatLedgerRenderTimerRef.current = null;
-          if (isAppVisible()) startTransition(() => setChatsState(chatsRef.current));
-        }, 120);
-      }
+      // Side feeds and open search subscribe directly to the live ledger.
+      // Ordinary token updates do not change any shell metadata, so they must
+      // not rerender the whole page or the apps mounted alongside the chat.
+      if (shouldSort) publishChatMetadata(committed);
       debouncedSaveToFolder();
       return committed;
     }
@@ -9480,8 +9495,6 @@ function DeepWorkUI() {
 
   useEffect(() => () => {
     backgroundFlushPendingRef.current = false;
-    if (chatLedgerRenderTimerRef.current !== null) window.clearTimeout(chatLedgerRenderTimerRef.current);
-    chatLedgerRenderTimerRef.current = null;
     if (selectedFeedRenderFrameRef.current !== null) window.cancelAnimationFrame(selectedFeedRenderFrameRef.current);
     selectedFeedRenderFrameRef.current = null;
     selectedFeedRenderOwnerRef.current = null;
@@ -9492,7 +9505,7 @@ function DeepWorkUI() {
   /**
    * Start incremental polling for a specific chat.
    * Each chat has its own live request loop — fully independent.
-   * 
+   *
    * DESIGN: ALL chats poll at the SAME full speed. No background slowdown.
    * - The server wakes a long poll immediately when new traces arrive
    * - Short reconnect delay after responses; no high-frequency empty spin
@@ -14906,7 +14919,8 @@ function DeepWorkUI() {
     setSubAgentOrder(prev => {
       const existing = prev.filter(id => agentIds.includes(id));
       const brandNew = agentIds.filter(id => !prev.includes(id));
-      return [...existing, ...brandNew];
+      const next = [...existing, ...brandNew];
+      return next.length === prev.length && next.every((id, index) => id === prev[index]) ? prev : next;
     });
   }, [realSubAgents]);
 
@@ -14920,6 +14934,7 @@ function DeepWorkUI() {
     });
   }, [realSubAgents, subAgentOrder]);
 
+  const subAgentAssetIndexesRef = useRef<Record<string, number>>({});
   const subAgentAssetIndexes = useMemo(() => {
     const indexes: Record<string, number> = {};
     orderedRealSubAgents.forEach((agent: any, index: number) => {
@@ -14931,6 +14946,12 @@ function DeepWorkUI() {
       }
       if (identity) indexes[identity] = index;
     });
+    const previous = subAgentAssetIndexesRef.current;
+    const keys = Object.keys(indexes);
+    if (keys.length === Object.keys(previous).length && keys.every(key => previous[key] === indexes[key])) {
+      return previous;
+    }
+    subAgentAssetIndexesRef.current = indexes;
     return indexes;
   }, [orderedRealSubAgents]);
 
@@ -14989,6 +15010,7 @@ function DeepWorkUI() {
     let cancelled = false;
     let syncInFlight = false;
     let messageRevision = -1;
+    let historyHasMore = false;
     let requestController: AbortController | null = null;
     const chatId = activeChatId;
     const agentName = activeSubAgentInfo?.name || activeSubAgentTab;
@@ -15006,7 +15028,7 @@ function DeepWorkUI() {
         });
         if (messageRevision >= 0) {
           params.set('afterRevision', String(messageRevision));
-          params.set('waitMs', '15000');
+          if (!historyHasMore) params.set('waitMs', '15000');
         }
         requestController = new AbortController();
         const res = await fetch(`/api/agents/comm?${ params.toString() }`, {
@@ -15018,6 +15040,7 @@ function DeepWorkUI() {
         const data = await res.json().catch(() => null);
         if (!data?.success || !Array.isArray(data.messages) || cancelled) return false;
         if (Number.isFinite(Number(data.revision))) messageRevision = Number(data.revision);
+        historyHasMore = data.hasMore === true;
 
         const selectedIdentity = activeSubAgentInfo?.subAgentChatId || activeSubAgentInfo?.subAgentId || activeSubAgentTab;
         const incomingLogs = data.messages
@@ -16568,7 +16591,7 @@ function DeepWorkUI() {
                       />
                     )}
                     <span className="eterx-agent-tab-label max-w-[120px] truncate">
-                      {selectedAgent ? selectedAgentName : 'Main'}
+                      Main
                     </span>
                     {isThinking && !mainAgentPaused && (
                       <span className="eterx-splash-spinner" aria-label="Main working" />
@@ -16581,7 +16604,7 @@ function DeepWorkUI() {
                     axis="x"
                     values={visibleAgentNames}
                     onReorder={handleReorderVisible}
-                    className="flex items-center gap-1 min-w-0"
+                    className="flex flex-1 items-center gap-1 min-w-0 overflow-hidden"
                     as="div"
                   >
                     {headerSubAgentTabs.map((agent: any, index: number) => {
@@ -16661,11 +16684,8 @@ function DeepWorkUI() {
                       <button
                         type="button"
                         onClick={() => setOverflowDropdownOpen(!overflowDropdownOpen)}
-                        className={`eterx-agent-tab eterx-agent-tab-overflow flex items-center gap-1.5 transition-all
-                          ${ overflowDropdownOpen
-                            ? 'bg-white/[0.065] text-white/85'
-                            : 'text-white/50'
-                          }`}
+                        aria-expanded={overflowDropdownOpen}
+                        className="eterx-agent-tab eterx-agent-tab-overflow flex items-center gap-1.5 transition-all"
                         title={`${ hiddenHeaderSubAgentCount } more agents`}
                       >
                         <span className="text-[11px] font-bold">+{hiddenHeaderSubAgentCount}</span>
@@ -16709,6 +16729,48 @@ function DeepWorkUI() {
               )}
 
               <div className="flex shrink-0 items-center gap-1 pointer-events-auto [-webkit-app-region:no-drag] ml-auto">
+                {canUseMonitor && realSubAgents.length > 0 && !autonomousSelected && !workspaceControls.open && (
+                  <Tooltip
+                    text={workspaceControls.open ? `Open Sub-Agents (${ realSubAgents.length })` : showHeaderSubAgentDock ? 'Close subagent tabs' : `Open subagent tabs (${ realSubAgents.length })`}
+                    side="bottom"
+                    delay={450}
+                  >
+                    <button
+                      type="button"
+                      aria-label={workspaceControls.open ? 'Open Sub-Agents' : showHeaderSubAgentDock ? 'Close subagent tabs' : 'Open subagent tabs'}
+                      aria-expanded={workspaceControls.open || showHeaderSubAgentDock}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (workspaceControls.open) {
+                          setOverflowDropdownOpen(false);
+                          addWorkspaceTab(terminalChatId, 'subagents');
+                          return;
+                        }
+                        setSubAgentDockOpen(previous => {
+                          const next = !previous;
+                          if (!next) {
+                            setActiveSubAgentTab(null);
+                            setOverflowDropdownOpen(false);
+                          }
+                          return next;
+                        });
+                      }}
+                      className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ showHeaderSubAgentDock ? 'bg-[var(--sidebar-toggle-hover-bg)] text-[var(--sidebar-hover-text)]' : 'text-[var(--sidebar-muted-text)]' }`}
+                    >
+                      {showHeaderSubAgentDock ? (
+                        <X className="h-[17px] w-[17px] shrink-0" strokeWidth={2.15} />
+                      ) : (
+                        <>
+                          <GitFork className="h-[17px] w-[17px] shrink-0" strokeWidth={2.05} />
+                          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full border border-[#111] bg-[#E8E6E3] px-0.5 text-[8px] font-bold leading-none text-[#111]">
+                            {realSubAgents.length > 9 ? '9+' : realSubAgents.length}
+                          </span>
+                        </>
+                      )}
+                    </button>
+                  </Tooltip>
+                )}
                 {isHeaderGitRepo && !!activeChatId && (
                   <div className="relative group">
                     <button
@@ -16744,11 +16806,11 @@ function DeepWorkUI() {
                             transition={{ duration: 0.15, ease: "easeOut" }}
                             className="eterx-github-menu absolute right-0 top-[calc(100%+10px)] z-50 flex w-[236px] flex-col rounded-xl border border-white/[0.08] bg-[#1A1A1A]/95 backdrop-blur-2xl p-1.5 shadow-none text-[#F4F1EA]"
                             onClick={(e) => e.stopPropagation()}
-                            onMouseLeave={() => setHoveredSubmenu(null)}
+
                           >
                             <div
-                              className="px-2.5 py-1 text-[9px] font-bold text-[#6A6460] tracking-wider select-none mb-1"
-                              onMouseEnter={() => setHoveredSubmenu(null)}
+                              className="eterx-git-section-label"
+
                             >
                               Git Workspace
                             </div>
@@ -16757,17 +16819,16 @@ function DeepWorkUI() {
                             <div className="relative">
                               <button
                                 type="button"
-                                className={`w-full text-left px-2.5 py-1.5 text-[12px] font-semibold rounded-lg transition-all flex items-center justify-between ${ hoveredSubmenu === 'branch' ? 'text-white bg-white/5' : 'text-white/75 hover:text-white hover:bg-white/5' }`}
-                                onMouseEnter={() => {
-                                  setHoveredSubmenu('branch');
-                                  fetchGitInfo();
-                                }}
+                                className={`eterx-git-menu-row w-full text-left px-2.5 py-1.5 text-[12px] font-semibold rounded-lg transition-all flex items-center justify-between ${ hoveredSubmenu === 'branch' ? 'text-white bg-white/5' : 'text-white/75 hover:text-white hover:bg-white/5' }`}
+                                aria-expanded={hoveredSubmenu === 'branch'}
+                                onClick={() => { setHoveredSubmenu(previous => previous === 'branch' ? null : 'branch'); fetchGitInfo(); }}
+
                               >
-                                <div className="flex items-center gap-2 truncate pr-1">
+                                <div className="flex min-w-0 flex-1 items-center gap-2 pr-2">
                                   <GitBranch className="h-3.5 w-3.5 text-white/75" />
-                                  <span className="truncate">Branch: {currentBranch}</span>
+                                  <span className="eterx-git-branch-label">Branch</span><span className="eterx-git-branch-name" title={currentBranch}>{currentBranch}</span>
                                 </div>
-                                <ChevronLeft className="h-3.5 w-3.5 text-white/40" />
+                                <ChevronDown className="h-3.5 w-3.5 text-white/40" />
                               </button>
                             </div>
 
@@ -16778,8 +16839,8 @@ function DeepWorkUI() {
                                   e.preventDefault();
                                   handleCreateBranchSubmit();
                                 }}
-                                className="flex items-center gap-2 border border-white/10 rounded-lg px-2.5 py-1 bg-white/[0.02] mt-1 mx-0.5"
-                                onMouseEnter={() => setHoveredSubmenu(null)}
+                                className="eterx-git-branch-form flex items-center gap-2 border border-white/10 rounded-lg px-2.5 py-1 bg-white/[0.02] mt-1 mx-0.5"
+
                               >
                                 <GitBranch className="h-3.5 w-3.5 text-white/50" />
                                 <input
@@ -16804,8 +16865,8 @@ function DeepWorkUI() {
                             ) : (
                               <button
                                 type="button"
-                                className="w-full text-left px-2.5 py-1.5 text-[12px] font-semibold text-white/75 hover:text-white hover:bg-white/5 rounded-lg transition-all flex items-center gap-2"
-                                onMouseEnter={() => setHoveredSubmenu(null)}
+                                className="eterx-git-menu-row w-full text-left px-2.5 py-1.5 text-[12px] font-semibold text-white/75 hover:text-white hover:bg-white/5 rounded-lg transition-all flex items-center gap-2"
+
                                 onClick={() => {
                                   setIsCreatingBranch(true);
                                   setNewBranchName('');
@@ -16816,23 +16877,22 @@ function DeepWorkUI() {
                               </button>
                             )}
 
-                            <div className="h-px bg-white/[0.06] my-1.5 mx-1" onMouseEnter={() => setHoveredSubmenu(null)} />
+                            <div className="h-px bg-white/[0.06] my-1.5 mx-1" />
 
                             {/* Recent Commits (Submenu Button) */}
                             <div className="relative">
                               <button
                                 type="button"
-                                className={`w-full text-left px-2.5 py-1.5 text-[12px] font-semibold rounded-lg transition-all flex items-center justify-between ${ hoveredSubmenu === 'commits' ? 'text-white bg-white/5' : 'text-white/75 hover:text-white hover:bg-white/5' }`}
-                                onMouseEnter={() => {
-                                  setHoveredSubmenu('commits');
-                                  loadRecentCommits();
-                                }}
+                                className={`eterx-git-menu-row w-full text-left px-2.5 py-1.5 text-[12px] font-semibold rounded-lg transition-all flex items-center justify-between ${ hoveredSubmenu === 'commits' ? 'text-white bg-white/5' : 'text-white/75 hover:text-white hover:bg-white/5' }`}
+                                aria-expanded={hoveredSubmenu === 'commits'}
+                                onClick={() => { setHoveredSubmenu(previous => previous === 'commits' ? null : 'commits'); loadRecentCommits(); }}
+
                               >
                                 <div className="flex items-center gap-2">
                                   <Clock3 className="h-3.5 w-3.5" />
                                   <span>Recent Commits</span>
                                 </div>
-                                <ChevronLeft className="h-3.5 w-3.5 text-white/40" />
+                                <ChevronDown className="h-3.5 w-3.5 text-white/40" />
                               </button>
                             </div>
 
@@ -16844,13 +16904,13 @@ function DeepWorkUI() {
                                   animate={{ opacity: 1, x: 0, scale: 1 }}
                                   exit={{ opacity: 0, x: 6, scale: 0.98 }}
                                   transition={{ duration: 0.15, ease: "easeOut" }}
-                                  onMouseEnter={() => setHoveredSubmenu(hoveredSubmenu)}
-                                  onMouseLeave={() => setHoveredSubmenu(null)}
-                                  className="eterx-github-submenu absolute right-full mr-0.5 top-0 z-50 flex w-[245px] flex-col rounded-xl border border-white/[0.08] bg-[#1A1A1A]/95 backdrop-blur-2xl p-1.5 shadow-none text-[#F4F1EA] pointer-events-auto"
+
+
+                                  className="eterx-github-submenu relative flex w-[245px] flex-col rounded-xl border border-white/[0.08] bg-[#1A1A1A]/95 backdrop-blur-2xl p-1.5 shadow-none text-[#F4F1EA] pointer-events-auto"
                                 >
                                   {hoveredSubmenu === 'branch' && (
                                     <>
-                                      <div className="px-2.5 py-1 text-[9px] font-bold text-[#6A6460] tracking-wider select-none mb-1">
+                                      <div className="eterx-git-section-label">
                                         Select Branch
                                       </div>
                                       <div className="flex flex-col gap-0.5 max-h-[220px] overflow-y-auto eterx-scrollbar">
@@ -16860,7 +16920,7 @@ function DeepWorkUI() {
                                             <button
                                               key={b.name}
                                               type="button"
-                                              className={`group/item flex items-center justify-between px-2.5 py-1.5 text-[12px] font-semibold rounded-lg transition-colors leading-none ${ isCurrent ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:text-white hover:bg-white/5' }`}
+                                              className={`eterx-git-menu-row group/item flex items-center justify-between px-2.5 py-1.5 text-[12px] font-semibold rounded-lg transition-colors leading-none ${ isCurrent ? 'bg-white/[0.08] text-white' : 'text-white/60 hover:text-white hover:bg-white/5' }`}
                                               onClick={() => {
                                                 handleCheckoutBranch(b.name);
                                                 setGithubDropdownOpen(false);
@@ -16879,7 +16939,7 @@ function DeepWorkUI() {
                                   {hoveredSubmenu === 'commits' && (
                                     <>
                                       <div className="px-2.5 py-1 flex items-center justify-between mb-1 select-none">
-                                        <span className="text-[9px] font-bold text-[#6A6460] tracking-wider">
+                                        <span className="eterx-git-section-label">
                                           Commit History
                                         </span>
                                         <button
@@ -16912,7 +16972,7 @@ function DeepWorkUI() {
                                                 const didCopy = await safeCopyTextToClipboard(c.hash);
                                                 if (didCopy) alert(`Copied hash ${ c.hash } to clipboard!`);
                                               }}
-                                              className="text-left px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all flex items-center gap-2"
+                                              className="eterx-git-menu-row text-left px-2 py-1.5 rounded-lg hover:bg-white/5 transition-all flex items-center gap-2"
                                               title="Click to copy hash"
                                             >
                                               <span className="text-[10px] font-mono font-bold text-white/50 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.06] shrink-0 leading-none">
@@ -16935,65 +16995,6 @@ function DeepWorkUI() {
                       )}
                     </AnimatePresence>
                   </div>
-                )}
-                {canUseMonitor && realSubAgents.length > 0 && !autonomousSelected && (
-                  <Tooltip
-                    text={workspaceControls.open ? `Open Sub-Agents (${ realSubAgents.length })` : showHeaderSubAgentDock ? 'Close subagent tabs' : `Open subagent tabs (${ realSubAgents.length })`}
-                    side="bottom"
-                    delay={450}
-                  >
-                    <button
-                      type="button"
-                      aria-label={workspaceControls.open ? 'Open Sub-Agents' : showHeaderSubAgentDock ? 'Close subagent tabs' : 'Open subagent tabs'}
-                      onMouseDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (workspaceControls.open) {
-                          setOverflowDropdownOpen(false);
-                          addWorkspaceTab(terminalChatId, 'subagents');
-                          return;
-                        }
-                        setSubAgentDockOpen(previous => {
-                          const next = !previous;
-                          if (!next) {
-                            setActiveSubAgentTab(null);
-                            setOverflowDropdownOpen(false);
-                          }
-                          return next;
-                        });
-                      }}
-                      className={`relative eterx-header-icon-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-transparent bg-transparent transition-colors duration-150 hover:bg-[var(--sidebar-toggle-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ showHeaderSubAgentDock ? 'bg-[var(--sidebar-toggle-hover-bg)] text-[var(--sidebar-hover-text)]' : 'text-[var(--sidebar-muted-text)]' }`}
-                    >
-                      <AnimatePresence mode="wait" initial={false}>
-                        {showHeaderSubAgentDock ? (
-                          <motion.span
-                            key="close-subagent-tabs"
-                            initial={{ opacity: 0, rotate: -45, scale: 0.75 }}
-                            animate={{ opacity: 1, rotate: 0, scale: 1 }}
-                            exit={{ opacity: 0, rotate: 45, scale: 0.75 }}
-                            transition={{ duration: 0.14 }}
-                            className="flex items-center justify-center"
-                          >
-                            <X className="h-[17px] w-[17px]" strokeWidth={2.15} />
-                          </motion.span>
-                        ) : (
-                          <motion.span
-                            key="open-subagent-tabs"
-                            initial={{ opacity: 0, rotate: 30, scale: 0.75 }}
-                            animate={{ opacity: 1, rotate: 0, scale: 1 }}
-                            exit={{ opacity: 0, rotate: -30, scale: 0.75 }}
-                            transition={{ duration: 0.14 }}
-                            className="flex items-center justify-center"
-                          >
-                            <GitFork className="h-[17px] w-[17px]" strokeWidth={2.05} />
-                            <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full border border-[#111] bg-[#E8E6E3] px-0.5 text-[8px] font-bold leading-none text-[#111]">
-                              {realSubAgents.length > 9 ? '9+' : realSubAgents.length}
-                            </span>
-                          </motion.span>
-                        )}
-                      </AnimatePresence>
-                    </button>
-                  </Tooltip>
                 )}
                 {canUseMonitor && (
                   <>
@@ -18107,6 +18108,7 @@ function DeepWorkUI() {
                         workspacePath={activeWorkspacePath}
                         traceLogs={traceLogs}
                         chats={chats}
+                        liveChatLedger={liveChatLedger}
                         runningChats={sidebarRunningChats}
                         actions={sideChatActions}
                         agentNavigation={{
@@ -18169,6 +18171,7 @@ function DeepWorkUI() {
         isOpen={cmdPaletteOpen}
         onClose={() => setCmdPaletteOpen(false)}
         chats={chats}
+        liveChatLedger={liveChatLedger}
         loadChat={loadChat}
         runningChats={sidebarRunningChats}
         activeChatId={activeChatId}

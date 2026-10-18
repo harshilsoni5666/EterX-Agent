@@ -3495,11 +3495,11 @@
 }
 
 :root[data-theme="light"] .eterx-context-compaction-label {
-  color: #6B6B6B !important;
+  color: #53534F !important;
 }
 
 :root[data-theme="light"] .eterx-context-compaction[data-phase="compacted"] .eterx-context-compaction-label {
-  color: #327A4B !important;
+  color: #53534F !important;
 }
 
 :root[data-theme="light"] .eterx-context-compaction[data-phase="failed"] .eterx-context-compaction-label {
@@ -3507,7 +3507,7 @@
 }
 
 :root[data-theme="light"] .eterx-context-compaction-detail {
-  color: #989898 !important;
+  color: #6B6B65 !important;
 }
 
 /* Composer: a single elevated white surface, plain secondary actions, and a

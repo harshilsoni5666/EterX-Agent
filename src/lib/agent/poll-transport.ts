@@ -1,3 +1,5 @@
+import { yieldToMainThread } from '../yield-to-main';
+
 interface PollRequest {
   chatId: string;
   after: number;
@@ -16,7 +18,7 @@ interface Subscription {
   request: PollRequest;
   waiters: Set<PollWaiter>;
   traces: Map<number, any>;
-  traceChars: Map<number, number>;
+  traceRecords: Map<number, { chars: number; references: number }>;
   latest: any;
   version: number;
   deliveredVersion: number;
@@ -54,13 +56,14 @@ class LivePollChannel {
     this.bufferedChars = Math.max(0, this.bufferedChars - entry.bufferedChars);
     entry.bufferedChars = 0;
     entry.traces.clear();
-    entry.traceChars.clear();
+    entry.traceRecords.clear();
   }
 
   private removeBufferedTrace(entry: Subscription, index: number) {
-    const chars = entry.traceChars.get(index) || 0;
+    const record = entry.traceRecords.get(index);
+    const chars = record && --record.references === 0 ? record.chars : 0;
     entry.traces.delete(index);
-    entry.traceChars.delete(index);
+    entry.traceRecords.delete(index);
     entry.bufferedChars = Math.max(0, entry.bufferedChars - chars);
     this.bufferedChars = Math.max(0, this.bufferedChars - chars);
   }
@@ -71,7 +74,7 @@ class LivePollChannel {
     let entry = this.subscriptions.get(key);
     if (!entry) {
       entry = {
-        key, request: { ...request }, waiters: new Set(), traces: new Map(), traceChars: new Map(), latest: null,
+        key, request: { ...request }, waiters: new Set(), traces: new Map(), traceRecords: new Map(), latest: null,
         version: 0, deliveredVersion: 0, touchedAt: Date.now(), bufferedChars: 0,
         replayNeeded: false, epoch: 0,
       };
@@ -149,7 +152,7 @@ class LivePollChannel {
     entry.touchedAt = Date.now();
   }
 
-  private receive(entry: Subscription, payload: any) {
+  private receive(entry: Subscription, payload: any, wireChars?: number) {
     if (!payload || typeof payload !== 'object') throw new Error('Invalid live poll record.');
     if (!payload._pollError && (!Array.isArray(payload.traces) || !Number.isFinite(payload.maxIndex))) {
       throw new Error('Invalid live trace payload.');
@@ -159,6 +162,7 @@ class LivePollChannel {
       payload.maxIndex < entry.latest.maxIndex)) {
       this.clearBufferedTraces(entry);
     }
+    let record: { chars: number; references: number } | undefined;
     for (const trace of payload.traces || []) {
       // Persisted rows keep their first presentation index while _pollIdx
       // advances with later chunks/settlement. Filtering by the first index
@@ -167,12 +171,18 @@ class LivePollChannel {
       if (Number.isFinite(index) && (index > entry.request.after || (index === -1 && entry.request.after === -1))) {
         // Count retained rows, not total wire traffic. Replays, heartbeats,
         // and acknowledged prefixes must not exhaust a healthy chat's cap.
-        const chars = JSON.stringify(trace).length;
+        // Account for the already-decoded wire record once. Re-stringifying
+        // each cumulative answer/tool payload doubled JSON work in the UI.
+        // A record stays charged until its last retained row is acknowledged;
+        // this conservatively includes its metadata without undercounting.
+        record ||= { chars: wireChars ?? JSON.stringify(payload).length, references: 0 };
         this.removeBufferedTrace(entry, index);
         entry.traces.set(index, trace);
-        entry.traceChars.set(index, chars);
-        entry.bufferedChars += chars;
-        this.bufferedChars += chars;
+        entry.traceRecords.set(index, record);
+        if (record.references++ === 0) {
+          entry.bufferedChars += record.chars;
+          this.bufferedChars += record.chars;
+        }
       }
     }
     const { traces: _traces, ...metadata } = payload;
@@ -230,12 +240,12 @@ class LivePollChannel {
     const controller = new AbortController();
     this.controller = controller;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    const dispatch = (index: number, result: any) => {
+    const dispatch = (index: number, result: any, wireChars?: number) => {
       const entry = entries[index];
       if (!entry || this.generation !== generation || this.subscriptions.get(entry.key) !== entry ||
         entry.epoch !== epochs[index]) return;
       try {
-        this.receive(entry, result);
+        this.receive(entry, result, wireChars);
       } catch (error) {
         // A bad record belongs to one subscription. Keep other chats' live
         // readers connected, and let this consumer retry its committed cursor.
@@ -280,17 +290,31 @@ class LivePollChannel {
       reader = response.body.getReader();
       const decoder = new TextDecoder();
       let pending = '';
+      let sliceStartedAt = performance.now();
       while (this.generation === generation && !controller.signal.aborted) {
+        const readStartedAt = performance.now();
         const chunk = await reader.read();
+        // Time waiting on a quiet socket is not CPU work. Only a backlog of
+        // already-available records needs cooperative processing slices.
+        if (performance.now() - readStartedAt >= 1) sliceStartedAt = performance.now();
         pending += decoder.decode(chunk.value, { stream: !chunk.done });
         let newline: number;
-        while ((newline = pending.indexOf('\n')) >= 0) {
-          const line = pending.slice(0, newline);
-          pending = pending.slice(newline + 1);
+        let offset = 0;
+        while ((newline = pending.indexOf('\n', offset)) >= 0) {
+          const line = pending.slice(offset, newline);
+          offset = newline + 1;
           if (!line.trim()) continue;
           const record = JSON.parse(line);
-          dispatch(record.index, record.result);
+          dispatch(record.index, record.result, line.length);
+          if (performance.now() - sliceStartedAt >= 6) {
+            // Keep every record and its order, but let input and other live
+            // consumers run between records in a large multi-chat catch-up.
+            await yieldToMainThread();
+            sliceStartedAt = performance.now();
+            if (this.generation !== generation || controller.signal.aborted) return;
+          }
         }
+        if (offset) pending = pending.slice(offset);
         if (pending.length > 32 * 1024 * 1024) throw new Error('Live poll record exceeded its buffer limit.');
         if (chunk.done) throw new Error('Live poll connection ended.');
       }

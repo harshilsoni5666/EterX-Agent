@@ -5,9 +5,9 @@ import { compactWorkspaceRoots } from './workspace-paths';
 import type { TurnChanges } from './turn-changes';
 import { recordBrowserHistory } from './browser-history';
 
-export type WorkspaceKind = 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat' | 'subagents';
+export type WorkspaceKind = 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat' | 'subagents' | 'git';
 export type WorkspaceReviewState = { scope: 'chat' | 'working' | 'branch'; selected: string; filter: string; expanded: boolean; split: boolean; showTree: boolean; root: string; wrap?: boolean; loadFull?: boolean; richPreview?: boolean; ignoreWhitespace?: boolean; wordHighlights?: 'enabled' | 'disabled'; viewed?: string[]; hideViewed?: boolean; compactFolders?: boolean; baseRefs?: Record<string, string> };
-export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges };
+export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges; git?: { root: string; view: import('./git/types').GitView; drafts: Record<string, string> } };
 type WorkspaceState = { open: boolean; width: number | null; expanded: boolean; tabs: WorkspaceTab[]; activeId: string | null; folders?: string[] };
 const empty: WorkspaceState = { open: false, width: null, expanded: false, tabs: [], activeId: null };
 const states = new Map<string, WorkspaceState>();
@@ -41,7 +41,7 @@ function releaseBrowserEvents() {
   browserEventsStop?.(); browserEventsStop = undefined;
 }
 const read = (owner: string) => states.get(resolveWorkspaceOwner(owner)) || empty;
-const titles: Record<WorkspaceKind, string> = { review: 'Review', changes: 'Changes', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat', subagents: 'Sub-Agents' };
+const titles: Record<WorkspaceKind, string> = { review: 'Review', changes: 'Changes', terminal: 'Terminal', browser: 'New browser', files: 'Files', chat: 'Side chat', subagents: 'Sub-Agents', git: 'Git' };
 function subscribe(owner: string, fn: () => void) {
   const set = listeners.get(owner) || new Set();
   listeners.set(owner, set); set.add(fn);
@@ -89,9 +89,9 @@ export function addWorkspaceTab(owner: string, kind: WorkspaceKind, details: Par
   // Files is a reusable explorer. Selecting a different file updates its preview
   // instead of accumulating a tab for every click in the tree.
   const existing = (kind === 'files' ? state.tabs.find(tab => tab.id === state.activeId && tab.kind === 'files') : undefined)
-    || state.tabs.find(tab => tab.kind === kind && (kind === 'terminal' || kind === 'review' || kind === 'changes' || kind === 'files' || kind === 'subagents'));
+    || state.tabs.find(tab => tab.kind === kind && (kind === 'terminal' || kind === 'review' || kind === 'changes' || kind === 'files' || kind === 'subagents' || kind === 'git'));
   if (existing) {
-    const requestedReview = kind === 'review' && details.path ? { reviewPathRequest: (existing.reviewPathRequest || 0) + 1, ...(existing.review ? { review: { ...existing.review, selected: details.path, scope: 'chat' as const } } : {}) } : {};
+    const requestedReview = kind === 'review' && (details.path || details.review) ? { reviewPathRequest: (existing.reviewPathRequest || 0) + 1, ...(details.review ? { review: details.review } : existing.review ? { review: { ...existing.review, selected: details.path!, scope: 'chat' as const } } : {}) } : {};
     updateWorkspace(owner, { open: true, activeId: existing.id, tabs: state.tabs.map(tab => tab.id === existing.id ? { ...tab, ...details, ...requestedReview, id: tab.id, kind, title: details.title || tab.title } : tab) });
     return existing.id;
   }
@@ -113,6 +113,14 @@ export function updateWorkspaceTab(owner: string, id: string, patch: Partial<Wor
   if (openChat) { updateWorkspace(owner, { open: true, activeId: openChat.id }); return; }
   if (!previous || Object.entries(patch).every(([key, value]) => previous[key as keyof WorkspaceTab] === value)) return;
   updateWorkspace(owner, { tabs: state.tabs.map(tab => tab.id === id ? { ...tab, ...patch } : tab) });
+}
+export function openWorkspaceReview(owner: string, patch: Partial<WorkspaceReviewState>) {
+  const existing = read(owner).tabs.find(tab => tab.kind === 'review');
+  const review: WorkspaceReviewState = {
+    scope: 'working', selected: '', filter: '', expanded: false, split: false, showTree: true, root: '',
+    ...existing?.review, ...patch,
+  };
+  return addWorkspaceTab(owner, 'review', { review });
 }
 export function closeWorkspaceTab(owner: string, id: string) {
   recordedBrowserPages.delete(id);

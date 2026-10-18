@@ -1,0 +1,161 @@
+/* Repository controls inherit the workspace palette in every app theme. */
+.eterx-git { display:flex; flex:1 1 0%; flex-direction:column; min-width:0; min-height:0; overflow:hidden; color:var(--ws-text); font-size:12px; }
+.eterx-git button,.eterx-git input,.eterx-git textarea,.eterx-git select { font:inherit; }
+.eterx-git button { display:inline-flex; align-items:center; justify-content:center; gap:6px; border-radius:7px; transition:background 120ms,color 120ms; }
+.eterx-git button:hover:not(:disabled) { background:var(--ws-hover); }
+.eterx-git input:not([type="checkbox"]),.eterx-git textarea { width:100%; min-width:0; border:1px solid var(--ws-border); border-radius:8px; background:var(--ws-bg); color:var(--ws-text); padding:9px 10px; outline:none; }
+.eterx-git input:focus-visible,.eterx-git textarea:focus-visible { border-color:var(--ws-muted); box-shadow:0 0 0 1px var(--ws-muted); }
+.eterx-git input::placeholder,.eterx-git textarea::placeholder { color:var(--ws-muted); opacity:.8; }
+.eterx-git select { min-width:0; max-width:100%; background:var(--ws-bg); color:var(--ws-text); outline:none; border-radius:6px; }
+.eterx-git-toolbar { display:flex; align-items:center; gap:7px; padding:7px 12px 4px; flex-shrink:0; }
+.eterx-git-toolbar > svg { flex-shrink:0; color:var(--ws-muted); }
+.eterx-git-toolbar select { flex:1; height:30px; font-size:13px; font-weight:600; }
+.eterx-git .eterx-git-icon-button { width:28px; min-width:28px; height:28px; padding:0; flex:0 0 auto; color:var(--ws-muted); }
+.eterx-git-root { margin:0 14px 11px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:10px; color:var(--ws-muted); flex-shrink:0; }
+.eterx-git-branch-bar { display:flex; align-items:center; gap:8px; min-width:0; margin:0 12px; padding:4px 9px 4px 4px; border:1px solid var(--ws-border); border-radius:9px; background:var(--ws-surface); }
+.eterx-git-current-branch { min-width:0; max-width:65%; min-height:28px; padding:5px 7px; white-space:nowrap; }
+.eterx-git-current-branch:focus-visible { outline:1px solid var(--ws-muted); outline-offset:2px; }
+.eterx-git-current-branch strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.eterx-git-current-branch svg { flex-shrink:0; }
+.eterx-git-track { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ws-muted); font-size:10px; }
+.eterx-git-sync-count { display:flex; align-items:center; gap:3px; margin-left:auto; font-size:10px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.eterx-git-remote-bar { position:relative; z-index:5; display:flex; align-items:center; gap:5px; padding:7px 12px 10px; flex-shrink:0; flex-wrap:wrap; }
+.eterx-git-remote-bar > span { flex:1; color:var(--ws-muted); font-size:11px; }
+.eterx-git-remote-bar button { padding:6px 8px; font-size:11px; }
+.eterx-git-remote-picker { min-width:0; max-width:min(180px,45%); margin-right:auto; }
+.eterx-git-remote-picker > .eterx-workspace-menu-anchor { min-width:0; }
+.eterx-git-remote-picker > .eterx-workspace-menu-anchor > button { height:30px; min-width:0; max-width:100%; gap:7px; padding:0 9px; border:1px solid var(--ws-border); background:var(--ws-surface); color:var(--ws-text); }
+.eterx-git-remote-picker > .eterx-workspace-menu-anchor > button:hover:not(:disabled),.eterx-git-remote-picker > .eterx-workspace-menu-anchor > button[aria-expanded="true"] { background:var(--ws-hover); }
+.eterx-git-remote-picker button > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.eterx-git-remote-picker button > svg { flex-shrink:0; }
+.eterx-git-remote-picker button:focus-visible { outline:1px solid var(--ws-muted); outline-offset:-2px; }
+.eterx-git-remote-picker .eterx-workspace-menu { min-width:min(180px,calc(100cqw - 24px)); max-width:min(280px,calc(100cqw - 24px)); }
+.eterx-git-remote-picker .eterx-workspace-menu > button { justify-content:flex-start; height:32px; padding:0 10px; font-size:12px; }
+.eterx-git-remote-picker .eterx-workspace-menu > button[aria-checked="true"] { background:var(--ws-hover); }
+.eterx-git-remote-picker .eterx-workspace-menu > button[aria-checked="false"] > svg { visibility:hidden; }
+.eterx-git-remote-actions { display:flex; align-items:center; gap:3px; flex:0 0 auto; margin-left:auto; }
+.eterx-git-remote-actions > button { height:30px; white-space:nowrap; }
+.eterx-git-nav { display:flex; flex-shrink:0; gap:2px; border-bottom:1px solid var(--ws-border); padding:0 10px; overflow-x:auto; scrollbar-width:none; }
+.eterx-git-nav button { position:relative; flex:1 0 auto; padding:10px 7px; color:var(--ws-muted); border-radius:6px 6px 0 0; font-size:11px; }
+.eterx-git-nav button[aria-selected="true"] { color:var(--ws-text); }
+.eterx-git-nav button[aria-selected="true"]::after { content:''; position:absolute; height:2px; background:var(--ws-text); border-radius:2px; bottom:0; left:10px; right:10px; }
+.eterx-git-nav small,.eterx-git-group-heading h3 span { border-radius:5px; padding:1px 5px; font-size:10px; font-weight:400; background:var(--ws-hover); color:var(--ws-muted); font-variant-numeric:tabular-nums; }
+.eterx-git-body { display:flex; flex:1 1 0%; min-height:0; min-width:0; overflow:hidden; flex-direction:column; }
+.eterx-git-list-pane { display:flex; flex-direction:column; min-width:0; min-height:0; flex:1 1 0%; }
+.eterx-git-filter { display:flex; align-items:center; gap:8px; padding:8px 13px; color:var(--ws-muted); flex-shrink:0; }
+.eterx-git-filter input:not([type="checkbox"]) { border:0; background:transparent; padding:3px 0; box-shadow:none; font-size:11px; }
+.eterx-git-filter input:focus-visible { outline:1px solid var(--ws-muted); outline-offset:3px; }
+.eterx-git-list-scroll { min-height:0; flex:1 1 auto; overflow:auto; overscroll-behavior:contain; padding:0 7px 10px; }
+.eterx-git-file-group { margin-bottom:8px; }
+.eterx-git-group-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 7px 6px; }
+.eterx-git-group-heading h3 { display:flex; align-items:center; gap:7px; font-size:11px; font-weight:600; }
+.eterx-git-group-heading button { padding:3px 5px; font-size:10px; color:var(--ws-muted); }
+.eterx-git-file-row { display:flex; align-items:center; min-width:0; border-radius:7px; padding-right:3px; }
+.eterx-git-file-row:hover,.eterx-git-file-row.is-selected { background:var(--ws-surface); }
+.eterx-git .eterx-git-file-main { display:flex; flex:1 1 0%; min-width:0; text-align:left; justify-content:flex-start; padding:7px; gap:8px; }
+.eterx-git-file-name { display:flex; align-items:baseline; flex:1; min-width:0; gap:7px; }
+.eterx-git-file-name strong { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:450; }
+.eterx-git-file-name small { flex:1 1 0%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ws-muted); font-size:10px; }
+.eterx-git-file-stats { display:inline-flex; align-items:center; flex-shrink:0; gap:5px; white-space:nowrap; font:11px var(--font-mono); font-variant-numeric:tabular-nums; }
+.eterx-git-file-stats .is-added { color:var(--ws-added); }
+.eterx-git-file-stats .is-removed { color:var(--ws-removed); }
+.eterx-git-file-state { flex-shrink:0; white-space:nowrap; font-size:10px; color:var(--ws-muted); }
+.eterx-git-file-state.is-conflict { color:var(--ws-removed); }
+.eterx-git-commit-form { padding:11px 13px 12px; border-top:1px solid var(--ws-border); flex-shrink:0; }
+.eterx-git-commit-form > label { display:block; font-size:11px; font-weight:500; margin-bottom:7px; }
+.eterx-git-commit-form textarea { min-height:66px; max-height:150px; resize:vertical; line-height:1.55; background:var(--ws-surface); }
+.eterx-git-commit-form > div { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:9px; }
+.eterx-git-commit-form > div > span { font-size:10px; color:var(--ws-muted); }
+.eterx-git .eterx-git-primary { border:1px solid var(--ws-border); background:var(--ws-text); color:var(--ws-bg); padding:7px 11px; font-weight:600; font-size:11px; }
+.eterx-git .eterx-git-primary:hover:not(:disabled) { background:color-mix(in srgb,var(--ws-text) 85%,var(--ws-bg) 15%); }
+.eterx-git .eterx-git-button { padding:8px 11px; border:1px solid var(--ws-border); background:var(--ws-surface); font-weight:500; }
+.eterx-git-placeholder { display:flex; flex:1 1 auto; min-height:120px; align-items:center; justify-content:center; flex-direction:column; gap:10px; text-align:center; padding:25px 20px; color:var(--ws-muted); }
+.eterx-git-placeholder h3 { color:var(--ws-text); font-size:13px; font-weight:550; }
+.eterx-git-placeholder p { max-width:330px; font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.eterx-git-clean-icon { display:flex; width:42px; height:42px; align-items:center; justify-content:center; border:1px solid var(--ws-border); background:var(--ws-surface); color:var(--ws-added); border-radius:50%; }
+.eterx-git-progress { display:flex; align-items:center; gap:8px; padding:10px 14px; color:var(--ws-muted); font-size:11px; flex-shrink:0; }
+.eterx-git-notice { display:flex; align-items:flex-start; gap:8px; padding:9px 11px; margin:4px 12px 8px; font-size:11px; line-height:1.6; border:1px solid var(--ws-border); border-radius:8px; background:var(--ws-surface); flex-shrink:0; }
+.eterx-git-notice > span { flex:1; white-space:pre-wrap; overflow-wrap:anywhere; max-height:150px; overflow:auto; }
+.eterx-git-notice svg { flex-shrink:0; margin-top:2px; }
+.eterx-git-notice button { flex-shrink:0; padding:1px 3px; }
+.eterx-git-notice.is-error { border-color:color-mix(in srgb,var(--ws-removed) 25%,var(--ws-border)); color:var(--ws-removed); }
+.eterx-git-notice.is-success > svg { color:var(--ws-added); }
+.eterx-git-notice.is-warning > svg { color:var(--ws-modified); }
+.eterx-git-confirm { margin:5px 12px 10px; padding:12px; border:1px solid var(--ws-muted); border-radius:9px; background:var(--ws-surface); flex-shrink:0; max-height:250px; overflow:auto; }
+.eterx-git-confirm > strong { display:block; font-size:12px; }
+.eterx-git-confirm p { font-size:11px; line-height:1.7; color:var(--ws-muted); margin-top:5px; overflow-wrap:anywhere; }
+.eterx-git-confirm > div { display:flex; justify-content:flex-end; gap:6px; margin-top:12px; }
+.eterx-git-confirm button { padding:6px 9px; }
+.eterx-git-confirm.is-danger { border-color:color-mix(in srgb,var(--ws-removed) 45%,var(--ws-border)); }
+.eterx-git-confirm.is-danger .eterx-git-primary { color:var(--ws-removed); background:var(--ws-removed-bg); }
+.eterx-git-branch-row,.eterx-git-stash-row { display:flex; align-items:center; min-width:0; gap:9px; padding:10px 7px; border-bottom:1px solid var(--ws-border); }
+.eterx-git-branch-row > svg { flex-shrink:0; color:var(--ws-muted); }
+.eterx-git-branch-row > .eterx-workspace-menu-anchor > button,.eterx-git-stash-row > .eterx-workspace-menu-anchor > button { width:32px; height:32px; padding:0; border-radius:8px; }
+.eterx-git-branch-row > .eterx-workspace-menu-anchor > button:focus-visible,.eterx-git-stash-row > .eterx-workspace-menu-anchor > button:focus-visible { outline:1px solid var(--ws-muted); outline-offset:2px; }
+.eterx-git-branch-row > .eterx-workspace-menu-anchor > button > svg,.eterx-git-stash-row > .eterx-workspace-menu-anchor > button > svg { width:16px; height:16px; }
+.eterx-git-branch-row > div:not(.eterx-workspace-menu-anchor) { flex:1; min-width:0; }
+.eterx-git-branch-row strong,.eterx-git-history-row strong,.eterx-git-stash-row strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:500; }
+.eterx-git-branch-row small,.eterx-git-history-row small,.eterx-git-stash-row small { display:block; color:var(--ws-muted); font-size:10px; margin-top:3px; }
+.eterx-git-branch-row p { color:var(--ws-muted); font-size:10px; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.eterx-git .eterx-git-history-row { display:flex; align-items:flex-start; gap:10px; padding:12px 7px; width:100%; text-align:left; border-radius:7px; }
+.eterx-git-history-row.is-selected { background:var(--ws-surface); }
+.eterx-git-history-row > svg { flex-shrink:0; color:var(--ws-muted); margin-top:2px; }
+.eterx-git-history-row > span { flex:1; min-width:0; }
+.eterx-git-history-row > code { font:10px var(--font-mono); color:var(--ws-muted); padding-top:2px; }
+.eterx-git-history-row em { display:inline-block; margin-top:6px; font-size:9px; font-style:normal; line-height:1.7; padding:1px 6px; border-radius:5px; background:var(--ws-surface); color:var(--ws-modified); }
+.eterx-git .eterx-git-stash-preview { display:flex; align-items:flex-start; text-align:left; min-width:0; flex:1; gap:9px; padding:3px; }
+.eterx-git-stash-preview > span { min-width:0; flex:1; }
+.eterx-git-stash-preview > svg { flex-shrink:0; margin-top:2px; color:var(--ws-muted); }
+.eterx-git-form { display:flex; flex-direction:column; gap:10px; padding:12px; margin:7px; border:1px solid var(--ws-border); border-radius:9px; background:var(--ws-surface); flex-shrink:0; }
+.eterx-git-form label:not(.eterx-git-checkbox) { display:flex; flex-direction:column; gap:6px; font-size:11px; font-weight:500; }
+.eterx-git-form p { font-size:10px; line-height:1.6; color:var(--ws-muted); }
+.eterx-git-form-actions { display:flex; justify-content:flex-end; gap:7px; }
+.eterx-git-form-actions > button { padding:6px 9px; }
+.eterx-git-checkbox { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--ws-muted); }
+.eterx-git-checkbox input { accent-color:var(--ws-text); }
+.eterx-git-inline-form { display:flex; gap:8px; padding:7px 12px; }
+.eterx-git-inline-form button { padding:6px 9px; border:1px solid var(--ws-border); }
+.eterx-git-note { padding:9px 12px; font-size:11px; color:var(--ws-muted); line-height:1.7; flex-shrink:0; }
+.eterx-git .eterx-git-load-more { display:flex; padding:10px; margin:6px auto; color:var(--ws-muted); font-size:11px; }
+.eterx-git-preview { display:flex; flex-direction:column; min-width:0; min-height:0; flex:1 1 48%; border-top:1px solid var(--ws-border); background:var(--ws-bg); }
+.eterx-git-body.has-preview .eterx-git-list-pane { flex:1 1 52%; }
+.eterx-git-preview-heading { display:flex; align-items:center; gap:7px; padding:6px 11px; border-bottom:1px solid var(--ws-border); flex-shrink:0; }
+.eterx-git-preview-heading > svg { color:var(--ws-muted); flex-shrink:0; }
+.eterx-git-preview-heading strong { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:500; }
+.eterx-git-preview-actions { display:flex; align-items:center; flex-wrap:wrap; gap:4px; padding:5px 11px; border-bottom:1px solid var(--ws-border); font-size:10px; color:var(--ws-muted); flex-shrink:0; }
+.eterx-git-preview-actions > span,.eterx-git-preview-actions > code { flex:1; }
+.eterx-git-preview-actions button { padding:4px 5px; }
+.eterx-git-diff-scroll { overflow:auto; flex:1 1 0%; min-height:0; overscroll-behavior:contain; }
+.eterx-git-diff { min-width:100%; width:max-content; font:11px/1.8 var(--font-mono); tab-size:4; padding:8px 0; }
+.eterx-git-diff > span { display:block; min-height:1.8em; padding:0 12px; white-space:pre; }
+.eterx-git-diff > .is-added { background:var(--ws-added-bg); color:var(--ws-added); }
+.eterx-git-diff > .is-removed { background:var(--ws-removed-bg); color:var(--ws-removed); }
+.eterx-git-diff > .is-hunk { background:var(--ws-surface); color:var(--ws-modified); }
+.eterx-git-diff > .is-meta { color:var(--ws-muted); }
+.eterx-git-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:28px; padding:4px 12px; border-top:1px solid var(--ws-border); color:var(--ws-muted); font-size:9px; flex-shrink:0; }
+.eterx-git-footer button { padding:3px; }
+@container eterx-workspace (min-width:780px) {
+  .eterx-git-body { flex-direction:row; }
+  .eterx-git-body.has-preview .eterx-git-list-pane { flex:0 0 40%; max-width:420px; }
+  .eterx-git-preview { flex:1 1 0%; border-top:0; border-left:1px solid var(--ws-border); }
+}
+@container eterx-workspace (max-width:360px) {
+  .eterx-git-nav button { padding-inline:5px; font-size:10px; gap:4px; }
+  .eterx-git-nav button > svg { display:none; }
+  .eterx-git-file-name { flex-direction:column; gap:2px; align-items:stretch; }
+  .eterx-git-file-name small { flex:auto; }
+  .eterx-git-track { display:none; }
+  .eterx-git-commit-form > div { flex-wrap:wrap; }
+  .eterx-git-history-row > code { display:none; }
+}
+@media (prefers-reduced-motion:reduce) { .eterx-git button { transition:none; } }
+.eterx-git-composer-count { font-size:9px; opacity:.65; font-variant-numeric:tabular-nums; padding:1px 4px; border:1px solid currentColor; border-radius:5px; }
+.eterx-git-composer-refresh { float:right; display:flex; align-items:center; justify-content:center; width:22px; height:20px; opacity:.65; }
+.eterx-git-composer-error { display:flex; align-items:flex-start; gap:7px; padding:8px 10px; font-size:11px; line-height:1.6; color:#d35f6c; }
+.eterx-git-composer-error > svg { flex-shrink:0; margin-top:2px; }
+.eterx-git-composer-error > span { white-space:pre-wrap; overflow-wrap:anywhere; max-height:120px; overflow:auto; }
+.eterx-git-composer-hint { padding:8px 11px; font-size:10px; line-height:1.6; opacity:.6; }
+.eterx-git-composer-create { display:flex; align-items:center; gap:6px; padding:8px; }
+.eterx-git-composer-create input { min-width:0; width:100%; padding:7px; border:1px solid color-mix(in srgb,currentColor 18%,transparent); border-radius:6px; font-size:12px; background:transparent; outline:none; }
+.eterx-git-composer-create input:focus-visible { outline:1px solid currentColor; }
+.eterx-git-composer-create button { display:flex; align-items:center; gap:4px; padding:7px; font-size:11px; border:1px solid color-mix(in srgb,currentColor 18%,transparent); border-radius:6px; }

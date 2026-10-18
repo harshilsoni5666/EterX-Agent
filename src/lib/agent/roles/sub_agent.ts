@@ -328,6 +328,15 @@ export function closeAgent(
   const activeAgentId = expectedAgentId || globalSubAgentSpawner.findActiveAgentId(projectId, agentName);
   const queuedNode = swarmCoordinator.get(activeAgentId);
   if (queuedNode && queuedNode.projectId === resolveProjectId(projectId) && queuedNode.name.toLowerCase() === agentName.toLowerCase() && ['queued', 'waiting'].includes(queuedNode.state)) {
+    const key = agentKey(projectId, agentName, queuedNode.id);
+    controlAgentNames.set(key, agentName);
+    agentCloseFlags.set(key, true);
+    globalSubAgentSpawner.clearDirectUserMessages(
+      projectId,
+      agentName,
+      queuedNode.id,
+      queuedAdmissionCutoff,
+    );
     globalSubAgentSpawner.cancelBranch(projectId, queuedNode.id);
     return true;
   }

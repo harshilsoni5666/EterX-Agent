@@ -272,11 +272,12 @@ export const WorkspaceCode = memo(function WorkspaceCode({ content, path = '', l
   </div>;
 });
 
-export function WorkspaceMenu({ label, trigger, children, onOpen }: { label: string; trigger: React.ReactNode; children: React.ReactNode; onOpen?: () => void }) {
+export function WorkspaceMenu({ label, trigger, children, onOpen, disabled = false, align = 'end' }: { label: string; trigger: React.ReactNode; children: React.ReactNode; onOpen?: () => void; disabled?: boolean; align?: 'start' | 'end' }) {
   const [open, setOpen] = useState(false);
   const node = useRef<HTMLDivElement>(null);
   const focusEdge = useRef<'first' | 'last' | null>(null);
   useLayoutEffect(() => {
+    if (disabled) { setOpen(false); return; }
     if (!open) return;
     const anchor = node.current, menu = anchor?.querySelector<HTMLElement>('[role="menu"]');
     if (!anchor || !menu) return;
@@ -289,7 +290,8 @@ export function WorkspaceMenu({ label, trigger, children, onOpen }: { label: str
       const topEdge = Math.max(8, (frame?.top || 0) + 8);
       menu.style.maxHeight = Math.max(60, bottom - topEdge) + 'px';
       const width = menu.offsetWidth, height = menu.offsetHeight;
-      menu.style.left = Math.max(leftEdge, Math.min(bounds.right - width, rightEdge - width)) - bounds.left + 'px';
+      const preferredLeft = align === 'start' ? bounds.left : bounds.right - width;
+      menu.style.left = Math.max(leftEdge, Math.min(preferredLeft, rightEdge - width)) - bounds.left + 'px';
       menu.style.right = 'auto';
       menu.style.top = Math.max(topEdge, Math.min(bounds.bottom + 5, bottom - height)) - bounds.top + 'px';
     };
@@ -301,7 +303,7 @@ export function WorkspaceMenu({ label, trigger, children, onOpen }: { label: str
     const observer = new ResizeObserver(position); observer.observe(anchor); observer.observe(menu); if (pane) observer.observe(pane);
     window.addEventListener('resize', position);
     return () => { observer.disconnect(); window.removeEventListener('resize', position); };
-  }, [open]);
+  }, [open, disabled, align]);
   useEffect(() => {
     if (!open) return;
     const close = (event: PointerEvent) => { if (!node.current?.contains(event.target as Node)) setOpen(false); };
@@ -309,6 +311,7 @@ export function WorkspaceMenu({ label, trigger, children, onOpen }: { label: str
     return () => document.removeEventListener('pointerdown', close);
   }, [open]);
   return <div ref={node} className="eterx-workspace-menu-anchor" onKeyDown={event => {
+    if (disabled) return;
     if (event.key === 'Escape') { event.preventDefault(); setOpen(false); node.current?.querySelector('button')?.focus(); event.stopPropagation(); }
     if (event.key === 'Tab') setOpen(false);
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && (!(event.target instanceof HTMLInputElement) || !['Home', 'End'].includes(event.key))) {
@@ -320,8 +323,8 @@ export function WorkspaceMenu({ label, trigger, children, onOpen }: { label: str
       items[next]?.focus();
     }
   }}>
-    <button aria-label={label} aria-expanded={open} aria-haspopup="menu" onClick={() => { if (!open) onOpen?.(); setOpen(value => !value); }}>{trigger}</button>
-    {open && <div className="eterx-workspace-menu eterx-scrollbar" role="menu" aria-label={label} onClick={event => { if ((event.target as HTMLElement).closest('button')) { setOpen(false); node.current?.querySelector('button')?.focus(); } }}>{children}</div>}
+    <button type="button" aria-label={label} aria-expanded={open && !disabled} aria-haspopup="menu" disabled={disabled} onClick={() => { if (!open) onOpen?.(); setOpen(value => !value); }}>{trigger}</button>
+    {open && !disabled && <div className="eterx-workspace-menu eterx-scrollbar" role="menu" aria-label={label} onClick={event => { if ((event.target as HTMLElement).closest('button')) { setOpen(false); node.current?.querySelector('button')?.focus(); } }}>{children}</div>}
   </div>;
 }
 

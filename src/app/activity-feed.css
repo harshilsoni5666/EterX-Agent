@@ -1,6 +1,8 @@
 /* The group heading sits on the transcript. The activity list is a quiet
    scroll region; only expanded tool details receive a visible surface. */
-.eterx-activity-panel {
+.eterx-thinking-process-stack,
+.eterx-activity-panel,
+.eterx-thought-block {
   --activity-surface: var(--background, #111111);
   --activity-border: #2b2b2b;
   --activity-divider: #252525;
@@ -10,13 +12,16 @@
   --activity-detail: #a3a29e;
   --activity-focus: #a6a6a2;
   --activity-alert: #e6ac97;
+  --activity-live-ink: #a7a8a4;
+  --activity-live-highlight: #e8e9e6;
   --activity-height: min(320px, 42dvh);
-  --activity-font: "Segoe UI Variable Text", var(--font-sans), -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --activity-font: var(--font-sans, "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif);
+  --activity-font-size: 13.5px;
   min-width: 0;
   isolation: isolate;
 }
 
-:root[data-theme="light"] .eterx-activity-panel {
+:root[data-theme="light"] :is(.eterx-thinking-process-stack, .eterx-activity-panel, .eterx-thought-block) {
   --activity-surface: var(--background, #ffffff);
   --activity-border: #e4e4e2;
   --activity-divider: #ededeb;
@@ -26,6 +31,81 @@
   --activity-detail: #62625e;
   --activity-focus: #666660;
   --activity-alert: #a0412a;
+  --activity-live-ink: #62635f;
+  --activity-live-highlight: #242522;
+}
+
+/* Agent events need light-theme ink rather than their dark-theme warm grays. */
+:root[data-theme="light"] :is(.eterx-feed-agent-chip, .eterx-feed-agent-card) {
+  color: #454540 !important;
+  background: #f5f5f3 !important;
+  border-color: #ddddd8 !important;
+}
+
+:root[data-theme="light"] :is(.eterx-feed-agent-chip, .eterx-feed-agent-card):is(:hover, :focus-visible) {
+  background: #eaeae6 !important;
+  border-color: #c7c7c0 !important;
+  color: #252522 !important;
+}
+
+:root[data-theme="light"] :is(.eterx-feed-agent-chip, .eterx-feed-agent-card):focus-visible {
+  outline: 2px solid #77776f;
+  outline-offset: 2px;
+}
+
+:root[data-theme="light"] :is(.eterx-feed-agent-chip, .eterx-feed-agent-card, .eterx-feed-agent-action) .eterx-feed-agent-name {
+  color: #3c3c37 !important;
+}
+
+:root[data-theme="light"] :is(.eterx-feed-agent-spawn, .eterx-feed-agent-card, .eterx-feed-agent-action) .eterx-feed-agent-status {
+  color: #66665f !important;
+}
+
+:root[data-theme="light"] .eterx-feed-agent-status-dot { background: #77776f !important; }
+:root[data-theme="light"] .eterx-feed-agent-status-dot:is([data-agent-status="working"], [data-agent-status="completed"]) { background: #20845e !important; }
+:root[data-theme="light"] .eterx-feed-agent-status-dot[data-agent-status="failed"] { background: #c13e35 !important; }
+:root[data-theme="light"] .eterx-feed-agent-status-dot[data-agent-status="paused"] { background: #a56b13 !important; }
+
+/* Action labels and status rows are UI chrome, including standalone events.
+   Target only their rows, never expanded output or conversation content. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(
+  .eterx-worked-summary-button,
+  .eterx-action-sequence-header,
+  .eterx-browser-activity-header,
+  .eterx-action-group-header,
+  .eterx-thought-toggle,
+  .eterx-terminal-trace-row,
+  .eterx-file-change-row,
+  .eterx-action-chip,
+  .eterx-feed-agent-card,
+  .eterx-feed-agent-spawn,
+  .eterx-feed-agent-action,
+  .eterx-agent-comm-card,
+  .eterx-proxy-status-divider,
+  .eterx-context-compaction
+) {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(
+  .eterx-worked-summary-button,
+  .eterx-action-sequence-header,
+  .eterx-browser-activity-header,
+  .eterx-action-group-header,
+  .eterx-thought-toggle,
+  .eterx-terminal-trace-row,
+  .eterx-file-change-row,
+  .eterx-action-chip,
+  .eterx-feed-agent-card,
+  .eterx-feed-agent-spawn,
+  .eterx-feed-agent-action,
+  .eterx-agent-comm-card,
+  .eterx-proxy-status-divider,
+  .eterx-context-compaction
+) * {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* No outer card or header bar, including on hover and in the side chat. */
@@ -50,10 +130,11 @@
   background: transparent !important;
   color: var(--activity-ink) !important;
   font-family: var(--activity-font) !important;
-  font-size: 13.5px !important;
+  font-size: var(--activity-font-size) !important;
   font-weight: 500;
   line-height: 22px;
   letter-spacing: -0.01em;
+  font-kerning: normal;
 }
 
 :root[data-theme] .eterx-activity-panel .eterx-action-sequence-header[hidden] { display: none; }
@@ -78,9 +159,33 @@
   font: inherit !important;
 }
 
-:root[data-theme] .eterx-activity-panel :is(.eterx-action-sequence-header, .eterx-browser-activity-header) .shimmer,
-:root[data-theme] .eterx-live-working-indicator .shimmer {
-  --shimmer-duration: 3s !important;
+/* One palette for live activity text. Brighten in dark mode and deepen in
+   light mode, so the passing highlight never washes out the words. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thinking-process-stack, .eterx-activity-panel, .eterx-thought-block) .shimmer {
+  --shimmer-base: var(--activity-live-ink);
+  --shimmer-color: var(--activity-live-highlight);
+  --shimmer-duration: 3s;
+}
+
+/* Startup, waiting and generic group labels share the heading typography.
+   The text-sized sweep stays visible even on a short Thinking/Working label. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-live-status-label.shimmer {
+  --shimmer-duration: 3s;
+  --shimmer-base: var(--activity-live-ink, #a7a8a4);
+  --shimmer-color: var(--activity-live-highlight, #e8e9e6);
+  --shimmer-band-width: clamp(28px, calc(var(--shimmer-width, 120px) * .5), 100px);
+  color: var(--activity-live-ink, #a7a8a4) !important;
+  font-family: var(--activity-font, var(--font-sans)) !important;
+  font-size: var(--activity-font-size, 13.5px) !important;
+  font-weight: 500 !important;
+  line-height: 22px !important;
+  letter-spacing: normal !important;
+}
+
+:root[data-theme="light"] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-live-status-label.shimmer {
+  --shimmer-base: var(--activity-live-ink, #62635f);
+  --shimmer-color: var(--activity-live-highlight, #242522);
+  color: var(--activity-live-ink, #62635f) !important;
 }
 
 :root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-sequence-caret {
@@ -99,9 +204,27 @@
 
 :root[data-theme] .eterx-activity-panel .eterx-sequence-icon :is(svg, img) { top: 0 !important; }
 
-.eterx-activity-disclosure { border: 0; padding-top: 2px; }
+/* Keep the heading and rows on the same clean, unframed transcript column. */
+.eterx-activity-disclosure {
+  margin: 0;
+  padding: 2px 0 0;
+  border: 0;
+}
 .eterx-activity-disclosure[hidden] { display: none; }
 .eterx-activity-body, .eterx-activity-scroll-frame { position: relative; min-width: 0; }
+
+/* Match the subtle disclosure motion without animating row size or scrolling. */
+:is(.eterx-activity-panel, .eterx-thinking-process-stack, .eterx-thought-block) :is(.eterx-thought-chevron, .eterx-sequence-caret svg, [aria-expanded] > svg:last-child) {
+  transition-property: transform, color;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.22, 0.8, 0.3, 1);
+}
+
+/* Reserve space for the child disclosure and its header/footer within the
+   group's compact viewport. Full history keeps the same readable child size. */
+.eterx-activity-body {
+  --activity-child-height: max(0px, calc(var(--activity-height) - 80px));
+}
 
 .eterx-activity-viewport {
   --eterx-sb-size: 6px;
@@ -183,7 +306,7 @@
 
 :root[data-theme] .eterx-activity-panel .eterx-action-row-divider { border: 0 !important; }
 
-:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thinking-process-stack, .eterx-activity-panel) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
   min-height: 28px !important;
   height: auto !important;
   padding: 3px 0 !important;
@@ -193,12 +316,19 @@
   background: transparent !important;
   color: var(--activity-ink) !important;
   font-family: var(--activity-font) !important;
-  font-size: 13.5px !important;
+  font-size: var(--activity-font-size) !important;
+  font-weight: 400 !important;
   line-height: 22px !important;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.01em !important;
+  font-kerning: normal;
 }
 
-:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row):is(:hover, :focus-visible) {
+/* Expanded child rows retain the quiet hover surface until closed. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thinking-process-stack, .eterx-activity-panel) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row):is(:hover, :focus-visible, [aria-expanded="true"]) {
+  background: var(--activity-hover) !important;
+}
+
+:root[data-theme] :is(.eterx-thinking-process-stack, .eterx-activity-panel) .eterx-file-operation-notice[open] > summary {
   background: var(--activity-hover) !important;
 }
 
@@ -216,22 +346,23 @@
   color: inherit !important;
 }
 
-:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-trace-label, .eterx-action-verb, .eterx-file-change-title, .eterx-file-change-filename) {
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thinking-process-stack, .eterx-activity-panel) :is(.eterx-trace-label, .eterx-action-verb, .eterx-file-change-title, .eterx-file-change-filename, .eterx-action-file-link) {
   color: var(--activity-ink) !important;
   font-family: var(--activity-font) !important;
-  font-size: 13.5px !important;
+  font-size: var(--activity-font-size) !important;
   font-weight: 400 !important;
   line-height: 22px !important;
+  letter-spacing: normal !important;
 }
 
-:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel .eterx-trace-command,
-:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-terminal-trace-row, .eterx-action-chip, .eterx-file-change-row) > .font-mono {
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thinking-process-stack, .eterx-activity-panel) .eterx-trace-command,
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thinking-process-stack, .eterx-activity-panel) :is(.eterx-terminal-trace-row, .eterx-action-chip, .eterx-file-change-row) > .font-mono {
   color: var(--activity-detail) !important;
   font-family: var(--activity-font) !important;
-  font-size: 13.5px !important;
+  font-size: var(--activity-font-size) !important;
   font-weight: 400 !important;
   line-height: 22px !important;
-  letter-spacing: -0.01em;
+  letter-spacing: normal !important;
 }
 
 .eterx-trace-duration {
@@ -258,9 +389,163 @@
   color: var(--activity-alert) !important;
 }
 
-/* Thinking retains its original disclosure, spacing, chevron and reading
-   container. This stylesheet only changes the tool activity presentation. */
+/* Thought disclosures keep their label and adjacent chevron, with the same
+   full-row hit target and hover surface as commands. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle {
+  width: 100% !important;
+  min-height: 30px !important;
+  height: 30px !important;
+  padding: 1px 2px !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  cursor: pointer;
+  font-family: var(--activity-font) !important;
+}
+
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-thought-toggle:is(:hover, :focus-visible, [aria-expanded="true"]) {
+  background: var(--activity-hover) !important;
+}
+
+/* Override the older shared scrollbar containment only within activity.
+   Touch scrolling can chain naturally. Wheel handoff only takes over at an
+   already-reached edge, in either direction; horizontal navigation is native. */
+:root :is(.eterx-thinking-process-stack, .eterx-activity-panel, .eterx-thought-block) :is(.eterx-scrollbar, .eterx-thought-expanded, .eterx-activity-viewport) {
+  overscroll-behavior-y: auto !important;
+  scroll-behavior: auto !important;
+}
+
 .eterx-activity-note { margin-block: 4px; }
+
+/* The invocation stays outside the output viewport, including when expanded. */
+.eterx-terminal-console.eterx-activity-child-panel {
+  min-width: 0;
+  --terminal-divider: color-mix(in srgb, var(--foreground) 9%, transparent);
+}
+
+.eterx-terminal-command-header {
+  flex: none;
+  min-width: 0;
+  max-height: 45%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--terminal-divider);
+  background: color-mix(in srgb, var(--foreground) 2%, transparent);
+}
+
+.eterx-terminal-command-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.eterx-terminal-command-toggle {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 2px;
+  border-radius: 5px;
+  text-align: left;
+  color: var(--activity-ink, var(--foreground));
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+
+.eterx-terminal-command-toggle:hover {
+  background: var(--activity-hover, rgb(128 128 128 / 8%));
+}
+
+.eterx-terminal-command-toggle:focus-visible {
+  outline: 2px solid var(--activity-focus, var(--muted-foreground));
+  outline-offset: 2px;
+}
+
+.eterx-terminal-command-toggle .eterx-terminal-console-command {
+  display: block;
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.eterx-terminal-command-toggle .eterx-terminal-console-command[data-expanded="true"] {
+  overflow: visible;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.eterx-terminal-prompt {
+  flex: none;
+  color: var(--activity-muted, var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.eterx-terminal-command-chevron {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-top: 4px;
+  opacity: 0.5;
+  transition: transform 160ms ease;
+}
+
+.eterx-terminal-command-toggle[aria-expanded="true"] .eterx-terminal-command-chevron {
+  transform: rotate(180deg);
+}
+
+.eterx-terminal-command-copy { flex: none; }
+
+.eterx-terminal-console .eterx-terminal-output-frame {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.eterx-terminal-console .eterx-terminal-console-scroll {
+  flex: 1 1 auto;
+  max-height: 100%;
+  --terminal-fade-top: 0px;
+  --terminal-fade-bottom: 0px;
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--terminal-fade-top), #000 calc(100% - var(--terminal-fade-bottom)), transparent);
+}
+
+.eterx-terminal-output-frame[data-at-top="false"] .eterx-terminal-console-scroll {
+  --terminal-fade-top: 14px;
+}
+
+.eterx-terminal-output-frame[data-at-bottom="false"] .eterx-terminal-console-scroll {
+  --terminal-fade-bottom: 20px;
+}
+
+.eterx-terminal-console .eterx-terminal-console-output { padding: 8px 12px; }
+
+.eterx-terminal-console .eterx-terminal-console-footer {
+  min-height: 28px;
+  padding: 4px 10px;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.eterx-terminal-console-footer > span { flex: 1 1 0%; }
+.eterx-terminal-console-footer > div { flex-shrink: 0; }
+
+.eterx-terminal-command-copy button {
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eterx-terminal-command-toggle,
+  .eterx-terminal-command-chevron { transition: none; }
+}
 
 /* Tool output is the visible card inside the otherwise unframed list.
    Keep its existing command, copy action, output and status-footer layout. */
@@ -281,13 +566,42 @@
   font-variant-ligatures: none;
 }
 
-/* Compact groups own vertical scrolling for expanded tool output as well.
-   Full activity restores each result's own limit. Horizontal code/table
-   scrolling remains available, and native scrolling passes through at ends. */
-.eterx-activity-body[data-expanded="false"] :is(.eterx-terminal-console-output, .eterx-inline-code-scroll, .eterx-inline-diff-scroll, .eterx-tool-result-scroll) {
-  max-height: none !important;
-  overflow-y: visible !important;
-  overscroll-behavior: auto !important;
+/* Every expanded result shares the same footprint, including its own chrome.
+   Content scrolls inside that budget instead of resizing the activity feed.
+   Fullscreen file viewers do not carry these classes. */
+.eterx-activity-child-panel,
+.eterx-activity-child-scroll {
+  min-height: 0;
+  max-height: var(--activity-child-height, max(0px, calc(var(--activity-height, min(320px, 42dvh)) - 80px)));
+}
+
+.eterx-activity-child-panel {
+  display: flex;
+  flex-direction: column;
+  height: var(--activity-child-height, max(0px, calc(var(--activity-height, min(320px, 42dvh)) - 80px)));
+  min-width: 0;
+  overflow: hidden;
+}
+
+.eterx-activity-child-frame {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.eterx-activity-child-scroll {
+  --eterx-sb-size: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior-y: auto;
+  scrollbar-gutter: stable;
+  scroll-padding-block: 12px;
+}
+
+.eterx-activity-child-panel > :is(.eterx-terminal-console-footer, .eterx-inline-code-header, .eterx-inline-diff-header, .eterx-trp-card-header) {
+  flex-shrink: 0;
 }
 
 .eterx-trp-card {
@@ -299,14 +613,14 @@
 .eterx-tool-result-scroll {
   --eterx-sb-size: 6px;
   min-width: 0;
-  max-height: min(320px, 42dvh);
+  max-height: var(--activity-child-height, max(0px, calc(var(--activity-height, min(320px, 42dvh)) - 80px)));
   overflow: auto;
   overscroll-behavior: auto;
   scrollbar-gutter: stable;
   scroll-padding-block: 12px;
 }
 
-.eterx-tool-result-scroll:focus-visible {
+.eterx-activity-child-scroll:focus-visible {
   outline: 2px solid var(--activity-focus, var(--muted-foreground));
   outline-offset: -2px;
 }
@@ -436,6 +750,8 @@
    the main transcript or source editor rails. */
 :root .eterx-activity-viewport::-webkit-scrollbar-button,
 :root .eterx-activity-viewport::-webkit-scrollbar-button:single-button,
+:root .eterx-activity-child-scroll::-webkit-scrollbar-button,
+:root .eterx-activity-child-scroll::-webkit-scrollbar-button:single-button,
 :root .eterx-tool-result-scroll::-webkit-scrollbar-button,
 :root .eterx-tool-result-scroll::-webkit-scrollbar-button:single-button {
   display: none !important;
@@ -460,7 +776,7 @@
 }
 
 @media (pointer: coarse) {
-  :root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-activity-panel :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row) {
+  :root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) :is(.eterx-thinking-process-stack, .eterx-activity-panel, .eterx-thought-block) :is(.eterx-action-chip, .eterx-terminal-trace-row, .eterx-file-change-row, .eterx-thought-toggle) {
     min-height: 40px !important;
   }
   .eterx-activity-footer button { min-height: 40px; }
@@ -468,10 +784,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .eterx-activity-panel, .eterx-activity-panel * { scroll-behavior: auto !important; }
+  :is(.eterx-activity-panel, .eterx-thinking-process-stack, .eterx-thought-block) :is(.eterx-thought-chevron, .eterx-sequence-caret svg, [aria-expanded] > svg:last-child) {
+    transition-duration: 0s;
+  }
 }
 
 @media (forced-colors: active) {
-  :root[data-theme] .eterx-activity-panel {
+  :root[data-theme] :is(.eterx-thinking-process-stack, .eterx-activity-panel, .eterx-thought-block) {
     --activity-surface: Canvas;
     --activity-border: ButtonText;
     --activity-divider: GrayText;

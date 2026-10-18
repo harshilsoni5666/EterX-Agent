@@ -304,7 +304,6 @@ html[data-theme="light"] .eterx-side-workspace img.eterx-workspace-pack-icon:is(
 .eterx-workspace-markdown :is(.eterx-markdown-th,.eterx-markdown-td) { min-width:100px; padding:10px 14px; line-height:1.6; }
 .eterx-workspace-markdown .eterx-markdown-hr { margin-block:2em; border-color:var(--ws-border); }
 .eterx-workspace-markdown .eterx-workspace-markdown-image { display:block; max-width:100%; height:auto; margin:1.25em auto; border-radius:8px; }
-.eterx-workspace-markdown .katex-display { max-width:100%; overflow-x:auto; overflow-y:hidden; padding-block:4px; }
 .eterx-workspace-markdown .footnotes { margin-top:2.5em; padding-top:1em; border-top:1px solid var(--ws-border); font-size:.85em; }
 .eterx-workspace-markdown-empty { padding-block:24px; color:var(--ws-muted); }
 .eterx-workspace-files[data-markdown="true"] .eterx-workspace-load-more { display:flex; margin:12px auto 24px; max-width:calc(100% - 32px); }

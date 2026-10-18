@@ -492,12 +492,11 @@ function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
     const type = normalizedPersistedActionType(log?.type);
     const strongKeys = [...persistedActionIdentities(log)].map(identity => `${ scope }:${ type }:${ identity }`);
     const replaySignature = persistedActionReplaySignature(log);
-    const likelyReplayIndex = findLikelyActionIndex(log);
     const correlatedIndex = strongKeys
       .map(key => actionIndexes.get(key))
       .find(index => index !== undefined) ?? (
         replaySignature ? actionIndexes.get(`replay:${ replaySignature }`) : undefined
-      ) ?? likelyReplayIndex;
+      ) ?? findLikelyActionIndex(log);
     const existingIndex = correlatedIndex !== undefined &&
       haveConflictingFeedActionInvocations(canonical[correlatedIndex], log)
       ? undefined
@@ -566,12 +565,14 @@ function canonicalizePersistedActionLogs(traceLogs: any[]): any[] {
   return canonical.filter(Boolean);
 }
 
-function trimTask(task: PersistedTask, compactAll = false): void {
-  task.prompt = String(task.prompt || '').replace(/\u0000/g, '');
-  task.finalAnswer = String(task.finalAnswer || '').substring(0, MAX_FINAL_ANSWER_CHARS);
+function trimTask(task: PersistedTask, compactAll = false, reconcileActions = true): void {
+  if (reconcileActions || compactAll) {
+    task.prompt = String(task.prompt || '').replace(/\u0000/g, '');
+    task.finalAnswer = String(task.finalAnswer || '').substring(0, MAX_FINAL_ANSWER_CHARS);
+  }
   const limit = task.status === 'running' ? MAX_RUNNING_TRACE_LOGS : MAX_COMPLETED_TRACE_LOGS;
   if (!Array.isArray(task.traceLogs)) task.traceLogs = [];
-  task.traceLogs = canonicalizePersistedActionLogs(task.traceLogs);
+  if (reconcileActions || compactAll) task.traceLogs = canonicalizePersistedActionLogs(task.traceLogs);
   if (task.traceLogs.length > limit) task.traceLogs = trimTraceLedgerWithBoundary(task.traceLogs, limit);
   if (compactAll) task.traceLogs = task.traceLogs.map(compactTraceEvent);
 }
@@ -1575,8 +1576,14 @@ export const taskStore = {
     }
     task.lastUpdatedAt = now;
     
-    // Keep trace logs bounded to prevent massive files
-    trimTask(task);
+    // Text/console chunks already update their own lifecycle row above. They
+    // cannot introduce an action, plan, or usage duplicate, so do not rebuild
+    // every historical action index for each provider token. Reconcile on
+    // relevant events and before every durable snapshot; retention still runs
+    // on every append and the existing persistence cadence stays unchanged.
+    const eventType = String(timedEvent?.type || '');
+    trimTask(task, false, PERSISTED_ACTION_TRACE_TYPES.has(eventType) ||
+      eventType === 'task_plan' || eventType === 'context_usage' || eventType === 'model_usage');
     
     scheduleDiskWrite(chatId);
   },

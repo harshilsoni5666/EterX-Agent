@@ -5,10 +5,16 @@ type Line = NonNullable<FilePanelProps['diffLines']>[number];
 
 // Only settled previews and explicit mutation results are evidence of an
 // edit. Reading a file or mentioning it in prose must not create a change row.
+export function isWorkspaceReviewTrace(log: any): boolean {
+  return Boolean(log && !log.isLive && !log.isStreaming && log.streamState !== 'open' &&
+    !['running', 'pending', 'error', 'failed', 'cancelled'].includes(log.status) &&
+    (log.type === 'file_preview' || log.fileOperationResult || log.toolResult || log.result));
+}
+
 export function collectWorkspaceReviewFiles(logs: any[], owner?: string): ReviewChange[] {
   const files = new Map<string, ReviewChange>();
   for (const log of logs) {
-    if (!log || (owner && log.ownerChatId && log.ownerChatId !== owner) || log.isLive || log.isStreaming || ['running', 'pending', 'error', 'failed', 'cancelled'].includes(log.status) || log.streamState === 'open') continue;
+    if (!isWorkspaceReviewTrace(log) || (owner && log.ownerChatId && log.ownerChatId !== owner)) continue;
     let result = log.fileOperationResult || log.toolResult || log.result || {};
     if (typeof result === 'string') { try { result = JSON.parse(result); } catch { result = {}; } }
     if (!result || result.success === false || result.rolledBack || result.operation === 'none') continue;

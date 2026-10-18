@@ -138,6 +138,7 @@ function buildMetadata(body: Record<string, any>, fallback?: {
 function formatMessage(message: any) {
   return {
     id: message.id,
+    revision: message.revision,
     from: message.from,
     to: message.to,
     projectId: message.projectId,
@@ -317,17 +318,27 @@ export async function GET(request: NextRequest) {
       const type = MESSAGE_TYPES.includes(typeParam as MessageType) ? typeParam as MessageType : undefined;
       const from = cleanString(searchParams.get('from') || '', 120);
       const to = cleanString(searchParams.get('to') || '', 120);
-      const messages = interAgentMailbox.getProjectMessages(projectId, {
+      const latestRevision = interAgentMailbox.getProjectMessageRevision(projectId);
+      const history = interAgentMailbox.getProjectMessages(projectId, {
         agentName: agentName || undefined,
         type,
         from: from || undefined,
         to: to || undefined,
-        // Apply the child-thread filter before the public page limit.
-        limit: subAgentChatId ? 1000 : limit,
-      }).filter(message => messageMatchesAgentRun(message, agentName, subAgentChatId)).slice(-limit);
+        afterRevision: afterRevision >= 0 ? afterRevision : undefined,
+        messageFilter: subAgentChatId
+          ? message => messageMatchesAgentRun(message, agentName, subAgentChatId)
+          : undefined,
+      });
+      const messages = afterRevision >= 0 ? history.slice(0, limit) : history.slice(-limit);
+      const hasMore = afterRevision >= 0 && history.length > messages.length;
+      const nextRevision = hasMore && messages.length > 0
+        ? Number(messages[messages.length - 1].revision || afterRevision)
+        : latestRevision;
       return respond({
         success: true,
-        revision: interAgentMailbox.getProjectMessageRevision(projectId),
+        revision: nextRevision,
+        latestRevision,
+        hasMore,
         agentName: agentName || undefined,
         messages: messages.map(formatMessage),
         count: messages.length,

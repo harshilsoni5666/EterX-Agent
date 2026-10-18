@@ -1,6 +1,7 @@
 'use client';
 import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
 import { requestJson } from '../../lib/request-json';
+import { DEFAULT_GIT_PREFERENCES, normalizeGitPreferences } from '../../lib/git/preferences';
 import { DEFAULT_SCRATCH_RETENTION_DAYS, normalizeScratchRetention } from '../../lib/managed-workspaces';
 import { ScratchRetentionControl } from './scratch-retention-control';
 import { beginModelCatalogRequest } from '../../lib/model-catalog-client';
@@ -386,7 +387,10 @@ export interface AppSettings {
   mcpServersEnabled: boolean;
   hooksEnabled: boolean;
   gitIntegration: boolean;
+  gitWorkspaceEnabled: boolean;
   gitAutoDetect: boolean;
+  gitBranchPrefix: string;
+  gitConfirmPush: boolean;
   gitMergeMethod: 'merge' | 'squash';
   showPrStatus: boolean;
   isolatedEnvironments: boolean;
@@ -460,9 +464,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   keyboardShortcuts: true,
   mcpServersEnabled: true,
   hooksEnabled: false,
-  gitIntegration: true,
-  gitAutoDetect: true,
-  gitMergeMethod: 'merge',
+  ...DEFAULT_GIT_PREFERENCES,
   showPrStatus: false,
   isolatedEnvironments: true,
   worktreesEnabled: false,
@@ -503,6 +505,7 @@ const normalizeAppSettings = (value: unknown): AppSettings => {
     ? value as Partial<AppSettings>
     : {};
   const next = { ...DEFAULT_SETTINGS, ...stored } as AppSettings;
+  Object.assign(next, normalizeGitPreferences(stored));
   next.dictationModel = typeof stored.dictationModel === 'string' && stored.dictationModel.trim()
     ? stored.dictationModel : DEFAULT_SETTINGS.dictationModel;
   next.dictationLanguage = typeof stored.dictationLanguage === 'string' && /^(auto|[a-z]{2,3})$/.test(stored.dictationLanguage)
@@ -5416,16 +5419,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                         <div>
                           <SectionHeader title="Git" />
                           <SettingsStack>
-                            <SettingsStackRow title="Git integration" description="Detect repository status and expose branch-aware actions inside the agent workflow.">
+                            <SettingsStackRow title="Git integration" description="Show the current branch and enable repository actions in the composer and Git workspace.">
                               <Toggle enabled={settings.gitIntegration} onChange={v => updateSetting('gitIntegration', v)} />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Auto-detect changes" description="Refresh changed files and branch status while the agent edits the workspace.">
+                            <SettingsStackRow title="Git workspace tab" description="Add Git alongside Files, Review, and Terminal. Stage changes, commit, manage branches, and browse history and stashes.">
+                              <Toggle enabled={settings.gitWorkspaceEnabled} onChange={v => updateSetting('gitWorkspaceEnabled', v)} />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Auto-refresh local status" description="Refresh while Git is visible and when returning to the app. Remote fetches, pulls, and pushes always start with your action.">
                               <Toggle enabled={settings.gitAutoDetect} onChange={v => updateSetting('gitAutoDetect', v)} />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Branch prefix" description="Default prefix for new EterX-created branches.">
-                              <span className="rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 font-mono text-[13px] text-[#CFCFCF]">eterx/</span>
+                            <SettingsStackRow title="Branch prefix" description="Prefill new branch names. You can edit the full name before creating a branch.">
+                              <input aria-label="Git branch prefix" value={settings.gitBranchPrefix} maxLength={120} onChange={event => updateSetting('gitBranchPrefix', event.target.value)} placeholder="eterx/" className="w-36 rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 font-mono text-[13px] text-[#CFCFCF] outline-none focus:border-white/30" />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Pull request merge method" description="Default merge strategy for repository workflows.">
+                            <SettingsStackRow title="Branch merge method" description="Merge creates or fast-forwards a commit. Squash stages the combined changes for you to review and commit.">
                               <SegmentedControl
                                 value={settings.gitMergeMethod}
                                 onChange={(value) => updateSetting('gitMergeMethod', value)}
@@ -5435,10 +5441,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 ]}
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Show PR status in sidebar" description="Display repository status beside active project chats.">
-                              <Toggle enabled={settings.showPrStatus} onChange={v => updateSetting('showPrStatus', v)} />
+                            <SettingsStackRow title="Confirm before pushing" description="Review the repository, current branch, and destination remote before publishing commits.">
+                              <Toggle enabled={settings.gitConfirmPush} onChange={v => updateSetting('gitConfirmPush', v)} />
                             </SettingsStackRow>
                           </SettingsStack>
+                          <p className="mt-4 text-[13px] leading-6 text-[#A5A5A5]">Open the workspace + menu and choose Git, or use Ctrl/⌘ + Alt + G while the workspace is open. Commits include staged files only. Pull uses fast-forward only. Authentication uses your existing system Git credentials.</p>
                         </div>
                       )}
 

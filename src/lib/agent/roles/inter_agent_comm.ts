@@ -36,6 +36,7 @@ export type MessageType =
 export interface AgentMessage {
   id: string;
   timestamp: number;
+  revision?: number;
   from: string;           // Sender task-based agent name or 'Main'
   to: string;             // Recipient: agent name or '*' for broadcast
   projectId: string;      // Chat scope
@@ -175,14 +176,16 @@ class InterAgentMailbox {
     return Array.from(recipients.values());
   }
 
-  private appendProjectLog(message: AgentMessage): void {
+  private appendProjectLog(message: AgentMessage): number {
+    const revision = (this.projectMessageRevisions.get(message.projectId) || 0) + 1;
     const log = this.projectLogs.get(message.projectId) || [];
-    log.push({ ...message });
+    log.push({ ...message, revision });
     if (log.length > 1000) {
       log.splice(0, log.length - 1000);
     }
     this.projectLogs.set(message.projectId, log);
     this.bumpProjectRevision(message.projectId, true);
+    return revision;
   }
 
   private bumpProjectRevision(projectId: string, messageChanged = false): void {
@@ -300,6 +303,8 @@ class InterAgentMailbox {
     type?: MessageType;
     from?: string;
     to?: string;
+    afterRevision?: number;
+    messageFilter?: (message: AgentMessage) => boolean;
     limit?: number;
   }): AgentMessage[] {
     const now = Date.now();
@@ -317,6 +322,13 @@ class InterAgentMailbox {
     }
     if (opts?.to) {
       messages = messages.filter(message => message.to === '*' || this.presenceKey(message.to) === this.presenceKey(opts.to!));
+    }
+    if (typeof opts?.afterRevision === 'number') {
+      const afterRevision = opts.afterRevision;
+      messages = messages.filter(message => typeof message.revision === 'number' && message.revision > afterRevision);
+    }
+    if (opts?.messageFilter) {
+      messages = messages.filter(message => opts.messageFilter!(message));
     }
     if (opts?.limit) {
       messages = messages.slice(-opts.limit);
@@ -395,7 +407,7 @@ class InterAgentMailbox {
       timestamp: Date.now(),
       read: false,
     };
-    this.appendProjectLog(fullMessage);
+    fullMessage.revision = this.appendProjectLog(fullMessage);
 
     if (message.to === '*') {
       // Broadcast to every registered teammate, including planned agents

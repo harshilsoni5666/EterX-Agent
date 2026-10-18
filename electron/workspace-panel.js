@@ -183,6 +183,7 @@ exports.registerWorkspacePanel = ({ ipcMain, app, getWindow }) => {
     // remain attached and continue drawing while the menu is open.
     return new Promise(resolve => {
       const items = [['chat', 'Side chat'], ['subagents', 'Sub-Agents'], ['files', 'Files'], ['review', 'Review'], ['terminal', 'Terminal'], ['browser', 'Browser']];
+      if (anchor.gitEnabled === true) items.splice(4, 0, ['git', 'Git']);
       const popup = Menu.buildFromTemplate(items.map(([kind, label]) => ({ label, click: () => resolve(kind) })));
       const zoom = window.webContents.getZoomFactor();
       const [width, height] = window.getContentSize();

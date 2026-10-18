@@ -31,6 +31,17 @@ export async function runWithSelfHealing(
 ): Promise<any> {
   return executeFn(args, context);
 }
+
+/** Each nested call owns a receipt; replaying its parent preserves that ID. */
+function nestedToolContext(context: any, toolName: string, index: number): any {
+  return {
+    ...context,
+    ...(context?.workspaceEditInvocationId ? {
+      workspaceEditInvocationId: JSON.stringify([context.workspaceEditInvocationId, toolName, index]),
+    } : {}),
+  };
+}
+
 export interface ResolvedTool {
   name: string;
   description: string;
@@ -148,7 +159,7 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
       // For tool_chain, we compose the execute function from existing tools
       execute: async (args: any, context: any) => {
         const results: any[] = [];
-        for (const step of (custom.toolChain || [])) {
+        for (const [stepIndex, step] of (custom.toolChain || []).entries()) {
           const stepToolName = normalizeRegistryToolName(step.tool);
           const realTool = globalToolRegistry.getTool(stepToolName);
           if (!realTool?.execute) {
@@ -168,7 +179,7 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
               results.push({ tool: step.tool, error: capabilityDecision.reason || `Tool ${stepToolName} is not allowed` });
               return { success: false, chainResults: results, failedTool: step.tool };
             }
-            const toolExec = createToolExecutionContext(context);
+            const toolExec = createToolExecutionContext(nestedToolContext(context, stepToolName, stepIndex));
             try {
               toolExec.throwIfCancelled();
               const result = await runWithSelfHealing(stepToolName, realTool.execute, validation.args, toolExec.context);
@@ -218,9 +229,12 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
       }
 
       const logs: string[] = [];
+      let nestedCallIndex = 0;
 
       const callTool = async (name: string, toolArgs: any) => {
         name = normalizeRegistryToolName(name);
+        // Reserve before any await, including calls launched with Promise.all.
+        const callContext = nestedToolContext(context, name, nestedCallIndex++);
         const realTool = globalToolRegistry.getTool(name);
         if (!realTool?.execute) {
           throw new Error(`Tool "${name}" not found in registry.`);
@@ -237,7 +251,7 @@ export function resolveCustomTool(custom: AgentBuilderCustomTool): ResolvedTool 
           throw new Error(`Capability blocked for tool "${name}": ${capabilityDecision.reason || 'Permission denied'}`);
         }
 
-        const toolExec = createToolExecutionContext(context);
+        const toolExec = createToolExecutionContext(callContext);
         try {
           toolExec.throwIfCancelled();
           const result = await runWithSelfHealing(name, realTool.execute, validation.args, toolExec.context);

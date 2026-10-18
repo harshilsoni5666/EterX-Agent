@@ -58,6 +58,7 @@ import {
 import { appStorage, appStorageReady, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 import { useManagedWorkspace } from '../../lib/use-managed-workspace';
 import { WorkspaceLocationMenu } from './workspace-location-menu';
+import { GitBranchControl } from './git-branch-control';
 import type { RunLocation } from '../../lib/managed-workspaces';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { formatExactContextTokens } from '../../lib/context-window-policy';
@@ -1989,14 +1990,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   const filteredSlashCommands = useMemo(() => {
     if (!slashTrigger) return [];
+    const availableCommands = chatMode
+      ? SLASH_COMMANDS.filter(command => command.action !== 'plan' && command.action !== 'swarm')
+      : SLASH_COMMANDS;
     const query = slashTrigger.query.trim();
-    if (!query) return SLASH_COMMANDS;
+    if (!query) return availableCommands;
 
-    return SLASH_COMMANDS.filter(command => {
+    return availableCommands.filter(command => {
       const target = `${ command.label } ${ command.description } ${ command.id }`.toLowerCase();
       return target.includes(query);
     });
-  }, [slashTrigger]);
+  }, [chatMode, slashTrigger]);
 
   const closeSlashPanel = useCallback(() => setSlashPanel(null), []);
 
@@ -2697,128 +2701,6 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // the centered empty composer. Anchor direction follows layout, not ID.
   const isNewChatHome = isEmptyHome;
   const resolvedComposerPlaceholder = composerPlaceholder || (isLiveActive ? "Type..." : isThinking ? "Send a message while EterX works" : isNewChatHome ? "What should EterX work on?" : "Message EterX");
-  const [branchName, setBranchName] = useState('main');
-  const [branchesList, setBranchesList] = useState<string[]>([]);
-  const [isCreatingBranch, setIsCreatingBranch] = useState(false);
-  const [newBranchName, setNewBranchName] = useState('');
-  const [isGitRepo, setIsGitRepo] = useState(false);
-
-  const loadBranchesList = useCallback(() => {
-    if (!activeWorkspacePath) {
-      setBranchesList(['main']);
-      return;
-    }
-    fetch('/api/code/execute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: 'git branch', cwd: activeWorkspacePath }),
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data.stdout) {
-          const list = data.stdout
-            .split('\n')
-            .map((b: string) => {
-              let cleaned = b.trim();
-              if (cleaned.startsWith('*')) {
-                cleaned = cleaned.substring(1).trim();
-              }
-              return cleaned;
-            })
-            .filter((b: string) => {
-              return b && !b.includes(' ') && !b.includes('Sandbox') && !b.includes('error:') && !b.includes('fatal:');
-            });
-          setBranchesList(list.length > 0 ? list : ['main']);
-        } else {
-          setBranchesList(['main']);
-        }
-      })
-      .catch(() => setBranchesList(['main']));
-  }, [activeWorkspacePath]);
-
-  useEffect(() => {
-    if (openStatusMenu === 'branch') {
-      loadBranchesList();
-      setIsCreatingBranch(false);
-      setNewBranchName('');
-    }
-  }, [openStatusMenu, loadBranchesList]);
-
-  const handleSwitchBranch = useCallback((targetBranch: string) => {
-    if (!activeWorkspacePath || !targetBranch || targetBranch.includes(' ') || targetBranch.includes('Sandbox') || targetBranch.includes('error:')) {
-      return;
-    }
-    fetch('/api/code/execute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: `git checkout ${targetBranch}`, cwd: activeWorkspacePath }),
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data.stderr && data.stderr.includes('error:')) {
-          alert(`Git error: ${data.stderr}`);
-        } else {
-          setBranchName(targetBranch);
-        }
-      })
-      .catch(err => console.error('Failed to switch branch:', err));
-  }, [activeWorkspacePath]);
-
-  const submitCreateBranch = useCallback((name: string) => {
-    if (!activeWorkspacePath) return;
-    const cleanName = name.trim();
-    if (!cleanName || cleanName.includes(' ')) return;
-    
-    fetch('/api/code/execute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: `git checkout -b ${cleanName}`, cwd: activeWorkspacePath }),
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data.stderr && data.stderr.includes('error:')) {
-          alert(`Git error: ${data.stderr}`);
-        } else {
-          setBranchName(cleanName);
-          setIsCreatingBranch(false);
-          setNewBranchName('');
-          loadBranchesList();
-          setOpenStatusMenu(null);
-        }
-      })
-      .catch(err => {
-        console.error('Failed to create branch:', err);
-        setIsCreatingBranch(false);
-        setNewBranchName('');
-      });
-  }, [activeWorkspacePath, loadBranchesList]);
-
-  useEffect(() => {
-    if (!activeWorkspacePath) {
-      setIsGitRepo(false);
-      setBranchName('main');
-      return;
-    }
-    fetch('/api/code/execute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: 'git branch --show-current', cwd: activeWorkspacePath }),
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data.stdout?.trim() && !data.stdout.includes('Sandbox') && !data.stdout.includes(' ') && !data.stdout.includes('error:')) {
-          setBranchName(data.stdout.trim());
-          setIsGitRepo(true);
-        } else {
-          setIsGitRepo(false);
-          setBranchName('main');
-        }
-      })
-      .catch(() => {
-        setIsGitRepo(false);
-        setBranchName('main');
-      });
-  }, [activeWorkspacePath]);
   const toggleStatusMenu = useCallback((event: React.MouseEvent, menu: Exclude<StatusRailMenu, null>) => {
     event.stopPropagation();
     setOpenPillDrop(null);
@@ -3149,7 +3031,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
       data-compressed={isCompressed ? 'true' : 'false'}
       onDragStart={handleComposerDragStart}
     >
-        {showScrollBottom && traceLogsLength > 0 && !isEmptyHome && !showModelMenu && !showAgentMenu && !slashMenuVisible && !slashPanel && (
+        {showScrollBottom && traceLogsLength > 0 && !isEmptyHome && !showModelMenu && !showAgentMenu && !showContextUsagePanel && !slashMenuVisible && !slashPanel && (
           <button
             type="button"
             aria-label="Jump to latest message"
@@ -3572,7 +3454,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   ['Latest request agent', chatUsage?.latestCacheOwner || 'Not reported'],
                   ['Latest request model', chatUsage?.latestCacheModel || 'Not reported'],
                   ['Cache reporting coverage', chatUsage?.cacheReportingCoverage == null ? 'Not reported' : `${(chatUsage.cacheReportingCoverage * 100).toFixed(1)}% of input tokens`],
-                  ['Current context (active agent)', contextUsage && contextUsage.contextWindow > 0 ? `${contextUsage.isEstimated ? '≈ ' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
+                  ['Current context (active agent)', contextUsage && contextUsage.contextWindow > 0 ? `${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens` : 'Not measured yet'],
                 ].map(([label, value]) => <div key={label} className="flex items-center justify-between gap-4"><dt className="opacity-65">{label}</dt><dd className="text-right font-medium tabular-nums">{value}</dd></div>)}
               </dl>
               {chatUsage?.latestCacheExplanation && <p className="mt-3 text-xs leading-relaxed opacity-75">{chatUsage.latestCacheExplanation}</p>}
@@ -3881,7 +3763,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </motion.div>
               ) : (
                 <div className="eterx-composer-textarea-wrap relative w-full">
-                  {(planModeActive || swarmModeActive) && (
+                  {!chatMode && (planModeActive || swarmModeActive) && (
                     <div className="eterx-composer-mode-row" role="group" aria-label="Active modes">
                       {([{ kind: 'plan', active: planModeActive, label: 'Plan', tooltip: 'Create a plan', Icon: Lightbulb, toggle: setPlanModeActive },
                         { kind: 'swarm', active: swarmModeActive, label: 'Swarm', tooltip: 'Coordinate a team', Icon: Network, toggle: setSwarmModeActive }] as const).filter(mode => mode.active).map(mode => {
@@ -4266,7 +4148,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                         {usedPercent}% used <span className="eterx-context-usage-muted font-medium">({leftPercent}% left)</span>
                       </div>
                       <div className="eterx-context-usage-secondary whitespace-nowrap text-[11.5px] font-medium leading-[15px] tabular-nums">
-                        {contextUsage!.isEstimated ? '≈ ' : ''}{formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens used
+                        {formatContextTokenCount(safeUsedTokens)} / {formatContextTokenCount(safeContextWindow)} tokens used
                       </div>
                     </div>
                   )}
@@ -4301,8 +4183,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 </Tooltip>
                 );
               })()}
-              {/* Agent selector — suppressed in Agent Builder mode */}
-              {!isAgentBuilder && (
+              {!isAgentBuilder && !executionContextLocked && (
                 <div ref={agentSelectorRef} className="eterx-agent-selector relative min-w-0">
                   <button
                     type="button"
@@ -4344,9 +4225,9 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   <AnimatePresence initial={false}>
                   {showAgentMenu && !executionContextLocked && (
                     <AdaptiveMenu key="agent-selector-menu" motionProps={{
-                      initial: { opacity: 0, clipPath: 'inset(5px 0px 5px 0px)', filter: 'blur(1px)' },
-                      animate: { opacity: 1, clipPath: 'inset(0px)', filter: 'blur(0px)' },
-                      exit: { opacity: 0, clipPath: 'inset(3px 0px 3px 0px)', filter: 'blur(1px)' },
+                      initial: { opacity: 0, clipPath: 'inset(5px 0px 5px 0px round 16px)' },
+                      animate: { opacity: 1, clipPath: 'inset(0px round 16px)' },
+                      exit: { opacity: 0, clipPath: 'inset(3px 0px 3px 0px round 16px)' },
                       transition: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
                     }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome} heightLimit={380}
                       style={{ transform: `translateX(${ agentMenuX })`, width: codingDetails ? 320 : 224, maxHeight: agentMenuMaxHeight }}
@@ -5059,96 +4940,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 {managedWorkspace.workspace.status === 'expired' ? 'Expired' : managedWorkspace.workspace.expiresAt ? `Expires ${new Date(managedWorkspace.workspace.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : 'Kept'}
               </span>}
 
-              {isGitRepo && (
-                <div className="eterx-new-chat-status-anchor">
-                  <button
-                    type="button"
-                    className={`eterx-new-chat-status-item ${ openStatusMenu === 'branch' ? 'is-open' : '' }`}
-                    aria-label={`Git branch ${ branchName }`}
-                    aria-haspopup="dialog"
-                    aria-expanded={openStatusMenu === 'branch'}
-                    onClick={(event) => toggleStatusMenu(event, 'branch')}
-                  >
-                    <GitBranch className="eterx-new-chat-status-icon" strokeWidth={1.9} />
-                    <span>{branchName}</span>
-                    <ChevronDown className="eterx-new-chat-status-chevron" strokeWidth={2.1} />
-                  </button>
-                  {openStatusMenu === 'branch' && (
-                      <AdaptiveMenu
-                        className="eterx-composer-popout eterx-status-popout eterx-status-popout-branch"
-                        role="dialog"
-                        aria-label="Branch menu"
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <div className="eterx-status-menu-label">Branch</div>
-                        <div data-menu-scroll-region className="eterx-status-menu-section flex-1 min-h-0 overflow-y-auto eterx-scrollbar">
-                          {branchesList.map(b => {
-                            const isCurrent = b === branchName;
-                            return (
-                              <button
-                                key={b}
-                                type="button"
-                                className={`eterx-status-menu-item ${ isCurrent ? 'is-selected' : '' }`}
-                                onClick={() => {
-                                  handleSwitchBranch(b);
-                                  setOpenStatusMenu(null);
-                                }}
-                              >
-                                <GitBranch className="eterx-status-menu-icon" strokeWidth={1.95} />
-                                <span className="min-w-0 flex-1 truncate text-left">{b}</span>
-                                {isCurrent && <Check className="h-4 w-4 shrink-0" strokeWidth={2.35} />}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <div className="eterx-status-menu-rule" />
-                        {isCreatingBranch ? (
-                          <form
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              if (newBranchName.trim()) {
-                                submitCreateBranch(newBranchName.trim());
-                              }
-                            }}
-                            className="eterx-status-search mx-1 mb-1 mt-1"
-                          >
-                            <GitBranch className="h-4 w-4 shrink-0 opacity-60" strokeWidth={1.9} />
-                            <input
-                              autoFocus
-                              value={newBranchName}
-                              onChange={(e) => setNewBranchName(e.target.value)}
-                              placeholder="New branch name..."
-                              className="w-full bg-transparent text-[12.5px] outline-none text-white placeholder-white/30 font-medium"
-                              onBlur={() => {
-                                if (!newBranchName.trim()) {
-                                  setIsCreatingBranch(false);
-                                }
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Escape') {
-                                  setIsCreatingBranch(false);
-                                  setNewBranchName('');
-                                }
-                              }}
-                            />
-                          </form>
-                        ) : (
-                          <button
-                            type="button"
-                            className="eterx-status-menu-item"
-                            onClick={() => {
-                              setIsCreatingBranch(true);
-                              setNewBranchName('');
-                            }}
-                          >
-                            <Plus className="eterx-status-menu-icon text-[#E2765A]" strokeWidth={2.05} />
-                            <span className="min-w-0 flex-1 truncate text-[#E2765A] font-semibold text-left">Create new branch</span>
-                          </button>
-                        )}
-                      </AdaptiveMenu>
-                  )}
-                </div>
-              )}
+              <GitBranchControl
+                root={activeWorkspacePath}
+                owner={workspaceOwnerId || activeChatId || 'terminal-draft-initial'}
+                open={openStatusMenu === 'branch'}
+                onToggle={event => toggleStatusMenu(event, 'branch')}
+                onClose={() => setOpenStatusMenu(null)}
+              />
             </div>
           </div>
         )}

@@ -201,8 +201,13 @@ export const canGroupThoughtStreams = (left: any, right: any): boolean => {
  * payloads in the already-closed row so the timer stays frozen and text is
  * not lost.
  */
-export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void => {
+export const closeThoughtStreamsForBoundary = (
+  logs: any[],
+  boundary: any,
+  openThoughtIndexes?: Set<number>,
+): void => {
   if (!boundary || boundary.type === 'thought_stream') return;
+  if (openThoughtIndexes?.size === 0) return;
 
   const closeAll = boundary.type === 'user_action' || boundary.type === 'steering_received' || isGlobalTerminalBoundary(boundary);
   const closeOwner = isThoughtClosingBoundary(boundary);
@@ -211,12 +216,14 @@ export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void
   const boundaryHasScope = hasThoughtStreamScope(boundary);
   const endedAt = getTraceTimestamp(boundary);
 
-  for (let index = logs.length - 1; index >= 0; index -= 1) {
+  const closeAtIndex = (index: number) => {
     const log = logs[index];
-    if (!log) continue;
-    // Lifecycle scope never crosses a visible user/guidance phase. A global
-    // terminal event closes owners in the current phase, not historical work.
-    if (log.type === 'user_action' || log.type === 'steering_received') break;
+    // Scope resolution allocates several identity arrays. Only an open
+    // thought can change here, so all other rows bypass that work entirely.
+    if (log?.type !== 'thought_stream' || log.isStreaming === false || log.streamState === 'closed') {
+      openThoughtIndexes?.delete(index);
+      return;
+    }
 
     const owner = getThoughtStreamOwner(log);
     // A new visible query closes the immediately preceding live reasoning even
@@ -227,14 +234,28 @@ export const closeThoughtStreamsForBoundary = (logs: any[], boundary: any): void
       boundary.type !== 'steering_received' &&
       boundaryHasScope &&
       !thoughtStreamScopesMatch(log, boundary, !closeAll)
-    ) continue;
-    if (!closeAll && owner !== boundaryOwner) continue;
-    if (log.type !== 'thought_stream') continue;
-    if (log.isStreaming === false || log.streamState === 'closed') continue;
+    ) return;
+    if (!closeAll && owner !== boundaryOwner) return;
 
     // Recovery can leave multiple open rows for one owner. A real boundary
     // closes all of them, including child owners at a global terminal event.
     logs[index] = closeThoughtAt(log, endedAt);
+    openThoughtIndexes?.delete(index);
+  };
+
+  if (openThoughtIndexes) {
+    // Canonicalization already tracks the open thoughts in the current phase.
+    // Re-scanning its entire prefix at every tool/note was quadratic in the
+    // transcript length, even when all historical thoughts were closed.
+    for (const index of openThoughtIndexes) closeAtIndex(index);
+    return;
+  }
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const log = logs[index];
+    // Lifecycle scope never crosses a visible user/guidance phase. A global
+    // terminal event closes owners in the current phase, not historical work.
+    if (log?.type === 'user_action' || log?.type === 'steering_received') break;
+    closeAtIndex(index);
   }
 };
 
@@ -428,6 +449,16 @@ export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
   const source = Array.isArray(logs) ? logs : [];
   const canonical: any[] = [];
   const thoughtIndexes = new Map<string, number>();
+  const thoughtIdIndexes = new Map<string, number[]>();
+  const openThoughtIndexes = new Set<number>();
+  const trackOpenThought = (index: number) => {
+    const log = canonical[index];
+    if (log?.type === 'thought_stream' && log.isStreaming !== false && log.streamState !== 'closed') {
+      openThoughtIndexes.add(index);
+    } else {
+      openThoughtIndexes.delete(index);
+    }
+  };
 
   for (const log of source) {
     if (
@@ -436,13 +467,19 @@ export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
       !String(log.text || '').trim() &&
       !isThoughtStreamOpen(log)
     ) continue;
-    if (log?.type === 'user_action' || log?.type === 'steering_received') thoughtIndexes.clear();
+    const isBoundary = log?.type === 'user_action' || log?.type === 'steering_received';
+    if (isBoundary) {
+      thoughtIndexes.clear();
+      thoughtIdIndexes.clear();
+    }
     const identity = getCanonicalThoughtIdentity(log);
     if (!identity) {
       // Restored histories need the same close boundaries as live ingestion.
       // A persisted stop/answer must not leave earlier cards ticking forever.
-      closeThoughtStreamsForBoundary(canonical, log);
+      closeThoughtStreamsForBoundary(canonical, log, openThoughtIndexes);
+      if (isBoundary) openThoughtIndexes.clear();
       canonical.push(log);
+      trackOpenThought(canonical.length - 1);
       continue;
     }
 
@@ -450,14 +487,11 @@ export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
     if (existingIndex === undefined) {
       const thoughtId = String(log?.thoughtId || '').trim();
       if (thoughtId) {
-        for (let index = canonical.length - 1; index >= 0; index -= 1) {
+        const candidates = thoughtIdIndexes.get(thoughtId) || [];
+        for (let position = candidates.length - 1; position >= 0; position -= 1) {
+          const index = candidates[position];
           const candidate = canonical[index];
-          if (candidate?.type === 'user_action' || candidate?.type === 'steering_received') break;
-          if (
-            candidate?.type === 'thought_stream' &&
-            String(candidate.thoughtId || '').trim() === thoughtId &&
-            thoughtStreamScopesMatch(candidate, log)
-          ) {
+          if (thoughtStreamScopesMatch(candidate, log)) {
             existingIndex = index;
             break;
           }
@@ -465,13 +499,22 @@ export const canonicalizeThoughtStreamLogs = (logs: any[]): any[] => {
       }
     }
     if (existingIndex === undefined) {
-      thoughtIndexes.set(identity, canonical.length);
+      const index = canonical.length;
+      thoughtIndexes.set(identity, index);
       canonical.push(log);
+      const thoughtId = String(log?.thoughtId || '').trim();
+      if (thoughtId) {
+        const candidates = thoughtIdIndexes.get(thoughtId) || [];
+        candidates.push(index);
+        thoughtIdIndexes.set(thoughtId, candidates);
+      }
+      trackOpenThought(index);
       continue;
     }
 
     canonical[existingIndex] = mergeCanonicalThought(canonical[existingIndex], log);
     thoughtIndexes.set(identity, existingIndex);
+    trackOpenThought(existingIndex);
   }
 
   return canonical;

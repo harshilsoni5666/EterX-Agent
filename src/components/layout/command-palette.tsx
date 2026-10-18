@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, X } from 'lucide-react';
+import { useLiveChats, type LiveChatLedger } from '../../lib/live-chat-ledger';
 
 interface ChatSession {
   id: string;
@@ -18,6 +19,7 @@ interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
   chats: ChatSession[];
+  liveChatLedger?: LiveChatLedger;
   loadChat: (id: string) => void;
   runningChats?: Set<string>;
   activeChatId?: string | null;
@@ -75,40 +77,66 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   isOpen,
   onClose,
   chats,
+  liveChatLedger,
   loadChat,
   runningChats = new Set<string>(),
   activeChatId = null,
 }) => {
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const liveChats = useLiveChats(liveChatLedger, isOpen);
+  const searchableChats = liveChatLedger && isOpen ? liveChats : chats;
+  const textCache = useRef(new WeakMap<object, { text: string; lower: string }>());
+  const resultCache = useRef({ query: '', chats: new WeakMap<ChatSession, SearchResult[]>() });
 
   const results = useMemo<SearchResult[]>(() => {
+    if (!isOpen) return [];
     const search = query.trim().toLowerCase();
-    if (!search) return chats.slice(0, 18);
+    if (!search) return searchableChats.slice(0, 18);
+    if (resultCache.current.query !== search) {
+      resultCache.current = { query: search, chats: new WeakMap() };
+    }
 
-    return chats
+    return searchableChats
       .flatMap(chat => {
+        const cached = resultCache.current.chats.get(chat);
+        if (cached) return cached;
+        const remember = (matches: SearchResult[]) => {
+          resultCache.current.chats.set(chat, matches);
+          return matches;
+        };
         const title = String(chat.title || 'Untitled chat');
-        if (title.toLowerCase().includes(search)) return [{ ...chat, matchLabel: 'Chat title' }];
+        if (title.toLowerCase().includes(search)) return remember([{ ...chat, matchLabel: 'Chat title' }]);
 
         const logs = Array.isArray(chat.traceLogs) ? chat.traceLogs : [];
         for (let index = logs.length - 1; index >= 0; index -= 1) {
-          const text = textFromValue(logs[index]).replace(/\s+/g, ' ').trim();
-          if (!text.toLowerCase().includes(search)) continue;
-          return [{
+          const log = logs[index];
+          const cacheable = log !== null && typeof log === 'object';
+          let entry = cacheable ? textCache.current.get(log) : undefined;
+          if (!entry) {
+            const text = textFromValue(log).replace(/\s+/g, ' ').trim();
+            entry = { text, lower: text.toLowerCase() };
+            if (cacheable) textCache.current.set(log, entry);
+          }
+          if (!entry.lower.includes(search)) continue;
+          return remember([{
             ...chat,
-            matchLabel: getMatchLabel(logs[index]),
-            snippet: makeSnippet(text, query.trim()),
-          }];
+            matchLabel: getMatchLabel(log),
+            snippet: makeSnippet(entry.text, query.trim()),
+          }]);
         }
-        return [];
+        return remember([]);
       })
       .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
       .slice(0, 24);
-  }, [chats, query]);
+  }, [isOpen, searchableChats, query]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      textCache.current = new WeakMap();
+      resultCache.current = { query: '', chats: new WeakMap() };
+      return;
+    }
     setQuery('');
     window.requestAnimationFrame(() => inputRef.current?.focus());
   }, [isOpen]);

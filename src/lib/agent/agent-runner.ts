@@ -26,6 +26,7 @@ import { buildTelegramWorkNoteCue } from './telegram-bot-behavior';
 import { cleanText } from './gateways/telegram-presentation.cjs';
 import { buildToolAvailabilityPrompt } from './tool-availability-prompt';
 import { SOURCE_READING_POLICY } from './source-read-policy';
+import { WORKSPACE_EDIT_POLICY } from './workspace-edit-contract';
 import { schemaUsageDescription } from './tools/registry';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -234,6 +235,10 @@ export class AgentRunner {
   /** Build the complete system instruction for this agent */
   private buildSystemInstruction(taskText = '', config?: AgentRunnerConfig): string {
     if (!this.profile) throw new Error('Agent not loaded');
+    const activeTools = this.resolveToolsForTask(taskText);
+    const availableToolNames = new Set(activeTools.map(tool => tool.name));
+    const workspaceEditPolicy = availableToolNames.has('workspace_edit_file')
+      ? `\n## Workspace editing contract\n${WORKSPACE_EDIT_POLICY}` : '';
 
     if (this.runtimeKind === 'agent_builder') {
       const profileSummary = summarizeAgentBuilderProfile(this.profile);
@@ -268,6 +273,7 @@ ${FINAL_ANSWER_POLICY}
 
 ## Execution contract
 ${AGENT_EXECUTION_POLICY}
+${workspaceEditPolicy}
 
 ## Current persisted target profile
 This snapshot is the latest authoritative configuration. Chat history explains user intent; this persisted state identifies what currently exists. A ready profile remains fully editable.
@@ -315,8 +321,6 @@ ${persistedSnapshot}
 
     // Function declarations are authoritative. Repeating every description in
     // the prompt duplicated the largest part of the tool-schema payload.
-    const activeTools = this.resolveToolsForTask(taskText);
-    const availableToolNames = new Set(activeTools.map(tool => tool.name));
     if (availableToolNames.has('channel_agent') || availableToolNames.has('connector_mcp') || availableToolNames.has('gateway_bridge')) {
       parts.push(`
 ## Connected-service behavior
@@ -365,6 +369,7 @@ ${FINAL_ANSWER_POLICY}`);
     // These complement the builder-written soul rules in the prompt.
     // ═══════════════════════════════════════════════════════════════
     parts.push(`\n## Execution contract\n${AGENT_EXECUTION_POLICY}\nKeep the mission of "${this.profile.name || this.profile.agentId}" and preserve the user's authority over consequential actions.`);
+    if (workspaceEditPolicy) parts.push(workspaceEditPolicy);
 
     // ═══════════════════════════════════════════════════════════════
     // RUNTIME EFFICIENCY (auto-injected)
@@ -1868,6 +1873,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       maxRetries: config.pinnedContext?.maxRetries,
       _onTrace: onTrace,
       ownerTraceId,
+      workspaceEditInvocationId: ownerTraceId,
+      subAgentId: config.pinnedContext?.subAgentId,
       abortSignal: abortSignal || this.cancelController?.signal,
       signal: abortSignal || this.cancelController?.signal,
       isCancelled: () => this.cancelled || abortSignal?.aborted === true || this.cancelController?.signal.aborted === true,

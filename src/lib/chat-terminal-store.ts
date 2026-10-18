@@ -63,13 +63,16 @@ export function useChatTerminalControls(chatId: string) {
   }, () => emptyControls);
 }
 export function setTerminalOpen(chatId: string, open: boolean) { update(chatId, { open }); }
+export function clearTerminalError(chatId: string) { update(chatId, { error: '' }); }
 export function showTerminal(chatId: string, placement: 'bottom' | 'right') { update(chatId, { open: true, placement }); }
 export function toggleTerminalPlacement(chatId: string, placement: 'bottom' | 'right') {
   const state = read(chatId);
   update(chatId, { placement, open: !(state.open && state.placement === placement) });
 }
 export function resizeTerminalWidth(chatId: string, width: number) { update(chatId, { width: Math.max(240, Math.min(1200, width)) }); }
-export function selectTerminal(chatId: string, activeId: string) { update(chatId, { activeId }); }
+export function selectTerminal(chatId: string, activeId: string) {
+  if (read(chatId).tabs.some(tab => tab.id === activeId)) update(chatId, { activeId });
+}
 export function resizeTerminalDock(chatId: string, height: number) { update(chatId, { height: Math.max(140, Math.min(650, height)) }); }
 export function transferChatTerminals(from: string, to: string) {
   if (from === to) return;
@@ -108,7 +111,8 @@ export async function closeTerminal(chatId: string, id: string) {
   const current = read(chatId);
   if (!chats.has(chatId)) return;
   const tabs = current.tabs.filter(item => item.id !== id);
-  update(chatId, { tabs, activeId: current.activeId === id ? tabs.at(-1)?.id || null : current.activeId });
+  const next = tabs[Math.min(current.tabs.indexOf(tab), tabs.length - 1)];
+  update(chatId, { tabs, activeId: current.activeId === id ? next?.id || null : current.activeId });
 }
 export async function createTerminal(chatId: string, cwd?: string | null) {
   if (read(chatId).creating) return;

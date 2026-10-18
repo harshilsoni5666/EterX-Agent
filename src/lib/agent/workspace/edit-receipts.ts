@@ -11,7 +11,10 @@ export function editInvocationKey(context: any): string | undefined {
   const owner = context?.ownerChatId || context?.chatId || context?.projectId;
   const run = context?.runId;
   if (!invocation || !owner || !run) return undefined;
-  return JSON.stringify([owner, run, context?.turnId || '', invocation]);
+  // Parallel workers can receive the same provider call ID. Their receipts
+  // must not turn another worker's edit into a replay or a payload conflict.
+  const agent = context?.subAgentId || context?.agentId || context?.customAgentId || 'main';
+  return JSON.stringify([owner, run, context?.turnId || '', agent, invocation]);
 }
 
 export function editRequestSignature(targets: unknown): string {

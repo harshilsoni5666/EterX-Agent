@@ -53,11 +53,16 @@ export function resolveTouchPath(value: unknown, cwd: string) {
 
 // Read structured evidence from this transcript only. Never scrape assistant
 // prose or use an application's global last-folder/default working directory.
+export function isWorkspaceTouchTrace(log: any): boolean {
+  return Boolean(log && !log.isLive && !log.isStreaming &&
+    !['running', 'pending', 'error', 'failed', 'cancelled'].includes(log.status) && log.streamState !== 'open' &&
+    /^(file_preview|file_edit|file_read|file_create|folder_read|folder_create|command|console_output|tool_result_preview|tool_result|exploration)$/.test(log.type || ''));
+}
+
 export function collectWorkspaceTouches(logs: any[], owner: string, workspacePath?: string | null): WorkspaceTouch[] {
   const found = new Map<string, WorkspaceTouch>();
   for (const log of logs) {
-    if (!log || (log.ownerChatId && log.ownerChatId !== owner) || log.isLive || log.isStreaming || ['running', 'pending', 'error', 'failed', 'cancelled'].includes(log.status) || log.streamState === 'open') continue;
-    if (!/^(file_preview|file_edit|file_read|file_create|folder_read|folder_create|command|console_output|tool_result_preview|tool_result|exploration)$/.test(log.type || '')) continue;
+    if (!isWorkspaceTouchTrace(log) || (log.ownerChatId && log.ownerChatId !== owner)) continue;
     const rawResult = log.fileOperationResult || log.toolResult || log.result || {};
     let result = rawResult;
     if (typeof result === 'string') { try { result = JSON.parse(result); } catch { result = {}; } }

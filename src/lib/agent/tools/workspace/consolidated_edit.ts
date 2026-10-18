@@ -13,11 +13,11 @@ import { applyTextEdit, editLineCount } from '../../workspace/edit-text';
 import { completedEditReceipt, editInvocationKey, editRequestSignature, rememberCompletedEdit } from '../../workspace/edit-receipts';
 
 const editChunkSchema = z.preprocess(normalizeWorkspaceEditChunk, z.object({
-  search: z.string().min(1).optional().describe('Exact observed block. Only this text is replaced; code outside it remains. Copy source without display numbers/omissions. With startLine/endLine, match only inside those lines. Omit for creation or range-only replacement.'),
+  search: z.string().min(1).optional().describe('Small unique block copied verbatim from current source, preserving spaces, indentation and literal escapes. Never reconstruct old code or include display numbers/omissions. It must still exist after preceding edits. Omit startLine/endLine for a unique search; include them only to restrict a known match entirely inside that range. Only this text is replaced. Omit search for creation or range-only replacement.'),
   replace: z.string().describe('Required literal text for ONLY the selected block/range, with JSON escaping exactly once. Empty string deletes it. No selector creates only a missing/zero-byte file. A stub or previously created file is existing: complete replacement requires startLine:1,endLine:-1. Write complete new files directly without a placeholder first. Never replace only a prefix with a complete class/file.'),
-  replaceAll: z.boolean().optional().describe('Replace every exact match in the selected scope (whole file, or supplied range). Requires search; defaults to false.'),
+  replaceAll: z.boolean().optional().describe('Replace every exact match in the selected scope (whole file, or supplied range). Requires search; defaults to false. Use only when every occurrence should change, never to resolve an ambiguous target.'),
   replace_all: z.boolean().optional().describe('Alias for replaceAll.'),
-  startLine: z.number().int().min(1).optional().describe('First inclusive 1-based line; endLine is also required. Whole existing file: startLine:1,endLine:-1. Ranges refer to content after preceding edits.'),
+  startLine: z.number().int().min(1).optional().describe('First inclusive 1-based line observed in current source; endLine is also required. Whole existing file: startLine:1,endLine:-1. Ranges refer to content after preceding edits. Omit for a unique search; approximate line numbers can exclude its match.'),
   endLine: z.number().int().refine(value => value === -1 || value >= 1, 'endLine must be at least 1, or -1 for end of file.').optional().describe('Last inclusive 1-based line, or -1 for EOF. startLine is also required. Do not guess a large end line for a rewrite; use -1.'),
 }).superRefine((edit, issues) => {
   if ((edit.startLine === undefined) !== (edit.endLine === undefined)) {
@@ -36,7 +36,7 @@ const editChunkSchema = z.preprocess(normalizeWorkspaceEditChunk, z.object({
 
 const editTargetSchema = z.object({
   filename: z.string().min(1).optional().describe('Absolute path or path relative to the active workspace. A one-item files array may inherit the top-level filename.'),
-  edits: z.array(editChunkSchema).min(1).max(50).optional().describe('Sequential edits for this file. Create: [{replace:completeContent}]. Existing full rewrite: [{startLine:1,endLine:-1,replace:completeContent}]. Partial replacement covers only its selected block/range. Omit when delete=true.'),
+  edits: z.array(editChunkSchema).min(1).max(50).optional().describe('1-50 sequential edits for this file, each targeting the result of preceding edits. Combine overlapping changes; order disjoint original ranges bottom-up. Create: [{replace:completeContent}]. Existing full rewrite: [{startLine:1,endLine:-1,replace:completeContent}]. Partial replacement covers only its selected block/range. Omit when delete=true.'),
   delete: z.boolean().optional().describe('Delete this file. Do not provide edits when true.'),
 }).superRefine((target, issueContext) => {
   const hasEdits = Array.isArray(target.edits) && target.edits.length > 0;
@@ -316,7 +316,7 @@ export const workspaceEditFileTool: ToolDefinition = {
     filename: z.string().optional().describe('Single-file mode: absolute path or path relative to the active workspace.'),
     edits: z.array(editChunkSchema).min(1).max(50).optional().describe('Sequential edits. Create: [{replace:completeContent}]. Rewrite an existing file: [{startLine:1,endLine:-1,replace:completeContent}]. Partial changes replace only the selected block/range. Use bottom-up order for disjoint original line ranges.'),
     delete: z.boolean().optional().describe('Single-file mode: delete the file. Do not also provide edits.'),
-    files: z.array(editTargetSchema).min(1).max(50).optional().describe('Multi-file mode: all create, edit, or delete targets. Do not also provide single-file fields.'),
+    files: z.array(editTargetSchema).min(1).max(50).optional().describe('Multi-file mode: 1-50 related create, edit, or delete targets prepared together before writes. Use one entry per physical file with all its edits in one ordered edits array. Do not also provide single-file fields. Wait for current source and other writers before constructing this batch.'),
   }).superRefine((value, issueContext) => {
     const hasSingleFields = Boolean(value.filename || value.edits || value.delete !== undefined);
     const hasMultiFiles = Array.isArray(value.files) && value.files.length > 0;

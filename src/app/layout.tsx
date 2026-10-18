@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import type { CSSProperties } from 'react';
 import { GeistMono } from 'geist/font/mono';
+import 'katex/dist/katex.min.css';
 import './globals.css';
 import '@xterm/xterm/css/xterm.css';
 import './chat-terminal.css';
@@ -11,17 +12,19 @@ import './light-theme.polish.css';
 import './composer-responsive.css';
 import './conversation-layout.css';
 import './side-workspace.css';
+import './git-workspace.css';
 import './turn-changes.css';
 import './dropdown-polish.css';
 import './code-review.css';
 import './composer-surfaces.css';
 import './chat-content.css';
+import './markdown-content.css';
 import './activity-feed.css';
 import '../../electron/splash.css';
-import 'katex/dist/katex.min.css';
 import './scrollbars.css';
 import { ThemeBridge } from '../components/theme/theme-bridge';
 import { ClipboardPasteBridge } from '../components/ui/clipboard-paste-bridge';
+import { NativeTooltipSuppressor } from '../components/ui/native-tooltip-suppressor';
 import { readInitialThemePreference, resolveInitialTheme } from '../lib/initial-theme';
 import { DEFAULT_THEME } from '../lib/theme-config';
 
@@ -87,6 +90,7 @@ export default function RootLayout({
       <body className="font-sans antialiased min-h-screen selection:bg-white/20 selection:text-white">
         <ThemeBridge />
         <ClipboardPasteBridge />
+        <NativeTooltipSuppressor />
         {children}
       </body>
     </html>

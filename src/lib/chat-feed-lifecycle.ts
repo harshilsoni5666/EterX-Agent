@@ -414,13 +414,20 @@ export const reconcileTerminalRunNotices = (logs: any[]): any[] => {
       notices.clear();
     }
     const type = String(log?.type || '').toLowerCase();
+    // Most rows are streamed text, tool results, or file contents. They cannot
+    // be terminal notices; avoid normalizing their entire payload on every
+    // ordering pass (and on every chunk in every concurrent conversation).
+    if (!['thought', 'agent_status', 'run_status', 'status', 'error', 'done'].includes(type) ||
+      !isTerminalWorkTrace(log)) {
+      result.push(log);
+      continue;
+    }
     const status = String(log?.status || '').toLowerCase();
     const detail = String(log?.detail || log?.text || log?.message || '')
       .replace(/^\s*[*_`]+|[*_`]+\s*$/g, '').replace(/\s+/g, ' ').trim();
     const stopped = ['stopped', 'cancelled', 'canceled'].includes(status) ||
       /^(?:generation stopped by user\.?|agent stopped\.?|stopped by (?:you|user)\.?)$/i.test(detail);
-    const isNotice = ['thought', 'agent_status', 'run_status', 'status', 'error', 'done'].includes(type) &&
-      isTerminalWorkTrace(log) && (Boolean(detail) || type === 'agent_status') &&
+    const isNotice = (Boolean(detail) || type === 'agent_status') &&
       !['completed', 'complete', 'success'].includes(status);
     const runId = String(log?.runId || boundary?.runId || '').trim();
     const turnId = String(log?.turnId || boundary?.turnId || log?._feedBoundaryId || '').trim();
@@ -2030,7 +2037,8 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
       .sort((left, right) => compareTimelineEntries(left, right) || (
         Number(left.log?._feedEventOrder) - Number(right.log?._feedEventOrder)
       ) || left.sourceIndex - right.sourceIndex)
-      .map((entry, index) => ({ ...entry.log, _feedEventOrder: index }));
+      .map((entry, index) => entry.log?._feedEventOrder === index
+        ? entry.log : { ...entry.log, _feedEventOrder: index });
   }
 
   const boundaryIdCounts = new Map<string, number>();
@@ -2071,12 +2079,8 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     const turnScope = String(log?._feedBoundaryId || log?.turnId || log?.runId || 'unscoped').trim();
     const runScope = String(log?.runId || log?.originRunId || 'unscoped-run').trim();
     const eventScope = `${ chatScope }:${ turnScope }`;
-    const actionTypes = new Set([
-      'command', 'tool_call', 'exploration', 'file_edit', 'browser',
-      'communication', 'sub_agent_action',
-    ]);
     const ownerChainId = String(
-      log?.ownerTraceId || (actionTypes.has(normalizedType) ? log?.traceId || log?.toolCallId : '') || '',
+      log?.ownerTraceId || (FEED_ACTION_TYPES.has(normalizedType) ? log?.traceId || log?.toolCallId : '') || '',
     ).trim();
     const hasExplicitTurnScope = Boolean(
       String(log?._feedBoundaryId || log?.turnId || '').trim(),
@@ -2281,6 +2285,12 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     return selectNearestTimestampBoundary(log);
   };
 
+  // An installed transcript already carries authoritative boundary IDs.
+  // Transport aliases only help rows whose ownership has not landed yet.
+  // Skip rebuilding all tool/stream/message keys when every row is already
+  // bound, while retaining the full recovery path for even one new/orphan row.
+  const needsTransportOwners = source.some(log => log && !isFeedTurnBoundary(log) &&
+    !boundariesByStableId.has(String(log._feedBoundaryId || '').trim()));
   let nearestBoundaryIndex = -1;
   source.forEach((log, sourceIndex) => {
     if (!log) return;
@@ -2288,7 +2298,7 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
       nearestBoundaryIndex = boundaryIndexBySourceIndex.get(sourceIndex) ?? nearestBoundaryIndex;
       return;
     }
-    const eventKeys = transportEventKeys(log);
+    const eventKeys = needsTransportOwners ? transportEventKeys(log) : [];
     const persistedBoundaryId = String(log?._feedBoundaryId || '').trim();
     const persistedBoundaryMatches = persistedBoundaryId
       ? boundariesByStableId.get(persistedBoundaryId) || []
@@ -2397,19 +2407,22 @@ export const orderFeedTimelineLogs = (logs: any[]): any[] => {
     .sort(compareBoundaryEntries)
     .map((entry, index) => ({
       ...entry,
-      log: { ...entry.log, _feedBoundaryOrder: index },
+      log: entry.log?._feedBoundaryOrder === index
+        ? entry.log : { ...entry.log, _feedBoundaryOrder: index },
     }));
 
   const ordered: any[] = preamble
     .slice()
     .sort((left, right) => compareTimelineEntries(left, right) || left.sourceIndex - right.sourceIndex)
-    .map((entry, index) => ({ ...entry.log, _feedEventOrder: index }));
+    .map((entry, index) => entry.log?._feedEventOrder === index
+      ? entry.log : { ...entry.log, _feedEventOrder: index });
   orderedBoundaryEntries.forEach(boundaryEntry => {
     const entries = deduplicateBoundaryEntries(entriesByBoundary[boundaryEntry.boundaryIndex]);
     const orderedEntries = entries
       .slice(1)
       .sort((left, right) => compareTimelineEntries(left, right) || left.sourceIndex - right.sourceIndex)
-      .map((entry, index) => ({ ...entry.log, _feedEventOrder: index }));
+      .map((entry, index) => entry.log?._feedEventOrder === index
+        ? entry.log : { ...entry.log, _feedEventOrder: index });
     ordered.push(
       boundaryEntry.log,
       ...orderedEntries,

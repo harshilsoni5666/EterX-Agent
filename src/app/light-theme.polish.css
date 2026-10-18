@@ -1021,7 +1021,7 @@
   box-sizing: border-box !important;
   height: 30px !important;
   min-height: 30px !important;
-  width: fit-content !important;
+  width: 100% !important;
   max-width: 100%;
   padding: 1px 2px !important;
   background: transparent !important;

@@ -16,6 +16,7 @@ import { selectMainContextLogs, traceBelongsToUsageChat } from '../../lib/chat-u
 import { parseModelEntryKey } from '../../lib/agent/model-selector-store';
 import { FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 import { useLocalDictation } from '../../lib/use-local-dictation';
+import { useLiveChat, type LiveChatLedger } from '../../lib/live-chat-ledger';
 export type SideChatSession = { id: string; title: string; traceLogs: any[]; workspacePath?: string | null; modelSelection?: string; updatedAt: number; isFavorite?: boolean };
 export type SideChatSettings = { modelSelection: string; selectedAgent: { agentId: string | null; agentName: string; chatMode?: boolean }; thinkingLevel: MainAgentThinkingLevel; agentMode: MainAgentMode; workspacePath: string | null; runLocation: 'local' | 'sandbox' | 'worktree' };
 export type SideChatActions = {
@@ -76,6 +77,9 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
     }, 180);
   }, [id, dictation.reset]);
   const actionsRef = useRef(actions); actionsRef.current = actions;
+  const answerQuestion = useCallback((timestamp: number, answer: string, responseKey?: string) => {
+    actionsRef.current.answer(id, timestamp, answer, responseKey);
+  }, [id]);
   useLayoutEffect(() => {
     const surface = pane.current, feed = surface?.querySelector<HTMLElement>('.eterx-chat-feed-scroll');
     if (!surface || !feed) return;
@@ -151,16 +155,17 @@ const Conversation = memo(function Conversation({ id, tabId, workspaceOwner, cha
   return <FilePanelReveal value={() => actions.openMain(id)}><div ref={pane} className="eterx-workspace-side-conversation eterx-conversation-pane">
     {loading && <div className="eterx-workspace-chat-loading"><Loader2 size={15} className="animate-spin" /> Loading conversation…</div>}
     {error && <div className="eterx-workspace-inline-error" role="alert">{error}{loading === false && chat && !chat.traceLogs.length && <button onClick={() => { setError(''); setLoading(true); void actions.hydrate(id).catch(error => setError(String(error))).finally(() => setLoading(false)); }}>Retry</button>}</div>}
-    <ChatFeed workspaceOwner={workspaceOwner} scrollContainerId={`side-chat-${tabId}`} traceLogs={chat?.traceLogs || emptyLogs} chatId={id} isThinking={running || sending} messagesEndRef={end} setSidebarOpen={ignore} sidebarOpen={false} handleScroll={event => { const node = event.currentTarget; setShowBottom(node.scrollHeight - node.scrollTop - node.clientHeight > 100); }} showScrollBottom={false} isCompressed workspacePath={settings.workspacePath} onEditUserMessage={setText} onAnswerAskUser={(timestamp, answer, responseKey) => actions.answer(id, timestamp, answer, responseKey)} />
+    <ChatFeed workspaceOwner={workspaceOwner} scrollContainerId={`side-chat-${tabId}`} traceLogs={chat?.traceLogs || emptyLogs} chatId={id} isThinking={running || sending} messagesEndRef={end} setSidebarOpen={ignore} sidebarOpen={false} handleScroll={event => { const node = event.currentTarget; setShowBottom(node.scrollHeight - node.scrollTop - node.clientHeight > 100); }} showScrollBottom={false} isCompressed workspacePath={settings.workspacePath} onEditUserMessage={setText} onAnswerAskUser={answerQuestion} />
     <ChatInput inputValue={text} inputValueRevision={textRevision} onInputValueChange={updateTextDraft} setInputValue={setText} isThinking={running || sending} canStop={running} isRecording={dictation.isRecording} dictationPhase={dictation.phase} toggleSpeech={() => void dictation.toggle()} showVoiceControls contextUsage={contextUsage} chatUsage={chatUsage} chatTitle={chat?.title || 'New side chat'} onLiveStart={() => { dictation.stop(); if (actions.startLive) actions.startLive(id); else actions.openMain(id); }} handleSend={submit} handleSteer={submit} handleStop={() => actions.stop(id)} attachments={attachments} setAttachments={setAttachments} greeting="" traceLogsLength={Math.max(1, chat?.traceLogs.length || 0)} activeChatId={id} isCompressed modelSelectionScope="surface" chatModelSelection={settings.modelSelection} onModelSelectionChange={modelSelection => setSettings(previous => ({ ...previous, modelSelection }))} selectedAgent={settings.selectedAgent.agentId} selectedAgentName={settings.selectedAgent.agentName} chatMode={settings.selectedAgent.chatMode} onAgentChange={(agentId, agentName, chatMode) => setSettings(previous => ({ ...previous, selectedAgent: { agentId, agentName, chatMode } }))} thinkingLevel={settings.thinkingLevel} onThinkingLevelChange={thinkingLevel => setSettings(previous => ({ ...previous, thinkingLevel }))} agentMode={settings.agentMode} onModeChange={agentMode => setSettings(previous => ({ ...previous, agentMode }))} workspacePath={settings.workspacePath} onWorkspacePathChange={selectWorkspace} runLocation={settings.runLocation} onRunLocationChange={runLocation => setSettings(previous => ({ ...previous, runLocation }))} showScrollBottom={showBottom} onScrollToBottom={scrollBottom} />
   </div></FilePanelReveal>;
 });
 
-export function WorkspaceSideChat({ owner, tab, chats, mainChatId, runningChats, actions }: { owner: string; tab: WorkspaceTab; chats: SideChatSession[]; mainChatId: string | null; runningChats: Set<string>; actions: SideChatActions }) {
+export function WorkspaceSideChat({ owner, tab, chats, liveChatLedger, mainChatId, runningChats, actions }: { owner: string; tab: WorkspaceTab; chats: SideChatSession[]; liveChatLedger?: LiveChatLedger; mainChatId: string | null; runningChats: Set<string>; actions: SideChatActions }) {
   const [search, setSearch] = useState('');
   const history = tab.chatHistory || (tab.chatId ? ['', tab.chatId] : ['']);
   const position = tab.chatPosition ?? history.length - 1;
-  const current = chats.find(chat => chat.id === tab.chatId);
+  const liveChat = useLiveChat(liveChatLedger, tab.chatId || '');
+  const current = liveChatLedger ? liveChat : chats.find(chat => chat.id === tab.chatId);
   const selected = tab.chatId && tab.chatId !== mainChatId ? tab.chatId : null;
   const select = (id: string) => {
     const nextHistory = [...history.slice(0, position + 1), id];

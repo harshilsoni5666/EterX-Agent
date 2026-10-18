@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { createPortal } from 'react-dom';
-import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, MessageSquarePlus, Activity, Minimize2, Info } from 'lucide-react';
+import { Copy, RefreshCw, ChevronDown, FileText, Check, Clock, MessageSquarePlus, Activity, Minimize2, Info, ArrowRight } from 'lucide-react';
 import { InlineRunNotice } from './inline-run-notice';
 import { UserMessageText } from './user-message-text';
 import { openChatImage } from './image-gallery';
@@ -17,7 +17,8 @@ import { notifyAgentFaceTraceLog } from './agent-face-controller';
 import ReactMarkdown from 'react-markdown';
 import { markdownComponents, normalizeMarkdownForRendering, remarkPlugins, rehypePlugins } from './markdown-renderer';
 import { LocalFileLinkChip, LocalFileWorkspaceContext, LocalFilePathsContext, decodeLocalFileHref } from './local-file-link';
-import { collectWorkspaceTouches } from '../../lib/workspace-paths';
+import { collectWorkspaceTouches, isWorkspaceTouchTrace } from '../../lib/workspace-paths';
+import { useTraceSelection } from '../../lib/use-trace-selection';
 import { areLikelySameFeedActionLifecycle, ensureStableFeedPresentationIds, getFeedActionLifecycleCandidateKeys, getFeedActionSingletonIdentity, haveConflictingFeedActionInvocations, isFeedTraceExplicitlySettled, isFeedTraceOpen, isFeedTurnBoundary, isSettledAnswerTrace, isTerminalWorkTrace, isTurnWorkActive, mergeUserTurnBoundaries, orderFeedTimelineLogs, reconcileTerminalRunNotices, recoverMissingUserTurnBoundaries, settleFeedTraceLifecycles, shouldRenderContextCompactionEvent } from '../../lib/chat-feed-lifecycle';
 import { shouldRenderThoughtStream } from '../../lib/thought-stream-lifecycle';
 import { isLiveUserVisibleTrace } from '../../lib/agent/trace-visibility';
@@ -32,6 +33,7 @@ import { FilePanelOwner } from '../../contexts/FilePanelContext';
 import { TurnChangesCard } from './turn-changes';
 import { reconcileModelUsageLogs, summarizeModelUsage } from '../../lib/model-usage';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
+import { useActivityScrollHandoff } from './use-activity-scroll-handoff';
 
 interface ChatFeedProps {
   workspaceOwner?: string;
@@ -1573,7 +1575,6 @@ const ContextCompactionNotice = ({ log }: { log: any }) => {
   const nextWindow = Number(log?.nextContextWindow || 0);
   const active = phase === 'compacting' || phase === 'retrying';
   const cancelled = phase === 'failed' && /cancelled|canceled|stopped by user/i.test(String(log?.summary || ''));
-  const estimatePrefix = log?.beforeTokensEstimated === false ? '' : '≈';
   const label = phase === 'failed'
     ? cancelled ? 'Context compaction stopped' : 'Failed to compact'
     : phase === 'compacted'
@@ -1589,11 +1590,18 @@ const ContextCompactionNotice = ({ log }: { log: any }) => {
       ].filter(Boolean).join(' ')
     : phase === 'compacted'
       ? before > 0 && hasAfter
-        ? `${estimatePrefix}${formatProviderTokenCount(before)} → ≈${formatProviderTokenCount(after)} tokens`
+        ? (
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap tabular-nums">
+              <span>{formatProviderTokenCount(before)}</span>
+              <ArrowRight className="h-3.5 w-3.5 shrink-0 opacity-70" strokeWidth={1.6} aria-hidden="true" />
+              <span className="sr-only">to</span>
+              <span>{formatProviderTokenCount(after)} tokens</span>
+            </span>
+          )
         : ''
       : phase === 'retrying'
         ? String(log?.summary || '').trim()
-        : before > 0 ? `${estimatePrefix}${formatProviderTokenCount(before)} tokens` : '';
+        : before > 0 ? `${formatProviderTokenCount(before)} tokens` : '';
 
   return (
     <div
@@ -2650,8 +2658,9 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
   traceLogs: incomingTraceLogs, chatId, isThinking, messagesEndRef, setSidebarOpen, sidebarOpen, handleScroll: externalHandleScroll, showScrollBottom, isCompressed = false, onOpenAgentTeam, subAgentAssetIndexes, isFeedActivityPaused = false, onAnswerAskUser, onEditUserMessage, isSubAgentTab = false, liveState, workspacePath, media
 }) => {
   const isAgentBuilderFeed = String(chatId || '').startsWith('agent_builder_');
-  const localFilePaths = useMemo(() => collectWorkspaceTouches(incomingTraceLogs || [], chatId || '', workspacePath)
-    .filter(item => item.kind === 'file').map(item => item.path), [incomingTraceLogs, chatId, workspacePath]);
+  const workspaceLogs = useTraceSelection(incomingTraceLogs, isWorkspaceTouchTrace);
+  const localFilePaths = useMemo(() => collectWorkspaceTouches(workspaceLogs, chatId || '', workspacePath)
+    .filter(item => item.kind === 'file').map(item => item.path), [workspaceLogs, chatId, workspacePath]);
   const steeringDelivery = useMemo(
     () => projectSteeringDelivery(Array.isArray(incomingTraceLogs) ? incomingTraceLogs : []),
     [incomingTraceLogs],
@@ -2831,6 +2840,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
     transportWorkActive || transportHandoffActive
   );
 
+  const previousGroups = useRef<any[][]>([]);
   const groups = useMemo(() => {
     const nextGroups: any[][] = [];
     let currentGroup: any[] = [];
@@ -2870,7 +2880,15 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
       }
     }
 
-    return nextGroups;
+    // Ordering preserves unchanged row objects. Retain their group arrays as
+    // well so historical message cards skip deep comparison and rendering.
+    const stableGroups = nextGroups.map((group, index) => {
+      const previous = previousGroups.current[index];
+      return previous && previous.length === group.length && group.every((log, row) => log === previous[row])
+        ? previous : group;
+    });
+    previousGroups.current = stableGroups;
+    return stableGroups;
   }, [activeBoundary, feedWorkActive, orderedTraceLogs]);
   const activeWorkGroupIndex = useMemo(() => {
     if (!feedWorkActive || !activeBoundary) return -1;
@@ -3021,6 +3039,8 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
       autoFollowFrameRef.current = null;
     }
   }, []);
+
+  useActivityScrollHandoff(scrollContainerRef, pauseAutoFollow);
 
   React.useLayoutEffect(() => {
     const previous = autoFollowActivationRef.current;

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useLiveFeedFlow } from './use-live-feed-flow';
 import { ActivityViewport } from './activity-viewport';
+import { ActivityDisclosure } from './activity-disclosure';
 import { ToolResultScroll } from './tool-result-scroll';
 import { HighlightedDiffCode, useCodeSyntax, useDiffSyntax } from './diff-syntax';
 import { getActionSummary } from './action-summary';
@@ -309,9 +310,9 @@ const getThoughtScrollEdges = (element: HTMLDivElement) => {
 const thoughtMarkdownComponents = {
   ...markdownComponents,
   p: ({ node, ...props }: any) => <p className="eterx-thought-paragraph mb-2 last:mb-0 break-words leading-[1.62]" {...props} />,
-  ol: ({ node, ...props }: any) => <ol className="eterx-thought-list my-2 list-decimal space-y-1.5 pl-5" {...props} />,
-  ul: ({ node, ...props }: any) => <ul className="eterx-thought-list my-2 list-disc space-y-1.5 pl-5" {...props} />,
-  li: ({ node, ...props }: any) => <li className="eterx-thought-list-item pl-1 leading-[1.58]" {...props} />,
+  ol: ({ node, className = '', ...props }: any) => <ol className={`eterx-thought-list my-2 list-decimal space-y-1.5 pl-5 ${className}`} {...props} />,
+  ul: ({ node, className = '', ...props }: any) => <ul className={`eterx-thought-list my-2 list-disc space-y-1.5 pl-5 ${className}`} {...props} />,
+  li: ({ node, className = '', ...props }: any) => <li className={`eterx-thought-list-item pl-1 leading-[1.58] ${className}`} {...props} />,
   strong: ({ node, ...props }: any) => <strong className="eterx-thought-strong font-semibold" {...props} />,
   a: ({ node, href, children, ...props }: any) => {
     const localPath = decodeLocalFileHref(href);
@@ -340,7 +341,7 @@ const LiveMarkdown = React.memo(({ text, streaming, components }: {
   text: string; streaming: boolean; components: typeof markdownComponents;
 }) => {
   const paragraphs = useMemo(() => {
-    if (!text.includes('\n\n') || /[`$|<]|^\s{0,3}(?:>|[-+*]\s|\d+[.)]\s|\[[^\]]+\]:)|^ {4}\S|^\t/m.test(text)) return null;
+    if (!text.includes('\n\n') || /[`$|<~]|\\(?:\(|\[)|^\s{0,3}(?:>|[-+*]\s|\d+[.)]\s|\[[^\]]+\]:)|^ {4}\S|^\t/m.test(text)) return null;
     const parts = text.split(/(\n{2,})/);
     let offset = 0;
     return parts.map(part => {
@@ -428,7 +429,6 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
   const { text, isLatest, isThinking, variant = 'thought', suffix } = props;
   const requestedLive = isLatest && isThinking;
   const thoughtIsLive = variant === 'thought' && requestedLive;
-  const prefersReducedMotion = useReducedMotion();
   // Thought details are opt-in; live activity is presented in the group heading.
   const [open, setOpen] = useState(false);
   const [thoughtCanScroll, setThoughtCanScroll] = useState(false);
@@ -513,9 +513,9 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
   const professionalMarkdownComponents = useMemo(() => ({
     ...markdownComponents,
     p: ({ node, ...props }: any) => <p className="eterx-answer-paragraph mb-2 last:mb-0 break-words leading-[1.62] tracking-normal" {...props} />,
-    ul: ({ node, ...props }: any) => <ul className="eterx-answer-list my-2.5 list-disc space-y-1.5 pl-5" {...props} />,
-    ol: ({ node, ...props }: any) => <ol className="eterx-answer-list my-2.5 list-decimal space-y-1.5 pl-5" {...props} />,
-    li: ({ node, ...props }: any) => <li className="eterx-answer-list-item pl-1 leading-[1.58]" {...props} />,
+    ul: ({ node, className = '', ...props }: any) => <ul className={`eterx-answer-list my-2.5 list-disc space-y-1.5 pl-5 ${className}`} {...props} />,
+    ol: ({ node, className = '', ...props }: any) => <ol className={`eterx-answer-list my-2.5 list-decimal space-y-1.5 pl-5 ${className}`} {...props} />,
+    li: ({ node, className = '', ...props }: any) => <li className={`eterx-answer-list-item pl-1 leading-[1.58] ${className}`} {...props} />,
     strong: ({ node, ...props }: any) => <strong className="eterx-answer-strong font-semibold" {...props} />,
     em: ({ node, ...props }: any) => <em className="eterx-answer-em italic" {...props} />,
     a: ({ node, href, children, ...props }: any) => {
@@ -546,40 +546,33 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
             aria-label={`${ thoughtLabel }. ${ open ? 'Hide' : 'Show' } thought details`}
             className="eterx-thought-toggle group flex h-[30px] min-h-[30px] w-full items-center gap-1.5 px-0 py-0 text-left transition-colors focus-visible:outline-none"
           >
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.span
-                key={isLive ? 'thinking' : 'thought'}
-                className="eterx-thought-state-label"
-                initial={prefersReducedMotion ? false : { opacity: 0, y: 2 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={prefersReducedMotion ? undefined : { opacity: 0, y: -2 }}
-                transition={{ duration: prefersReducedMotion ? 0 : 0.14, ease: 'easeOut' }}
-              >
+            <span className="eterx-thought-state-label">
                 <Shimmer
                   active={isLive}
                   className="eterx-thinking-shimmer min-w-0 truncate text-[15px] font-medium tracking-[-0.01em] text-[var(--eterx-ui-working-text)]"
                 >
                   {thoughtLabel}
                 </Shimmer>
-              </motion.span>
-            </AnimatePresence>
+            </span>
             <ChevronRight aria-hidden="true" className={`eterx-thought-chevron h-3.5 w-3.5 shrink-0 text-[#77736C] group-hover:text-[#A8A198] transition-all ${ open ? 'rotate-90' : '' }`} />
           </button>
-          <AnimatePresence initial={false}>
-            {open && renderText && (
-              <motion.div
-                key="thought-details"
-                id={thoughtDetailsId}
-                className="eterx-thought-details overflow-hidden"
-                initial={prefersReducedMotion ? false : { height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={prefersReducedMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
-                transition={prefersReducedMotion
-                  ? { duration: 0 }
-                  : { height: { duration: 0.18, ease: [0.22, 1, 0.36, 1] }, opacity: { duration: 0.13, ease: 'easeOut' } }}
-              >
+          <ActivityDisclosure open={open && Boolean(renderText)} id={thoughtDetailsId} className="eterx-thought-details">
                 <div className="eterx-thought-scroll-frame relative">
-                  <div ref={thoughtScrollRef} onScroll={handleThoughtScroll} className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' }`} style={{ maxHeight: 'min(44vh, 380px)' }}>
+                  <div
+                    ref={thoughtScrollRef}
+                    onScroll={handleThoughtScroll}
+                    onWheelCapture={event => { if (event.deltaY < 0) thoughtAutoScrollRef.current = false; }}
+                    onPointerDownCapture={() => { thoughtAutoScrollRef.current = false; }}
+                    onTouchStart={() => { thoughtAutoScrollRef.current = false; }}
+                    onKeyDownCapture={event => {
+                      if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) thoughtAutoScrollRef.current = false;
+                    }}
+                    role="region"
+                    aria-label="Thought details"
+                    tabIndex={thoughtCanScroll ? 0 : undefined}
+                    className={`eterx-thought-expanded ${ thoughtCanScroll ? 'eterx-scrollbar overflow-y-auto' : 'overflow-y-hidden' }`}
+                    style={{ maxHeight: 'var(--activity-child-height, max(0px, calc(var(--activity-height, min(320px, 42dvh)) - 80px)))' }}
+                  >
                     <div ref={thoughtContentRef} className="eterx-thought-reading-content">
                       {thoughtSections.map((section, index) => (
                         <div key={section.id} className={index > 0 ? 'mt-3' : undefined}>
@@ -591,9 +584,7 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
                   {thoughtScrollFades.top && <div className="eterx-thought-scroll-fade eterx-thought-scroll-fade-top" aria-hidden="true" />}
                   {thoughtScrollFades.bottom && <div className="eterx-thought-scroll-fade eterx-thought-scroll-fade-bottom" aria-hidden="true" />}
                 </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          </ActivityDisclosure>
         </div>
       </motion.div>
     );
@@ -856,6 +847,8 @@ const InlineConsole = ({ command, program, args, content, exitCode, status, dura
   const previousContentLengthRef = useRef(0);
   const atBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+  const [atTop, setAtTop] = useState(true);
+  const [commandExpanded, setCommandExpanded] = useState(false);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -868,17 +861,19 @@ const InlineConsole = ({ command, program, args, content, exitCode, status, dura
         el.scrollTop = el.scrollHeight;
       }
       const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+      setAtTop(el.scrollTop < 4);
       if (nearBottom !== atBottomRef.current) {
         atBottomRef.current = nearBottom;
         setAtBottom(nearBottom);
       }
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [content, isRunning]);
+  }, [content, isRunning, commandExpanded]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    setAtTop(el.scrollTop < 4);
     shouldFollowOutputRef.current = nearBottom;
     if (nearBottom !== atBottomRef.current) {
       atBottomRef.current = nearBottom;
@@ -900,24 +895,36 @@ const InlineConsole = ({ command, program, args, content, exitCode, status, dura
   const durationLabel = formatTerminalMetaDuration(durationMs);
 
   const consolePanel = (
-    <div className={`eterx-terminal-console flex flex-col font-mono text-[#D8D1C8] ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'overflow-hidden rounded-[10px] border border-white/[0.07] bg-[#141413]/80 shadow-none' }`}>
-      {/* Keep the command inline with the console; copying never toggles the
-          parent disclosure row. */}
-      <div className="eterx-terminal-console-command-card relative mx-2 mt-2 mb-1 min-w-0 px-1.5 py-1">
-        <div className="eterx-terminal-console-command whitespace-pre-wrap break-words pr-9 font-mono text-[11.5px] font-medium leading-[1.55] text-[#E5E7EB] select-text">
-          {command}
-        </div>
-        <div className="absolute right-0 top-0">
-          <IconCopyButton content={program ? JSON.stringify({ program, args: args || [] }, null, 2) : command} label={program ? 'Copy invocation' : 'Copy command'} />
+    <div className={`eterx-terminal-console eterx-activity-child-panel flex flex-col font-mono text-[#D8D1C8] ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'overflow-hidden rounded-[10px] border border-white/[0.07] bg-[#141413]/80 shadow-none' }`}>
+      <div className="eterx-terminal-command-header">
+        <div className="eterx-terminal-command-disclosure">
+          <button
+            type="button"
+            aria-expanded={commandExpanded}
+            aria-label={commandExpanded ? 'Collapse command' : 'Expand full command'}
+            onClick={(event) => { event.stopPropagation(); setCommandExpanded(expanded => !expanded); }}
+            className="eterx-terminal-command-toggle"
+          >
+            <span className="eterx-terminal-prompt" aria-hidden="true">$</span>
+            <span className="eterx-terminal-console-command" data-expanded={commandExpanded}>{command}</span>
+            <ChevronDown className="eterx-terminal-command-chevron" aria-hidden="true" />
+          </button>
+          <div className="eterx-terminal-command-copy">
+            <IconCopyButton content={program ? JSON.stringify({ program, args: args || [] }, null, 2) : command} label={program ? 'Copy invocation' : 'Copy command'} />
+          </div>
         </div>
       </div>
-
-      {/* Output scroll body */}
-      <div className="relative min-h-0">
+      <div className="eterx-activity-child-frame eterx-terminal-output-frame relative" data-at-top={atTop} data-at-bottom={atBottom}>
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="eterx-terminal-console-output eterx-scrollbar max-h-[220px] min-h-[56px] overflow-auto px-2.5 py-2 text-[11.5px] leading-[1.48] text-[#CDC5BB]"
+          role="region"
+          aria-label="Terminal output"
+          tabIndex={0}
+          className="eterx-terminal-console-scroll eterx-activity-child-scroll eterx-scrollbar"
+        >
+        <div
+          className="eterx-terminal-console-output min-h-[56px] px-2.5 py-2 text-[11.5px] leading-[1.48] text-[#CDC5BB]"
         >
           <div className="min-w-0 pr-1">
             <div className="eterx-terminal-console-body whitespace-pre-wrap break-words text-[#CDC5BB]">
@@ -928,6 +935,7 @@ const InlineConsole = ({ command, program, args, content, exitCode, status, dura
             </div>
           </div>
         </div>
+        </div>
         {!atBottom && hasManyLines && (
           <button type="button" aria-label="Scroll output to bottom" onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-none transition-colors hover:bg-[#333331] hover:text-[#F0EAE0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20">
             <ChevronDown className="h-3 w-3" />
@@ -937,7 +945,7 @@ const InlineConsole = ({ command, program, args, content, exitCode, status, dura
 
       {/* Terminal footer status bar */}
       <div className="eterx-terminal-console-footer flex items-center justify-between gap-2 border-t border-white/[0.045] bg-white/[0.012] px-2.5 py-1 text-[10.5px] font-medium text-[#A9A196]">
-        <span className="min-w-0 truncate text-[#777168]" title={executionLabel || undefined}>{executionLabel}</span>
+        <span className="min-w-0 truncate text-[#777168]">{executionLabel}</span>
         <div className="flex items-center gap-2.5">
           {durationLabel && (
             <span className="text-[#807970]">{durationLabel}</span>
@@ -979,6 +987,35 @@ type FileChangeDetail = {
   readback?: string;
 };
 
+type FileOperationResult = {
+  operation: 'created' | 'edited' | 'deleted' | 'mixed' | 'none';
+  filesModified: string[];
+  filesCreated: string[];
+  filesDeleted: string[];
+  errors: string[];
+  changes: FileChangeDetail[];
+  rolledBack: boolean;
+};
+
+const normalizeFileChangePath = (value: unknown) => String(value || '').trim().replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+const fileChangePathsMatch = (left: unknown, right: unknown) => {
+  const a = normalizeFileChangePath(left);
+  const b = normalizeFileChangePath(right);
+  return Boolean(a && b && (a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`)));
+};
+
+// Prefer an exact path. A filename-only preview must never supply the diff for
+// two different files (for example, several route.ts files in one edit).
+const findFileChangePreview = (previews: any[], path: string, paths: string[]) => {
+  const latest = [...previews].reverse();
+  return latest.find(item => normalizeFileChangePath(item?.filepath || item?.filename) === normalizeFileChangePath(path))
+    || latest.find(item => {
+      const previewPath = item?.filepath || item?.filename;
+      return fileChangePathsMatch(previewPath, path)
+        && paths.filter(candidate => fileChangePathsMatch(previewPath, candidate)).length === 1;
+    });
+};
+
 const fileDiffLines = (diff = '') => diff
   .split('\n')
   .map(line => line.startsWith('@@')
@@ -988,197 +1025,6 @@ const fileDiffLines = (diff = '') => diff
       content: /^[+\- ]/.test(line) ? line.slice(1) : line,
     });
 
-const FileOperationSummaryPanel = ({
-  filesModified = [],
-  filesCreated = [],
-  filesDeleted = [],
-  errors = [],
-  changes = [],
-  rolledBack = false,
-  flush = false,
-}: {
-  filesModified?: string[];
-  filesCreated?: string[];
-  filesDeleted?: string[];
-  errors?: string[];
-  changes?: FileChangeDetail[];
-  rolledBack?: boolean;
-  flush?: boolean;
-}) => {
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
-  const totalFiles = filesModified.length + filesCreated.length + filesDeleted.length;
-  const hasErrors = errors.length > 0;
-  const success = totalFiles > 0 && !hasErrors;
-
-  type FileEntry = { path: string; kind: 'modified' | 'created' | 'deleted'; detail?: FileChangeDetail };
-  const detailByPath = new Map(changes.map(change => [change.path.replace(/\\/g, '/').toLowerCase(), change]));
-  const withDetail = (filePath: string, kind: FileEntry['kind']): FileEntry => ({
-    path: filePath,
-    kind,
-    detail: detailByPath.get(filePath.replace(/\\/g, '/').toLowerCase()),
-  });
-  const allFiles: FileEntry[] = [
-    ...filesCreated.map(p => withDetail(p, 'created')),
-    ...filesModified.map(p => withDetail(p, 'modified')),
-    ...filesDeleted.map(p => withDetail(p, 'deleted')),
-  ];
-
-  const getDiffLines = (file: FileEntry) => Array.isArray(file.detail?.diffLines)
-    ? file.detail.diffLines
-    : file.detail?.diff
-      ? fileDiffLines(file.detail.diff)
-      : [];
-
-  const toggleFile = (filePath: string) => {
-    setExpandedPaths(current => {
-      const next = new Set(current);
-      if (next.has(filePath)) next.delete(filePath);
-      else next.add(filePath);
-      return next;
-    });
-  };
-
-  const kindStyle = {
-    created: { bar: 'bg-emerald-400', verb: 'Created', text: 'text-emerald-300/80' },
-    modified: { bar: 'bg-sky-400', verb: 'Edited', text: 'text-sky-300/80' },
-    deleted: { bar: 'bg-red-400', verb: 'Deleted', text: 'text-red-300/80' },
-  };
-
-  if (success && allFiles.length === 1) {
-    const file = allFiles[0];
-    const filename = file.path.replace(/\\/g, '/').split('/').pop() || file.path;
-    const diffLines = getDiffLines(file);
-    if (diffLines.length > 0) {
-      return (
-        <InlineDiffView
-          filename={filename}
-          filepath={file.path}
-          diffLines={diffLines}
-          showExpand={false}
-          flush
-        />
-      );
-    }
-    if (file.kind === 'deleted' && !file.detail?.readback) {
-      return (
-        <InlineMissingDiffView
-          filename={filename}
-          filepath={file.path}
-          stats={{ added: Number(file.detail?.additions || 0), removed: Number(file.detail?.deletions || 0) }}
-          flush
-        />
-      );
-    }
-    return (
-      <InlineCodeView
-        filename={filename}
-        content={file.detail?.readback || ''}
-        filepath={file.path}
-        stats={{ added: Number(file.detail?.additions || 0), removed: Number(file.detail?.deletions || 0) }}
-        showExpand={false}
-        fetchFull
-        created={file.kind === 'created'}
-        flush
-      />
-    );
-  }
-
-  return (
-    <div className={`eterx-patch-summary-panel flex flex-col overflow-hidden shadow-none ${ flush ? 'border-t border-white/[0.052] bg-transparent' : 'mx-3 mt-1.5 mb-2 rounded-[12px] border border-white/[0.07] bg-[#151514]' }`}>
-      {allFiles.map((file) => {
-        const style = kindStyle[file.kind];
-        const pathParts = file.path.replace(/\\/g, '/').split('/');
-        const name = pathParts.pop() || file.path;
-        const parentPath = pathParts.slice(-3).join('/');
-        const diffLines = getDiffLines(file);
-        const canOpen = file.kind !== 'deleted' || diffLines.length > 0 || Boolean(file.detail?.readback);
-        const isExpanded = canOpen && expandedPaths.has(file.path);
-        return (
-          <React.Fragment key={`${ file.kind }-${ file.path }`}>
-            <button
-              type="button"
-              className={`group flex w-full items-stretch border-t border-white/[0.045] text-left first:border-t-0 transition-colors ${ canOpen ? 'cursor-pointer hover:bg-white/[0.025]' : 'cursor-default' } ${ isExpanded ? 'bg-white/[0.028]' : '' }`}
-              onClick={() => { if (canOpen) toggleFile(file.path); }}
-              aria-expanded={canOpen ? isExpanded : undefined}
-              title={canOpen ? `${ isExpanded ? 'Hide' : 'Show' } ${ name }` : file.path}
-            >
-              <span className={`w-[2px] shrink-0 ${ style.bar }`} />
-              <span className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2">
-                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white/[0.035] text-[#A9A198] ring-1 ring-inset ring-white/[0.045]">
-                  <LocalFileIcon fileName={name} size="sm" />
-                </span>
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-tight">
-                  <span className="truncate text-[12px] font-medium text-[#C7DDEA]">{name}</span>
-                  <span className="flex min-w-0 items-center gap-1.5 text-[9.5px]">
-                    <span className={`shrink-0 ${ style.text }`}>{style.verb}</span>
-                    {parentPath ? (
-                      <>
-                        <span className="text-[#4F4A45]">·</span>
-                        <span className="truncate text-[#716B64]">{parentPath}</span>
-                      </>
-                    ) : null}
-                  </span>
-                </span>
-                {file.detail && (file.detail.additions || file.detail.deletions) ? (
-                  <span className="flex shrink-0 items-center gap-1.5 text-[10px] tabular-nums">
-                    <span className="text-emerald-300">+{file.detail.additions || 0}</span>
-                    <span className="text-red-300">−{file.detail.deletions || 0}</span>
-                  </span>
-                ) : null}
-                {canOpen ? (
-                  <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#716B64] transition-transform duration-150 ${ isExpanded ? 'rotate-90 text-[#C0B8AE]' : 'group-hover:text-[#9A938B]' }`} />
-                ) : null}
-              </span>
-            </button>
-            <AnimatePresence initial={false}>
-              {isExpanded ? (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-                  className="overflow-hidden border-t border-white/[0.052] bg-black/[0.08]"
-                >
-                  {diffLines.length > 0 ? (
-                    <InlineDiffView
-                      filename={name}
-                      filepath={file.path}
-                      diffLines={diffLines}
-                      showExpand={false}
-                      flush
-                    />
-                  ) : (
-                    <InlineCodeView
-                      filename={name}
-                      content={file.detail?.readback || ''}
-                      filepath={file.path}
-                      stats={{ added: Number(file.detail?.additions || 0), removed: Number(file.detail?.deletions || 0) }}
-                      showExpand={false}
-                      fetchFull
-                      created={file.kind === 'created'}
-                      flush
-                    />
-                  )}
-                </motion.div>
-              ) : null}
-            </AnimatePresence>
-          </React.Fragment>
-        );
-      })}
-      {hasErrors && errors.map((err, i) => (
-        <div key={`err-${ i }`} className="flex items-start gap-0 border-t border-white/[0.045]">
-          <div className="w-[3px] self-stretch shrink-0 bg-red-500" />
-          <div className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2">
-            <span className="shrink-0 text-[11px] font-medium text-red-300">{rolledBack ? 'Rolled back' : 'Error'}</span>
-            <span className="min-w-0 flex-1 break-words text-[11.5px] leading-[1.45] text-[#E6AAA4]">{err}</span>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-};
-
-
 // ─── Shared card shell — defined OUTSIDE ToolResultPreview so React never remounts ───
 const TrpCard = React.memo(({ icon, title, badge, children, flush = false }: {
   icon?: React.ReactNode;
@@ -1187,7 +1033,7 @@ const TrpCard = React.memo(({ icon, title, badge, children, flush = false }: {
   children: React.ReactNode;
   flush?: boolean;
 }) => (
-  <div className={`eterx-trp-card ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none text-[#D0C8C0]' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[11px] border border-white/[0.07] bg-[#151514] text-[#D0C8C0] shadow-none' }`}>
+  <div className={`eterx-trp-card eterx-activity-child-panel ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none text-[#D0C8C0]' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[11px] border border-white/[0.07] bg-[#151514] text-[#D0C8C0] shadow-none' }`}>
     {title && (
       <div className="eterx-trp-card-header flex items-center gap-2 border-b border-white/[0.045] bg-white/[0.02] px-3.5 py-2">
         {icon && <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#6A6460]">{icon}</span>}
@@ -1498,7 +1344,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
               Guidelines
             </span>
             {skillName && (
-              <span className="min-w-0 truncate font-mono text-[10px] text-[#817A70]" title={skillName}>
+              <span className="min-w-0 truncate font-mono text-[10px] text-[#817A70]">
                 {skillName}
               </span>
             )}
@@ -1589,7 +1435,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
                 {rows.map((row: any, ri: number) => (
                   <tr key={ri} className="border-b border-white/[0.03] last:border-0 hover:bg-white/[0.02]">
                     {Object.values(row).map((v: any, vi: number) => (
-                      <td key={vi} className="px-2.5 py-1.5 border-r border-white/[0.03] last:border-r-0 max-w-[180px] truncate select-all text-[#A0988E]" title={String(v)}>
+                      <td key={vi} className="px-2.5 py-1.5 border-r border-white/[0.03] last:border-r-0 max-w-[180px] truncate select-all text-[#A0988E]">
                         {v === null ? <span className="text-white/20 italic">null</span> : String(v)}
                       </td>
                     ))}
@@ -1931,7 +1777,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
     }
   };
   const diffPanel = (
-    <div className={`eterx-inline-diff-panel flex flex-col font-mono text-[#D8D1C8] ${ full ? 'h-full rounded-none border-0 bg-[#151514]' : `${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514] shadow-none' }` }`}>
+    <div className={`eterx-inline-diff-panel flex flex-col font-mono text-[#D8D1C8] ${ full ? 'h-full rounded-none border-0 bg-[#151514]' : `eterx-activity-child-panel ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514] shadow-none' }` }`}>
       {/* Header (hidden when flush embedded in card) */}
       {!flush && (
         <div className="eterx-inline-diff-header flex items-center justify-between gap-3 bg-white/[0.02] border-b border-white/[0.045] px-3 py-1.5">
@@ -1959,11 +1805,14 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
         </div>
       )}
       {/* Single unified scroll container — horizontal + vertical together */}
-      <div className={`relative min-h-0 ${ full ? 'flex-1' : '' }`}>
+      <div className={`relative min-h-0 ${ full ? 'flex-1' : 'eterx-activity-child-frame' }`}>
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className={`eterx-inline-diff-scroll eterx-scrollbar overflow-auto text-[12px] leading-[1.5] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
+          role="region"
+          aria-label={`Changes in ${filename}`}
+          tabIndex={0}
+          className={`eterx-inline-diff-scroll eterx-scrollbar overflow-auto text-[12px] leading-[1.5] ${ full ? 'h-full' : 'eterx-activity-child-scroll' }`}
         >
           {/* Inner container expands to content width — all lines share same horizontal scroll */}
           <div style={{ minWidth: 'max-content' }}>
@@ -2152,7 +2001,7 @@ const InlineCodeView = ({
   };
   if (isDocumentAsset) return <div className="min-w-0 p-3"><LocalFileLinkChip filePath={filepath || filename} label={filename} /></div>;
   const codePanel = (
-    <div className={`eterx-inline-code-panel ${ created ? 'eterx-inline-code-panel-created' : '' } flex flex-col font-mono text-[#D8D1C8] ${ full ? 'h-full rounded-none border-0 bg-[#151514]' : `${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514] shadow-none' }` }`}>
+    <div className={`eterx-inline-code-panel ${ created ? 'eterx-inline-code-panel-created' : '' } flex flex-col font-mono text-[#D8D1C8] ${ full ? 'h-full rounded-none border-0 bg-[#151514]' : `eterx-activity-child-panel ${ flush ? 'border-t border-white/[0.052] bg-transparent rounded-none' : 'mx-3 mt-1.5 mb-2 overflow-hidden rounded-[12px] border border-white/[0.07] bg-[#151514] shadow-none' }` }`}>
       {/* Header (hidden when flush embedded in card) */}
       {!flush && (
         <div className="eterx-inline-code-header flex items-center justify-between gap-3 bg-white/[0.02] border-b border-white/[0.045] px-3 py-1.5">
@@ -2175,7 +2024,7 @@ const InlineCodeView = ({
         </div>
       )}
       {/* Single unified scroll container */}
-      <div className={`relative min-h-0 ${ full ? 'flex-1' : '' }`}>
+      <div className={`relative min-h-0 ${ full ? 'flex-1' : 'eterx-activity-child-frame' }`}>
         {isLoading ? (
           <div className="flex min-h-[96px] w-full items-center justify-center px-4 py-6">
             <span
@@ -2188,7 +2037,10 @@ const InlineCodeView = ({
           <div
             ref={scrollRef}
             onScroll={handleScroll}
-            className={`eterx-inline-code-scroll eterx-scrollbar overflow-auto text-[12px] leading-[1.5] ${ full ? 'h-full' : 'max-h-[300px] min-h-[74px]' }`}
+            role="region"
+            aria-label={`Contents of ${filename}`}
+            tabIndex={0}
+            className={`eterx-inline-code-scroll eterx-scrollbar overflow-auto text-[12px] leading-[1.5] ${ full ? 'h-full' : 'eterx-activity-child-scroll' }`}
           >
             {/* Inner div expands to content width — all lines share the same horizontal scroll */}
             <div style={{ minWidth: 'max-content' }}>
@@ -3258,7 +3110,7 @@ const TerminalTraceCard = ({
       <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`}>
         <div className={`eterx-terminal-trace-row flex w-full items-center gap-1.5 py-0.5 text-left ${ inCard ? 'min-h-[29px] px-1' : 'min-h-[34px] px-2.5' }`}>
           <span className="eterx-action-icon eterx-terminal-icon flex h-5 w-5 shrink-0 items-center justify-center text-[#A39B91]">
-            {connectorAction ? <ConnectorIcon connectorId={connectorId} size={15} title={`${ connectorId || 'connected service' } connector`} /> : <Clock className={`h-[15px] w-[15px] ${ isStreaming ? 'text-[#67C58A]' : 'text-[#A39B91]' }`} strokeWidth={2} />}
+            {connectorAction ? <ConnectorIcon connectorId={connectorId} size={15} showTooltip={false} /> : <Clock className={`h-[15px] w-[15px] ${ isStreaming ? 'text-[#67C58A]' : 'text-[#A39B91]' }`} strokeWidth={2} />}
           </span>
           <Shimmer active={isStreaming} className="eterx-trace-label min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
             {headerLabel}
@@ -3301,21 +3153,20 @@ const TerminalTraceCard = ({
         className={`eterx-terminal-trace-row group grid w-full ${ rowGridClass } items-center gap-1.5 py-0.5 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'min-h-[29px] px-1 hover:bg-white/[0.024]' : 'min-h-[34px] px-2.5 hover:bg-white/[0.024]' }`}
       >
         <span className="eterx-action-icon eterx-terminal-icon flex h-5 w-5 shrink-0 items-center justify-center text-[#A39B91]">
-          {connectorAction ? <ConnectorIcon connectorId={connectorId} size={15} title={`${ connectorId || 'connected service' } connector`} /> : <ToolTerminalIcon size={15} color="currentColor" />}
+          {connectorAction ? <ConnectorIcon connectorId={connectorId} size={15} showTooltip={false} /> : <ToolTerminalIcon size={15} color="currentColor" />}
         </span>
         <Shimmer active={isStreaming} className="eterx-trace-label min-w-0 truncate text-[12.5px] font-medium leading-tight tracking-normal text-[#C8C1B8]">
           {isExpanded ? title : compactTitle}
         </Shimmer>
         {!isExpanded && (
-          <span title={command} className="eterx-trace-command min-w-0 flex-1 truncate text-[13.5px] leading-tight select-text">
+          <span className="eterx-trace-command min-w-0 flex-1 truncate text-[13.5px] leading-tight select-text">
             {collapsedCommand || '(no command)'}
           </span>
         )}
         <span className="eterx-trace-duration" aria-hidden="true">{durationLabel}</span>
         <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[#898176] transition-transform ${ isExpanded ? 'rotate-90 text-[#C8C1B8]' : '' }`} />
       </button>
-      {isExpanded && (
-        <div id={outputId}>
+      <ActivityDisclosure open={isExpanded} id={outputId}>
           <InlineConsole
             command={command}
             program={getTerminalInvocation(log, preview)?.program}
@@ -3329,8 +3180,7 @@ const TerminalTraceCard = ({
             pid={pid}
             flush={true}
           />
-        </div>
-      )}
+      </ActivityDisclosure>
     </div>
   );
 };
@@ -3345,6 +3195,7 @@ const FileChangeTraceCard = ({
   fileTargets,
   diffStats,
   inCard = false,
+  singleFileResult,
 }: {
   log: any;
   preview?: any;
@@ -3355,7 +3206,9 @@ const FileChangeTraceCard = ({
   fileTargets: FileTraceTarget[];
   diffStats: { added: number; removed: number } | null;
   inCard?: boolean;
-}) => {
+  /** Defined (including null) only on a row scoped to one file. */
+  singleFileResult?: FileOperationResult | null;
+}): React.ReactElement => {
   const [isExpanded, setIsExpanded] = useState(false);
   const previewIsLive = preview?.type === 'file_preview' && isFeedTraceOpen(preview);
   // File writes must not move the feed by opening and closing themselves.
@@ -3365,24 +3218,24 @@ const FileChangeTraceCard = ({
   const effectiveIsLiveChip = !isExplicitlySettledAction(log) && (isLiveChip || previewIsLive);
   const displayFileTargets = useMemo(() => dedupeFileTraceTargetsForDisplay(fileTargets), [fileTargets]);
   const primaryTarget = displayFileTargets[0] || fileTargets[0];
-  const explicitCount = numberFrom(log.fileCount, log.filesCount, log.count);
-  const fileOperationResult = useMemo(() => {
+  const isSingleFile = singleFileResult !== undefined;
+  const explicitCount = isSingleFile ? 1 : numberFrom(log.fileCount, log.filesCount, log.count);
+  const fileOperationResult = useMemo<FileOperationResult | null>(() => {
+    if (singleFileResult !== undefined) return singleFileResult;
     const raw = preview?.fileOperationResult ?? preview?.result ?? log?.toolResult ?? log?.result ?? log;
     let src = raw;
     if (typeof raw === 'string') {
       try { src = JSON.parse(raw); } catch { src = {}; }
     }
 
-    const rawChanges = Array.isArray(src?.changes) ? src.changes as FileChangeDetail[] : [];
+    const rawChanges: FileChangeDetail[] = Array.isArray(src?.changes)
+      ? src.changes.filter((change: any) => change && typeof change.path === 'string' && change.path.trim()
+        && ['modified', 'created', 'deleted'].includes(change.action))
+      : [];
     const relatedPreviews = [preview, ...(Array.isArray(preview?.relatedFilePreviews) ? preview.relatedFilePreviews : [])]
       .filter((item, index, items) => item?.type === 'file_preview' && items.indexOf(item) === index);
-    const normalizePath = (value: unknown) => String(value || '').replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
     const structuredChanges = rawChanges.map(change => {
-      const changePath = normalizePath(change.path);
-      const matchingPreview = relatedPreviews.find(item => {
-        const previewPath = normalizePath(item?.filepath || item?.filename);
-        return previewPath && (previewPath === changePath || previewPath.endsWith(`/${ changePath }`) || changePath.endsWith(`/${ previewPath }`));
-      });
+      const matchingPreview = findFileChangePreview(relatedPreviews, change.path, rawChanges.map(item => item.path));
       if (!matchingPreview) return change;
       return {
         ...change,
@@ -3392,14 +3245,18 @@ const FileChangeTraceCard = ({
         readback: change.readback || getPreviewContent(matchingPreview),
       };
     });
-    const filesModified = (src?.filesModified ?? structuredChanges.filter(change => change.action === 'modified').map(change => change.path)) as string[];
-    const filesCreated = (src?.filesCreated ?? structuredChanges.filter(change => change.action === 'created').map(change => change.path)) as string[];
-    const filesDeleted = (src?.filesDeleted ?? structuredChanges.filter(change => change.action === 'deleted').map(change => change.path)) as string[];
-    const errors = (src?.errors ?? []) as string[];
-    const hasData = filesModified.length > 0 || filesCreated.length > 0 || filesDeleted.length > 0 || structuredChanges.length > 0 || errors.length > 0 || Boolean(src?.operation);
+    const resultPaths = (value: unknown, action: FileChangeDetail['action']): string[] => Array.isArray(value)
+      ? value.filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+      : structuredChanges.filter(change => change.action === action).map(change => change.path);
+    const filesModified = resultPaths(src?.filesModified, 'modified');
+    const filesCreated = resultPaths(src?.filesCreated, 'created');
+    const filesDeleted = resultPaths(src?.filesDeleted, 'deleted');
+    const errors: string[] = Array.isArray(src?.errors)
+      ? src.errors.map((error: unknown) => formatUnknownError(error, 'File operation failed.')) : [];
+    const hasData = filesModified.length > 0 || filesCreated.length > 0 || filesDeleted.length > 0 || structuredChanges.length > 0 || errors.length > 0 || Boolean(src?.operation) || Boolean(src?.rolledBack);
     if (!hasData) return null;
 
-    const inferredOperation = filesCreated.length > 0 && filesModified.length === 0 && filesDeleted.length === 0
+    const inferredOperation: FileOperationResult['operation'] = filesCreated.length > 0 && filesModified.length === 0 && filesDeleted.length === 0
       ? 'created'
       : filesModified.length > 0 && filesCreated.length === 0 && filesDeleted.length === 0
         ? 'edited'
@@ -3420,12 +3277,130 @@ const FileChangeTraceCard = ({
       changes: structuredChanges,
       rolledBack: Boolean(src?.rolledBack),
     };
-  }, [log, preview]);
+  }, [log, preview, singleFileResult]);
+
+  // Expand a batch into the same independent rows used by single-file edits.
+  // The underlying action remains one event; each row owns only its file's
+  // preview, change counts and disclosure state.
+  if (!isSingleFile) {
+    const relatedPreviews = [preview, ...(Array.isArray(preview?.relatedFilePreviews) ? preview.relatedFilePreviews : [])]
+      .filter(item => item?.type === 'file_preview');
+    const targets = new Map<string, FileTraceTarget>();
+    const addPath = (path: string, alias = false) => {
+      const key = normalizeFileChangePath(path);
+      if (!key || targets.has(key)) return;
+      const absolute = /^(?:[a-z]:\/|\/)/.test(key);
+      for (const [slotKey, target] of [...targets].sort((a, b) => b[1].filepath.length - a[1].filepath.length)) {
+        const existingKey = normalizeFileChangePath(target.filepath);
+        if (existingKey === key) return;
+        if (!fileChangePathsMatch(target.filepath, path)) continue;
+        const existingAbsolute = /^(?:[a-z]:\/|\/)/.test(existingKey);
+        if (alias && absolute !== existingAbsolute) {
+          if (absolute) {
+            // Retain insertion order while upgrading a relative path alias.
+            targets.set(slotKey, { filepath: path, filename: target.filename });
+          }
+          return;
+        }
+        if (alias && !key.includes('/')) return;
+      }
+      targets.set(key, { filepath: path, filename: path.replace(/\\/g, '/').split('/').pop() || path });
+    };
+    const resultPaths = fileOperationResult ? [
+      ...fileOperationResult.changes.map(change => change.path),
+      ...fileOperationResult.filesCreated,
+      ...fileOperationResult.filesModified,
+      ...fileOperationResult.filesDeleted,
+    ] : [];
+    resultPaths.forEach(path => addPath(path));
+    // Keep file order, omitting display-only basename aliases when the same
+    // invocation already identifies that file by a path.
+    fileTargets.forEach(target => {
+      const key = normalizeFileChangePath(target.filepath);
+      if (!key.includes('/') && fileTargets.some(other => normalizeFileChangePath(other.filepath).endsWith(`/${key}`))) return;
+      addPath(target.filepath, true);
+    });
+    relatedPreviews.forEach(item => addPath(item.filepath || item.filename || '', true));
+    const entries = [...targets.values()];
+    const paths = entries.map(target => target.filepath);
+    if (entries.length > 0) {
+      return <>{entries.map(target => {
+        const matchingPreview = findFileChangePreview(relatedPreviews, target.filepath, paths);
+        const changes = fileOperationResult?.changes || [];
+        const detail = changes.find(change => normalizeFileChangePath(change.path) === normalizeFileChangePath(target.filepath))
+          || changes.find(change => fileChangePathsMatch(change.path, target.filepath)
+            && paths.filter(path => fileChangePathsMatch(change.path, path)).length === 1);
+        const inPaths = (values: string[] = []) => values.some(path =>
+          normalizeFileChangePath(path) === normalizeFileChangePath(target.filepath)
+          || (fileChangePathsMatch(path, target.filepath) && paths.filter(candidate => fileChangePathsMatch(path, candidate)).length === 1));
+        const kind = inPaths(fileOperationResult?.filesCreated) ? 'created'
+          : inPaths(fileOperationResult?.filesDeleted) ? 'deleted'
+            : inPaths(fileOperationResult?.filesModified) ? 'modified' : detail?.action;
+        const rolledBack = Boolean(fileOperationResult?.rolledBack);
+        const applied = Boolean(kind) && !rolledBack && fileOperationResult?.operation !== 'none';
+        const scopedResult: FileOperationResult | null = fileOperationResult ? {
+          operation: applied ? (kind === 'modified' ? 'edited' : kind!) : 'none',
+          filesCreated: applied && kind === 'created' ? [target.filepath] : [],
+          filesModified: applied && kind === 'modified' ? [target.filepath] : [],
+          filesDeleted: applied && kind === 'deleted' ? [target.filepath] : [],
+          errors: applied ? [] : fileOperationResult.errors,
+          changes: detail && applied ? [detail] : [],
+          rolledBack,
+        } : null;
+        const diffLines = detail?.diffLines?.length ? detail.diffLines
+          : detail?.diff ? fileDiffLines(detail.diff) : matchingPreview?.diffLines;
+        const childPreview = matchingPreview || detail ? {
+          ...matchingPreview,
+          type: 'file_preview',
+          filename: target.filename,
+          filepath: target.filepath,
+          content: detail?.readback || getPreviewContent(matchingPreview),
+          diffLines,
+          isEdit: kind === 'modified' || kind === 'deleted' || Boolean(matchingPreview?.isEdit) || Boolean(diffLines?.length),
+          relatedFilePreviews: undefined,
+        } : undefined;
+        const stats = rolledBack || (scopedResult?.operation === 'none' && scopedResult.errors.length > 0) ? null
+          : detail && (detail.additions !== undefined || detail.deletions !== undefined)
+            ? { added: Number(detail.additions) || 0, removed: Number(detail.deletions) || 0 }
+            : childPreview ? getDiffStats(childPreview, {}) : entries.length === 1 ? diffStats : null;
+        return (
+          <FileChangeTraceCard
+            key={normalizeFileChangePath(target.filepath)}
+            log={log}
+            preview={childPreview}
+            isLiveChip={isLiveChip}
+            displayVerb={displayVerb}
+            iconCategory={iconCategory}
+            lineContext={entries.length === 1 ? lineContext : undefined}
+            fileTargets={[target]}
+            diffStats={stats}
+            inCard={inCard}
+            singleFileResult={scopedResult}
+          />
+        );
+      })}
+        {Boolean(fileOperationResult?.errors.length) && !fileOperationResult?.rolledBack
+          && fileOperationResult?.operation !== 'none'
+          && entries.every(target => resultPaths.some(path => fileChangePathsMatch(path, target.filepath))) && (
+          <details className="eterx-file-operation-notice group/notice">
+            <summary className="eterx-action-chip flex w-full cursor-pointer list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden">
+              <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 flex-1">File operation issues</span>
+              <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 transition-transform group-open/notice:rotate-90" />
+            </summary>
+            <ToolResultScroll label="File operation issues" className="px-3 py-2.5">
+              {fileOperationResult?.errors.map((error, index) => <p key={index} className="eterx-result-error">{error}</p>)}
+            </ToolResultScroll>
+          </details>
+        )}
+      </>;
+    }
+  }
   const resultFileCount = fileOperationResult
     ? fileOperationResult.filesCreated.length + fileOperationResult.filesModified.length + fileOperationResult.filesDeleted.length
     : 0;
   const fileCount = Math.max(displayFileTargets.length, explicitCount || 0, resultFileCount);
-  const multiFile = fileCount > 1 || /\bfiles\b/i.test(String(log.text || ''));
+  const multiFile = !isSingleFile && (fileCount > 1 || /\bfiles\b/i.test(String(log.text || '')));
   const resultOperation = fileOperationResult?.operation;
   const resultSaysEdit = preview?.type === 'file_preview' && Boolean(
     preview?.isEdit ||
@@ -3469,8 +3444,9 @@ const FileChangeTraceCard = ({
   );
   const showDiff = Boolean(isEditPreview && hasDiffPreview);
   // Allow fetching if we have a filepath, even for non-create actions (covers edit with no diff)
-  const canFetchCreatedFile = !multiFile && !canPreview && Boolean(previewFilePath || primaryTarget?.filepath);
-  const canShowFileList = !canPreview && (multiFile || !canFetchCreatedFile) && displayFileTargets.length > 0;
+  const failedOperation = resultOperation === 'none' && Boolean(fileOperationResult?.errors.length || fileOperationResult?.rolledBack);
+  const canFetchCreatedFile = !failedOperation && resultOperation !== 'deleted' && !multiFile && !canPreview && Boolean(previewFilePath || primaryTarget?.filepath);
+  const hasFileTarget = Boolean(previewFilePath || primaryTarget?.filepath);
 
   // Structured workspace_edit_file result used for operation labels and real diffs.
   const hasFileOperationResult = Boolean(fileOperationResult);
@@ -3482,7 +3458,7 @@ const FileChangeTraceCard = ({
     : null;
   const effectiveStats = structuredStats || diffStats;
 
-  const canExpand = hasFileOperationResult || canPreview || canFetchCreatedFile || canShowFileList;
+  const canExpand = hasFileOperationResult || canPreview || hasFileTarget;
   const isDeleteAction = resultOperation === 'deleted' || (!resultOperation && /^(?:delet|remov)/i.test(displayVerb));
   const agentEntry = isDeleteAction
     ? { Icon: FileDeleteIcon, color: W }
@@ -3498,16 +3474,12 @@ const FileChangeTraceCard = ({
     }
   };
 
-  const previewPanel = hasFileOperationResult && fileOperationResult && multiFile ? (
-    <FileOperationSummaryPanel
-      filesModified={fileOperationResult.filesModified}
-      filesCreated={fileOperationResult.filesCreated}
-      filesDeleted={fileOperationResult.filesDeleted}
-      errors={fileOperationResult.errors}
-      changes={fileOperationResult.changes}
-      rolledBack={fileOperationResult.rolledBack}
-      flush
-    />
+  const previewPanel = failedOperation || (multiFile && fileOperationResult) ? (
+    <ToolResultScroll label="File operation details" className="px-3 py-2.5">
+      {fileOperationResult?.rolledBack && <p className="eterx-result-error">The file operation was rolled back.</p>}
+      {fileOperationResult?.errors.map((error, index) => <p key={index} className="eterx-result-error">{error}</p>)}
+      {!fileOperationResult?.errors.length && !fileOperationResult?.rolledBack && <p className="eterx-result-caption">No per-file preview was recorded for this operation.</p>}
+    </ToolResultScroll>
   ) : canFetchCreatedFile ? (
     <InlineCodeView
       filename={filename}
@@ -3522,24 +3494,9 @@ const FileChangeTraceCard = ({
       streaming={previewIsLive}
       flush
     />
-  ) : canShowFileList ? (
-    <div className="eterx-file-change-list-panel border-t border-white/[0.052] bg-transparent text-[12.5px] text-[#CDC5BB]">
-      {displayFileTargets.slice(0, 10).map((target) => (
-        <div key={target.filepath} className="eterx-file-change-list-row flex min-h-[36px] items-center gap-2.5 border-t border-white/[0.045] px-3 py-2 first:border-t-0">
-          <LocalFileIcon fileName={target.filename} size="sm" />
-          <span className="eterx-file-change-list-name min-w-0 flex-1 break-words font-medium leading-[1.35] text-[#E2DFDA]">{target.filename}</span>
-          {displayFileTargets.length === 1 && (
-            <ChangeStats
-              stats={effectiveStats}
-              className="flex shrink-0 items-center gap-1 text-[11.5px] font-semibold tabular-nums"
-            />
-          )}
-        </div>
-      ))}
-    </div>
   ) : showDiff ? (
     <InlineDiffView filename={filename} filepath={previewFilePath} diffLines={preview.diffLines} showExpand={false} flush />
-  ) : (previewFilePath || primaryTarget?.filepath || previewContent) ? (
+  ) : !isDeleteAction && (previewFilePath || primaryTarget?.filepath || previewContent) ? (
     <InlineCodeView
       filename={filename}
       content={previewContent}
@@ -3567,6 +3524,7 @@ const FileChangeTraceCard = ({
         role={canExpand ? 'button' : undefined}
         tabIndex={canExpand ? 0 : undefined}
         aria-expanded={canExpand ? isExpanded : undefined}
+        aria-label={canExpand ? `${isExpanded ? 'Hide' : 'Show'} ${title.toLowerCase()} details${previewFilePath ? `: ${previewFilePath}` : ''}` : undefined}
         onClick={activate}
         onKeyDown={(event) => {
           if (!canExpand) return;
@@ -3586,7 +3544,7 @@ const FileChangeTraceCard = ({
           {targetLabel ? (
             <span className="inline-flex min-w-0 max-w-full items-center gap-1.5">
               <LocalFileIcon fileName={filename || targetLabel} size="sm" />
-              <span className="eterx-file-change-filename min-w-0 truncate text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors group-hover:text-white" title={targetLabel}>{targetLabel}</span>
+              <span className="eterx-file-change-filename min-w-0 truncate text-[13px] font-semibold leading-[1.25] text-[#DDEAF1] decoration-transparent underline-offset-[3px] transition-colors group-hover:text-white">{targetLabel}</span>
             </span>
           ) : null}
           {lineContext && (
@@ -3602,20 +3560,9 @@ const FileChangeTraceCard = ({
           <span className="h-3.5 w-3.5 shrink-0" />
         )}
       </div>
-      <AnimatePresence initial={false}>
-        {isExpanded && canExpand && (
-          <motion.div
-            key="file-preview"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-            className="eterx-file-change-preview w-full overflow-hidden"
-          >
-            {previewPanel}
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ActivityDisclosure open={isExpanded && canExpand} className="eterx-file-change-preview w-full">
+        {previewPanel}
+      </ActivityDisclosure>
     </div>
   );
 };
@@ -4016,11 +3963,10 @@ const ActionChip = ({
           return (
             <span
               className={`eterx-action-icon flex h-5 w-5 items-center justify-center shrink-0 ${ connectorAction ? 'rounded-[6px] border border-white/[0.08] bg-white/[0.035] shadow-none' : '' }`}
-              title={connectorAction ? `${ (connectorId || 'connected service').replace(/_/g, ' ') } connector` : undefined}
               data-connector={connectorId || (connectorAction ? 'connected-service' : undefined)}
             >
               {connectorAction
-                ? <ConnectorIcon connectorId={connectorId} size={15} title={`${ (connectorId || 'connected service').replace(/_/g, ' ') } connector`} />
+                ? <ConnectorIcon connectorId={connectorId} size={15} showTooltip={false} />
                 : <AI isLive={isLiveChip} size={15} color={isLiveChip ? ac : '#DAD6CF'} />}
             </span>
           );
@@ -4051,9 +3997,6 @@ const ActionChip = ({
                   addedClassName="eterx-action-diff-added text-[#3EE06F]"
                   removedClassName="eterx-action-diff-removed text-[#FF6D63]"
                 />
-                <span className="eterx-action-diff-tooltip pointer-events-none absolute -top-8 left-1/2 z-30 -translate-x-1/2 whitespace-nowrap rounded-full border border-white/[0.08] bg-[#222220]/96 px-2.5 py-1 text-[11px] font-medium text-[#E6DED4] opacity-0 shadow-none backdrop-blur-xl transition-opacity duration-150 group-hover/diff:opacity-100">
-                  Open diff
-                </span>
               </button>
             )}
             {lineContext && (
@@ -4073,17 +4016,8 @@ const ActionChip = ({
           )}
         </span>
       </div>
-      <AnimatePresence initial={false}>
-        {isExpanded && preview && (
-          <motion.div
-            key="action-chip-preview"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-            className="w-full overflow-hidden"
-          >
-            {preview.type === 'console_output'
+      <ActivityDisclosure open={Boolean(isExpanded && preview)} className="w-full">
+            {preview && (preview.type === 'console_output'
               ? <InlineConsole command={preview.command || subtitle} content={preview.output || preview.content} exitCode={preview.exitCode} durationMs={preview.durationMs} flush />
               : preview.type === 'file_preview' && previewHasDiff
                 ? <InlineDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} diffLines={preview.diffLines} flush />
@@ -4093,10 +4027,8 @@ const ActionChip = ({
                     ? <InlineMissingDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} stats={diffStats} flush />
                     : preview.type === 'tool_result_preview'
                       ? <ToolResultPreview toolName={preview.toolName} args={preview.toolArgs} result={preview.result} flush />
-                      : null}
-          </motion.div>
-        )}
-      </AnimatePresence>
+                      : null)}
+      </ActivityDisclosure>
     </div>
   );
 };
@@ -4120,13 +4052,13 @@ const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpen
     <button
       type="button"
       onClick={() => onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || agentName)}
-      className="group/subagent my-[-2px] flex max-w-full items-center gap-2 rounded-full px-1.5 py-1 text-left text-[12px] text-[#8F887E] transition-colors hover:bg-white/[0.035] hover:text-[#D7D1C8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
+      className="eterx-feed-agent-card group/subagent my-[-2px] flex max-w-full items-center gap-2 rounded-full px-1.5 py-1 text-left text-[12px] text-[#8F887E] transition-colors hover:bg-white/[0.035] hover:text-[#D7D1C8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
       aria-label={`Open ${ agentName } conversation`}
     >
       <SubAgentIdentityIcon name={agentName} status={identityStatus} size={23} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
-      <span className="max-w-[220px] truncate font-medium text-[#C9C3BA]">{agentName}</span>
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${ isFailed ? 'bg-red-400/75' : isPaused ? 'bg-amber-300/70' : isWorking || isComplete ? 'bg-emerald-300/70' : 'bg-white/30' }`} />
-      <span className="shrink-0">{statusLabel}</span>
+      <span className="eterx-feed-agent-name max-w-[220px] truncate font-medium text-[#C9C3BA]">{agentName}</span>
+      <span data-agent-status={statusLabel} className={`eterx-feed-agent-status-dot h-1.5 w-1.5 shrink-0 rounded-full ${ isFailed ? 'bg-red-400/75' : isPaused ? 'bg-amber-300/70' : isWorking || isComplete ? 'bg-emerald-300/70' : 'bg-white/30' }`} />
+      <span className="eterx-feed-agent-status shrink-0">{statusLabel}</span>
     </button>
   );
 };
@@ -4151,7 +4083,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
   const queued = displayList.every((agent: any) => ['planned', 'spawning'].includes(String(agent.status || '')));
 
   return (
-    <div className="my-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#8D877F]">
+    <div className="eterx-feed-agent-spawn my-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#8D877F]">
       {displayList.map((agent: { name: string; identity: string }, index: number) => {
         const { name, identity } = agent;
         return (
@@ -4159,16 +4091,15 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
             key={identity}
             type="button"
             onClick={() => onOpenAgentTeam?.(identity)}
-            title={name}
-            className="inline-flex h-8 max-w-[260px] items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.025] px-2.5 text-[#BEB8B0] transition-colors hover:border-white/[0.13] hover:bg-white/[0.055] hover:text-[#EEEAE4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
+            className="eterx-feed-agent-chip inline-flex h-8 max-w-[260px] items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.025] px-2.5 text-[#BEB8B0] transition-colors hover:border-white/[0.13] hover:bg-white/[0.055] hover:text-[#EEEAE4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
             aria-label={`Open ${ name } conversation`}
           >
             <SubAgentIdentityIcon name={name} status="working" size={20} assetIndex={getSubAgentAssetIndex(assetIndexes, name) ?? index} />
-            <span className="truncate font-medium">{name}</span>
+            <span className="eterx-feed-agent-name truncate font-medium">{name}</span>
           </button>
         );
       })}
-      <span className="ml-0.5 shrink-0">{queued ? 'queued' : 'started working'}</span>
+      <span className="eterx-feed-agent-status ml-0.5 shrink-0">{queued ? 'queued' : 'started working'}</span>
     </div>
   );
 };
@@ -4182,16 +4113,16 @@ const SubAgentActionCard = ({ log, assetIndexes }: { log: any; assetIndexes?: Su
 
   return (
     <div
-      className="flex min-h-[38px] items-center gap-2.5 px-1.5 py-1.5"
+      className="eterx-feed-agent-action flex min-h-[38px] items-center gap-2.5 px-1.5 py-1.5"
     >
       <SubAgentIdentityIcon name={agentName} status="working" size={24} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[11.5px] font-medium text-[#D8D1C8]">{agentName}</span>
-        <span className="mt-0.5 block min-w-0 truncate text-[12px] leading-4 text-[#AFA89F]">
+        <span className="eterx-feed-agent-name block truncate text-[11.5px] font-medium text-[#D8D1C8]">{agentName}</span>
+        <span className="eterx-feed-agent-status mt-0.5 block min-w-0 truncate text-[12px] leading-4 text-[#AFA89F]">
           {actionText}
         </span>
         {detailText && (
-          <span className="mt-0.5 block truncate text-[11px] text-[#7E766C]">{detailText}</span>
+          <span className="eterx-feed-agent-status mt-0.5 block truncate text-[11px] text-[#7E766C]">{detailText}</span>
         )}
       </span>
     </div>
@@ -4243,25 +4174,15 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
               </span>
             )}
           </span>
-          {subject && <span className="mt-0.5 block truncate text-[11.5px] text-[#AFA89F]">{subject}</span>}
+          {subject && <span className="eterx-feed-agent-status mt-0.5 block truncate text-[11.5px] text-[#AFA89F]">{subject}</span>}
         </span>
         {preview && <ChevronRight className={`mt-1 h-3.5 w-3.5 shrink-0 text-[#6F685F] transition-transform ${ open ? 'rotate-90' : '' }`} />}
       </button>
-      <AnimatePresence initial={false}>
-        {open && preview && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.16 }}
-            className="overflow-hidden"
-          >
-            <div className="ml-7 max-h-[420px] overflow-y-auto border-l border-white/[0.075] pb-3 pl-4 pt-2 whitespace-pre-wrap text-[12px] leading-relaxed text-[#A79F95] eterx-scrollbar">
+      <ActivityDisclosure open={open && Boolean(preview)}>
+            <div role="region" aria-label={`Message from ${fromAgent}`} tabIndex={0} className="eterx-activity-child-scroll ml-7 overflow-y-auto border-l border-white/[0.075] pb-3 pl-4 pt-2 whitespace-pre-wrap text-[12px] leading-relaxed text-[#A79F95] eterx-scrollbar">
               {preview}
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      </ActivityDisclosure>
     </div>
   );
 };
@@ -4315,15 +4236,7 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
         </span>
         <ChevronRight className={`h-4 w-4 shrink-0 text-[#898176] transition-transform ${ open ? 'rotate-90 text-[#C8C1B8]' : '' }`} />
       </button>
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.18 }}
-            className="overflow-hidden"
-          >
+      <ActivityDisclosure open={open}>
             <div className="mx-3 mb-2 mt-1.5 rounded-[11px] border border-white/[0.07] bg-white/[0.022] p-3 text-[12.5px] leading-relaxed text-[#BDB5AA]">
               <div className="font-medium text-[#DED6CC]">Question</div>
               <div className="mt-1 whitespace-pre-wrap">{question}</div>
@@ -4344,9 +4257,7 @@ const AskUserTimelineCard = ({ log, isLive }: { log: any; isLive: boolean }) => 
                 </>
               )}
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      </ActivityDisclosure>
     </div>
   );
 };
@@ -4375,7 +4286,6 @@ const BrowserActivityGroup = ({
   const activityIsActive = isActive;
   const [open, setOpen] = useState(activityIsActive || keepOpenWhileRunning);
   const contentId = React.useId();
-  const prefersReducedMotion = useReducedMotion();
   const browserManuallyToggledRef = useRef(false);
   useEffect(() => {
     if (browserManuallyToggledRef.current) return;
@@ -4430,17 +4340,7 @@ const BrowserActivityGroup = ({
         />
       </button>
 
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.div
-            key="browser-activity-content"
-            id={contentId}
-            initial={prefersReducedMotion ? false : { height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: prefersReducedMotion ? 0 : 0.16, ease: [0.22, 1, 0.36, 1] }}
-            className="eterx-activity-disclosure overflow-hidden"
-          >
+      <ActivityDisclosure open={open} id={contentId} className="eterx-activity-disclosure">
             <ActivityViewport active={activityIsActive} label="Browser activity" onInspect={() => { browserManuallyToggledRef.current = true; }}>
             {items.map((item, itemIndex) => {
               if (item.kind === 'note') {
@@ -4483,9 +4383,7 @@ const BrowserActivityGroup = ({
               });
             })}
             </ActivityViewport>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      </ActivityDisclosure>
     </div>
   );
 };
@@ -4584,6 +4482,20 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
     .find(value => value && value.length <= 96);
   const thinking = currentAction?.type === 'thought_stream';
   const runningCommand = Boolean(currentAction && shouldUseTerminalIcon(currentAction));
+  // Show an invocation only while that command is actually running. Settled
+  // groups keep their normal summary, including "Ran commands".
+  const commandHeadingLog = runningCommand ? currentAction : undefined;
+  const commandHeading = useMemo(() => {
+    if (!commandHeadingLog) return '';
+    const preview = getActionPreviewCandidates(commandHeadingLog, allLogs).findLast(item =>
+      ['console_output', 'tool_result_preview'].includes(item?.type)
+      && previewBelongsToAction(item, commandHeadingLog, allLogs));
+    const command = getTerminalCommandText(commandHeadingLog, preview);
+    // Use the same actual invocation as its terminal row. A single-line label
+    // is clipped by the heading; the complete command remains in the console.
+    return getCollapsedTerminalCode(commandHeadingLog, preview, command)
+      .replace(/[\r\n\t]+/g, ' ').trim();
+  }, [commandHeadingLog, allLogs]);
   const liveFileTargets = useMemo(() => currentAction ? dedupeFileTraceTargetsForDisplay(collectFileTargets(currentAction)) : [], [currentAction]);
   const liveFileLabel = liveFileTargets.length
     ? liveFileTargets.slice(0, 2).map(target => target.filename).join(', ') + (liveFileTargets.length > 2 ? ` +${liveFileTargets.length - 2} more` : '')
@@ -4598,7 +4510,7 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
     ? currentAction.type === 'file_edit'
       ? liveFileLabel ? `Editing ${liveFileTargets.length > 1 ? 'files: ' : ''}${liveFileLabel}` : Math.max(Number(currentAction.fileCount) || 0, Number(currentAction.filesCount) || 0, Number(currentAction.count) || 0) > 1 ? 'Editing files' : 'Editing file'
       : currentAction.iconCategory === 'file_read' && liveFileLabel ? `Reading ${liveFileLabel}`
-      : runningCommand ? recentThoughtHeading || (actionCount > 1 ? 'Running commands' : 'Running command')
+      : runningCommand ? commandHeading || 'Terminal'
       : liveSummary?.key === 'skill' ? `Loading skill${skillName && skillName.length <= 80 ? `: ${skillName}` : ''}`
       : liveSummary?.live || 'Working'
     : 'Working';
@@ -4609,9 +4521,10 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
     : label || 'Thought';
   const fallbackHeading = useLiveFallbackLabel(isActive && hasGroup && rawHeading === 'Working', 'group');
   const displayHeading = fallbackHeading || rawHeading;
-  const heading = displayHeading.charAt(0).toUpperCase() + displayHeading.slice(1);
-  const iconLog = isActive ? currentAction : logs.find(log => log.type === 'file_edit') || logs.find(log => log.type !== 'thought_stream');
-  const showIcon = Boolean(iconLog && iconLog.type !== 'thought_stream' && !/^(?:working|thinking)(?:\s|$)/i.test(heading));
+  // Command names and paths are case-sensitive; do not title-case them.
+  const heading = commandHeading ? displayHeading : displayHeading.charAt(0).toUpperCase() + displayHeading.slice(1);
+  const iconLog = commandHeadingLog || (isActive ? currentAction : logs.find(log => log.type === 'file_edit') || logs.find(log => log.type !== 'thought_stream'));
+  const showIcon = Boolean(commandHeadingLog || (iconLog && iconLog.type !== 'thought_stream' && !/^(?:working|thinking)(?:\s|$)/i.test(heading)));
   const isSkillAction = liveSummary?.key === 'skill' || /skill/i.test(heading) || iconLog?.toolName === 'get_skill_guidelines';
   const isCreateGroup = (creationOnly && iconLog?.type === 'file_edit') || /^(?:created|creating)\b/i.test(heading);
   const isEditGroup = iconLog?.type === 'file_edit' && !isCreateGroup;
@@ -4619,7 +4532,11 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
   const isRightOrLeftClick = /right[\s_-]*click|left[\s_-]*click/i.test(heading);
   const isClickGroup = /\b(?:click|clicked|clicking|double[\s_-]*click)\b/i.test(heading);
 
-  const resolvedHeaderEntry = isSkillAction
+  // Words inside shell arguments must not turn a terminal into a skill,
+  // browser or file-edit icon.
+  const resolvedHeaderEntry = commandHeadingLog
+    ? { Icon: ToolTerminalIcon, color: 'currentColor' }
+    : isSkillAction
     ? { Icon: SkillIcon, color: 'currentColor' }
     : isRightOrLeftClick
       ? { Icon: MouseIcon, color: 'currentColor' }
@@ -4646,35 +4563,36 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
         onClick={event => {
           const start = pointerStartRef.current;
           pointerStartRef.current = null;
-          const selection = window.getSelection();
-          const selectedHeaderText = selection && !selection.isCollapsed && (
-            event.currentTarget.contains(selection.anchorNode) || event.currentTarget.contains(selection.focusNode)
-          );
-          if (event.detail > 0 && (selectedHeaderText || (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 5))) return;
+          if (event.detail > 0 && start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 5) return;
           manualDisclosureRef.current = true;
           setOpen(value => !value);
         }}
         className="eterx-action-sequence-header flex min-h-[34px] w-full items-center gap-2 rounded-md px-1 py-1 text-left text-[13px] font-medium text-[#96938E] transition-colors hover:text-[#D5CFC7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/25"
       >
         <span className="eterx-sequence-icon flex h-5 w-5 shrink-0 items-center justify-center" data-visible={showIcon ? 'true' : 'false'} aria-hidden="true">
-          {showIcon && (isConnectorTrace(iconLog)
-            ? <ConnectorIcon connectorId={getConnectorId(iconLog)} size={15} />
+          {showIcon && (!commandHeadingLog && isConnectorTrace(iconLog)
+            ? <ConnectorIcon connectorId={getConnectorId(iconLog)} size={15} showTooltip={false} />
             : <SummaryIcon size={15} color="currentColor" />)}
         </span>
-        <span className="eterx-sequence-heading min-w-0 truncate select-text" title={heading}>
-          <Shimmer active={isActive} stableSweep durationMs={3000} className="block">{heading}</Shimmer>
+        <span className="eterx-sequence-heading min-w-0 truncate select-none">
+          <Shimmer
+            active={isActive}
+            stableSweep
+            durationMs={3000}
+            className={fallbackHeading ? 'eterx-live-status-label block' : 'block'}
+          >
+            {heading}
+          </Shimmer>
         </span>
         <span className="eterx-sequence-caret" aria-hidden="true">
           <ChevronDown className={`h-3.5 w-3.5 ${ open ? '' : '-rotate-90' }`} />
         </span>
       </button>
-      <div id={contentId} hidden={hasGroup && !open} className={hasGroup ? 'eterx-activity-disclosure' : undefined}>
-        {(!hasGroup || open) && (
+      <ActivityDisclosure open={!hasGroup || open} id={contentId} className={hasGroup ? 'eterx-activity-disclosure' : undefined}>
           <ActivityViewport active={isActive} label="Tool activity" onInspect={() => { manualDisclosureRef.current = true; }}>
             {children}
           </ActivityViewport>
-        )}
-      </div>
+      </ActivityDisclosure>
     </div>
   );
 };
