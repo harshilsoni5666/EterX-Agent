@@ -51,15 +51,18 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
     steps:
       - name: Require a public updater host
         shell: bash
         run: |
           set -euo pipefail
-          visibility="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility // (if .private then "private" else "public" end)')"
-          visibility="$(printf '%s' "$visibility" | tr '[:upper:]' '[:lower:]')"
-          if [ "$visibility" != "public" ]; then
-            echo "EterX desktop clients use an unauthenticated GitHub Releases feed; repository visibility is $visibility, not PUBLIC." >&2
+          if [ "$REPOSITORY_PRIVATE" = "true" ]; then
+            echo "EterX desktop clients use an unauthenticated GitHub Releases feed; the repository is private, not PUBLIC." >&2
+            exit 1
+          fi
+          if [ "$REPOSITORY_PRIVATE" != "false" ]; then
+            echo "Could not determine repository visibility from the GitHub event." >&2
             exit 1
           fi
 
