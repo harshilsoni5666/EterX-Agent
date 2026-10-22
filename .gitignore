@@ -100,3 +100,11 @@ image.png
 /Microsoft/
 /desktop-runtime/assets/native/whisper/
 
+# =========================
+# 🔹 Local Scratch & One-off Test Files
+# =========================
+test.txt
+desktop-build-*.log
+.agents/
+files/architecture/_chrome*
+
