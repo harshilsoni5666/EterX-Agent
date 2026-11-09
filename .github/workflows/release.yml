@@ -92,7 +92,7 @@ jobs:
     name: Build ${{ matrix.platform }}
     needs: prepare-release
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           - platform: Windows
