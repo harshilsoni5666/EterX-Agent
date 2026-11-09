@@ -25,9 +25,11 @@ async function handle(req: NextRequest, stop: boolean) {
     }
     const offset = input.sinceOffset === undefined ? undefined : Number(input.sinceOffset);
     if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) return respond(jsonError('Invalid output offset.'));
+    const outputLimit = input.maxOutputChars === undefined ? 64_000 : Number(input.maxOutputChars);
+    if (!Number.isSafeInteger(outputLimit) || outputLimit < 1000 || outputLimit > 64_000) return respond(jsonError('Output limit must be between 1000 and 64000 characters.'));
     const task = stop
       ? await killTerminalBackgroundTask(taskId, chatId)
-      : await getTerminalBackgroundTaskStatus(taskId, chatId, offset, 64_000);
+      : await getTerminalBackgroundTaskStatus(taskId, chatId, offset, outputLimit);
     if (!task) return respond(jsonError('Terminal task not found in this chat.', 404));
     return respond(NextResponse.json({ task }, { headers: { 'Cache-Control': 'no-store' } }));
   } catch (error) {

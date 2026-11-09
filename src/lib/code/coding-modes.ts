@@ -2,7 +2,7 @@
 export const CODING_LITE_TOOLS = ['workspace_run_command', 'workspace_edit_file'] as const;
 export const CODING_HEAVY_TOOLS = [
   ...CODING_LITE_TOOLS,
-  'browser_control', 'web_search', 'ask_user', 'task_decomposer',
+  'browser_control', 'computer', 'screen_agent', 'web_search', 'ask_user', 'task_decomposer',
   'task_checkpoint', 'context_memory', 'wait_timer', 'get_skill_guidelines',
 ] as const;
 
@@ -15,7 +15,7 @@ export const CODING_MODES = [
   },
   {
     id: 'coding-heavy', profile: 'eterx-code-heavy', label: 'Coding Heavy',
-    description: 'Coding with browser work, research and long-task support.', tools: CODING_HEAVY_TOOLS,
+    description: 'Coding with browser and desktop work, research and long-task support.', tools: CODING_HEAVY_TOOLS,
   },
 ] as const;
 
@@ -30,6 +30,8 @@ export const CODING_TOOL_DETAILS: Record<string, { label: string; description: s
   workspace_run_command: { label: 'Terminal', description: 'Read, search, run commands and manage processes; batch independent reads.' },
   workspace_edit_file: { label: 'File editing', description: 'Create, edit and delete files with exact selectors and related multi-file changes.' },
   browser_control: { label: 'Browser', description: 'Inspect and exercise web interfaces when browser access is enabled.' },
+  computer: { label: 'Desktop apps', description: 'Find native app windows and inspect their controls when Computer Use is enabled.' },
+  screen_agent: { label: 'Computer actions', description: 'Use native app controls, screenshots, mouse and keyboard when Computer Use is enabled.' },
   web_search: { label: 'Web research', description: 'Find current documentation and technical references.' },
   ask_user: { label: 'Clarification', description: 'Ask focused questions when a missing decision blocks safe progress.' },
   task_decomposer: { label: 'Task planning', description: 'Create a tracker when dependencies or scope justify one.' },

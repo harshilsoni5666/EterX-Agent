@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  openChatWindow: (chatId) => ipcRenderer.invoke('chat-window-open', chatId),
   terminalTransfer: (from, to) => ipcRenderer.invoke('chat-terminal-transfer', from, to),
   workspaceFolderRoot: (options) => ipcRenderer.invoke('workspace-folder-root', options),
   workspaceFolderRoots: (options) => ipcRenderer.invoke('workspace-folder-roots', options),
@@ -109,6 +110,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   callGatewayBridgeTool: (name, args) => ipcRenderer.invoke('gateway-call-bridge-tool', name, args),
   getGatewayMcpConnection: () => ipcRenderer.invoke('gateway-get-mcp-connection'),
   sendGatewayMessage: (platform, target, text) => ipcRenderer.invoke('gateway-send-message', platform, target, text),
+  deliverGatewayAgentReply: (request) => ipcRenderer.invoke('gateway-deliver-agent-reply', request),
   onGatewayInput: (callback) => {
     const listener = (_event, input) => callback(input);
     ipcRenderer.on('gateway-input', listener);

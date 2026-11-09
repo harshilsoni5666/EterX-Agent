@@ -149,11 +149,26 @@ const enqueuePersist = (): Promise<boolean> => {
   return persistChain;
 };
 
+const pendingStorageNotifications = new Map<string, boolean>();
+let storageNotificationScheduled = false;
+
 const dispatchStorageUpdate = (key: string, removed = false) => {
   if (!isBrowser) return;
-  window.dispatchEvent(new CustomEvent('eterx-folder-storage-updated', {
-    detail: { key, removed },
-  }));
+  // Reads see a write immediately, but subscriber callbacks must not re-enter
+  // a React render or observe the middle of a settings transaction.
+  pendingStorageNotifications.set(key, removed);
+  if (storageNotificationScheduled) return;
+  storageNotificationScheduled = true;
+  queueMicrotask(() => {
+    storageNotificationScheduled = false;
+    const notifications = Array.from(pendingStorageNotifications);
+    pendingStorageNotifications.clear();
+    for (const [changedKey, wasRemoved] of notifications) {
+      window.dispatchEvent(new CustomEvent('eterx-folder-storage-updated', {
+        detail: { key: changedKey, removed: wasRemoved },
+      }));
+    }
+  });
 };
 
 const notifyPreferencesCommitted = () => {

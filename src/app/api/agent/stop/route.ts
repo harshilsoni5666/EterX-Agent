@@ -4,6 +4,7 @@ import { taskStore } from '../../../../lib/agent/task-store';
 import { cancelAllSubAgents, cancelAgent } from '../../../../lib/agent/roles/sub_agent';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
 import { isTerminalWorkTrace } from '../../../../lib/chat-feed-lifecycle';
+import { stopAllTerminalTasks } from '../../../../lib/agent/tools/core/terminal_background';
 import {
   attachAgentApiSessionCookie,
   getOrCreateAgentApiSession,
@@ -114,6 +115,7 @@ export async function POST(req: NextRequest) {
         keepScheduled: body.keepScheduled === true,
         keepChannels: body.keepChannels === true,
       });
+      if (body.stopTerminals === true) await stopAllTerminalTasks();
       // Complete authoritative task persistence before Electron terminates
       // the server. A renderer ACK alone cannot flush server-side traces.
       await taskStore.flushPendingWrites(chatIds);
@@ -123,6 +125,7 @@ export async function POST(req: NextRequest) {
     // Emergency global stop
     agentRegistry.stopAll();
     cancelAllSubAgents();
+    await stopAllTerminalTasks();
     await taskStore.flushPendingWrites();
     console.log('[API] 🛑 EMERGENCY STOP — all agents cancelled');
     return attachAgentApiSessionCookie(NextResponse.json({ success: true, message: 'All agents stopping' }), session);

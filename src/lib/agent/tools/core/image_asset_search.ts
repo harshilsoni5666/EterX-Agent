@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { ToolDefinition } from '../../schemas';
-import { tavily } from '@tavily/core';
+import { executeSearchWithFailover } from '../../../search/search-runtime';
+import { SEARCH_PROVIDER_IDS, type SearchProvider } from '../../../search/search-config';
+import { enforceToolCapability } from '../security/tool_policy';
 import fse from 'fs-extra';
 import fs from 'fs/promises';
 import path from 'path';
@@ -77,37 +79,6 @@ const ROLE_MIN_SIZE: Record<string, { width: number; height: number }> = {
   logo: { width: 128, height: 128 },
 };
 
-const getTavilyKeys = (): string[] => {
-  const keys: string[] = [];
-  for (let i = 1; i <= 20; i++) {
-    const key = process.env[`TAVILY_API_KEY_${i}`] || process.env[`VITE_TAVILY_API_KEY_${i}`];
-    if (key?.trim()) keys.push(key.trim());
-  }
-
-  if (keys.length === 0) {
-    const fallback = process.env.VITE_TAVILY_API_KEY || process.env.TAVILY_API_KEY;
-    if (fallback?.trim()) keys.push(fallback.trim());
-  }
-
-  return keys;
-};
-
-const tavilyKeys = getTavilyKeys();
-let currentKeyIndex = 0;
-const tavilyClients = tavilyKeys.map(apiKey => tavily({ apiKey }));
-
-const getNextTavilyClient = () => {
-  if (tavilyClients.length === 0) {
-    throw new Error('No Tavily API key found. Add TAVILY_API_KEY to enable image asset search.');
-  }
-
-  const client = tavilyClients[currentKeyIndex];
-  const usedIndex = currentKeyIndex;
-  currentKeyIndex = (currentKeyIndex + 1) % tavilyClients.length;
-  console.log(`[Tool: image_asset_search] Using Tavily key index: ${usedIndex}`);
-  return client;
-};
-
 function tokenize(text: string): string[] {
   return text
     .toLowerCase()
@@ -136,6 +107,10 @@ function getDomain(url: string): string {
   }
 }
 
+function readableURL(url: string): string {
+  try { return decodeURIComponent(url); } catch { return url; }
+}
+
 function isBadImageUrl(url: string, allowSvg: boolean): string | null {
   let parsed: URL;
   try {
@@ -151,7 +126,7 @@ function isBadImageUrl(url: string, allowSvg: boolean): string | null {
     return 'placeholder_or_avatar_domain';
   }
 
-  const lowerUrl = decodeURIComponent(url).toLowerCase();
+  const lowerUrl = readableURL(url).toLowerCase();
   if (!allowSvg && lowerUrl.includes('.svg')) return 'svg_not_allowed';
   if (/\b(favicon|sprite|tracking|pixel|1x1|blank|spacer)\b/.test(lowerUrl)) return 'non_content_image';
 
@@ -219,7 +194,7 @@ function scoreCandidate(
   height: number,
   queryTokens: string[],
 ): number {
-  const searchableText = `${description} ${decodeURIComponent(sourceUrl)}`.toLowerCase();
+  const searchableText = `${description} ${readableURL(sourceUrl)}`.toLowerCase();
   const matchedTokens = queryTokens.filter(token => searchableText.includes(token));
   const domain = getDomain(sourceUrl);
 
@@ -249,6 +224,7 @@ async function downloadAndValidateImage(
     index: number;
     queryTokens: string[];
     strictDescriptionMatch: boolean;
+    signal?: AbortSignal;
   }
 ): Promise<{ asset?: AcceptedAsset; rejection?: RejectedAsset }> {
   const earlyRejection = isBadImageUrl(candidate.url, options.allowSvg);
@@ -271,6 +247,7 @@ async function downloadAndValidateImage(
       method: 'GET',
       responseType: 'arraybuffer',
       timeout: 15000,
+      signal: options.signal,
       maxContentLength: options.maxBytes,
       maxBodyLength: options.maxBytes,
       headers: {
@@ -349,6 +326,7 @@ For website projects, pass outputDir as the project's absolute public asset fold
   category: 'research',
   inputSchema: z.object({
     query: z.string().describe('Precise visual search query, including the exact subject, place, product, style, or scene needed.'),
+    provider: z.enum(SEARCH_PROVIDER_IDS).optional().describe('Optional enabled external search provider to try first, for another source when earlier images are unsuitable.'),
     visualRole: z.enum(['hero', 'background', 'product', 'card', 'gallery', 'avatar', 'logo']).optional().default('card')
       .describe('How the image will be used in the design. This controls query hints and minimum dimensions.'),
     count: z.number().optional().default(3).describe('Number of final validated images to download.'),
@@ -363,6 +341,7 @@ For website projects, pass outputDir as the project's absolute public asset fold
   outputSchema: z.any(),
   execute: async (input: {
     query: string;
+    provider?: SearchProvider;
     visualRole?: 'hero' | 'background' | 'product' | 'card' | 'gallery' | 'avatar' | 'logo';
     count?: number;
     outputDir?: string;
@@ -373,6 +352,10 @@ For website projects, pass outputDir as the project's absolute public asset fold
     allowSvg?: boolean;
     strictDescriptionMatch?: boolean;
   }, context?: any) => {
+    const policy = enforceToolCapability('image_asset_search', input, context);
+    if (!policy.allowed) return { success: false, message: policy.reason || 'Image asset search is not allowed in this context.' };
+    const signal: AbortSignal | undefined = context?.abortSignal || context?.signal;
+    signal?.throwIfAborted();
     const role = input.visualRole || 'card';
     const count = Math.min(8, Math.max(1, input.count || 3));
     const roleMin = ROLE_MIN_SIZE[role] || ROLE_MIN_SIZE.card;
@@ -389,28 +372,28 @@ For website projects, pass outputDir as the project's absolute public asset fold
     await fse.ensureDir(outputDir);
 
     console.log(`[Tool: image_asset_search] Searching images for: ${searchQuery}`);
-    const client = getNextTavilyClient();
-    const response = await client.search(searchQuery, {
+    const response = await executeSearchWithFailover({
+      action: 'search',
+      route: 'external',
+      provider: input.provider,
+      query: searchQuery,
       searchDepth: 'advanced',
       includeImages: true,
       includeImageDescriptions: true,
       includeAnswer: false,
-      maxResults: Math.max(8, count * 5),
-      excludeDomains: BAD_IMAGE_DOMAINS,
-    });
+      numResults: Math.max(8, count * 5),
+    }, context);
 
-    const rawImages: RawImageCandidate[] = Array.isArray(response.images)
-      ? response.images
+    const rawImages: RawImageCandidate[] = [...(response.images || []), ...response.results.flatMap(item => item.images || [])]
         .map((image: any) => ({
           url: String(image?.url || image || '').trim(),
           description: image?.description ? String(image.description).trim() : '',
         }))
-        .filter(image => image.url)
-      : [];
+        .filter(image => image.url);
 
     const seen = new Set<string>();
     const candidates = rawImages.filter(image => {
-      const key = image.url.toLowerCase();
+      const key = image.url;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -421,6 +404,7 @@ For website projects, pass outputDir as the project's absolute public asset fold
     let downloadIndex = 1;
 
     for (const candidate of candidates) {
+      signal?.throwIfAborted();
       if (accepted.length >= count) break;
       const result = await downloadAndValidateImage(candidate, {
         allowSvg,
@@ -433,7 +417,9 @@ For website projects, pass outputDir as the project's absolute public asset fold
         index: downloadIndex,
         queryTokens,
         strictDescriptionMatch,
+        signal,
       });
+      signal?.throwIfAborted();
 
       if (result.asset) {
         accepted.push(result.asset);
@@ -449,6 +435,9 @@ For website projects, pass outputDir as the project's absolute public asset fold
       success: accepted.length > 0,
       query: input.query,
       searchQuery,
+      provider: response.provider,
+      attemptedProviders: response.attemptedProviders,
+      failedProviders: response.failedProviders,
       visualRole: role,
       outputDir,
       requested: count,

@@ -24,7 +24,7 @@ const videoProviders = readLiteralSet('SECURE_RUNTIME_VIDEO_PROVIDERS');
 for (const provider of MODEL_PROVIDER_ORDER) {
   assert.ok(runtimeProviders.has(provider), `Missing secure model/API provider: ${provider}`);
 }
-for (const provider of new Set(LIVE_PROVIDER_OPTIONS.map(option => option.keyProvider))) {
+for (const provider of new Set(LIVE_PROVIDER_OPTIONS.map(option => option.keyProvider).filter(Boolean))) {
   assert.ok(runtimeProviders.has(provider), `Missing secure Live Convo provider: ${provider}`);
 }
 for (const provider of SEARCH_PROVIDER_IDS) {
@@ -38,7 +38,7 @@ for (const provider of VIDEO_PROVIDER_IDS) {
 }
 
 assert.ok(runtimeProviders.has('github'), 'GitHub credentials must use secure runtime storage');
-assert.match(electronMain, /safeStorage\.encryptString\(serialized\)/, 'Runtime settings must use Electron safeStorage');
+assert.match(electronMain, /safeStorage\.encryptStringAsync\(serialized\)/, 'Runtime settings must use Electron safeStorage');
 assert.equal(JSON.parse(packageManifest)?.build?.nsis?.deleteAppDataOnUninstall, false, 'Desktop updates/uninstalls must preserve AppData');
 
 console.log('credential storage coverage integration tests passed');

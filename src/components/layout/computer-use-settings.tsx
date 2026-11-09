@@ -18,7 +18,11 @@ interface RuntimeStatus {
   computer?: {
     screenProvider?: string;
     inputProvider?: string;
-    cuaDriver?: { healthy?: boolean; installed?: boolean; version?: string };
+    cuaDriver?: {
+      healthy?: boolean; installed?: boolean; version?: string; daemonRunning?: boolean;
+      overall?: string; message?: string;
+      health?: { checks?: Array<{ name?: string; status?: string; message?: string; hint?: string }> };
+    };
   };
 }
 
@@ -27,6 +31,7 @@ interface ComputerUseSettingsProps {
   runtime: RuntimeStatus | null;
   runtimeBusy: boolean;
   runtimeMessage: string;
+  accessError?: string;
   platform: string;
   onSettingChange: (key: AccessSetting, value: boolean) => void;
   onBrowserAction: (action: BrowserAction) => Promise<void>;
@@ -73,12 +78,15 @@ export function ComputerUseSettings({
   runtime,
   runtimeBusy,
   runtimeMessage,
+  accessError,
   platform,
   onSettingChange,
   onBrowserAction,
   onRefresh,
 }: ComputerUseSettingsProps) {
   const [refreshing, setRefreshing] = useState(false);
+  const [desktopBusy, setDesktopBusy] = useState(false);
+  const [desktopMessage, setDesktopMessage] = useState('');
   const driver = runtime?.computer?.cuaDriver;
   const browserConnected = Boolean(runtime?.signedBrowser || runtime?.managedBrowser);
   const platformId = runtime?.platform || platform;
@@ -86,14 +94,38 @@ export function ComputerUseSettings({
     win32: 'Windows', windows: 'Windows', darwin: 'macOS', mac: 'macOS', linux: 'Linux', unknown: 'Detecting…',
   };
   const browserState = runtimeBusy ? 'Connecting…' : runtime?.success === false ? 'Unavailable' : browserConnected ? 'Connected' : runtime ? 'Not connected' : 'Checking…';
-  const desktopState = !settings.computerUse ? 'Off' : !runtime ? 'Checking…' : driver?.healthy ? 'Ready' : driver?.installed ? 'Setup required' : 'Unavailable';
+  const checkingDesktop = !driver || driver.overall === 'checking';
+  const desktopState = !settings.computerUse ? 'Off' : desktopBusy ? 'Starting…' : checkingDesktop ? 'Checking…' : driver?.healthy ? 'Ready' : driver?.daemonRunning ? 'Needs attention' : driver?.installed ? 'Stopped' : 'Setup required';
   const browserSession = runtime?.signedBrowser ? 'Existing browser' : runtime?.managedBrowser ? 'Isolated browser' : 'No active session';
-  const driverState = driver?.healthy ? (driver.version ? `Cua ${driver.version}` : 'Ready') : driver?.installed ? 'Setup required' : runtime ? 'Unavailable' : 'Checking…';
+  const driverState = checkingDesktop ? 'Checking…' : driver?.healthy ? (driver.version ? `Cua ${driver.version}` : 'Ready') : driver?.daemonRunning ? 'Needs attention' : driver?.installed ? 'Stopped' : 'Not installed';
+
+  const setupDesktop = async (action: 'start' | 'permissions') => {
+    setDesktopBusy(true);
+    setDesktopMessage(action === 'start' ? 'Starting desktop service…' : 'Opening macOS permissions…');
+    try {
+      const response = await fetch('/api/computer/status', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }), signal: AbortSignal.timeout(40_000),
+      });
+      const payload = await response.json();
+      setDesktopMessage(response.ok && payload.success ? payload.message : payload.error || 'Desktop setup could not finish.');
+    } catch {
+      setDesktopMessage('Could not finish desktop setup. Refresh status to see the current state.');
+    } finally {
+      try { await onRefresh(); }
+      catch { setDesktopMessage('Could not refresh desktop status. Try Refresh again.'); }
+      finally { setDesktopBusy(false); }
+    }
+  };
 
   const refresh = async () => {
     setRefreshing(true);
     try {
+      await fetch('/api/computer/status?refresh=1', { cache: 'no-store', signal: AbortSignal.timeout(20_000) }).catch(() => undefined);
       await onRefresh();
+      setDesktopMessage('');
+    } catch {
+      setDesktopMessage('Could not refresh desktop status. Try Refresh again.');
     } finally {
       setRefreshing(false);
     }
@@ -161,10 +193,27 @@ export function ComputerUseSettings({
         <AccessRow
           id="computer-desktop-access"
           title="Allow computer actions"
-          description="Let EterX view the screen and use the mouse and keyboard in native apps."
+          description="Let General and Coding Heavy view the screen and interact with native apps. Agent tool settings and task access also apply."
           enabled={settings.computerUse}
           onChange={value => onSettingChange('computerUse', value)}
         />
+        {accessError && <p className={styles.notice} role="alert">{accessError}</p>}
+        <p className={styles.hint}>Desktop work uses screenshots with your selected model. Choose a model that accepts images and tools; changing provider does not change desktop access. In the desktop app, a soft blue border shows active computer use. Press Escape to stop it.</p>
+        {!checkingDesktop && !driver?.healthy && (
+          <div className={styles.session}>
+            <p className={styles.description}>{driver?.message || 'Set up desktop access on this device.'}</p>
+            <div className={styles.actions}>
+              {driver?.installed && !driver.daemonRunning && (
+                <button type="button" className={styles.button} disabled={desktopBusy || refreshing} onClick={() => void setupDesktop('start')}>Start desktop service</button>
+              )}
+              {driver?.installed && ['darwin', 'mac'].includes(platformId) && (
+                <button type="button" className={styles.button} disabled={desktopBusy || refreshing} onClick={() => void setupDesktop('permissions')}>Open macOS permissions</button>
+              )}
+              {!driver?.installed && <a className={styles.button} href="https://cua.ai/docs/cua-driver/quickstart" target="_blank" rel="noopener noreferrer">Desktop setup guide</a>}
+            </div>
+          </div>
+        )}
+        {desktopMessage && <p className={styles.runtimeMessage} role="status">{desktopMessage}</p>}
         <details className={styles.details}>
           <summary>
             <ChevronRight className={styles.disclosureIcon} size={14} aria-hidden="true" />
@@ -177,6 +226,7 @@ export function ComputerUseSettings({
               ['Browser session', browserSession],
               ['Browser mode', browserConnected ? runtime?.browser?.mode || browserSession : 'Not connected'],
               ['Desktop driver', driverState],
+              ['Service', checkingDesktop ? 'Checking…' : driver?.daemonRunning ? 'Running' : 'Stopped'],
               ['Screen provider', runtime?.computer?.screenProvider || (runtime ? 'Unavailable' : 'Checking…')],
               ['Input provider', runtime?.computer?.inputProvider || (runtime ? 'Unavailable' : 'Checking…')],
             ].map(([label, value]) => (
@@ -186,6 +236,9 @@ export function ComputerUseSettings({
               </div>
             ))}
           </dl>
+          {driver?.health?.checks?.filter(check => check.status !== 'pass' && check.status !== 'ok').map((check, index) => (
+            <p key={`${check.name}-${index}`} className={styles.notice}>{check.message || check.name}{check.hint ? ` ${check.hint}` : ''}</p>
+          ))}
         </details>
       </section>
 
@@ -202,7 +255,7 @@ export function ComputerUseSettings({
         />
         <p className={styles.permissionNote}>
           <LockKeyhole size={13} aria-hidden="true" />
-          <span>Desktop actions also require your approval in the active task.</span>
+          <span>Desktop actions follow the active task’s access permissions and this device’s operating-system permissions.</span>
         </p>
       </section>
     </div>

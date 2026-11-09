@@ -380,6 +380,8 @@
   color: inherit !important;
   font-size: 13px !important;
   font-weight: 500 !important;
+  line-height: 1.5 !important;
+  padding-block: 1px;
   letter-spacing: 0 !important;
 }
 

@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     if (!isImageProvider(provider)) {
       return NextResponse.json({ ok: false, error: 'Unknown image generation provider.' }, { status: 400 });
     }
-    const result = await testImageProvider(provider, String(body?.key || ''), String(body?.model || ''));
+    const result = await testImageProvider(provider, String(body?.key || ''), String(body?.model || ''), String(body?.baseURL || ''));
     return NextResponse.json({ ok: true, provider, model: result.model, result: { message: result.message } });
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || 'Image provider test failed.' }, { status: 502 });

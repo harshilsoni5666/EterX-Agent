@@ -6,6 +6,7 @@ import { appStorage, appStorageReady, flushAppStorage } from '../../lib/client-s
 import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
 import { getModelThinkingOptions, normalizeThinkingLevelForModel, type ModelThinkingCapabilities } from '../../lib/agent/model-routing';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_THINKING_CAPABILITIES_STORAGE_KEY, isModelProvider, normalizeModelSelectorEntries, modelEntryKey, parseModelEntryKey, type ModelSelectorEntry } from '../../lib/agent/model-selector-store';
 import { normalizeTelegramToken, TELEGRAM_CLIENT_VERSION } from '../../lib/agent/gateways/telegram-token.cjs';
 
@@ -17,7 +18,7 @@ type BotProfile = {
   ownerName?: string; conversationCount?: number;
 };
 const freshBot = (): BotProfile => ({ name: '', token: '', enabled: true, instructions: '', model: { provider: '', modelId: '' }, agentType: 'general', workspacePath: '', allowBrowserControl: true, allowHostControl: false, thinkingLevel: 'low' });
-const field = 'w-full rounded-xl border border-black/10 bg-white px-3.5 py-3 text-[13px] outline-none transition focus:border-[#2388dc] dark:border-white/10 dark:bg-white/[0.04]';
+const field = 'w-full rounded-xl border border-black/10 bg-white px-3.5 py-3 text-[13px] outline-hidden transition focus:border-[#2388dc] dark:border-white/10 dark:bg-white/[0.04]';
 const muted = 'text-black/50 dark:text-white/50';
 const panel = 'rounded-2xl border border-black/[0.08] bg-white dark:border-white/[0.09] dark:bg-white/[0.035]';
 const action = 'inline-flex items-center justify-center gap-2 rounded-xl border border-black/10 px-3.5 py-2.5 text-[12px] font-semibold transition hover:bg-black/[0.035] disabled:opacity-40 dark:border-white/10 dark:hover:bg-white/[0.06]';
@@ -54,21 +55,33 @@ export function ConnectAsBot({ onBack, onChanged }: { onBack: () => void; onChan
     if (!api?.getGatewayState) { setLoading(false); return; }
     try {
       const state = await api.getGatewayState();
-      setBots(state.status?.bots || state.config?.telegramBots || []);
+      const nextBots = state.status?.bots || state.config?.telegramBots || [];
+      setBots(previous => JSON.stringify(previous) === JSON.stringify(nextBots) ? previous : nextBots);
       setRunning(state.status?.running === true);
     } catch { setError('Could not read the desktop connection. Try again in a moment.'); }
     finally { setLoading(false); }
   }, [api]);
   useEffect(() => {
-    void refresh();
-    const off = api?.onGatewayStatus?.((status: any) => { setBots(status.bots || []); setRunning(status.running === true); });
-    const timer = window.setInterval(() => void refresh(), 10000);
-    return () => { off?.(); window.clearInterval(timer); };
+    const refreshVisible = () => { if (isAppVisible()) void refresh(); };
+    refreshVisible();
+    const off = api?.onGatewayStatus?.((status: any) => {
+      const nextBots = status.bots || [];
+      setBots(previous => JSON.stringify(previous) === JSON.stringify(nextBots) ? previous : nextBots);
+      setRunning(status.running === true);
+    });
+    const timer = window.setInterval(refreshVisible, 10000);
+    const unsubscribeVisibility = subscribeAppVisibility(refreshVisible);
+    return () => { off?.(); window.clearInterval(timer); unsubscribeVisibility(); };
   }, [api, refresh]);
   useEffect(() => {
+    let previousValues: Array<string | null> | null = null;
     const read = () => {
-      try { setModels(normalizeModelSelectorEntries(JSON.parse(appStorage.getItem(MODEL_SELECTOR_STORAGE_KEY) || 'null'), JSON.parse(appStorage.getItem(MODEL_CATALOG_STORAGE_KEY) || '{}'))); } catch { setModels([]); }
-      try { setThinkingCapabilities(JSON.parse(appStorage.getItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY) || '{}')); } catch { setThinkingCapabilities({}); }
+      const values = [MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_THINKING_CAPABILITIES_STORAGE_KEY]
+        .map(key => appStorage.getItem(key));
+      if (previousValues && values.every((value, index) => value === previousValues![index])) return;
+      previousValues = values;
+      try { setModels(normalizeModelSelectorEntries(JSON.parse(values[0] || 'null'), JSON.parse(values[1] || '{}'))); } catch { setModels([]); }
+      try { setThinkingCapabilities(JSON.parse(values[2] || '{}')); } catch { setThinkingCapabilities({}); }
     };
     let active = true;
     void appStorageReady.then(() => { if (active) read(); });
@@ -175,7 +188,7 @@ export function ConnectAsBot({ onBack, onChanged }: { onBack: () => void; onChan
         </div>
         <div className={`mt-6 border-t border-black/[0.07] pt-4 text-[12px] leading-6 dark:border-white/[0.07] ${muted}`}>Keep this computer awake and online. Connecting a bot keeps EterX running in the tray when the window closes; quitting EterX or sleeping the computer stops work. Enable “Starts at sign-in” in Gateway if you want EterX to launch when you log in. Telegram retains incoming updates for up to 24 hours.</div>
       </section>}
-      <div className="mb-4 flex items-center justify-between gap-4"><h2 className="text-[17px] font-semibold">Your bots <span className={`ml-1 text-[12px] font-normal ${muted}`}>{bots.length}</span></h2><label className="flex max-w-[260px] items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]"><Search className={`h-4 w-4 ${muted}`} /><input aria-label="Search bots" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search bots" className="min-w-0 bg-transparent text-[12px] outline-none" /></label></div>
+      <div className="mb-4 flex items-center justify-between gap-4"><h2 className="text-[17px] font-semibold">Your bots <span className={`ml-1 text-[12px] font-normal ${muted}`}>{bots.length}</span></h2><label className="flex max-w-[260px] items-center gap-2 rounded-xl border border-black/10 bg-white px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]"><Search className={`h-4 w-4 ${muted}`} /><input aria-label="Search bots" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search bots" className="min-w-0 bg-transparent text-[12px] outline-hidden" /></label></div>
       {loading ? <div className="flex justify-center py-12"><Loader2 className="h-5 w-5 animate-spin" /></div> : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{visible.map((bot, index) => <article key={bot.id} className={`${panel} flex flex-col p-5`}>
         <div className="flex items-start gap-3"><span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${['bg-[#eae5ff] text-[#7560ab]', 'bg-[#def0e9] text-[#467b69]', 'bg-[#f9e9d6] text-[#ac7440]'][index % 3]}`}><Bot className="h-6 w-6" /></span><div className="min-w-0 flex-1"><h3 className="truncate text-[16px] font-semibold">{bot.name}</h3><p className={`mt-1 truncate text-[11px] ${muted}`}>@{bot.username}</p></div><button type="button" aria-label={`Edit ${bot.name}`} onClick={() => { setDraft({ ...bot, token: '' }); setError(''); }} className={`p-1 ${muted}`}><Settings2 className="h-4 w-4" /></button></div>
         <p className={`mb-5 mt-4 line-clamp-2 min-h-[40px] text-[12px] leading-5 ${muted}`}>{bot.instructions || 'Ready to help with your next task.'}</p>
@@ -186,7 +199,7 @@ export function ConnectAsBot({ onBack, onChanged }: { onBack: () => void; onChan
         <div className="mt-auto flex flex-wrap gap-2">{bot.paired ? <a href={`https://t.me/${bot.username}`} target="_blank" rel="noreferrer" className={action}>Open Telegram<ArrowUpRight className="h-3.5 w-3.5" /></a> : <button type="button" disabled={busy || !bot.enabled} onClick={() => void pair(bot.id!)} className={action}>Pair account<ChevronRight className="h-3.5 w-3.5" /></button>}<button type="button" disabled={busy} onClick={() => void save({ ...bot, enabled: !bot.enabled })} className={action}>{bot.enabled ? 'Pause' : 'Resume'}</button></div>
       </article>)}{!bots.length && <button type="button" disabled={!api?.saveTelegramBot} onClick={() => setDraft(freshBot())} className="flex min-h-[220px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-black/15 p-6 text-center transition hover:bg-white/60 disabled:opacity-40 dark:border-white/15 dark:hover:bg-white/[0.04]"><Plus className="h-6 w-6" /><span className="text-[14px] font-semibold">Create your first teammate</span><span className={`text-[12px] ${muted}`}>Research, documents, coding, or everyday work.</span></button>}{bots.length > 0 && !visible.length && <p className={`py-10 text-[13px] ${muted}`}>No bots match your search.</p>}</div>}
       <div className="mt-8 grid gap-4 md:grid-cols-3">{[[Bot, 'Work together in real time', 'Send another message to steer the task in progress. Use /stop whenever you need to stop.'], [FileText, 'Results arrive in your chat', 'Receive documents, images and visual previews. Send files and photos for your bot to work with.'], [ShieldCheck, 'A private place for each task', 'Use /new, /chats and /switch in Telegram. Working context is saved on this device, outside your desktop chat list. Enable Topics in BotFather for separate Telegram threads.']].map(([Icon, title, copy]: any[]) => <div key={title} className="px-1 py-3"><Icon className={`h-5 w-5 ${muted}`} /><h3 className="mt-3 text-[13px] font-semibold">{title}</h3><p className={`mt-2 text-[12px] leading-6 ${muted}`}>{copy}</p></div>)}</div>
-      {draft && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm" onClick={event => { if (event.target === event.currentTarget && !busy) setDraft(null); }}><section role="dialog" aria-modal="true" aria-labelledby="bot-editor-title" className="max-h-[90vh] w-full max-w-[690px] overflow-y-auto rounded-[24px] border border-black/10 bg-[#faf9f7] p-6 shadow-xl dark:border-white/10 dark:bg-[#202020]">
+      {draft && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/35 p-4 backdrop-blur-xs" onClick={event => { if (event.target === event.currentTarget && !busy) setDraft(null); }}><section role="dialog" aria-modal="true" aria-labelledby="bot-editor-title" className="max-h-[90vh] w-full max-w-[690px] overflow-y-auto rounded-[24px] border border-black/10 bg-[#faf9f7] p-6 shadow-xl dark:border-white/10 dark:bg-[#202020]">
         <div className="flex items-center justify-between"><div><h2 id="bot-editor-title" className="text-[23px] font-semibold tracking-tight">{draft.id ? 'Edit your bot' : 'Meet your next teammate'}</h2><p className={`mt-1 text-[12px] ${muted}`}>One Telegram bot. Your existing EterX agent.</p></div><button type="button" disabled={busy} aria-label="Close bot editor" onClick={() => setDraft(null)} className="p-2"><X className="h-5 w-5" /></button></div>
         <form className="mt-6 space-y-5" onSubmit={event => { event.preventDefault(); void save(draft); }}>
           <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-2 text-[12px] font-semibold"><span>Bot name</span><input required maxLength={64} autoFocus value={draft.name} onChange={event => patch({ name: event.target.value })} placeholder="Research partner" className={field} /></label><label className="space-y-2 text-[12px] font-semibold"><span>BotFather token</span><div className="relative"><input required={!draft.id} disabled={busy} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} type={showToken ? 'text' : 'password'} value={draft.token || ''} onPaste={pasteToken} onChange={event => { patch({ token: event.target.value }); setError(''); setDiagnostic(''); }} placeholder={draft.id ? 'Saved securely · leave blank to keep' : '123456789:AA…'} className={`${field} pr-11`} /><button type="button" disabled={busy} aria-label={showToken ? 'Hide bot token' : 'Show bot token'} aria-pressed={showToken} onClick={() => setShowToken(value => !value)} className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 ${muted}`}>{showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button></div></label></div>

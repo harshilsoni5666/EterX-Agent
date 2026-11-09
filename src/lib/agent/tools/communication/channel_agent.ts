@@ -69,7 +69,7 @@ function channelAllowed(profile: any, platform: string) {
 
 export const channelAgentTool: ToolDefinition = {
   name: 'channel_agent',
-  description: 'On-demand playbook and high-level inbox tool for connected-channel work. Call first for sales, support, inbox, drafting, or replying across connected channels. Message sends execute directly without a confirmation prompt; draft-only profiles never send.',
+  description: 'On-demand playbook and high-level inbox tool for connected-channel work. Call first for sales, support, inbox, drafting, or replying across connected channels. Draft-only profiles never send. Direct-send profiles require an explicit user request, represented by confirm=true; autonomous profiles follow their configured send policy.',
   category: 'communication',
   inputSchema: z.object({
     action: z.enum(['guide', 'status', 'inbox', 'read', 'prepare_reply', 'send_reply']),
@@ -101,7 +101,7 @@ export const channelAgentTool: ToolDefinition = {
         return {
           success: true,
           status: `${profile.name} is configured for ${bound.filter((item: any) => item.enabled).length} enabled channel(s).`,
-          results: { guide, channels: bound, readiness: bound.map((item: any) => ({ id: item.id, ready: item.enabled && !['needs-configuration', 'conflict', 'retrying'].includes(item.state), state: item.state, error: item.lastError })) },
+          results: { guide, channels: bound, readiness: bound.map((item: any) => ({ id: item.id, ready: item.enabled && ['connected', 'listening'].includes(item.state), state: item.state, error: item.lastError })) },
         };
       }
 
@@ -131,14 +131,15 @@ export const channelAgentTool: ToolDefinition = {
       }
 
       if (profile.sendPolicy === 'draft-only') return { success: false, status: `${profile.name} is configured as draft-only. Return the draft to the user instead of sending.` };
+      const autonomousDelivery = profile.operatingMode === 'autonomous' && profile.sendPolicy === 'autonomous';
+      if (!autonomousDelivery && input.confirm !== true) return { success: false, status: 'This profile sends only when requested. Return the draft, or set confirm=true after the user explicitly asks to send it.' };
       if (!String(input.text || '').trim()) return { success: false, status: 'text is required for send_reply.' };
       const sourceMessages = Array.isArray(conversation.messages) ? conversation.messages : [];
       const source = [...sourceMessages].reverse().find((message: any) => message?.replyTarget && message?.platform === conversation.platform)
         || [...sourceMessages].reverse().find((message: any) => message?.replyTarget);
       if (!source?.replyTarget) return { success: false, status: 'No verified reply target is stored for this conversation. Read a newer inbound message or use gateway_bridge with an explicit target.' };
-      const autonomousDelivery = profile.operatingMode === 'autonomous' && profile.sendPolicy === 'autonomous';
       const delivery = await callGateway('messages_send', { platform: conversation.platform, target: source.replyTarget, text: String(input.text).trim() });
-      return { success: true, status: `Reply queued through ${conversation.platform} for ${conversation.title}${autonomousDelivery ? ' under its autonomous send policy' : ''}.`, results: { delivery, conversationId: conversation.id, profileId: profile.id, autonomousDelivery } };
+      return { success: delivery?.ok === true, status: delivery?.ok === true ? `Reply delivered through ${conversation.platform} for ${conversation.title}.` : delivery?.retrying ? 'Delivery is pending and will be retried. Do not claim the reply was received.' : delivery?.error || 'The reply could not be delivered.', results: { delivery, conversationId: conversation.id, profileId: profile.id, autonomousDelivery } };
     } catch (error: any) {
       return { success: false, status: error?.message || String(error) };
     }

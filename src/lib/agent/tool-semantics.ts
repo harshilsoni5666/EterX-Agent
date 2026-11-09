@@ -105,6 +105,12 @@ const BROWSER_MUTATION_ACTIONS = new Set([
   'upload',
 ]);
 
+const DESKTOP_OBSERVATION_ACTIONS = new Set([
+  'see', 'see_window', 'see_region', 'read', 'read_text', 'find', 'find_app',
+  'get_controls', 'get_active', 'get_stats', 'list_apps', 'get_cursor',
+  'clipboard_get', 'wait_text', 'wait_change', 'wait_ms',
+]);
+
 function normalizeToolName(toolName: string): string {
   return String(toolName || '').trim().toLowerCase();
 }
@@ -267,8 +273,9 @@ export function classifyToolSemantics(toolName: string, args: Record<string, any
 
   if (name === 'browser_control' || name === 'screen_agent' || name === 'computer' || name === 'screenshot_capture') {
     const action = normalizeAction(args);
-    const observes = name === 'screenshot_capture' || BROWSER_OBSERVATION_ACTIONS.has(action);
-    const mutates = BROWSER_MUTATION_ACTIONS.has(action);
+    const desktop = name === 'computer' || name === 'screen_agent';
+    const observes = name === 'screenshot_capture' || (desktop ? DESKTOP_OBSERVATION_ACTIONS : BROWSER_OBSERVATION_ACTIONS).has(action);
+    const mutates = desktop ? !observes : BROWSER_MUTATION_ACTIONS.has(action);
     return {
       effect: observes ? 'observation' : mutates ? 'external_action' : 'observation',
       isMutation: false,

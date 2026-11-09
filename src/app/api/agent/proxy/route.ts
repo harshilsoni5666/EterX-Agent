@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
+import { readProxyControl, type ProxyControlSettings } from '../../../../lib/agent/autonomy/proxy-control-plane';
 import {
   attachAgentApiSessionCookie,
   getOrCreateAgentApiSession,
@@ -24,11 +25,11 @@ export async function POST(req: NextRequest) {
     const chatId = typeof body.chatId === 'string' ? body.chatId : '';
     const action = body.action;
     const level = body.level;
-    const modelSelection = typeof body.modelSelection === 'string' ? body.modelSelection.slice(0, 320) : '';
+    const modelSelection = typeof body.modelSelection === 'string' ? body.modelSelection.trim().slice(0, 320) || 'auto' : '';
     if (!isSafeChatId(chatId)) return attachAgentApiSessionCookie(jsonError('Valid chatId is required', 400), session);
     const ownerError = requireChatOwner(chatId, session.sessionId);
     if (ownerError) return attachAgentApiSessionCookie(ownerError, session);
-    if (!['enable', 'disable', 'pause', 'resume', 'intervention', 'model'].includes(String(action))) {
+    if (!['enable', 'disable', 'pause', 'resume', 'intervention', 'model', 'configure'].includes(String(action))) {
       return attachAgentApiSessionCookie(jsonError('Unknown proxy action', 400), session);
     }
     if (action === 'intervention' && !['minimal', 'normal', 'high'].includes(String(level))) {
@@ -37,13 +38,33 @@ export async function POST(req: NextRequest) {
     if (action === 'model' && !modelSelection) {
       return attachAgentApiSessionCookie(jsonError('modelSelection is required', 400), session);
     }
+    let settings: ProxyControlSettings | undefined;
+    if (action === 'configure') {
+      const input = body.settings;
+      if (!input || typeof input.enabled !== 'boolean' || typeof input.paused !== 'boolean' ||
+        !['minimal', 'normal', 'high'].includes(input.intervention) ||
+        typeof input.modelSelection !== 'string' ||
+        (input.followChatModel !== undefined && typeof input.followChatModel !== 'boolean')) {
+        return attachAgentApiSessionCookie(jsonError('Complete Proxy settings are required', 400), session);
+      }
+      settings = {
+        enabled: input.enabled, paused: input.paused, intervention: input.intervention,
+        modelSelection: input.modelSelection.trim().slice(0, 320) || 'auto',
+        followChatModel: input.followChatModel !== false || !input.modelSelection.trim() || input.modelSelection.trim() === 'auto',
+      };
+    }
     const value = action === 'model' ? modelSelection : level;
     hydrateServerRuntimeSettings();
-    const success = agentRegistry.controlUserProxy(chatId, action as any, value as any);
+    const success = agentRegistry.controlUserProxy(chatId, action as any, value as any, settings,
+      typeof body.followChatModel === 'boolean' ? body.followChatModel : undefined);
     if (!success) return attachAgentApiSessionCookie(jsonError(action === 'resume'
       ? 'Turn on Autonomous before resuming Proxy.'
       : 'The requested Proxy setting is not available.', 409), session);
-    return attachAgentApiSessionCookie(NextResponse.json({ success, action, level, modelSelection }), session);
+    const control = readProxyControl(chatId);
+    return attachAgentApiSessionCookie(NextResponse.json({ success, action, control: {
+      enabled: control.enabled, paused: control.paused, intervention: control.intervention,
+      modelSelection: control.modelSelection, followChatModel: control.followChatModel, revision: control.revision,
+    } }), session);
   } catch (error: any) {
     const response = NextResponse.json({ success: false, error: error?.message || 'Internal error' }, { status: 500 });
     return session ? attachAgentApiSessionCookie(response, session) : response;

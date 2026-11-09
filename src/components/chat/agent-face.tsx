@@ -345,7 +345,7 @@ export const AgentFace = React.memo(({
       whileTap={interactive ? { scale: 0.94 } : undefined}
       animate={outerMotion}
       transition={{ duration: size === 'inline' ? pace : motionProfile.duration, repeat: Infinity, ease: 'easeInOut' }}
-      className={`relative z-20 shrink-0 overflow-visible rounded-full outline-none focus-visible:ring-2 focus-visible:ring-white/30 ${ interactive ? 'cursor-pointer' : 'pointer-events-none' } ${ sizeProfile.outer } ${ className }`}
+      className={`relative z-20 shrink-0 overflow-visible rounded-full outline-hidden focus-visible:ring-2 focus-visible:ring-white/30 ${ interactive ? 'cursor-pointer' : 'pointer-events-none' } ${ sizeProfile.outer } ${ className }`}
     >
       <style>{`
         @keyframes eterx-agent-face-click {
@@ -363,8 +363,6 @@ export const AgentFace = React.memo(({
       >
         <FaceMotion.div
           animate={{
-            x: '-50%',
-            y: '-50%',
             rotate: motionProfile.faceRotate,
             scale: isLaughing
                 ? [faceScale, faceScale * 1.024, faceScale * 0.998, faceScale]

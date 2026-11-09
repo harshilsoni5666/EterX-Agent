@@ -43,7 +43,7 @@ interface ChatFeedProps {
   traceLogs: any[];
   chatId: string | null;
   isThinking: boolean;
-  messagesEndRef: React.RefObject<HTMLDivElement>;
+  messagesEndRef: React.RefObject<HTMLDivElement | null>;
   setSidebarOpen: (o: boolean) => void;
   sidebarOpen: boolean;
   handleScroll: (e: any) => void;
@@ -88,7 +88,7 @@ const NakedCopyButton = React.memo(({ content }: { content: string }) => {
 /** Copy button that shows a checkmark for 2s after clicking */
 const CopyButton = ({ text }: { text: string }) => {
   const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const copy = async () => {
     const didCopy = await copyTextToClipboard(text);
     if (!didCopy) return;
@@ -138,7 +138,7 @@ const UserMessageActionButton = ({
         onClick(event);
       }}
       aria-label={label}
-      className="eterx-user-message-action-button relative isolate grid h-6 w-6 place-items-center rounded-full text-[#736E67] outline-none focus-visible:ring-2 focus-visible:ring-white/18"
+      className="eterx-user-message-action-button relative isolate grid h-6 w-6 place-items-center rounded-full text-[#736E67] outline-hidden focus-visible:ring-2 focus-visible:ring-white/18"
     >
       <span className="pointer-events-none relative z-10 grid h-6 w-6 place-items-center rounded-full">
         {children}
@@ -1893,7 +1893,7 @@ const ThoughtSequence = ({
             type="button"
             onClick={toggleOpen}
             aria-expanded={isOpen}
-            className="eterx-worked-summary-button inline-flex shrink-0 items-center gap-1.5 rounded-md py-1 text-left outline-none transition-colors"
+            className="eterx-worked-summary-button inline-flex shrink-0 items-center gap-1.5 rounded-md py-1 text-left outline-hidden transition-colors"
           >
             <span className="eterx-worked-summary-label py-[1px] text-[13px] font-semibold leading-[1.4] tracking-normal text-[var(--muted-foreground)]">
               <span>{workElapsedLabel
@@ -1931,6 +1931,7 @@ const ThoughtSequence = ({
 
 const RENDER_RELEVANT_LOG_FIELDS = [
   'id', 'admissionId', 'steeringIds', 'steeringMessages', 'deliveryState', '_queuedFollowUp', '_traceIdx', 'type', 'text', 'secondary', 'output', 'content',
+  'importedFrom', 'importPresentationVersion', 'importRevision', 'historical',
   'timestamp', 'startTime', 'endTime', 'streamStartedAt', 'isStreaming', 'isLiveTyping',
   'wasStreaming', 'isLive', 'streamState', 'final', 'done', 'answerId', 'spokenText', 'noteId', 'thoughtId',
   'subAgent', 'subAgentId', 'subAgentChatId', 'parentAgentId', 'parentAgentName', 'depth', 'isSubAgent', 'agentRole', 'terminalTask', 'agentName', 'status', 'state', 'finishReason', 'finish_reason', 'progress', 'error',
@@ -2082,6 +2083,8 @@ const ChatFeedMessageGroup = React.memo(({
               <div className="eterx-user-attachments flex max-w-full flex-wrap justify-end gap-2 w-full">
                 {first.attachments.map((att: any, i: number) => {
                   const savedMedia = findChatMedia(chatMedia, att);
+                  const unavailable = att.unavailable === true && !savedMedia;
+                  const attachmentPath = savedMedia?.path || att.localPath || att.path;
                   const mimeType = String(att.mimeType || att.file?.type || savedMedia?.mimeType || '').toLowerCase();
                   const fileName = att.name || att.file?.name || savedMedia?.name || 'file';
                   const extension = fileName.split('.').pop()?.toUpperCase() || 'FILE';
@@ -2089,8 +2092,8 @@ const ChatFeedMessageGroup = React.memo(({
                   const isVideo = mimeType.startsWith('video/') || ['MP4', 'WEBM', 'MOV', 'M4V'].includes(extension);
                   // Blob URLs belong to the composer and may be revoked on send.
                   // Persisted files remain available after navigation and restart.
-                  const previewUrl = savedMedia?.previewUrl || att.previewUrl || (att.localPath || att.path
-                    ? buildFilePreviewUrl(att.localPath || att.path)
+                  const previewUrl = unavailable ? '' : savedMedia?.previewUrl || att.previewUrl || (attachmentPath
+                    ? buildFilePreviewUrl(attachmentPath)
                     : att.preview || '');
                   const isPdf = extension === 'PDF';
                   const isTextPreviewable = mimeType === PASTED_TEXT_MIME || ['TXT', 'MD', 'CSV', 'TSV', 'JSON', 'LOG'].includes(extension);
@@ -2109,7 +2112,7 @@ const ChatFeedMessageGroup = React.memo(({
                             else openChatImage(e.currentTarget, previewUrl, chatMedia.filter(item => item.mimeType.startsWith('image/')).map(item => item.previewUrl));
                           }
                         }}
-                        className={`relative group ${first.attachments.length === 1 ? 'h-[144px] w-[192px]' : 'h-[96px] w-[112px]'} max-w-full shrink-0 cursor-pointer overflow-hidden rounded-[14px] border border-[var(--border)] shadow-none transition-colors hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current`}
+                        className={`relative group ${first.attachments.length === 1 ? 'h-[144px] w-[192px]' : 'h-[96px] w-[112px]'} max-w-full shrink-0 cursor-pointer overflow-hidden rounded-[14px] border border-[var(--border)] shadow-none transition-colors hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-current`}
                         aria-label={`Preview ${ fileName }`}
                       >
                         {isVideo ? (
@@ -2126,21 +2129,22 @@ const ChatFeedMessageGroup = React.memo(({
                     <button
                       type="button"
                       key={att.id || i}
-                      disabled={!att.localPath && !att.path && !att.preview}
+                      disabled={unavailable || (!attachmentPath && !att.preview)}
+                      title={unavailable ? 'Original file unavailable. Reattach it to restore access.' : fileName}
                       onClick={() => {
                         if (isDocPreviewable) {
-                          const targetPath = att.localPath || att.path || att.name;
+                          const targetPath = attachmentPath || att.name;
                           window.dispatchEvent(new CustomEvent(isTextPreviewable ? 'eterx-preview-text' : 'eterx-preview-document', { detail: { filePath: targetPath, name: fileName } }));
-                        } else { void openLocalFilePath(att.localPath || att.path); }
+                        } else { void openLocalFilePath(attachmentPath); }
                       }}
-                      className="inline-flex h-10 min-w-0 max-w-full items-center justify-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 text-[var(--foreground)] shadow-none transition-colors hover:opacity-85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current disabled:opacity-50"
+                      className="inline-flex h-10 min-w-0 max-w-full items-center justify-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 text-[var(--foreground)] shadow-none transition-colors hover:opacity-85 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-current disabled:opacity-50"
                       aria-label={isDocPreviewable ? `Preview ${ fileName }` : fileName}
                     >
                       <div className={`w-[26px] h-[26px] rounded-[7px] flex items-center justify-center shrink-0 ${ isPdf ? 'bg-[#C65D58]' : extension === 'DOCX' ? 'bg-[#2A6B9C]' : 'bg-[#596B7B]' }`}>
                         <FileText className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
                       </div>
                       <span className="min-w-0 max-w-[32ch] truncate text-[12px] font-medium">{mimeType === PASTED_TEXT_MIME ? 'Pasted text' : fileName}</span>
-                      <span className="shrink-0 text-[10px] text-[var(--muted-foreground)]">{att.size ? `${Math.max(1, Math.ceil(att.size / 1024))} KB` : extension}</span>
+                      <span className="shrink-0 text-[10px] text-[var(--muted-foreground)]">{unavailable ? 'Unavailable' : att.size ? `${Math.max(1, Math.ceil(att.size / 1024))} KB` : extension}</span>
                     </button>
                   );
                 })}
@@ -2738,20 +2742,27 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
     const boundaryReconciled = orderFeedTimelineLogs(dedupeFeedLogs(ownershipOrdered));
     return dedupeFeedLogs(boundaryReconciled);
   }, [isSubAgentTab, traceLogs]);
-  const rawTransportActive = !isFeedActivityPaused && Boolean(
-    isThinking || (
-      !isSubAgentTab &&
-      liveState !== undefined &&
-      liveState !== 'idle' &&
-      liveState !== 'error'
-    )
-  );
+  // An open microphone is not unfinished work. Only a current transcript or
+  // action can give Live ownership of a working indicator in the feed.
+  const liveTransportActive = !isSubAgentTab && !isFeedActivityPaused
+    && liveState !== undefined && liveState !== 'idle' && liveState !== 'error'
+    && orderedTraceLogs.some(log => log?.isLive === true && !log?._liveCommitKey
+      && (log.isStreaming === true || log.isLiveTyping === true) && isFeedTraceOpen(log));
+  const rawTransportActive = !isFeedActivityPaused && Boolean(isThinking || liveTransportActive);
   const activeFeedBoundaryIndex = useMemo(() => {
     let latestBoundaryIndex = -1;
     for (let index = orderedTraceLogs.length - 1; index >= 0; index -= 1) {
       if (isFeedTurnBoundary(orderedTraceLogs[index])) {
         latestBoundaryIndex = index;
         break;
+      }
+    }
+    if (isThinking && !isSubAgentTab && orderedTraceLogs[latestBoundaryIndex]?.isLive === true) {
+      // Voice conversation can continue beside an existing task. Its newer
+      // user boundary must not steal that task's activity indicator.
+      for (let index = latestBoundaryIndex - 1; index >= 0; index -= 1) {
+        const log = orderedTraceLogs[index];
+        if (isFeedTurnBoundary(log) && log?.isLive !== true && log?._queuedFollowUp !== true) return index;
       }
     }
     if (!rawTransportActive || latestBoundaryIndex < 0 || orderedTraceLogs[latestBoundaryIndex]?._queuedFollowUp !== true) {
@@ -2774,7 +2785,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
       if (!terminal) return index;
     }
     return latestBoundaryIndex;
-  }, [orderedTraceLogs, rawTransportActive]);
+  }, [isThinking, isSubAgentTab, orderedTraceLogs, rawTransportActive]);
   const activeFeedTurnLogs = useMemo(() => {
     const start = activeFeedBoundaryIndex >= 0 ? activeFeedBoundaryIndex : 0;
     const nextBoundaryIndex = orderedTraceLogs.findIndex((log, index) =>
@@ -2812,8 +2823,6 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
     ),
     [activeFeedRunLogs],
   );
-  const liveTransportActive = !isSubAgentTab && !isFeedActivityPaused &&
-    liveState !== undefined && liveState !== 'idle' && liveState !== 'error';
   const transportWorkActive = rawTransportActive || liveTransportActive;
   const activeBoundary = activeFeedTurnLogs.find(isFeedTurnBoundary);
   const activityScope = `${ String(chatId || 'chat') }::${ String(
@@ -2821,7 +2830,8 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
   ) }::occurrence:${ activeFeedBoundaryIndex }`;
   const [transportHandoff, setTransportHandoff] = useState({ scope: '', active: false });
   useEffect(() => {
-    if (activeTurnHasTerminalTrace || activeTurnHasExplicitFinalAnswer || isFeedActivityPaused) {
+    if (activeTurnHasTerminalTrace || activeTurnHasExplicitFinalAnswer || isFeedActivityPaused
+      || (activeBoundary?.isLive === true && !liveTransportActive)) {
       setTransportHandoff({ scope: activityScope, active: false });
       return;
     }
@@ -2834,7 +2844,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
     setTransportHandoff(current => current.scope === activityScope
       ? current
       : { scope: activityScope, active: false });
-  }, [activeTurnHasExplicitFinalAnswer, activeTurnHasTerminalTrace, activityScope, isFeedActivityPaused, transportWorkActive]);
+  }, [activeBoundary, activeTurnHasExplicitFinalAnswer, activeTurnHasTerminalTrace, activityScope, isFeedActivityPaused, liveTransportActive, transportWorkActive]);
   const transportHandoffActive = transportHandoff.scope === activityScope && transportHandoff.active;
   const feedWorkActive = !activeTurnHasTerminalTrace && !activeTurnHasExplicitFinalAnswer && (
     transportWorkActive || transportHandoffActive
@@ -3393,7 +3403,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
                     data-turn-index={k}
                     aria-label={`Go to turn ${ k + 1 }: ${ turn.userText.slice(0, 80) }`}
                     aria-current={activeTurnIdx === k ? 'step' : undefined}
-                    className="eterx-chat-turn-marker group relative flex min-h-[18px] w-[34px] shrink-0 items-center justify-center rounded-lg py-1 text-left outline-none transition-colors duration-150 hover:bg-[var(--muted)] focus-visible:bg-[var(--muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
+                    className="eterx-chat-turn-marker group relative flex min-h-[18px] w-[34px] shrink-0 items-center justify-center rounded-lg py-1 text-left outline-hidden transition-colors duration-150 hover:bg-[var(--muted)] focus-visible:bg-[var(--muted)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30"
                     whileTap={{ scale: 0.94 }}
                     transition={{ type: 'spring', stiffness: 520, damping: 32 }}
                     onMouseEnter={(event) => showHoveredTurn({ turn, rect: event.currentTarget.getBoundingClientRect() })}
@@ -3492,12 +3502,8 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
                   if (isHiddenRecoveredUserBoundary(group[0])) return null;
                   const isThinkingTurn = feedWorkActive && groupIdx === activeWorkGroupIndex;
                   const isLiveSessionActive =
-                    feedWorkActive && groupIdx === activeWorkGroupIndex &&
-                    !isFeedActivityPaused &&
-                    !isSubAgentTab &&
-                    liveState !== undefined &&
-                    liveState !== 'idle' &&
-                    liveState !== 'error';
+                    liveTransportActive && group.some(log => log?.isLive === true
+                      && !log?._liveCommitKey && isFeedTraceOpen(log));
 
                   // --- Date divider logic ---
                   const thisDateKey = getGroupDateKey(group);
@@ -3582,7 +3588,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
                 ref={previewCloseButtonRef}
                 type="button"
                 onClick={() => setPreviewUserMessage(null)}
-                className="absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-[#242423]/90 text-[#B9B2A8] shadow-none transition-colors duration-150 hover:bg-[#2C2C2A] hover:text-[#EFE9DF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                className="absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-[#242423]/90 text-[#B9B2A8] shadow-none transition-colors duration-150 hover:bg-[#2C2C2A] hover:text-[#EFE9DF] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/20"
                 aria-label="Close prompt preview"
               >
                 <Minimize2 className="h-4 w-4" strokeWidth={2.2} />

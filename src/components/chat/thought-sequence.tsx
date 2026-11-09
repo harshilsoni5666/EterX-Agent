@@ -4,7 +4,7 @@ import { useLiveFeedFlow } from './use-live-feed-flow';
 import { ActivityViewport } from './activity-viewport';
 import { ActivityDisclosure } from './activity-disclosure';
 import { ToolResultScroll } from './tool-result-scroll';
-import { HighlightedDiffCode, useCodeSyntax, useDiffSyntax } from './diff-syntax';
+import { HighlightedDiffCode, isPlaceholderDiffGap, useCodeSyntax, useDiffSyntax } from './diff-syntax';
 import { getActionSummary } from './action-summary';
 import { getTextPlaybackId, usePacedText } from './use-paced-text';
 import { LivePendingIndicator, useLiveFallbackLabel } from './live-pending-indicator';
@@ -37,6 +37,7 @@ import { formatTerminalProgram } from '../../lib/agent/terminal-invocation';
 import { normalizeLifecycleTimestamp, resolveLifecycleDurationMs, useLifecycleElapsedMs } from './lifecycle-clock';
 import { formatUnknownError } from '../../lib/agent/error-format';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
+import { diffLineNumber, diffLineNumberTitle, numberDiffLines } from '../../lib/diff-line-numbers';
 
 type SubAgentAssetIndexes = Record<string, number>;
 
@@ -544,7 +545,7 @@ export const ProfessionalThought = React.memo((props: { text: string, playbackId
             aria-expanded={open}
             aria-controls={open ? thoughtDetailsId : undefined}
             aria-label={`${ thoughtLabel }. ${ open ? 'Hide' : 'Show' } thought details`}
-            className="eterx-thought-toggle group flex h-[30px] min-h-[30px] w-full items-center gap-1.5 px-0 py-0 text-left transition-colors focus-visible:outline-none"
+            className="eterx-thought-toggle group flex h-[30px] min-h-[30px] w-full items-center gap-1.5 px-0 py-0 text-left transition-colors focus-visible:outline-hidden"
           >
             <span className="eterx-thought-state-label">
                 <Shimmer
@@ -839,7 +840,7 @@ const normalizeTerminalOutputForDisplay = (value: unknown): string => {
   return output;
 };
 
-const InlineConsole = ({ command, program, args, content, exitCode, status, durationMs, cwd, shell, pid, flush = false }: { command: string, program?: string, args?: string[], content: string, exitCode?: number, status?: 'running' | 'completed' | 'failed' | 'stopped' | 'unknown', durationMs?: number, cwd?: string, shell?: string, pid?: number, flush?: boolean }) => {
+const InlineConsole = ({ command, program, args, content, exitCode, status, durationMs, cwd, shell, pid, historical = false, flush = false }: { command: string, program?: string, args?: string[], content: string, exitCode?: number, status?: 'running' | 'completed' | 'failed' | 'stopped' | 'unknown', durationMs?: number, cwd?: string, shell?: string, pid?: number, historical?: boolean, flush?: boolean }) => {
   const isRunning = status ? status === 'running' : exitCode === undefined;
   const isUnknown = status === 'unknown';
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -937,7 +938,7 @@ const InlineConsole = ({ command, program, args, content, exitCode, status, dura
         </div>
         </div>
         {!atBottom && hasManyLines && (
-          <button type="button" aria-label="Scroll output to bottom" onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-none transition-colors hover:bg-[#333331] hover:text-[#F0EAE0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20">
+          <button type="button" aria-label="Scroll output to bottom" onClick={(e) => { e.stopPropagation(); const el = scrollRef.current; if (!el) return; shouldFollowOutputRef.current = true; el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }} className="absolute bottom-2 right-2 flex h-6 w-6 items-center justify-center rounded-full border border-white/[0.08] bg-[#2A2A29]/95 text-[#BDB5AA] shadow-none transition-colors hover:bg-[#333331] hover:text-[#F0EAE0] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/20">
             <ChevronDown className="h-3 w-3" />
           </button>
         )}
@@ -960,7 +961,7 @@ const InlineConsole = ({ command, program, args, content, exitCode, status, dura
             ) : (
               <CornerDownLeft className="h-3.5 w-3.5 text-red-300" />
             )}
-            {isRunning ? 'Running' : isUnknown ? 'Result unavailable' : status === 'stopped' ? 'Stopped' : success ? 'Success' : exitCode !== undefined ? `Exit ${ exitCode }` : 'Failed'}
+            {isRunning ? 'Running' : isUnknown ? historical ? 'Exit status not recorded' : 'Result unavailable' : status === 'stopped' ? 'Stopped' : success ? 'Success' : exitCode !== undefined ? `Exit ${ exitCode }` : 'Failed'}
           </span>
         </div>
       </div>
@@ -1127,7 +1128,7 @@ const ObjectCard = React.memo(({ item, primaryKey, secondaryKey, metaKeys }: {
         <button
           type="button"
           onClick={() => setExpanded(!expanded)}
-          className="shrink-0 text-[10px] font-medium text-[#6B9AB8] hover:text-[#94C7E0] hover:bg-white/[0.04] transition-all px-1.5 py-0.5 rounded border border-white/[0.06] shadow-none"
+          className="shrink-0 text-[10px] font-medium text-[#6B9AB8] hover:text-[#94C7E0] hover:bg-white/[0.04] transition-all px-1.5 py-0.5 rounded-sm border border-white/[0.06] shadow-none"
         >
           {expanded ? 'Hide Details' : 'Show Details'}
         </button>
@@ -1497,7 +1498,7 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
     'success', 'passed', 'ok', 'error', 'message', 'content', 'guidelines', 'text',
     'output', 'stdout', 'stderr', 'logs', 'response', 'result', 'summary',
     'answer', 'report', '_cached', '_traceIdx', 'timestamp', 'data',
-    '__eterxContextDigest', '_compacted', 'originalChars', 'exactContextPageRef', 'recovery'
+    '__eterxContextDigest', '_compacted', 'originalChars', 'exactContextPageRef', 'recovery', 'historical'
   ]);
   const scalarFields: [string, any][] = Object.entries(obj).filter(
     ([k, v]) => !SKIP_SCALAR.has(k) && !Array.isArray(v) && typeof v !== 'object' && v !== null && v !== undefined && String(v).trim().length > 0
@@ -1741,13 +1742,32 @@ const InlineMissingDiffView = ({
   );
 };
 
-const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true, flush = false }: { filename: string, filepath?: string, diffLines: any[], showExpand?: boolean, flush?: boolean }) => {
+const InlineDiffView = ({ filename, filepath = '', diffLines: sourceDiffLines, showExpand = true, flush = false }: { filename: string, filepath?: string, diffLines: any[], showExpand?: boolean, flush?: boolean }) => {
   const [full, setFull] = useState(false);
+  const diffLines = useMemo(() => numberDiffLines(sourceDiffLines), [sourceDiffLines]);
   const syntax = useDiffSyntax(diffLines, filepath || filename);
   const { openPanel } = useFilePanelActions();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(false);
   const [atBottom, setAtBottom] = useState(false);
+  const [canScroll, setCanScroll] = useState(false);
+  useEffect(() => {
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    const measure = () => {
+      setCanScroll(viewport.scrollHeight > viewport.clientHeight + 2);
+      const bottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 20;
+      atBottomRef.current = bottom;
+      setAtBottom(bottom);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewport);
+    if (contentRef.current) observer.observe(contentRef.current);
+    return () => observer.disconnect();
+  }, [diffLines, full]);
   const added = diffLines.filter(l => l.type === 'added').length;
   const removed = diffLines.filter(l => l.type === 'removed').length;
   const parentPath = filepath
@@ -1795,7 +1815,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <IconCopyButton
-              content={diffLines.map(line => line.isGap
+              content={diffLines.filter(line => !isPlaceholderDiffGap(line)).map(line => line.isGap
                 ? `@@ ${ line.content || `${ line.skipped || 0 } lines hidden` } @@`
                 : `${ line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' ' }${ line.content }`
               ).join('\n')}
@@ -1812,11 +1832,12 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
           role="region"
           aria-label={`Changes in ${filename}`}
           tabIndex={0}
-          className={`eterx-inline-diff-scroll eterx-scrollbar overflow-auto text-[12px] leading-[1.5] ${ full ? 'h-full' : 'eterx-activity-child-scroll' }`}
+          className={`eterx-inline-diff-scroll eterx-scrollbar overflow-auto ${ full ? 'h-full' : 'eterx-activity-child-scroll' }`}
         >
           {/* Inner container expands to content width — all lines share same horizontal scroll */}
-          <div style={{ minWidth: 'max-content' }}>
+          <div ref={contentRef} style={{ minWidth: 'max-content' }}>
             {diffLines.map((l, i) => {
+              if (isPlaceholderDiffGap(l)) return null;
               const isAdd = l.type === 'added';
               const isDel = l.type === 'removed';
               if (l.isGap) {
@@ -1834,7 +1855,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
                   <div className={`eterx-inline-diff-bar w-[3px] shrink-0 ${ isAdd ? 'bg-emerald-500' : isDel ? 'bg-red-500' : 'bg-transparent'
                     }`} />
                   {/* Line number */}
-                  <div className="eterx-inline-diff-line-number w-[42px] shrink-0 select-none border-r border-white/[0.055] py-[3px] pr-3 text-right text-[10.5px] text-[#6F6962]">{l.newLine || (isDel ? l.oldLine : '')}</div>
+                  <div title={diffLineNumberTitle(l)} className="eterx-inline-diff-line-number w-[42px] shrink-0 select-none border-r border-white/[0.055] py-[3px] pr-3 text-right text-[10.5px] text-[#6F6962]">{diffLineNumber(l)}</div>
                   {/* +/- glyph */}
                   <div className={`eterx-inline-diff-glyph w-[20px] shrink-0 text-center py-[3px] font-bold ${ isAdd ? 'text-emerald-400' : isDel ? 'text-red-400' : 'text-transparent'
                     }`}>{isAdd ? '+' : isDel ? '-' : ' '}</div>
@@ -1848,7 +1869,7 @@ const InlineDiffView = ({ filename, filepath = '', diffLines, showExpand = true,
             })}
           </div>
         </div>
-        {!atBottom && diffLines.length > 10 && (
+        {canScroll && !atBottom && (
           <button
             type="button"
             aria-label="Scroll diff to bottom"
@@ -1873,6 +1894,7 @@ const InlineCodeView = ({
   flush = false,
   startLine,
   endLine,
+  contentStartLine,
   streaming = false,
 }: {
   filename: string;
@@ -1885,6 +1907,7 @@ const InlineCodeView = ({
   flush?: boolean;
   startLine?: number;
   endLine?: number;
+  contentStartLine?: number;
   streaming?: boolean;
 }) => {
   const [full, setFull] = useState(false);
@@ -1969,6 +1992,10 @@ const InlineCodeView = ({
     if (!effectiveContent && isLoading) {
       return { displayLines: [], startLineOffset: 1 };
     }
+    if (contentStartLine && contentStartLine > 0) {
+      const start = Math.max(contentStartLine, finalStartLine || contentStartLine);
+      return { displayLines: allLines.slice(start - contentStartLine, finalEndLine && finalEndLine >= start ? finalEndLine - contentStartLine + 1 : undefined), startLineOffset: start };
+    }
     if (finalStartLine && finalStartLine > 0) {
       if (allLines.length >= finalStartLine) {
         const end = finalEndLine && finalEndLine >= finalStartLine ? finalEndLine : allLines.length;
@@ -1983,7 +2010,7 @@ const InlineCodeView = ({
       };
     }
     return { displayLines: allLines, startLineOffset: 1 };
-  }, [effectiveContent, finalStartLine, finalEndLine, isLoading]);
+  }, [effectiveContent, finalStartLine, finalEndLine, contentStartLine, isLoading]);
 
   const previewCode = useMemo(() => displayLines.join('\n'), [displayLines]);
   const codeSyntax = useCodeSyntax(previewCode, filepath || filename, !streaming);
@@ -2040,7 +2067,7 @@ const InlineCodeView = ({
             role="region"
             aria-label={`Contents of ${filename}`}
             tabIndex={0}
-            className={`eterx-inline-code-scroll eterx-scrollbar overflow-auto text-[12px] leading-[1.5] ${ full ? 'h-full' : 'eterx-activity-child-scroll' }`}
+            className={`eterx-inline-code-scroll eterx-scrollbar overflow-auto ${ full ? 'h-full' : 'eterx-activity-child-scroll' }`}
           >
             {/* Inner div expands to content width — all lines share the same horizontal scroll */}
             <div style={{ minWidth: 'max-content' }}>
@@ -3129,18 +3156,18 @@ const TerminalTraceCard = ({
   const controlLabels: Record<string, string> = { list: 'Listed processes', check: 'Read process status', wait: 'Waited for process', background: 'Backgrounded process', kill: 'Stopped process' };
   const title = isProcessControl
     ? isStreaming ? 'Managing process' : isFailed ? 'Process request failed' : controlLabels[mode]
-    : isStreaming ? 'Running command' : isStopped ? 'Command stopped' : isFailed ? 'Command failed' : resultStatus === 'unknown' ? 'Command result unavailable' : 'Ran command';
+    : isStreaming ? 'Running command' : isStopped ? 'Command stopped' : isFailed ? 'Command failed' : resultStatus === 'unknown' && !log.importedFrom ? 'Command result unavailable' : 'Ran command';
 
   const compactControlLabels: Record<string, string> = { list: 'Processes', check: 'Status', wait: 'Waited', background: 'Backgrounded', kill: 'Stopped' };
   const compactTitle = isProcessControl ? isStreaming || isFailed ? title : compactControlLabels[mode] || title
     : isStreaming ? 'Running' : isStopped ? 'Stopped' : isFailed ? 'Failed'
-    : resultStatus === 'unknown' ? 'Result unavailable' : 'Ran';
+    : resultStatus === 'unknown' && !log.importedFrom ? 'Result unavailable' : 'Ran';
   const rowGridClass = isExpanded
     ? 'grid-cols-[20px_minmax(0,1fr)_auto_14px]'
     : 'grid-cols-[20px_auto_minmax(0,1fr)_auto_14px]';
 
   return (
-    <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`} data-status={resultStatus}>
+    <div className={`eterx-terminal-trace w-full ${ inCard ? '' : ACTION_CARD_CLASS }`} data-status={resultStatus === 'unknown' && log.importedFrom ? 'historical' : resultStatus}>
       <button
         type="button"
         onClick={(event) => {
@@ -3150,7 +3177,7 @@ const TerminalTraceCard = ({
         aria-expanded={isExpanded}
         aria-controls={isExpanded ? outputId : undefined}
         aria-label={`${title}${durationLabel ? `, ${durationLabel}` : ''}: ${command}. ${isExpanded ? 'Hide' : 'Show'} output`}
-        className={`eterx-terminal-trace-row group grid w-full ${ rowGridClass } items-center gap-1.5 py-0.5 text-left transition-colors outline-none focus:outline-none focus-visible:outline-none focus-visible:ring-0 ${ inCard ? 'min-h-[29px] px-1 hover:bg-white/[0.024]' : 'min-h-[34px] px-2.5 hover:bg-white/[0.024]' }`}
+        className={`eterx-terminal-trace-row group grid w-full ${ rowGridClass } items-center gap-1.5 py-0.5 text-left transition-colors outline-hidden focus:outline-hidden focus-visible:outline-hidden focus-visible:ring-0 ${ inCard ? 'min-h-[29px] px-1 hover:bg-white/[0.024]' : 'min-h-[34px] px-2.5 hover:bg-white/[0.024]' }`}
       >
         <span className="eterx-action-icon eterx-terminal-icon flex h-5 w-5 shrink-0 items-center justify-center text-[#A39B91]">
           {connectorAction ? <ConnectorIcon connectorId={connectorId} size={15} showTooltip={false} /> : <ToolTerminalIcon size={15} color="currentColor" />}
@@ -3178,6 +3205,7 @@ const TerminalTraceCard = ({
             cwd={cwd}
             shell={shell}
             pid={pid}
+            historical={Boolean(log.importedFrom)}
             flush={true}
           />
       </ActivityDisclosure>
@@ -3445,7 +3473,7 @@ const FileChangeTraceCard = ({
   const showDiff = Boolean(isEditPreview && hasDiffPreview);
   // Allow fetching if we have a filepath, even for non-create actions (covers edit with no diff)
   const failedOperation = resultOperation === 'none' && Boolean(fileOperationResult?.errors.length || fileOperationResult?.rolledBack);
-  const canFetchCreatedFile = !failedOperation && resultOperation !== 'deleted' && !multiFile && !canPreview && Boolean(previewFilePath || primaryTarget?.filepath);
+  const canFetchCreatedFile = !log.importedFrom && !failedOperation && resultOperation !== 'deleted' && !multiFile && !canPreview && Boolean(previewFilePath || primaryTarget?.filepath);
   const hasFileTarget = Boolean(previewFilePath || primaryTarget?.filepath);
 
   // Structured workspace_edit_file result used for operation labels and real diffs.
@@ -3496,14 +3524,15 @@ const FileChangeTraceCard = ({
     />
   ) : showDiff ? (
     <InlineDiffView filename={filename} filepath={previewFilePath} diffLines={preview.diffLines} showExpand={false} flush />
-  ) : !isDeleteAction && (previewFilePath || primaryTarget?.filepath || previewContent) ? (
+  ) : !isDeleteAction && (previewContent || !log.importedFrom && (previewFilePath || primaryTarget?.filepath)) ? (
     <InlineCodeView
       filename={filename}
       content={previewContent}
+      contentStartLine={preview?.sourceFileSnapshot ? previewStartLine : undefined}
       stats={effectiveStats}
       showExpand={false}
       filepath={previewFilePath || primaryTarget?.filepath || ''}
-      fetchFull={!previewIsLive}
+      fetchFull={!previewIsLive && !log.importedFrom}
       startLine={previewStartLine}
       endLine={previewEndLine}
       created={isCreateAction}
@@ -3606,7 +3635,7 @@ const ActionChip = ({
         'browser_control', 'checkpoint', 'computer', 'screen_agent'
       ]);
       const toolName = displayToolName || log.tool || log.name || '';
-      if (!EXCLUDED_PREVIEW_TOOLS.has(toolName) && ![
+      if (!(log.importedFrom && (isEdit || isRead)) && !EXCLUDED_PREVIEW_TOOLS.has(toolName) && ![
         'workspace_edit_file', 'workspace_run_command',
       ].includes(toolName)) {
         return {
@@ -3979,7 +4008,7 @@ const ActionChip = ({
             <button
               type="button"
               onClick={openInIde}
-              className="eterx-action-file-link min-w-0 truncate text-left text-[12.5px] font-semibold leading-tight text-[#DDEAF1] transition-colors duration-150 hover:text-white hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#94C7E0]/22"
+              className="eterx-action-file-link min-w-0 truncate text-left text-[12.5px] font-semibold leading-tight text-[#DDEAF1] transition-colors duration-150 hover:text-white hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[#94C7E0]/22"
               aria-label={`Open file: ${ fileName }`}
             >
               {fileName}
@@ -3988,7 +4017,7 @@ const ActionChip = ({
               <button
                 type="button"
                 onClick={openInIde}
-                className="eterx-action-diff-chip group/diff relative -my-1 inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-1.5 text-[11px] font-semibold tabular-nums leading-none text-[#C8C1B8] transition-colors duration-150 hover:bg-white/[0.052] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/18"
+                className="eterx-action-diff-chip group/diff relative -my-1 inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-1.5 text-[11px] font-semibold tabular-nums leading-none text-[#C8C1B8] transition-colors duration-150 hover:bg-white/[0.052] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/18"
                 aria-label={`Open file: ${ fileName }`}
               >
                 <ChangeStats
@@ -4022,7 +4051,7 @@ const ActionChip = ({
               : preview.type === 'file_preview' && previewHasDiff
                 ? <InlineDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} diffLines={preview.diffLines} flush />
                 : preview.type === 'file_preview' && (preview.filepath || fullPath || getPreviewContent(preview))
-                  ? <InlineCodeView filename={preview.filename || fileName} content={getPreviewContent(preview)} filepath={preview.filepath || fullPath} fetchFull={!previewIsLive && Boolean(preview.filepath || fullPath)} streaming={previewIsLive} startLine={preview.startLine ?? preview.lineStart} endLine={preview.endLine ?? preview.lineEnd} stats={diffStats} flush />
+                  ? <InlineCodeView filename={preview.filename || fileName} content={getPreviewContent(preview)} filepath={preview.filepath || fullPath} fetchFull={!log.importedFrom && !previewIsLive && Boolean(preview.filepath || fullPath)} streaming={previewIsLive} startLine={preview.startLine ?? preview.lineStart} endLine={preview.endLine ?? preview.lineEnd} contentStartLine={preview.sourceFileSnapshot ? preview.startLine ?? preview.lineStart ?? 1 : undefined} stats={diffStats} flush />
                   : preview.type === 'file_preview'
                     ? <InlineMissingDiffView filename={preview.filename || fileName} filepath={preview.filepath || fullPath} stats={diffStats} flush />
                     : preview.type === 'tool_result_preview'
@@ -4052,7 +4081,7 @@ const SubAgentCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; onOpen
     <button
       type="button"
       onClick={() => onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || agentName)}
-      className="eterx-feed-agent-card group/subagent my-[-2px] flex max-w-full items-center gap-2 rounded-full px-1.5 py-1 text-left text-[12px] text-[#8F887E] transition-colors hover:bg-white/[0.035] hover:text-[#D7D1C8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
+      className="eterx-feed-agent-card group/subagent my-[-2px] flex max-w-full items-center gap-2 rounded-full px-1.5 py-1 text-left text-[12px] text-[#8F887E] transition-colors hover:bg-white/[0.035] hover:text-[#D7D1C8] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/14"
       aria-label={`Open ${ agentName } conversation`}
     >
       <SubAgentIdentityIcon name={agentName} status={identityStatus} size={23} assetIndex={getSubAgentAssetIndex(assetIndexes, agentName)} />
@@ -4091,7 +4120,7 @@ const AgentCreatedCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; on
             key={identity}
             type="button"
             onClick={() => onOpenAgentTeam?.(identity)}
-            className="eterx-feed-agent-chip inline-flex h-8 max-w-[260px] items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.025] px-2.5 text-[#BEB8B0] transition-colors hover:border-white/[0.13] hover:bg-white/[0.055] hover:text-[#EEEAE4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
+            className="eterx-feed-agent-chip inline-flex h-8 max-w-[260px] items-center gap-1.5 rounded-full border border-white/[0.07] bg-white/[0.025] px-2.5 text-[#BEB8B0] transition-colors hover:border-white/[0.13] hover:bg-white/[0.055] hover:text-[#EEEAE4] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/14"
             aria-label={`Open ${ name } conversation`}
           >
             <SubAgentIdentityIcon name={name} status="working" size={20} assetIndex={getSubAgentAssetIndex(assetIndexes, name) ?? index} />
@@ -4149,7 +4178,7 @@ const InterAgentCommCard = ({ log, onOpenAgentTeam, assetIndexes }: { log: any; 
         type="button"
         onClick={() => preview ? setOpen(value => !value) : onOpenAgentTeam?.(log.subAgentChatId || log.subAgentId || focusAgent)}
         aria-expanded={preview ? open : undefined}
-        className="eterx-agent-comm-card flex min-h-[42px] w-full items-center gap-2.5 rounded-[9px] px-2 py-1.5 text-left transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/14"
+        className="eterx-agent-comm-card flex min-h-[42px] w-full items-center gap-2.5 rounded-[9px] px-2 py-1.5 text-left transition-colors hover:bg-white/[0.025] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/14"
         aria-label={preview ? `${ open ? 'Collapse' : 'Expand' } message from ${ fromAgent }` : `View ${ focusAgent || 'agent activity' }`}
       >
         <span className="eterx-agent-comm-identities flex shrink-0 items-center gap-1">
@@ -4317,7 +4346,7 @@ const BrowserActivityGroup = ({
           browserManuallyToggledRef.current = true;
           setOpen(value => !value);
         }}
-        className="eterx-browser-activity-header flex min-h-[38px] w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.028] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/25"
+        className="eterx-browser-activity-header flex min-h-[38px] w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-white/[0.028] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/25"
       >
         <span className="flex h-5 w-5 shrink-0 items-center justify-center" aria-hidden="true">
           {activityIsActive ? (
@@ -4567,7 +4596,7 @@ const ActionSequenceSummary = ({ logs, allLogs, isActive, keepOpenWhileRunning, 
           manualDisclosureRef.current = true;
           setOpen(value => !value);
         }}
-        className="eterx-action-sequence-header flex min-h-[34px] w-full items-center gap-2 rounded-md px-1 py-1 text-left text-[13px] font-medium text-[#96938E] transition-colors hover:text-[#D5CFC7] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/25"
+        className="eterx-action-sequence-header flex min-h-[34px] w-full items-center gap-2 rounded-md px-1 py-1 text-left text-[13px] font-medium text-[#96938E] transition-colors hover:text-[#D5CFC7] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/25"
       >
         <span className="eterx-sequence-icon flex h-5 w-5 shrink-0 items-center justify-center" data-visible={showIcon ? 'true' : 'false'} aria-hidden="true">
           {showIcon && (!commandHeadingLog && isConnectorTrace(iconLog)
@@ -4992,7 +5021,7 @@ const HtmlPreviewCard = ({ log }: { log: any }) => {
                     {consoleLogs.map((log, index) => (
                       <div
                         key={index}
-                        className={`flex gap-2 px-2 py-0.5 rounded ${ log.type === 'error' ? 'bg-red-500/5 text-red-400' : log.type === 'warn' ? 'bg-amber-500/5 text-amber-400' : 'text-zinc-300' }`}
+                        className={`flex gap-2 px-2 py-0.5 rounded-sm ${ log.type === 'error' ? 'bg-red-500/5 text-red-400' : log.type === 'warn' ? 'bg-amber-500/5 text-amber-400' : 'text-zinc-300' }`}
                       >
                         <span className="text-white/20">[{log.type.toUpperCase()}]</span>
                         <span className="whitespace-pre-wrap break-all">{log.text}</span>

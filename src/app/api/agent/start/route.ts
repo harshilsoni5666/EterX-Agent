@@ -11,7 +11,6 @@ import {
 import { buildScopedRuntimeSettings } from '../../../../lib/agent/runtime-api-keys';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
-import { readProxyControl, updateProxyControl } from '../../../../lib/agent/autonomy/proxy-control-plane';
 import {
   attachAgentApiSessionCookie,
   cleanContextText,
@@ -121,30 +120,8 @@ export async function POST(req: NextRequest) {
     );
     const isBuilderChat = isAgentBuilderChatId(chatId);
     const builderAgentId = isBuilderChat ? getAgentIdFromBuilderChatId(chatId) : '';
-    const hasExplicitAutonomySelection = typeof safePinnedContext?.autonomy?.enabled === 'boolean';
-    const hasAutonomyContext = safePinnedContext?.agentRuntime === 'autonomy_v1' || hasExplicitAutonomySelection;
-    if (hasAutonomyContext) {
-      updateProxyControl(chatId, {
-        // Preserve the user's explicit off state. Autonomy must never be
-        // inferred merely because a stale control record exists for the chat.
-        enabled: safePinnedContext?.autonomy?.enabled === true,
-        paused: safePinnedContext?.autonomy?.paused,
-        intervention: safePinnedContext?.autonomy?.intervention,
-        modelSelection: safePinnedContext?.autonomy?.proxyModelSelection,
-      });
-    }
-    const proxyControl = readProxyControl(chatId);
     const effectivePinnedContext = {
       ...(isBuilderChat ? buildAgentBuilderPinnedContext(chatId, safePinnedContext) : safePinnedContext),
-      ...(hasAutonomyContext ? {
-        autonomy: {
-          ...(safePinnedContext.autonomy || {}),
-          enabled: proxyControl.enabled,
-          paused: proxyControl.paused,
-          intervention: proxyControl.intervention,
-          proxyModelSelection: proxyControl.modelSelection,
-        },
-      } : {}),
       thinkingLevel: safeThinkingLevel,
       ...(exactModelName ? {
         selectedModelName: exactModelName,

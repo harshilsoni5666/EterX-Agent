@@ -1,12 +1,16 @@
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
+import { buildChatCopy, nextChatCopyTitle } from './chat-copy';
+import { copyChatMedia, removeChatMedia } from './chat-media-store';
 import { getContextFabricForChat } from './agent/context-fabric';
 import { getEterxDataDir } from './agent/storage-paths';
 import { filterUserVisibleTraces } from './agent/trace-visibility';
 import { buildTemporaryTitle, mergeChatTitleMetadata } from './chat/title-generation';
 import { visibleUserRequest } from './chat-user-payload';
+import { normalizeImportedTraces } from './imports/presentation';
+import { importedWorkspaceMetadata } from './imports/workspace';
 import {
   mergeFeedTraceHistories,
   isConclusiveSettledAnswerTrace,
@@ -34,7 +38,10 @@ export interface ChatSnapshotWriteResult extends PersistedChatSnapshot {
 let cachedSnapshot: PersistedChatSnapshot | null = null;
 let cachedSnapshotFileSignature: string | null = null;
 let pendingSnapshotRead: Promise<PersistedChatSnapshot> | null = null;
-let writeQueue: Promise<unknown> = Promise.resolve();
+// Next can bundle the import and chat routes separately. Their writes must
+// still serialize against the same durable transcript in this process.
+const chatStoreGlobal = globalThis as typeof globalThis & { __eterxChatWrites?: { queue: Promise<unknown> } };
+const chatWrites = chatStoreGlobal.__eterxChatWrites ||= { queue: Promise.resolve() };
 const auditedDialogueChats = new Set<string>();
 
 const emptySnapshot = (): PersistedChatSnapshot => ({
@@ -71,13 +78,14 @@ function normalizePersistedChat(chat: any): any | null {
 
   const title = normalizeChatTitle(chat.title || chat.name);
 
-  const sourceLogs = Array.isArray(chat.traceLogs)
+  const storedLogs = Array.isArray(chat.traceLogs)
     ? chat.traceLogs
     : Array.isArray(chat.logs)
       ? chat.logs
       : Array.isArray(chat.messages)
         ? chat.messages
         : [];
+  const sourceLogs = normalizeImportedTraces(storedLogs);
   const traceLogs = settleFeedTraceLifecycles(recoverMissingUserTurnBoundaries(filterUserVisibleTraces(sourceLogs.map((message: any, index: number) => {
     if (message && typeof message.type === 'string') return ['user_action', 'steering_received', 'steering_queued'].includes(message.type)
       ? { ...message, text: visibleUserRequest(message.text) } : message;
@@ -646,30 +654,112 @@ async function writeAtomic(snapshot: PersistedChatSnapshot): Promise<string | nu
 }
 
 export async function loadChatSnapshot(): Promise<PersistedChatSnapshot> {
-  await writeQueue.catch(() => {});
+  await chatWrites.queue.catch(() => {});
   const snapshot = await readFromDisk();
   return { ...snapshot, chats: [...snapshot.chats] };
 }
 
 export async function loadChatById(chatId: string): Promise<unknown | null> {
-  await writeQueue.catch(() => {});
+  await chatWrites.queue.catch(() => {});
   const snapshot = await readFromDisk();
   return (snapshot.chats as any[]).find(chat => chat?.id === chatId) || null;
 }
 
+function mergeChatForAction(durable: any, incoming: unknown) {
+  if (!incoming) return durable;
+  const candidate = normalizePersistedChat(incoming);
+  if (!candidate || candidate.id !== durable.id) throw new Error('Invalid conversation snapshot.');
+  const newest = Number(candidate.updatedAt || 0) >= Number(durable.updatedAt || 0) ? candidate : durable;
+  const workspace = Number(candidate.workspaceSelectionUpdatedAt || 0) >= Number(durable.workspaceSelectionUpdatedAt || 0)
+    ? candidate : durable;
+  return {
+    ...durable,
+    ...newest,
+    ...(durable.importOrigin ? {
+      importOrigin: durable.importOrigin, importFolder: durable.importFolder,
+      importPresentationVersion: durable.importPresentationVersion,
+    } : {}),
+    workspacePath: workspace.workspacePath ?? null,
+    workspaceSelectionUpdatedAt: workspace.workspaceSelectionUpdatedAt,
+    ...importedWorkspaceMetadata(durable, candidate),
+    ...mergeChatTitleMetadata(durable, candidate),
+    updatedAt: Math.max(Number(durable.updatedAt || 0), Number(candidate.updatedAt || 0)),
+    traceLogs: mergeFeedTraceHistories(durable.traceLogs || [], candidate.traceLogs || []),
+  };
+}
+
+/** Commit just the selected chat under the store lock. Other chats/imports
+ * cannot reject this action by advancing the whole-history timestamp. */
+export async function prepareStoredChat(sourceId: string, incoming?: unknown) {
+  const operation = chatWrites.queue.catch(() => {}).then(async () => {
+    const current = await readFromDisk();
+    const durable = (current.chats as any[]).find(chat => chat.id === sourceId);
+    if (!durable) throw new Error('Chat no longer exists. Refresh your chat list and try again.');
+    const chat = mergeChatForAction(durable, incoming);
+    const next = {
+      ...current,
+      chats: (current.chats as any[]).map(item => item.id === sourceId ? chat : item),
+      savedAt: Math.max(Date.now(), current.savedAt + 1), lastMutationId: '',
+    };
+    cachedSnapshotFileSignature = await writeAtomic(next);
+    cachedSnapshot = next;
+    return { chat, savedAt: next.savedAt };
+  });
+  chatWrites.queue = operation;
+  return operation;
+}
+
+export async function copyStoredChat(sourceId: string, incoming?: unknown, requestId?: string) {
+  const operation = chatWrites.queue.catch(() => {}).then(async () => {
+    const current = await readFromDisk();
+    const id = requestId || randomUUID();
+    const priorCopy = (current.chats as any[]).find(chat => chat.id === id);
+    if (priorCopy) {
+      if (priorCopy.copyRequestId !== `${sourceId}:${id}`) throw new Error('This copy request is no longer valid.');
+      return { chat: priorCopy, savedAt: current.savedAt };
+    }
+    const durable = (current.chats as any[]).find(chat => chat.id === sourceId);
+    if (!durable) throw new Error('Chat no longer exists. Refresh your chat list and try again.');
+    const source = mergeChatForAction(durable, incoming);
+    try {
+      const replacements = await copyChatMedia(sourceId, id, source.traceLogs || []);
+      const chat = normalizePersistedChat({
+        ...buildChatCopy(source, id, nextChatCopyTitle(source.title, (current.chats as any[]).map(chat => chat.title)), replacements),
+        copyRequestId: `${sourceId}:${id}`,
+      });
+      const next = {
+        ...current,
+        chats: [chat, ...(current.chats as any[]).map(item => item.id === sourceId ? source : item)],
+        savedAt: Math.max(Date.now(), current.savedAt + 1), lastMutationId: '',
+      };
+      cachedSnapshotFileSignature = await writeAtomic(next);
+      cachedSnapshot = next;
+      return { chat, source, savedAt: next.savedAt };
+    } catch (error) {
+      await removeChatMedia([id]);
+      throw error;
+    }
+  });
+  chatWrites.queue = operation;
+  return operation;
+}
+
 export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutationId = ''): Promise<ChatSnapshotWriteResult> {
   const requested = normalizeSnapshot({ chats, savedAt, lastMutationId: mutationId });
-  writeQueue = writeQueue.catch(() => {}).then(async () => {
+  chatWrites.queue = chatWrites.queue.catch(() => {}).then(async () => {
     const current = await readFromDisk();
     if (mutationId && current.lastMutationId === mutationId) return { ...current, applied: true };
     if (requested.savedAt < current.savedAt) return { ...current, applied: false };
     const currentById = new Map((current.chats as any[]).map(chat => [chat.id, chat]));
+    const requestedIds = new Set((requested.chats as any[]).map(chat => chat.id));
     const mergedChats = (requested.chats as any[]).map(chat => {
       const durable = currentById.get(chat.id);
       if (!durable) return chat;
       return {
         ...durable,
         ...chat,
+        ...(durable.importOrigin ? { importOrigin: durable.importOrigin, importFolder: durable.importFolder, importPresentationVersion: durable.importPresentationVersion } : {}),
+        ...importedWorkspaceMetadata(durable, chat),
         ...mergeChatTitleMetadata(durable, chat),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
@@ -679,7 +769,12 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
     });
     const next = await hydrateRecoveredDialogue(normalizeSnapshot({
       ...requested,
-      chats: mergedChats,
+      chats: [
+        ...mergedChats,
+        // Imports can commit while an older client is saving a full snapshot.
+        // Deletion remains explicit through patchChatSnapshot's deleted IDs.
+        ...(current.chats as any[]).filter(chat => chat.importOrigin && !requestedIds.has(chat.id)),
+      ],
       savedAt: Math.max(requested.savedAt, current.savedAt + 1),
       lastMutationId: mutationId,
     }));
@@ -688,7 +783,7 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
     cachedSnapshotFileSignature = signature;
     return { ...next, applied: true };
   });
-  const stored = await writeQueue as ChatSnapshotWriteResult;
+  const stored = await chatWrites.queue as ChatSnapshotWriteResult;
   return { ...stored, chats: [...stored.chats] };
 }
 
@@ -706,7 +801,7 @@ export async function patchChatSnapshot(
       .map(id => String(id)),
   );
   const changed = normalizeSnapshot({ chats, savedAt }).chats as any[];
-  writeQueue = writeQueue.catch(() => {}).then(async () => {
+  chatWrites.queue = chatWrites.queue.catch(() => {}).then(async () => {
     const current = await readFromDisk();
     if (mutationId && current.lastMutationId === mutationId) return { ...current, applied: true };
     if (savedAt < current.savedAt) return { ...current, applied: false };
@@ -716,6 +811,8 @@ export async function patchChatSnapshot(
       byId.set(chat.id, durable ? {
         ...durable,
         ...chat,
+        ...(durable.importOrigin ? { importOrigin: durable.importOrigin, importFolder: durable.importFolder, importPresentationVersion: durable.importPresentationVersion } : {}),
+        ...importedWorkspaceMetadata(durable, chat),
         ...mergeChatTitleMetadata(durable, chat),
         traceLogs: mergeFeedTraceHistories(
           durable.traceLogs || [],
@@ -741,6 +838,25 @@ export async function patchChatSnapshot(
     cachedSnapshotFileSignature = signature;
     return { ...next, applied: true };
   });
-  const stored = await writeQueue as ChatSnapshotWriteResult;
+  const stored = await chatWrites.queue as ChatSnapshotWriteResult;
   return { ...stored, chats: [...stored.chats] };
+}
+
+/** Imports share the normal store's write queue. The reducer sees the latest
+ * durable revision, including sends/deletes that landed during discovery. */
+export async function updateImportedChats(
+  merge: (current: any[]) => any[],
+): Promise<PersistedChatSnapshot> {
+  const operation = chatWrites.queue.catch(() => {}).then(async () => {
+    const current = await readFromDisk();
+    const chats = merge(current.chats as any[]);
+    if (chats === current.chats) return current;
+    const next = normalizeSnapshot({ ...current, chats, savedAt: Math.max(Date.now(), current.savedAt + 1), lastMutationId: '' });
+    cachedSnapshotFileSignature = await writeAtomic(next);
+    cachedSnapshot = next;
+    return next;
+  });
+  chatWrites.queue = operation;
+  const snapshot = await operation;
+  return { ...snapshot, chats: [...snapshot.chats] };
 }

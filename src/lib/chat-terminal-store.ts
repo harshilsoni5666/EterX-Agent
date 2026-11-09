@@ -149,7 +149,7 @@ export async function createTerminal(chatId: string, cwd?: string | null) {
     if (creation.disposed) return;
     // Construct the display before spawning a shell so renderer failures never
     // leave an interactive process behind.
-    const { terminal, fit, element } = createTerminalSurface(runtime, { cursorBlink: true, cursorStyle: 'bar', cursorWidth: 2, cursorInactiveStyle: 'outline', fontSize: 13, lineHeight: 1.18, fontFamily: '"Geist Mono", Consolas, "Liberation Mono", Menlo, monospace', scrollback: 2000, allowProposedApi: false, theme: chatTerminalTheme() });
+    const { terminal, fit, element } = createTerminalSurface(runtime, { cursorBlink: true, cursorStyle: 'bar', cursorWidth: 2, cursorInactiveStyle: 'outline', fontSize: 13, lineHeight: 1.18, fontFamily: '"GeistMono", Consolas, "Liberation Mono", Menlo, monospace', scrollback: 2000, allowProposedApi: false, theme: chatTerminalTheme() });
     createdTerminal = terminal;
     let terminalShell = 'auto';
     try { terminalShell = JSON.parse(appStorage.getItem('eterx_settings') || '{}').terminalShell || 'auto'; } catch {}
@@ -253,7 +253,7 @@ export async function openManagedTerminal(taskChatId: string, task: ManagedTermi
     chatId = creation.owner;
     const { terminal, fit, element } = createTerminalSurface(runtime, {
       disableStdin: true, cursorBlink: false, convertEol: true, fontSize: 13,
-      lineHeight: 1.18, fontFamily: '"Geist Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      lineHeight: 1.18, fontFamily: '"GeistMono", Consolas, "Liberation Mono", Menlo, monospace',
       scrollback: 10000, theme: chatTerminalTheme(),
     });
     createdTerminal = terminal;
@@ -300,17 +300,23 @@ export function streamManagedTerminal(chatId: string, tab: TerminalTab): () => v
   let refreshing = false;
   const refresh = async () => {
     if (refreshing || controller.signal.aborted || !isAppVisible() || tab.managedSettled) return;
+    clearTimeout(timer);
     refreshing = true;
+    let moreOutput = false;
     try {
       const prefetched = tab.initialSnapshot;
       tab.initialSnapshot = undefined;
       const snapshot = await (prefetched || readManagedTerminal(tab.managedOwnerChatId || chatId, tab.managedTaskId!, tab.outputOffset || 0, controller.signal));
       if (controller.signal.aborted || tabsById.get(tab.id) !== tab) return;
+      if (snapshot.outputReadError) throw new Error(snapshot.outputReadError);
       const owner = tabOwner(tab);
       if (!owner) return;
       chatId = owner;
-      if (tab.managedLoading || tab.managedError) {
-        tab.managedLoading = false; tab.managedError = undefined;
+      const persistenceError = snapshot.outputPersistenceError
+        ? `Some terminal output could not be saved: ${snapshot.outputPersistenceError}`
+        : snapshot.statusPersistenceError ? `Terminal status could not be saved: ${snapshot.statusPersistenceError}` : undefined;
+      if (tab.managedLoading || tab.managedError !== persistenceError) {
+        tab.managedLoading = false; tab.managedError = persistenceError;
         update(chatId, { tabs: [...read(chatId).tabs] });
       }
       if (first) { tab.terminal.reset(); tab.terminal.writeln(`$ ${snapshot.command}\r\n[${snapshot.cwd}]\r\n`); first = false; tab.managedInitialized = true; }
@@ -321,16 +327,17 @@ export function streamManagedTerminal(chatId: string, tab: TerminalTab): () => v
       }
       tab.outputOffset = snapshot.outputEnd;
       tab.managedStatus = snapshot.status;
-      if (!snapshot.running) {
+      moreOutput = snapshot.hasMoreOutput === true;
+      if (!snapshot.running && !moreOutput) {
         tab.managedSettled = true;
         tab.exitCode = snapshot.exitCode ?? undefined;
         const status = snapshot.status === 'completed' ? 'Completed' : snapshot.status === 'killed' ? 'Stopped' : snapshot.status === 'unknown' ? 'Outcome unavailable' : 'Failed';
         tab.terminal.writeln(`\r\n[${status}${snapshot.exitCode === null ? '' : ` · exit ${snapshot.exitCode}`}${snapshot.outputEnd === 0 ? ' · no output produced' : ''}]`);
         update(chatId, { tabs: [...read(chatId).tabs] });
-        window.dispatchEvent(new CustomEvent('eterx-terminal-task-changed', { detail: { chatId, taskId: tab.managedTaskId } }));
+        window.dispatchEvent(new CustomEvent('eterx-terminal-task-changed', { detail: { chatId: tab.managedOwnerChatId || chatId, taskId: tab.managedTaskId } }));
         return;
       }
-      if (snapshot.outputEnd === 0 && !tab.element.dataset.waitingOutput) {
+      if (snapshot.running && snapshot.outputEnd === 0 && !tab.element.dataset.waitingOutput) {
         tab.element.dataset.waitingOutput = 'true';
         tab.terminal.writeln('[Process running; no output yet]');
       }
@@ -344,10 +351,15 @@ export function streamManagedTerminal(chatId: string, tab: TerminalTab): () => v
     } finally {
       refreshing = false;
     }
-    if (!controller.signal.aborted && isAppVisible()) timer = setTimeout(refresh, previousError ? 8000 : 1000);
+    if (!controller.signal.aborted && isAppVisible()) timer = setTimeout(refresh, previousError ? 8000 : moreOutput ? 50 : 1000);
   };
   const visibility = () => { clearTimeout(timer); if (isAppVisible()) void refresh(); };
+  const changed = (event: Event) => {
+    const detail = (event as CustomEvent).detail;
+    if (detail?.chatId === (tab.managedOwnerChatId || chatId) && detail?.taskId === tab.managedTaskId) void refresh();
+  };
+  window.addEventListener('eterx-terminal-task-changed', changed);
   const unsubscribeVisibility = subscribeAppVisibility(visibility);
   void refresh();
-  return () => { controller.abort(); clearTimeout(timer); unsubscribeVisibility(); };
+  return () => { controller.abort(); clearTimeout(timer); unsubscribeVisibility(); window.removeEventListener('eterx-terminal-task-changed', changed); };
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { loadChatById, loadChatSnapshot, patchChatSnapshot, saveChatSnapshot } from '../../../lib/chat-store';
+import { copyStoredChat, prepareStoredChat, loadChatById, loadChatSnapshot, patchChatSnapshot, saveChatSnapshot } from '../../../lib/chat-store';
 import { removeChatMedia } from '../../../lib/chat-media-store';
 import { rejectCrossOrigin } from '../agent/_shared';
 
@@ -7,6 +7,29 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const noStoreHeaders = { 'Cache-Control': 'no-cache, no-store, must-revalidate' };
+
+export async function POST(req: NextRequest) {
+  const originError = rejectCrossOrigin(req);
+  if (originError) return originError;
+  try {
+    const body = await req.json();
+    if (!['copy', 'prepare'].includes(body?.action) || typeof body.id !== 'string' || !body.id.trim()) {
+      return NextResponse.json({ error: 'A chat ID and supported action are required.' }, { status: 400, headers: noStoreHeaders });
+    }
+    if (body.chat !== undefined && (!body.chat || body.chat.id !== body.id || !Array.isArray(body.chat.traceLogs))) {
+      return NextResponse.json({ error: 'The conversation snapshot does not match the selected chat.' }, { status: 400, headers: noStoreHeaders });
+    }
+    if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId))) {
+      return NextResponse.json({ error: 'Invalid copy request.' }, { status: 400, headers: noStoreHeaders });
+    }
+    const result = body.action === 'copy'
+      ? await copyStoredChat(body.id, body.chat, body.requestId)
+      : await prepareStoredChat(body.id, body.chat);
+    return NextResponse.json(result, { headers: noStoreHeaders });
+  } catch (error: any) {
+    return NextResponse.json({ error: error?.message || 'Unable to save this conversation.' }, { status: 500, headers: noStoreHeaders });
+  }
+}
 
 export async function GET(req: NextRequest) {
   const originError = rejectCrossOrigin(req);

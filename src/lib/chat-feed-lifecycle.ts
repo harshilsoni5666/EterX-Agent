@@ -2,6 +2,7 @@ import { contextUsageCursor, mergeContextCompactionSnapshot, mergeContextUsageSn
 import { modelUsageReceiptKey, mergeModelUsageReceipt } from './model-usage';
 import { sameUserAdmission, userAdmissionKey, reconcileQueuedTurnDelivery } from './steering-delivery';
 import { mergeUserAttachments, visibleUserRequest } from './chat-user-payload';
+import { normalizeImportedTraces } from './imports/presentation';
 
 const TERMINAL_WORK_STATUSES = new Set([
   'completed',
@@ -814,6 +815,8 @@ const mergedBoundaryAliases = (previous: any, incoming: any) => ({
 });
 
 export const mergeUserTurnBoundaries = (previous: any, incoming: any): any => {
+  const imported = mergeImportedTraceRevision(previous, incoming);
+  if (imported) return imported;
   if (previous?.type !== 'user_action' || incoming?.type !== 'user_action') {
     return {
       ...previous,
@@ -896,8 +899,26 @@ export const mergeUserTurnBoundaries = (previous: any, incoming: any): any => {
   };
 };
 
+function mergeImportedTraceRevision(previous: any, incoming: any): any | null {
+  if (!previous?.importedFrom || previous.importedFrom !== incoming?.importedFrom || !previous.id || previous.id !== incoming.id) return null;
+  const previousVersion = Number(previous.importPresentationVersion || 0);
+  const incomingVersion = Number(incoming.importPresentationVersion || 0);
+  const usePrevious = previousVersion > incomingVersion || previousVersion === incomingVersion
+    && Number(previous.importRevision || 0) > Number(incoming.importRevision || 0);
+  const preferred = usePrevious ? previous : incoming;
+  // Imported adapters may deliberately shorten text or change a row's type.
+  // The normal streaming rule (longest text wins) resurrects raw envelopes and
+  // JS wrappers, so source revisions use their complete canonical payload.
+  return { ...previous, ...incoming, ...preferred,
+    _feedPresentationId: previous._feedPresentationId || incoming._feedPresentationId,
+    _feedBoundaryId: previous._feedBoundaryId || incoming._feedBoundaryId,
+  };
+}
+
 /** A sparse transport snapshot must not erase a payload already delivered. */
 export const mergeFeedTracePayload = (previous: any, incoming: any): any => {
+  const imported = mergeImportedTraceRevision(previous, incoming);
+  if (imported) return imported;
   const merged = { ...previous };
   for (const [key, value] of Object.entries(incoming || {})) {
     if (value !== undefined) merged[key] = value;
@@ -914,6 +935,8 @@ export const mergeFeedTracePayload = (previous: any, incoming: any): any => {
 };
 
 const mergeTimelineTrace = (previous: any, incoming: any): any => {
+  const imported = mergeImportedTraceRevision(previous, incoming);
+  if (imported) return imported;
   if (previous?.type === 'model_usage' && incoming?.type === 'model_usage') {
     return mergeModelUsageReceipt(previous, incoming);
   }
@@ -1702,14 +1725,20 @@ export const mergeFeedTraceHistories = (
 ): any[] => {
   const merged: any[] = [];
   const indexes = new Map<string, number>();
+  const importedIndexes = new Map<string, number>();
   const recoveredBoundaryByScope = new Map<string, number>();
   const realBoundaryScopes = new Set<string>();
 
   const registerTraceKeys = (log: any, index: number) => {
     timelineStableKeys(log).forEach(key => indexes.set(key, index));
+    if (log?.importedFrom && log.id) importedIndexes.set(`${log.importedFrom}:${log.id}`, index);
   };
 
   const findTraceIndex = (log: any): number | undefined => {
+    if (log?.importedFrom && log.id) {
+      const importedIndex = importedIndexes.get(`${log.importedFrom}:${log.id}`);
+      if (importedIndex !== undefined) return importedIndex;
+    }
     for (const key of timelineStableKeys(log)) {
       const index = indexes.get(key);
       if (index !== undefined) return index;
@@ -1753,8 +1782,8 @@ export const mergeFeedTraceHistories = (
     registerTraceKeys(log, index);
   };
 
-  (Array.isArray(durableLogs) ? durableLogs : []).forEach(append);
-  (Array.isArray(incomingLogs) ? incomingLogs : []).forEach(append);
+  normalizeImportedTraces(Array.isArray(durableLogs) ? durableLogs : []).forEach(append);
+  normalizeImportedTraces(Array.isArray(incomingLogs) ? incomingLogs : []).forEach(append);
   return settleFeedTraceLifecycles(
     orderFeedTimelineLogs(recoverMissingUserTurnBoundaries(
       merged,

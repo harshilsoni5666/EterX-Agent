@@ -25,7 +25,7 @@ const nextConfig = {
   outputFileTracingExcludes: {
     '*': runtimeDataExcludes,
   },
-  serverExternalPackages: ['cheerio', 'undici', 'fs-extra', 'pdf-parse', 'mathjs', 'playwright-core'],
+  serverExternalPackages: ['cheerio', 'undici', 'fs-extra', 'pdf-parse', 'mathjs', 'playwright-core', 'koffi', 'typescript'],
   experimental: {
     optimizePackageImports: ['lucide-react'],
   },

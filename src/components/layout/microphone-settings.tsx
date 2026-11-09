@@ -194,7 +194,7 @@ export function MicrophoneSettings({ microphoneDeviceId, language, modelId, onMi
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <label className="relative min-w-[160px] flex-1">
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#888]" />
-              <input aria-label="Search speech models" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search all speech models…" className="h-9 w-full rounded-lg border border-white/[0.08] bg-black/10 pl-9 pr-3 text-[12px] text-[#F1F1F1] outline-none focus:border-blue-400" />
+              <input aria-label="Search speech models" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search all speech models…" className="h-9 w-full rounded-lg border border-white/[0.08] bg-black/10 pl-9 pr-3 text-[12px] text-[#F1F1F1] outline-hidden focus:border-blue-400" />
             </label>
             <label className="flex items-center gap-2 text-[12px] text-[#A7A7A7]"><input type="checkbox" checked={downloadedOnly} onChange={event => setDownloadedOnly(event.target.checked)} /> Downloaded</label>
           </div>

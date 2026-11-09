@@ -1,0 +1,97 @@
+.field {
+  --teal: 69 148 156;
+  --blue: 80 117 174;
+  --violet: 144 115 170;
+  --warm: 163 144 113;
+  --wash-alpha: 0.3;
+  --body-alpha: 0.16;
+  --accent-alpha: 0.15;
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 0;
+  width: 100%;
+  height: clamp(160px, 44%, 560px);
+  max-height: 56%;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  isolation: isolate;
+  contain: strict;
+  /* A quiet foundation keeps the horizon grounded as the color layers drift. */
+  background: radial-gradient(ellipse 75% 80% at 50% 118%, rgb(var(--teal) / 0.05) 0%, rgb(var(--blue) / 0.03) 45%, rgb(var(--blue) / 0) 82%);
+  /* Anchor the horizon below the pane: color rests on the bottom while the
+     crest and side tips dissolve gradually into the chat background. */
+  -webkit-mask-image: radial-gradient(ellipse 50% 112% at 50% 112%, #000 0%, #000 32%, rgba(0, 0, 0, 0.88) 52%, rgba(0, 0, 0, 0.46) 72%, rgba(0, 0, 0, 0.1) 89%, transparent 100%);
+  mask-image: radial-gradient(ellipse 50% 112% at 50% 112%, #000 0%, #000 32%, rgba(0, 0, 0, 0.88) 52%, rgba(0, 0, 0, 0.46) 72%, rgba(0, 0, 0, 0.1) 89%, transparent 100%);
+}
+
+.color {
+  position: absolute;
+  inset: -12% -16% -42%;
+  transform-origin: 50% 100%;
+  will-change: transform, opacity;
+}
+
+/* Softness is in the gradients themselves, without large blurred rectangles. */
+.firstWave {
+  background:
+    radial-gradient(ellipse 44% 72% at 31% 86%, rgb(var(--teal) / var(--wash-alpha)) 0%, rgb(var(--teal) / var(--body-alpha)) 36%, rgb(var(--teal) / 0) 76%),
+    radial-gradient(ellipse 48% 78% at 69% 80%, rgb(var(--blue) / var(--wash-alpha)) 0%, rgb(var(--blue) / var(--body-alpha)) 34%, rgb(var(--blue) / 0) 76%);
+  animation: first-drift 29s ease-in-out -7s infinite;
+}
+
+.secondWave {
+  background:
+    radial-gradient(ellipse 38% 68% at 24% 86%, rgb(var(--violet) / var(--accent-alpha)) 0%, rgb(var(--violet) / 0) 75%),
+    radial-gradient(ellipse 37% 62% at 77% 94%, rgb(var(--warm) / var(--accent-alpha)) 0%, rgb(var(--warm) / 0) 76%);
+  animation: second-drift 37s ease-in-out -19s infinite;
+}
+
+.thirdWave {
+  background:
+    radial-gradient(ellipse 55% 44% at 46% 96%, rgb(var(--teal) / var(--body-alpha)) 0%, rgb(var(--teal) / 0) 80%),
+    radial-gradient(ellipse 44% 53% at 60% 90%, rgb(var(--blue) / var(--accent-alpha)) 0%, rgb(var(--blue) / 0) 78%);
+  animation: third-drift 31s ease-in-out -11s infinite;
+}
+
+:global(:root[data-theme='light']) .field {
+  --teal: 111 181 168;
+  --blue: 128 166 203;
+  --violet: 174 149 195;
+  --warm: 199 178 155;
+  --wash-alpha: 0.24;
+  --body-alpha: 0.13;
+  --accent-alpha: 0.12;
+}
+
+@keyframes first-drift {
+  0%, 100% { transform: translate3d(-2%, 1%, 0) rotate(-0.6deg) scale(1, 0.98); opacity: 0.84; }
+  50% { transform: translate3d(3%, -2%, 0) rotate(0.6deg) scale(1.04, 1.04); opacity: 0.98; }
+}
+
+@keyframes second-drift {
+  0%, 100% { transform: translate3d(3%, -1%, 0) rotate(0.6deg) scale(1.02, 1); opacity: 0.72; }
+  50% { transform: translate3d(-4%, 2%, 0) rotate(-0.8deg) scale(1.06, 1.05); opacity: 0.88; }
+}
+
+@keyframes third-drift {
+  0%, 100% { transform: translate3d(-1%, 2%, 0) scale(1.02, 0.97); opacity: 0.74; }
+  50% { transform: translate3d(2%, -2%, 0) scale(1.06, 1.04); opacity: 0.91; }
+}
+
+:global(.eterx-app-shell[data-document-visible='false']) .color {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .color {
+    animation: none;
+    will-change: auto;
+  }
+}
+
+@media (forced-colors: active) {
+  .field {
+    display: none;
+  }
+}

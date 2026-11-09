@@ -4,7 +4,7 @@ import { useEffect, type RefObject } from 'react';
 
 /** Keep the browser's native wheel/trackpad scrolling and momentum. CSS owns
  * scroll containment; bubbling gestures must not reach chat wheel handlers. */
-export function useWorkspaceScrollBoundary(panel: RefObject<HTMLElement>) {
+export function useWorkspaceScrollBoundary(panel: RefObject<HTMLElement | null>) {
   useEffect(() => {
     const host = panel.current;
     if (!host) return;

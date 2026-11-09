@@ -2,8 +2,6 @@ import { NextResponse } from 'next/server';
 import { browserEngine } from '../../../../lib/agent/browser/engine';
 import { nativeCurrentBrowser } from '../../../../lib/agent/browser/native-current-browser';
 import { isUnsafeHostControlEnabled } from '../../../../lib/agent/computer/computer-session';
-import { platformScreenProvider } from '../../../../lib/agent/computer/platform-screen';
-import { platformControlProvider } from '../../../../lib/agent/computer/platform-control';
 import { cuaDriverProvider, getCuaDriverStatus } from '../../../../lib/agent/computer/cua-driver';
 
 export const dynamic = 'force-dynamic';
@@ -47,12 +45,12 @@ async function snapshot() {
     managedBrowser: browserEngine.connected && browserEngine.mode === 'managed',
     computer: {
       hostControlEnabled: isUnsafeHostControlEnabled(),
-      screenProvider: platformScreenProvider(),
-      inputProvider: cuaStatus.installed ? cuaDriverProvider() : platformControlProvider(),
+      screenProvider: cuaStatus.installed ? cuaDriverProvider() : 'Not configured',
+      inputProvider: cuaStatus.installed ? cuaDriverProvider() : 'Not configured',
       cuaDriver: cuaStatus,
       note: process.platform === 'win32'
-        ? 'Computer Use uses Cua Driver for background Windows UIAutomation and screen capture when enabled; the isolated runtime remains available when it is off.'
-        : 'Computer Use uses Cua Driver for background desktop control when installed; the native screen provider remains the fallback when it is unavailable.'
+        ? 'Native desktop control requires Computer Use enabled for the task and a running Cua Driver in the signed-in Windows session.'
+        : 'Native window control requires a running Cua Driver. macOS also requires Accessibility and Screen Recording permissions.'
     },
   };
 }
@@ -101,11 +99,9 @@ export async function POST(request: Request) {
       managedBrowser: browserEngine.connected && browserEngine.mode === 'managed',
       computer: {
         hostControlEnabled: isUnsafeHostControlEnabled(),
-        screenProvider: platformScreenProvider(),
-        inputProvider: platformControlProvider(),
-        note: process.platform === 'win32'
-          ? 'Computer Use uses Cua Driver for background Windows UIAutomation and screen capture when enabled; the isolated runtime remains available when it is off.'
-          : 'Computer Use uses Cua Driver for background desktop control when installed; the native screen provider remains the fallback when it is unavailable.'
+        screenProvider: 'Unknown',
+        inputProvider: 'Unknown',
+        note: 'Refresh desktop status in Settings > Computer. Native desktop control requires a running Cua Driver.'
       },
     }, { status: 409 });
   }

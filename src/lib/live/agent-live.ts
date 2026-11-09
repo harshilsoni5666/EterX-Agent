@@ -12,17 +12,24 @@
  */
 
 import { captureMicrophone } from '../microphone';
+import { requestJson } from '../request-json';
 import {
-  getGeminiThinkingConfig,
-  getModelThinkingOptions,
   normalizeModelThinkingCapabilities,
-  normalizeThinkingLevelForModel,
   type MainAgentThinkingLevel,
   type ModelThinkingCapabilities,
 } from '../agent/model-routing';
 import { appStorage } from '../client-storage';
 import { MODEL_THINKING_CAPABILITIES_STORAGE_KEY, modelEntryKey } from '../agent/model-selector-store';
 import { normalizeGeminiLiveModelName } from './live-provider';
+import { getGeminiLiveThinkingConfig, isGeminiExtendedThinkingModel } from './gemini-live-contract';
+import {
+  buildLiveOperatingGuidance,
+  buildLiveSystemEventPrompt,
+  shouldAnnounceLiveEvent,
+  summarizeLiveTaskResult,
+  updateLiveInteractionPolicy,
+} from './live-behavior';
+import { manageLiveTerminalTask } from './live-terminal';
 
 export type LiveSessionState = 'idle' | 'connecting' | 'connected' | 'listening' | 'thinking' | 'speaking' | 'error';
 
@@ -41,10 +48,13 @@ export interface LiveAgentActivity {
 
 export interface LiveSystemEvent {
   id: string;
-  type: 'task_completed' | 'task_failed' | 'task_progress' | 'task_blocked';
+  type: 'task_completed' | 'task_failed' | 'task_progress' | 'task_blocked' | 'task_stopped';
+  runId?: string;
   sourceChatId: string;
   sourceChatTitle?: string;
   summary: string;
+  /** Original chat text for local speech. Omitted from native control prompts. */
+  sourceMarkdown?: string;
 }
 
 export interface LiveTurnMetadata {
@@ -68,7 +78,8 @@ interface CoordinatedLiveTask {
   chatId: string;
   title: string;
   objective: string;
-  status: 'running' | 'queued' | 'idle' | 'completed' | 'failed' | 'blocked';
+  runId?: string;
+  status: 'running' | 'queued' | 'idle' | 'completed' | 'failed' | 'blocked' | 'stopped';
   lastSummary: string;
   updatedAt: number;
 }
@@ -96,8 +107,8 @@ export interface LiveInteractionPolicy {
 export interface LiveSessionCallbacks {
   onStateChange: (state: LiveSessionState) => void;
   onInputTranscription: (text: string) => void;   // User's speech → text
-  onOutputTranscription: (text: string) => void;  // Model's speech → text
-  onError: (error: string) => void;
+  onOutputTranscription: (text: string, metadata?: LiveTurnMetadata) => void;
+  onError: (error: string, options?: { recoverable?: boolean }) => void;
   onTurnComplete: (userText: string, modelText: string, metadata?: LiveTurnMetadata) => void;
   onInterrupted: (metadata?: LiveTurnMetadata) => void;
   onMicVolume?: (volume: number) => void;          // Real-time mic volume 0-100
@@ -106,7 +117,7 @@ export interface LiveSessionCallbacks {
   onToolCallActive?: (toolName: string | null) => void; // Tool call in progress
   onToolAction?: (text: string, secondary?: string) => void; // Human-readable action for Main UI
   onAgentActivity?: (activity: LiveAgentActivity) => void; // Structured activity for the shared thought sequence
-  onAppControlAction?: (actionName: string, args: any) => Promise<any>; // Full App Control & Main Agent integration
+  onAppControlAction?: (actionName: string, args: any, metadata?: LiveTurnMetadata) => Promise<any>; // Full App Control & Main Agent integration
   onCameraStateChange?: (enabled: boolean) => void;
   onScreenShareStateChange?: (enabled: boolean) => void;
 }
@@ -147,6 +158,10 @@ export interface LiveSessionOptions {
   audioInputEnabled?: boolean;
   microphoneDeviceId?: string;
   audioOutputEnabled?: boolean;
+  /** Exact configured provider/model key used by the speech-to-agent bridge. */
+  workerModelSelection?: string;
+  dictationModel?: string;
+  dictationLanguage?: string;
   interactionPolicy?: Partial<LiveInteractionPolicy>;
   initialContext?: {
     pastMemories?: string[];
@@ -156,7 +171,7 @@ export interface LiveSessionOptions {
   };
 }
 
-const LIVE_WS_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent';
+const LIVE_WS_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained';
 const LIVE_INTERACTION_POLICY_STORAGE_KEY = 'eterx_live_interaction_policy_v1';
 const AGENT_BUILDER_INTERNAL_REQUEST_PATTERN = /^\[AGENT BUILDER REQUEST\]\s*\r?\nTarget agent ID:[^\r\n]*\r?\n\s*\r?\n\[USER REQUEST\]\s*\r?\n?([\s\S]*)$/i;
 
@@ -227,7 +242,7 @@ export class AgentLiveSession implements LiveSession {
   private nextPlayTime = 0;
   private state: LiveSessionState = 'idle';
   private callbacks: LiveSessionCallbacks;
-  private apiKey: string;
+  private authController: AbortController | null = null;
   private options?: LiveSessionOptions;
   private outputTranscript = '';
   private inputTranscript = '';
@@ -245,6 +260,7 @@ export class AgentLiveSession implements LiveSession {
   private speakerMuted = false;
   private currentVoice = 'Kore'; // AGI: Dynamic voice selection
   private isInterruptedThisTurn = false;
+  private localInterruptionPending = false;
   private thinkingActivityId: string | null = null;
   private thinkingActivityStartedAt: number | null = null;
   private nativeThoughtSummary = '';
@@ -252,6 +268,7 @@ export class AgentLiveSession implements LiveSession {
   private toolActivityStarts = new Map<string, number>();
   private cancelledToolCallIds = new Set<string>();
   private toolAbortControllers = new Map<string, AbortController>();
+  private toolCallResults = new Map<string, { name: string; response?: any }>();
   private systemEventQueue: LiveSystemEvent[] = [];
   private queuedSystemEventIds = new Set<string>();
   private deliveredSystemEventIds = new Set<string>();
@@ -285,6 +302,7 @@ export class AgentLiveSession implements LiveSession {
     autoFollowThrough: true,
   };
   private resumptionHandle: string | null = null;
+  private interactionStatus: 'IN_PROGRESS' | 'IDLE' | null = null;
   private resumeRequested = false;
   private manualDisconnect = false;
   private connectPromise: Promise<void> | null = null;
@@ -309,9 +327,9 @@ export class AgentLiveSession implements LiveSession {
   private playbackCharCount = 0;
 
   private chatId: string;
+  private readonly desktopRunId = `live-${crypto.randomUUID()}`;
 
-  constructor(apiKey: string, chatId: string, callbacks: LiveSessionCallbacks, options?: LiveSessionOptions) {
-    this.apiKey = apiKey;
+  constructor(_apiKey: string, chatId: string, callbacks: LiveSessionCallbacks, options?: LiveSessionOptions) {
     this.chatId = chatId;
     this.callbacks = callbacks;
     this.options = options;
@@ -543,8 +561,10 @@ export class AgentLiveSession implements LiveSession {
 
   private finalizeCompletedTurn(): void {
     const completion = this.pendingTurnCompletion;
-    if (!completion || this.activeSources.length > 0) return;
+    if (!completion || this.activeSources.length > 0
+      || (isGeminiExtendedThinkingModel(this.options?.model) && this.interactionStatus === 'IN_PROGRESS')) return;
     this.pendingTurnCompletion = null;
+    this.localInterruptionPending = false;
     this.callbacks.onTurnComplete(completion.userText, completion.modelText, completion.metadata);
     const wasInternal = this.internalTextTurn;
     this.internalTextTurn = false;
@@ -565,26 +585,37 @@ export class AgentLiveSession implements LiveSession {
     });
   }
 
+  private completeInteraction(): void {
+    if (this.pendingTurnCompletion) return;
+    const completedSystemEvent = this.activeSystemEvent;
+    this.activeSystemEvent = null;
+    this.pendingTurnCompletion = {
+      userText: this.turnInputTranscript,
+      modelText: sanitizeLiveAnswerText(this.turnOutputTranscript),
+      metadata: completedSystemEvent || this.internalTextTurn ? {
+        ...(completedSystemEvent ? { systemEvent: completedSystemEvent } : {}),
+        ...(this.internalTextTurn ? { internalEvent: true } : {}),
+      } : undefined,
+    };
+    this.finishThinking();
+    if (this.activeSources.length === 0) this.finalizeCompletedTurn();
+    else this.setState('speaking');
+  }
+
   private summarizeToolResult(toolName: string, value: unknown, failed = false): string {
     if (value === undefined || value === null) return 'Completed';
     if (typeof value === 'string') return this.compactActivityDetail(value, failed ? 'Action failed' : 'Completed');
     if (typeof value !== 'object') return String(value);
     const result = value as Record<string, any>;
     if (failed) return this.compactActivityDetail(String(result.message || result.error || 'Action failed'), 'Action failed');
-    if (toolName === 'send_prompt_to_main_agent') {
-      const target = String(result.chatTitle || result.targetTitle || result.chatId || 'target chat');
-      if (result.mode === 'queued_next_run') return `Follow-up queued for ${target}`;
-      return result.mode === 'steered_existing_run'
-        ? `Instruction delivered to ${target}`
-        : `Task started in ${target}`;
-    }
+    const taskSummary = summarizeLiveTaskResult(toolName, result);
+    if (taskSummary) return this.compactActivityDetail(taskSummary);
     if (toolName === 'list_all_chats') return `${Number(result.totalChats || result.chats?.length || 0)} chats available`;
     if (toolName === 'get_coordinated_work') return `${Number(result.activeCount || 0)} coordinated tasks active`;
     if (toolName === 'update_live_mission') return 'Mission map updated';
     if (toolName === 'configure_live_behavior') return 'Live behavior adapted';
     if (toolName === 'visual_watch') return this.compactActivityDetail(String(result.message || (result.active ? 'Visual watch active' : 'Visual watch inactive')));
     if (toolName === 'list_available_models') return `${Number(result.models?.length || 0)} models available`;
-    if (toolName === 'get_main_agent_status') return `${result.chatTitle || 'Task'} is ${result.isRunning ? 'working' : 'idle'}`;
     if (toolName === 'manage_scheduled_tasks') {
       if (Array.isArray(result.tasks)) return `${result.tasks.length} scheduled tasks`;
       if (Array.isArray(result.history)) return `${result.history.length} recorded runs`;
@@ -632,6 +663,7 @@ export class AgentLiveSession implements LiveSession {
           chatId,
           title: String(dispatchResult.chatTitle || dispatchResult.targetTitle || 'Task'),
           objective: objective.userText || this.turnInputTranscript.trim(),
+          runId: String(dispatchResult.runId || '').trim() || undefined,
           status: dispatchResult.mode === 'queued_next_run' ? 'queued' : 'running',
           lastSummary: summary,
           updatedAt: Date.now(),
@@ -642,7 +674,11 @@ export class AgentLiveSession implements LiveSession {
       const chatId = String(statusResult.chatId || '').trim();
       const coordinatedTask = chatId ? this.coordinatedTasks.get(chatId) : null;
       if (coordinatedTask) {
-        coordinatedTask.status = statusResult.isRunning ? 'running' : 'idle';
+        const state = statusResult.state === 'waiting_for_input' ? 'blocked' : statusResult.state;
+        coordinatedTask.status = ['running', 'idle', 'completed', 'failed', 'blocked', 'stopped'].includes(state)
+          ? state as CoordinatedLiveTask['status']
+          : statusResult.isRunning ? 'running' : 'idle';
+        coordinatedTask.runId = String(statusResult.runId || '').trim() || coordinatedTask.runId;
         coordinatedTask.lastSummary = summary;
         coordinatedTask.updatedAt = Date.now();
       }
@@ -663,7 +699,7 @@ export class AgentLiveSession implements LiveSession {
         ? 'Inspect this failure and choose a safe alternate route when one exists. Do not repeat a state-changing action blindly.'
         : toolName === 'send_prompt_to_main_agent'
           ? 'Dispatch is confirmed, but the worker outcome is still pending. Keep the Live conversation available for steering and completion updates.'
-          : 'Compare this evidence with the user outcome. Continue with the next useful tool or verification when work remains; otherwise report the grounded result.',
+          : 'Compare this evidence with the user outcome. Continue only unfinished authorized work; verify only when permitted. Do not restart stopped work or treat a pending process as complete.',
     };
   }
 
@@ -673,6 +709,7 @@ export class AgentLiveSession implements LiveSession {
     if (/(permission|approval|forbidden|unauthori[sz]ed|invalid|unsupported|not found|missing|required|cancel|abort|captcha|mfa)/i.test(error)) {
       return false;
     }
+    if (toolName === 'manage_terminal_task') return args.action !== 'stop';
 
     if ([
       'web_search',
@@ -733,27 +770,28 @@ export class AgentLiveSession implements LiveSession {
   announceSystemEvent(event: LiveSystemEvent): boolean {
     if (!event?.id || this.state === 'idle' || this.state === 'error') return false;
     const coordinatedTask = this.coordinatedTasks.get(event.sourceChatId);
-    if (coordinatedTask) {
+    if (coordinatedTask && (!event.runId || !coordinatedTask.runId || event.runId === coordinatedTask.runId)) {
       coordinatedTask.status = event.type === 'task_completed'
         ? 'completed'
         : event.type === 'task_failed'
           ? 'failed'
-          : event.type === 'task_blocked'
+          : event.type === 'task_stopped'
+            ? 'stopped'
+            : event.type === 'task_blocked'
             ? 'blocked'
             : 'running';
       coordinatedTask.lastSummary = event.summary;
       coordinatedTask.updatedAt = Date.now();
     }
-    if (!this.interactionPolicy.proactiveUpdates) return false;
-    if (
-      (this.interactionPolicy.silenceUntilImportant ||
-        this.interactionPolicy.notificationLevel === 'important') &&
-      event.type === 'task_progress'
-    ) return false;
-    if (
-      this.interactionPolicy.notificationLevel === 'critical' &&
-      (event.type === 'task_progress' || event.type === 'task_completed')
-    ) return false;
+    if (event.type === 'task_stopped') {
+      this.systemEventQueue = this.systemEventQueue.filter(candidate => {
+        const superseded = candidate.sourceChatId === event.sourceChatId
+          && (!candidate.runId || !event.runId || candidate.runId === event.runId);
+        if (superseded) this.queuedSystemEventIds.delete(candidate.id);
+        return !superseded;
+      });
+    }
+    if (!shouldAnnounceLiveEvent(event, this.interactionPolicy)) return false;
     if (
       this.deliveredSystemEventIds.has(event.id) ||
       this.queuedSystemEventIds.has(event.id) ||
@@ -762,7 +800,8 @@ export class AgentLiveSession implements LiveSession {
     if (event.type === 'task_progress') {
       const queuedProgressIndex = this.systemEventQueue.findIndex(candidate =>
         candidate.type === 'task_progress' &&
-        candidate.sourceChatId === event.sourceChatId
+        candidate.sourceChatId === event.sourceChatId &&
+        (!candidate.runId || !event.runId || candidate.runId === event.runId)
       );
       if (queuedProgressIndex >= 0) {
         const replaced = this.systemEventQueue[queuedProgressIndex];
@@ -773,8 +812,9 @@ export class AgentLiveSession implements LiveSession {
       }
     } else {
       this.systemEventQueue = this.systemEventQueue.filter(candidate => {
-        const superseded = candidate.type === 'task_progress' &&
-          candidate.sourceChatId === event.sourceChatId;
+        const superseded = candidate.sourceChatId === event.sourceChatId
+          && (!candidate.runId || !event.runId || candidate.runId === event.runId)
+          && (candidate.type === 'task_progress' || event.type === 'task_stopped');
         if (superseded) this.queuedSystemEventIds.delete(candidate.id);
         return !superseded;
       });
@@ -789,7 +829,8 @@ export class AgentLiveSession implements LiveSession {
     if (this.activeSystemEvent || this.systemEventQueue.length === 0) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     if (this.speakerMuted) return;
-    if (this.state === 'speaking' || this.state === 'thinking' || this.activeSources.length > 0) return;
+    if (this.state === 'speaking' || this.state === 'thinking' || this.activeSources.length > 0
+      || this.pendingTurnCompletion || this.toolAbortControllers.size > 0) return;
     const quietForMs = Date.now() - this.lastUserSpeechAt;
     if (quietForMs < 1400) {
       if (this.systemEventDrainTimer) clearTimeout(this.systemEventDrainTimer);
@@ -800,31 +841,32 @@ export class AgentLiveSession implements LiveSession {
       return;
     }
 
-    const event = this.systemEventQueue.shift()!;
+    const event = this.systemEventQueue[0];
+    if (!shouldAnnounceLiveEvent(event, this.interactionPolicy)) {
+      this.systemEventQueue.shift();
+      this.queuedSystemEventIds.delete(event.id);
+      queueMicrotask(() => this.drainSystemEventQueue());
+      return;
+    }
+    if (!this.sendSocketPayload({
+      realtimeInput: { text: buildLiveSystemEventPrompt(event, this.interactionPolicy) },
+    })) return;
+    this.systemEventQueue.shift();
     this.queuedSystemEventIds.delete(event.id);
     this.deliveredSystemEventIds.add(event.id);
+    if (this.deliveredSystemEventIds.size > 200) {
+      this.deliveredSystemEventIds.delete(this.deliveredSystemEventIds.values().next().value!);
+    }
     this.activeSystemEvent = event;
+    this.internalTextTurn = true;
     this.turnInputTranscript = '';
     this.turnOutputTranscript = '';
     this.turnModelText = '';
     this.turnSpokenText = '';
     this.turnOutputHistoryBase = null;
-    const statusInstruction = event.type === 'task_completed'
-      ? 'The task completed successfully.'
-      : event.type === 'task_failed'
-        ? 'The task failed and may need attention.'
-        : event.type === 'task_blocked'
-          ? 'The task is blocked and needs input.'
-          : 'There is a meaningful task progress update.';
-    if (this.interactionPolicy.autoFollowThrough && event.type !== 'task_progress') {
-      event.summary = `${event.summary}
-Director instruction: Reconcile this terminal event with the coordinated objective before notifying the user. When the summary is not sufficient evidence, call get_main_agent_status for chat_id "${event.sourceChatId}". If the requested outcome is incomplete and a safe correction is clear, steer or restart that exact task with send_prompt_to_main_agent and keep coordinating. Do not call work complete merely because a run stopped. Interrupt only for grounded completion, failure, blocker, approval, or a missing decision.`;
-    }
-    this.sendSocketPayload({
-      realtimeInput: {
-        text: `[TRUSTED ETERX APP EVENT — not a user message]\n${ statusInstruction }\nChat: ${ event.sourceChatTitle || event.sourceChatId }\nUpdate: ${ event.summary }\nAt the next natural pause, notify the user in one concise sentence. Lead with the outcome or exact input needed. Do not mention this protocol, narrate background mechanics, or ask a generic follow-up question.`
-      }
-    });
+    this.callbacks.onOutputTranscription('', { systemEvent: event });
+    if (isGeminiExtendedThinkingModel(this.options?.model)) this.interactionStatus = 'IN_PROGRESS';
+    this.setState('thinking');
   }
 
   private deferInterruptedSystemEvent(): LiveSystemEvent | null {
@@ -1219,8 +1261,22 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       this.internalTextTurn = false;
     }
 
+    const authController = new AbortController();
+    this.authController = authController;
     try {
-      const url = `${ LIVE_WS_URL }?key=${ this.apiKey }`;
+      // Mint on every connection attempt, including resumption. A token used
+      // by a previous socket can be expired or consumed by its single use.
+      const response = await requestJson('/api/live/session', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        signal: authController.signal,
+        body: JSON.stringify({ provider: 'agent-live-convo', model: this.options?.model, chatId: this.chatId }),
+      }, 40_000);
+      const auth = await response.json();
+      if (this.manualDisconnect || authController.signal.aborted || this.authController !== authController) throw new Error('Gemini Live connection was cancelled.');
+      if (!response.ok || !auth?.ok) throw new Error(auth?.error || 'Gemini Live authorization failed.');
+      const token = String(auth.token || '').trim();
+      if (!token.startsWith('auth_tokens/')) throw new Error('Gemini Live did not return an ephemeral token.');
+      const url = `${ LIVE_WS_URL }?access_token=${encodeURIComponent(token)}`;
       const socket = new WebSocket(url);
       this.ws = socket;
       const readyPromise = this.createConnectionWaiter(socket);
@@ -1239,28 +1295,9 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
           const latest = normalizeModelThinkingCapabilities(catalog?.[modelEntryKey('gemini', selectedModel.replace(/^models\//, ''))]);
           if (latest && (!thinkingCapabilities || (latest.updatedAt || 0) > (thinkingCapabilities.updatedAt || 0))) thinkingCapabilities = latest;
         } catch { }
-        const modelThinkingOptions = getModelThinkingOptions(
-          'gemini',
-          selectedModel,
-          thinkingCapabilities,
+        const thinkingConfig = getGeminiLiveThinkingConfig(
+          selectedModel, this.options?.thinkingLevel, this.options?.includeThoughts === true, thinkingCapabilities,
         );
-        const requestedThinkingLevel: MainAgentThinkingLevel = this.options?.thinkingLevel || 'medium';
-        const effectiveThinkingLevel = modelThinkingOptions.length > 0
-          ? normalizeThinkingLevelForModel(
-              requestedThinkingLevel,
-              'gemini',
-              selectedModel,
-              thinkingCapabilities,
-            )
-          : null;
-        const thinkingConfig = effectiveThinkingLevel
-          ? getGeminiThinkingConfig(
-              effectiveThinkingLevel,
-              selectedModel,
-              this.options?.includeThoughts !== false,
-              thinkingCapabilities,
-            )
-          : null;
 
         const setupMessage = {
           setup: {
@@ -1385,17 +1422,36 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                 },
                 {
                   name: 'computer_control',
-                  description: 'See and control the isolated EterX Computer with visual feedback. Always see or find the current state before coordinate actions and inspect the result afterward.',
+                  description: 'Observe and control the native desktop when Computer Use is enabled. Select exact windows with list_apps and see. Use current element_token or screenshot pixel coordinates; inspect after input. Never repeat actionStatus=sent/unknown without observing. Escape is reserved for the user to stop control.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {
-                      action: { type: 'STRING', description: 'Computer action such as see, click, double_click, type, key, scroll, drag, find, read, wait_change, launch_app, focus_app, or list_apps.' },
+                      action: { type: 'STRING', description: 'see, list_apps, get_active, launch_app, open_file, open_url, focus_app, click, right_click, double_click, hover, type, set_value, invoke_menu, key, scroll, drag, find, read, get_controls, wait_text, wait_change, wait_ms, set_window_frame, clipboard_get, clipboard_set, select_all, copy, paste, save, undo, close_window, stream_start or stream_stop.' },
                       x: { type: 'NUMBER', description: 'Start X coordinate.' },
                       y: { type: 'NUMBER', description: 'Start Y coordinate.' },
                       x2: { type: 'NUMBER', description: 'End X coordinate for drag.' },
                       y2: { type: 'NUMBER', description: 'End Y coordinate for drag.' },
                       text: { type: 'STRING', description: 'Text, key, app name, or wait target.' },
                       query: { type: 'STRING', description: 'Visual element query for find.' },
+                      app: { type: 'STRING', description: 'Unique app name or window title.' },
+                      pid: { type: 'NUMBER', description: 'Process ID from list_apps; provide with window_id.' },
+                      window_id: { type: 'NUMBER', description: 'Exact window ID from list_apps.' },
+                      scope: { type: 'STRING', enum: ['desktop', 'window'] },
+                      element_token: { type: 'STRING', description: 'Token from the latest observation of this target.' },
+                      capture_id: { type: 'STRING', description: 'Capture ID for screenshot pixel input.' },
+                      delivery_mode: { type: 'STRING', enum: ['background', 'foreground'] },
+                      path: { type: 'STRING', description: 'Absolute path for open_file.' },
+                      url: { type: 'STRING', description: 'HTTP(S) URL for open_url.' },
+                      value: { type: 'STRING', description: 'Replacement value for set_value on a current element_token.' },
+                      menu_path: { type: 'ARRAY', items: { type: 'STRING' }, description: 'Exact native menu labels for invoke_menu.' },
+                      button: { type: 'STRING', enum: ['left', 'right', 'middle'] },
+                      modifiers: { type: 'ARRAY', items: { type: 'STRING' } },
+                      delay_ms: { type: 'NUMBER', description: 'Typing delay per character, 0 to 200 ms; 0 is fastest.' },
+                      duration_ms: { type: 'NUMBER' },
+                      timeout_ms: { type: 'NUMBER' },
+                      ms: { type: 'NUMBER' },
+                      max_elements: { type: 'NUMBER' },
+                      bounds: { type: 'OBJECT', properties: { x: { type: 'NUMBER' }, y: { type: 'NUMBER' }, width: { type: 'NUMBER' }, height: { type: 'NUMBER' } }, required: ['x', 'y', 'width', 'height'], description: 'Window frame in list_apps desktop units, not screenshot pixels.' },
                       direction: { type: 'STRING', description: 'Scroll direction.' },
                       amount: { type: 'NUMBER', description: 'Scroll amount.' },
                       action_verb: { type: 'STRING', description: 'Short UI verb such as "Viewing" or "Typing"' },
@@ -1442,6 +1498,21 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     },
                     required: ['command', 'action_verb', 'action_target']
                   }
+                },
+                {
+                  name: 'manage_terminal_task',
+                  description: 'Inspect or stop an existing terminal process in this Live chat. Continue a command with its returned task ID instead of launching it again. Stop only when requested or necessary to recover the authorized task.',
+                  parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                      action: { type: 'STRING', enum: ['list', 'status', 'stop'] },
+                      task_id: { type: 'STRING', description: 'Exact taskId from run_terminal_command or the terminal task list.' },
+                      since_offset: { type: 'NUMBER', description: 'Use the previous outputEnd cursor to read only new output.' },
+                      action_verb: { type: 'STRING' },
+                      action_target: { type: 'STRING' },
+                    },
+                    required: ['action', 'action_verb', 'action_target'],
+                  },
                 },
                 {
                   name: 'read_workspace_file',
@@ -1769,6 +1840,19 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
           }
         };
 
+        // Extended Thinking only accepts asynchronous tools. Other models
+        // retain the blocking turn contract used by this adapter, including
+        // Gemini 3.8 Live where the provider's default became asynchronous.
+        setupMessage.setup.tools = setupMessage.setup.tools.map(tool => ({
+          ...tool,
+          functionDeclarations: tool.functionDeclarations.map(declaration => ({
+            ...declaration,
+            behavior: isGeminiExtendedThinkingModel(selectedModel) ? 'NON_BLOCKING' : 'BLOCKING',
+          })),
+        }));
+        setupMessage.setup.systemInstruction.parts[0].text += `\n\n${buildLiveOperatingGuidance(
+          setupMessage.setup.tools.flatMap(tool => tool.functionDeclarations.map(declaration => declaration.name)),
+        )}`;
         if (!this.sendSocketPayload(setupMessage, socket)) {
           this.rejectConnectionReady(socket, new Error('Gemini Live setup could not be sent.'));
         }
@@ -1849,6 +1933,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
       await readyPromise;
 
     } catch (error: any) {
+      if (this.manualDisconnect || authController.signal.aborted) throw error;
       console.error('[GeminiLive] Connection error:', error);
       this.callbacks.onError(error.message || 'Failed to connect');
       this.cleanup();
@@ -1868,7 +1953,26 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
     // separate streams and must never be appended into each other.
     this.turnOutputTranscript = this.turnSpokenText || this.turnModelText;
     this.outputTranscript = this.turnOutputHistoryBase + this.turnOutputTranscript;
-    this.callbacks.onOutputTranscription(sanitizeLiveAnswerText(this.turnOutputTranscript));
+    if (this.pendingTurnCompletion) {
+      this.pendingTurnCompletion.modelText = sanitizeLiveAnswerText(this.turnOutputTranscript);
+    }
+    this.callbacks.onOutputTranscription(sanitizeLiveAnswerText(this.turnOutputTranscript), {
+      ...this.pendingTurnCompletion?.metadata,
+      ...(this.activeSystemEvent ? { systemEvent: this.activeSystemEvent } : {}),
+      ...(this.internalTextTurn ? { internalEvent: true } : {}),
+    });
+  }
+
+  private acceptInputTranscription(text: unknown): void {
+    if (typeof text !== 'string' || !text) return;
+    this.lastUserSpeechAt = Date.now();
+    // Internal control prompts can be echoed by the provider as input.
+    if (this.internalTextTurn) return;
+    this.turnInputTranscript += text;
+    this.inputTranscript += text;
+    const objective = this.ensureObjective();
+    objective.userText = this.turnInputTranscript.trim();
+    this.callbacks.onInputTranscription(this.turnInputTranscript);
   }
 
   private async handleMessage(event: MessageEvent, sourceSocket: WebSocket | null = this.ws) {
@@ -1883,6 +1987,17 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         return;
       }
       if (!sourceSocket || this.ws !== sourceSocket || this.manualDisconnect) return;
+
+      const extendedThinking = isGeminiExtendedThinkingModel(this.options?.model);
+      const interactionUpdate = String(data.interactionStatus || data.interaction_status
+        || data.serverContent?.interactionStatus || data.serverContent?.interaction_status || '');
+      if (extendedThinking && (interactionUpdate === 'IN_PROGRESS' || interactionUpdate === 'IDLE')) {
+        this.interactionStatus = interactionUpdate;
+        if (interactionUpdate === 'IN_PROGRESS') {
+          this.pendingTurnCompletion = null;
+          if (!this.activeSources.length) this.setState('thinking');
+        }
+      }
 
       // ═══ Setup Complete ═══
       if (data.setupComplete) {
@@ -1933,27 +2048,50 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         // Check for server-side interruption signal FIRST
         if (content.interrupted || content.modelTurn?.interrupted) {
           console.log('[GeminiLive] Gemini server confirmed interruption');
-          this.isInterruptedThisTurn = true;
-          this.internalTextTurn = false;
+          const alreadyInterrupted = this.localInterruptionPending || this.isInterruptedThisTurn;
+          this.localInterruptionPending = false;
+          this.isInterruptedThisTurn = !content.turnComplete;
           this.pendingTurnCompletion = null;
           this.flushPlayback();
-          this.turnInputTranscript = '';
-          this.turnOutputTranscript = '';
-    this.turnModelText = '';
-    this.turnSpokenText = '';
-    this.turnOutputHistoryBase = null;
-          const interruptedSystemEvent = this.deferInterruptedSystemEvent();
-          this.activeObjective = null;
-          this.callbacks.onInterrupted(
-            interruptedSystemEvent ? { systemEvent: interruptedSystemEvent } : undefined
-          );
-          this.finishThinking();
-          this.setState('listening');
+          // A local barge-in already committed the old turn and may have
+          // started a new typed turn. The server acknowledgment must not
+          // commit again or erase that new input and its objective.
+          if (!alreadyInterrupted) {
+            const wasInternal = this.internalTextTurn;
+            this.internalTextTurn = false;
+            this.turnInputTranscript = '';
+            this.turnOutputTranscript = '';
+            this.turnModelText = '';
+            this.turnSpokenText = '';
+            this.turnOutputHistoryBase = null;
+            const interruptedSystemEvent = this.deferInterruptedSystemEvent();
+            this.activeObjective = null;
+            this.callbacks.onInterrupted(
+              interruptedSystemEvent ? { systemEvent: interruptedSystemEvent }
+                : wasInternal ? { internalEvent: true } : undefined,
+            );
+            this.finishThinking();
+            this.setState('listening');
+          } else {
+            // Old response chunks can arrive between the local barge-in and
+            // its acknowledgment. Discard only that output, keeping the new
+            // input, objective and internal-turn ownership intact.
+            if (this.turnOutputHistoryBase !== null) this.outputTranscript = this.turnOutputHistoryBase;
+            this.turnOutputTranscript = '';
+            this.turnModelText = '';
+            this.turnSpokenText = '';
+            this.turnOutputHistoryBase = null;
+            this.callbacks.onOutputTranscription('', this.internalTextTurn ? { internalEvent: true } : undefined);
+            this.setState(this.turnInputTranscript || this.internalTextTurn ? 'thinking' : 'listening');
+          }
+          this.acceptInputTranscription(content.inputTranscription?.text);
           return;
         }
 
-        // If turn was interrupted, ignore stale in-flight audio chunks from Gemini
+        // The interrupted generation ends at turnComplete. Input transcripts
+        // are an independent stream and may already belong to the next turn.
         if (this.isInterruptedThisTurn) {
+          this.acceptInputTranscription(content.inputTranscription?.text);
           if (content.turnComplete) {
             this.isInterruptedThisTurn = false;
           }
@@ -2001,40 +2139,27 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
         }
 
         // Input transcription (user's spoken words as text)
-        if (content.inputTranscription?.text) {
-          this.lastUserSpeechAt = Date.now();
-          // Gemini can echo realtimeInput text back as input transcription.
-          // Internal control prompts must never become visible voice input or
-          // a persisted user_action row.
-          if (!this.internalTextTurn) {
-            this.turnInputTranscript += content.inputTranscription.text;
-            this.inputTranscript += content.inputTranscription.text;
-            const objective = this.ensureObjective();
-            objective.userText = this.turnInputTranscript.trim();
-            this.callbacks.onInputTranscription(this.turnInputTranscript);
-          }
-        }
+        this.acceptInputTranscription(content.inputTranscription?.text);
 
         // Turn complete
-        if (content.turnComplete) {
+        if (content.turnComplete && (!extendedThinking || this.interactionStatus === 'IDLE')) {
           this.isInterruptedThisTurn = false;
-          const completedSystemEvent = this.activeSystemEvent;
-          this.activeSystemEvent = null;
-          this.pendingTurnCompletion = {
-            userText: this.turnInputTranscript,
-            modelText: sanitizeLiveAnswerText(this.turnOutputTranscript),
-            metadata: (completedSystemEvent || this.internalTextTurn)
-              ? {
-                ...(completedSystemEvent ? { systemEvent: completedSystemEvent } : {}),
-                ...(this.internalTextTurn ? { internalEvent: true } : {}),
-              }
-              : undefined,
-          };
-          this.finishThinking();
-          if (this.activeSources.length === 0) this.finalizeCompletedTurn();
-          else this.setState('speaking');
-          // Reset silence timer — conversation is active
+          this.completeInteraction();
+        } else if (content.turnComplete && extendedThinking && this.activeSources.length === 0) {
+          this.setState('thinking');
         }
+      }
+
+      // Some revisions send interaction status separately from the final
+      // audio frame. A filler utterance must never close the user's task.
+      if (extendedThinking && interactionUpdate === 'IDLE' && !data.serverContent?.turnComplete
+        && (this.turnInputTranscript || this.turnOutputTranscript || this.activeSystemEvent || this.internalTextTurn)) {
+        this.completeInteraction();
+      } else if (extendedThinking && interactionUpdate === 'IDLE' && !this.activeSources.length
+        && !this.pendingTurnCompletion && !this.toolAbortControllers.size) {
+        this.finishThinking();
+        this.setState('listening');
+        this.resetSilenceTimer();
       }
 
       // ═══ Tool Call ═══
@@ -2053,8 +2178,23 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
             try {
               const responses: any[] = [];
               for (const fc of data.toolCall.functionCalls) {
+                if (this.ws !== toolSocket || this.manualDisconnect) break;
                 this.callbacks.onToolCallActive?.(fc.name || 'tool');
                 const toolCallId = String(fc.id || '');
+                const previousCall = toolCallId ? this.toolCallResults.get(toolCallId) : undefined;
+                if (previousCall) {
+                  // A reconnect or repeated provider event must not repeat a
+                  // file edit, task dispatch, or external action.
+                  if (previousCall.response) responses.push(previousCall.response);
+                  continue;
+                }
+                if (toolCallId) {
+                  this.toolCallResults.set(toolCallId, { name: fc.name });
+                  if (this.toolCallResults.size > 256) {
+                    const completedId = [...this.toolCallResults].find(([, entry]) => entry.response)?.[0];
+                    if (completedId) this.toolCallResults.delete(completedId);
+                  }
+                }
                 const toolAbortController = new AbortController();
                 if (toolCallId) this.toolAbortControllers.set(toolCallId, toolAbortController);
                 const activityId = `live_tool_${ fc.id || Date.now() }`;
@@ -2239,23 +2379,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                   };
                 }
                 if (fc.name === 'configure_live_behavior') {
-                  const notificationLevel = String(fc.args?.notification_level || '');
-                  const responseDetail = String(fc.args?.response_detail || '');
-                  if (['all', 'important', 'critical'].includes(notificationLevel)) {
-                    this.interactionPolicy.notificationLevel = notificationLevel as LiveInteractionPolicy['notificationLevel'];
-                  }
-                  if (['brief', 'balanced', 'detailed'].includes(responseDetail)) {
-                    this.interactionPolicy.responseDetail = responseDetail as LiveInteractionPolicy['responseDetail'];
-                  }
-                  if (typeof fc.args?.proactive_updates === 'boolean') {
-                    this.interactionPolicy.proactiveUpdates = fc.args.proactive_updates;
-                  }
-                  if (typeof fc.args?.silence_until_important === 'boolean') {
-                    this.interactionPolicy.silenceUntilImportant = fc.args.silence_until_important;
-                  }
-                  if (typeof fc.args?.auto_follow_through === 'boolean') {
-                    this.interactionPolicy.autoFollowThrough = fc.args.auto_follow_through;
-                  }
+                  this.interactionPolicy = updateLiveInteractionPolicy(this.interactionPolicy, fc.args || {});
                   this.persistInteractionPolicy();
                   return {
                     id: fc.id,
@@ -2267,6 +2391,8 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                   try {
                     const toolName = fc.name === 'browser_control' ? 'browser_control' : 'screen_agent';
                     const { action_verb: _verb, action_target: _target, ...toolInput } = fc.args || {};
+                    let computerUseEnabled = false;
+                    try { computerUseEnabled = JSON.parse(appStorage.getItem('eterx_settings') || '{}').computerUse === true; } catch { /* Keep desktop access off. */ }
                     const res = await fetch('/api/live/tool', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
@@ -2274,6 +2400,8 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                       body: JSON.stringify({
                         chatId: this.chatId,
                         toolName,
+                        runId: this.desktopRunId,
+                        computerUseEnabled,
                         input: toolInput,
                       }),
                     });
@@ -2284,7 +2412,9 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     const toolResult = json.result;
                     const vision = toolResult?.vision?.inlineData;
                     if (vision?.data && (vision.mimeType === 'image/jpeg' || vision.mimeType === 'image/png')) {
-                      this.sendVisualFrame(vision.data, vision.mimeType);
+                      if (!this.sendVisualFrame(vision.data, vision.mimeType)) {
+                        throw new Error('The desktop image could not be sent. Stop desktop input until a visual observation is received; an earlier action may already have been delivered.');
+                      }
                       delete toolResult.vision;
                       toolResult.visualFrameDelivered = true;
                     }
@@ -2354,6 +2484,10 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                   } catch (e: any) {
                     return { id: fc.id, name: fc.name, response: { error: e.message } };
                   }
+                }
+                if (fc.name === 'manage_terminal_task') {
+                  const result = await manageLiveTerminalTask(this.chatId, fc.args || {}, toolAbortController.signal);
+                  return { id: fc.id, name: fc.name, response: { result } };
                 }
                 if (fc.name === 'get_system_time') {
                   const verb = fc.args?.action_verb || 'Checking';
@@ -2456,7 +2590,10 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     const target = fc.args?.action_target || 'app';
                     if (this.callbacks.onToolAction) this.callbacks.onToolAction(verb, target);
                     if (this.callbacks.onAppControlAction) {
-                      const res = await this.callbacks.onAppControlAction(fc.name, fc.args);
+                      const res = await this.callbacks.onAppControlAction(fc.name, fc.args, {
+                        ...(this.activeSystemEvent ? { systemEvent: this.activeSystemEvent } : {}),
+                        ...(this.internalTextTurn ? { internalEvent: true } : {}),
+                      });
                       if (res?.error) {
                         return { id: fc.id, name: fc.name, response: { error: String(res.error) } };
                       }
@@ -2482,6 +2619,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                 };
                 let response = await runToolCallSafely();
                 for (let retryAttempt = 1; retryAttempt <= 2; retryAttempt += 1) {
+                  if (toolAbortController.signal.aborted || this.ws !== toolSocket || this.manualDisconnect) break;
                   if (!this.isSafeToRetryTool(fc.name, fc.args || {}, response)) break;
                   const retryReason = String(response?.response?.error || 'Transient tool failure');
                   this.emitActivity({
@@ -2495,16 +2633,22 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     startedAt: activityStartedAt,
                   });
                   await this.waitForRetry(retryAttempt);
+                  if (toolAbortController.signal.aborted || this.ws !== toolSocket || this.manualDisconnect) break;
                   response = await runToolCallSafely();
                 }
-                if (this.cancelledToolCallIds.delete(toolCallId)) {
+                if (this.cancelledToolCallIds.delete(toolCallId) || toolAbortController.signal.aborted
+                  || this.ws !== toolSocket || this.manualDisconnect) {
                   this.toolActivityStarts.delete(activityId);
                   if (toolCallId) this.toolAbortControllers.delete(toolCallId);
-                  responses.push({
+                  const cancelledResponse = {
                     id: fc.id,
                     name: fc.name,
-                    response: { error: 'Tool call cancelled by the Live session.' },
-                  });
+                    response: { error: 'This call was interrupted. It may already have taken effect. Read the task or target state before retrying.' },
+                  };
+                  if (toolCallId && !this.manualDisconnect) {
+                    this.toolCallResults.set(toolCallId, { name: fc.name, response: cancelledResponse });
+                  }
+                  responses.push(cancelledResponse);
                   continue;
                 }
                 const agentContext = this.recordObjectiveToolStep(fc.name, response, fc.args || {});
@@ -2515,6 +2659,7 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
                     agentContext,
                   },
                 } as any;
+                if (toolCallId) this.toolCallResults.set(toolCallId, { name: fc.name, response });
                 responses.push(response);
                 const responsePayload = response?.response || {};
                 const failed = Boolean(responsePayload.error);
@@ -2554,7 +2699,9 @@ Director instruction: Reconcile this terminal event with the coordinated objecti
               if (this.callbacks.onToolCallActive) this.callbacks.onToolCallActive(null);
               // Gemini will emit a native `thought` part if it reasons after the
               // tool result. Do not manufacture a thinking state in advance.
-              if (this.state !== 'speaking') this.setState('listening');
+              if (this.ws === toolSocket && !this.manualDisconnect && this.state !== 'speaking') {
+                this.setState(extendedThinking && this.interactionStatus === 'IN_PROGRESS' ? 'thinking' : 'listening');
+              }
             }
           })();
         }
@@ -2676,7 +2823,7 @@ NATIVE REASONING:
     - Keep every visible thought summary to one short action phrase without Markdown headings or first-person deliberation. The activity UI shows only the latest few meaningful steps.
 
 VISION:
-    - Choose the correct visual source intelligently. camera_control is for the user, surroundings, objects, documents, or physical equipment. screen_share_control is for the user's current desktop, app UI, visible error, presentation, code editor, or “this thing on my screen.” browser_control is for a browser page you must inspect or operate; computer_control is for the isolated EterX Computer.
+    - Choose the correct visual source intelligently. camera_control is for the user, surroundings, objects, documents, or physical equipment. screen_share_control is for the user's current desktop, app UI, visible error, presentation, code editor, or “this thing on my screen.” browser_control is for a browser page you must inspect or operate; computer_control observes and operates native desktop apps when Computer Use is enabled. Select exact windows, use fresh screenshots and tokens, and inspect the result after input. Escape stops native computer use.
     - If screen sharing is already active, treat incoming frames as current evidence without requiring the user to repeatedly say “look at my screen.” When the user's language refers to something visible but the screen is not shared, ask them once to approve screen sharing or use screen_share_control start so the visible system picker can appear.
     - Camera and shared-screen activation are visible and permission-controlled. Never imply that you can see either source before a frame is actually available.
     - Do not activate visual capture for tasks that conversation, existing context, or a less invasive tool can complete. Stop the active visual source after the visual portion of the task unless the user asks to keep sharing.
@@ -2688,7 +2835,7 @@ AGENTIC OPERATING BEHAVIOR:
     - Obey communication preferences as operating policy. If the user asks you to stay silent, only interrupt for important items, avoid routine updates, be brief, or be detailed, call configure_live_behavior immediately and follow that policy for later background events and replies. Acknowledge the change once, briefly. Never interpret silence as permission to stop, pause, or abandon active work. Keep auto_follow_through enabled unless the user explicitly asks you to stop autonomous continuation.
     - Distinguish questions from action requests. If the user asks to fix, build, change, create, run, research, inspect-and-resolve, manage, schedule, or send something, perform the work with the appropriate tools or delegate it; do not replace execution with instructions about how the user could do it.
     - Treat an ordinary action request as authorization for reversible work inside the stated scope. Do not ask "should I proceed?" after the user already asked you to proceed. Preserve explicit boundaries and pause only before consequential external actions, destructive changes, new permissions, or a material product decision the user has not made.
-    - If the user asks you to check and fix, inspection is evidence for the next action, not the finish line. Continue into the safe fix and verify the resulting state unless they asked for diagnosis only.
+    - If the user asks you to check and fix, inspection informs the next action. Continue into the safe fix unless they asked for diagnosis only. Verify only when allowed; honor explicit restrictions on Git, tests and checks without substituting another validation route.
     - Choose the next useful action naturally. Do not force a formal plan or extra confirmation for ordinary reversible work. Ask only when a consequential choice, missing permission, or genuinely ambiguous outcome would materially change the result.
     - Use an evidence loop for real work: orient from current state, act, inspect the result, adapt, and continue. A successful tool call proves only that action succeeded; it does not prove the whole objective is complete.
     - Chain as many tools as the outcome needs. Prefer independent read-only discovery in parallel when the runtime offers multiple calls; keep dependent and state-changing actions ordered so each result informs the next.
@@ -2829,19 +2976,23 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
           if (confirmedBargeIn) {
             console.log('[GeminiLive] Instant voice barge-in triggered (volume:', normalizedVolume, ')');
             this.bargeInCandidateFrames = 0;
+            this.localInterruptionPending = true;
+            const wasInternal = this.internalTextTurn;
             this.pendingTurnCompletion = null;
             this.flushPlayback();
             this.internalTextTurn = false;
             this.turnInputTranscript = '';
             this.turnOutputTranscript = '';
-    this.turnModelText = '';
-    this.turnSpokenText = '';
-    this.turnOutputHistoryBase = null;
+            this.turnModelText = '';
+            this.turnSpokenText = '';
+            this.turnOutputHistoryBase = null;
             const interruptedSystemEvent = this.deferInterruptedSystemEvent();
             this.activeObjective = null;
             this.callbacks.onInterrupted(
-              interruptedSystemEvent ? { systemEvent: interruptedSystemEvent } : undefined
+              interruptedSystemEvent ? { systemEvent: interruptedSystemEvent }
+                : wasInternal ? { internalEvent: true } : undefined,
             );
+            this.finishThinking();
             this.setState('listening');
           } else {
             // Drop routine mic background noise while AI speaks to avoid acoustic feedback
@@ -2974,6 +3125,9 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
         this.activeSources = this.activeSources.filter(s => s !== source);
         if (this.activeSources.length === 0 && this.pendingTurnCompletion) {
           queueMicrotask(() => this.finalizeCompletedTurn());
+        } else if (this.activeSources.length === 0 && !this.manualDisconnect
+          && isGeminiExtendedThinkingModel(this.options?.model) && this.interactionStatus === 'IN_PROGRESS') {
+          this.setState('thinking');
         }
       };
 
@@ -3091,12 +3245,15 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
       !this.ws ||
       this.ws.readyState !== WebSocket.OPEN ||
       this.state === 'connecting' ||
-      this.state === 'connected'
+      this.state === 'connected' ||
+      (isInternal && (this.state === 'thinking' || this.state === 'speaking' || this.pendingTurnCompletion))
     ) {
-      if (this.state !== 'connecting' && this.state !== 'connected') return false;
+      if (this.ws?.readyState !== WebSocket.OPEN
+        && this.state !== 'connecting' && this.state !== 'connected') return false;
       if (this.pendingTextTurns.length >= 8) {
         const internalIndex = this.pendingTextTurns.findIndex(turn => turn.internal);
-        this.pendingTextTurns.splice(internalIndex >= 0 ? internalIndex : 0, 1);
+        if (internalIndex < 0) return false;
+        this.pendingTextTurns.splice(internalIndex, 1);
       }
       this.pendingTextTurns.push({ text: trimmed, internal: isInternal });
       return true;
@@ -3109,7 +3266,10 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
       this.pendingTextTurns.length === 0 ||
       this.ws?.readyState !== WebSocket.OPEN ||
       this.state === 'connecting' ||
-      this.state === 'connected'
+      this.state === 'connected' ||
+      this.state === 'thinking' ||
+      this.state === 'speaking' ||
+      this.pendingTurnCompletion
     ) return;
     const turn = this.pendingTextTurns.shift()!;
     if (!this.sendTextNow(turn.text, turn.internal)) {
@@ -3121,16 +3281,21 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
     console.log('[GeminiLive] Sending real-time text prompt over WebSocket:', trimmed);
 
     if (!this.sendSocketPayload({ realtimeInput: { text: trimmed } })) return false;
+    if (isGeminiExtendedThinkingModel(this.options?.model)) this.interactionStatus = 'IN_PROGRESS';
 
     // Instant Interruption: flush active AI speech playback immediately when user sends text
-    if (this.state === 'speaking' || this.activeSources.length > 0) {
+    if (this.state === 'speaking' || this.state === 'thinking'
+      || this.pendingTurnCompletion || this.activeSources.length > 0) {
       console.log('[GeminiLive] Interrupted AI speech via text prompt');
+      this.localInterruptionPending = true;
       this.pendingTurnCompletion = null;
       this.flushPlayback();
       const interruptedSystemEvent = this.deferInterruptedSystemEvent();
       this.callbacks.onInterrupted(
-        interruptedSystemEvent ? { systemEvent: interruptedSystemEvent } : undefined,
+        interruptedSystemEvent ? { systemEvent: interruptedSystemEvent }
+          : this.internalTextTurn ? { internalEvent: true } : undefined,
       );
+      this.finishThinking();
     }
 
     this.internalTextTurn = isInternal;
@@ -3139,6 +3304,8 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
     this.turnModelText = '';
     this.turnSpokenText = '';
     this.turnOutputHistoryBase = null;
+    this.callbacks.onOutputTranscription('', isInternal ? { internalEvent: true } : undefined);
+    this.setState('thinking');
     if (!isInternal) {
       this.activeObjective = null;
       const objective = this.ensureObjective();
@@ -3166,6 +3333,11 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
    * Internal cleanup of all WebSocket, audio capture, and playback resources.
    */
   private cleanup(preserveVisualCapture = false): void {
+    this.interactionStatus = null;
+    this.isInterruptedThisTurn = false;
+    this.localInterruptionPending = false;
+    this.authController?.abort();
+    this.authController = null;
     this.finishThinking();
     this.internalTextTurn = false;
     if (this.ws) {
@@ -3181,9 +3353,26 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
         this.reconnectTimer = null;
       }
     }
+    this.toolAbortControllers.forEach((controller, callId) => {
+      controller.abort();
+      const call = this.toolCallResults.get(callId);
+      if (call && !call.response) {
+        call.response = {
+          id: callId, name: call.name,
+          response: { error: 'The connection ended during this action. Read its current state before retrying; it may already have taken effect.' },
+        };
+      }
+      this.emitActivity({
+        id: `live_tool_${callId}`, kind: 'tool', phase: 'blocked',
+        label: 'Live connection interrupted', toolName: call?.name,
+        detail: 'Read the task status before retrying an action that may already have started.',
+        startedAt: this.toolActivityStarts.get(`live_tool_${callId}`) || Date.now(),
+        completedAt: Date.now(),
+      });
+    });
     this.toolActivityStarts.clear();
-    this.toolAbortControllers.forEach(controller => controller.abort());
     this.toolAbortControllers.clear();
+    if (!preserveVisualCapture) this.toolCallResults.clear();
     this.cancelledToolCallIds.clear();
     this.callbacks.onToolCallActive?.(null);
     this.bargeInCandidateFrames = 0;

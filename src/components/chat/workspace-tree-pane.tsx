@@ -7,7 +7,7 @@ import { revealInWorkspaceScroller } from './workspace-scroll';
 export function WorkspaceTreePane({ owner, tabId, width, full = false, hidden = false, children }: { owner: string; tabId: string; width?: number; full?: boolean; hidden?: boolean; children: React.ReactNode }) {
   const pane = useRef<HTMLElement>(null);
   const [available, setAvailable] = useState(600);
-  const drag = useRef<{ start: number; width: number; next: number; frame: number }>();
+  const drag = useRef<{ start: number; width: number; next: number; frame: number }>(undefined);
   const minimum = 140;
   const maximum = Math.max(minimum, available - 240);
   const stacked = available <= 350;

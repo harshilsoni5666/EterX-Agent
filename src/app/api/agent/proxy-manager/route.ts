@@ -4,6 +4,7 @@ import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { agentRegistry } from '../../../../lib/agent/agent-registry';
+import { readProxyControl, type ProxyTaskInput } from '../../../../lib/agent/autonomy/proxy-control-plane';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -39,6 +40,8 @@ export async function GET(req: NextRequest) {
       paused: context.proxyControl.paused,
       intervention: context.proxyControl.intervention,
       modelSelection: context.proxyControl.modelSelection,
+      followChatModel: context.proxyControl.followChatModel,
+      revision: context.proxyControl.revision,
       updatedAt: context.proxyControl.updatedAt,
     },
     context,
@@ -66,6 +69,12 @@ export async function POST(req: NextRequest) {
     if (body.requestId !== undefined && !isSafeRunId(body.requestId)) {
       return attachAgentApiSessionCookie(jsonError('A valid requestId is required', 400), session);
     }
+    const control = readProxyControl(chatId);
+    if (!control.enabled || control.paused) {
+      return attachAgentApiSessionCookie(jsonError(control.paused
+        ? 'Proxy is paused. Resume Proxy to continue coordinating.'
+        : 'Turn on Autonomous mode to use Proxy.', 409), session);
+    }
     hydrateServerRuntimeSettings();
     const mediaAttachments = await resolveChatMediaForRequest(`${chatId}::proxy-manager`, message, normalizeMediaAttachments(body.mediaAttachments));
     const requestId = typeof body.requestId === 'string' ? body.requestId : undefined;
@@ -75,6 +84,16 @@ export async function POST(req: NextRequest) {
     const mainModel = isModelProvider(body?.mainModel?.provider) && cleanString(body?.mainModel?.modelId, 220)
       ? { provider: body.mainModel.provider, modelId: cleanString(body.mainModel.modelId, 220) }
       : undefined;
+    const workspaceInput = body.workspace;
+    const workspace: ProxyTaskInput['workspace'] = workspaceInput && typeof workspaceInput === 'object' &&
+      (workspaceInput.path === null || typeof workspaceInput.path === 'string')
+      ? {
+        path: cleanString(workspaceInput.path, 4096) || null,
+        paths: Array.isArray(workspaceInput.paths)
+          ? Array.from(new Set<string>(workspaceInput.paths.map((item: unknown) => cleanString(item, 4096)).filter(Boolean))).slice(0, 50)
+          : [],
+        runLocation: ['local', 'sandbox', 'worktree'].includes(workspaceInput.runLocation) ? workspaceInput.runLocation : 'local',
+      } : undefined;
     const contextCompaction = body?.contextCompaction && typeof body.contextCompaction === 'object'
       ? body.contextCompaction
       : undefined;
@@ -102,7 +121,7 @@ export async function POST(req: NextRequest) {
             }
           };
           req.signal.addEventListener('abort', close, { once: true });
-          if (req.signal.aborted) close();
+          if (req.signal.aborted) { close(); return; }
           if (!closed) {
             heartbeat = setInterval(() => send({ type: 'heartbeat', timestamp: Date.now() }), 15_000);
             heartbeat.unref?.();
@@ -112,10 +131,12 @@ export async function POST(req: NextRequest) {
             chatId,
             message,
             requestId,
+            controlGeneration: control.stopGeneration,
             mediaAttachments,
             attachmentContext,
             model: { provider, modelId },
             mainModel,
+            workspace,
             contextCompaction,
             onProgress: progress => send({ type: 'progress', progress }),
           }).then(result => {
@@ -146,10 +167,12 @@ export async function POST(req: NextRequest) {
       chatId,
       message,
       requestId,
+      controlGeneration: control.stopGeneration,
       mediaAttachments,
       attachmentContext,
       model: { provider, modelId },
       mainModel,
+      workspace,
       contextCompaction,
     });
     return attachAgentApiSessionCookie(NextResponse.json({

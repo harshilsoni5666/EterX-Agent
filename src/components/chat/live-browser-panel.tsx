@@ -308,7 +308,7 @@ export const LiveBrowserPanel: React.FC<LiveBrowserPanelProps> = ({
 
           {/* Screenshot timestamp badge */}
           {hasLiveFrame && frameTimestamp && (
-            <div className="absolute bottom-3 right-3 px-2 py-1 rounded-full bg-black/60 border border-white/[0.08] text-[10px] font-mono text-[#888] backdrop-blur-sm">
+            <div className="absolute bottom-3 right-3 px-2 py-1 rounded-full bg-black/60 border border-white/[0.08] text-[10px] font-mono text-[#888] backdrop-blur-xs">
               {frameTimestamp}
             </div>
           )}

@@ -2749,6 +2749,18 @@ export class ContextFabric {
     return imported;
   }
 
+  /** Source-app tool records are historical evidence, never live executions or
+   * permission grants. Archive exact text without changing current tool facts. */
+  importHistoricalObservations(records: Array<{ originId: string; text: string; toolName: string; createdAt?: number }>): number {
+    let imported = 0;
+    for (const record of records) {
+      if (!record.originId || !record.text.trim() || this.episodeIdByOrigin.has(record.originId)) continue;
+      this.archiveEpisode({ source: 'tool', header: `Imported historical tool record: ${record.toolName}`, content: { text: record.text, historical: true }, toolName: record.toolName, originId: record.originId, createdAt: record.createdAt });
+      imported++;
+    }
+    return imported;
+  }
+
   /**
    * Retire prior objective anchors and decisions at a task boundary. A
    * heuristic cannot revoke human constraints, resolve a failure, or settle a

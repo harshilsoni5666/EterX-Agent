@@ -30,6 +30,8 @@ import {
 import { getContextFabricForChat, type ContextFabric } from '../agent/context-fabric';
 import { detectChatBoundaryFromHistory } from '../agent/chat-boundary';
 import { hydratePersistedConversationContext } from '../agent/conversation-context';
+import { buildImportedContext } from '../imports/context';
+import { loadChatById } from '../chat-store';
 import { getProviderBaseURL, isLocalModelProvider } from '../agent/provider-runtime';
 import {
   assertProviderAttachmentsSupported,
@@ -243,7 +245,9 @@ const prepareDirectContinuity = async (
       requestMode,
       String(request.runId || ''),
     );
-    const context = fabric.compileWorkingSet(String(request.prompt || ''), 12_000);
+    const savedChat = await loadChatById(chatId) as { workspacePath?: string } | null;
+    const setup = await buildImportedContext(savedChat?.workspacePath);
+    const context = [fabric.compileWorkingSet(String(request.prompt || ''), 12_000), setup].filter(Boolean).join('\n\n');
     return { fabric, context };
   } catch {
     return { fabric: null, context: '' };

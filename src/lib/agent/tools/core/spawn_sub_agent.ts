@@ -235,6 +235,16 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
       return rejectAgentAction(input.mode || 'blocked', decision.reason || 'Sub-agent spawning is not allowed');
     }
 
+    if (input.agentId && ['pause', 'resume', 'close'].includes(input.mode)) {
+      const target = swarmCoordinator.get(input.agentId);
+      const active = globalSubAgentSpawner.getAgentStatus().find(agent => agent.id === input.agentId && agent.projectId === context.projectId);
+      const name = target && target.projectId === context.projectId ? target.name : active?.name;
+      if (!name || input.agentName && input.agentName.toLowerCase() !== name.toLowerCase()) {
+        return rejectAgentAction(input.mode, 'The agent ID does not match a worker in this project or the supplied agent name.');
+      }
+      input = { ...input, agentName: name };
+    }
+
     if (context?.isSubAgent && ['pause', 'resume', 'close', 'clear'].includes(input.mode)) {
       const target = input.agentId || (input.agentName ? globalSubAgentSpawner.findActiveAgentId(context.projectId, input.agentName) : undefined);
       if (input.mode === 'clear' || !target || !swarmCoordinator.descendants(context.subAgentId).some(node => node.id === target)) {
@@ -246,6 +256,11 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
     const onTrace = (context?._rootOnTrace || context?._onTrace) as ((t: any) => void) | undefined;
     const resolveActiveAgentId = (agentName: string) =>
       globalSubAgentSpawner.findActiveAgentId(context?.projectId, agentName);
+    const topic = input.tasks?.[0];
+    const workerOptions = topic ? {
+      mode: topic.mode, provider: topic.provider, model: topic.model,
+      thinkingLevel: topic.thinkingLevel, resources: topic.resources,
+    } : undefined;
 
     // Status and collect are observations, not a waiting primitive. Suppress an
     // immediate second observation in the same Main turn regardless of which
@@ -552,7 +567,8 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         const consensusResult = await globalSubAgentSpawner.spawnConsensus(
           consensusTask,
           context,
-          onTrace
+          onTrace,
+          workerOptions,
         );
 
         const payload = buildCollectionPayload(consensusResult.perspectives.map(item => ({
@@ -581,7 +597,8 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
         const debateResult = await globalSubAgentSpawner.spawnDebate(
           input.tasks[0].task,
           context,
-          onTrace
+          onTrace,
+          workerOptions,
         );
 
         const payload = buildCollectionPayload(debateResult.rounds.flatMap(round => round.results.map(result => ({
@@ -616,7 +633,8 @@ WHEN TO USE SPECIALIST: focused security, performance, architecture, QA, or rese
           input.specialistRole,
           input.tasks[0].task,
           context,
-          onTrace
+          onTrace,
+          workerOptions,
         );
 
         const payload = buildCollectionPayload([{

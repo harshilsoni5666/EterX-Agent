@@ -1,9 +1,11 @@
 import OpenAISDK from 'openai';
 import AnthropicSDK from '@anthropic-ai/sdk';
 
+type FetchImplementation = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
 /** Fetch without an SDK deadline, retaining caller and stream cancellation. */
 function fetchWithoutDeadline(
-  fetcher: typeof fetch,
+  fetcher: FetchImplementation,
   url: RequestInfo,
   init: RequestInit | undefined,
   controller: AbortController,
@@ -23,17 +25,31 @@ function fetchWithoutDeadline(
 // The SDKs unconditionally schedule setTimeout, even for timeout: 0. Override
 // only that case; finite deadlines explicitly requested by callers still work.
 export class OpenAI extends OpenAISDK {
+  private readonly fetchOverride: FetchImplementation | undefined;
+
+  constructor(options?: ConstructorParameters<typeof OpenAISDK>[0]) {
+    super(options);
+    this.fetchOverride = options?.fetch;
+  }
+
   override fetchWithTimeout(url: RequestInfo, init: RequestInit | undefined, ms: number, controller: AbortController): Promise<Response> {
     return ms === 0
-      ? fetchWithoutDeadline(this._options.fetch || globalThis.fetch, url, init, controller)
+      ? fetchWithoutDeadline(this.fetchOverride || globalThis.fetch, url, init, controller)
       : super.fetchWithTimeout(url, init, ms, controller);
   }
 }
 
 export class Anthropic extends AnthropicSDK {
+  private readonly fetchOverride: FetchImplementation | undefined;
+
+  constructor(options?: ConstructorParameters<typeof AnthropicSDK>[0]) {
+    super(options);
+    this.fetchOverride = options?.fetch;
+  }
+
   override fetchWithTimeout(url: RequestInfo, init: RequestInit | undefined, ms: number, controller: AbortController): Promise<Response> {
     return ms === 0
-      ? fetchWithoutDeadline(this._options.fetch || globalThis.fetch, url, init, controller)
+      ? fetchWithoutDeadline(this.fetchOverride || globalThis.fetch, url, init, controller)
       : super.fetchWithTimeout(url, init, ms, controller);
   }
 }

@@ -10,6 +10,7 @@ import { normalizeApiRetries } from './api-retry';
 import { normalizeAgentToolSettings, type AgentToolSettings } from './builtin-agent-settings';
 
 export type StoredRuntimeSettings = {
+  computerUse?: boolean;
   agentTools?: AgentToolSettings;
   apiRetries?: number;
   apiKeys?: Record<string, string | string[]>;
@@ -87,6 +88,7 @@ const normalizeStoredSettings = (value: unknown): StoredRuntimeSettings => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const source = value as Record<string, unknown>;
   return {
+    computerUse: typeof source.computerUse === 'boolean' ? source.computerUse : undefined,
     agentTools: normalizeAgentToolSettings(source.agentTools),
     apiRetries: normalizeApiRetries(source.apiRetries),
     apiKeys: source.apiKeys && typeof source.apiKeys === 'object' && !Array.isArray(source.apiKeys)

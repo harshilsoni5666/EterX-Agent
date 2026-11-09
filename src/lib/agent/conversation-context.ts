@@ -14,6 +14,7 @@ const activeTranscriptHydrations = new WeakMap<ContextFabric, Promise<number>>()
 const transcriptHydrationState = new WeakMap<ContextFabric, {
   traceCount: number;
   tailIdentity: string;
+  importRevision: number;
 }>();
 
 const normalizedText = (value: unknown, max = Number.POSITIVE_INFINITY): string => {
@@ -77,7 +78,9 @@ const extractPersistedDialogueTurnsFromLogs = (
       ? runId
       : rawId;
     const index = safeStart + localIndex;
-    const originId = dialogueId
+    const originId = log?.importedFrom && dialogueId
+      ? `import-chat:${dialogueId}:${role}:${hash(text).slice(0, 20)}`
+      : dialogueId
       ? `chat-trace:${dialogueId}:${role}`
       : `chat-legacy:${index}:${role}:${hash(text).slice(0, 20)}`;
     const timestamp = Number(log?.timestamp || log?.endTime || log?.startTime || 0);
@@ -130,8 +133,10 @@ export async function hydratePersistedConversationContext(
     if (!chat) return 0;
     const logs = Array.isArray((chat as any)?.traceLogs) ? (chat as any).traceLogs : [];
     const previous = transcriptHydrationState.get(fabric);
+    const importRevision = Number((chat as any)?.importOrigin?.syncedAt || 0);
     const prefixUnchanged = Boolean(
       previous
+      && previous.importRevision === importRevision
       && previous.traceCount <= logs.length
       && (
         previous.traceCount === 0
@@ -145,9 +150,19 @@ export async function hydratePersistedConversationContext(
     const imported = fabric.importDialogueTurns(
       extractPersistedDialogueTurnsFromLogs(logs, currentRequest, startIndex),
     );
+    fabric.importHistoricalObservations(logs.slice(startIndex).filter((log: any) => log?.importedFrom && ['tool_call', 'command', 'file_edit', 'exploration', 'browser', 'work_note'].includes(log.type)).map((log: any) => {
+      const text = log.type === 'work_note' ? normalizedText(log.text) : JSON.stringify({
+        action: log.text, tool: log.sourceToolName || log.toolName || log.tool,
+        input: log.toolArgs, output: log.toolResult ?? log.output,
+        attachments: log.attachments, historical: true,
+      });
+      return { originId: `import-history:${normalizedText(log.id, 200)}:${hash(text).slice(0, 16)}`,
+        text, toolName: normalizedText(log.sourceToolName || log.toolName || log.tool || 'Source activity', 120), createdAt: Number(log.timestamp || 0) };
+    }));
     transcriptHydrationState.set(fabric, {
       traceCount: logs.length,
       tailIdentity: logs.length > 0 ? traceIdentity(logs[logs.length - 1], logs.length - 1) : '',
+      importRevision,
     });
     return imported;
   })();

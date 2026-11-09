@@ -11,12 +11,12 @@ import { apiKeyPool, type KeyLease } from './api-key-pool';
 import { taskStore } from './task-store';
 import { writeRuntimeTrace } from './runtime-trace';
 import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider } from './model-routing';
-import { MODEL_PROVIDER_MODE, isModelProvider } from './model-selector-store';
+import { MODEL_PROVIDER_MODE, isModelProvider, modelEntryKey, parseModelEntryKey } from './model-selector-store';
 import { buildScopedRuntimeSettings, getScopedRuntimeApiKey, type ScopedRuntimeSettings } from './runtime-api-keys';
 import { flushLedgerForChat } from './memory/conversation-ledger';
 import { globalToolRegistry } from './tools/registry';
 import { observeUserProxy, startUserProxyRuntime, stopUserProxyRuntime, pauseUserProxyRuntime, resumeUserProxyRuntime, setUserProxyIntervention, setUserProxyModel, getUserProxyManagerSnapshot, deliverUserProxyManagerDirective, type ProxyInterventionLevel, type ProxyManagerDirective } from './autonomy/user-proxy-runtime';
-import { cancelPendingProxyTasks, claimDormantProxyDirectives, claimNextProxyTask, completeProxyTask, enqueueProxyTasks, getPendingProxyTaskCount, readProxyControl, saveDormantProxyDirective, settleProxyTask, updateProxyControl, type ProxyTaskInput } from './autonomy/proxy-control-plane';
+import { cancelPendingProxyTasks, claimDormantProxyDirectives, claimNextProxyTask, completeProxyTask, enqueueProxyTasks, getPendingProxyTaskCount, initializeProxyControl, readProxyControl, saveDormantProxyDirective, settleProxyTask, updateProxyControl, type ProxyControlSettings, type ProxyTaskInput } from './autonomy/proxy-control-plane';
 import { agentMessageBus, cancelAgent, cancelAllSubAgents, clearCancelState, clearPendingResults, globalSubAgentSpawner } from './roles/sub_agent';
 import { interAgentMailbox } from './roles/inter_agent_comm';
 import { normalizeAttachmentMime } from './attachment-pipeline';
@@ -1435,6 +1435,24 @@ class AgentRegistry {
       };
     }
 
+    let proxyControl = initializeProxyControl(chatId, pinnedContext?.autonomy);
+    if (proxyControl.followChatModel && isModelProvider(pinnedContext?.selectedModelProvider) && pinnedContext?.selectedModelName) {
+      const selection = modelEntryKey(pinnedContext.selectedModelProvider, pinnedContext.selectedModelName);
+      if (proxyControl.modelSelection !== selection) proxyControl = updateProxyControl(chatId, { modelSelection: selection });
+    }
+    if (pinnedContext?.autonomy || proxyControl.enabled) {
+      pinnedContext = {
+        ...(pinnedContext || {}),
+        autonomy: {
+          ...(pinnedContext?.autonomy || {}),
+          enabled: proxyControl.enabled,
+          paused: proxyControl.paused,
+          intervention: proxyControl.intervention,
+          proxyModelSelection: proxyControl.modelSelection,
+        },
+      };
+    }
+
     // A turn-scoped provider/model selection is authoritative for admission as
     // well as execution.  Using only `mode` here can lease a Gemini key and
     // reject an otherwise valid OpenAI-compatible run before the orchestrator
@@ -1939,9 +1957,8 @@ class AgentRegistry {
         }
         // If images are present, add explicit analysis instruction
         const attachedImageCount = geminiNativeFiles.filter(f => String(f.mimeType || '').startsWith('image/')).length;
-        if (!isExternalProvider && (uploadedImageParts.length > 0 || attachedImageCount > 0)) {
-          const imageCount = attachedImageCount || uploadedImageParts.length;
-          enrichedPrompt += `[MULTIMODAL CONTEXT] ${ imageCount } image(s) are attached to this message. You CAN see them. When the user asks about an image, analyze it thoroughly — describe content, colors, text, layout, objects, people, code, UI elements, or anything visible. Do NOT say you cannot see images. You are a multimodal model with full vision capability.\n\n`;
+        if (!isExternalProvider && attachedImageCount > 0) {
+          enrichedPrompt += `[MULTIMODAL CONTEXT] ${ attachedImageCount } image(s) were supplied through native media input. Use the actual visible content when it is relevant to the request. If an image is unavailable, unreadable or lacks the required detail, state that specific limitation; do not infer pixels from its filename or claim to see an image that was not delivered.\n\n`;
         }
 
         enrichedPrompt += `[USER REQUEST]\n${ prompt }`;
@@ -1976,14 +1993,7 @@ class AgentRegistry {
           ? apiKeyPool.leaseSubAgentKey(chatId, 'user_proxy')
           : null;
         const selectedProxyModel = latestProxyControl.modelSelection;
-        const proxyModelEntry = typeof selectedProxyModel === 'string' && selectedProxyModel.includes(':')
-          ? (() => {
-            const [provider, ...modelParts] = selectedProxyModel.split(':');
-            return isModelProvider(provider) && modelParts.join(':').trim()
-              ? { provider, modelId: modelParts.join(':').trim() }
-              : null;
-          })()
-          : null;
+        const proxyModelEntry = parseModelEntryKey(selectedProxyModel);
         const proxyRuntimeSettings: ScopedRuntimeSettings | null | undefined = proxyModelEntry && runtimeSettings
           ? { ...runtimeSettings, modelOverrides: { ...runtimeSettings.modelOverrides, [proxyModelEntry.provider]: proxyModelEntry.modelId } }
           : runtimeSettings;
@@ -2039,6 +2049,7 @@ class AgentRegistry {
           mode,
           {
             ...(pinnedContext || {}),
+            autonomy: proxyContext.autonomy,
             // Preserve the original user text separately from file/routing
             // envelopes. This is assigned here, not accepted from the client.
             visibleUserRequest: prompt,
@@ -2709,34 +2720,58 @@ class AgentRegistry {
 
   public controlUserProxy(
     chatId: string,
-    action: 'enable' | 'disable' | 'pause' | 'resume' | 'intervention' | 'model',
+    action: 'enable' | 'disable' | 'pause' | 'resume' | 'intervention' | 'model' | 'configure',
     value?: ProxyInterventionLevel | string,
+    settings?: ProxyControlSettings,
+    followChatModel?: boolean,
   ): boolean {
     const execution = this.findExecution(chatId);
     const projectId = execution?.orchestratorProjectId || chatId;
+    if (action === 'configure' && !settings) return false;
+    const previousControl = readProxyControl(chatId);
+    const requestedSelection = String(action === 'configure' ? settings!.modelSelection : value || 'auto').trim() || 'auto';
+    const selectedModel = parseModelEntryKey(requestedSelection);
+    const selection = selectedModel ? modelEntryKey(selectedModel.provider, selectedModel.modelId) : 'auto';
+    if (action === 'model' || action === 'configure') {
+      if (requestedSelection !== 'auto' && !selectedModel) return false;
+    }
+    if (action === 'resume' && !previousControl.enabled) return false;
+    const patch = action === 'configure' ? { ...settings!, modelSelection: selection }
+      : action === 'enable' || action === 'resume' ? { enabled: true, paused: false }
+      : action === 'disable' ? { enabled: false, paused: false }
+      : action === 'pause' ? { paused: true }
+      : action === 'intervention' ? { intervention: value as ProxyInterventionLevel }
+      : { modelSelection: selection, ...(typeof followChatModel === 'boolean' ? { followChatModel } : {}) };
+    const control = updateProxyControl(chatId, patch);
+    if (execution) {
+      const pinned = execution.launchSpec.pinnedContext || {};
+      execution.launchSpec.pinnedContext = {
+        ...pinned,
+        autonomy: { ...pinned.autonomy, enabled: control.enabled, paused: control.paused, intervention: control.intervention, proxyModelSelection: control.modelSelection },
+      };
+    }
+    if (action === 'configure') action = !control.enabled ? 'disable' : control.paused ? 'pause' : 'enable';
+    if (settings) {
+      setUserProxyIntervention(projectId, control.intervention);
+      if (execution) this.applyUserProxyModel(execution, projectId, control.modelSelection);
+    }
     if (action === 'pause' || action === 'disable') {
-      const control = updateProxyControl(chatId, action === 'disable' ? { enabled: false, paused: false } : { paused: true });
-      if (execution) {
-        const pinned = execution.launchSpec.pinnedContext || {};
-        execution.launchSpec.pinnedContext = { ...pinned, autonomy: { ...pinned.autonomy, enabled: control.enabled, paused: control.paused } };
-      }
       pauseUserProxyRuntime(projectId);
       return true;
     }
     if (action === 'resume' || action === 'enable') {
-      if (action === 'resume' && !readProxyControl(chatId).enabled) return false;
-      const control = updateProxyControl(chatId, { enabled: true, paused: false });
-      if (execution?.status === 'running' && !execution.settled) {
+      // During attachment/model preparation, the pipeline will start Proxy
+      // from the latest saved control. Do not create a provisional supervisor
+      // that the pipeline would immediately replace and lose its directives.
+      if (execution?.status === 'running' && !execution.settled && execution.orchestratorProjectId) {
         const pinned = execution.launchSpec.pinnedContext || {};
-        pinned.autonomy = { ...pinned.autonomy, enabled: true, paused: false, intervention: control.intervention, proxyModelSelection: control.modelSelection };
-        execution.launchSpec.pinnedContext = pinned;
         if (!resumeUserProxyRuntime(projectId)) {
           const runtimeSettings = execution.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
           const configured = getMainAgentModelConfig(execution.mode, runtimeSettings);
-          const [selectedProvider, ...selectedModel] = control.modelSelection.split(':');
-          const provider: MainAgentProvider = isModelProvider(selectedProvider) ? selectedProvider
+          const proxyModel = parseModelEntryKey(control.modelSelection);
+          const provider: MainAgentProvider = proxyModel ? proxyModel.provider
             : isModelProvider(pinned.selectedModelProvider) ? pinned.selectedModelProvider : configured.provider;
-          const modelId = isModelProvider(selectedProvider) ? selectedModel.join(':') : pinned.selectedModelName || configured.modelName;
+          const modelId = proxyModel ? proxyModel.modelId : pinned.selectedModelName || configured.modelName;
           const settings = { ...runtimeSettings, modelOverrides: { ...runtimeSettings.modelOverrides, [provider]: modelId } };
           const runtime = startUserProxyRuntime({
             context: { ...pinned, projectId, selectedModelProvider: pinned.selectedModelProvider || configured.provider, selectedModelName: pinned.selectedModelName || configured.modelName, strictModelSelection: true } as any,
@@ -2756,40 +2791,39 @@ class AgentRegistry {
             for (const entry of execution.traceBuffer.slice(-36)) runtime.observe(entry.data);
           }
         }
+        setUserProxyIntervention(projectId, control.intervention);
       }
       if (!execution || execution.settled) void this.startNextQueuedWork(chatId);
       return true;
     }
     if (action === 'intervention') {
       const level = value as ProxyInterventionLevel;
-      updateProxyControl(chatId, { intervention: level });
       const appliedToLiveRuntime = setUserProxyIntervention(projectId, level);
       return appliedToLiveRuntime || readProxyControl(chatId).intervention === level;
     }
 
-    const selection = String(value || 'auto').trim();
-    const requestedParts = selection.split(':');
-    if (selection !== 'auto' && (!isModelProvider(requestedParts[0]) || !requestedParts.slice(1).join(':').trim())) return false;
-    updateProxyControl(chatId, { modelSelection: selection });
-    if (!execution) return true;
+    if (execution) this.applyUserProxyModel(execution, projectId, selection);
+    return true;
+  }
+
+  private applyUserProxyModel(execution: AgentExecution, projectId: string, selection: string): void {
+    const selectedModel = parseModelEntryKey(selection);
     const runtimeSettings = execution.launchSpec.runtimeSettings || buildScopedRuntimeSettings();
-    const parts = selection.includes(':') ? selection.split(':') : [];
     const activeProvider = execution.launchSpec.pinnedContext?.selectedModelProvider;
-    const provider = isModelProvider(parts[0]) ? parts[0] : isModelProvider(activeProvider)
+    const provider = selectedModel ? selectedModel.provider : isModelProvider(activeProvider)
       ? activeProvider : getMainAgentModelConfig(execution.mode, runtimeSettings).provider;
     const modelId = selection === 'auto'
       ? String(execution.launchSpec.pinnedContext?.selectedModelName || '').trim()
-      : parts.slice(1).join(':').trim();
-    const settings = modelId
+      : selectedModel?.modelId || '';
+    const modelSettings = modelId
       ? { ...runtimeSettings, modelOverrides: { ...runtimeSettings.modelOverrides, [provider]: modelId } }
       : runtimeSettings;
     setUserProxyModel(projectId, {
       mode: MODEL_PROVIDER_MODE[provider],
-      apiKey: getScopedRuntimeApiKey(settings, provider),
-      runtimeSettings: settings,
-      modelSelection: selection === 'auto' ? 'auto' : `${provider}:${modelId}`,
+      apiKey: getScopedRuntimeApiKey(modelSettings, provider),
+      runtimeSettings: modelSettings,
+      modelSelection: selection,
     });
-    return true;
   }
 
   private queueSnapshotClock = 0;
@@ -3107,14 +3141,14 @@ class AgentRegistry {
     chatId: string,
     prompt: string,
     rationale = '',
-    options: { dependency?: string; supersedesTaskId?: string; mediaAttachments?: ProxyTaskInput['mediaAttachments']; model?: ProxyTaskInput['model'] } = {},
+    options: { dependency?: string; supersedesTaskId?: string; mediaAttachments?: ProxyTaskInput['mediaAttachments']; model?: ProxyTaskInput['model']; workspace?: ProxyTaskInput['workspace'] } = {},
   ): {
     accepted: boolean;
     status: 'pending' | 'starting' | 'failed';
     id: string;
     error?: string;
   } {
-    return this.queueProxyWorkflow(chatId, [{ prompt, rationale, dependency: options.dependency, mediaAttachments: options.mediaAttachments, model: options.model }], options.supersedesTaskId);
+    return this.queueProxyWorkflow(chatId, [{ prompt, rationale, dependency: options.dependency, mediaAttachments: options.mediaAttachments, model: options.model, workspace: options.workspace }], options.supersedesTaskId);
   }
 
   public queueProxyWorkflow(
@@ -3181,8 +3215,14 @@ class AgentRegistry {
     const basePinned = current?.launchSpec.pinnedContext || {};
     const pinnedContext = {
       ...basePinned,
+      ...(task.workspace ? {
+        workspacePath: task.workspace.path,
+        paths: task.workspace.paths,
+        isFocusedWorkspace: Boolean(task.workspace.path),
+        runLocation: task.workspace.runLocation,
+      } : {}),
       ...(taskProvider && taskModel ? { selectedModelProvider: taskProvider, selectedModelName: taskModel, strictModelSelection: true } : {}),
-      agentRuntime: 'autonomy_v1',
+      agentRuntime: basePinned.agentRuntime || 'autonomy_v1',
       autonomy: {
         ...(basePinned.autonomy || {}),
         enabled: control.enabled,

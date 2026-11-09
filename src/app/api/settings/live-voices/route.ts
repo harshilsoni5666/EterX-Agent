@@ -7,9 +7,9 @@ import { rejectCrossOrigin } from '../../agent/_shared';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-async function buildVoiceCatalogResponse(body: any) {
+async function buildVoiceCatalogResponse(body: any, signal?: AbortSignal) {
   const provider = normalizeLiveProvider(body?.provider);
-  const client = createLiveCatalogRequest(provider.value, body?.key);
+  const client = createLiveCatalogRequest(provider.value, body?.key, signal, body?.modelId);
   let source = 'documented-catalog';
   let voices: LiveVoiceOption[] = [];
   let defaultVoice = getDefaultLiveVoice(provider.value);
@@ -83,7 +83,7 @@ async function buildVoiceCatalogResponse(body: any) {
 export async function POST(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
   if (originError) return originError;
-  const result = await buildVoiceCatalogResponse(await req.json().catch(() => ({})));
+  const result = await buildVoiceCatalogResponse(await req.json().catch(() => ({})), req.signal);
   return NextResponse.json(result, { status: result.ok ? 200 : 502 });
 }
 

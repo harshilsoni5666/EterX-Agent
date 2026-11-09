@@ -328,7 +328,7 @@ export const LocalFileLinkChip = React.memo(({ filePath, label, compact = false 
   };
   return <span className={'eterx-local-file-chip inline-flex min-w-0 max-w-full flex-wrap items-center overflow-hidden align-middle text-left ' + (compact ? 'my-0.5' : 'my-1') + ' rounded-[10px] border transition-colors'} title={target || reference}>
     <button type="button" onClick={openPath} aria-label={'Open ' + name + ' in default app'} aria-busy={opening} disabled={opening}
-      className={'eterx-local-file-chip-open inline-flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-[10px] ' + (compact ? 'h-8 px-2' : 'h-9 px-2.5') + ' text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current'}>
+      className={'eterx-local-file-chip-open inline-flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-[10px] ' + (compact ? 'h-8 px-2' : 'h-9 px-2.5') + ' text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current'}>
       <LocalFileIcon fileName={target || reference} size={compact ? 'sm' : 'md'} />
       <span className="eterx-local-file-chip-name min-w-0 truncate text-[12.75px] font-semibold leading-tight tracking-normal text-[var(--foreground)]">{name}</span>
       <ExternalLink className="eterx-local-file-chip-icon h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)] opacity-75" strokeWidth={2} />

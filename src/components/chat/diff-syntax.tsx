@@ -3,7 +3,13 @@
 import React, { useEffect, useState } from 'react';
 import { highlightWorkspaceCode, workspaceLanguage, type WorkspaceToken, type WorkspaceTokens } from '../../lib/workspace-syntax';
 
-type DiffLine = { type: string; content: string; isGap?: boolean };
+type DiffLine = { type: string; content: string; isGap?: boolean; skipped?: number };
+
+// Imported patches without hunk coordinates use these structural separators.
+// Keep them in the data for diff grouping, but do not render placeholder bars.
+export function isPlaceholderDiffGap(line: DiffLine): boolean {
+  return Boolean(line.isGap && !line.skipped && /^(?:Changed section|Next change)?$/i.test(String(line.content || '').trim()));
+}
 
 export function useCodeSyntax(content: string, filepath: string, enabled = true) {
   const [syntax, setSyntax] = useState<{ content: string; filepath: string; tokens: WorkspaceTokens | null } | null>(null);
@@ -25,8 +31,8 @@ export function useDiffSyntax<T extends DiffLine>(lines: T[], filepath: string, 
   useEffect(() => {
     let disposed = false;
     const versions = [
-      lines.filter(line => !line.isGap && (line.type === 'removed' || line.type === 'unchanged')),
-      lines.filter(line => !line.isGap && (line.type === 'added' || line.type === 'unchanged')),
+      lines.filter(line => !line.isGap && ['removed', 'unchanged', 'context'].includes(line.type)),
+      lines.filter(line => !line.isGap && ['added', 'unchanged', 'context'].includes(line.type)),
     ];
     void Promise.all(versions.map(version => highlightWorkspaceCode(
       version.map(line => line.content).join('\n'), workspaceLanguage(filepath, language),

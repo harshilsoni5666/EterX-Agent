@@ -70,6 +70,8 @@ type TerminalCommandResult = {
   outputLimited?: boolean;
   outputFile?: string;
   outputReadError?: string;
+  outputPersistenceError?: string;
+  statusPersistenceError?: string;
   streamId?: string;
   nextActionNote?: string;
   stillRunning?: boolean;
@@ -97,7 +99,7 @@ const commandRequestSchema = z.object({
   program: z.string().min(1).optional().describe('Executable name or absolute path. python/python3 use this chat’s selected Python environment; explicit paths are honored. Executes directly without shell quoting.'),
   args: z.array(z.string()).optional().describe('Exact program arguments, e.g. ["-c", "print(123)"]. No shell expansion.'),
   shell: z.string().optional().describe('Shell preference for command only. Defaults to this chat setting.'),
-  env: z.record(z.string()).optional().describe('Environment overrides for this invocation. Do not pass secrets unless required.'),
+  env: z.record(z.string(), z.string()).optional().describe('Environment overrides for this invocation. Do not pass secrets unless required.'),
   cwd: z.string().optional().describe('Optional working directory override for this command.'),
   timeoutSeconds: z.number().optional().describe('Optional foreground check-in override for this command, up to 120 seconds.'),
   background: z.boolean().optional().describe('Start this command immediately as a managed background process.'),
@@ -345,6 +347,8 @@ async function executeTerminalCommand(
       outputLimited: page?.outputLimited,
       outputFile: page?.outputFile,
       outputReadError: page?.outputReadError,
+      outputPersistenceError: page?.outputPersistenceError ?? result.outputPersistenceError,
+      statusPersistenceError: page?.statusPersistenceError ?? result.statusPersistenceError,
       streamId: result.streamId,
       nextActionNote: page?.nextActionNote || result.nextActionNote || (!result.success && !result.stillRunning
         ? terminalFailureAdvice(rawStderr || rawStdout, shell) : undefined),
@@ -392,7 +396,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
     program: z.string().min(1).optional().describe('Native executable name or absolute path. python/python3 select this chat’s runtime; explicit paths are honored. Use program + args to bypass shell quoting. Provide exactly one of command, program, or commands.'),
     args: z.array(z.string()).optional().describe('Arguments passed unchanged to program. Do not shell-quote individual arguments.'),
     shell: z.string().optional().describe('Shell preference for shell commands only; defaults to the chat setting.'),
-    env: z.record(z.string()).optional().describe('Environment overrides scoped to this invocation.'),
+    env: z.record(z.string(), z.string()).optional().describe('Environment overrides scoped to this invocation.'),
     commands: z.array(commandRequestSchema).min(1).max(32).optional().describe('Batch mode for independent terminal operations, especially parallel file reads and searches. Do not also provide command.'),
     taskId: z.string().optional().describe('Managed terminal task ID required by mode=check or mode=kill.'),
     sinceOffset: z.number().int().min(0).optional().describe('For mode=check/wait, read from this character offset. Reuse outputEnd for the next exact page when hasMoreOutput is true, including after the command completes.'),
@@ -537,6 +541,8 @@ export const workspaceRunCommandTool: ToolDefinition = {
         outputLimited: task.outputLimited,
         outputFile: task.outputFile,
         outputReadError: task.outputReadError,
+        outputPersistenceError: task.outputPersistenceError,
+        statusPersistenceError: task.statusPersistenceError,
         hasNewOutput: task.hasNewOutput,
         cwd: task.cwd,
         shell: task.shell,

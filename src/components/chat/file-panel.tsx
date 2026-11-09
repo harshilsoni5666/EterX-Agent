@@ -15,6 +15,7 @@ import { getPrimaryModifierLabel } from '../../lib/platform';
 import { decodeLocalFileHref, openLocalFilePath } from './local-file-link';
 import { isAppVisible } from '../../lib/app-visibility';
 import { createMonacoCodeTheme } from '../../lib/code-theme';
+import { diffLineNumber, numberDiffLines } from '../../lib/diff-line-numbers';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 const DiffEditor = dynamic(
@@ -287,7 +288,7 @@ export interface FilePanelProps {
   filename: string;
   filepath: string;
   content?: string;
-  diffLines?: Array<{ type: 'added'|'removed'|'unchanged'|'context'; content: string; oldLine?: number; newLine?: number; isGap?: boolean; skipped?: number }>;
+  diffLines?: Array<{ type: 'added'|'removed'|'unchanged'|'context'; content: string; oldLine?: number; newLine?: number; displayOldLine?: number; displayNewLine?: number; isGap?: boolean; skipped?: number }>;
   isEdit?: boolean;
   language?: string;
   linesAdded?: number;
@@ -423,7 +424,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           options={{
             minimap: { enabled: false },
             fontSize: 13,
-            fontFamily: 'JetBrains Mono, Menlo, monospace',
+            fontFamily: '"GeistMono", Consolas, "Liberation Mono", monospace',
             lineHeight: 24,
             padding: { top: 16, bottom: 16 },
             scrollBeyondLastLine: false,
@@ -454,8 +455,11 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
     };
     const editorLang = languageMap[getLanguage(filename)] || 'plaintext';
 
-    const original = useMemo(() => (diffLines || []).filter((l: any) => l.type !== 'added').map((l: any) => l.content).join('\n'), [diffLines]);
-    const modified = useMemo(() => (diffLines || []).filter((l: any) => l.type !== 'removed').map((l: any) => l.content).join('\n'), [diffLines]);
+    const numbered = useMemo(() => numberDiffLines(diffLines || []), [diffLines]);
+    const originalLines = useMemo(() => numbered.filter(line => !line.isGap && line.type !== 'added'), [numbered]);
+    const modifiedLines = useMemo(() => numbered.filter(line => !line.isGap && line.type !== 'removed'), [numbered]);
+    const original = useMemo(() => originalLines.map(line => line.content).join('\n'), [originalLines]);
+    const modified = useMemo(() => modifiedLines.map(line => line.content).join('\n'), [modifiedLines]);
 
     return (
       <div className="flex-1 w-full h-full relative" style={{ background: editorSurface }}>
@@ -466,10 +470,14 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           beforeMount={configureEterxMonacoTheme}
           original={original}
           modified={modified}
+          onMount={editor => {
+            editor.getOriginalEditor().updateOptions({ lineNumbers: line => originalLines[line - 1] ? String(diffLineNumber(originalLines[line - 1], 'old')) : '' });
+            editor.getModifiedEditor().updateOptions({ lineNumbers: line => modifiedLines[line - 1] ? String(diffLineNumber(modifiedLines[line - 1], 'new')) : '' });
+          }}
           options={{
             minimap: { enabled: false },
             fontSize: 13,
-            fontFamily: 'JetBrains Mono, Menlo, monospace',
+            fontFamily: '"GeistMono", Consolas, "Liberation Mono", monospace',
             lineHeight: 24,
             padding: { top: 16, bottom: 16 },
             readOnly: true,
@@ -489,14 +497,14 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
       <div className="flex items-center gap-2 flex-1 min-w-0">
         <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: fileColor }} />
         <span className="text-[12.5px] font-semibold text-[#E8E6E3] truncate">{filename}</span>
-        <span className="text-[9px] font-mono text-[#555350] bg-white/[0.04] border border-white/[0.06] px-1.5 py-[2px] rounded shrink-0 uppercase tracking-wide">{lang}</span>
-        {added > 0 && <span className="eterx-file-change-added text-[10px] font-bold font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-[1.5px] rounded shrink-0">+{added}</span>}
-        {removed > 0 && <span className="eterx-file-change-removed text-[10px] font-bold font-mono text-red-400 bg-red-500/10 px-1.5 py-[1.5px] rounded shrink-0">−{removed}</span>}
+        <span className="text-[9px] font-mono text-[#555350] bg-white/[0.04] border border-white/[0.06] px-1.5 py-[2px] rounded-sm shrink-0 uppercase tracking-wide">{lang}</span>
+        {added > 0 && <span className="eterx-file-change-added text-[10px] font-bold font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-[1.5px] rounded-sm shrink-0">+{added}</span>}
+        {removed > 0 && <span className="eterx-file-change-removed text-[10px] font-bold font-mono text-red-400 bg-red-500/10 px-1.5 py-[1.5px] rounded-sm shrink-0">−{removed}</span>}
         {tab === 'code' && localContent && <span className="text-[10px] font-mono text-[#555350] shrink-0">{lineCount}L</span>}
       </div>
 
       <div className="flex items-center gap-1 shrink-0">
-        <div className="flex items-center bg-white/[0.02] border border-white/[0.05] rounded p-0.5 mr-2">
+        <div className="flex items-center bg-white/[0.02] border border-white/[0.05] rounded-sm p-0.5 mr-2">
           {isHtml && (
             <button onClick={() => setTab('preview')} className="px-2 py-0.5 rounded-[3px] text-[10px] font-medium transition-colors text-[#555350] hover:text-[#A3A19E]">Preview</button>
           )}
@@ -538,13 +546,13 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
             value={urlInput}
             onChange={e => setUrlInput(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') setPreviewUrl(resolvePreviewAddress(urlInput)); }}
-            className="text-[11px] text-[#A3A19E] font-mono truncate bg-transparent outline-none flex-1" 
+            className="text-[11px] text-[#A3A19E] font-mono truncate bg-transparent outline-hidden flex-1"
           />
         </div>
       </div>
 
       <div className="flex items-center gap-1 shrink-0 w-[120px] justify-end">
-        <div className="flex items-center bg-[#050505] border border-white/[0.05] rounded p-0.5 mr-2">
+        <div className="flex items-center bg-[#050505] border border-white/[0.05] rounded-sm p-0.5 mr-2">
           <button onClick={() => setTab('preview')} className="px-2 py-0.5 rounded-[3px] text-[10px] font-medium transition-colors bg-white/[0.1] text-[#E8E6E3]">Preview</button>
           <button onClick={() => setTab('code')} className="px-2 py-0.5 rounded-[3px] text-[10px] font-medium transition-colors text-[#555350] hover:text-[#A3A19E]">Code</button>
         </div>
@@ -602,8 +610,8 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
                            <span className="bg-white/[0.05] text-[#555350] px-1.5 rounded-full text-[9px] ml-1">{consoleLogs.length}</span>
                          </div>
                          <div className="flex items-center gap-1">
-                           <button onClick={() => setConsoleLogs([])} className="px-2 py-0.5 rounded text-[10px] text-[#555350] hover:text-[#E8E6E3] hover:bg-white/[0.05] transition-colors">Clear</button>
-                           <button onClick={() => setShowConsole(false)} className="p-1 rounded text-[#555350] hover:text-red-400 hover:bg-red-500/10 transition-colors"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+                           <button onClick={() => setConsoleLogs([])} className="px-2 py-0.5 rounded-sm text-[10px] text-[#555350] hover:text-[#E8E6E3] hover:bg-white/[0.05] transition-colors">Clear</button>
+                           <button onClick={() => setShowConsole(false)} className="p-1 rounded-sm text-[#555350] hover:text-red-400 hover:bg-red-500/10 transition-colors"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
                          </div>
                        </div>
                        <div className="eterx-scrollbar flex-1 overflow-auto p-2 space-y-1 font-mono text-[11.5px] [scrollbar-gutter:stable]">
@@ -625,7 +633,7 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
                {!showConsole && consoleLogs.length > 0 && (
                   <button 
                     onClick={() => setShowConsole(true)}
-                    className="absolute bottom-4 right-4 bg-[#0D0D10]/90 backdrop-blur border border-white/[0.1] text-[#E8E6E3] rounded-full p-2 shadow-none hover:scale-105 transition-transform group flex items-center gap-2"
+                    className="absolute bottom-4 right-4 bg-[#0D0D10]/90 backdrop-blur-sm border border-white/[0.1] text-[#E8E6E3] rounded-full p-2 shadow-none hover:scale-105 transition-transform group flex items-center gap-2"
                   >
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-blue-400"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
                     <span className="text-[11px] font-mono font-medium max-w-0 overflow-hidden group-hover:max-w-[100px] transition-all whitespace-nowrap">View Console</span>
@@ -716,7 +724,7 @@ const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick 
       <div>
         <div
           onClick={() => setExpanded(e => !e)}
-          className={`flex items-center gap-1.5 px-2 py-[3px] hover:bg-[#2A2D2E] cursor-pointer rounded-sm mx-1`}
+          className={`flex items-center gap-1.5 px-2 py-[3px] hover:bg-[#2A2D2E] cursor-pointer rounded-xs mx-1`}
           style={{ paddingLeft: `${8 + depth * 14}px` }}
         >
           {expanded ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#888] shrink-0"><polyline points="6 9 12 15 18 9"></polyline></svg> : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#888] shrink-0"><polyline points="9 18 15 12 9 6"></polyline></svg>}
@@ -735,7 +743,7 @@ const FileTreeNode = ({ node, depth, openFilePaths, activeFilePath, onFileClick 
       onClick={() => onFileClick(node.path, node.name)}
       data-active={isActive ? 'true' : undefined}
       data-open={isOpen ? 'true' : undefined}
-      className={`eterx-ide-tree-node flex items-center gap-1.5 py-[3px] hover:bg-[#2A2D2E] cursor-pointer rounded-sm mx-1 group ${
+      className={`eterx-ide-tree-node flex items-center gap-1.5 py-[3px] hover:bg-[#2A2D2E] cursor-pointer rounded-xs mx-1 group ${
         isActive ? 'bg-[#37373D]' : isOpen ? 'bg-[#2D2D30]' : ''
       }`}
       style={{ paddingLeft: `${8 + depth * 14 + 12}px`, paddingRight: '8px' }}
@@ -1355,7 +1363,7 @@ export const IdePanel = () => {
               {isTextPreviewTrimmed && <span>Trimmed</span>}
             </div>
           </div>
-          <pre className="eterx-scrollbar h-[calc(100%-38px)] overflow-auto p-5 text-[12.5px] leading-[1.75] [scrollbar-gutter:stable]" style={{ fontFamily: '"JetBrains Mono", "Fira Code", Menlo, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          <pre className="eterx-scrollbar h-[calc(100%-38px)] overflow-auto p-5 text-[12.5px] leading-[1.75] [scrollbar-gutter:stable]" style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             {textPreview || 'No preview content'}
           </pre>
         </div>
@@ -1652,7 +1660,7 @@ export const IdePanel = () => {
                       minimap: { enabled: false },
                       fontSize: 14,
                       lineHeight: 24,
-                      fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+                      fontFamily: '"GeistMono", Consolas, "Liberation Mono", monospace',
                       fontLigatures: false,
                       scrollBeyondLastLine: false,
                       renderLineHighlight: 'none',
@@ -1679,7 +1687,7 @@ export const IdePanel = () => {
                       </div>
                     }
                   />
-                  <div className={`pointer-events-none absolute bottom-3 right-3 rounded-full border px-3 py-1 text-[10.5px] font-semibold tabular-nums shadow-none backdrop-blur ${activeFile.truncated ? 'border-amber-500/25 bg-amber-500/12 text-amber-200' : isLightTheme ? 'border-black/10 bg-white/82 text-black/42' : 'border-white/10 bg-black/42 text-white/42'}`}>
+                  <div className={`pointer-events-none absolute bottom-3 right-3 rounded-full border px-3 py-1 text-[10.5px] font-semibold tabular-nums shadow-none backdrop-blur-sm ${activeFile.truncated ? 'border-amber-500/25 bg-amber-500/12 text-amber-200' : isLightTheme ? 'border-black/10 bg-white/82 text-black/42' : 'border-white/10 bg-black/42 text-white/42'}`}>
                     {activeFileLoadedRange}
                   </div>
                   </>
@@ -1752,7 +1760,7 @@ export const IdePanel = () => {
                           onChange={e => setUrlInput(e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter') handlePreviewAddressSubmit(); }}
                           aria-label="Preview address"
-                          className="eterx-ide-address-input min-w-0 flex-1 truncate bg-transparent font-mono text-[12px] tracking-wide text-white/68 outline-none placeholder:text-white/22"
+                          className="eterx-ide-address-input min-w-0 flex-1 truncate bg-transparent font-mono text-[12px] tracking-wide text-white/68 outline-hidden placeholder:text-white/22"
                           placeholder="Enter dev server URL (e.g. http://localhost:3000)"
                         />
                         <div className="flex shrink-0 items-center gap-2.5">
@@ -1852,7 +1860,7 @@ export const IdePanel = () => {
                 </div>
                 <div className="eterx-scrollbar flex-1 overflow-y-auto overflow-x-hidden p-4 font-mono text-[12px] leading-relaxed [scrollbar-gutter:stable]">
                   {consoleLogs.map((log, i) => (
-                    <div key={i} className={`flex gap-3 p-2 rounded mb-2 ${log.type === 'warn' ? 'bg-yellow-500/5 border border-yellow-500/10 text-[#D4D4D4]' : 'text-[#D4D4D4]'}`}>
+                    <div key={i} className={`flex gap-3 p-2 rounded-sm mb-2 ${log.type === 'warn' ? 'bg-yellow-500/5 border border-yellow-500/10 text-[#D4D4D4]' : 'text-[#D4D4D4]'}`}>
                       {log.type === 'warn' && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-yellow-500/70 shrink-0 mt-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>}
                       <span className="flex-1">{log.text}</span>
                     </div>
@@ -1900,7 +1908,7 @@ export const IdePanel = () => {
       <AnimatePresence>
         {paletteOpen && (
           <>
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-[#000000]/40 backdrop-blur-sm z-[99998]" onClick={() => setPaletteOpen(false)} />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-[#000000]/40 backdrop-blur-xs z-[99998]" onClick={() => setPaletteOpen(false)} />
             <motion.div
               initial={{ opacity: 0, y: -20, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -1912,16 +1920,16 @@ export const IdePanel = () => {
                 <input 
                   autoFocus 
                   placeholder="Type a command or search open editors..." 
-                  className="flex-1 bg-transparent border-none outline-none text-[#E8E6E3] placeholder:text-[#555350] text-[13px] font-mono"
+                  className="flex-1 bg-transparent border-none outline-hidden text-[#E8E6E3] placeholder:text-[#555350] text-[13px] font-mono"
                 />
-                <span className="text-[10px] text-[#555350] font-mono bg-white/[0.05] px-1.5 rounded">ESC</span>
+                <span className="text-[10px] text-[#555350] font-mono bg-white/[0.05] px-1.5 rounded-sm">ESC</span>
               </div>
               <div className="eterx-scrollbar max-h-[300px] overflow-y-auto overflow-x-hidden p-2 [scrollbar-gutter:stable]">
                 <div className="px-3 py-1.5 text-[10px] font-bold text-[#555350] uppercase tracking-wider">Commands</div>
                 
                 <div onClick={() => { setSidebarOpen(!sidebarOpen); setPaletteOpen(false); }} className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/[0.05] cursor-pointer group">
                   <div className="flex items-center gap-3"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-[#8C8A88] group-hover:text-[#4FC1FF]"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="12" y1="3" x2="12" y2="21"></line></svg><span className="text-[12px] text-[#E8E6E3]">Toggle Left Sidebar</span></div>
-                  <span className="text-[10px] text-[#555350] font-mono border border-white/[0.05] bg-[#0A0A0C] px-1.5 rounded">{primaryModifierLabel}+B</span>
+                  <span className="text-[10px] text-[#555350] font-mono border border-white/[0.05] bg-[#0A0A0C] px-1.5 rounded-sm">{primaryModifierLabel}+B</span>
                 </div>
 
                 <div onClick={() => { handleCloseAll(); setPaletteOpen(false); }} className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-white/[0.05] cursor-pointer group">

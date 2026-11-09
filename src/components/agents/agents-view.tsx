@@ -5,6 +5,8 @@ import { Plus, ArrowUp, SendHorizontal, Download, CheckCircle2, Upload } from 'l
 import { PremiumEdit, PremiumSettings } from '../ui/premium-icons';
 import { Tooltip } from '../ui/tooltip';
 import type { MainAgentThinkingLevel } from '../../lib/agent/model-routing';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
+import { requestJson } from '../../lib/request-json';
 
 interface Agent {
   id: string;
@@ -50,10 +52,14 @@ export const AgentsView = React.memo(({
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
+    const controller = new AbortController();
 
     const syncServerAgents = async () => {
+      if (cancelled || inFlight || !isAppVisible()) return;
+      inFlight = true;
       try {
-        const res = await fetch('/api/agents/list', { cache: 'no-store' });
+        const res = await requestJson('/api/agents/list', { cache: 'no-store', signal: controller.signal }, 15_000);
         if (!res.ok) return;
         const data = await res.json();
         const serverAgents = Array.isArray(data.agents)
@@ -69,7 +75,8 @@ export const AgentsView = React.memo(({
               .filter(agent => {
                 const serverBacked = agent.kind === 'flow'
                   || agent.id.startsWith('eterxagent-')
-                  || agent.id.startsWith('eterxflow-');
+                  || agent.id.startsWith('eterxflow-')
+                  || agent.id.startsWith('import-');
                 return agent.id === 'default-1' || agent.isSetup !== true || !serverBacked;
               })
               .map(agent => [agent.id, agent])
@@ -104,23 +111,32 @@ export const AgentsView = React.memo(({
             if (agent.id === 'default-1') continue;
             const serverBacked = agent.kind === 'flow'
               || agent.id.startsWith('eterxagent-')
-              || agent.id.startsWith('eterxflow-');
+              || agent.id.startsWith('eterxflow-')
+              || agent.id.startsWith('import-');
             if (!serverBacked) continue;
             if (agent.isSetup === false && !serverIds.has(agent.id)) byId.set(agent.id, agent);
           }
 
-          return Array.from(byId.values());
+          const next = Array.from(byId.values());
+          return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
         });
       } catch {
         // Keep the default card or an in-progress draft visible if the folder
         // store is temporarily unavailable.
+      } finally {
+        inFlight = false;
       }
     };
 
     syncServerAgents();
+    window.addEventListener('eterx_imports_updated', syncServerAgents);
     window.addEventListener('focus', syncServerAgents);
+    const unsubscribeVisibility = subscribeAppVisibility(syncServerAgents);
     return () => {
       cancelled = true;
+      controller.abort();
+      unsubscribeVisibility();
+      window.removeEventListener('eterx_imports_updated', syncServerAgents);
       window.removeEventListener('focus', syncServerAgents);
     };
   }, []);
@@ -541,7 +557,7 @@ export const AgentsView = React.memo(({
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3 }}
-          className="eterx-agents-library-panel flex-1 bg-[#0A0A0A]/70 backdrop-blur-sm border border-white/[0.04] rounded-[18px] p-4 md:p-5 w-full shadow-none flex flex-col gap-3 overflow-hidden relative"
+          className="eterx-agents-library-panel flex-1 bg-[#0A0A0A]/70 backdrop-blur-xs border border-white/[0.04] rounded-[18px] p-4 md:p-5 w-full shadow-none flex flex-col gap-3 overflow-hidden relative"
         >
           {/* Header internal row matching style and spacing of ProjectsView */}
           <div className="w-full flex items-center justify-between shrink-0 pl-1 pr-1 pb-1.5 border-b border-white/[0.03]">
@@ -591,7 +607,7 @@ export const AgentsView = React.memo(({
                       onOpenBuilder(agent.id, agent.name);
                     }
                   }}
-                  className="eterx-agent-card group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-stretch justify-between shrink-0 shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+                  className="eterx-agent-card group relative bg-[#111111] border border-white/[0.06] rounded-[14px] p-3 hover:border-white/[0.12] hover:bg-[#151515] transition-all duration-200 cursor-pointer overflow-hidden flex items-stretch justify-between shrink-0 shadow-none focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/20"
                 >
                   <div className="absolute inset-0 bg-white/[0.02] opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" />
                   
@@ -616,7 +632,7 @@ export const AgentsView = React.memo(({
                                 setEditingAgentId(null);
                               }
                             }}
-                            className="text-[14px] md:text-[15px] font-semibold text-white bg-white/5 border border-white/10 rounded-md px-2 py-0.5 outline-none focus:border-white/30 w-full max-w-[250px]"
+                            className="text-[14px] md:text-[15px] font-semibold text-white bg-white/5 border border-white/10 rounded-md px-2 py-0.5 outline-hidden focus:border-white/30 w-full max-w-[250px]"
                           />
                         ) : (
                           <>
@@ -782,31 +798,31 @@ export const AgentsView = React.memo(({
                         void handleStartBuilder();
                       }
                     }}
-                    className="w-full bg-[#111111] border border-white/10 rounded-xl px-4 py-3 text-[14px] text-white outline-none focus:border-white/20 transition-all font-sans placeholder:text-[#555350]"
+                    className="w-full bg-[#111111] border border-white/10 rounded-xl px-4 py-3 text-[14px] text-white outline-hidden focus:border-white/20 transition-all font-sans placeholder:text-[#555350]"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-2">
                     <label className="text-[13px] font-semibold text-[#8C8A88]">Role template</label>
-                    <select value={newAgentTemplate} onChange={(event) => setNewAgentTemplate(event.target.value as typeof newAgentTemplate)} className="h-11 rounded-xl border border-white/10 bg-[#111111] px-3 text-[13px] text-white outline-none focus:border-white/20">
+                    <select value={newAgentTemplate} onChange={(event) => setNewAgentTemplate(event.target.value as typeof newAgentTemplate)} className="h-11 rounded-xl border border-white/10 bg-[#111111] px-3 text-[13px] text-white outline-hidden focus:border-white/20">
                       <option value="general">General</option><option value="sales">Sales</option><option value="support">Support</option><option value="operations">Operations</option><option value="research">Research</option><option value="coding">Coding</option>
                     </select>
                   </div>
                   <div className="flex flex-col gap-2">
                     <label className="text-[13px] font-semibold text-[#8C8A88]">Integrations</label>
-                    <select value={newAgentIntegration} onChange={(event) => setNewAgentIntegration(event.target.value as typeof newAgentIntegration)} className="h-11 rounded-xl border border-white/10 bg-[#111111] px-3 text-[13px] text-white outline-none focus:border-white/20">
+                    <select value={newAgentIntegration} onChange={(event) => setNewAgentIntegration(event.target.value as typeof newAgentIntegration)} className="h-11 rounded-xl border border-white/10 bg-[#111111] px-3 text-[13px] text-white outline-hidden focus:border-white/20">
                       <option value="none">None yet</option><option value="channels">Channels</option><option value="connectors">REST / MCP</option><option value="all">Channels + connectors</option>
                     </select>
                   </div>
                 </div>
                 <div className="flex flex-col gap-2">
                   <label className="text-[13px] font-semibold text-[#8C8A88]">What should this agent accomplish?</label>
-                  <textarea rows={4} value={newAgentPurpose} onChange={(event) => setNewAgentPurpose(event.target.value)} placeholder="Example: Qualify inbound leads, answer from approved product information, draft concise follow-ups, and escalate pricing or security questions." className="w-full resize-none rounded-xl border border-white/10 bg-[#111111] px-4 py-3 text-[13px] leading-5 text-white outline-none transition-all placeholder:text-[#555350] focus:border-white/20" />
+                  <textarea rows={4} value={newAgentPurpose} onChange={(event) => setNewAgentPurpose(event.target.value)} placeholder="Example: Qualify inbound leads, answer from approved product information, draft concise follow-ups, and escalate pricing or security questions." className="w-full resize-none rounded-xl border border-white/10 bg-[#111111] px-4 py-3 text-[13px] leading-5 text-white outline-hidden transition-all placeholder:text-[#555350] focus:border-white/20" />
                 </div>
                 {(newAgentIntegration === 'channels' || newAgentIntegration === 'all') && (
                   <div className="flex flex-col gap-2 rounded-xl border border-[#1d8cff]/20 bg-[#1d8cff]/[0.06] p-3">
                     <div className="flex items-center justify-between gap-3"><div><label className="text-[13px] font-semibold text-[#b9dcff]">Channel Agent profile</label><p className="mt-1 text-[11px] leading-4 text-[#8C8A88]">The workflow loads only when needed, keeping normal prompts smaller.</p></div><span className="rounded-full bg-[#1d8cff]/15 px-2 py-1 text-[9px] font-semibold text-[#9dceff]">On demand</span></div>
-                    <select value={newAgentChannelProfile} onChange={(event) => setNewAgentChannelProfile(event.target.value)} className="h-10 rounded-lg border border-white/10 bg-[#111111] px-3 text-[12px] text-white outline-none">
+                    <select value={newAgentChannelProfile} onChange={(event) => setNewAgentChannelProfile(event.target.value)} className="h-10 rounded-lg border border-white/10 bg-[#111111] px-3 text-[12px] text-white outline-hidden">
                       <option value="">Default Gateway profile</option>{channelProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {profile.role}</option>)}
                     </select>
                     {channelProfiles.length === 0 && <p className="text-[10px] text-amber-300/80">No custom Channel Agent profiles found. The Gateway default will be used; profiles can be added under Channels → Channel Agents.</p>}
@@ -879,12 +895,12 @@ export const AgentsView = React.memo(({
                   <h4 className="text-[14px] font-medium text-[#E8E6E3] mb-2">Configuration</h4>
                   <div className="flex items-center justify-between text-[13px]">
                     <span className="text-[#8C8A88]">Access Type</span>
-                    <span className="text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">{settingsAgent.accessType}</span>
+                    <span className="text-white px-2 py-0.5 rounded-sm bg-white/5 border border-white/10">{settingsAgent.accessType}</span>
                   </div>
                   {settingsAgent.preferredModel && (
                     <div className="flex items-center justify-between gap-3 text-[13px]">
                       <span className="text-[#8C8A88]">Preferred model</span>
-                      <span className="max-w-[260px] truncate text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">
+                      <span className="max-w-[260px] truncate text-white px-2 py-0.5 rounded-sm bg-white/5 border border-white/10">
                         {settingsAgent.preferredModel}
                       </span>
                     </div>
@@ -892,7 +908,7 @@ export const AgentsView = React.memo(({
                   {settingsAgent.preferredThinkingLevel && (
                     <div className="flex items-center justify-between text-[13px]">
                       <span className="text-[#8C8A88]">Thinking level</span>
-                      <span className="capitalize text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">
+                      <span className="capitalize text-white px-2 py-0.5 rounded-sm bg-white/5 border border-white/10">
                         {settingsAgent.preferredThinkingLevel}
                       </span>
                     </div>
@@ -900,7 +916,7 @@ export const AgentsView = React.memo(({
                   {typeof settingsAgent.qualityScore === 'number' && (
                     <div className="flex items-center justify-between gap-3 text-[13px]">
                       <span className="text-[#8C8A88]">Builder quality</span>
-                      <span className="text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">
+                      <span className="text-white px-2 py-0.5 rounded-sm bg-white/5 border border-white/10">
                         {settingsAgent.qualityScore}% · {settingsAgent.readinessPassed || 0}/{settingsAgent.readinessChecks || 0} checks
                       </span>
                     </div>
@@ -908,7 +924,7 @@ export const AgentsView = React.memo(({
                   {settingsAgent.category && (
                     <div className="flex items-center justify-between text-[13px]">
                       <span className="text-[#8C8A88]">Category</span>
-                      <span className="text-white px-2 py-0.5 rounded bg-white/5 border border-white/10">{settingsAgent.category}</span>
+                      <span className="text-white px-2 py-0.5 rounded-sm bg-white/5 border border-white/10">{settingsAgent.category}</span>
                     </div>
                   )}
                 </div>

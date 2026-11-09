@@ -49,6 +49,14 @@
   box-shadow: var(--eterx-menu-shadow) !important;
 }
 
+:root .eterx-sidebar-project-menu {
+  --eterx-menu-hover: color-mix(in srgb, var(--foreground, #fff) 12%, transparent);
+}
+
+:root[data-theme="dark"] .eterx-sidebar-project-menu {
+  background: rgba(36, 36, 36, 0.98) !important;
+}
+
 :root .eterx-composer-shell [data-adaptive-menu="true"],
 :root .eterx-composer-popout,
 :root .eterx-agent-popout,

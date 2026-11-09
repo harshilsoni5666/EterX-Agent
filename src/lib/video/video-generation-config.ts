@@ -126,12 +126,13 @@ export const VIDEO_PROVIDER_META: Record<VideoProvider, VideoProviderMeta> = {
     description: 'Direct MiniMax asynchronous video generation with Hailuo/H3 text and image modes.',
     requiresKey: true,
     supportsImageInput: true,
-    supportsAudioOutput: false,
+    supportsAudioOutput: true,
     supportsTextToVideo: true,
     authLabel: 'MiniMax API key',
     keyPlaceholder: 'Paste MINIMAX_API_KEY',
     models: [
       { id: 'MiniMax-H3', label: 'MiniMax H3', description: 'Current multimodal video model with text, image, video, and audio context.' },
+      { id: 'MiniMax-H3-Max', label: 'MiniMax H3 Max', description: 'Faster generation at 480P or 768P with native audio.' },
       { id: 'MiniMax-Hailuo-2.3', label: 'Hailuo 2.3', description: 'Current MiniMax text-to-video model.' },
     ],
     defaultModel: 'MiniMax-H3',
@@ -250,7 +251,7 @@ export const normalizeVideoSettings = (value: unknown): VideoSettings => {
     : {};
   const provider = isProvider(source.provider) ? source.provider : DEFAULT_VIDEO_SETTINGS.provider;
   const fallbackProviders = Array.from(new Set(
-    (Array.isArray(source.fallbackProviders) ? source.fallbackProviders : DEFAULT_VIDEO_SETTINGS.fallbackProviders)
+    (Array.isArray(source.fallbackProviders) ? source.fallbackProviders : VIDEO_PROVIDER_IDS.filter(id => id !== provider))
       .filter(isProvider)
       .filter(candidate => candidate !== provider),
   )) as VideoProvider[];

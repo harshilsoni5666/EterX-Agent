@@ -526,6 +526,8 @@ export class AgentOrchestrator {
     context.terminalShell = String(pinnedContext?.terminalShell || 'auto');
 
     Object.assign(context, await initializeChatWorkspace(projectId, userId, pinnedContext));
+    const { buildImportedContext } = await import('../imports/context');
+    (context as any).importedSetupContext = await buildImportedContext(String((context as any).workspacePath || ''));
     // Spawning authority is opt-in per run. Treat omitted/stale pinned fields
     // as disabled instead of silently inheriting the broad Main capability.
     (context as any).rootUserRequest = context.workingContextRequest?.visibleText || userRequest;
@@ -583,6 +585,7 @@ export class AgentOrchestrator {
     context.allowDynamicCode = pinnedContext?.allowDynamicCode !== false;
     context.allowBrowserControl = pinnedContext?.allowBrowserControl !== false;
     context.allowHostControl = pinnedContext?.allowHostControl === true && pinnedContext?.computerUseEnabled !== false;
+    context.computerUseEnabled = pinnedContext?.computerUseEnabled !== false && context.allowHostControl;
     context.allowAutomation = pinnedContext?.allowAutomation === true;
     context.allowExternalCommunication = pinnedContext?.allowExternalCommunication === true;
     context.allowSecretManagement = pinnedContext?.allowSecretManagement === true;

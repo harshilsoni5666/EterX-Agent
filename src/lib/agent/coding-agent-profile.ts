@@ -52,6 +52,7 @@ export function buildCodingAgentRootPrompt(options: CodingRootPromptOptions): st
   const mode = getCodingMode(runtimeContext.agentProfile)!;
   const available = new Set(toolNames.split(',').map(name => name.trim()));
   const support = [
+    available.has('computer') || available.has('screen_agent') ? 'Use computer and screen_agent for authorized native app work, including desktop UI evidence. Select an exact window, prefer fresh accessibility tokens, and inspect the returned state after input. Use workspace tools for code changes. Computer Use settings still apply; tool availability does not grant host access.' : '',
     available.has('browser_control') ? 'Use browser_control for decision-relevant UI/runtime evidence; do not open a browser for unrelated edits.' : '',
     available.has('web_search') ? 'Use web_search for changing external facts or documentation that local evidence cannot settle.' : '',
     available.has('ask_user') ? 'Use ask_user for consequential missing choices, required authority or blockers; prefer one focused question, never ask for facts the workspace can supply. It does not require a task plan.' : 'You have no question tool. If safe progress requires a user decision, ask one concise question in your final response; otherwise state a reasonable assumption and proceed.',

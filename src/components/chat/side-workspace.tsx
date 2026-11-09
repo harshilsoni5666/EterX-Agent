@@ -74,7 +74,7 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
   useWorkspaceScrollBoundary(panel);
   const strip = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ start: number; width: number; next: number; max: number; frame: number }>();
+  const drag = useRef<{ start: number; width: number; next: number; max: number; frame: number }>(undefined);
   const active = state.tabs.find(tab => tab.id === state.activeId);
   useLayoutEffect(() => {
     const parent = panel.current?.parentElement;

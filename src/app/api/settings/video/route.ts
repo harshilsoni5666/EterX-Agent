@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const provider = String(body?.provider || '').trim();
     if (!isVideoProvider(provider)) return NextResponse.json({ ok: false, error: 'Unknown video generation provider.' }, { status: 400 });
-    const result = await testVideoProvider(provider, String(body?.key || ''), String(body?.model || ''));
+    const result = await testVideoProvider(provider, String(body?.key || ''), String(body?.model || ''), String(body?.baseURL || ''));
     return NextResponse.json({ ok: true, provider, model: result.model, result: { message: result.message } });
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || 'Video provider test failed.' }, { status: 502 });

@@ -292,7 +292,8 @@ class AgentMonitorEmitter extends EventEmitter {
   // ── Desktop / any app ────────────────────────────────────────
 
   desktopScreenshot(base64Png: string, filePath?: string, chatId?: string) {
-    this.emit_event({ type: 'desktop_screenshot', screenshot: base64Png, filePath, appName: _currentAppName || 'Desktop', chatId });
+    const screenshotMimeType = base64Png.startsWith('/9j/') ? 'image/jpeg' : 'image/png';
+    this.emit_event({ type: 'desktop_screenshot', screenshot: base64Png, screenshotMimeType, filePath, appName: _currentAppName || 'Desktop', chatId });
   }
 
   desktopAction(action: string, appName?: string, details?: Record<string, any>, chatId?: string) {

@@ -253,6 +253,12 @@
 .eterx-turn-diff-line > code, .eterx-workspace-diff-cell > code { padding-left: 10px; }
 .eterx-workspace-diff-row > b { text-align: center; margin-right: 10px; }
 .eterx-inline-diff-content { padding-left: 10px; }
+.eterx-inline-diff-scroll,
+.eterx-inline-code-scroll {
+  font-family: var(--font-mono, Consolas, monospace);
+  font-size: 13px;
+  line-height: 1.7;
+}
 
 .eterx-code-word-change { color: inherit; border-radius: 3px; padding: 0; }
 .eterx-code-word-change.diff-added { background: var(--diff-added-word); }

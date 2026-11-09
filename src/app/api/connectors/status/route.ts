@@ -48,15 +48,16 @@ export async function POST(request: NextRequest) {
       id,
       kind: body.kind === 'oauth' || body.kind === 'native' ? body.kind : 'rest',
       connected: false,
-      baseUrl: String(body.baseUrl || defaults.baseUrl || '').trim().replace(/\/$/, '') || undefined,
-      healthPath: String(body.healthPath || defaults.healthPath || '').trim() || undefined,
-      authHeader: String(body.authHeader || defaults.authHeader || '').trim() || undefined,
-      tokenPrefix: body.tokenPrefix === '' ? '' : String(body.tokenPrefix ?? defaults.tokenPrefix ?? '').trim() || undefined,
+      baseUrl: String(body.baseUrl ?? previous?.baseUrl ?? defaults.baseUrl ?? '').trim().replace(/\/$/, '') || undefined,
+      healthPath: String(body.healthPath ?? previous?.healthPath ?? defaults.healthPath ?? '').trim() || undefined,
+      authHeader: String(body.authHeader ?? previous?.authHeader ?? defaults.authHeader ?? '').trim() || undefined,
+      tokenPrefix: body.tokenPrefix === '' ? '' : String(body.tokenPrefix ?? previous?.tokenPrefix ?? defaults.tokenPrefix ?? '').trim() || undefined,
       credentials,
       metadata: body.metadata && typeof body.metadata === 'object' ? body.metadata : undefined,
     };
     saveConnectorRecord(record);
-    const tested = body.skipTest === true ? { ok: true, status: 200, message: 'Saved without a health check.' } : await testConnectorRecord(record);
+    if (body.skipTest === true) return NextResponse.json({ ok: true, connector: redactConnector(record), message: 'Saved. API access has not been verified.' });
+    const tested = await testConnectorRecord(record);
     const saved = saveConnectorRecord({
       ...record,
       connected: tested.ok,

@@ -173,6 +173,25 @@ export async function registerChatMediaAttachments(chatId: string, attachments: 
 export const chatMediaHref = (chatId: string, id: string) =>
   `/api/chat/media?chatId=${encodeURIComponent(chatId)}&id=${encodeURIComponent(id)}`;
 
+/** Copy bytes into a separate vault; deleting either chat cannot break the other. */
+export async function copyChatMedia(sourceId: string, targetId: string, logs: any[]) {
+  const attachments = logs.flatMap(log => Array.isArray(log?.attachments) ? log.attachments : []);
+  const entries = await registerChatMediaAttachments(sourceId, attachments);
+  const replacements = new Map<string, string>();
+  const copies: ChatMediaAttachment[] = [];
+  await fs.ensureDir(getChatMediaDir(targetId));
+  for (const entry of entries) {
+    const target = path.join(getChatMediaDir(targetId), path.basename(entry.path));
+    await fs.copyFile(entry.path, target);
+    copies.push({ ...entry, path: target, originalPath: target });
+    replacements.set(entry.path, target);
+    if (entry.originalPath) replacements.set(entry.originalPath, target);
+    replacements.set(chatMediaHref(sourceId, entry.id), chatMediaHref(targetId, entry.id));
+  }
+  await writeManifest(targetId, copies);
+  return replacements;
+}
+
 export async function getChatMediaAttachment(chatId: string, id: string) {
   await mediaWrites.get(chatId)?.catch(() => {});
   return (await readManifest(chatId)).find(entry => entry.id === id);

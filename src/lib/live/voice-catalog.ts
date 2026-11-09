@@ -88,12 +88,25 @@ export const ELEVENLABS_CONVAI_VOICE_OPTIONS: LiveVoiceOption[] = [
 ];
 
 export const LIVE_PROVIDER_VOICE_OPTIONS: Record<string, LiveVoiceOption[]> = {
+  'model-voice': [{ value: 'auto', label: 'System default voice' }],
   'agent-live-convo': GEMINI_LIVE_VOICE_OPTIONS,
   'openai-realtime': OPENAI_REALTIME_VOICE_OPTIONS,
   'grok-realtime': XAI_REALTIME_VOICE_OPTIONS,
   'deepgram-voice-agent': DEEPGRAM_VOICE_AGENT_VOICE_OPTIONS,
   'elevenlabs-convai': ELEVENLABS_CONVAI_VOICE_OPTIONS,
 };
+
+/** System voices are discovered on the device, never invented on the server. */
+export const getSystemLiveVoiceOptions = (): LiveVoiceOption[] => [
+  { value: 'auto', label: 'System default voice' },
+  ...(typeof window !== 'undefined' && window.speechSynthesis
+    ? window.speechSynthesis.getVoices().map(voice => ({
+        value: voice.voiceURI,
+        label: `${voice.name} (${voice.lang})`,
+        description: voice.localService ? 'Device voice' : 'System speech service',
+      }))
+    : []),
+];
 
 export const getLiveVoiceOptions = (providerValue: unknown): LiveVoiceOption[] => {
   const normalizedProvider = String(providerValue || '').trim().toLowerCase();

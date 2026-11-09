@@ -6,7 +6,7 @@ import { getChatWorkspacePaths, getEterxAppRoot, getEterxWorkspaceDir } from '..
 import { getUserFolders } from '../runtime/user-folders';
 
 const PROTECTED_SUBDIRS = ['src', 'electron', 'public', 'node_modules', '.git', '.next', 'dist'];
-const PROTECTED_ROOT_FILES = new Set(['package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.bot.json', 'next.config.mjs', 'tailwind.config.ts', 'postcss.config.js', '.gitignore', 'next-env.d.ts']);
+const PROTECTED_ROOT_FILES = new Set(['package.json', 'package-lock.json', 'tsconfig.json', 'tsconfig.bot.json', 'next.config.mjs', 'tailwind.config.js', 'postcss.config.js', '.gitignore', 'next-env.d.ts']);
 const EterX_ROOT = getEterxAppRoot();
 
 function inside(root: string, target: string): boolean {

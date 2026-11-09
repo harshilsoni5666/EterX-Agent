@@ -15,15 +15,15 @@ function shellForPlatform(platform = process.platform, env = process.env, prefer
   return { file, args, label: /powershell|pwsh/.test(name) ? 'PowerShell' : path.basename(file) };
 }
 
-function loadChatPty() {
-  const modulePath = require.resolve('node-pty');
-  const unpacked = modulePath.replace(/\.asar([\\/])/g, '.asar.unpacked$1');
-  // Unix spawn-helper is an executable, so node-pty must resolve its helper
-  // relative to the real unpacked directory rather than the ASAR archive.
-  return require(fs.existsSync(unpacked) ? unpacked : modulePath);
+function loadChatPty(app) {
+  if (!app.isPackaged) return require('node-pty');
+  // Keep the manifest, JS workers, native bindings, and macOS spawn-helper
+  // together on disk. Resolving through dependencies.asar first can fail on
+  // its unpacked package.json before we can select the physical entry point.
+  return require(path.join(process.resourcesPath, 'runtime', 'terminal', 'node-pty'));
 }
 
-function registerChatTerminals({ ipcMain, app, getWindow, loadPty = loadChatPty }) {
+function registerChatTerminals({ ipcMain, app, getWindow, loadPty = () => loadChatPty(app) }) {
   const sessions = new Map();
   const owners = new Set();
   const authorize = (event) => {
@@ -44,7 +44,11 @@ function registerChatTerminals({ ipcMain, app, getWindow, loadPty = loadChatPty 
     clearTimeout(session.attachTimer);
     session.dataListener?.dispose();
     session.exitListener?.dispose();
-    try { session.pty.kill(); } catch {}
+    // An exited terminal can stay visible for hours. Its PID may have been
+    // reused by then, so closing that tab must never signal it again.
+    if (session.exitCode === undefined) {
+      try { session.pty.kill(); } catch {}
+    }
     session.releaseWorkspace?.();
   };
   ipcMain.handle('chat-terminal-create', (event, options = {}) => {
@@ -65,10 +69,16 @@ function registerChatTerminals({ ipcMain, app, getWindow, loadPty = loadChatPty 
     if (process.platform === 'win32' && /^bash\.exe$/i.test(path.basename(shell.file))) env.CHERE_INVOKING = '1';
     // Internal Electron/Node launch settings must not leak into user shells.
     for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH']) delete env[key];
+    let ptyModule;
+    try {
+      ptyModule = loadPty();
+    } catch (error) {
+      throw new Error(`Could not load the EterX terminal runtime on ${process.platform}/${process.arch}: ${error.message || error}`);
+    }
     let pty;
     const releaseWorkspace = acquireWorkspaceLease(cwd);
     try {
-      pty = loadPty().spawn(shell.file, shell.args, { cwd, env, cols: 100, rows: 24, name: 'xterm-256color' });
+      pty = ptyModule.spawn(shell.file, shell.args, { cwd, env, cols: 100, rows: 24, name: 'xterm-256color' });
       releaseWorkspace.setProcess?.(pty.pid);
     } catch (error) {
       releaseWorkspace();

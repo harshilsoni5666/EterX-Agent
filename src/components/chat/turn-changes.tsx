@@ -7,7 +7,8 @@ import { useFilePanelOwner } from '../../contexts/FilePanelContext';
 import { addWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { collectTurnChanges, type TurnFileChange } from '../../lib/turn-changes';
 import { workspaceChatDiffLines } from '../../lib/workspace-review-data';
-import { HighlightedDiffCode, useDiffSyntax } from './diff-syntax';
+import { diffLineNumber, diffLineNumberTitle } from '../../lib/diff-line-numbers';
+import { HighlightedDiffCode, isPlaceholderDiffGap, useDiffSyntax } from './diff-syntax';
 import { FileCodeCorner, SquareSplitHorizontal } from './workspace-icons';
 import { WorkspaceFileIcon } from './workspace-file-icon';
 import type { FilePanelProps } from './file-panel';
@@ -20,10 +21,9 @@ function ChangeFileIcon({ path }: { path: string }) {
 function ChangeCounts({ files }: { files: FilePanelProps[] }) {
   const known = files.some(file => file.linesAdded != null || file.linesRemoved != null);
   if (!known) return <span className="eterx-turn-change-muted">File changed</span>;
-  return <span className="eterx-turn-change-counts" aria-label="Lines added and removed">
+  return <span className="eterx-turn-change-counts" aria-label="Recorded lines added and removed">
     <span>+{files.reduce((sum, file) => sum + (file.linesAdded || 0), 0)}</span>
     <span>−{files.reduce((sum, file) => sum + (file.linesRemoved || 0), 0)}</span>
-    {files.some(file => file.linesAdded == null && file.linesRemoved == null) && <small title="Some files have no recorded line counts">+ other files</small>}
   </span>;
 }
 
@@ -34,10 +34,10 @@ function RecordedDiff({ file, compact }: { file: FilePanelProps; compact?: boole
   const syntax = useDiffSyntax(visible, file.filepath, file.language);
   return <>
     {lines.length ? <div className="eterx-turn-diff-lines">
-      {visible.map((line, index) => line.isGap ? <div key={index} className="eterx-turn-diff-gap">{line.skipped || 'Some'} unchanged lines omitted</div> :
+      {visible.map((line, index) => isPlaceholderDiffGap(line) ? null : line.isGap ? <div key={index} className="eterx-turn-diff-gap">{line.skipped || 'Some'} unchanged lines omitted</div> :
         <div key={index} className="eterx-turn-diff-line" data-kind={line.type}>
-          {!compact && <span className="eterx-turn-diff-number">{line.oldLine ?? ''}</span>}
-          <span className="eterx-turn-diff-number">{compact && line.type === 'removed' ? line.oldLine ?? '' : line.newLine ?? ''}</span>
+          {!compact && <span className="eterx-turn-diff-number" title={diffLineNumberTitle(line, 'old')}>{diffLineNumber(line, 'old')}</span>}
+          <span className="eterx-turn-diff-number" title={diffLineNumberTitle(line, compact && line.type === 'removed' ? 'old' : 'new')}>{diffLineNumber(line, compact && line.type === 'removed' ? 'old' : 'new')}</span>
           <span className="eterx-turn-diff-sign">{line.type === 'added' ? '+' : line.type === 'removed' ? '−' : ' '}</span>
           <code><HighlightedDiffCode line={line} tokens={syntax?.get(line)} /></code>
         </div>)}
@@ -70,8 +70,8 @@ export function TurnChangesCard({ logs, turnId }: { logs: any[]; turnId: string 
   const [hover, setHover] = useState<{ file: TurnFileChange; anchor: HTMLElement } | null>(null);
   const [position, setPosition] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
   const popup = useRef<HTMLDivElement>(null);
-  const openTimer = useRef<ReturnType<typeof setTimeout>>();
-  const closeTimer = useRef<ReturnType<typeof setTimeout>>();
+  const openTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const closeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const candidate = useRef<{ file: TurnFileChange; anchor: HTMLElement; x: number; y: number } | null>(null);
   const blockedAnchor = useRef<HTMLElement | null>(null);
   const focusPreview = useRef(false);
@@ -208,7 +208,7 @@ export function TurnChangesCard({ logs, turnId }: { logs: any[]; turnId: string 
     </div>
     <div id={listId} hidden={!expanded} className="eterx-turn-changes-files eterx-scrollbar">
       {expanded && files.map(file => <button key={file.filepath} className="eterx-turn-changes-file" onClick={() => open(file.filepath)} {...previewEvents(file)}>
-        <ChangeFileIcon path={file.filepath} /><FileLabel file={file} inline />
+        <ChangeFileIcon path={file.filepath} /><FileLabel file={file} inline /><ChangeCounts files={[file]} />
       </button>)}
     </div>
     {hover && typeof document !== 'undefined' && createPortal(<div ref={popup} id={popupId} role="region" aria-label={'Recorded changes to ' + hover.file.filename} tabIndex={0} className="eterx-turn-changes-popup" style={{ left: position?.left ?? 0, top: position?.top ?? 0, width: position?.width ?? 360, maxHeight: position?.maxHeight ?? 320, visibility: position ? 'visible' : 'hidden' }} onPointerEnter={() => { cancelOpen(); keep(); }} onPointerLeave={leave} onFocus={keep} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) leave(); }}>
@@ -224,7 +224,7 @@ export function WorkspaceTurnChanges({ owner, tab, isActive }: { owner: string; 
   const [fileLimit, setFileLimit] = useState(10);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const scroll = useRef<HTMLDivElement>(null);
-  const previousSelection = useRef<typeof changes>();
+  const previousSelection = useRef<typeof changes>(undefined);
   const selectedIndex = changes?.files.findIndex(file => file.filepath === changes.selected) ?? -1;
   const visibleLimit = Math.max(fileLimit, selectedIndex + 1);
   useLayoutEffect(() => {

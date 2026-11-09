@@ -1,6 +1,17 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss" source(none);
+@source "../components";
+@source "./";
+@config "../../tailwind.config.js";
+
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+}
 
 /* Floating conversation feedback follows the app's explicit theme selection. */
 :root {
@@ -311,6 +322,14 @@
     font: inherit;
   }
 
+  /* Keep descenders inside the line box on compact controls and text fields. */
+  .eterx-app-shell :is(button, [role="button"], [role="option"], [role="menuitem"], [role="menuitemradio"], [role="tab"]),
+  .eterx-app-shell input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+  .eterx-app-shell textarea,
+  .eterx-app-shell select {
+    line-height: 1.5;
+  }
+
   .eterx-workspace-shell {
     --eterx-main-panel-left-radius: 18px;
     position: relative;
@@ -323,6 +342,14 @@
     padding-left: 8px !important;
     padding-right: 0 !important;
     padding-bottom: 0 !important;
+  }
+
+  @media (min-width: 960px) {
+    .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell {
+      /* The left inset overlaps the sidebar. Keep this override in the base
+         layer so its default background cannot cover the sidebar's edge. */
+      background: transparent !important;
+    }
   }
 
   .eterx-app-shell[data-sidebar-open="true"] .eterx-workspace-shell::before {
@@ -511,7 +538,7 @@
     background: color-mix(in srgb, var(--background) 96%, var(--sidebar-bg) 4%);
   }
 
-  /* Use JetBrains Mono for all monospace content */
+  /* Use the bundled Geist Mono face for code and monospace content. */
   code,
   pre,
   .monaco-editor,
@@ -2089,6 +2116,8 @@
 
 .eterx-new-chat-status-item span {
   min-width: 0;
+  line-height: 1.5;
+  padding-block: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2201,6 +2230,8 @@
 
 .eterx-new-chat-status-item span {
   min-width: 0;
+  line-height: 1.5;
+  padding-block: 1px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5587,7 +5618,7 @@
   color: var(--sidebar-icon) !important;
 }
 
-.eterx-sidebar-menu button:last-child {
+.eterx-sidebar-menu button.eterx-sidebar-menu-danger {
   color: var(--sidebar-danger-text) !important;
 }
 
@@ -5596,7 +5627,7 @@
   color: var(--sidebar-danger-text) !important;
 }
 
-.eterx-sidebar-menu button:last-child:hover {
+.eterx-sidebar-menu button.eterx-sidebar-menu-danger:hover {
   background: var(--sidebar-danger-bg) !important;
   color: var(--sidebar-danger-text) !important;
 }
@@ -6338,7 +6369,7 @@
   .eterx-home-greeting {
     max-width: min(74vw, 520px);
     white-space: normal !important;
-    text-align: center;
+    text-align: left;
   }
 }
 
@@ -7644,6 +7675,32 @@
 }
 
 /* ── Ambient Glow Sheen Styles ── */
+/* Typed, inherited colors blend continuously on the shared sheen. Both glow
+   layers stay on the same palette when the agent enters or leaves thinking. */
+@property --eterx-sidebar-glow-upper {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #153AB2;
+}
+
+@property --eterx-sidebar-glow-middle {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #105CD2;
+}
+
+@property --eterx-sidebar-glow-lower {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #12825C;
+}
+
+@property --eterx-sidebar-glow-edge {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #54FFBE;
+}
+
 .ambient-glow-layer {
   pointer-events: none;
   mix-blend-mode: screen;
@@ -7656,10 +7713,10 @@
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.020) 0%, rgba(255, 255, 255, 0.012) 42%, rgba(255, 255, 255, 0.016) 100%),
     radial-gradient(ellipse at 104% 34%, rgba(255, 255, 255, 0.020) 0%, rgba(255, 255, 255, 0.009) 34%, transparent 64%),
-    radial-gradient(ellipse at 112% 52%, rgba(21, 58, 178, 0.064) 0%, rgba(21, 58, 178, 0.026) 36%, transparent 70%),
-    radial-gradient(ellipse at 104% 68%, rgba(16, 92, 210, 0.078) 0%, rgba(16, 92, 210, 0.032) 38%, transparent 72%),
-    radial-gradient(ellipse at 96% 84%, rgba(18, 130, 92, 0.070) 0%, rgba(18, 130, 92, 0.028) 38%, transparent 74%),
-    radial-gradient(ellipse at 112% 104%, rgba(84, 255, 190, 0.038) 0%, rgba(84, 255, 190, 0.014) 34%, transparent 70%);
+    radial-gradient(ellipse at 112% 52%, color-mix(in srgb, var(--eterx-sidebar-glow-upper) 6.4%, transparent) 0%, color-mix(in srgb, var(--eterx-sidebar-glow-upper) 2.6%, transparent) 36%, transparent 70%),
+    radial-gradient(ellipse at 104% 68%, color-mix(in srgb, var(--eterx-sidebar-glow-middle) 7.8%, transparent) 0%, color-mix(in srgb, var(--eterx-sidebar-glow-middle) 3.2%, transparent) 38%, transparent 72%),
+    radial-gradient(ellipse at 96% 84%, color-mix(in srgb, var(--eterx-sidebar-glow-lower) 7.0%, transparent) 0%, color-mix(in srgb, var(--eterx-sidebar-glow-lower) 2.8%, transparent) 38%, transparent 74%),
+    radial-gradient(ellipse at 112% 104%, color-mix(in srgb, var(--eterx-sidebar-glow-edge) 3.8%, transparent) 0%, color-mix(in srgb, var(--eterx-sidebar-glow-edge) 1.4%, transparent) 34%, transparent 70%);
   background-size: 100% 100%, 100% 100%, 126% 100%, 138% 100%, 132% 100%, 124% 100%;
   animation: ambientSidebarCycle 16s ease-in-out infinite;
 }
@@ -7668,10 +7725,10 @@
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.028) 0%, rgba(255, 255, 255, 0.016) 42%, rgba(255, 255, 255, 0.022) 100%),
     radial-gradient(ellipse at 104% 34%, rgba(255, 255, 255, 0.026) 0%, rgba(255, 255, 255, 0.011) 34%, transparent 64%),
-    radial-gradient(ellipse at 112% 52%, rgba(22, 62, 196, 0.086) 0%, rgba(22, 62, 196, 0.032) 36%, transparent 70%),
-    radial-gradient(ellipse at 104% 68%, rgba(28, 84, 220, 0.108) 0%, rgba(28, 84, 220, 0.040) 38%, transparent 72%),
-    radial-gradient(ellipse at 96% 84%, rgba(18, 148, 104, 0.088) 0%, rgba(18, 148, 104, 0.032) 38%, transparent 74%),
-    radial-gradient(ellipse at 112% 104%, rgba(84, 255, 190, 0.050) 0%, rgba(84, 255, 190, 0.017) 34%, transparent 70%);
+    radial-gradient(ellipse at 112% 52%, color-mix(in srgb, var(--eterx-sidebar-glow-upper) 8.6%, transparent) 0%, color-mix(in srgb, var(--eterx-sidebar-glow-upper) 3.2%, transparent) 36%, transparent 70%),
+    radial-gradient(ellipse at 104% 68%, color-mix(in srgb, var(--eterx-sidebar-glow-middle) 10.8%, transparent) 0%, color-mix(in srgb, var(--eterx-sidebar-glow-middle) 4.0%, transparent) 38%, transparent 72%),
+    radial-gradient(ellipse at 96% 84%, color-mix(in srgb, var(--eterx-sidebar-glow-lower) 8.8%, transparent) 0%, color-mix(in srgb, var(--eterx-sidebar-glow-lower) 3.2%, transparent) 38%, transparent 74%),
+    radial-gradient(ellipse at 112% 104%, color-mix(in srgb, var(--eterx-sidebar-glow-edge) 5.0%, transparent) 0%, color-mix(in srgb, var(--eterx-sidebar-glow-edge) 1.7%, transparent) 34%, transparent 70%);
   background-size: 100% 100%, 100% 100%, 126% 100%, 138% 100%, 132% 100%, 124% 100%;
   animation: ambientSidebarCycle 13s ease-in-out infinite;
 }
@@ -7711,7 +7768,7 @@
   }
 
   :root[data-theme="dark"] .eterx-composer-shell:not([data-compressed="true"]) .eterx-composer-textarea-wrap {
-    min-height: 26px;
+    min-height: 32px;
     padding-top: 0;
   }
 }
@@ -7785,31 +7842,85 @@
   }
 }
 
+/* Six related palettes, sixteen seconds per blend on the shared 96s timeline.
+   Sapphire leads back into the original blue/jade; matching endpoints and
+   ease-in-out timing let the last blend join the first without a color jump. */
+@keyframes ambientSidebarPaletteCycle {
+  /* Original Azure Jade */
+  0%,
+  100% {
+    --eterx-sidebar-glow-upper: #153AB2;
+    --eterx-sidebar-glow-middle: #105CD2;
+    --eterx-sidebar-glow-lower: #12825C;
+    --eterx-sidebar-glow-edge: #54FFBE;
+  }
+
+  /* Petrol Jade: blue eases into muted teal and green. */
+  16.666667% {
+    --eterx-sidebar-glow-upper: #315F71;
+    --eterx-sidebar-glow-middle: #458A91;
+    --eterx-sidebar-glow-lower: #4E9B80;
+    --eterx-sidebar-glow-edge: #A0D8C1;
+  }
+
+  /* Champagne Bronze: green warms through sage into bronze. */
+  33.333333% {
+    --eterx-sidebar-glow-upper: #786147;
+    --eterx-sidebar-glow-middle: #B18B57;
+    --eterx-sidebar-glow-lower: #987960;
+    --eterx-sidebar-glow-edge: #E4CBA0;
+  }
+
+  /* Garnet Rose: bronze warms into soft garnet and rose. */
+  50% {
+    --eterx-sidebar-glow-upper: #7B465F;
+    --eterx-sidebar-glow-middle: #AE697B;
+    --eterx-sidebar-glow-lower: #866381;
+    --eterx-sidebar-glow-edge: #DFB0BF;
+  }
+
+  /* Amethyst Smoke: rose cools through plum into violet. */
+  66.666667% {
+    --eterx-sidebar-glow-upper: #66508F;
+    --eterx-sidebar-glow-middle: #9876B5;
+    --eterx-sidebar-glow-lower: #6E6D9D;
+    --eterx-sidebar-glow-edge: #C6B6E5;
+  }
+
+  /* Sapphire Steel: violet returns to blue before the loop closes. */
+  83.333333% {
+    --eterx-sidebar-glow-upper: #3E5C96;
+    --eterx-sidebar-glow-middle: #628DC0;
+    --eterx-sidebar-glow-lower: #4F8794;
+    --eterx-sidebar-glow-edge: #A6CAD9;
+  }
+}
+
 @keyframes ambientSidebarCycle {
 
   0%,
   100% {
     opacity: 0.72;
     background-position: 0 0, 0 0, 42% 0, 34% 0, 100% 0, 78% 0;
-    filter: hue-rotate(0deg) saturate(0.9);
+    filter: saturate(0.9);
   }
 
   26% {
     opacity: 0.86;
     background-position: 0 0, 0 0, 12% 0, 0% 0, 70% 0, 46% 0;
-    filter: hue-rotate(18deg) saturate(1.02);
+    filter: saturate(1.02);
   }
 
   52% {
     opacity: 0.80;
     background-position: 0 0, 0 0, 0% 0, 18% 0, 34% 0, 18% 0;
-    filter: hue-rotate(70deg) saturate(1);
+    filter: saturate(1);
   }
 
   78% {
     opacity: 0.80;
     background-position: 0 0, 0 0, 28% 0, 52% 0, 12% 0, 0% 0;
-    filter: hue-rotate(128deg) saturate(0.98);
+    filter: saturate(0.98);
   }
 }
 
@@ -8443,8 +8554,10 @@
     max-width: min(100%, var(--eterx-chat-content-max));
     font-size: var(--eterx-home-greeting-size) !important;
     white-space: normal !important;
-    text-align: center;
+    text-align: left;
     text-wrap: balance;
+    margin: 0;
+    padding: 0;
     background-color: transparent !important;
     box-shadow: none !important;
     border: none !important;
@@ -9044,6 +9157,91 @@ body.eterx-gateway-view section.mt-7 {
 
 body.eterx-gateway-view section.mt-8 {
   margin-top: 0.65rem !important;
+}
+
+body.eterx-gateway-view .eterx-gateway-connections {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 1024px) {
+  body.eterx-gateway-view .eterx-gateway-connections {
+    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  }
+}
+
+body.eterx-gateway-view .eterx-gateway-connections > :is(aside, main) {
+  min-width: 0;
+}
+
+body.eterx-gateway-view .eterx-gateway-connections > main {
+  container-type: inline-size;
+}
+
+body.eterx-gateway-view .eterx-gateway-setup-fields {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 640px) {
+  body.eterx-gateway-view .eterx-gateway-setup-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 700px) {
+  body.eterx-gateway-view .eterx-gateway-setup-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+body.eterx-gateway-view .eterx-gateway-setup-fields > *,
+body.eterx-gateway-view .eterx-gateway-connections > main :is(input, select, textarea) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+body.eterx-gateway-view .eterx-gateway-connections > main p {
+  overflow-wrap: anywhere;
+}
+
+body.eterx-gateway-view .eterx-gateway-connections > main :is(input, select, textarea) {
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+body.eterx-gateway-view .eterx-gateway-connections > main :is(input, select, textarea):not(:disabled):not([readonly]):hover {
+  border-color: rgba(29, 140, 255, 0.48);
+}
+
+body.eterx-gateway-view .eterx-gateway-connections :is(button:not([aria-label="Close options"]), input, select, textarea, summary):focus-visible {
+  outline: 2px solid #1d8cff;
+  outline-offset: 2px;
+}
+
+body.eterx-gateway-view .eterx-gateway-connections button:not(:disabled):not([role="switch"]):not([role="option"]):not([aria-label="Close options"]) {
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+body.eterx-gateway-view .eterx-gateway-connections > main button:not(:disabled):not([role="switch"]):not([role="option"]):not([aria-label="Close options"]):hover {
+  border-color: rgba(29, 140, 255, 0.38);
+  box-shadow: 0 0 0 3px rgba(29, 140, 255, 0.08);
+}
+
+body.eterx-gateway-view .eterx-gateway-connection-list button:hover {
+  transform: translateX(2px);
+}
+
+body.eterx-gateway-view .eterx-gateway-mode-tabs button:not([aria-pressed="true"]):hover {
+  color: #126fc1 !important;
+  background: rgba(29, 140, 255, 0.08);
+}
+
+:root[data-theme="dark"] body.eterx-gateway-view .eterx-gateway-mode-tabs button:not([aria-pressed="true"]):hover {
+  color: #b9dcff !important;
+  background: rgba(29, 140, 255, 0.12);
+}
+
+body.eterx-gateway-view .eterx-gateway-mode-tabs button:focus-visible {
+  outline: 2px solid #1d8cff;
+  outline-offset: 2px;
 }
 
 body.eterx-gateway-view .eterx-gateway-mode-tabs {
@@ -11112,7 +11310,8 @@ body.eterx-gateway-view section.mt-8 > main {
     font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
     font-size: 14px !important;
     font-weight: 550 !important;
-    line-height: 1.35 !important;
+    line-height: 1.5 !important;
+    padding-block: 1px;
     letter-spacing: -0.006em !important;
   }
 
@@ -12118,7 +12317,7 @@ body.eterx-gateway-view section.mt-8 > main {
 
 .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-textarea-wrap {
   height: auto;
-  min-height: 26px !important;
+  min-height: 32px !important;
 }
 
 .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-textarea-wrap {
@@ -12131,7 +12330,7 @@ body.eterx-gateway-view section.mt-8 > main {
 .eterx-composer-shell .eterx-composer-main:not([data-live="true"]) .eterx-composer-textarea {
   display: block !important;
   width: 100% !important;
-  min-height: 26px !important;
+  min-height: 32px !important;
   max-height: var(--eterx-composer-textarea-max, 240px) !important;
   overflow-wrap: anywhere;
   word-break: break-word;

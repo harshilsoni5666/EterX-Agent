@@ -13,9 +13,9 @@ export const ToolDefinitionSchema = z.object({
   category: z.enum(['core', 'workspace', 'automation', 'support', 'research', 'communication', 'monitoring']),
   inputSchema: z.any(), // Should be a Zod schema object
   outputSchema: z.any(), // Map to expected output structure
-  execute: z.function()
-    .args(z.any(), z.any()) // args: parameters, context
-    .returns(z.promise(z.any()))
+  execute: z.custom<(args: any, context: any) => Promise<any>>(
+    value => typeof value === 'function',
+  ),
 });
 export type ToolDefinition = z.infer<typeof ToolDefinitionSchema>;
 

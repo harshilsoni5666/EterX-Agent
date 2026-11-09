@@ -1,11 +1,10 @@
 import { execFile, spawn } from 'child_process';
-import { promisify } from 'util';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
-import { getPlatformShortcut, normalizeShortcutForPlatform } from './platform-shortcuts';
 
-const execFileAsync = promisify(execFile);
+import { setTimeout as delay } from 'timers/promises';
+
 
 type CuaHealth = {
   schema_version?: string;
@@ -30,13 +29,18 @@ export type CuaActionResult = {
   success: boolean;
   result: unknown;
   provider: string;
-  vision?: { inlineData: { data: string; mimeType: 'image/png' } } | null;
+  vision?: { inlineData: { data: string; mimeType: 'image/png' | 'image/jpeg' } } | null;
+  observation?: Record<string, any>;
+  observationError?: string;
+  actionStatus?: 'not_sent' | 'sent' | 'unknown';
 };
 
 const PROVIDER = 'Cua Driver (background desktop control)';
-const STATUS_TTL_MS = 2500;
+const STATUS_TTL_MS = 15_000;
 let statusCache: { expiresAt: number; value: CuaDriverStatus } | null = null;
 let statusPromise: Promise<CuaDriverStatus> | null = null;
+let daemonPromise: Promise<CuaDriverStatus> | null = null;
+let daemonCache: { expiresAt: number; value: CuaDriverStatus } | null = null;
 
 function driverCommand(): string {
   const configured = String(process.env.ETERX_CUA_DRIVER_CMD || '').trim();
@@ -44,7 +48,7 @@ function driverCommand(): string {
 
   const home = os.homedir();
   const candidates = process.platform === 'win32'
-    ? [path.join(home, 'AppData', 'Local', 'Programs', 'Cua', 'cua-driver', 'bin', 'cua-driver.exe')]
+    ? [path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'Programs', 'Cua', 'cua-driver', 'bin', 'cua-driver.exe')]
     : process.platform === 'darwin'
       ? ['/opt/homebrew/bin/cua-driver', '/usr/local/bin/cua-driver', path.join(home, '.local', 'bin', 'cua-driver')]
       : ['/usr/local/bin/cua-driver', '/usr/bin/cua-driver', path.join(home, '.local', 'bin', 'cua-driver')];
@@ -54,22 +58,69 @@ function driverCommand(): string {
 function parseJson<T>(stdout: string): T | null {
   const text = String(stdout || '').trim();
   if (!text) return null;
-  try { return JSON.parse(text) as T; } catch {}
+  const unwrap = (value: any): T => {
+    if (value?.isError || value?.error || value?.success === false || value?.ok === false) return value as T;
+    if (value?.structuredContent) return value.structuredContent as T;
+    for (const block of Array.isArray(value?.content) ? value.content : []) {
+      if (block?.type !== 'text') continue;
+      try { return JSON.parse(block.text) as T; } catch {}
+    }
+    return value as T;
+  };
+  try {
+    return unwrap(JSON.parse(text));
+  } catch {}
   const first = text.indexOf('{');
   const last = text.lastIndexOf('}');
   if (first >= 0 && last > first) {
-    try { return JSON.parse(text.slice(first, last + 1)) as T; } catch {}
+    try {
+      return unwrap(JSON.parse(text.slice(first, last + 1)));
+    } catch {}
   }
   return null;
 }
 
-async function runCua(args: string[], timeout = 8000): Promise<string> {
-  const result = await execFileAsync(driverCommand(), args, {
-    timeout,
-    windowsHide: true,
-    maxBuffer: 12 * 1024 * 1024,
-  });
-  return String(result.stdout || '');
+function daemonIsRunning(stdout: string): boolean {
+  const value = parseJson<Record<string, unknown>>(stdout);
+  for (const flag of [value?.running, value?.daemonRunning, value?.daemon_running]) {
+    if (typeof flag === 'boolean') return flag;
+  }
+  const status = String(value?.status || stdout).replace(/\x1b\[[0-9;]*m/g, '');
+  return /\brunning\b/i.test(status) && !/\bnot\s+running\b|\bisn't\s+running\b|\bstopped\b/i.test(status);
+}
+
+export async function runCua(args: string[], timeout = 8000, signal?: AbortSignal, stdin?: string): Promise<string> {
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const child = execFile(driverCommand(), args, {
+        timeout, signal, windowsHide: true, maxBuffer: 24 * 1024 * 1024, encoding: 'utf8',
+      }, (error, stdout) => {
+        if (error) {
+          Object.assign(error, { stdout });
+          reject(error);
+        } else resolve(String(stdout || ''));
+      });
+      // CLI tool arguments use stdin so long Unicode/multiline typing is not
+      // constrained by Windows command-line limits or exposed in process argv.
+      child.stdin?.on('error', () => { /* Process completion carries the failure. */ });
+      child.stdin?.end(stdin);
+    });
+  } catch (error: any) {
+    // execFile's message contains the entire argv, including text being typed.
+    // Do not echo that into the chat or the monitor on a process failure.
+    daemonCache = null;
+    if (signal?.aborted) throw new Error('Computer action cancelled. Observe the target before repeating any input that may already have been sent.');
+    const structured = parseJson<any>(String(error?.stdout || ''));
+    if (args[0] === 'call' && !error?.killed && structured
+      && (structured.isError || structured.error || structured.success === false || structured.ok === false)) {
+      return String(error.stdout);
+    }
+    throw new Error(error?.code === 'ENOENT'
+      ? 'Cua Driver executable was not found. Install it or set ETERX_CUA_DRIVER_CMD to its executable path.'
+      : error?.killed
+        ? 'Cua Driver timed out. Input may have been delivered; observe the target before retrying.'
+        : `Cua Driver could not complete the request (${String(error?.code || 'process error')}). Refresh desktop status for setup details.`);
+  }
 }
 
 async function probeStatus(): Promise<CuaDriverStatus> {
@@ -90,16 +141,17 @@ async function probeStatus(): Promise<CuaDriverStatus> {
 
   let daemonRunning = false;
   try {
-    const status = (await runCua(['status'], 3500)).toLowerCase();
-    daemonRunning = /daemon\s+is\s+running|running\s+on/.test(status) && !/not running|unhealthy/.test(status);
+    daemonRunning = daemonIsRunning(await runCua(['status'], 3500));
   } catch {}
 
   let health: CuaHealth | undefined;
   try {
-    health = parseJson<CuaHealth>(await runCua(['call', 'health_report', '{}'], 9000)) || undefined;
+    const report = parseJson<CuaHealth & { isError?: boolean; error?: unknown; success?: boolean; ok?: boolean }>(await runCua(['call', 'health_report', '{}'], 9000));
+    if (report && !report.isError && !report.error && report.success !== false && report.ok !== false && typeof report.overall === 'string') health = report;
   } catch {}
 
   const overall = health?.overall || (daemonRunning ? 'unknown' : 'stopped');
+  if (health) daemonRunning = true;
   const healthy = daemonRunning && overall === 'ok';
   const message = healthy
     ? `Driver ${health?.driver_version || version.replace(/^cua-driver\s+/i, '')} is ready.`
@@ -136,16 +188,15 @@ async function probeDaemonOnly(): Promise<CuaDriverStatus> {
   }
 
   try {
-    const status = (await runCua(['status'], 3500)).toLowerCase();
-    const daemonRunning = /daemon\s+is\s+running|running\s+on/.test(status) && !/not running|unhealthy/.test(status);
+    const daemonRunning = daemonIsRunning(await runCua(['status'], 3500));
     return {
       installed: true,
       version: version.replace(/^cua-driver\s+/i, '') || null,
       daemonRunning,
-      healthy: daemonRunning,
+      healthy: false,
       overall: daemonRunning ? 'unknown' : 'stopped',
       platform: process.platform,
-      message: daemonRunning ? 'Cua Driver daemon is ready.' : 'Cua Driver daemon is not running.',
+      message: daemonRunning ? 'Cua Driver daemon is running; detailed health is available in Settings.' : 'Cua Driver daemon is not running.',
     };
   } catch {
     return {
@@ -161,6 +212,7 @@ async function probeDaemonOnly(): Promise<CuaDriverStatus> {
 }
 
 export async function getCuaDriverStatus(force = false): Promise<CuaDriverStatus> {
+  if (force) { statusCache = null; daemonCache = null; }
   if (!force && statusCache && statusCache.expiresAt > Date.now()) return statusCache.value;
   if (statusPromise) return statusPromise;
   statusPromise = probeStatus().then(value => {
@@ -174,294 +226,30 @@ export async function ensureCuaDriverDaemon(): Promise<CuaDriverStatus> {
   // Desktop actions only need a live endpoint. The detailed health report is
   // intentionally reserved for the settings/status surface so it cannot add
   // seconds of latency to every click or keystroke.
-  const current = await probeDaemonOnly();
-  if (!current.installed || current.daemonRunning) return current;
-
-  const child = spawn(driverCommand(), ['serve'], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  child.unref();
-
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 350 : 250));
-    const next = await probeDaemonOnly();
-    if (next.daemonRunning) return next;
-  }
-  return probeDaemonOnly();
-}
-
-async function callCuaTool(tool: string, input: Record<string, unknown> = {}, options: { timeout?: number; screenshotOutFile?: string } = {}) {
-  const args = ['call', tool, JSON.stringify(input)];
-  if (options.screenshotOutFile) args.push('--screenshot-out-file', options.screenshotOutFile);
-  const stdout = await runCua(args, options.timeout ?? 15000);
-  return parseJson<any>(stdout) ?? { raw: stdout.trim() };
-}
-
-async function captureCuaScreen(): Promise<{ data: string; mimeType: 'image/png' } | null> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eterx-cua-'));
-  const imagePath = path.join(dir, 'screen.png');
-  try {
-    await callCuaTool('get_desktop_state', {}, { timeout: 15000, screenshotOutFile: imagePath });
-    if (!(await fs.pathExists(imagePath))) return null;
-    return { data: (await fs.readFile(imagePath)).toString('base64'), mimeType: 'image/png' };
-  } finally {
-    await fs.remove(dir).catch(() => {});
-  }
-}
-
-function didCuaActionSucceed(result: unknown): boolean {
-  if (!result || typeof result !== 'object') return true;
-  const value = result as Record<string, unknown>;
-  if (typeof value.success === 'boolean') return value.success;
-  if (typeof value.ok === 'boolean') return value.ok;
-  if (value.error || value.errors) return false;
-  const status = String(value.status || value.state || '').trim().toLowerCase();
-  if (['error', 'failed', 'failure', 'denied'].includes(status)) return false;
-  return true;
-}
-
-async function withDesktopVision(result: unknown): Promise<CuaActionResult> {
-  const vision = await captureCuaScreen();
-  return { success: didCuaActionSucceed(result), result, provider: PROVIDER, vision: vision ? { inlineData: vision } : null };
-}
-
-function actionCoordinates(input: any): Record<string, unknown> {
-  const x = Number(input?.x);
-  const y = Number(input?.y);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    throw new Error('x and y coordinates are required for this desktop action.');
-  }
-  return {
-    scope: 'desktop',
-    x,
-    y,
-  };
-}
-
-function normalizeKey(key: string): string {
-  const value = key.trim().toLowerCase();
-  const aliases: Record<string, string> = {
-    esc: 'escape',
-    enter: 'return',
-    ctrl: 'control',
-    page_up: 'pageup',
-    page_down: 'pagedown',
-  };
-  return aliases[value] || value;
-}
-
-async function listWindows(): Promise<any[]> {
-  const result = await callCuaTool('list_windows', {});
-  return Array.isArray(result?.windows) ? result.windows : [];
-}
-
-async function resolveWindow(query: string): Promise<any | null> {
-  const needle = query.trim().toLowerCase();
-  if (!needle) return null;
-  const windows = await listWindows();
-  return windows.find(window => `${window.app_name || ''} ${window.title || ''}`.toLowerCase().includes(needle)) || null;
-}
-
-const CUA_ACTIONS = new Set([
-  'see', 'see_region', 'click', 'right_click', 'double_click', 'drag', 'type', 'key', 'scroll', 'hover',
-  'get_cursor', 'list_apps', 'focus_app', 'launch_app', 'find', 'read', 'wait_text',
-  'select_all', 'copy', 'paste', 'save', 'undo', 'close_window',
-]);
-
-async function getWindowElements(query?: string): Promise<{ window: any; elements: any[] } | null> {
-  const windows = (await listWindows())
-    .filter(window => window?.is_on_screen !== false && Number.isFinite(Number(window?.pid)) && Number.isFinite(Number(window?.window_id)))
-    .sort((a, b) => Number(b?.z_index ?? -1) - Number(a?.z_index ?? -1));
-  const needle = String(query || '').trim().toLowerCase();
-  const ordered = needle
-    ? [...windows.filter(window => `${window.app_name || ''} ${window.title || ''}`.toLowerCase().includes(needle)), ...windows]
-    : windows;
-  const seen = new Set<string>();
-  // A desktop may expose hundreds of installed-but-hidden apps. Semantic
-  // discovery is intentionally scoped to the frontmost few visible windows;
-  // callers can focus an app first when they need a different target.
-  for (const window of ordered.slice(0, 4)) {
-    const key = `${window.pid}:${window.window_id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    try {
-      const state = await callCuaTool('get_window_state', {
-        pid: Number(window.pid),
-        window_id: Number(window.window_id),
-        include_screenshot: false,
-        max_depth: 12,
-        max_elements: 500,
+  if (daemonCache && daemonCache.expiresAt > Date.now()) return daemonCache.value;
+  if (daemonPromise) return daemonPromise;
+  daemonPromise = (async () => {
+    let current = await probeDaemonOnly();
+    if (current.installed && !current.daemonRunning) {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(driverCommand(), ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
+        child.once('error', () => reject(new Error('Could not start the Cua Driver background service.')));
+        child.once('spawn', () => { child.unref(); resolve(); });
       });
-      const elements = Array.isArray(state?.elements) ? state.elements : [];
-      if (elements.length) return { window, elements };
-    } catch {}
-  }
-  return null;
+      const deadline = Date.now() + 12_000;
+      do {
+        await delay(350);
+        current = await probeDaemonOnly();
+      } while (!current.daemonRunning && Date.now() < deadline);
+    }
+    daemonCache = { value: current, expiresAt: Date.now() + (current.daemonRunning ? 10_000 : 2000) };
+    statusCache = null;
+    return current;
+  })().finally(() => { daemonPromise = null; });
+  return daemonPromise;
 }
 
-export async function executeCuaScreenAction(action: string, input: any): Promise<CuaActionResult | null> {
-  if (!CUA_ACTIONS.has(action)) return null;
-  const status = await ensureCuaDriverDaemon();
-  if (!status.installed) return null;
-  if (!status.daemonRunning) {
-    return { success: false, result: `${status.message} Start the cua-driver daemon and retry.`, provider: PROVIDER, vision: null };
-  }
-
-  try {
-    if (action === 'see' || action === 'see_region') {
-      const vision = await captureCuaScreen();
-      return vision
-        ? { success: true, result: action === 'see_region' ? 'Current desktop captured; Cua Driver returns the full desktop frame.' : 'Current desktop captured', provider: PROVIDER, vision: { inlineData: vision } }
-        : { success: false, result: 'Cua Driver did not return a desktop screenshot.', provider: PROVIDER, vision: null };
-    }
-
-    if (action === 'click' || action === 'right_click' || action === 'double_click') {
-      const coordinates = actionCoordinates(input);
-      // The Windows driver exposes right/double clicks as the `button` and
-      // `count` options on its desktop-scoped click endpoint. Its dedicated
-      // right_click endpoint is window/PID scoped, so using it here makes
-      // screen coordinates fail even though ordinary clicks work.
-      const useWindowsClickOptions = process.platform === 'win32';
-      const tool = useWindowsClickOptions || action === 'click'
-        ? 'click'
-        : action === 'right_click' ? 'right_click' : 'double_click';
-      const payload = useWindowsClickOptions
-        ? { ...coordinates, ...(action === 'right_click' ? { button: 'right' } : {}), ...(action === 'double_click' ? { count: 2 } : {}) }
-        : coordinates;
-      const result = await callCuaTool(tool, payload);
-      return withDesktopVision(result || `${action} dispatched through Cua Driver.`);
-    }
-
-    if (action === 'drag') {
-      const x2 = Number(input.x2);
-      const y2 = Number(input.y2);
-      if (!Number.isFinite(x2) || !Number.isFinite(y2)) {
-        throw new Error('x2 and y2 coordinates are required for drag.');
-      }
-      const result = await callCuaTool('drag', {
-        from_x: Number(input.x), from_y: Number(input.y), to_x: x2, to_y: y2, scope: 'desktop',
-      });
-      return withDesktopVision(result || 'Drag dispatched through Cua Driver.');
-    }
-
-    if (action === 'type') {
-      if (!String(input.text || '')) return { success: false, result: 'No text provided.', provider: PROVIDER, vision: null };
-      const target = input.x != null && input.y != null ? actionCoordinates(input) : { scope: 'desktop' };
-      const result = await callCuaTool('type_text', { ...target, text: String(input.text) });
-      return withDesktopVision(result || `Typed ${String(input.text).length} characters through Cua Driver.`);
-    }
-
-    if (action === 'key') {
-      const shortcut = normalizeShortcutForPlatform(String(input.text || 'enter'));
-      const raw = shortcut.split('+').map(normalizeKey);
-      const result = raw.length > 1
-        ? await callCuaTool('hotkey', { keys: raw, scope: 'desktop' })
-        : await callCuaTool('press_key', { key: raw[0], scope: 'desktop' });
-      return withDesktopVision(result || `Key ${String(input.text || 'enter')} dispatched through Cua Driver.`);
-    }
-
-    if (action === 'scroll') {
-      const result = await callCuaTool('scroll', {
-        ...actionCoordinates(input), direction: input.direction === 'up' ? 'up' : 'down', amount: Math.max(1, Math.min(50, Number(input.amount || 3))), scope: 'desktop',
-      });
-      return withDesktopVision(result || 'Scroll dispatched through Cua Driver.');
-    }
-
-    if (action === 'hover') {
-      const result = await callCuaTool('move_cursor', actionCoordinates(input));
-      return withDesktopVision(result || 'Cursor moved through Cua Driver.');
-    }
-
-    if (action === 'get_cursor') {
-      const result = await callCuaTool('get_cursor_position', {});
-      return { success: didCuaActionSucceed(result), result, provider: PROVIDER, vision: null };
-    }
-
-    if (action === 'clipboard_get' || action === 'clipboard_set') {
-      const result = await callCuaTool(action === 'clipboard_get' ? 'clipboard_read' : 'clipboard_write', action === 'clipboard_get' ? { include_text: true } : { text: String(input.text || '') });
-      return { success: didCuaActionSucceed(result), result, provider: PROVIDER, vision: null };
-    }
-
-    if (action === 'list_apps') {
-      const result = await callCuaTool('list_apps', {});
-      return { success: didCuaActionSucceed(result), result: result?.apps || result, provider: PROVIDER, vision: null };
-    }
-
-    if (action === 'find' || action === 'read') {
-      const query = String(input.query || input.text || '').trim().toLowerCase();
-      if (action === 'find' && !query) return { success: false, result: 'No query provided.', provider: PROVIDER, vision: null };
-      const found = await getWindowElements(action === 'find' ? query : undefined);
-      if (!found) return { success: false, result: 'Cua Driver could not read an accessible window on the current desktop.', provider: PROVIDER, vision: null };
-      const windowX = Number(found.window?.bounds?.x || 0);
-      const windowY = Number(found.window?.bounds?.y || 0);
-      const elements = found.elements.map(element => ({
-        ...element,
-        text: String(element.label || element.value || '').trim(),
-        center: {
-          x: windowX + Number(element.frame?.x || 0) + Math.round(Number(element.frame?.w || 0) / 2),
-          y: windowY + Number(element.frame?.y || 0) + Math.round(Number(element.frame?.h || 0) / 2),
-        },
-      })).filter(element => element.text);
-      if (action === 'read') return withDesktopVision(elements.map(element => element.text).join('\n') || '(no accessible text found)');
-      const match = elements.find(element => element.text.toLowerCase().includes(query));
-      if (!match) return { success: false, result: `Element "${query}" not found in the accessible desktop window.`, provider: PROVIDER, vision: null };
-      return withDesktopVision({
-        text: match.text,
-        center: match.center,
-        bounds: { x: windowX + Number(match.frame?.x || 0), y: windowY + Number(match.frame?.y || 0), w: Number(match.frame?.w || 0), h: Number(match.frame?.h || 0) },
-        source: PROVIDER,
-        tip: 'Use click with the returned center coordinates.',
-      });
-    }
-
-    if (action === 'wait_text') {
-      const wanted = String(input.text || '').trim().toLowerCase();
-      if (!wanted) return { success: false, result: 'No text to wait for.', provider: PROVIDER, vision: null };
-      const deadline = Date.now() + Math.min(Number(input.timeout_ms || 12000), 60000);
-      while (Date.now() < deadline) {
-        const result = await executeCuaScreenAction('find', { query: wanted });
-        if (result?.success) return { success: true, result: `Text "${wanted}" appeared.`, provider: PROVIDER, vision: result.vision || null };
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      return { success: false, result: `Text "${wanted}" did not appear before the timeout.`, provider: PROVIDER, vision: null };
-    }
-
-    if (action === 'focus_app') {
-      const target = await resolveWindow(String(input.text || ''));
-      if (!target?.pid) return { success: false, result: `Window not found: ${String(input.text || '')}`, provider: PROVIDER, vision: null };
-      const result = await callCuaTool('bring_to_front', { pid: target.pid, window_id: target.window_id });
-      return withDesktopVision(result || `Focused ${String(input.text || '')}.`);
-    }
-
-    if (action === 'launch_app') {
-      const needle = String(input.text || '').trim().toLowerCase();
-      const apps = (await callCuaTool('list_apps', {}))?.apps || [];
-      const app = apps.find((candidate: any) => String(candidate?.name || '').toLowerCase().includes(needle));
-      if (!app) return { success: false, result: `Installed app not found: ${String(input.text || '')}`, provider: PROVIDER, vision: null };
-      const launchInput = {
-        ...(app.bundle_id ? { bundle_id: app.bundle_id } : {}),
-        ...(app.name ? { name: app.name } : {}),
-        ...(app.path ? { path: app.path } : {}),
-        ...(app.launch_path ? { launch_path: app.launch_path } : {}),
-      };
-      const result = await callCuaTool('launch_app', launchInput);
-      return withDesktopVision(result || `Launched ${String(input.text || '')}.`);
-    }
-
-    const shortcutActions = new Set(['select_all', 'copy', 'paste', 'save', 'undo', 'close_window']);
-    if (shortcutActions.has(action)) {
-      const keys = getPlatformShortcut(action as 'select_all' | 'copy' | 'paste' | 'save' | 'undo' | 'close_window').split('+');
-      const result = await callCuaTool('hotkey', { keys, scope: 'desktop' });
-      return withDesktopVision(result || `${action} dispatched through Cua Driver.`);
-    }
-
-    return null;
-  } catch (error: any) {
-    return { success: false, result: String(error?.message || error).replace(/\s+/g, ' ').slice(0, 500), provider: PROVIDER, vision: null };
-  }
-}
+export { executeCuaScreenAction, captureCuaPreview, endCuaSession } from './cua-actions';
 
 export function cuaDriverProvider(): string {
   return PROVIDER;

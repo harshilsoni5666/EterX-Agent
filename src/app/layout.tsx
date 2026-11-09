@@ -35,7 +35,7 @@ export const dynamic = 'force-dynamic';
 // where it is not installed.
 const localFontVariables: CSSProperties = {
   '--font-sans': '"Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif',
-  '--font-mono': '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+  '--font-mono': 'var(--font-geist-mono)',
   '--font-serif': 'Lora, Georgia, Cambria, "Times New Roman", serif',
 } as CSSProperties;
 

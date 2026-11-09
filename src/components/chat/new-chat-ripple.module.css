@@ -1,0 +1,31 @@
+.field {
+  --edge-x: clamp(14px, 3%, 52px);
+  --edge-y: clamp(12px, 3%, 36px);
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  contain: strict;
+  /* Keep partial glyphs and antialiasing away from the window's pixel edge. */
+  clip-path: inset(1px);
+  -webkit-mask-image:
+    linear-gradient(90deg, transparent, #000 var(--edge-x), #000 calc(100% - var(--edge-x)), transparent),
+    linear-gradient(180deg, transparent, #000 var(--edge-y), #000 calc(100% - var(--edge-y)), transparent);
+  mask-image:
+    linear-gradient(90deg, transparent, #000 var(--edge-x), #000 calc(100% - var(--edge-x)), transparent),
+    linear-gradient(180deg, transparent, #000 var(--edge-y), #000 calc(100% - var(--edge-y)), transparent);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+  .field {
+    display: none;
+  }
+}

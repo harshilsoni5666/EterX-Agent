@@ -729,4 +729,5 @@ class InterAgentMailbox {
 // Singleton Export
 // ═══════════════════════════════════════════════════════════════
 
-export const interAgentMailbox = new InterAgentMailbox();
+const mailboxGlobal = globalThis as typeof globalThis & { __eterxInterAgentMailbox?: InterAgentMailbox };
+export const interAgentMailbox = mailboxGlobal.__eterxInterAgentMailbox ||= new InterAgentMailbox();

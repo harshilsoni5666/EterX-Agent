@@ -33,8 +33,8 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
   const lastURL = useRef('');
   const viewport = useRef<HTMLDivElement>(null);
   const viewportFlags = useRef({ url: '', error: '', overlay: false });
-  const scheduleViewport = useRef<() => void>();
-  const frameReady = useRef<(revision: number) => void>();
+  const scheduleViewport = useRef<() => void>(undefined);
+  const frameReady = useRef<(revision: number) => void>(undefined);
   const [pageFrame, setPageFrame] = useState<{ source: string; revision: number } | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const [history, setHistory] = useState<BrowserHistoryItem[]>([]);
@@ -44,7 +44,7 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
   const [capturing, setCapturing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [captureError, setCaptureError] = useState('');
-  const copiedTimer = useRef<ReturnType<typeof setTimeout>>();
+  const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
     let disposed = false;
     const refresh = () => { if (!disposed) setHistory(readBrowserHistory()); };

@@ -2,15 +2,16 @@ import fs from 'fs-extra';
 import { randomUUID } from 'crypto';
 import { createIsolatedClient } from '../Agent';
 import { agentRegistry } from '../agent-registry';
-import { MODEL_PROVIDER_MODE, isModelProvider } from '../model-selector-store';
+import { MODEL_PROVIDER_MODE, isModelProvider, parseModelEntryKey } from '../model-selector-store';
 import { buildScopedRuntimeSettings, getScopedRuntimeApiKey, type ScopedRuntimeSettings } from '../runtime-api-keys';
 import type { MainAgentMode, MainAgentProvider } from '../model-routing';
 import { getEterxWorkspaceDir } from '../storage-paths';
 import { taskStore } from '../task-store';
-import { readProxyControl, subscribeProxyControl } from './proxy-control-plane';
+import { readProxyControl, subscribeProxyControl, type ProxyTaskInput } from './proxy-control-plane';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from '../self-improvement/engine';
 import { delegationTelemetryFromTrace } from '../delegation-evidence';
 import { CONVERSATION_INTENT_POLICY } from '../conversation-intent-policy';
+import { rebaseContextCompactionWindow } from '../model-context-window';
 
 export type ProxyManagerChatMessage = {
   id: string;
@@ -28,8 +29,10 @@ type ProxyManagerInput = {
   message: string;
   requestId?: string;
   attachmentContext?: string;
+  controlGeneration?: number;
   mediaAttachments?: Array<{ path: string; mimeType: string; name?: string; id?: string }>;
   mainModel?: { provider: string; modelId: string };
+  workspace?: ProxyTaskInput['workspace'];
   model?: { provider?: string; modelId?: string };
   contextCompaction?: unknown;
   onProgress?: (event: ProxyManagerProgress) => void;
@@ -94,7 +97,11 @@ type ManagerStore = {
   updatedAt: number;
 };
 
-const proxyManagerTurnChains = new Map<string, Promise<void>>();
+const proxyManagerGlobal = globalThis as typeof globalThis & {
+  __eterxProxyManagerTurnChains?: Map<string, Promise<void>>;
+};
+const proxyManagerTurnChains = proxyManagerGlobal.__eterxProxyManagerTurnChains
+  || (proxyManagerGlobal.__eterxProxyManagerTurnChains = new Map<string, Promise<void>>());
 const EMPTY_COORDINATION_MODEL: ManagerStore['coordinationModel'] = {
   activeIntent: '',
   constraints: [],
@@ -278,7 +285,9 @@ async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal
   if (!admissionControl.enabled || admissionControl.paused) throw new Error(admissionControl.paused ? 'Proxy is paused. Resume Proxy to continue coordinating.' : 'Turn on Autonomous mode to use Proxy.');
   if (admissionControl.stopGeneration !== stopGenerationAtStart) throw new Error('Proxy controls changed while this request was waiting. Send it again to continue.');
   const store = readStore(input.chatId);
-  const resolved = resolveModel(input.model);
+  // A model may change while this turn waits behind another request. Resolve
+  // from the saved controls when work starts, not from the earlier UI snapshot.
+  const resolved = resolveModel(parseModelEntryKey(admissionControl.modelSelection) || input.model);
   const existingReply = input.requestId ? store.messages.find(item => item.role === 'proxy' && item.requestId === input.requestId) : undefined;
   if (existingReply) return { message: existingReply, history: store.messages, model: { provider: resolved.provider, modelId: resolved.modelId }, wakeRequested: agentRegistry.getProxyManagerContext(input.chatId)?.run?.status === 'running' };
   const userMessage: ProxyManagerChatMessage = {
@@ -289,12 +298,13 @@ async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal
     createdAt: Date.now(),
   };
   if (!store.messages.some(item => item.id === userMessage.id)) store.messages.push(userMessage);
-  store.model = input.model;
+  store.model = { provider: resolved.provider, modelId: resolved.modelId };
   // Persist the accepted user turn before model/tool work begins. A provider
   // failure must not make the prompt disappear from the side conversation.
   writeStore(store);
 
   const live = agentRegistry.getProxyManagerContext(input.chatId);
+  if (input.workspace) live.workspace = { path: input.workspace.path || '', pinnedPaths: input.workspace.paths };
   if (live?.run?.status === 'idle') {
     const persisted = await taskStore.getTask(input.chatId).catch(() => null);
     if (persisted) {
@@ -406,7 +416,7 @@ async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal
     strictModelSelection: Boolean(resolved.modelId),
     selectedThinkingLevel: 'high',
     runtimeSettings: resolved.settings,
-    contextCompaction: input.contextCompaction,
+    contextCompaction: rebaseContextCompactionWindow(input.contextCompaction, resolved.provider, resolved.modelId),
     durableContextPersistence: true,
     workspacePath: live?.workspace?.path || undefined,
     paths: live?.workspace?.pinnedPaths || [],
@@ -515,7 +525,7 @@ async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal
       timestamp: Date.now(),
     });
     if (decision.operation === 'schedule_workflow') {
-      const queued = agentRegistry.queueProxyWorkflow(input.chatId, decision.tasks.map(task => ({ ...task, mediaAttachments: input.mediaAttachments, model: input.mainModel })));
+      const queued = agentRegistry.queueProxyWorkflow(input.chatId, decision.tasks.map(task => ({ ...task, mediaAttachments: input.mediaAttachments, model: input.mainModel, workspace: input.workspace })));
       deliveryError = queued.error || '';
       delivery = !queued.accepted || queued.status === 'failed'
         ? 'unavailable'
@@ -527,6 +537,7 @@ async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal
         supersedesTaskId: decision.operation === 'replace_queued_task' ? decision.supersedesTaskId : undefined,
         mediaAttachments: input.mediaAttachments,
         model: input.mainModel,
+        workspace: input.workspace,
       });
       delivery = !queued.accepted || queued.status === 'failed'
         ? 'unavailable'
@@ -614,7 +625,8 @@ async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal
 }
 
 export async function talkToProxyManager(input: ProxyManagerInput): Promise<{ message: ProxyManagerChatMessage; history: ProxyManagerChatMessage[]; model: { provider: string; modelId: string }; wakeRequested: boolean }> {
-  const stopGenerationAtAdmission = readProxyControl(input.chatId).stopGeneration;
+  input = { ...input, requestId: input.requestId || randomUUID() };
+  const stopGenerationAtAdmission = input.controlGeneration ?? readProxyControl(input.chatId).stopGeneration;
   const previous = proxyManagerTurnChains.get(input.chatId) || Promise.resolve();
   if (proxyManagerTurnChains.has(input.chatId)) input.onProgress?.({ type: 'status', text: 'Waiting for the previous coordination request', phase: 'queued', timestamp: Date.now() });
   const turn = previous.catch(() => undefined).then(async () => {
@@ -640,6 +652,9 @@ export async function talkToProxyManager(input: ProxyManagerInput): Promise<{ me
       return await Promise.race([runProxyManagerTurn(input, controller.signal, stopGenerationAtAdmission), deadline, interrupted]);
     } catch (error: any) {
       const store = readStore(input.chatId);
+      if (!input.requestId || !store.messages.some(message => message.id === input.requestId)) {
+        store.messages.push({ id: input.requestId || randomUUID(), requestId: input.requestId, role: 'user', text: input.message, createdAt: Date.now() });
+      }
       const failure: ProxyManagerChatMessage = { id: randomUUID(), requestId: input.requestId, role: 'proxy', text: error?.message || 'Proxy Manager is temporarily unavailable.', createdAt: Date.now(), operation: 'none', delivery: 'unavailable' };
       store.messages.push(failure);
       writeStore(store);

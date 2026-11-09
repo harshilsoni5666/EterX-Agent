@@ -4,6 +4,7 @@ import path from 'path';
 import { resolveFinalArtifactPathForContext } from '../../workspace/path_resolver';
 import { enforceToolCapability } from '../security/tool_policy';
 import { executeImageGeneration } from '../../../image/image-generation-runtime';
+import { IMAGE_PROVIDER_IDS, type ImageProvider } from '../../../image/image-generation-config';
 import { retainChatImageOutput } from '../../../chat-media-store';
 
 /**
@@ -42,6 +43,8 @@ Use for creative images: photos, illustrations, product shots, UI mockups, cover
 
 Do NOT return SVG/HTML placeholders when the user requested a generated raster image.
 
+Uses the enabled provider and fallback order in External service settings. You may select any enabled provider for this call. If providerActionMode is pending, resume using the returned job's provider, model, and id as jobId; do not submit another generation. Failures include the attempted providers and reasons.
+
 Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo, ui, product, landscape.`,
   category: 'core',
   inputSchema: z.object({
@@ -51,6 +54,9 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
     width: z.number().optional().default(1024).describe('Width in pixels (512-1920)'),
     height: z.number().optional().default(1024).describe('Height in pixels (512-1920)'),
     filename: z.string().optional().describe('Custom filename. Default: generated_<timestamp>.png'),
+    provider: z.enum(IMAGE_PROVIDER_IDS).optional().describe('Optional enabled image provider to try first.'),
+    model: z.string().trim().min(1).optional().describe('Exact model for the chosen provider. Required with jobId.'),
+    jobId: z.string().trim().min(1).optional().describe('Resume an existing generation using its returned provider and model.'),
     enhancePrompt: z.boolean().optional().default(true).describe('Auto-enhance the prompt with style and quality modifiers')
   }),
   outputSchema: z.object({
@@ -60,6 +66,11 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
     enhancedPrompt: z.string(),
     provider: z.string().optional(),
     model: z.string().optional(),
+    providerActionMode: z.string().optional(),
+    attemptedProviders: z.array(z.string()).optional(),
+    failedProviders: z.array(z.object({ provider: z.string(), model: z.string(), error: z.string() })).optional(),
+    job: z.object({ provider: z.string(), model: z.string(), id: z.string() }).optional(),
+    downloadURL: z.string().optional(),
     displayUrl: z.string().optional(),
     images: z.array(z.object({ src: z.string(), localPath: z.string(), name: z.string() })).optional(),
   }),
@@ -69,6 +80,9 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
     width?: number,
     height?: number,
     filename?: string,
+    provider?: ImageProvider,
+    model?: string,
+    jobId?: string,
     enhancePrompt?: boolean
   }, context?: any) => {
     const policy = enforceToolCapability('image_generator', input, context);
@@ -98,14 +112,13 @@ Styles: realistic, illustration, diagram, icon, abstract, photo, 3d, anime, logo
     console.log(`[Tool: image_generator] Enhanced: "${finalPrompt.substring(0, 100)}..."`);
 
     try {
-      const result = await executeImageGeneration({ prompt: finalPrompt, width: w, height: h, filePath });
+      const result = await executeImageGeneration({ prompt: finalPrompt, width: w, height: h, filePath, provider: input.provider, model: input.model, jobId: input.jobId }, context);
       const savedName = result.filePath ? path.basename(result.filePath) : '';
       const displayUrl = result.success && result.filePath
         ? await retainChatImageOutput(String(context?.ownerChatId || context?.chatId || context?.projectId || ''), result.filePath).catch(() => '') : '';
       console.log(`[Tool: image_generator] ${result.message}`);
       return {
-        success: result.success,
-        filePath: result.filePath,
+        ...result,
         ...(result.success && result.filePath ? {
           displayUrl: displayUrl || result.filePath,
           images: [{ src: displayUrl || result.filePath, localPath: result.filePath, name: savedName }],

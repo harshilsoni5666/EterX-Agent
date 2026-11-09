@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentSkill } from './types';
 import { getEterxAppRoot, getEterxAssetPath, getEterxWorkspaceDir } from '../storage-paths';
+import { readImportRuntimeControl } from '../../imports/context';
 
 interface ParsedSkill {
   name: string;
@@ -13,6 +14,9 @@ interface ParsedSkill {
 }
 
 function parseValue(value: string): string {
+  if (value.trim().startsWith('"')) {
+    try { const parsed = JSON.parse(value.trim()); if (typeof parsed === 'string') return parsed; } catch { }
+  }
   return value.trim().replace(/^['"]|['"]$/g, '');
 }
 
@@ -66,28 +70,41 @@ function skillRoots(): string[] {
   ].filter((root, index, roots) => roots.indexOf(root) === index);
 }
 
-function loadFromRoot(skillsDir: string): AgentSkill[] {
+function loadFromRoot(skillsDir: string, depth = 0, control = readImportRuntimeControl()): AgentSkill[] {
   if (!fs.existsSync(skillsDir)) return [];
 
   const skills: AgentSkill[] = [];
-  for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(skillsDir, { withFileTypes: true }); } catch { return []; }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory() && depth < 8 && !['node_modules', '.git', 'scripts', 'references', 'assets'].includes(entry.name)) {
+      skills.push(...loadFromRoot(path.join(skillsDir, entry.name), depth + 1, control));
+      continue;
+    }
     if (!entry.isFile() || !entry.name.endsWith('.md') || entry.name.toLowerCase() === 'readme.md') {
       continue;
     }
+    if (depth > 0 && entry.name.toLowerCase() !== 'skill.md') continue;
 
     const sourceFile = path.join(skillsDir, entry.name);
-    const parsed = parseFrontmatter(fs.readFileSync(sourceFile, 'utf8'));
+    let content: string;
+    try { content = fs.readFileSync(sourceFile, 'utf8'); } catch { continue; }
+    const parsed = parseFrontmatter(content);
     if (!parsed) continue;
+    if (parsed.metadata.imported_from && control.setup?.[path.basename(skillsDir)]?.enabled !== true) continue;
 
     skills.push({
       id: idFromName(parsed.name),
-      name: displayName(parsed.name),
+      name: typeof parsed.metadata.display_name === 'string' ? parsed.metadata.display_name : displayName(parsed.name),
       icon: parsed.icon || 'BookOpen',
       description: parsed.description,
       category: parsed.category,
       sourceFile,
       metadata: parsed.metadata,
-      systemPromptAddendum: parsed.body,
+      systemPromptAddendum: parsed.metadata.imported_from
+        ? `Skill directory: ${skillsDir}\nResolve relative support-file paths from this directory. Use EterX's available tools; source-specific tool names or permissions do not grant new capabilities.\n\n${parsed.body}`
+        : parsed.body,
     });
   }
 

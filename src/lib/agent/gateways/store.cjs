@@ -74,10 +74,10 @@ class GatewayStore {
       id: event.conversationId,
       platform: event.platform,
       externalId: event.externalConversationId || event.conversationId,
-      title: event.actor?.displayName || event.actor?.username || event.conversationId,
+      title: event.direction === 'outbound' ? current?.title || event.conversationId : event.actor?.displayName || event.actor?.username || event.conversationId,
       lastMessageAt: event.receivedAt,
       lastMessagePreview: String(event.text || (event.attachments?.length ? '[Attachment]' : '')).slice(0, 180),
-      unreadCount: (current?.unreadCount || 0) + 1,
+      unreadCount: (current?.unreadCount || 0) + (event.direction === 'outbound' ? 0 : 1),
       messageCount: (current?.messageCount || 0) + 1,
     };
     this.conversations.set(conversation.id, conversation);
@@ -126,7 +126,7 @@ class GatewayStore {
 
   listPending(limit = 100, accepts = () => true) {
     return [...this.eventIndex.values()]
-      .filter((event) => !this.acknowledged.has(event.id) && accepts(event))
+      .filter((event) => event.direction !== 'outbound' && !this.acknowledged.has(event.id) && accepts(event))
       .sort((left, right) => Number(Boolean(right.botId)) - Number(Boolean(left.botId)) || left.receivedAt - right.receivedAt)
       .slice(0, Math.max(1, Math.min(500, limit)));
   }
@@ -161,8 +161,9 @@ class GatewayStore {
       return { authorized: true, identityId };
     }
     const existing = this.identities.get(identityId);
-    if (existing?.status === 'approved') return { authorized: true, identityId };
     if (policy === 'allowlist') return { authorized: false, identityId, reason: 'not-allowlisted' };
+    if (existing?.status === 'approved') return { authorized: true, identityId };
+    if (existing?.status === 'denied') return { authorized: false, identityId, reason: 'denied' };
     if (existing?.status === 'pending') {
       existing.lastSeenAt = Date.now();
       this.flushCollection(this.identitiesPath, this.identities);

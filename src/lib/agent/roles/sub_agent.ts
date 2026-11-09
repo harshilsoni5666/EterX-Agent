@@ -6,6 +6,7 @@ import { interAgentMailbox } from './inter_agent_comm';
 import { getEterxWorkspaceDir } from '../storage-paths';
 import { stableScopeSegment } from '../context-scope';
 import { getMainAgentModelConfig, type MainAgentMode, type MainAgentProvider, type MainAgentThinkingLevel } from '../model-routing';
+import { isModelProvider } from '../model-selector-store';
 import { MAX_SUB_AGENTS } from '../sub-agent-settings';
 import { assessDelegatedAgent, type DelegatedAgentEvidence } from '../delegation-evidence';
 import { getSearchRouteBrief } from '../../search/search-runtime';
@@ -16,6 +17,27 @@ import { rebaseContextCompactionWindow } from '../model-context-window';
 import { swarmCoordinator, SWARM_LIMITS, type SwarmContract } from '../swarm-coordinator';
 import { SUB_AGENT_MODEL_SELECTION_GUIDANCE } from '../sub-agent-model-guidance';
 import { SUB_AGENT_SPAWN_GUIDANCE } from '../sub-agent-spawn-guidance';
+
+type SubAgentRuntimeState = {
+  cancelFlags: Map<string, boolean>;
+  emergencyStopped: boolean;
+  pauseStates: Map<string, AgentPauseState>;
+  closeFlags: Map<string, boolean>;
+  controlNames: Map<string, string>;
+  pendingResults: Map<string, PendingSubAgentResult>;
+  durableResultKeys: Set<string>;
+  legacyCleanup?: Promise<void>;
+  messageBus?: AgentMessageBus;
+  spawner?: SubAgentSpawner;
+};
+// The graph and key pool are process-global. Route bundles and development
+// reloads must share their worker owners, controls, and retained reports too.
+const runtimeGlobal = globalThis as typeof globalThis & { __eterxSubAgentRuntime?: SubAgentRuntimeState };
+const sharedRuntime: SubAgentRuntimeState = runtimeGlobal.__eterxSubAgentRuntime ||= {
+  cancelFlags: new Map(), emergencyStopped: false,
+  pauseStates: new Map(), closeFlags: new Map(), controlNames: new Map(),
+  pendingResults: new Map(), durableResultKeys: new Set(),
+} satisfies SubAgentRuntimeState;
 
 function boundedHandoffPayload(value: string, maxChars = 20_000): { body: string; truncated: boolean } {
   if (value.length <= maxChars) return { body: value, truncated: false };
@@ -94,6 +116,23 @@ export type SubAgentTaskSpec = SwarmContract & {
   model?: string;
   thinkingLevel?: MainAgentThinkingLevel;
 };
+type SubAgentWorkerOptions = Pick<SubAgentTaskSpec, 'mode' | 'provider' | 'model' | 'thinkingLevel' | 'resources'>;
+
+function resolveSubAgentModel(context: ProjectContext, override?: Omit<SubAgentTaskSpec, 'task' | 'name'>): {
+  provider: MainAgentProvider; model: string; mode: MainAgentMode;
+} {
+  const runtime = context as any;
+  const configured = getMainAgentModelConfig(override?.mode || runtime.selectedModelMode || 'fast', runtime.runtimeSettings);
+  const inheritedProvider = isModelProvider(runtime.selectedModelProvider) ? runtime.selectedModelProvider : undefined;
+  const provider = override?.provider || (override?.mode ? configured.provider : inheritedProvider || configured.provider);
+  const providerConfig = configured.provider === provider ? configured
+    : getMainAgentModelConfig(provider === 'gemini' ? 'fast' : provider, runtime.runtimeSettings);
+  const model = String(override?.model || (provider === inheritedProvider ? runtime.selectedModelName : '') || providerConfig.modelName || '').trim();
+  if (!model) throw new Error(`No model is selected for the ${provider} worker. Inherit the parent's selected model or supply provider and model together.`);
+  const requestedMode = override?.mode || runtime.selectedModelMode;
+  const mode: MainAgentMode = provider === 'gemini' ? requestedMode === 'think' ? 'think' : 'fast' : provider;
+  return { provider, model, mode };
+}
 
 const MAX_PENDING_RESULTS_PER_PROJECT = SWARM_LIMITS.maxNodes;
 const MAX_PENDING_RESULTS_TOTAL = SWARM_LIMITS.maxNodes * 4;
@@ -140,7 +179,6 @@ const LEGACY_PRE_TASK_AGENT_NAMES = new Set([
   'ada', 'curie', 'feynman', 'darwin', 'hawking', 'galileo', 'davinci',
   'aristotle', 'oppenheimer', 'gates', 'jobs', 'pascal',
 ]);
-let legacyAgentStatusCleanupPromise: Promise<void> | null = null;
 
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
@@ -169,8 +207,7 @@ function safeAgentSegment(value: string, fallback: string): string {
 
 // === PER-CHAT CANCELLATION FLAGS ===
 // Each chat has its own cancel flag. Stopping one chat doesn't kill another.
-const cancelFlags: Map<string, boolean> = new Map();
-let globalCancelFlag = false; // Emergency stop for ALL agents
+const cancelFlags = sharedRuntime.cancelFlags;
 
 // === PER-AGENT PAUSE/CLOSE CONTROLS ===
 // Control keys use the immutable spawned-agent ID when available. Agent names
@@ -181,9 +218,9 @@ interface AgentPauseState {
   resolver: (() => void) | null;
   promise: Promise<void> | null;
 }
-const agentPauseStates: Map<string, AgentPauseState> = new Map();
-const agentCloseFlags: Map<string, boolean> = new Map();
-const controlAgentNames: Map<string, string> = new Map();
+const agentPauseStates = sharedRuntime.pauseStates;
+const agentCloseFlags = sharedRuntime.closeFlags;
+const controlAgentNames = sharedRuntime.controlNames;
 
 function resolveProjectId(projectId: string): string {
   const registry = (globalThis as any).__eterxAgentRegistry;
@@ -327,7 +364,7 @@ export function closeAgent(
 ): boolean {
   const activeAgentId = expectedAgentId || globalSubAgentSpawner.findActiveAgentId(projectId, agentName);
   const queuedNode = swarmCoordinator.get(activeAgentId);
-  if (queuedNode && queuedNode.projectId === resolveProjectId(projectId) && queuedNode.name.toLowerCase() === agentName.toLowerCase() && ['queued', 'waiting'].includes(queuedNode.state)) {
+  if (queuedNode && isSameProjectScope(queuedNode.projectId, projectId) && queuedNode.name.toLowerCase() === agentName.toLowerCase() && ['queued', 'waiting'].includes(queuedNode.state)) {
     const key = agentKey(projectId, agentName, queuedNode.id);
     controlAgentNames.set(key, agentName);
     agentCloseFlags.set(key, true);
@@ -499,7 +536,7 @@ export function cancelAgent(chatId: string) {
  * Emergency stop — cancel ALL agents across all chats.
  */
 export function cancelAllSubAgents() {
-  globalCancelFlag = true;
+  sharedRuntime.emergencyStopped = true;
   for (const key of cancelFlags.keys()) {
     cancelFlags.set(key, true);
   }
@@ -521,12 +558,12 @@ export function resetCancelFlag(chatId?: string) {
     cancelFlags.delete(resolvedProjectId);
     resetAgentControls(chatId);
     // Also reset global flag if it was set — emergency is over if we're starting new work
-    if (globalCancelFlag) {
-      globalCancelFlag = false;
+    if (sharedRuntime.emergencyStopped) {
+      sharedRuntime.emergencyStopped = false;
       console.log('[SubAgent] 🔄 Global cancel flag auto-cleared (new work started)');
     }
   } else {
-    globalCancelFlag = false;
+    sharedRuntime.emergencyStopped = false;
     cancelFlags.clear();
     resetAgentControls();
     console.log('[SubAgent] 🔄 All cancel flags cleared');
@@ -545,7 +582,7 @@ export function clearCancelState(chatId: string) {
  * Check if a specific chat is cancelled, or if a specific agent within it is closed.
  */
 export function isCancelled(chatId?: string, agentName?: string, agentId?: string): boolean {
-  if (globalCancelFlag) return true;
+  if (sharedRuntime.emergencyStopped) return true;
   if (chatId && agentName) {
     if (isAgentClosed(chatId, agentName, agentId)) return true;
   }
@@ -561,8 +598,8 @@ class AgentMessageBus {
 
   async ensureDir() {
     await fs.ensureDir(AGENTS_DIR);
-    if (!legacyAgentStatusCleanupPromise) {
-      legacyAgentStatusCleanupPromise = (async () => {
+    if (!sharedRuntime.legacyCleanup) {
+      sharedRuntime.legacyCleanup = (async () => {
         const files = await fs.readdir(AGENTS_DIR);
         await Promise.all(files.filter(file => file.endsWith('.json')).map(async file => {
           const filePath = resolveUnder(AGENTS_DIR, file);
@@ -575,7 +612,7 @@ class AgentMessageBus {
         }));
       })();
     }
-    await legacyAgentStatusCleanupPromise;
+    await sharedRuntime.legacyCleanup;
   }
 
   private statusFilePath(agentName: string, projectId?: string): string {
@@ -672,7 +709,7 @@ class AgentMessageBus {
   }
 }
 
-export const agentMessageBus = new AgentMessageBus();
+export const agentMessageBus = sharedRuntime.messageBus ||= new AgentMessageBus();
 
 interface SubAgentInstance {
   id: string;
@@ -694,6 +731,7 @@ interface SubAgentInstance {
   originContext: ProjectContext;
   parentContext?: string;
   onTrace?: (trace: any) => void;
+  setLeasedKey?: (apiKey: string) => void;
   /** Direct user message IDs remain idempotent after the live queue drains. */
   directUserMessageIds: Set<string>;
   directUserMessages: Array<{
@@ -731,9 +769,10 @@ type PendingSubAgentResult = {
   attempt?: number;
 };
 type BackgroundSubAgentRun = { projectId: string, name: SubAgentName, agentId?: string, parentAgentId?: string, promise: Promise<any> };
+type SubAgentSlotReservation = { projectId: string; name: SubAgentName; lease: KeyLease | null };
 
-const pendingResults: Map<string, PendingSubAgentResult> = new Map();
-const durableResultKeys = new Set<string>();
+const pendingResults = sharedRuntime.pendingResults;
+const durableResultKeys = sharedRuntime.durableResultKeys;
 
 async function queuePendingResult(result: PendingSubAgentResult): Promise<void> {
   const runKey = `${result.projectId}:${result.agentId}`;
@@ -814,24 +853,31 @@ export class SubAgentSpawner {
     queue: SubAgentInstance['directUserMessages'];
   }> = new Map();
   private directContinuationPromises: Map<string, Promise<void>> = new Map();
-  private slotReservations: Map<string, { projectId: string; name: SubAgentName }> = new Map();
+  private slotReservations: Map<string, SubAgentSlotReservation> = new Map();
   private capacityWaiters: Map<string, Set<() => void>> = new Map();
 
-  private reserveSlot(projectId: string, name: SubAgentName, agentId: string, context: ProjectContext): boolean {
+  private reserveSlot(projectId: string, name: SubAgentName, agentId: string, context: ProjectContext, modelOverride?: Omit<SubAgentTaskSpec, 'task' | 'name'>): boolean {
     if (this.slotReservations.has(agentId)) return true;
+    const selection = resolveSubAgentModel(context, modelOverride);
+    if (selection.provider === 'gemini' && apiKeyPool.totalKeys === 0) throw new Error('No Gemini API keys are configured for this worker.');
     if (this.slotReservations.size >= SWARM_LIMITS.globalConcurrency) return false;
     if (this.getOccupiedSlotCount(projectId) >= getConfiguredSubAgentLimit(context)) return false;
     const node = swarmCoordinator.get(agentId);
-    if (node && !swarmCoordinator.isTerminal(agentId) && !swarmCoordinator.canStart(agentId)) return false;
-    this.slotReservations.set(agentId, { projectId: resolveProjectId(projectId), name });
-    if (node && !swarmCoordinator.isTerminal(agentId)) swarmCoordinator.start(agentId);
+    if (node && (swarmCoordinator.isTerminal(agentId) || !swarmCoordinator.canStart(agentId,
+      candidate => candidate.provider !== 'gemini' || apiKeyPool.canAcceptNewAgent()))) return false;
+    const lease = selection.provider === 'gemini' ? apiKeyPool.leaseSubAgentKey(projectId, name) : null;
+    if (selection.provider === 'gemini' && !lease) return false;
+    this.slotReservations.set(agentId, { projectId: resolveProjectId(projectId), name, lease });
+    if (node) swarmCoordinator.start(agentId);
     return true;
   }
 
-  private releaseSlot(agentId: string): void {
+  private releaseSlot(agentId: string, expected?: SubAgentSlotReservation): void {
     const reservation = this.slotReservations.get(agentId);
+    if (!reservation || expected && reservation !== expected) return;
     this.slotReservations.delete(agentId);
-    if (reservation) this.notifyCapacityWaiters();
+    if (reservation.lease) apiKeyPool.releaseKey(reservation.lease.chatId);
+    this.notifyCapacityWaiters();
   }
 
   private notifyCapacityWaiters(projectId?: string): void {
@@ -854,15 +900,21 @@ export class SubAgentSpawner {
     name: SubAgentName,
     agentId: string,
     context: ProjectContext,
+    modelOverride?: Omit<SubAgentTaskSpec, 'task' | 'name'>,
   ): Promise<boolean> {
     const waiterProjectId = resolveProjectId(projectId);
     const parentAbortSignal = (context as any).abortSignal as AbortSignal | undefined;
     while (!isCancelled(projectId) && !parentAbortSignal?.aborted) {
       if (isAgentClosed(projectId, name, agentId) || swarmCoordinator.isTerminal(agentId)) return false;
-      if (this.reserveSlot(projectId, name, agentId, context)) return true;
+      if (this.reserveSlot(projectId, name, agentId, context, modelOverride)) return true;
+      interAgentMailbox.updateAgentPresence(projectId, name, {
+        status: 'queued',
+        progress: swarmCoordinator.get(agentId)?.reason || 'Waiting for execution capacity',
+      });
       await new Promise<void>((resolve) => {
         let settled = false;
         let unsubscribe: (() => void) | undefined;
+        let unsubscribeKeys: (() => void) | undefined;
         const waiters = this.capacityWaiters.get(waiterProjectId) || new Set<() => void>();
         const wake = () => {
           if (settled) return;
@@ -871,12 +923,14 @@ export class SubAgentSpawner {
           if (waiters.size === 0) this.capacityWaiters.delete(waiterProjectId);
           parentAbortSignal?.removeEventListener('abort', wake);
           unsubscribe?.();
+          unsubscribeKeys?.();
           resolve();
         };
         waiters.add(wake);
         this.capacityWaiters.set(waiterProjectId, waiters);
         parentAbortSignal?.addEventListener('abort', wake, { once: true });
         unsubscribe = swarmCoordinator.subscribe(projectId, wake);
+        unsubscribeKeys = apiKeyPool.subscribeCapacity(wake);
         if (parentAbortSignal?.aborted || isCancelled(projectId) || swarmCoordinator.isTerminal(agentId)) wake();
       });
     }
@@ -1018,8 +1072,8 @@ export class SubAgentSpawner {
     const externalServiceSection = [
       '\nLIVE EXTERNAL SERVICE ROUTES (read before using a route):',
       getSearchRouteBrief(runtimeContext),
-      getImageGenerationRouteBrief(),
-      getVideoGenerationRouteBrief(),
+      getImageGenerationRouteBrief(runtimeContext),
+      getVideoGenerationRouteBrief(runtimeContext),
       'Use web_search, image_generator, or video_generator for the real task and treat the actual result as route evidence. Claim real media success only after the generation tool returns validated bytes.',
     ].join('\n');
     teamSection = `${teamSection}${externalServiceSection}`;
@@ -1037,6 +1091,8 @@ export class SubAgentSpawner {
     modelOverride?: Omit<SubAgentTaskSpec, 'task' | 'name'>,
     customAgentId?: string,
   ): Promise<{ agentId: string, name: SubAgentName, result: string, success: boolean, durationMs: number, traceLog: string[] }> {
+    const modelSelection = resolveSubAgentModel(context, modelOverride);
+    modelOverride = { ...modelOverride, ...modelSelection };
     const name = customName || this.resolveAgentName(context.projectId, task);
     const agentId = customAgentId || this.createAgentId(context.projectId, name);
     const subAgentChatId = `${context.projectId}::sub-agent::${agentId}`;
@@ -1049,591 +1105,578 @@ export class SubAgentSpawner {
     };
     const rootOnTrace = (context as any)._rootOnTrace || onTrace;
     const emitTrace = onTrace;
-    onTrace = emitTrace ? (event) => emitTrace({ ...feedOwnership, ...lineage, ...event }) : undefined;
-    if (!this.reserveSlot(context.projectId, name, agentId, context)) {
+    onTrace = emitTrace ? (event) => {
+      try { emitTrace({ ...feedOwnership, ...lineage, ...event }); }
+      catch (error) { console.warn('[SubAgent] Trace delivery failed:', formatUnknownError(error)); }
+    } : undefined;
+    if (!await this.reserveSlotWhenAvailable(context.projectId, name, agentId, context, modelOverride)) {
       return {
         agentId,
         name,
-        result: `Not started: the configured ${getConfiguredSubAgentLimit(context)}-agent concurrency limit is already in use.`,
+        result: swarmCoordinator.get(agentId)?.reason || 'Cancelled before execution',
         success: false,
         durationMs: 0,
-        traceLog: ['Not started because no project concurrency slot was available'],
+        traceLog: ['Execution stopped before startup'],
       };
     }
-    if (isCancelled(context.projectId)) {
-      this.releaseSlot(agentId);
-      return { agentId, name, result: 'Cancelled by user', success: false, durationMs: 0, traceLog: ['Cancelled before start'] };
-    }
-    // Register agents in inter-agent mailbox
-    interAgentMailbox.registerAgent(context.projectId, name, {
-      agentId,
-      subAgentChatId,
-      role: 'sub_agent',
-      task,
-      status: 'running',
-      progress: 'Starting execution...',
-      ...feedOwnership,
-      ...lineage,
-    });
-    if (!(context as any).isSubAgent) interAgentMailbox.registerAgent(context.projectId, 'Main', {
-      role: 'main',
-      status: 'coordinating',
-      ...resolveFeedOwnership(context),
-      subAgentTurnId: undefined,
-    });
+    const reservation = this.slotReservations.get(agentId)!;
     const abortController = new AbortController();
-    const assertExecutionActive = () => {
-      if (isCancelled(context.projectId, name, agentId) || abortController.signal.aborted || (context as any).abortSignal?.aborted || swarmCoordinator.get(agentId)?.state === 'cancelled') throw new Error('CANCELLED_BY_USER');
-    };
     const parentAbortSignal = (context as any).abortSignal as AbortSignal | undefined;
     const abortFromParent = () => {
       if (!abortController.signal.aborted) {
         abortController.abort(parentAbortSignal?.reason || new Error('CANCELLED_BY_USER'));
       }
     };
-    if (parentAbortSignal?.aborted) {
-      abortFromParent();
-    } else {
-      parentAbortSignal?.addEventListener('abort', abortFromParent, { once: true });
-    }
-    const directConversationState = this.directConversationStates.get(agentId) || {
-      acceptedIds: new Set<string>(),
-      queue: [] as SubAgentInstance['directUserMessages'],
-    };
-    this.directConversationStates.set(agentId, directConversationState);
-    const directUserMessages = directConversationState.queue;
-    // Compaction updates the admitted policy in place at provider boundaries.
-    // Each worker owns its policy; model changes and failure recovery must not
-    // mutate the parent's or a sibling's window through a shallow context copy.
-    const inheritedCompaction = (context as any).contextCompaction;
-    const workerCompaction = inheritedCompaction && typeof inheritedCompaction === 'object'
-      ? { ...inheritedCompaction,
-          model: inheritedCompaction.model ? { ...inheritedCompaction.model } : inheritedCompaction.model,
-          modelContextWindows: { ...inheritedCompaction.modelContextWindows },
-        }
-      : inheritedCompaction;
-    const subAgentContext = {
-      ...(context as any),
-      contextCompaction: workerCompaction,
-      forceContextCompaction: false,
-      agentName: name,
-      subAgentName: name,
-      communicationAgentName: name,
-      parentAgentName: lineage.parentAgentName,
-      parentAgentId: lineage.parentAgentId,
-      agentDepth: lineage.depth,
-      swarmRunId: context.swarmRunId || context.runId || context.turnId,
-      isSubAgent: true,
-      disableSubAgents: (context as any).disableSubAgents === true || lineage.depth >= SWARM_LIMITS.maxDepth,
-      allowAgentSpawning: context.allowAgentSpawning === true && lineage.depth < SWARM_LIMITS.maxDepth,
-      allowedCapabilities: (context as any).allowedCapabilities,
-      // Child plans use their own conversation scope and delegated objective.
-      workingContextRequest: { visibleText: task, runtimeText: task },
-      _requiredPlanTurn: undefined,
-      _swarmCoordinationRequired: false,
-      _swarmCompletionReminder: undefined,
-      _subAgentObservations: undefined,
-      _rootOnTrace: rootOnTrace,
-      subAgentId: agentId,
-      subAgentChatId,
-      // Parent projectId remains the routing/coordination scope. All
-      // persisted conversation state must use the child thread identity.
-      memoryScopeId: subAgentChatId,
-      conversationScopeId: subAgentChatId,
-      abortSignal: abortController.signal,
-      // Direct human guidance is intentionally separate from the inter-agent
-      // mailbox. It is drained by this exact worker at safe loop boundaries.
-      // Admit exactly one human query per safe provider boundary. Draining the
-      // whole mailbox made a rapid sequence of queries share one model turn,
-      // so every later action was incorrectly owned by only the final query.
-      drainDirectUserMessages: () => directUserMessages.splice(0, 1),
-    };
-    if (modelOverride?.mode) {
-      subAgentContext.selectedModelMode = modelOverride.mode;
-    }
-    if (modelOverride?.provider && modelOverride?.model) {
-      if (modelOverride.provider !== subAgentContext.selectedModelProvider || modelOverride.model !== subAgentContext.selectedModelName) {
-        delete subAgentContext.modelThinkingCapability;
-        delete subAgentContext.modelWireCapabilities;
+    try {
+      if (isCancelled(context.projectId, name, agentId) || parentAbortSignal?.aborted || swarmCoordinator.isTerminal(agentId)) {
+        return { agentId, name, result: 'Cancelled by user', success: false, durationMs: 0, traceLog: ['Cancelled before start'] };
       }
-      subAgentContext.selectedModelProvider = modelOverride.provider;
-      subAgentContext.selectedModelName = modelOverride.model;
-      (subAgentContext as any).contextCompaction = rebaseContextCompactionWindow(
-        (subAgentContext as any).contextCompaction, modelOverride.provider, modelOverride.model,
-      );
-      if (modelOverride.provider !== 'gemini') {
-        subAgentContext.selectedModelMode = modelOverride.provider;
+      // Register agents in inter-agent mailbox
+      interAgentMailbox.registerAgent(context.projectId, name, {
+        agentId,
+        subAgentChatId,
+        role: 'sub_agent',
+        task,
+        status: 'running',
+        progress: 'Starting execution...',
+        ...feedOwnership,
+        ...lineage,
+      });
+      if (!(context as any).isSubAgent) interAgentMailbox.registerAgent(context.projectId, 'Main', {
+        role: 'main',
+        status: 'coordinating',
+        ...resolveFeedOwnership(context),
+        subAgentTurnId: undefined,
+      });
+      const assertExecutionActive = () => {
+        if (isCancelled(context.projectId, name, agentId) || abortController.signal.aborted || (context as any).abortSignal?.aborted || swarmCoordinator.get(agentId)?.state === 'cancelled') throw new Error('CANCELLED_BY_USER');
+      };
+      if (parentAbortSignal?.aborted) {
+        abortFromParent();
+      } else {
+        parentAbortSignal?.addEventListener('abort', abortFromParent, { once: true });
       }
-      subAgentContext.strictModelSelection = true;
-    } else if (modelOverride?.mode) {
-      delete subAgentContext.modelThinkingCapability;
-      delete subAgentContext.modelWireCapabilities;
-      subAgentContext.selectedModelProvider = undefined;
-      subAgentContext.selectedModelName = undefined;
-      subAgentContext.strictModelSelection = false;
-    }
-    if (modelOverride?.thinkingLevel) {
-      subAgentContext.selectedThinkingLevel = modelOverride.thinkingLevel;
-    }
-    // Keep the delegated task intact while adding the live team roster and the
-    // communication/control contract needed for real parallel coordination.
-    const deepBrief = this.buildDeepBrief(task, name, context.projectId, parentContext, subAgentContext);
-    const traceLog: string[] = [];
-    let traceEventCount = 0;
-    let lastStatusWriteAt = 0;
-    const instance: SubAgentInstance = {
-      id: agentId, projectId: context.projectId, name, task, deepBrief,
-      ...lineage,
-      status: 'running', traceLog, startedAt: Date.now(), abortController,
-      directUserMessageIds: directConversationState.acceptedIds, directUserMessages,
-      // Direct worker model changes must never mutate the parent's context.
-      originContext: { ...context,
-        contextCompaction: subAgentContext.contextCompaction,
-        selectedModelProvider: subAgentContext.selectedModelProvider,
-        selectedModelName: subAgentContext.selectedModelName,
-        selectedModelMode: subAgentContext.selectedModelMode,
-        selectedThinkingLevel: subAgentContext.selectedThinkingLevel,
-        modelThinkingCapability: subAgentContext.modelThinkingCapability,
-        modelWireCapabilities: subAgentContext.modelWireCapabilities,
-      } as ProjectContext, parentContext, onTrace,
-    };
-    this.activeAgents.set(agentId, instance);
-    this.completedAgents.delete(agentId);
-    void agentMessageBus.writeAgentStatus(name, {
-      status: 'running', task, agentId, subAgentChatId,
-      progress: 'Starting execution...',
-      startedAt: instance.startedAt,
-      ...feedOwnership,
-      ...lineage,
-    }, context.projectId).catch(() => { });
-    interAgentMailbox.updateAgentPresence(context.projectId, name, {
-      status: 'running',
-      task,
-      progress: 'Starting execution...',
-      ...feedOwnership,
-      ...lineage,
-    });
-
-    // Emit spawn event to UI
-    if (onTrace) {
-      onTrace({
-        type: 'sub_agent_spawn',
-        text: `${ name } started`,
-        secondary: task.substring(0, 80),
-        task: task,
-        subAgent: name,
+      const directConversationState = this.directConversationStates.get(agentId) || {
+        acceptedIds: new Set<string>(),
+        queue: [] as SubAgentInstance['directUserMessages'],
+      };
+      this.directConversationStates.set(agentId, directConversationState);
+      const directUserMessages = directConversationState.queue;
+      // Compaction updates the admitted policy in place at provider boundaries.
+      // Each worker owns its policy; model changes and failure recovery must not
+      // mutate the parent's or a sibling's window through a shallow context copy.
+      const inheritedCompaction = (context as any).contextCompaction;
+      const workerCompaction = inheritedCompaction && typeof inheritedCompaction === 'object'
+        ? { ...inheritedCompaction,
+            model: inheritedCompaction.model ? { ...inheritedCompaction.model } : inheritedCompaction.model,
+            modelContextWindows: { ...inheritedCompaction.modelContextWindows },
+          }
+        : inheritedCompaction;
+      const subAgentContext = {
+        ...(context as any),
+        contextCompaction: workerCompaction,
+        forceContextCompaction: false,
+        agentName: name,
+        subAgentName: name,
+        communicationAgentName: name,
+        parentAgentName: lineage.parentAgentName,
+        parentAgentId: lineage.parentAgentId,
+        agentDepth: lineage.depth,
+        swarmRunId: context.swarmRunId || context.runId || context.turnId,
+        isSubAgent: true,
+        disableSubAgents: (context as any).disableSubAgents === true || lineage.depth >= SWARM_LIMITS.maxDepth,
+        allowAgentSpawning: context.allowAgentSpawning === true && lineage.depth < SWARM_LIMITS.maxDepth,
+        allowedCapabilities: (context as any).allowedCapabilities,
+        // Child plans use their own conversation scope and delegated objective.
+        workingContextRequest: { visibleText: task, runtimeText: task },
+        _requiredPlanTurn: undefined,
+        _swarmCoordinationRequired: false,
+        _swarmCompletionReminder: undefined,
+        _subAgentObservations: undefined,
+        withReleasedProviderLease: undefined,
+        _rootOnTrace: rootOnTrace,
         subAgentId: agentId,
         subAgentChatId,
-        agentName: name,
-        agentStatus: 'running',
-        ...lineage,
-        timestamp: instance.startedAt,
-        startTime: instance.startedAt,
-      });
-    }
-
-    instance.status = 'running';
-    let lease: KeyLease | null = null;
-
-    try {
-      // Import createIsolatedClient dynamically to avoid circular deps
-      // A per-task mode must win over the parent's mode. The previous code
-      // only copied the override into the child context, while constructing
-      // the isolated client from the parent mode, so { mode: 'think' } was
-      // silently ignored for workers without an exact provider/model pair.
-      const requestedProvider = modelOverride?.provider && modelOverride?.model
-        ? modelOverride.provider
-        : undefined;
-      const subAgentMode: MainAgentMode = requestedProvider && requestedProvider !== 'gemini'
-        ? requestedProvider
-        : modelOverride?.mode || (requestedProvider === 'gemini' ? 'fast' : (context as any).selectedModelMode || 'fast');
-      const subAgentProvider = requestedProvider
-        || getMainAgentModelConfig(subAgentMode, (context as any).runtimeSettings).provider;
-      // Gemini sub-agents use the isolated Gemini pool. External and local
-      // providers use their own runtime settings and must not be blocked by a
-      // missing Gemini lease.
-      if (subAgentProvider === 'gemini') {
-        lease = apiKeyPool.leaseSubAgentKey(context.projectId, name);
-        if (!lease) throw new Error('No Gemini API keys available for sub-agent');
+        // Parent projectId remains the routing/coordination scope. All
+        // persisted conversation state must use the child thread identity.
+        memoryScopeId: subAgentChatId,
+        conversationScopeId: subAgentChatId,
+        abortSignal: abortController.signal,
+        // Direct human guidance is intentionally separate from the inter-agent
+        // mailbox. It is drained by this exact worker at safe loop boundaries.
+        // Admit exactly one human query per safe provider boundary. Draining the
+        // whole mailbox made a rapid sequence of queries share one model turn,
+        // so every later action was incorrectly owned by only the final query.
+        drainDirectUserMessages: () => directUserMessages.splice(0, 1),
+      };
+      if (modelOverride?.mode) {
+        subAgentContext.selectedModelMode = modelOverride.mode;
       }
-      const { createIsolatedClient } = await import('../Agent');
-      const subAgentClient = createIsolatedClient(lease?.apiKey || '', subAgentMode, (context as any).runtimeSettings);
-      
-      const result = await subAgentClient.executeMessageLoop(
-        subAgentContext,
-        deepBrief,
-        [],
-        (trace) => {
-          const compactionSettled = trace.type === 'context_compaction'
-            && (trace.phase === 'failed' || trace.phase === 'compacted');
-          // Check per-agent close flag first
-          if (isAgentClosed(context.projectId, name, agentId) && !compactionSettled) {
-            return;
-          }
-          // Check cancellation on every trace event for this specific chat
-          if ((isCancelled(context.projectId) || abortController.signal.aborted) && !compactionSettled) {
-            return;
-          }
-
-          // Check pause — if paused, this blocks until resumed
-          // We can't await here (sync callback), so we use a microtask check
-          // The actual await happens in the executeMessageLoop's async iterations
-          const pauseKey = agentKey(context.projectId, name, agentId);
-          const pauseState = agentPauseStates.get(pauseKey);
-          if (pauseState?.paused && pauseState.promise) {
-            // Signal that we're paused to the message loop by throwing a special marker
-            // The message loop's outer try/catch will handle this
-            instance.status = 'paused';
-          } else if (instance.status === 'paused') {
-            instance.status = 'running';
-          }
-
-          const traceSummary = `${ trace.text || '' }${ trace.secondary ? ' | ' + trace.secondary : '' }`.slice(0, 4000);
-          const logEntry = `[${ new Date().toISOString() }] ${ trace.type }: ${ traceSummary }`;
-          traceEventCount++;
-          traceLog.push(logEntry);
-          if (traceLog.length > MAX_SUB_AGENT_TRACE_LOGS) {
-            traceLog.splice(0, traceLog.length - MAX_SUB_AGENT_TRACE_LOGS);
-          }
-
-          // Time-based throttling stays bounded even when several agents emit
-          // bursts at very different rates.
-          const statusWriteAt = Date.now();
-          if (statusWriteAt - lastStatusWriteAt >= SUB_AGENT_STATUS_WRITE_INTERVAL_MS) {
-            lastStatusWriteAt = statusWriteAt;
-            interAgentMailbox.updateAgentPresence(context.projectId, name, {
-              status: instance.status === 'paused' ? 'paused' : 'running',
-              task,
-              progress: trace.text || 'Working...',
-              ...resolveFeedOwnership(context, subAgentChatId),
-        ...lineage,
-            });
-            agentMessageBus.writeAgentStatus(name, {
-              status: instance.status === 'paused' ? 'paused' : 'running', agentId, subAgentChatId,
-              task,
-              progress: trace.text || 'Working...',
-              traceLog: traceLog.slice(-10),
-              startedAt: instance.startedAt,
-              ...resolveFeedOwnership(context, subAgentChatId),
-        ...lineage,
-            }, context.projectId).catch(() => { });
-          }
-
-          // Keep the provider's answer/cancellation lifecycle intact. The
-          // worker identity isolates this stream from Main's answer surface.
-          if (onTrace) {
-            onTrace({
-              ...trace,
-              type: trace.type,
-              text: trace.text,
-              subAgent: name,
-              subAgentId: agentId,
-              subAgentChatId,
-              agentName: name,
-              agentStatus: instance.status === 'paused' ? 'paused' : 'working',
-              agentStep: traceEventCount
-            });
-          }
+      if (modelOverride?.provider && modelOverride?.model) {
+        if (modelOverride.provider !== subAgentContext.selectedModelProvider || modelOverride.model !== subAgentContext.selectedModelName) {
+          delete subAgentContext.modelThinkingCapability;
+          delete subAgentContext.modelWireCapabilities;
         }
-      );
-
-      const unfinishedChildren = swarmCoordinator.descendants(agentId).filter(child => !swarmCoordinator.isTerminal(child.id));
-      if (unfinishedChildren.length && !abortController.signal.aborted) {
-        await this.joinChildren(subAgentContext);
-        throw new Error(`The worker ended before integrating its delegated children. Child results are retained by run ID. Partial answer:\n${boundedHandoffPayload(result.text, 12000).body}`);
+        subAgentContext.selectedModelProvider = modelOverride.provider;
+        subAgentContext.selectedModelName = modelOverride.model;
+        (subAgentContext as any).contextCompaction = rebaseContextCompactionWindow(
+          (subAgentContext as any).contextCompaction, modelOverride.provider, modelOverride.model,
+        );
+        if (modelOverride.provider !== 'gemini') {
+          subAgentContext.selectedModelMode = modelOverride.provider;
+        }
+        subAgentContext.strictModelSelection = true;
       }
-      if (this.hasUndeliveredChildEvidence(subAgentContext)) {
-        throw new Error(`The worker ended before receiving all child outcomes for integration. Reports remain available by task ID. Partial answer:\n${boundedHandoffPayload(result.text, 12000).body}`);
+      if (modelOverride?.thinkingLevel) {
+        subAgentContext.selectedThinkingLevel = modelOverride.thinkingLevel;
       }
-
-      // A provider may finish while cancellation is propagating. Never publish
-      // that late result as successful work after the user stopped the run.
-      if (
-        isCancelled(context.projectId) ||
-        abortController.signal.aborted ||
-        (context as any).abortSignal?.aborted ||
-        isAgentClosed(context.projectId, name, agentId)
-      ) {
-        throw new Error('CANCELLED_BY_USER');
-      }
-
-      const durationMs = Date.now() - instance.startedAt;
-      instance.status = 'completed';
-      instance.result = result.text;
-      instance.completedAt = Date.now();
-      instance.durationMs = durationMs;
-
-      interAgentMailbox.updateAgentPresence(context.projectId, name, {
-        status: 'completed',
-        task,
-        progress: 'Done',
-        ...resolveFeedOwnership(context, subAgentChatId),
+      // Keep the delegated task intact while adding the live team roster and the
+      // communication/control contract needed for real parallel coordination.
+      const deepBrief = this.buildDeepBrief(task, name, context.projectId, parentContext, subAgentContext);
+      const traceLog: string[] = [];
+      let traceEventCount = 0;
+      let lastStatusWriteAt = 0;
+      const instance: SubAgentInstance = {
+        id: agentId, projectId: context.projectId, name, task, deepBrief,
         ...lineage,
-      });
-      await agentMessageBus.writeAgentStatus(name, {
-        status: 'completed', agentId, subAgentChatId,
-        task,
-        progress: 'Done',
-        result: result.text,
-        traceLog,
+        status: 'running', traceLog, startedAt: Date.now(), abortController,
+        directUserMessageIds: directConversationState.acceptedIds, directUserMessages,
+        // Direct worker model changes must never mutate the parent's context.
+        originContext: { ...context,
+          contextCompaction: subAgentContext.contextCompaction,
+          selectedModelProvider: subAgentContext.selectedModelProvider,
+          selectedModelName: subAgentContext.selectedModelName,
+          selectedModelMode: subAgentContext.selectedModelMode,
+          selectedThinkingLevel: subAgentContext.selectedThinkingLevel,
+          modelThinkingCapability: subAgentContext.modelThinkingCapability,
+          modelWireCapabilities: subAgentContext.modelWireCapabilities,
+        } as ProjectContext, parentContext, onTrace,
+      };
+      this.activeAgents.set(agentId, instance);
+      this.completedAgents.delete(agentId);
+      void agentMessageBus.writeAgentStatus(name, {
+        status: 'running', task, agentId, subAgentChatId,
+        progress: 'Starting execution...',
         startedAt: instance.startedAt,
-        completedAt: instance.completedAt,
-        ...resolveFeedOwnership(context, subAgentChatId),
+        ...feedOwnership,
         ...lineage,
-      }, context.projectId).catch(error => console.warn('[SubAgent] Status persistence failed:', formatUnknownError(error)));
-      assertExecutionActive();
-
-      console.log(`[${ name }] ✅ Done ${ (durationMs / 1000).toFixed(1) }s`);
-
-      const delegationEvidence = assessDelegatedAgent({
-        agentId,
-        subAgentChatId,
-        name,
+      }, context.projectId).catch(() => { });
+      interAgentMailbox.updateAgentPresence(context.projectId, name, {
+        status: 'running',
         task,
-        status: 'completed',
-        result: result.text,
-        success: true,
-        completedAt: instance.completedAt,
-      }, false);
-
-      // Queue result silently — main agent picks it up via 'collect'
-      await queuePendingResult({
-        projectId: context.projectId,
-        agentId,
-        subAgentChatId,
-        name,
-        task,
-        result: result.text,
-        success: true,
-        status: 'completed',
-        delegationEvidence,
-        durationMs,
-        completedAt: instance.completedAt,
-        ...resolveFeedOwnership(context, subAgentChatId),
+        progress: 'Starting execution...',
+        ...feedOwnership,
         ...lineage,
       });
-      assertExecutionActive();
-      const handoffPayload = boundedHandoffPayload(result.text);
-      interAgentMailbox.send({
-        from: name,
-        to: lineage.parentAgentName,
-        projectId: context.projectId,
-        type: 'handoff',
-        subject: `${name} completed its assignment`.substring(0, 100),
-        body: handoffPayload.body,
-        metadata: {
-          priority: 'normal',
-          deliveryMode: 'defer',
-          requiresResponse: false,
-          tags: ['automatic-handoff', 'sub-agent-result'],
-          subAgentId: agentId,
-          subAgentChatId,
-          resultChars: delegationEvidence.resultChars,
-          resultHash: delegationEvidence.resultHash,
-          resultUsability: delegationEvidence.resultUsability,
-          evidenceReady: delegationEvidence.evidenceReady,
-          verificationStatus: delegationEvidence.verificationStatus,
-          payloadTruncated: handoffPayload.truncated,
-          ...resolveFeedOwnership(context, subAgentChatId),
-        ...lineage,
-        },
-      });
-      apiKeyPool.reportSuccess(`${context.projectId}_sub_${name}`);
 
+      // Emit spawn event to UI
       if (onTrace) {
         onTrace({
-          type: 'sub_agent_complete',
-          text: `${ name } completed`,
-          // Preserve the lossless, user-facing answer on the completion event.
-          // resultSummary is compact orchestration metadata and intentionally
-          // removes Markdown structure, so it cannot serve as chat content.
-          result: result.text,
-          content: result.text,
-          timestamp: instance.completedAt,
-          startTime: instance.startedAt,
-          endTime: instance.completedAt,
-          secondary: `${ (durationMs / 1000).toFixed(1) }s · ${ traceEventCount } steps`,
+          type: 'sub_agent_spawn',
+          text: `${ name } started`,
+          secondary: task.substring(0, 80),
+          task: task,
           subAgent: name,
           subAgentId: agentId,
           subAgentChatId,
           agentName: name,
-          agentStatus: 'completed',
-          task: task.substring(0, 1200),
-          taskSummary: delegationEvidence.resultSummary,
-          resultSummary: delegationEvidence.resultSummary,
-          resultAvailable: delegationEvidence.resultAvailable,
-          resultUsability: delegationEvidence.resultUsability,
-          evidenceReady: delegationEvidence.evidenceReady,
-          verificationStatus: delegationEvidence.verificationStatus,
-          resultHash: delegationEvidence.resultHash,
-          resultChars: delegationEvidence.resultChars,
-          collected: false,
-          delegationEvidence,
-          durationMs,
-          stepCount: traceEventCount,
-          traceLog: traceLog.slice(-5)
+          agentStatus: 'running',
+          ...lineage,
+          timestamp: instance.startedAt,
+          startTime: instance.startedAt,
         });
       }
 
-      swarmCoordinator.settle(agentId, 'completed', undefined, result.text);
-      return { agentId, name, result: result.text, success: true, durationMs, traceLog };
-    } catch (error: any) {
-      const durationMs = Date.now() - instance.startedAt;
-      const errorMessage = formatUnknownError(error, 'Unknown sub-agent failure');
-      const wasClosed = isAgentClosed(context.projectId, name, agentId);
-      const wasCancelled = wasClosed || errorMessage === 'CANCELLED_BY_USER'
-        || isCancelled(context.projectId)
-        || (context as any).abortSignal?.aborted
-        || abortController.signal.aborted;
-      if (!wasCancelled && lease) {
-        apiKeyPool.reportFailure(`${context.projectId}_sub_${name}`, apiKeyPool.classifyError(errorMessage), errorMessage);
-      }
+      instance.status = 'running';
+      const lease = reservation.lease;
 
-      instance.status = wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed';
-      instance.result = wasClosed ? 'Closed by user' : wasCancelled ? 'Cancelled by user' : errorMessage;
-      instance.completedAt = Date.now();
-      instance.durationMs = durationMs;
-      swarmCoordinator.settle(agentId, wasCancelled ? 'cancelled' : 'failed', instance.result);
-      for (const child of swarmCoordinator.descendants(agentId)) {
-        if (!swarmCoordinator.isTerminal(child.id)) this.cancelBranch(context.projectId, child.id);
-      }
-      const delegationEvidence = assessDelegatedAgent({
-        agentId,
-        subAgentChatId,
-        name,
-        task,
-        status: instance.status,
-        result: instance.result,
-        success: false,
-        completedAt: instance.completedAt,
-      }, false);
+      try {
+        // Startup already reserved the provider lease atomically with the slot.
+        const { createIsolatedClient } = await import('../Agent');
+        assertExecutionActive();
+        const subAgentClient = createIsolatedClient(lease?.apiKey || '', modelSelection.mode, (context as any).runtimeSettings);
+    instance.setLeasedKey = apiKey => subAgentClient.setLeasedKey(apiKey);
 
-      interAgentMailbox.updateAgentPresence(context.projectId, name, {
-        status: wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed',
-        task,
-        progress: wasClosed ? 'Closed by main control' : wasCancelled ? 'Cancelled' : `Failed: ${ errorMessage }`,
-        ...resolveFeedOwnership(context, subAgentChatId),
-        ...lineage,
-      });
-      await agentMessageBus.writeAgentStatus(name, {
-        status: wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed', agentId, subAgentChatId,
-        task,
-        progress: wasClosed ? 'Closed by main control' : wasCancelled ? 'Cancelled' : `Failed: ${ errorMessage }`,
-        result: instance.result,
-        traceLog,
-        startedAt: instance.startedAt,
-        completedAt: instance.completedAt,
-        ...resolveFeedOwnership(context, subAgentChatId),
-        ...lineage,
-      }, context.projectId).catch(error => console.warn('[SubAgent] Status persistence failed:', formatUnknownError(error)));
+    const result = await subAgentClient.executeMessageLoop(
+          subAgentContext,
+          deepBrief,
+          [],
+          (trace) => {
+            const compactionSettled = trace.type === 'context_compaction'
+              && (trace.phase === 'failed' || trace.phase === 'compacted');
+            // Check per-agent close flag first
+            if (isAgentClosed(context.projectId, name, agentId) && !compactionSettled) {
+              return;
+            }
+            // Check cancellation on every trace event for this specific chat
+            if ((isCancelled(context.projectId) || abortController.signal.aborted) && !compactionSettled) {
+              return;
+            }
 
-      await queuePendingResult({
-        projectId: context.projectId,
-        agentId,
-        subAgentChatId,
-        name,
-        task,
-        result: instance.result!,
-        success: false,
-        status: wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed',
-        delegationEvidence,
-        durationMs,
-        completedAt: instance.completedAt,
-        ...resolveFeedOwnership(context, subAgentChatId),
-        ...lineage,
-      });
-      if (!wasCancelled) {
-        const handoffPayload = boundedHandoffPayload(errorMessage);
+            // Check pause — if paused, this blocks until resumed
+            // We can't await here (sync callback), so we use a microtask check
+            // The actual await happens in the executeMessageLoop's async iterations
+            const pauseKey = agentKey(context.projectId, name, agentId);
+            const pauseState = agentPauseStates.get(pauseKey);
+            if (pauseState?.paused && pauseState.promise) {
+              // Signal that we're paused to the message loop by throwing a special marker
+              // The message loop's outer try/catch will handle this
+              instance.status = 'paused';
+            } else if (instance.status === 'paused') {
+              instance.status = 'running';
+            }
+
+            const traceSummary = `${ trace.text || '' }${ trace.secondary ? ' | ' + trace.secondary : '' }`.slice(0, 4000);
+            const logEntry = `[${ new Date().toISOString() }] ${ trace.type }: ${ traceSummary }`;
+            traceEventCount++;
+            traceLog.push(logEntry);
+            if (traceLog.length > MAX_SUB_AGENT_TRACE_LOGS) {
+              traceLog.splice(0, traceLog.length - MAX_SUB_AGENT_TRACE_LOGS);
+            }
+
+            // Time-based throttling stays bounded even when several agents emit
+            // bursts at very different rates.
+            const statusWriteAt = Date.now();
+            if (statusWriteAt - lastStatusWriteAt >= SUB_AGENT_STATUS_WRITE_INTERVAL_MS) {
+              lastStatusWriteAt = statusWriteAt;
+              interAgentMailbox.updateAgentPresence(context.projectId, name, {
+                status: instance.status === 'paused' ? 'paused' : 'running',
+                task,
+                progress: trace.text || 'Working...',
+                ...resolveFeedOwnership(context, subAgentChatId),
+          ...lineage,
+              });
+              agentMessageBus.writeAgentStatus(name, {
+                status: instance.status === 'paused' ? 'paused' : 'running', agentId, subAgentChatId,
+                task,
+                progress: trace.text || 'Working...',
+                traceLog: traceLog.slice(-10),
+                startedAt: instance.startedAt,
+                ...resolveFeedOwnership(context, subAgentChatId),
+          ...lineage,
+              }, context.projectId).catch(() => { });
+            }
+
+            // Keep the provider's answer/cancellation lifecycle intact. The
+            // worker identity isolates this stream from Main's answer surface.
+            if (onTrace) {
+              onTrace({
+                ...trace,
+                type: trace.type,
+                text: trace.text,
+                subAgent: name,
+                subAgentId: agentId,
+                subAgentChatId,
+                agentName: name,
+                agentStatus: instance.status === 'paused' ? 'paused' : 'working',
+                agentStep: traceEventCount
+              });
+            }
+          }
+        );
+
+        const unfinishedChildren = swarmCoordinator.descendants(agentId).filter(child => !swarmCoordinator.isTerminal(child.id));
+        if (unfinishedChildren.length && !abortController.signal.aborted) {
+          await this.joinChildren(subAgentContext);
+          throw new Error(`The worker ended before integrating its delegated children. Child results are retained by run ID. Partial answer:\n${boundedHandoffPayload(result.text, 12000).body}`);
+        }
+        if (this.hasUndeliveredChildEvidence(subAgentContext)) {
+          throw new Error(`The worker ended before receiving all child outcomes for integration. Reports remain available by task ID. Partial answer:\n${boundedHandoffPayload(result.text, 12000).body}`);
+        }
+
+        // A provider may finish while cancellation is propagating. Never publish
+        // that late result as successful work after the user stopped the run.
+        if (
+          isCancelled(context.projectId) ||
+          abortController.signal.aborted ||
+          (context as any).abortSignal?.aborted ||
+          isAgentClosed(context.projectId, name, agentId)
+        ) {
+          throw new Error('CANCELLED_BY_USER');
+        }
+
+        const durationMs = Date.now() - instance.startedAt;
+        instance.status = 'completed';
+        instance.result = result.text;
+        instance.completedAt = Date.now();
+        instance.durationMs = durationMs;
+
+        interAgentMailbox.updateAgentPresence(context.projectId, name, {
+          status: 'completed',
+          task,
+          progress: 'Done',
+          ...resolveFeedOwnership(context, subAgentChatId),
+          ...lineage,
+        });
+        await agentMessageBus.writeAgentStatus(name, {
+          status: 'completed', agentId, subAgentChatId,
+          task,
+          progress: 'Done',
+          result: result.text,
+          traceLog,
+          startedAt: instance.startedAt,
+          completedAt: instance.completedAt,
+          ...resolveFeedOwnership(context, subAgentChatId),
+          ...lineage,
+        }, context.projectId).catch(error => console.warn('[SubAgent] Status persistence failed:', formatUnknownError(error)));
+        assertExecutionActive();
+
+        console.log(`[${ name }] ✅ Done ${ (durationMs / 1000).toFixed(1) }s`);
+
+        const delegationEvidence = assessDelegatedAgent({
+          agentId,
+          subAgentChatId,
+          name,
+          task,
+          status: 'completed',
+          result: result.text,
+          success: true,
+          completedAt: instance.completedAt,
+        }, false);
+
+        // Queue result silently — main agent picks it up via 'collect'
+        await queuePendingResult({
+          projectId: context.projectId,
+          agentId,
+          subAgentChatId,
+          name,
+          task,
+          result: result.text,
+          success: true,
+          status: 'completed',
+          delegationEvidence,
+          durationMs,
+          completedAt: instance.completedAt,
+          ...resolveFeedOwnership(context, subAgentChatId),
+          ...lineage,
+        });
+        assertExecutionActive();
+        const handoffPayload = boundedHandoffPayload(result.text);
         interAgentMailbox.send({
           from: name,
           to: lineage.parentAgentName,
           projectId: context.projectId,
-          type: 'alert',
-          subject: `${name} could not complete its assignment`.substring(0, 100),
+          type: 'handoff',
+          subject: `${name} completed its assignment`.substring(0, 100),
           body: handoffPayload.body,
           metadata: {
-            priority: 'high',
-            deliveryMode: 'interrupt',
-            requiresResponse: true,
-            tags: ['automatic-handoff', 'sub-agent-failure'],
+            priority: 'normal',
+            deliveryMode: 'defer',
+            requiresResponse: false,
+            tags: ['automatic-handoff', 'sub-agent-result'],
             subAgentId: agentId,
             subAgentChatId,
             resultChars: delegationEvidence.resultChars,
             resultHash: delegationEvidence.resultHash,
             resultUsability: delegationEvidence.resultUsability,
-            evidenceReady: false,
+            evidenceReady: delegationEvidence.evidenceReady,
             verificationStatus: delegationEvidence.verificationStatus,
             payloadTruncated: handoffPayload.truncated,
             ...resolveFeedOwnership(context, subAgentChatId),
-        ...lineage,
+          ...lineage,
           },
         });
-      }
+        apiKeyPool.reportSuccess(`${context.projectId}_sub_${name}`);
 
-      if (onTrace && !wasCancelled) {
-        // Emit sub_agent_error (hidden from main feed) instead of safety_warning
-        // so failed agents don't pollute the main chat with red banners
-        onTrace({
-          type: 'sub_agent_error',
-          text: `${ name } failed`,
-          secondary: error.message.substring(0, 120),
-          subAgent: name,
-          subAgentId: agentId,
+        if (onTrace) {
+          onTrace({
+            type: 'sub_agent_complete',
+            text: `${ name } completed`,
+            // Preserve the lossless, user-facing answer on the completion event.
+            // resultSummary is compact orchestration metadata and intentionally
+            // removes Markdown structure, so it cannot serve as chat content.
+            result: result.text,
+            content: result.text,
+            timestamp: instance.completedAt,
+            startTime: instance.startedAt,
+            endTime: instance.completedAt,
+            secondary: `${ (durationMs / 1000).toFixed(1) }s · ${ traceEventCount } steps`,
+            subAgent: name,
+            subAgentId: agentId,
+            subAgentChatId,
+            agentName: name,
+            agentStatus: 'completed',
+            task: task.substring(0, 1200),
+            taskSummary: delegationEvidence.resultSummary,
+            resultSummary: delegationEvidence.resultSummary,
+            resultAvailable: delegationEvidence.resultAvailable,
+            resultUsability: delegationEvidence.resultUsability,
+            evidenceReady: delegationEvidence.evidenceReady,
+            verificationStatus: delegationEvidence.verificationStatus,
+            resultHash: delegationEvidence.resultHash,
+            resultChars: delegationEvidence.resultChars,
+            collected: false,
+            delegationEvidence,
+            durationMs,
+            stepCount: traceEventCount,
+            traceLog: traceLog.slice(-5)
+          });
+        }
+
+        swarmCoordinator.settle(agentId, 'completed', undefined, result.text);
+        return { agentId, name, result: result.text, success: true, durationMs, traceLog };
+      } catch (error: any) {
+        const durationMs = Date.now() - instance.startedAt;
+        const errorMessage = formatUnknownError(error, 'Unknown sub-agent failure');
+        const wasClosed = isAgentClosed(context.projectId, name, agentId);
+        const wasCancelled = wasClosed || errorMessage === 'CANCELLED_BY_USER'
+          || isCancelled(context.projectId)
+          || (context as any).abortSignal?.aborted
+          || abortController.signal.aborted;
+        if (!wasCancelled && lease) {
+          apiKeyPool.reportFailure(`${context.projectId}_sub_${name}`, apiKeyPool.classifyError(errorMessage), errorMessage);
+        }
+
+        instance.status = wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed';
+        instance.result = wasClosed ? 'Closed by user' : wasCancelled ? 'Cancelled by user' : errorMessage;
+        instance.completedAt = Date.now();
+        instance.durationMs = durationMs;
+        swarmCoordinator.settle(agentId, wasCancelled ? 'cancelled' : 'failed', instance.result);
+        for (const child of swarmCoordinator.descendants(agentId)) {
+          if (!swarmCoordinator.isTerminal(child.id)) this.cancelBranch(context.projectId, child.id);
+        }
+        const delegationEvidence = assessDelegatedAgent({
+          agentId,
           subAgentChatId,
-          agentName: name,
-          agentStatus: 'error',
-          task: task.substring(0, 1200),
-          resultSummary: delegationEvidence.resultSummary,
-          resultAvailable: delegationEvidence.resultAvailable,
-          resultUsability: delegationEvidence.resultUsability,
-          evidenceReady: false,
-          verificationStatus: delegationEvidence.verificationStatus,
-          resultHash: delegationEvidence.resultHash,
-          resultChars: delegationEvidence.resultChars,
-          collected: false,
-          delegationEvidence,
-          timestamp: instance.completedAt,
-          startTime: instance.startedAt,
-          endTime: instance.completedAt,
-          durationMs,
-          stepCount: traceEventCount,
-        });
-      }
+          name,
+          task,
+          status: instance.status,
+          result: instance.result,
+          success: false,
+          completedAt: instance.completedAt,
+        }, false);
 
-      return { agentId, name, result: instance.result!, success: false, durationMs, traceLog };
-    } finally {
-      parentAbortSignal?.removeEventListener('abort', abortFromParent);
-      if (lease) apiKeyPool.releaseSubAgentKey(context.projectId, name);
-      const completedControlKey = agentKey(context.projectId, name, agentId);
-      agentPauseStates.get(completedControlKey)?.resolver?.();
-      agentPauseStates.delete(completedControlKey);
-      agentCloseFlags.delete(completedControlKey);
-      controlAgentNames.delete(completedControlKey);
-      if (['completed', 'failed', 'cancelled', 'closed'].includes(instance.status)) {
-        this.completedAgents.delete(agentId);
-        this.completedAgents.set(agentId, instance);
-        while (this.completedAgents.size > 200) {
-          const oldestId = this.completedAgents.keys().next().value as string | undefined;
-          if (!oldestId) break;
-          const oldest = this.completedAgents.get(oldestId);
-          this.completedAgents.delete(oldestId);
-          const continuationKey = oldest ? `${ oldest.projectId }:${ oldestId }:direct` : '';
-          if (!this.activeAgents.has(oldestId) && (!continuationKey || !this.directContinuationPromises.has(continuationKey))) {
-            this.directConversationStates.delete(oldestId);
+        interAgentMailbox.updateAgentPresence(context.projectId, name, {
+          status: wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed',
+          task,
+          progress: wasClosed ? 'Closed by main control' : wasCancelled ? 'Cancelled' : `Failed: ${ errorMessage }`,
+          ...resolveFeedOwnership(context, subAgentChatId),
+          ...lineage,
+        });
+        await agentMessageBus.writeAgentStatus(name, {
+          status: wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed', agentId, subAgentChatId,
+          task,
+          progress: wasClosed ? 'Closed by main control' : wasCancelled ? 'Cancelled' : `Failed: ${ errorMessage }`,
+          result: instance.result,
+          traceLog,
+          startedAt: instance.startedAt,
+          completedAt: instance.completedAt,
+          ...resolveFeedOwnership(context, subAgentChatId),
+          ...lineage,
+        }, context.projectId).catch(error => console.warn('[SubAgent] Status persistence failed:', formatUnknownError(error)));
+
+        await queuePendingResult({
+          projectId: context.projectId,
+          agentId,
+          subAgentChatId,
+          name,
+          task,
+          result: instance.result!,
+          success: false,
+          status: wasClosed ? 'closed' : wasCancelled ? 'cancelled' : 'failed',
+          delegationEvidence,
+          durationMs,
+          completedAt: instance.completedAt,
+          ...resolveFeedOwnership(context, subAgentChatId),
+          ...lineage,
+        });
+        if (!wasCancelled) {
+          const handoffPayload = boundedHandoffPayload(errorMessage);
+          interAgentMailbox.send({
+            from: name,
+            to: lineage.parentAgentName,
+            projectId: context.projectId,
+            type: 'alert',
+            subject: `${name} could not complete its assignment`.substring(0, 100),
+            body: handoffPayload.body,
+            metadata: {
+              priority: 'high',
+              deliveryMode: 'interrupt',
+              requiresResponse: true,
+              tags: ['automatic-handoff', 'sub-agent-failure'],
+              subAgentId: agentId,
+              subAgentChatId,
+              resultChars: delegationEvidence.resultChars,
+              resultHash: delegationEvidence.resultHash,
+              resultUsability: delegationEvidence.resultUsability,
+              evidenceReady: false,
+              verificationStatus: delegationEvidence.verificationStatus,
+              payloadTruncated: handoffPayload.truncated,
+              ...resolveFeedOwnership(context, subAgentChatId),
+          ...lineage,
+            },
+          });
+        }
+
+        if (onTrace && !wasCancelled) {
+          // Emit sub_agent_error (hidden from main feed) instead of safety_warning
+          // so failed agents don't pollute the main chat with red banners
+          onTrace({
+            type: 'sub_agent_error',
+            text: `${ name } failed`,
+            secondary: errorMessage.substring(0, 120),
+            subAgent: name,
+            subAgentId: agentId,
+            subAgentChatId,
+            agentName: name,
+            agentStatus: 'error',
+            task: task.substring(0, 1200),
+            resultSummary: delegationEvidence.resultSummary,
+            resultAvailable: delegationEvidence.resultAvailable,
+            resultUsability: delegationEvidence.resultUsability,
+            evidenceReady: false,
+            verificationStatus: delegationEvidence.verificationStatus,
+            resultHash: delegationEvidence.resultHash,
+            resultChars: delegationEvidence.resultChars,
+            collected: false,
+            delegationEvidence,
+            timestamp: instance.completedAt,
+            startTime: instance.startedAt,
+            endTime: instance.completedAt,
+            durationMs,
+            stepCount: traceEventCount,
+          });
+        }
+
+        return { agentId, name, result: instance.result!, success: false, durationMs, traceLog };
+      } finally {
+        parentAbortSignal?.removeEventListener('abort', abortFromParent);
+        const completedControlKey = agentKey(context.projectId, name, agentId);
+        agentPauseStates.get(completedControlKey)?.resolver?.();
+        agentPauseStates.delete(completedControlKey);
+        agentCloseFlags.delete(completedControlKey);
+        controlAgentNames.delete(completedControlKey);
+        if (['completed', 'failed', 'cancelled', 'closed'].includes(instance.status)) {
+          this.completedAgents.delete(agentId);
+          this.completedAgents.set(agentId, instance);
+          while (this.completedAgents.size > 200) {
+            const oldestId = this.completedAgents.keys().next().value as string | undefined;
+            if (!oldestId) break;
+            const oldest = this.completedAgents.get(oldestId);
+            this.completedAgents.delete(oldestId);
+            const continuationKey = oldest ? `${ oldest.projectId }:${ oldestId }:direct` : '';
+            if (!this.activeAgents.has(oldestId) && (!continuationKey || !this.directContinuationPromises.has(continuationKey))) {
+              this.directConversationStates.delete(oldestId);
+            }
           }
         }
+        this.activeAgents.delete(agentId);
+        this.releaseSlot(agentId);
+        if (
+          instance.directUserMessages.length > 0 &&
+          ['completed', 'failed', 'closed'].includes(instance.status)
+        ) {
+          // A message may arrive during the provider's final response, after the
+          // last safe drain. Resume it only after the old answer and lifecycle
+          // have settled so it receives a fresh immutable turn.
+          queueMicrotask(() => void this.startNextDirectContinuation(instance));
+        }
       }
-      this.activeAgents.delete(agentId);
-      this.releaseSlot(agentId);
-      if (
-        instance.directUserMessages.length > 0 &&
-        ['completed', 'failed', 'closed'].includes(instance.status)
-      ) {
-        // A message may arrive during the provider's final response, after the
-        // last safe drain. Resume it only after the old answer and lifecycle
-        // have settled so it receives a fresh immutable turn.
-        queueMicrotask(() => void this.startNextDirectContinuation(instance));
-      }
+    } finally {
+      // Covers startup failures before the provider loop's own cleanup exists.
+      // Identity guards keep an old run from releasing a new continuation.
+      parentAbortSignal?.removeEventListener('abort', abortFromParent);
+      this.releaseSlot(agentId, reservation);
     }
   }
 
@@ -1657,7 +1700,9 @@ export class SubAgentSpawner {
     onTrace = upstreamTrace ? event => { try { upstreamTrace(event); } catch (error) { console.warn('[SubAgent] Trace delivery failed:', formatUnknownError(error)); } } : undefined;
     const occupiedSlots = this.getOccupiedSlotCount(context.projectId);
     const availableSlots = Math.max(0, getConfiguredSubAgentLimit(context) - occupiedSlots);
-    const activeTasks = tasks;
+    // Resolve the entire batch before admission so a bad model cannot leave a
+    // partially registered frontier that blocks later tasks in the queue.
+    const activeTasks = tasks.map(task => ({ ...task, ...resolveSubAgentModel(context, task) }));
     const teamSize = activeTasks.length;
     const reservedNames = new Set<SubAgentName>();
     const agentNames = activeTasks.map((t) => {
@@ -1723,8 +1768,10 @@ export class SubAgentSpawner {
       const name = agentNames[index];
       const plan = agentPlans[index];
       const runKey = `${ context.projectId }:${ plan.agentId }`;
+      const attempt = nodes[index].attempt;
 
       const publishFailure = async (reason: string, stopped: boolean) => {
+        if (swarmCoordinator.get(plan.agentId)?.attempt !== attempt) return;
         const status = stopped ? 'cancelled' as const : 'failed' as const;
         swarmCoordinator.settle(plan.agentId, status, reason);
         const ownership = { ...resolveFeedOwnership(context, plan.subAgentChatId), ...lineage(index) };
@@ -1748,13 +1795,15 @@ export class SubAgentSpawner {
 
       // Fire-and-forget: start without awaiting. Every terminal path publishes
       // an addressable report, including cancellation before a provider exists.
+      let reservation: SubAgentSlotReservation | undefined;
       const promise = (async () => {
-        const reserved = await this.reserveSlotWhenAvailable(context.projectId, name, plan.agentId, context);
+        const reserved = await this.reserveSlotWhenAvailable(context.projectId, name, plan.agentId, context, t);
         if (!reserved) {
           const node = swarmCoordinator.get(plan.agentId);
           await publishFailure(node?.reason || 'Cancelled before execution', node?.state !== 'blocked' && node?.state !== 'failed');
           return;
         }
+        reservation = this.slotReservations.get(plan.agentId);
         if (isCancelled(context.projectId) || (context as any).abortSignal?.aborted || swarmCoordinator.isTerminal(plan.agentId)) {
           await publishFailure('Cancelled before execution', true);
           return;
@@ -1763,7 +1812,11 @@ export class SubAgentSpawner {
         if (!outcome.success && !pendingResults.has(runKey)) {
           await publishFailure(outcome.result, isCancelled(context.projectId) || (context as any).abortSignal?.aborted || swarmCoordinator.get(plan.agentId)?.state === 'cancelled');
         }
-        if (!swarmCoordinator.isTerminal(plan.agentId)) swarmCoordinator.settle(plan.agentId, outcome.success ? 'completed' : 'failed', outcome.success ? undefined : outcome.result, outcome.result);
+        // A queued direct message can reopen this ID before this promise
+        // resumes. The previous answer must not settle the new execution.
+        if (swarmCoordinator.get(plan.agentId)?.attempt === attempt && !swarmCoordinator.isTerminal(plan.agentId)) {
+          swarmCoordinator.settle(plan.agentId, outcome.success ? 'completed' : 'failed', outcome.success ? undefined : outcome.result, outcome.result);
+        }
       })()
         .catch(async (error) => {
           const stopped = isCancelled(context.projectId) || (context as any).abortSignal?.aborted || swarmCoordinator.get(plan.agentId)?.state === 'cancelled';
@@ -1771,7 +1824,7 @@ export class SubAgentSpawner {
           if (!stopped) console.error(`[SubAgent] Background run failed for ${name}:`, error);
         })
         .finally(() => {
-          this.releaseSlot(plan.agentId);
+          if (reservation) this.releaseSlot(plan.agentId, reservation);
           this.backgroundPromises.delete(runKey);
           if (this.getBackgroundCount(context.projectId) === 0) {
             clearCancelState(context.projectId);
@@ -1786,8 +1839,8 @@ export class SubAgentSpawner {
       agents: agentPlans.map((plan, index) => ({ ...plan, ...lineage(index) })),
       notStartedTasks: [],
       message: teamSize > 0
-        ? `${ teamSize } task-named agents accepted: up to ${getConfiguredSubAgentLimit(context)} run concurrently and ${Math.max(0, teamSize - availableSlots)} wait in the bounded queue. Continue independent work, or join when dependent evidence is needed. Results are automatically handed to the delegating parent and remain available through mode="collect".`
-        : `No agent slot is available. ${occupiedSlots} agent(s) are already running at the configured concurrent limit.`
+        ? `${ teamSize } task-named agents accepted. Up to ${getConfiguredSubAgentLimit(context)} may run concurrently; queued tasks start when provider capacity, dependencies, and resource ownership permit. Continue independent work, or join when dependent evidence is needed. Results are automatically handed to the delegating parent and remain available through mode="collect".`
+        : 'No task assignments were supplied.'
     };
   }
 
@@ -1835,16 +1888,24 @@ export class SubAgentSpawner {
       interAgentMailbox.updateAgentPresence(context.projectId, instance.name, { status: 'waiting', progress: 'Joining child evidence' });
     }
     try {
-      while (true) {
-        if ((context as any).abortSignal?.aborted || isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
-        const runs = [...this.backgroundPromises.values()].filter(matches);
-        if (!runs.length) break;
-        await Promise.allSettled(runs.map(run => run.promise));
-      }
+      const drain = async () => {
+        while (true) {
+          if ((context as any).abortSignal?.aborted || isCancelled(context.projectId)) throw new Error('CANCELLED_BY_USER');
+          const runs = [...this.backgroundPromises.values()].filter(matches);
+          if (!runs.length) break;
+          await Promise.allSettled(runs.map(run => run.promise));
+        }
+      };
+      const releaseParentLease = (context as any).withReleasedProviderLease;
+      if (!instance && typeof releaseParentLease === 'function') await releaseParentLease(drain);
+      else await drain();
     } finally {
       if (instance && !(context as any).abortSignal?.aborted && !isCancelled(context.projectId) && !swarmCoordinator.isTerminal(instance.id)) {
-        swarmCoordinator.resume(instance.id);
-        if (!await this.reserveSlotWhenAvailable(context.projectId, instance.name, instance.id, context)) throw new Error('CANCELLED_BY_USER');
+        const selection = resolveSubAgentModel(context);
+        swarmCoordinator.resume(instance.id, selection.provider);
+        if (!await this.reserveSlotWhenAvailable(context.projectId, instance.name, instance.id, context, selection)) throw new Error('CANCELLED_BY_USER');
+        const lease = this.slotReservations.get(instance.id)?.lease;
+        if (lease) instance.setLeasedKey?.(lease.apiKey);
         instance.status = 'running';
         interAgentMailbox.updateAgentPresence(context.projectId, instance.name, { status: 'running', progress: 'Integrating child evidence' });
       }
@@ -1981,13 +2042,17 @@ export class SubAgentSpawner {
     };
 
     let continuationStopped = false;
+    let reservation: SubAgentSlotReservation | undefined;
     const continuationPromise = (async () => {
-      swarmCoordinator.reopen(previous.id);
+      const selection = resolveSubAgentModel(continuationContext, modelOverride);
+      Object.assign(modelOverride, selection);
+      swarmCoordinator.reopen(previous.id, selection.provider);
       const reserved = await this.reserveSlotWhenAvailable(
         previous.projectId,
         previous.name,
         previous.id,
         continuationContext,
+        modelOverride,
       );
       if (!reserved) {
         continuationStopped = true;
@@ -2005,11 +2070,15 @@ export class SubAgentSpawner {
         });
         return;
       }
+      reservation = this.slotReservations.get(previous.id);
 
       // Remove only the message this continuation owns. Later messages stay
       // ordered in the shared queue for safe iteration drains or a subsequent
       // continuation; they can never be folded into this initial request.
-      if (state.queue[0]?.id !== nextMessage.id) return;
+      if (state.queue[0]?.id !== nextMessage.id) {
+        swarmCoordinator.settle(previous.id, 'cancelled', 'Direct message withdrawn before execution');
+        return;
+      }
       state.queue.shift();
       previous.onTrace?.({
         type: 'user_action',
@@ -2046,7 +2115,7 @@ export class SubAgentSpawner {
       if (state.queue[0]?.id === nextMessage.id) state.queue.shift();
       console.error(`[SubAgent] Continuation failed for ${ previous.name }:`, error);
     }).finally(() => {
-      this.releaseSlot(previous.id);
+      if (reservation) this.releaseSlot(previous.id, reservation);
       this.directContinuationPromises.delete(runKey);
       this.backgroundPromises.delete(runKey);
       const latest = this.completedAgents.get(previous.id) || previous;
@@ -2172,7 +2241,8 @@ export class SubAgentSpawner {
   public async spawnConsensus(
     task: string,
     context: ProjectContext,
-    onTrace?: (trace: any) => void
+    onTrace?: (trace: any) => void,
+    workerOptions?: SubAgentWorkerOptions,
   ): Promise<{
     perspectives: Array<{ perspective: string, agent: string, result: string, success: boolean }>,
     synthesisPrompt: string,
@@ -2229,15 +2299,15 @@ Your analysis should cover the realistic angle: practical constraints, balanced 
     const startTime = Date.now();
 
     const results = await this.spawnParallel(
-      perspectives.map(p => ({ task: p.brief, name: p.name })),
+      perspectives.map(p => ({ ...workerOptions, task: p.brief, name: p.name })),
       context,
-      `This is a CONSENSUS PANEL analysis. You are the ${perspectives[0].lens} lens.`,
+      'This is a CONSENSUS PANEL analysis. Use the perspective specified in your own assignment.',
       onTrace
     );
 
     const perspectiveResults = results.results.map((r, i) => ({
       perspective: perspectives[i].lens,
-      agent: perspectives[i].name,
+      agent: r.name,
       result: r.result,
       success: r.success
     }));
@@ -2291,7 +2361,8 @@ Do NOT just list what each agent said. SYNTHESIZE into a cohesive analysis.`;
   public async spawnDebate(
     task: string,
     context: ProjectContext,
-    onTrace?: (trace: any) => void
+    onTrace?: (trace: any) => void,
+    workerOptions?: SubAgentWorkerOptions,
   ): Promise<{
     rounds: Array<{ round: number; results: Array<{ agent: string; result: string; success: boolean }> }>;
     synthesis: string;
@@ -2317,8 +2388,8 @@ Do NOT just list what each agent said. SYNTHESIZE into a cohesive analysis.`;
     // === ROUND 1: Independent Analysis ===
     const round1 = await this.spawnParallel(
       [
-        { task: `[DEBATE ROUND 1 - ANALYSIS] Analyze this task independently and thoroughly:\n\n${task}\n\nProvide your complete analysis with evidence. Be specific and detailed.`, name: firstDebater },
-        { task: `[DEBATE ROUND 1 - ANALYSIS] Analyze this task independently and thoroughly:\n\n${task}\n\nProvide your complete analysis with evidence. Be specific and detailed.`, name: secondDebater },
+        { ...workerOptions, task: `[DEBATE ROUND 1 - PROPOSAL] Develop the strongest evidence-backed approach to this task:\n\n${task}\n\nExplain the proposed approach, supporting evidence, assumptions, and tradeoffs. Be specific and detailed.`, name: firstDebater },
+        { ...workerOptions, task: `[DEBATE ROUND 1 - CHALLENGE] Independently challenge the likely approaches to this task:\n\n${task}\n\nIdentify failure cases, counterevidence, unresolved assumptions, and viable alternatives. Be specific and detailed.`, name: secondDebater },
       ],
       context,
       'Debate Round 1: Independent analysis. Be thorough.',
@@ -2341,7 +2412,8 @@ Do NOT just list what each agent said. SYNTHESIZE into a cohesive analysis.`;
     const round2 = await this.spawnParallel(
       [
         { 
-          task: `[DEBATE ROUND 2 - REBUTTAL] 
+          ...workerOptions,
+          task: `[DEBATE ROUND 2 - PROPOSAL REBUTTAL]
 ORIGINAL TASK: ${task}
 
 YOUR ANALYSIS (Round 1): ${firstAnalysis.substring(0, 2000)}
@@ -2356,7 +2428,8 @@ Now REBUT the opponent's analysis:
           name: firstDebater
         },
         { 
-          task: `[DEBATE ROUND 2 - REBUTTAL]
+          ...workerOptions,
+          task: `[DEBATE ROUND 2 - CHALLENGE REBUTTAL]
 ORIGINAL TASK: ${task}
 
 YOUR ANALYSIS (Round 1): ${secondAnalysis.substring(0, 2000)}
@@ -2430,7 +2503,8 @@ No calibrated confidence score is available. Ground each conclusion in source ev
     role: 'security_auditor' | 'performance_analyst' | 'architect' | 'qa_tester' | 'researcher',
     task: string,
     context: ProjectContext,
-    onTrace?: (trace: any) => void
+    onTrace?: (trace: any) => void,
+    workerOptions?: SubAgentWorkerOptions,
   ): Promise<{ name: string; result: string; success: boolean; durationMs: number; confidence: number | null }> {
 
     const specialistProfiles: Record<string, { systemBrief: string; toolHints: string[] }> = {
@@ -2530,7 +2604,7 @@ OUTPUT: Research report with cited sources, confidence levels per claim, and are
       });
     }
 
-    const batch = await this.spawnParallel([{ task: specialistBrief, name: specialistName }], context,
+    const batch = await this.spawnParallel([{ ...workerOptions, task: specialistBrief, name: specialistName }], context,
       `Specialist role: ${role}. Apply this perspective only within the user’s instructions.`, onTrace);
     const result = batch.results[0] || { result: 'No specialist result', success: false, durationMs: 0 };
     // Tool count is activity, not a calibrated probability of correctness.
@@ -2546,4 +2620,4 @@ OUTPUT: Research report with cited sources, confidence levels per claim, and are
   }
 }
 
-export const globalSubAgentSpawner = new SubAgentSpawner();
+export const globalSubAgentSpawner = sharedRuntime.spawner ||= new SubAgentSpawner();

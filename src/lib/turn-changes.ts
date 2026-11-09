@@ -35,6 +35,20 @@ export function collectTurnChanges(logs: any[], workspacePath?: string | null): 
         if (!files.has(key)) files.set(key, { filepath, filename: filepath.split(/[\\/]/).pop() || filepath, status, revisions: [], isEdit: true });
       }
     }
+    // Imported source histories may retain the native action receipt without
+    // a separate preview event. Its recorded diff is the same edit evidence.
+    if (log.importedFrom && Array.isArray(result.changes)) for (const change of result.changes) {
+      if (!change || !['created', 'modified', 'deleted'].includes(change.action)) continue;
+      const filepath = resolveTouchPath(change.path, cwd);
+      if (!filepath) continue;
+      const diffLines = Array.isArray(change.diffLines) ? change.diffLines : [];
+      if (!diffLines.length && typeof change.readback !== 'string') continue;
+      const identity = String(log.id || log.traceId || `${log.runId || ''}:${log.timestamp || ''}`);
+      previews.set(`${workspacePathKey(filepath)}:${identity}`, { ...log, filepath,
+        filename: filepath.split(/[\\/]/).pop() || filepath, ownerTraceId: identity, diffLines,
+        content: change.readback, operation: change.action === 'created' ? 'created' : change.action === 'deleted' ? 'deleted' : 'edited',
+        linesAdded: change.additions, linesRemoved: change.deletions });
+    }
     if (log.type !== 'file_preview') continue;
     const filepath = resolveTouchPath(log.filepath || log.filePath, cwd);
     if (!filepath) continue;

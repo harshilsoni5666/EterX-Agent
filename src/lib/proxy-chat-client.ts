@@ -1,8 +1,33 @@
 import { getNativeFilePath } from './path-utils';
 
 const controlWrites = new Map<string, Promise<boolean>>();
+const controlWriteResults = new Map<string, boolean>();
 
-export function writeProxyControl(chatId: string, patch: { action: 'enable' | 'disable' | 'pause' | 'resume' | 'intervention' | 'model'; level?: string; modelSelection?: string }, onError?: (message: string) => void): Promise<boolean> {
+export type ProxyControlSettings = {
+  enabled: boolean;
+  paused: boolean;
+  intervention: 'minimal' | 'normal' | 'high';
+  modelSelection: string;
+  followChatModel?: boolean;
+};
+
+export function hasPendingProxyControlWrites(chatId: string): boolean {
+  return controlWrites.has(chatId);
+}
+
+// Reads and sends must also join the write queue. Waiting for just the first
+// promise misses a second toggle made while the first request was in flight.
+export async function waitForProxyControlWrites(chatId: string): Promise<boolean> {
+  let success = controlWriteResults.get(chatId) ?? true;
+  let pending: Promise<boolean> | undefined;
+  while ((pending = controlWrites.get(chatId))) {
+    success = await pending;
+    if (controlWrites.get(chatId) === pending) controlWrites.delete(chatId);
+  }
+  return success;
+}
+
+export function writeProxyControl(chatId: string, patch: { action: 'enable' | 'disable' | 'pause' | 'resume' | 'intervention' | 'model' | 'configure'; level?: string; modelSelection?: string; followChatModel?: boolean; settings?: ProxyControlSettings }, onError?: (message: string) => void): Promise<boolean> {
   const previous = controlWrites.get(chatId) || Promise.resolve(true);
   const write = previous.catch(() => false).then(async () => {
     try {
@@ -24,7 +49,10 @@ export function writeProxyControl(chatId: string, patch: { action: 'enable' | 'd
     }
   });
   controlWrites.set(chatId, write);
-  void write.finally(() => { if (controlWrites.get(chatId) === write) controlWrites.delete(chatId); });
+  void write.then(success => {
+    controlWriteResults.set(chatId, success);
+    if (controlWrites.get(chatId) === write) controlWrites.delete(chatId);
+  });
   return write;
 }
 

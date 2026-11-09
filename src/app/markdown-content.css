@@ -149,6 +149,40 @@
   border-radius: 0 !important;
   box-shadow: none !important;
   scrollbar-width: thin;
+  overflow: auto;
+}
+
+.eterx-table-summary,
+.eterx-table-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.eterx-table-summary {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.eterx-table-summary > span {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.eterx-table-actions {
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.eterx-table-block[data-expanded="false"] .eterx-markdown-table-wrap {
+  max-height: min(460px, 60vh);
+}
+
+.eterx-table-block .eterx-markdown-th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--eterx-md-card);
 }
 
 .eterx-table-block .eterx-markdown-table-wrap:focus-visible {
@@ -245,4 +279,5 @@
   .eterx-table-toolbar { display: none; }
   .eterx-math-display.katex-display { padding-inline: 0; }
   .eterx-table-block { break-inside: avoid; }
+  .eterx-table-block[data-expanded="false"] .eterx-markdown-table-wrap { max-height: none; overflow: visible; }
 }

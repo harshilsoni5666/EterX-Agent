@@ -10,6 +10,7 @@ import { persistScheduledTasks } from '../../lib/scheduled-task-sync';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { refreshSavedModelCatalog } from '../../lib/model-catalog-client';
+import { requestJson } from '../../lib/request-json';
 
 export type ScheduledTaskItem = ScheduledTaskRecord;
 import {
@@ -45,6 +46,12 @@ import { EterxLogo } from '../chat/agent-icons';
 
 const MODEL_API_KEY_STORAGE_KEY = API_KEY_PRESENCE_STORAGE_KEY;
 const SETTINGS_CHANNEL = 'eterx-settings';
+const MODEL_SETTINGS_STORAGE_KEYS = [
+  MODEL_API_KEY_STORAGE_KEY, MODEL_OVERRIDE_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY,
+  MODEL_SELECTOR_STORAGE_KEY, CHAT_MODEL_SELECTION_STORAGE_KEY,
+  MODEL_API_KEY_PRESENCE_STORAGE_KEY, MODEL_THINKING_CAPABILITIES_STORAGE_KEY,
+  'eterx_chat_thinking_level',
+];
 
 const syncRuntimeModelOverrides = (modelOverrides: Record<string, string>) => {
   void fetch('/api/settings/keys', {
@@ -319,6 +326,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   useEffect(() => {
     let disposed = false;
     let inFlight = false;
+    const controller = new AbortController();
     const applyTasks = (tasks: ScheduledTaskItem[]) => {
       if (disposed) return;
       const serialized = JSON.stringify(tasks);
@@ -337,7 +345,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
       const pendingLocalWriteAt = Number(appStorage.getItem('eterx_scheduled_tasks_sync_pending') || 0);
         if (pendingLocalWriteAt && Date.now() - pendingLocalWriteAt < 15_000) return;
       if (pendingLocalWriteAt) appStorage.removeItem('eterx_scheduled_tasks_sync_pending');
-        const response = await fetch('/api/scheduled-tasks', { cache: 'no-store' });
+        const response = await requestJson('/api/scheduled-tasks', { cache: 'no-store', signal: controller.signal }, 15_000);
         if (!response.ok) return;
         const snapshot = await response.json();
         if (disposed) return;
@@ -358,6 +366,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     const interval = window.setInterval(syncDurableTasks, 4000);
     return () => {
       disposed = true;
+      controller.abort();
       window.removeEventListener(SCHEDULED_TASKS_UPDATED_EVENT, handleSync);
       window.removeEventListener('focus', syncDurableTasks);
       unsubscribeVisibility();
@@ -617,8 +626,15 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
   }, [storedModelSettings.chatModelSelection]);
 
   useEffect(() => {
+    let disposed = false;
+    let previousValues: Array<string | null> | null = null;
     const handleUpdate = () => {
-      setStoredModelSettings(readStoredModelSettings());
+      if (disposed) return;
+      const values = MODEL_SETTINGS_STORAGE_KEYS.map(key => appStorage.getItem(key));
+      if (previousValues && values.every((value, index) => value === previousValues![index])) return;
+      previousValues = values;
+      const next = readStoredModelSettings();
+      setStoredModelSettings(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
       if (typeof window !== 'undefined') {
         setThinkingLevel((appStorage.getItem('eterx_chat_thinking_level') || 'medium') as MainAgentThinkingLevel);
       }
@@ -628,6 +644,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     window.addEventListener('eterx-folder-storage-updated', handleUpdate);
     void appStorageReady.then(handleUpdate);
     return () => {
+      disposed = true;
       window.removeEventListener('eterx-settings-updated', handleUpdate);
       window.removeEventListener(FOLDER_STORAGE_READY_EVENT, handleUpdate);
       window.removeEventListener('eterx-folder-storage-updated', handleUpdate);
@@ -837,12 +854,21 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
     }
   };
 
-  // Continuous real-time system clock state
+  // The scheduling controls display minutes, so only publish minute changes.
   const [nowClock, setNowClock] = useState(() => new Date());
 
   useEffect(() => {
-    const timer = setInterval(() => setNowClock(new Date()), 10000);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const syncClock = () => {
+      clearTimeout(timer);
+      if (!isAppVisible()) return;
+      const now = new Date();
+      setNowClock(previous => Math.floor(previous.getTime() / 60_000) === Math.floor(now.getTime() / 60_000) ? previous : now);
+      timer = setTimeout(syncClock, 60_000 - (now.getTime() % 60_000));
+    };
+    syncClock();
+    const unsubscribeVisibility = subscribeAppVisibility(syncClock);
+    return () => { clearTimeout(timer); unsubscribeVisibility(); };
   }, []);
 
   const todayStr = useMemo(() => {
@@ -1026,7 +1052,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3 }}
-            className="eterx-agents-library-panel flex-1 bg-[#0A0A0A]/70 backdrop-blur-sm border border-white/[0.04] rounded-[18px] p-6 w-full shadow-none flex flex-col items-center justify-between relative overflow-hidden"
+            className="eterx-agents-library-panel flex-1 bg-[#0A0A0A]/70 backdrop-blur-xs border border-white/[0.04] rounded-[18px] p-6 w-full shadow-none flex flex-col items-center justify-between relative overflow-hidden"
           >
             {scheduleMode === 'agent' ? (
               <>
@@ -1061,7 +1087,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                           value={inputValue}
                           onChange={(e) => setInputValue(e.target.value)}
                           placeholder="Do anything"
-                          className="w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[13.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[160px] resize-none leading-[1.45] py-0.5 overflow-hidden"
+                          className="w-full appearance-none border-0 bg-transparent shadow-none outline-hidden ring-0 text-[13.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-hidden focus:ring-0 placeholder:font-normal min-h-[26px] max-h-[160px] resize-none leading-[1.45] py-0.5 overflow-hidden"
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && !e.shiftKey) {
                               e.preventDefault();
@@ -1129,7 +1155,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                           if (event.key === 'Escape') setShowModelMenu(false);
                                         }}
                                         placeholder={`Search ${allModelOptions.length} models`}
-                                        className="h-9 w-full rounded-lg border border-white/[0.08] bg-[#171717] pl-8 pr-3 text-[12px] text-[#F4F1EA] outline-none placeholder:text-[#777] focus:border-white/[0.18]"
+                                        className="h-9 w-full rounded-lg border border-white/[0.08] bg-[#171717] pl-8 pr-3 text-[12px] text-[#F4F1EA] outline-hidden placeholder:text-[#777] focus:border-white/[0.18]"
                                       />
                                     </div>
                                   )}
@@ -1274,7 +1300,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                         onChange={(e) => setTaskTitle(e.target.value)}
                         placeholder=""
                         aria-label="Scheduled task title"
-                        className="relative z-0 w-full bg-transparent border-0 outline-none focus:outline-none focus:ring-0 text-[18px] font-bold text-white py-2 leading-tight"
+                        className="relative z-0 w-full bg-transparent border-0 outline-hidden focus:outline-hidden focus:ring-0 text-[18px] font-bold text-white py-2 leading-tight"
                       />
                     </div>
 
@@ -1291,7 +1317,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                         onChange={(e) => setTaskDescription(e.target.value)}
                         placeholder=""
                         aria-label="Describe what the agent should do"
-                        className="relative z-0 w-full bg-[#181818]/60 border border-white/[0.04] rounded-xl px-3.5 py-2.5 text-[13px] text-white focus:outline-none focus:border-white/10 transition-colors resize-none leading-relaxed shadow-none"
+                        className="relative z-0 w-full bg-[#181818]/60 border border-white/[0.04] rounded-xl px-3.5 py-2.5 text-[13px] text-white focus:outline-hidden focus:border-white/10 transition-colors resize-none leading-relaxed shadow-none"
                       />
                     </div>
 
@@ -1554,7 +1580,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                           placeholder="e.g., 3 days, 2 hours, 15 mins"
                                           value={customRepeatVal}
                                           onChange={(e) => setCustomRepeatVal(e.target.value)}
-                                          className={`flex-1 min-w-0 bg-[#0A0A0A]/60 border rounded-lg px-2.5 py-1 text-[11px] text-white focus:outline-none transition-colors text-center ${ customRepeatVal.trim() === ""
+                                          className={`flex-1 min-w-0 bg-[#0A0A0A]/60 border rounded-lg px-2.5 py-1 text-[11px] text-white focus:outline-hidden transition-colors text-center ${ customRepeatVal.trim() === ""
                                               ? "border-white/[0.08] focus:border-white/20"
                                               : isCustomRepeatValid
                                                 ? "border-emerald-500/30 focus:border-emerald-500/50"
@@ -1659,7 +1685,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                       placeholder="09:00"
                                       value={customTimeVal}
                                       onChange={(e) => setCustomTimeVal(e.target.value)}
-                                      className="flex-1 min-w-0 bg-[#0A0A0A]/60 border border-white/[0.08] rounded-lg px-2 py-1 text-[12px] text-white focus:outline-none focus:border-white/20 text-center"
+                                      className="flex-1 min-w-0 bg-[#0A0A0A]/60 border border-white/[0.08] rounded-lg px-2 py-1 text-[12px] text-white focus:outline-hidden focus:border-white/20 text-center"
                                     />
                                     <div className="flex bg-white/[0.03] p-0.5 rounded-lg border border-white/[0.04] shrink-0 select-none">
                                       {['AM', 'PM'].map((p) => {
@@ -1669,7 +1695,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                             type="button"
                                             key={p}
                                             onClick={() => setCustomTimePeriod(p as 'AM' | 'PM')}
-                                            className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer ${ active ? 'bg-white text-black font-extrabold shadow-none' : 'text-white/60 hover:text-white'
+                                            className={`px-2 py-0.5 rounded-sm text-[10px] font-bold transition-all cursor-pointer ${ active ? 'bg-white text-black font-extrabold shadow-none' : 'text-white/60 hover:text-white'
                                               }`}
                                           >
                                             {p}
@@ -1787,7 +1813,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = React.memo(({
                                       setCustomDateVal(e.target.value);
                                       setDateOption('custom');
                                     }}
-                                    className="w-full bg-[#0A0A0A]/60 border border-white/[0.1] rounded-lg px-2.5 py-1 text-[12px] text-white focus:outline-none focus:border-white/30 transition-colors"
+                                    className="w-full bg-[#0A0A0A]/60 border border-white/[0.1] rounded-lg px-2.5 py-1 text-[12px] text-white focus:outline-hidden focus:border-white/30 transition-colors"
                                   />
                                   <button
                                     type="button"

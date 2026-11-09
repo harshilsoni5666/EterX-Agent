@@ -1,11 +1,14 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { X, ChevronRight, ChevronDown, Check, FolderClosed, Search, AlarmClockCheck, Link as LinkIcon, Users } from 'lucide-react';
-import { PremiumShare, PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
+import { X, ChevronRight, ChevronDown, Check, FolderClosed, History, Search, AlarmClockCheck, Link as LinkIcon, Users } from 'lucide-react';
+import { PremiumEdit, PremiumStar, PremiumFolder, PremiumTrash, PremiumDashboard, PremiumAgent, PremiumChannels, PremiumMoreHorizontal, PremiumCheckSquare, PremiumSettings } from '../ui/premium-icons';
+import { CopyChatIcon, OpenChatWindowIcon } from '../ui/chat-menu-icons';
+import { LoaderCircle, RefreshCw } from 'lucide-react';
 import { Tooltip } from '../ui/tooltip';
 import { appStorage, appStorageReady } from '../../lib/client-storage';
-import { safeCopyTextToClipboard } from '../ui/copy-button';
+import { preloadAppPanel } from '../../lib/preload-app-panel';
+import { IMPORT_LABELS, type ImportOrigin } from '../../lib/imports/types';
 
 const SIDEBAR_DEFAULT_WIDTH = 256;
 const SIDEBAR_MIN_WIDTH = 220;
@@ -17,6 +20,29 @@ const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 const CHAT_RENDER_BATCH = 160;
 
+function SidebarLoadingSpinner({ className = 'h-5 w-5' }: { className?: string }) {
+  // The sidebar deliberately suppresses SVG transforms. Rotate a dedicated
+  // wrapper so icon hover rules cannot freeze a loading indicator.
+  return (
+    <span className={`eterx-sidebar-loading-spinner ${className}`} aria-hidden="true">
+      <LoaderCircle className="h-full w-full" strokeWidth={1.75} />
+    </span>
+  );
+}
+
+function ImportOriginMark({ origin, folder }: { origin: ImportOrigin; folder?: string | null }) {
+  const provider = origin.provider;
+  const label = `Imported from ${IMPORT_LABELS[provider]}${folder ? ` · ${folder}` : ''}`;
+  return (
+    <span className="eterx-sidebar-import-origin" title={label} role="img" aria-label={`Imported from ${IMPORT_LABELS[provider]}`}>
+      {provider === 'cursor' ? <>
+        <img className="eterx-sidebar-import-logo eterx-sidebar-import-logo-cursor-dark" src="/icons/import-providers/cursor-dark.png" alt="" draggable={false} />
+        <img className="eterx-sidebar-import-logo eterx-sidebar-import-logo-cursor-light" src="/icons/import-providers/cursor-light.png" alt="" draggable={false} />
+      </> : <img className={`eterx-sidebar-import-logo eterx-sidebar-import-logo-${provider}`} src={provider === 'codex' ? '/icons/import-providers/codex.png' : '/icons/import-providers/claude.png'} alt="" draggable={false} />}
+    </span>
+  );
+}
+
 const getSidebarViewportMax = (_viewportWidth: number) => SIDEBAR_MAX_WIDTH;
 
 const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isFavorite?: boolean }) => {
@@ -24,6 +50,87 @@ const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isF
   const textViewportRef = React.useRef<HTMLDivElement>(null);
   const textRef = React.useRef<HTMLSpanElement>(null);
   const [overflowDistance, setOverflowDistance] = React.useState(0);
+  const [revealing, setRevealing] = React.useState(false);
+  const reducedMotion = useReducedMotion();
+
+  React.useEffect(() => {
+    const row = containerRef.current?.closest<HTMLElement>('.eterx-sidebar-chat-row');
+    const scroller = row?.closest('.eterx-sidebar-recents-scroll');
+    if (!row || reducedMotion) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let hovering = false;
+    let focused = false;
+    let scrollingUntil = 0;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = undefined;
+      setRevealing(false);
+    };
+    const start = () => {
+      if (timer !== undefined || Date.now() < scrollingUntil) return;
+      timer = setTimeout(() => {
+        if ((hovering || focused) && !document.hidden && !row.hasAttribute('data-menu-open')) {
+          setRevealing(true);
+        } else {
+          timer = undefined;
+        }
+      }, 500);
+    };
+    const onScroll = () => {
+      scrollingUntil = Date.now() + 180;
+      reset();
+    };
+    const enter = (event: PointerEvent) => {
+      if (event.pointerType === 'touch' || event.buttons) return;
+      hovering = true;
+      scroller?.addEventListener('scroll', onScroll, { passive: true });
+      start();
+    };
+    const leave = () => {
+      hovering = false;
+      if (!focused) {
+        scroller?.removeEventListener('scroll', onScroll);
+        reset();
+      }
+    };
+    const move = (event: PointerEvent) => {
+      if (hovering && !event.buttons) start();
+    };
+    const focus = () => {
+      focused = row.matches(':focus-visible');
+      if (focused) {
+        scroller?.addEventListener('scroll', onScroll, { passive: true });
+        start();
+      }
+    };
+    const blur = () => {
+      focused = false;
+      if (!hovering) scroller?.removeEventListener('scroll', onScroll);
+      reset();
+    };
+    row.addEventListener('pointerenter', enter);
+    row.addEventListener('pointerleave', leave);
+    row.addEventListener('pointermove', move);
+    row.addEventListener('pointerdown', reset);
+    row.addEventListener('contextmenu', reset);
+    row.addEventListener('focus', focus);
+    row.addEventListener('blur', blur);
+    window.addEventListener('blur', reset);
+    document.addEventListener('visibilitychange', reset);
+    return () => {
+      clearTimeout(timer);
+      scroller?.removeEventListener('scroll', onScroll);
+      row.removeEventListener('pointerenter', enter);
+      row.removeEventListener('pointerleave', leave);
+      row.removeEventListener('pointermove', move);
+      row.removeEventListener('pointerdown', reset);
+      row.removeEventListener('contextmenu', reset);
+      row.removeEventListener('focus', focus);
+      row.removeEventListener('blur', blur);
+      window.removeEventListener('blur', reset);
+      document.removeEventListener('visibilitychange', reset);
+    };
+  }, [reducedMotion]);
 
   const measureOverflow = React.useCallback(() => {
     const viewport = textViewportRef.current;
@@ -31,7 +138,8 @@ const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isF
     if (!viewport || !text) return;
 
     const diff = text.scrollWidth - viewport.clientWidth;
-    const nextDistance = diff > 4 ? Math.ceil(diff) : 0;
+    // Include the trailing fade so the final character remains fully readable.
+    const nextDistance = diff > 1 ? Math.ceil(diff) + 8 : 0;
     setOverflowDistance(current => current === nextDistance ? current : nextDistance);
   }, []);
 
@@ -44,6 +152,7 @@ const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isF
     const observer = new ResizeObserver(measureOverflow);
     observer.observe(viewport);
     if (container) observer.observe(container);
+    if (textRef.current) observer.observe(textRef.current);
     return () => observer.disconnect();
   }, [isFavorite, measureOverflow, title]);
 
@@ -52,11 +161,7 @@ const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isF
     return () => window.removeEventListener('resize', measureOverflow);
   }, [measureOverflow]);
 
-  const marqueeDuration = Math.max(6, Math.min(18, 4.5 + overflowDistance * 0.16));
-  const marqueeStyle = overflowDistance > 0 ? {
-    '--eterx-sidebar-marquee-distance': `-${ overflowDistance }px`,
-    '--eterx-sidebar-marquee-duration': `${ marqueeDuration + 2.8 }s`,
-  } as React.CSSProperties : undefined;
+  const reveal = revealing && !reducedMotion && overflowDistance > 0;
 
   return (
     <div
@@ -65,13 +170,17 @@ const ChatTitleMarquee = React.memo(({ title, isFavorite }: { title: string; isF
     >
       {isFavorite && <PremiumStar className="eterx-sidebar-favorite-icon w-3.5 h-3.5 text-yellow-500/90 mr-1.5 shrink-0" />}
       <div ref={textViewportRef} className="min-w-0 flex-1 overflow-hidden">
-        <span
+        <motion.span
           ref={textRef}
-          style={marqueeStyle}
+          initial={false}
+          animate={{ x: reveal ? -overflowDistance : 0 }}
+          transition={reducedMotion ? { duration: 0 } : reveal
+            ? { duration: Math.max(0.6, overflowDistance / 28), ease: 'linear' }
+            : { duration: 0.3, ease: 'easeOut' }}
           className={`eterx-sidebar-chat-title text-current leading-normal whitespace-nowrap ${ overflowDistance > 0 ? 'eterx-sidebar-chat-title-overflow' : '' }`}
         >
           {title}
-        </span>
+        </motion.span>
       </div>
     </div>
   );
@@ -160,6 +269,24 @@ const handleMenuKeyboardNavigation = (event: React.KeyboardEvent<HTMLElement>) =
 };
 
 const lightweightSidebarCss = `
+  :root .eterx-sidebar-menu.eterx-move-project-menu {
+    border-radius: 12px !important;
+    background: color-mix(in srgb, var(--background, #202020) 90%, var(--foreground, #fff) 10%) !important;
+    padding: 5px !important;
+    gap: 0 !important;
+  }
+  :root .eterx-move-project-menu .eterx-sidebar-menu-item {
+    min-height: 34px;
+    padding: 7px 9px !important;
+    gap: 9px !important;
+    border-radius: 7px !important;
+    font-size: 12px !important;
+    line-height: 18px;
+  }
+  :root .eterx-move-project-menu .eterx-move-project-list {
+    scrollbar-width: thin;
+    scrollbar-color: var(--sidebar-muted-text) transparent;
+  }
 :root[data-theme="dark"] .eterx-sidebar-shell {
     --sidebar-hover-bg: #262626;
     --sidebar-chat-hover-bg: #282A29;
@@ -223,7 +350,8 @@ const lightweightSidebarCss = `
     bottom: 0 !important;
     height: auto !important;
     opacity: 1;
-    animation: none;
+    /* Keep one palette timeline while the child layers crossfade on thinking. */
+    animation: ambientSidebarPaletteCycle 96s ease-in-out infinite;
   }
 
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-sheen {
@@ -402,6 +530,26 @@ const lightweightSidebarCss = `
 
   .eterx-sidebar-project-loading {
     animation: eterx-sidebar-spin 0.8s linear infinite;
+  }
+
+  .eterx-sidebar-loading-spinner {
+    display: inline-flex;
+    flex-shrink: 0;
+    transform-origin: center;
+    animation: eterx-sidebar-spin 0.85s linear infinite;
+    will-change: transform;
+  }
+
+  @keyframes eterx-sidebar-loading-pulse {
+    0%, 100% { opacity: 0.45; }
+    50% { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .eterx-sidebar-loading-spinner {
+      animation: eterx-sidebar-loading-pulse 1.4s ease-in-out infinite;
+      will-change: opacity;
+    }
   }
 
 
@@ -609,16 +757,19 @@ const lightweightSidebarCss = `
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
+  :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-chat-row[data-menu-open="true"],
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
   :root[data-theme="dark"] .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-chat-row[data-menu-open="true"],
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
   :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
   .eterx-sidebar-shell .eterx-sidebar-toggle:hover,
   .eterx-sidebar-shell .eterx-sidebar-nav-item:hover,
   .eterx-sidebar-shell .eterx-sidebar-chat-row:hover,
+  .eterx-sidebar-shell .eterx-sidebar-chat-row[data-menu-open="true"],
   .eterx-sidebar-shell .eterx-sidebar-settings-button:hover,
   .eterx-sidebar-shell .eterx-sidebar-profile-icon-button:hover,
   .eterx-sidebar-menu button:hover {
@@ -702,23 +853,6 @@ const lightweightSidebarCss = `
     will-change: auto;
   }
 
-  @keyframes eterx-sidebar-title-marquee {
-    0%, 10% {
-      transform: translate3d(0, 0, 0);
-    }
-    38%, 64% {
-      transform: translate3d(var(--eterx-sidebar-marquee-distance), 0, 0);
-    }
-    86%, 100% {
-      transform: translate3d(0, 0, 0);
-    }
-  }
-
-  .eterx-sidebar-shell .eterx-sidebar-chat-row:hover .eterx-sidebar-chat-title-overflow {
-    animation: eterx-sidebar-title-marquee var(--eterx-sidebar-marquee-duration) cubic-bezier(0.25, 1, 0.5, 1) 420ms infinite;
-    will-change: transform;
-  }
-
   .eterx-sidebar-shell .eterx-sidebar-chat-title-wrap {
     overflow: hidden !important;
   }
@@ -748,6 +882,49 @@ const lightweightSidebarCss = `
     font-weight: 560;
     letter-spacing: 0;
     transition: opacity 150ms ease, transform 150ms ease, color 150ms ease, width 150ms ease, margin-left 150ms ease;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-import-origin {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    margin-right: 5px;
+    flex: 0 0 14px;
+    opacity: .9;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-import-logo {
+    display: block;
+    width: 14px;
+    height: 14px;
+    object-fit: contain;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-import-logo-codex {
+    filter: brightness(0) invert(1);
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-import-logo-cursor-dark {
+    display: block;
+  }
+
+  .eterx-sidebar-shell .eterx-sidebar-import-logo-cursor-light {
+    display: none;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-import-logo-codex {
+    filter: brightness(0);
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-import-logo-cursor-dark {
+    display: none;
+  }
+
+  :root[data-theme="light"] .eterx-sidebar-shell .eterx-sidebar-import-logo-cursor-light {
+    display: block;
   }
 
   .eterx-sidebar-shell .eterx-sidebar-chat-active .eterx-sidebar-chat-meta {
@@ -939,6 +1116,8 @@ interface ChatSession {
   traceLogs: any[];
   isFavorite?: boolean;
   workspacePath?: string | null;
+  importOrigin?: ImportOrigin;
+  importFolder?: string;
 }
 
 interface SidebarProject {
@@ -961,13 +1140,18 @@ interface SidebarProps {
   createNewChat: () => void;
   chats: ChatSession[];
   isLoadingChats?: boolean;
+  historyError?: string | null;
+  retryHistory?: () => void;
   activeChatId: string | null;
   additionalActiveChatIds?: Set<string> | string[];
   loadChat: (id: string) => void;
+  copyChat: (id: string) => Promise<void>;
+  openChatWindow: (id: string) => Promise<void>;
   deleteChat: (id: string) => void;
   deleteChats?: (ids: string[]) => void;
   renameChat: (id: string, newTitle: string) => void;
   toggleFavorite: (id: string) => void;
+  moveChatToProject: (id: string, path: string | null) => void;
   onSearchClick: () => void;
   activeView: 'chat' | 'agents' | 'channels' | 'projects';
   setActiveView: (view: 'chat' | 'agents' | 'channels' | 'projects') => void;
@@ -979,22 +1163,117 @@ interface SidebarProps {
 
 export const Sidebar = React.memo<SidebarProps>(
   ({
-    isOpen, titlebarToggleExternal = false, setIsOpen, createNewChat, chats, isLoadingChats = false, activeChatId, additionalActiveChatIds, loadChat, deleteChat, deleteChats, renameChat, toggleFavorite, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
+    isOpen, titlebarToggleExternal = false, setIsOpen, createNewChat, chats, isLoadingChats = false, historyError, retryHistory, activeChatId, additionalActiveChatIds, loadChat, copyChat, openChatWindow, deleteChat, deleteChats, renameChat, toggleFavorite, moveChatToProject, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
 }) => {
   const reduceMotion = useReducedMotion();
-  const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean } | null>(null);
+  const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean, anchoredToButton?: boolean } | null>(null);
+  const [chatMenuPosition, setChatMenuPosition] = React.useState<{ id: string; left: number; top: number } | null>(null);
+  const [pendingChatAction, setPendingChatAction] = React.useState<{ id: string; kind: 'copy' | 'window' } | null>(null);
+  const chatActionPending = pendingChatAction !== null;
+  const chatActionPendingRef = React.useRef(false);
+  const [chatActionError, setChatActionError] = React.useState<{ id: string; kind: 'copy' | 'window'; message: string } | null>(null);
+  const runChatAction = async (action: (id: string) => Promise<void>, id: string, kind: 'copy' | 'window') => {
+    if (chatActionPendingRef.current) return;
+    chatActionPendingRef.current = true;
+    setPendingChatAction({ id, kind });
+    setChatActionError(null);
+    setMoveProjectMenu(null);
+    try {
+      await action(id);
+      setMenuState(current => current?.id === id ? null : current);
+    } catch (error) {
+      setChatActionError({ id, kind, message: error instanceof Error ? error.message : 'Could not complete the action. Please try again.' });
+    } finally {
+      chatActionPendingRef.current = false;
+      setPendingChatAction(null);
+    }
+  };
+  React.useEffect(() => { setChatActionError(null); }, [menuState]);
   const [toggleHovered, setToggleHovered] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(false);
   const [viewportWidth, setViewportWidth] = React.useState(1440);
   const [sidebarWidth, setSidebarWidth] = React.useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = React.useState(false);
   const [selectedProjectPath, setSelectedProjectPath] = React.useState<string | null>(null);
+  const [selectedImportFolder, setSelectedImportFolder] = React.useState<string | null>(null);
+  const importFolders = React.useMemo(() => [...new Set(chats.map(chat => chat.importFolder).filter((folder): folder is string => Boolean(folder)))].sort((a, b) => a.localeCompare(b)), [chats]);
   const [projectMenuOpen, setProjectMenuOpen] = React.useState(false);
   const [projectMenuPosition, setProjectMenuPosition] = React.useState({ top: 0, left: 0 });
   const projectMenuRef = React.useRef<HTMLDivElement>(null);
   const projectMenuPortalRef = React.useRef<HTMLDivElement>(null);
   const chatMenuRef = React.useRef<HTMLDivElement>(null);
+  const moveProjectTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const moveProjectMenuRef = React.useRef<HTMLDivElement>(null);
+  const moveProjectCloseTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [moveProjectMenu, setMoveProjectMenu] = React.useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
+  const [moveProjectSearch, setMoveProjectSearch] = React.useState('');
+  const keepMoveProjectMenuOpen = () => {
+    if (moveProjectCloseTimer.current) clearTimeout(moveProjectCloseTimer.current);
+    moveProjectCloseTimer.current = null;
+  };
+  const scheduleMoveProjectMenuClose = () => {
+    keepMoveProjectMenuOpen();
+    moveProjectCloseTimer.current = setTimeout(() => setMoveProjectMenu(null), 180);
+  };
+  const openMoveProjectMenu = (focus = false) => {
+    keepMoveProjectMenuOpen();
+    const trigger = moveProjectTriggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const parent = chatMenuRef.current?.getBoundingClientRect() || rect;
+    const width = Math.min(224, window.innerWidth - 16);
+    const maxHeight = Math.min(360, window.innerHeight - 16);
+    const left = parent.right + 6 + width <= window.innerWidth - 8
+      ? parent.right + 6
+      : Math.max(8, parent.left - width - 6);
+    setMoveProjectMenu(previous => previous || { left, top: Math.max(8, rect.top - 5), width, maxHeight });
+    if (focus) window.requestAnimationFrame(() => moveProjectMenuRef.current?.querySelector<HTMLButtonElement>('button[role="menuitemradio"]')?.focus());
+  };
+  React.useEffect(() => {
+    setMoveProjectMenu(null);
+    setMoveProjectSearch('');
+    return () => {
+      if (moveProjectCloseTimer.current) clearTimeout(moveProjectCloseTimer.current);
+    };
+  }, [menuState]);
   const chatMenuButtonRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
+
+  React.useLayoutEffect(() => {
+    if (!menuState) {
+      setChatMenuPosition(null);
+      return;
+    }
+    const reposition = () => {
+      const menu = chatMenuRef.current;
+      if (!menu) return;
+      const anchor = menuState.anchoredToButton ? chatMenuButtonRefs.current[menuState.id]?.getBoundingClientRect() : null;
+      const anchorTop = anchor?.top ?? menuState.y;
+      const anchorBottom = anchor?.bottom ?? menuState.y;
+      const gap = 4;
+      const margin = 8;
+      const height = menu.offsetHeight;
+      const spaceBelow = window.innerHeight - anchorBottom - gap - margin;
+      const spaceAbove = anchorTop - gap - margin;
+      const openAbove = height > spaceBelow && spaceAbove > spaceBelow;
+      const top = Math.max(margin, Math.min(
+        openAbove ? anchorTop - height - gap : anchorBottom + gap,
+        window.innerHeight - height - margin,
+      ));
+      const left = Math.max(margin, Math.min((anchor?.right ?? menuState.x) - 16, window.innerWidth - menu.offsetWidth - margin));
+      setChatMenuPosition(previous => previous?.id === menuState.id && previous.left === left && previous.top === top
+        ? previous : { id: menuState.id, left, top });
+    };
+    reposition();
+    const observer = new ResizeObserver(reposition);
+    if (chatMenuRef.current) observer.observe(chatMenuRef.current);
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+  }, [menuState]);
 
   const projects = React.useMemo<SidebarProject[]>(() => {
     const byPath = new Map<string, SidebarProject>();
@@ -1017,15 +1296,51 @@ export const Sidebar = React.memo<SidebarProps>(
     });
   }, [chats]);
 
+  const matchingMoveProjects = React.useMemo(() => {
+    const query = projects.length > 6 ? moveProjectSearch.trim().toLowerCase() : '';
+    return projects.filter(project => !query || `${project.name} ${project.path}`.toLowerCase().includes(query));
+  }, [projects, moveProjectSearch]);
+  const duplicateProjectNames = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    projects.forEach(project => counts.set(project.name.toLowerCase(), (counts.get(project.name.toLowerCase()) || 0) + 1));
+    return new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name));
+  }, [projects]);
+  const moveProjectMenuOpen = Boolean(moveProjectMenu);
+  React.useLayoutEffect(() => {
+    if (!moveProjectMenuOpen) return;
+    const reposition = () => {
+      const panel = moveProjectMenuRef.current;
+      const trigger = moveProjectTriggerRef.current;
+      if (!panel || !trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const parent = chatMenuRef.current?.getBoundingClientRect() || rect;
+      const width = Math.min(224, window.innerWidth - 16);
+      const maxHeight = Math.min(360, window.innerHeight - 16);
+      const height = Math.min(panel.scrollHeight + 2, maxHeight);
+      const left = parent.right + 5 + width <= window.innerWidth - 8
+        ? parent.right + 5
+        : parent.left - width - 5 >= 8 ? parent.left - width - 5 : Math.max(8, window.innerWidth - width - 8);
+      const top = Math.max(8, Math.min(rect.top - 5, window.innerHeight - height - 8));
+      setMoveProjectMenu(previous => previous && (previous.left !== left || previous.top !== top || previous.width !== width || previous.maxHeight !== maxHeight)
+        ? { left, top, width, maxHeight } : previous);
+    };
+    reposition();
+    const observer = new ResizeObserver(reposition);
+    if (moveProjectMenuRef.current) observer.observe(moveProjectMenuRef.current);
+    window.addEventListener('resize', reposition);
+    return () => { observer.disconnect(); window.removeEventListener('resize', reposition); };
+  }, [moveProjectMenuOpen, matchingMoveProjects.length]);
+
   const activeProject = React.useMemo(
     () => projects.find(project => project.path.toLowerCase() === normalizeProjectPath(selectedProjectPath).toLowerCase()) || null,
     [projects, selectedProjectPath],
   );
   const filteredChats = React.useMemo(() => {
+    if (selectedImportFolder) return chats.filter(chat => chat.importFolder === selectedImportFolder);
     const selectedPath = normalizeProjectPath(selectedProjectPath).toLowerCase();
     if (!selectedPath) return chats;
     return chats.filter(chat => normalizeProjectPath(chat.workspacePath).toLowerCase() === selectedPath);
-  }, [chats, selectedProjectPath]);
+  }, [chats, selectedProjectPath, selectedImportFolder]);
   const [visibleChatCount, setVisibleChatCount] = React.useState(CHAT_RENDER_BATCH);
   const [recentScrollFades, setRecentScrollFades] = React.useState({ top: false, bottom: false });
   const visibleChats = React.useMemo(
@@ -1044,6 +1359,10 @@ export const Sidebar = React.memo<SidebarProps>(
   React.useEffect(() => {
     if (selectedProjectPath && !activeProject) setSelectedProjectPath(null);
   }, [activeProject, selectedProjectPath]);
+  React.useEffect(() => {
+    if (selectedImportFolder && !importFolders.includes(selectedImportFolder)) setSelectedImportFolder(null);
+    setVisibleChatCount(CHAT_RENDER_BATCH);
+  }, [selectedImportFolder, importFolders]);
 
   React.useEffect(() => {
     if (!projectMenuOpen) return;
@@ -1233,7 +1552,6 @@ export const Sidebar = React.memo<SidebarProps>(
 
   const [editingChatId, setEditingChatId] = React.useState<string | null>(null);
   const [editTitle, setEditTitle] = React.useState('');
-  const [shareCopiedId, setShareCopiedId] = React.useState<string | null>(null);
 
   const [isSelectMode, setIsSelectMode] = React.useState(false);
   const [selectedChatIds, setSelectedChatIds] = React.useState<Set<string>>(new Set());
@@ -1567,22 +1885,13 @@ export const Sidebar = React.memo<SidebarProps>(
   };
 
   const handleProjectSelect = React.useCallback((path: string | null) => {
+    setSelectedImportFolder(null);
     const normalizedPath = normalizeProjectPath(path);
     const currentPath = normalizeProjectPath(selectedProjectPath);
     setProjectMenuOpen(false);
     if (normalizedPath.toLowerCase() === currentPath.toLowerCase()) return;
     startProjectTransition(() => setSelectedProjectPath(normalizedPath || null));
   }, [selectedProjectPath, startProjectTransition]);
-
-  const handleShare = async (id: string) => {
-    const chatToShare = chats.find(c => c.id === id);
-    if (chatToShare) {
-      const didCopy = await safeCopyTextToClipboard(`Shared Session: ${ chatToShare.title }`);
-      if (!didCopy) return;
-      setShareCopiedId(id);
-      setTimeout(() => setShareCopiedId(null), 2000);
-    }
-  };
 
   React.useEffect(() => {
     const handleClickOutside = () => setMenuState(null);
@@ -1601,7 +1910,7 @@ export const Sidebar = React.memo<SidebarProps>(
           opacity: 1
         }}
         transition={reduceMotion ? { duration: 0 } : { duration: 0.28, ease: [0.2, 0.8, 0.2, 1] }}
-        className="eterx-sidebar-shell relative bg-[var(--sidebar-bg)] shadow-none flex flex-col flex-shrink-0 z-[100] h-full overflow-hidden [-webkit-app-region:no-drag]"
+        className="eterx-sidebar-shell relative bg-[var(--sidebar-bg)] shadow-none flex flex-col shrink-0 z-[100] h-full overflow-hidden [-webkit-app-region:no-drag]"
       >
         <div className="eterx-sidebar-sheen pointer-events-none absolute inset-0 bg-transparent overflow-hidden">
           <div
@@ -1637,7 +1946,7 @@ export const Sidebar = React.memo<SidebarProps>(
                 aria-expanded={isOpen}
                 aria-controls="eterx-sidebar-content"
                 style={glassClickStyle('sidebar-toggle')}
-                className={`eterx-sidebar-click-surface eterx-sidebar-toggle ${ glassClickClass('sidebar-toggle') } h-8 w-8 rounded-[8px] bg-transparent transition-colors duration-150 ease-out text-[var(--sidebar-muted-text)] flex items-center justify-center cursor-pointer border border-transparent hover:bg-[var(--sidebar-toggle-hover-bg)] hover:border-transparent hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] [-webkit-app-region:no-drag]`}
+                className={`eterx-sidebar-click-surface eterx-sidebar-toggle ${ glassClickClass('sidebar-toggle') } h-8 w-8 rounded-[8px] bg-transparent transition-colors duration-150 ease-out text-[var(--sidebar-muted-text)] flex items-center justify-center cursor-pointer border border-transparent hover:bg-[var(--sidebar-toggle-hover-bg)] hover:border-transparent hover:text-[var(--sidebar-hover-text)] active:bg-[var(--sidebar-toggle-active-bg)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] [-webkit-app-region:no-drag]`}
               >
                 <SidebarToggleIcon isOpen={isOpen} isHovered={toggleHovered} sizeClass="w-[18px] h-[18px]" />
               </button>
@@ -1696,9 +2005,9 @@ export const Sidebar = React.memo<SidebarProps>(
             {/* Menu Items */}
             <div className={isOpen ? "space-y-0.5 mt-0" : "space-y-1.5 mt-0"}>
               {[
-                { id: 'tasks', label: 'Tasks', icon: AlarmClockCheck, tooltip: 'Manage tasks', onClick: () => setActiveView('projects'), active: activeView === 'projects' },
-                { id: 'agents', label: 'Agents', icon: Users, tooltip: 'Manage agents', onClick: () => setActiveView('agents'), active: activeView === 'agents' },
-                { id: 'channels', label: 'Channels', icon: LinkIcon, tooltip: 'Deploy agents to channels', onClick: () => setActiveView('channels'), active: activeView === 'channels' },
+                { id: 'tasks', label: 'Tasks', icon: AlarmClockCheck, tooltip: 'Manage tasks', preload: () => preloadAppPanel('projects'), onClick: () => setActiveView('projects'), active: activeView === 'projects' },
+                { id: 'agents', label: 'Agents', icon: Users, tooltip: 'Manage agents', preload: () => preloadAppPanel('agents'), onClick: () => setActiveView('agents'), active: activeView === 'agents' },
+                { id: 'channels', label: 'Channels', icon: LinkIcon, tooltip: 'Deploy agents to channels', preload: () => preloadAppPanel('channels'), onClick: () => setActiveView('channels'), active: activeView === 'channels' },
               ].map(item => {
                 const Icon = item.icon;
                 const isActive = item.active;
@@ -1709,6 +2018,8 @@ export const Sidebar = React.memo<SidebarProps>(
                       <button
                         type="button"
                         aria-current={isActive ? 'page' : undefined}
+                        onPointerEnter={item.preload}
+                        onFocus={item.preload}
                         onMouseDown={(e) => triggerGlassClick(e, `nav-${ item.id }`)}
                         onClick={item.onClick}
                         style={glassClickStyle(`nav-${ item.id }`)}
@@ -1733,6 +2044,8 @@ export const Sidebar = React.memo<SidebarProps>(
                         type="button"
                         aria-label={item.label}
                         aria-current={isActive ? 'page' : undefined}
+                        onPointerEnter={item.preload}
+                        onFocus={item.preload}
                         onMouseDown={(e) => triggerGlassClick(e, `nav-${ item.id }`)}
                         onClick={item.onClick}
                         style={glassClickStyle(`nav-${ item.id }`)}
@@ -1767,7 +2080,7 @@ export const Sidebar = React.memo<SidebarProps>(
                   ) : (
                     <button
                       type="button"
-                      aria-label={`Chat scope: ${ activeProject?.name || 'Recents' }`}
+                      aria-label={`Chat scope: ${ selectedImportFolder || activeProject?.name || 'Recents' }`}
                       aria-haspopup="menu"
                       aria-expanded={projectMenuOpen}
                       onClick={(event) => {
@@ -1780,10 +2093,10 @@ export const Sidebar = React.memo<SidebarProps>(
                         });
                         setProjectMenuOpen(open => !open);
                       }}
-                      className={`eterx-sidebar-project-filter group/filter flex min-w-0 max-w-full items-center gap-1 rounded-full border border-transparent px-2 py-1 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ projectMenuOpen ? 'is-open' : '' }`}
+                      className={`eterx-sidebar-project-filter group/filter flex min-w-0 max-w-full items-center gap-1 rounded-full border border-transparent px-2 py-1 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] transition-[background-color,border-color,color,box-shadow,transform] duration-150 ease-out hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] active:scale-[0.985] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] ${ projectMenuOpen ? 'is-open' : '' }`}
                     >
                       <span className="eterx-sidebar-section-title min-w-0 truncate">
-                        {activeProject?.name || 'Recents'}
+                        {selectedImportFolder || activeProject?.name || 'Recents'}
                       </span>
                       <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform duration-150 ${ projectMenuOpen ? 'rotate-180' : '' }`} strokeWidth={2.1} />
                     </button>
@@ -1814,7 +2127,7 @@ export const Sidebar = React.memo<SidebarProps>(
                       <button
                         type="button"
                         role="menuitemradio"
-                        aria-checked={!selectedProjectPath}
+                        aria-checked={!selectedProjectPath && !selectedImportFolder}
                         onClick={() => handleProjectSelect(null)}
                         className="eterx-sidebar-project-menu-item group/menu-item"
                       >
@@ -1822,6 +2135,9 @@ export const Sidebar = React.memo<SidebarProps>(
                         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--sidebar-muted-text)] transition-transform duration-150 group-hover/menu-item:translate-x-0.5 group-hover/menu-item:text-[var(--sidebar-hover-text)]" strokeWidth={2} />
                       </button>
 
+                      {importFolders.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-[var(--sidebar-muted-text)]">Folders</div>}
+                      {importFolders.map(folder => <button key={folder} type="button" role="menuitemradio" aria-checked={selectedImportFolder === folder} onClick={() => { setProjectMenuOpen(false); setSelectedProjectPath(null); startProjectTransition(() => setSelectedImportFolder(folder)); }} className="eterx-sidebar-project-menu-item group/menu-item"><FolderClosed className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">{folder}</span>{selectedImportFolder === folder && <Check className="h-3.5 w-3.5" />}</button>)}
+                      {importFolders.length > 0 && projects.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-[var(--sidebar-muted-text)]">Projects</div>}
                       {projects.map(project => (
                         <button
                           key={project.path}
@@ -1849,7 +2165,7 @@ export const Sidebar = React.memo<SidebarProps>(
                       onMouseDown={(event) => triggerGlassClick(event, 'search-chats')}
                       onClick={(event) => { event.stopPropagation(); onSearchClick(); }}
                       style={glassClickStyle('search-chats')}
-                      className={`eterx-sidebar-click-surface ${ glassClickClass('search-chats') } h-7 w-7 inline-flex items-center justify-center rounded-[8px] border border-transparent text-[var(--sidebar-muted-text)] transition-colors hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]`}
+                      className={`eterx-sidebar-click-surface ${ glassClickClass('search-chats') } h-7 w-7 inline-flex items-center justify-center rounded-[8px] border border-transparent text-[var(--sidebar-muted-text)] transition-colors hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]`}
                     >
                       <Search className="w-[14px] h-[14px]" strokeWidth={2.1} aria-hidden="true" />
                     </button>
@@ -1910,7 +2226,7 @@ export const Sidebar = React.memo<SidebarProps>(
                             onMouseDown={(e) => triggerGlassClick(e, 'select-chats')}
                             onClick={(e) => { e.stopPropagation(); enterSelectMode(); }}
                             style={glassClickStyle('select-chats')}
-                            className={`eterx-sidebar-click-surface ${ glassClickClass('select-chats') } h-7 w-7 inline-flex items-center justify-center rounded-[8px] border border-transparent text-[var(--sidebar-muted-text)] transition-colors hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] disabled:pointer-events-none disabled:text-[var(--sidebar-muted-text)] disabled:opacity-45`}
+                            className={`eterx-sidebar-click-surface ${ glassClickClass('select-chats') } h-7 w-7 inline-flex items-center justify-center rounded-[8px] border border-transparent text-[var(--sidebar-muted-text)] transition-colors hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] disabled:pointer-events-none disabled:text-[var(--sidebar-muted-text)] disabled:opacity-45`}
                           >
                             <PremiumCheckSquare className="w-[14px] h-[14px]" strokeWidth={2.1} />
                           </button>
@@ -1924,19 +2240,31 @@ export const Sidebar = React.memo<SidebarProps>(
               <div
                 ref={scrollContainerRef}
                 onScroll={handleRecentChatsScroll}
+                aria-busy={(isLoadingChats && chats.length === 0) || (isProjectPending && filteredChats.length === 0)}
                 className={`eterx-sidebar-recents-scroll min-w-0 flex-1 overflow-x-hidden overflow-y-auto eterx-scrollbar pl-2 pr-2 space-y-0.5 relative z-10 ${ recentScrollFades.top && recentScrollFades.bottom ? 'eterx-sidebar-scroll-fade-both' : recentScrollFades.top ? 'eterx-sidebar-scroll-fade-top' : recentScrollFades.bottom ? 'eterx-sidebar-scroll-fade-bottom' : '' }`}
                 style={{ scrollBehavior: isDragSelecting ? 'auto' : undefined, overscrollBehavior: 'contain' }}
               >
-                {isLoadingChats || isProjectPending ? (
-                  <div className="eterx-sidebar-empty flex items-center gap-2 px-3 py-2 text-[12.5px] text-[var(--sidebar-muted-text)]">
-                    <span className="eterx-sidebar-project-loading h-3 w-3 shrink-0 rounded-full border border-current border-r-transparent" aria-hidden="true" />
-                    Loading chats…
+                {(isLoadingChats && chats.length === 0) || (isProjectPending && filteredChats.length === 0) ? (
+                  <div role="status" aria-label="Loading chats" className="flex h-16 items-center justify-center text-[var(--sidebar-muted-text)]">
+                    <SidebarLoadingSpinner />
                   </div>
-                ) : filteredChats.length === 0 ? (
+                ) : historyError && !isLoadingChats ? (
+                  <div role="status" aria-live="polite" className="mx-1 my-2 rounded-xl bg-[var(--sidebar-hover-bg)] px-3 py-3">
+                    <p className="text-[12.5px] font-medium text-[var(--sidebar-text)]">{historyError}</p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-[var(--sidebar-muted-text)]">
+                      {chats.length > 0 ? 'Your loaded chats are still available. We’ll try again shortly.' : 'We’ll try again shortly, or you can retry now.'}
+                    </p>
+                    <button type="button" onClick={retryHistory} aria-label="Retry loading chat history"
+                      className="mt-2 inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[12px] font-medium text-[var(--sidebar-text)] transition-colors hover:bg-[var(--sidebar-active-bg)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]">
+                      <RefreshCw className="h-3 w-3" strokeWidth={1.75} aria-hidden="true" /> Retry
+                    </button>
+                  </div>
+                ) : null}
+                {filteredChats.length === 0 ? (isLoadingChats || isProjectPending || historyError ? null : (
                   <div className="eterx-sidebar-empty px-3 py-2 text-[12.5px] text-[var(--sidebar-muted-text)]">
                     {selectedProjectPath ? 'No chats in this project yet' : 'No recent chats'}
                   </div>
-                ) : (
+                )) : (
                   visibleChats.map((chat) => {
                     const isActive = (activeChatId === chat.id || (additionalActiveChatIds instanceof Set ? additionalActiveChatIds.has(chat.id) : Array.isArray(additionalActiveChatIds) ? additionalActiveChatIds.includes(chat.id) : false)) && activeView === 'chat';
                     const isWorking = runningChats?.has(chat.id) ?? false;
@@ -1975,9 +2303,10 @@ export const Sidebar = React.memo<SidebarProps>(
                           }
                           e.preventDefault();
                           e.stopPropagation();
-                          setMenuState({ id: chat.id, x: e.clientX, y: e.clientY, dropUp: e.clientY + 260 > window.innerHeight });
+                          setMenuState({ id: chat.id, x: e.clientX, y: e.clientY, dropUp: e.clientY + 350 > window.innerHeight });
                         }}
                         data-chat-id={chat.id}
+                        data-menu-open={isMenuOpen ? 'true' : undefined}
                         aria-current={isActive && !isSelectMode ? 'page' : undefined}
                         onClick={() => {
                           if (!isSelectMode) {
@@ -2025,7 +2354,7 @@ export const Sidebar = React.memo<SidebarProps>(
                                   setEditingChatId(null);
                                 }
                               }}
-                              className="bg-transparent border-none outline-none text-[var(--sidebar-strong-text)] font-medium w-full text-[13px] leading-normal relative z-10 p-0 m-0"
+                              className="bg-transparent border-none outline-hidden text-[var(--sidebar-strong-text)] font-medium w-full text-[13px] leading-normal relative z-10 p-0 m-0"
                               onClick={(e) => e.stopPropagation()}
                             />
                           ) : (
@@ -2042,6 +2371,7 @@ export const Sidebar = React.memo<SidebarProps>(
 
                         {!isSelectMode && (
                           <div className="eterx-sidebar-chat-meta ml-1.5 flex shrink-0 items-center justify-end relative z-10">
+                            {chat.importOrigin && <ImportOriginMark origin={chat.importOrigin} folder={chat.importFolder} />}
                             {isWorking ? (
                               <span
                                 className="eterx-sidebar-running-indicator eterx-splash-spinner"
@@ -2065,7 +2395,7 @@ export const Sidebar = React.memo<SidebarProps>(
                                   ref={(element) => { chatMenuButtonRefs.current[chat.id] = element; }}
                                   onMouseDown={(e) => triggerGlassClick(e, `chat-menu-${ chat.id }`)}
                                   style={glassClickStyle(`chat-menu-${ chat.id }`)}
-                                  className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } absolute inset-0 z-20 flex items-center justify-center rounded-[8px] transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] focus-visible:opacity-100 ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)]' : 'opacity-0 group-hover:opacity-100 text-[var(--sidebar-muted-text)]' }`}
+                                  className={`eterx-sidebar-click-surface eterx-sidebar-chat-menu-button ${ glassClickClass(`chat-menu-${ chat.id }`) } absolute inset-0 z-20 flex items-center justify-center rounded-[8px] transition-colors duration-150 ease-out focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] focus-visible:opacity-100 ${ isMenuOpen ? 'opacity-100 text-[var(--sidebar-active-text)]' : 'opacity-0 group-hover:opacity-100 text-[var(--sidebar-muted-text)]' }`}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     if (isWorking) return;
@@ -2073,8 +2403,8 @@ export const Sidebar = React.memo<SidebarProps>(
                                       setMenuState(null);
                                     } else {
                                       const rect = e.currentTarget.getBoundingClientRect();
-                                      const dropUp = rect.bottom + 220 > window.innerHeight;
-                                      setMenuState({ id: chat.id, x: rect.right, y: dropUp ? rect.top : rect.bottom, dropUp });
+                                      const dropUp = rect.bottom + 350 > window.innerHeight;
+                                      setMenuState({ id: chat.id, x: rect.right, y: dropUp ? rect.top : rect.bottom, dropUp, anchoredToButton: true });
                                     }
                                   }}
                                 >
@@ -2107,11 +2437,13 @@ export const Sidebar = React.memo<SidebarProps>(
                 <button
                   type="button"
                   onMouseDown={(e) => triggerGlassClick(e, 'profile-card')}
+                  onPointerEnter={() => preloadAppPanel('settings')}
+                  onFocus={() => preloadAppPanel('settings')}
                   onClick={onSettingsClick}
                   disabled={!onSettingsClick}
                   aria-label="Open settings"
                 style={glassClickStyle('profile-card')}
-                className={`eterx-sidebar-click-surface eterx-sidebar-profile-card eterx-sidebar-settings-button ${ glassClickClass('profile-card') } flex h-[42px] w-full cursor-pointer items-center gap-3 rounded-[10px] border border-transparent px-3 text-left text-[var(--sidebar-text)] transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] group`}
+                className={`eterx-sidebar-click-surface eterx-sidebar-profile-card eterx-sidebar-settings-button ${ glassClickClass('profile-card') } flex h-[42px] w-full cursor-pointer items-center gap-3 rounded-[10px] border border-transparent px-3 text-left text-[var(--sidebar-text)] transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)] group`}
                 >
                   <span className="eterx-sidebar-profile-action flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-transparent text-current transition-colors">
                     <PremiumSettings className="w-4 h-4 transition-colors duration-150" strokeWidth={2.15} />
@@ -2128,6 +2460,8 @@ export const Sidebar = React.memo<SidebarProps>(
                 <button
                   type="button"
                   onMouseDown={(e) => triggerGlassClick(e, 'profile-settings-collapsed')}
+                  onPointerEnter={() => preloadAppPanel('settings')}
+                  onFocus={() => preloadAppPanel('settings')}
                   onClick={onSettingsClick}
                   aria-label="Open settings"
                   disabled={!onSettingsClick}
@@ -2175,6 +2509,7 @@ export const Sidebar = React.memo<SidebarProps>(
               transition={reduceMotion ? { duration: 0 } : { duration: 0.15, ease: "easeOut" }}
               role="menu"
               aria-label={`Chat options for ${ chats.find(chat => chat.id === menuState.id)?.title || 'conversation' }`}
+              aria-busy={chatActionPending}
               aria-orientation="vertical"
               onKeyDown={(event) => {
                 if (event.key === 'Escape') {
@@ -2190,23 +2525,43 @@ export const Sidebar = React.memo<SidebarProps>(
               onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
               style={{
                 position: 'fixed',
-                left: Math.max(8, Math.min(menuState.x - 16, window.innerWidth - 216)),
-                top: Math.max(8, Math.min(menuState.dropUp ? menuState.y - 248 : menuState.y - 8, window.innerHeight - 280)),
+                left: chatMenuPosition?.id === menuState.id ? chatMenuPosition.left : menuState.x,
+                top: chatMenuPosition?.id === menuState.id ? chatMenuPosition.top : menuState.y,
+                visibility: chatMenuPosition?.id === menuState.id ? 'visible' : 'hidden',
+                maxHeight: 'calc(100dvh - 16px)',
+                maxWidth: 'calc(100vw - 16px)',
+                overflowY: 'auto',
               }}
-              className="eterx-sidebar-menu w-52 bg-[var(--sidebar-menu-bg)] border border-transparent rounded-[12px] p-1.5 flex flex-col gap-0.5"
+              className="eterx-sidebar-menu w-52 max-h-[calc(100vh-16px)] overflow-y-auto bg-[var(--sidebar-menu-bg)] border border-transparent rounded-[12px] p-1.5 flex flex-col gap-0.5"
             >
-              <button
-                type="button"
-                role="menuitem"
-                onClick={(e) => { e.stopPropagation(); handleShare(menuState.id); }}
-                className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left group/btn"
-              >
-                <PremiumShare className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" />
-                {shareCopiedId === menuState.id ? <span className="text-[var(--sidebar-hover-text)]">Link copied!</span> : "Share"}
+              {chatActionError?.id === menuState.id && <div role="alert" className="mx-1 mb-1 rounded-lg bg-[var(--sidebar-hover-bg)] px-3 py-2 text-xs leading-relaxed text-[var(--sidebar-muted-text)]">
+                <p>{chatActionError.message}</p>
+                <button type="button" role="menuitem" disabled={chatActionPending}
+                  onClick={(event) => { event.stopPropagation(); void runChatAction(chatActionError.kind === 'copy' ? copyChat : openChatWindow, menuState.id, chatActionError.kind); }}
+                  className="mt-1.5 inline-flex items-center gap-1.5 rounded-md py-1 text-[var(--sidebar-text)] hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]">
+                  <RefreshCw className="h-3 w-3" aria-hidden="true" /> Try again
+                </button>
+              </div>}
+              <button type="button" role="menuitem" disabled={chatActionPending}
+                onClick={(event) => { event.stopPropagation(); void runChatAction(copyChat, menuState.id, 'copy'); }}
+                className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 text-left disabled:opacity-50 disabled:cursor-wait">
+                {pendingChatAction?.id === menuState.id && pendingChatAction.kind === 'copy' ? <>
+                  <SidebarLoadingSpinner className="h-4 w-4" />
+                  <span aria-live="polite">Copying…</span>
+                </> : <><CopyChatIcon className="w-4 h-4 shrink-0" strokeWidth={1.75} aria-hidden="true" /> Copy Chat</>}
+              </button>
+              <button type="button" role="menuitem" disabled={chatActionPending}
+                onClick={(event) => { event.stopPropagation(); void runChatAction(openChatWindow, menuState.id, 'window'); }}
+                className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 text-left disabled:opacity-50 disabled:cursor-wait">
+                {pendingChatAction?.id === menuState.id && pendingChatAction.kind === 'window' ? <>
+                  <SidebarLoadingSpinner className="h-4 w-4" />
+                  <span aria-live="polite">Opening…</span>
+                </> : <><OpenChatWindowIcon className="w-4 h-4 shrink-0" strokeWidth={1.75} aria-hidden="true" /> Open in New Window</>}
               </button>
               <button
                 type="button"
                 role="menuitem"
+                disabled={chatActionPending}
                 onClick={(e) => {
                   e.stopPropagation();
                   setEditingChatId(menuState.id);
@@ -2220,6 +2575,7 @@ export const Sidebar = React.memo<SidebarProps>(
               <button
                 type="button"
                 role="menuitem"
+                disabled={chatActionPending}
                 onClick={(e) => {
                   e.stopPropagation();
                   toggleFavorite(menuState.id);
@@ -2230,7 +2586,27 @@ export const Sidebar = React.memo<SidebarProps>(
                 <PremiumStar className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" />
                 {chats.find(c => c.id === menuState.id)?.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
               </button>
-              <button type="button" role="menuitem" disabled aria-disabled="true" className="eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left justify-between group/btn cursor-not-allowed opacity-60 disabled:hover:bg-transparent disabled:hover:text-[var(--sidebar-muted-text)]" title="Coming soon">
+              <button
+                ref={moveProjectTriggerRef}
+                type="button"
+                role="menuitem"
+                disabled={chatActionPending}
+                aria-haspopup="menu"
+                aria-expanded={Boolean(moveProjectMenu)}
+                data-active={moveProjectMenu ? 'true' : undefined}
+                aria-controls={moveProjectMenu ? 'sidebar-move-project-menu' : undefined}
+                onPointerEnter={() => openMoveProjectMenu()}
+                onPointerLeave={scheduleMoveProjectMenuClose}
+                onClick={() => openMoveProjectMenu(true)}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowRight') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openMoveProjectMenu(true);
+                  }
+                }}
+                className={`eterx-sidebar-menu-item w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-muted-text)] hover:text-[var(--sidebar-hover-text)] hover:bg-[var(--sidebar-hover-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left justify-between group/btn ${moveProjectMenu ? 'bg-[var(--sidebar-hover-bg)] text-[var(--sidebar-hover-text)]' : ''}`}
+              >
                 <div className="flex items-center gap-3">
                   <FolderClosed className="w-4 h-4 text-[var(--sidebar-icon)] group-hover/btn:text-[var(--sidebar-hover-text)] transition-colors duration-150" strokeWidth={2.0} /> Move to Project
                 </div>
@@ -2242,6 +2618,7 @@ export const Sidebar = React.memo<SidebarProps>(
               <button
                 type="button"
                 role="menuitem"
+                disabled={chatActionPending}
                 className="eterx-sidebar-menu-danger w-full px-3 py-2 text-[13px] font-medium text-[var(--sidebar-danger-text)] hover:text-[var(--sidebar-danger-text)] hover:bg-[var(--sidebar-danger-bg)] rounded-[10px] flex items-center gap-3 transition-colors duration-150 ease-out text-left group/btn"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -2253,6 +2630,96 @@ export const Sidebar = React.memo<SidebarProps>(
               </button>
             </motion.div>
           </AnimatePresence>
+          {moveProjectMenu && (
+            <div
+              ref={moveProjectMenuRef}
+              id="sidebar-move-project-menu"
+              role="menu"
+              aria-label="Move chat to project"
+              aria-orientation="vertical"
+              className="eterx-sidebar-menu eterx-move-project-menu fixed z-10 flex flex-col overflow-hidden border border-[var(--sidebar-menu-border)] shadow-xl"
+              style={moveProjectMenu}
+              onPointerEnter={keepMoveProjectMenuOpen}
+              onPointerLeave={() => {
+                if (!moveProjectMenuRef.current?.contains(document.activeElement)) scheduleMoveProjectMenuClose();
+              }}
+              onFocusCapture={keepMoveProjectMenuOpen}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) scheduleMoveProjectMenuClose();
+              }}
+              onClick={(event) => event.stopPropagation()}
+              onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === 'Escape' || event.key === 'ArrowLeft') {
+                  event.preventDefault();
+                  setMoveProjectMenu(null);
+                  moveProjectTriggerRef.current?.focus();
+                  return;
+                }
+                if (event.key === 'Tab') {
+                  setMoveProjectMenu(null);
+                  setMenuState(null);
+                  restoreChatMenuFocus(menuState.id);
+                  return;
+                }
+                if (event.target instanceof HTMLInputElement && !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+                handleMenuKeyboardNavigation(event);
+              }}
+            >
+              <div className="flex shrink-0 items-center justify-between px-2.5 py-1.5 text-[11px] font-medium text-[var(--sidebar-muted-text)]">
+                <span>Move to</span>
+                <span className="tabular-nums opacity-60">{projects.length} {projects.length === 1 ? 'project' : 'projects'}</span>
+              </div>
+              {projects.length > 6 && (
+                <div className="relative mx-1 mb-1.5 shrink-0">
+                  <Search className="pointer-events-none absolute left-2 top-2 h-3.5 w-3.5 text-[var(--sidebar-muted-text)]" aria-hidden="true" />
+                  <input
+                    type="search"
+                    aria-label="Search projects"
+                    placeholder="Search projects…"
+                    value={moveProjectSearch}
+                    onChange={event => setMoveProjectSearch(event.target.value)}
+                    className="h-8 w-full rounded-[7px] border border-[var(--sidebar-menu-border)] bg-[var(--sidebar-hover-bg)] pl-7 pr-2 text-[12px] text-[var(--sidebar-text)] placeholder:text-[var(--sidebar-muted-text)] focus:outline-none focus:ring-1 focus:ring-[var(--sidebar-focus-ring)]"
+                  />
+                </div>
+              )}
+              <div className="eterx-move-project-list min-h-0 overflow-y-auto overscroll-contain" role="group" aria-label="Destinations">
+              {[{ path: null, name: 'Recents' }, ...matchingMoveProjects].map(project => {
+                const currentPath = normalizeProjectPath(chats.find(chat => chat.id === menuState.id)?.workspacePath).toLowerCase();
+                const isCurrent = currentPath === normalizeProjectPath(project.path).toLowerCase();
+                return (
+                  <button
+                    key={project.path || 'recents'}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={isCurrent}
+                    title={project.path || 'No project'}
+                    className="eterx-sidebar-menu-item flex w-full shrink-0 items-center gap-3 rounded-[10px] px-3 py-2 text-left text-[13px] font-medium text-[var(--sidebar-muted-text)] transition-colors hover:bg-[var(--sidebar-hover-bg)] hover:text-[var(--sidebar-hover-text)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--sidebar-focus-ring)]"
+                    onClick={() => {
+                      const chatId = menuState.id;
+                      if (!isCurrent) moveChatToProject(chatId, project.path);
+                      setSelectedImportFolder(null);
+                      setSelectedProjectPath(project.path);
+                      setMoveProjectMenu(null);
+                      setMenuState(null);
+                      restoreChatMenuFocus(chatId);
+                    }}
+                  >
+                    {project.path ? <FolderClosed className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} /> : <History className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{project.name}</span>
+                      {project.path && duplicateProjectNames.has(project.name.toLowerCase()) && <span className="block truncate text-[10px] font-normal opacity-60">{project.path}</span>}
+                    </span>
+                    <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">{isCurrent && <Check className="h-3.5 w-3.5" />}</span>
+                  </button>
+                );
+              })}
+              {projects.length === 0 && <div className="px-3 py-2 text-[12px] leading-relaxed text-[var(--sidebar-muted-text)]">Choose a workspace folder in a chat to add a project here.</div>}
+              {projects.length > 0 && matchingMoveProjects.length === 0 && <div role="status" className="px-2.5 py-3 text-[12px] text-[var(--sidebar-muted-text)]">No matching projects.</div>}
+              </div>
+            </div>
+          )}
         </div>,
         document.body
       )}
@@ -2262,7 +2729,7 @@ export const Sidebar = React.memo<SidebarProps>(
         <AnimatePresence>
           {showDeleteConfirm && (
             <motion.div
-              className="fixed inset-0 z-[1000] flex items-center justify-center transition-colors duration-200 ease-out bg-black/60 backdrop-blur-sm"
+              className="fixed inset-0 z-[1000] flex items-center justify-center transition-colors duration-200 ease-out bg-black/60 backdrop-blur-xs"
               onClick={(e) => { e.stopPropagation(); !isDeleting && setShowDeleteConfirm(false); }}
             >
               <motion.div

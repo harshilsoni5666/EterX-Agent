@@ -166,7 +166,7 @@ export const FloatingPetMonitor = React.memo(({
               }}
               autoFocus
               placeholder="Reply"
-              className="eterx-pet-reply-input h-10 min-w-0 flex-1 select-text rounded-[10px] border border-[#6EA8FF]/70 bg-[#151515] px-3 text-[15px] font-medium text-white outline-none placeholder:text-[#8C8984] focus:border-[#8AB4FF]"
+              className="eterx-pet-reply-input h-10 min-w-0 flex-1 select-text rounded-[10px] border border-[#6EA8FF]/70 bg-[#151515] px-3 text-[15px] font-medium text-white outline-hidden placeholder:text-[#8C8984] focus:border-[#8AB4FF]"
             />
             <button
               type="button"

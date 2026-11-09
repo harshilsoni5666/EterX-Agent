@@ -8,7 +8,7 @@ import { Tooltip } from '../ui/tooltip';
 /** Shared image controls for Files and Review, including fit after pane resize. */
 export function WorkspaceImagePreview({ path, revision = 0, label, onError }: { path: string; revision?: string | number; label?: string; onError?: () => void }) {
   const viewport = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ x: number; y: number; left: number; top: number }>();
+  const drag = useRef<{ x: number; y: number; left: number; top: number }>(undefined);
   const [natural, setNatural] = useState({ width: 0, height: 0 });
   const [available, setAvailable] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState<number | null>(null);

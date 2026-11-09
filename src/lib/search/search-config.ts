@@ -83,6 +83,8 @@ export const SEARCH_PROVIDER_META: Record<SearchProvider, SearchProviderMeta> = 
     label: 'Firecrawl self-hosted',
     description: 'Your own Firecrawl instance for search, source reading, and crawling.',
     requiresKey: false,
+    credentialLabel: 'Optional Firecrawl API key',
+    credentialDescription: 'Leave empty for an instance without authentication, or add up to three keys if your instance requires Bearer authentication.',
     supportsExtraction: true,
     capabilities: ['search', 'read', 'crawl', 'map'],
     deepResearch: 'orchestrated',
@@ -180,7 +182,7 @@ export const normalizeSearchSettings = (
     : DEFAULT_SEARCH_SETTINGS.xaiModel;
   const rawFallbacks = Array.isArray(source.fallbackProviders)
     ? source.fallbackProviders
-    : DEFAULT_SEARCH_SETTINGS.fallbackProviders;
+    : SEARCH_PROVIDER_IDS.filter(id => id !== provider);
   const fallbackProviders = Array.from(new Set(rawFallbacks
     .filter(isProvider)
     .filter(candidate => candidate !== provider))) as SearchProvider[];

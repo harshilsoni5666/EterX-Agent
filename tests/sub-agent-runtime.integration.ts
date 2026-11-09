@@ -19,6 +19,16 @@ import { assessDelegatedAgent } from '../src/lib/agent/delegation-evidence';
 const uniqueId = (prefix: string) =>
   `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
+function testProjectContext(projectId: string): any {
+  return {
+    projectId,
+    maxSubAgents: 2,
+    selectedModelProvider: 'openai',
+    selectedModelName: 'test-model',
+    selectedModelMode: 'openai',
+  };
+}
+
 function recommendedAgentCount(strategy: ReturnType<typeof buildSubAgentStrategy>): number {
   const call = strategy.recommendedToolCall;
   if (!call) return 0;
@@ -115,7 +125,7 @@ async function testConfiguredLimitIsAConcurrencyCapNotTaskLoss(): Promise<void> 
   try {
     const first = spawner.spawnParallelFireAndForget(
       ['one', 'two', 'three', 'four'].map(task => ({ task })),
-      { projectId, maxSubAgents: 2 } as any,
+      testProjectContext(projectId),
     );
     assert.equal(first.agents.length, 4, 'all delegated tasks must be admitted to the bounded queue');
     assert.deepEqual(
@@ -126,7 +136,7 @@ async function testConfiguredLimitIsAConcurrencyCapNotTaskLoss(): Promise<void> 
 
     const whileFull = spawner.spawnParallelFireAndForget(
       [{ task: 'five' }],
-      { projectId, maxSubAgents: 2 } as any,
+      testProjectContext(projectId),
     );
     assert.equal(whileFull.agents.length, 1, 'new work must join the queue while all slots are occupied');
     assert.deepEqual(whileFull.notStartedTasks.map(task => task.task), []);
@@ -184,13 +194,13 @@ async function testBlockingModesCannotBypassTheConcurrencyCap(): Promise<void> {
   try {
     spawner.spawnParallelFireAndForget(
       [{ task: 'background-one' }, { task: 'background-two' }],
-      { projectId, maxSubAgents: 2 } as any,
+      testProjectContext(projectId),
     );
     assert.equal(spawner.getOccupiedSlotCount(projectId), 2);
 
     overflowAttempt = spawner.spawnParallel(
       [{ task: 'blocking-overflow' }],
-      { projectId, maxSubAgents: 2 } as any,
+      testProjectContext(projectId),
     );
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.ok(
@@ -244,13 +254,13 @@ async function testConsensusSharesTheGlobalProjectCap(): Promise<void> {
   try {
     spawner.spawnParallelFireAndForget(
       [{ task: 'background-one' }, { task: 'background-two' }],
-      { projectId, maxSubAgents: 2 } as any,
+      testProjectContext(projectId),
     );
     assert.equal(spawner.getOccupiedSlotCount(projectId), 2);
 
     consensusAttempt = spawner.spawnConsensus(
       'Evaluate the same decision from independent perspectives.',
-      { projectId, maxSubAgents: 2 } as any,
+      testProjectContext(projectId),
     );
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.ok(

@@ -1,7 +1,7 @@
 /** Focused coding-agent tool surface — advanced Cursor-class primitives */
 export const CODE_AGENT_TOOLS = [
   'workspace_edit_file', 'workspace_run_command', 'scheduled_tasks', 'wait_timer',
-  'browser_control', 'spawn_sub_agent', 'task_decomposer', 'task_checkpoint',
+  'browser_control', 'computer', 'screen_agent', 'spawn_sub_agent', 'task_decomposer', 'task_checkpoint',
   'get_skill_guidelines', 'context_memory', 'web_search', 'image_asset_search',
 ] as const;
 

@@ -33,7 +33,7 @@ export const UserMessageText = React.memo(({ text }: { text: string }) => {
         }
         setExpanded(value => !value);
       }}
-      className="mt-2 rounded-md px-1 py-1 text-[12px] font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current">
+      className="mt-2 rounded-md px-1 py-1 text-[12px] font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-current">
       {expanded ? 'Show less' : 'Show more'}
     </button>}
   </div>;

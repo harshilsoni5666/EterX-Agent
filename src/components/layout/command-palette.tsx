@@ -73,7 +73,7 @@ const formatDate = (timestamp: number) => {
   }
 };
 
-export const CommandPalette: React.FC<CommandPaletteProps> = ({
+export const CommandPalette: React.FC<CommandPaletteProps> = React.memo(({
   isOpen,
   onClose,
   chats,
@@ -173,7 +173,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               onChange={event => setQuery(event.target.value)}
               placeholder="Search chats"
               aria-label="Search chats"
-              className="eterx-command-search-input min-w-0 flex-1 bg-transparent text-[16px] font-normal tracking-[-0.018em] text-[#E8E6E3] outline-none placeholder:text-[#A3A19E]"
+              className="eterx-command-search-input min-w-0 flex-1 bg-transparent text-[16px] font-normal tracking-[-0.018em] text-[#E8E6E3] outline-hidden placeholder:text-[#A3A19E]"
             />
             <button
               type="button"
@@ -200,7 +200,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                 type="button"
                 key={`${chat.id}-${index}`}
                 onClick={() => openChat(chat.id)}
-                className={`eterx-command-chat-row group flex min-h-[35px] w-full items-center gap-3 rounded-[10px] px-[14px] py-[4px] text-left transition-[background-color,color,transform] duration-150 hover:bg-white/[0.085] hover:text-[#F2F0ED] active:scale-[0.992] active:bg-white/[0.12] focus-visible:bg-white/[0.10] focus-visible:outline-none ${isActive ? 'bg-white/[0.105] text-[#F2F0ED]' : 'text-[#C7C5C2]'}`}
+                className={`eterx-command-chat-row group flex min-h-[35px] w-full items-center gap-3 rounded-[10px] px-[14px] py-[4px] text-left transition-[background-color,color,transform] duration-150 hover:bg-white/[0.085] hover:text-[#F2F0ED] active:scale-[0.992] active:bg-white/[0.12] focus-visible:bg-white/[0.10] focus-visible:outline-hidden ${isActive ? 'bg-white/[0.105] text-[#F2F0ED]' : 'text-[#C7C5C2]'}`}
               >
                 <span className="eterx-command-chat-title min-w-0 flex-1 truncate text-[13px] font-normal tracking-[-0.005em] group-hover:text-[#F2F0ED]">
                   {chat.title || 'Untitled chat'}
@@ -222,7 +222,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       </section>
     </div>
   );
-};
+});
 
 // Keep palette-only layout/theme rules here; the shared splash ring lives in
 // globals.css so the sidebar, palette, and thread switcher stay identical.

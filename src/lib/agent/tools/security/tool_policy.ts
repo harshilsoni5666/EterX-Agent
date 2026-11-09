@@ -1,5 +1,5 @@
 import type { ToolDefinition } from '../../schemas';
-import { isConfiguredToolAllowed } from '../../builtin-agent-tool-policy';
+import { isConfiguredToolAllowed, isComputerUseDisabled } from '../../builtin-agent-tool-policy';
 import { swarmCoordinator, SWARM_LIMITS } from '../../swarm-coordinator';
 
 export type ToolCapabilityDecision = {
@@ -97,6 +97,13 @@ export function enforceToolCapability(
     };
   }
   const capability = CAPABILITY_BY_TOOL[toolName] || inferCapability(toolName);
+
+  // An explicit desktop setting takes precedence over an inherited capability
+  // or an unsafe-tools flag. Tool registration alone never enables the device.
+  if ((capability === 'host.control' || capability === 'host.screenshot')
+    && (isComputerUseDisabled() || context?.computerUseEnabled === false || context?.allowHostControl === false)) {
+    return { allowed: false, capability, reason: 'Computer Use is disabled for this task. Enable it in Settings > Computer and allow desktop access for this agent.' };
+  }
 
   if (isCapabilityAllowed(capability, context)) {
     return { allowed: true, capability };

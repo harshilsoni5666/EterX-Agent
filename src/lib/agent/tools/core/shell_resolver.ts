@@ -39,6 +39,7 @@ export type TerminalShellInvocation = {
   file: string;
   args: string[];
   shell: false;
+  windowsVerbatimArguments?: boolean;
 };
 
 /**
@@ -66,7 +67,9 @@ export function buildTerminalShellInvocation(
   if (['powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'].includes(shellName)) {
     // Pass the script as UTF-16LE instead of letting Windows reinterpret quotes
     // and Unicode. PowerShell uses the same switches on macOS and Linux.
-    const script = `$OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = $OutputEncoding;\n$ErrorActionPreference = 'Stop'\ntry {\n& {\n${command}\n}\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }\nexit 0\n} catch { [Console]::Error.WriteLine(($_ | Out-String)); exit 1 }`;
+    // Capture the last command's status inside the script block. Returning
+    // from & { ... } can reset $? and hide a native program's failure.
+    const script = `$OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = $OutputEncoding;\n$ErrorActionPreference = 'Stop'\ntry {\n& {\n${command}\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE }; exit 1 }\n}\nexit 0\n} catch { [Console]::Error.WriteLine(($_ | Out-String)); exit 1 }`;
     return {
       file: resolvedShell,
       args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-InputFormat', 'Text', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
@@ -76,7 +79,9 @@ export function buildTerminalShellInvocation(
 
   if (process.platform === 'win32') {
     if (shellName === 'cmd' || shellName === 'cmd.exe') {
-      return { file: resolvedShell, args: ['/d', '/s', '/c', command], shell: false };
+      // cmd parses its own command line. libuv's native-executable quoting
+      // escapes nested quotes with backslashes, which cmd treats literally.
+      return { file: resolvedShell, args: ['/d', '/s', '/c', `"${command}"`], shell: false, windowsVerbatimArguments: true };
     }
     if (shellName === 'wsl' || shellName === 'wsl.exe') {
       return { file: resolvedShell, args: [...(cwd ? ['--cd', cwd] : []), '--', 'sh', '-c', command], shell: false };

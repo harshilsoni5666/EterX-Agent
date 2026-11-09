@@ -39,6 +39,60 @@ class APIKeyPool {
   private keyHealth: Map<number, KeyHealth> = new Map();
   private cacheAffinity = new Map<string, string>();
   private initialized = false;
+  private capacityListeners = new Set<() => void>();
+
+  public subscribeCapacity(wake: () => void): () => void {
+    this.capacityListeners.add(wake);
+    return () => { this.capacityListeners.delete(wake); };
+  }
+
+  private notifyCapacity(): void {
+    for (const wake of [...this.capacityListeners]) wake();
+  }
+
+  /** Wait for a lease without treating temporary saturation as missing keys. */
+  public waitForLease(chatId: string, purpose: KeyLease['purpose'], signal?: AbortSignal, cacheScope = chatId): Promise<KeyLease> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        unsubscribe();
+        signal?.removeEventListener('abort', acquire);
+      };
+      const acquire = () => {
+        if (settled) return;
+        if (signal?.aborted || this.totalKeys === 0) {
+          settled = true;
+          cleanup();
+          reject(new Error(signal?.aborted ? 'CANCELLED_BY_USER' : 'No Gemini API keys are configured for this execution.'));
+          return;
+        }
+        if (!this.activeLeases.has(chatId) && !this.canAcceptNewAgent()) return;
+        const lease = this.leaseKey(chatId, purpose, undefined, cacheScope);
+        if (!lease) return;
+        settled = true;
+        cleanup();
+        resolve(lease);
+      };
+      const unsubscribe = this.subscribeCapacity(acquire);
+      signal?.addEventListener('abort', acquire, { once: true });
+      acquire();
+    });
+  }
+
+  /** A parent doing no provider work must not retain the last key while joining children. */
+  public async withReleasedLease<T>(chatId: string, operation: () => Promise<T>, signal?: AbortSignal, onReacquired?: (lease: KeyLease) => void): Promise<T> {
+    const previous = this.activeLeases.get(chatId);
+    if (!previous) return operation();
+    this.releaseKey(chatId);
+    try {
+      return await operation();
+    } finally {
+      if (!signal?.aborted) {
+        const lease = await this.waitForLease(chatId, previous.purpose, signal, previous.cacheScope || chatId);
+        onReacquired?.(lease);
+      }
+    }
+  }
 
   private static readonly DEFAULT_PARALLEL_LEASES_PER_KEY = 8;
 
@@ -134,6 +188,7 @@ class APIKeyPool {
     }
 
     console.log(`[APIKeyPool] Runtime pool synced from Settings: ${this.allKeys.length} Gemini key(s).`);
+    this.notifyCapacity();
   }
 
   /**
@@ -293,6 +348,7 @@ class APIKeyPool {
       const duration = ((Date.now() - lease.leasedAt) / 1000).toFixed(1);
       console.log(`[APIKeyPool] 🔓 Released key #${lease.keyIndex} from [${chatId.substring(0, 8)}...] after ${duration}s`);
       this.activeLeases.delete(chatId);
+      this.notifyCapacity();
     }
   }
 
@@ -328,7 +384,9 @@ class APIKeyPool {
     if (errorType === 'server_error' || errorType === 'transient' || /timeout|timed out|deadline/i.test(errorMsg)) {
       console.warn(`[APIKeyPool] Request failed (${errorType}); rotating without a credential-health penalty.`);
       this.activeLeases.delete(chatId);
-      return this.leaseKey(chatId, currentLease.purpose, failedKeyIndex, currentLease.cacheScope || chatId);
+      const replacement = this.leaseKey(chatId, currentLease.purpose, failedKeyIndex, currentLease.cacheScope || chatId);
+      this.notifyCapacity();
+      return replacement;
     }
 
     health.failures++;
@@ -336,7 +394,9 @@ class APIKeyPool {
     console.warn(`[APIKeyPool] Key #${failedKeyIndex} failed (${errorType}); rotating immediately. All configured keys remain eligible.`);
 
     this.activeLeases.delete(chatId);
-    return this.leaseKey(chatId, currentLease.purpose, failedKeyIndex, currentLease.cacheScope || chatId);
+    const replacement = this.leaseKey(chatId, currentLease.purpose, failedKeyIndex, currentLease.cacheScope || chatId);
+    this.notifyCapacity();
+    return replacement;
   }
 
   /**
@@ -470,6 +530,7 @@ class APIKeyPool {
     this.allKeys.push(apiKey);
     this.keyHealth.set(newIdx, { failures: 0, totalUses: 0, lastUsed: 0, lastError: '' });
     console.log(`[APIKeyPool] ➕ Added runtime key #${newIdx}. Total: ${this.allKeys.length}`);
+    this.notifyCapacity();
     return true;
   }
 

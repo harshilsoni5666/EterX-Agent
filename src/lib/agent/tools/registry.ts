@@ -1,5 +1,5 @@
 import { ToolDefinition } from '../schemas';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import * as z from 'zod';
 import { normalizeToolTraceName } from '../tool-trace';
 
 type RegisterOptions = {
@@ -89,9 +89,10 @@ export function getToolInputJsonSchema(tool: Pick<ToolDefinition, 'name' | 'inpu
   const cached = inputSchemaCache.get(tool.inputSchema);
   if (cached) return cached;
   try {
-    const schema = zodToJsonSchema(tool.inputSchema as any, {
-      $refStrategy: 'none',
-      target: 'jsonSchema7',
+    const schema = z.toJSONSchema(tool.inputSchema as any, {
+      cycles: 'throw',
+      reused: 'inline',
+      target: 'draft-7',
     }) as Record<string, any>;
     const portable = sanitizeJsonSchema(schema);
     inputSchemaCache.set(tool.inputSchema, portable);

@@ -1,5 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { withApiKeyRounds } from '../agent/api-retry';
+import {
+  externalServiceJson, externalServiceKeys, externalServiceSignal,
+  throwIfExternalServiceCancelled, waitForExternalService, withExternalServiceContext,
+  externalServiceJob, rememberExternalServiceJob, externalServiceJobFailed, externalServiceJobAccessError,
+  downloadExternalServiceAsset, readFalModelCatalog,
+  type ExternalServiceContext, type ExternalServiceJob,
+} from '../external-service-runtime';
 import {
   IMAGE_PROVIDER_IDS,
   IMAGE_PROVIDER_META,
@@ -14,6 +22,8 @@ export type ImageGenerationInput = {
   height?: number;
   filePath: string;
   model?: string;
+  provider?: ImageProvider;
+  jobId?: string;
 };
 
 export type ImageGenerationResult = {
@@ -21,8 +31,12 @@ export type ImageGenerationResult = {
   filePath: string;
   provider: ImageProvider | '';
   model: string;
-  providerActionMode: 'provider-native' | 'unavailable' | 'failed' | '';
+  providerActionMode: 'provider-native' | 'unavailable' | 'failed' | 'pending' | '';
   message: string;
+  attemptedProviders?: ImageProvider[];
+  failedProviders?: Array<{ provider: ImageProvider; model: string; error: string }>;
+  job?: ExternalServiceJob;
+  downloadURL?: string;
 };
 
 type ImageRuntimeGlobal = typeof globalThis & {
@@ -65,8 +79,8 @@ const envBaseURL = (provider: ImageProvider): string => environmentBaseURLs[prov
 const readEnvironmentSettings = (): ImageSettings => normalizeImageSettings({
   enabled: process.env.ETERX_IMAGE_ENABLED !== '0',
   provider: process.env.ETERX_IMAGE_PROVIDER,
-  fallbackProviders: String(process.env.ETERX_IMAGE_FALLBACK_PROVIDERS || '')
-    .split(',').map(value => value.trim()).filter(Boolean),
+  fallbackProviders: process.env.ETERX_IMAGE_FALLBACK_PROVIDERS === undefined ? undefined
+    : process.env.ETERX_IMAGE_FALLBACK_PROVIDERS.split(',').map(value => value.trim()).filter(Boolean),
   modelByProvider: Object.fromEntries(IMAGE_PROVIDER_IDS.map(provider => [
     provider,
     String(process.env[`ETERX_IMAGE_MODEL_${provider.toUpperCase()}`] || '').trim(),
@@ -98,23 +112,25 @@ const providerOrder = (settings: ImageSettings): ImageProvider[] => Array.from(n
   ...settings.fallbackProviders,
 ]));
 
-const keysForProvider = (provider: ImageProvider, settings: ImageSettings): string[] => Array.from(new Set([
-  ...(settings.apiKeys[provider] || []),
-  ...envValues(environmentKeys[provider]),
-].map(value => value.trim()).filter(Boolean))).slice(0, 3);
+const keysForProvider = (provider: ImageProvider, settings: ImageSettings, context?: ExternalServiceContext): string[] => externalServiceKeys(
+  settings.apiKeys[provider], envValues(environmentKeys[provider]),
+  provider === 'xai' ? 'grok' : provider === 'openai' || provider === 'openrouter' || provider === 'deepinfra' ? provider : undefined,
+  context?.runtimeSettings,
+);
 
 const providerBaseURL = (provider: ImageProvider, settings: ImageSettings, override = '') =>
   (override || settings.baseURLs[provider] || envBaseURL(provider) || IMAGE_PROVIDER_META[provider].defaultBaseURL).replace(/\/+$/, '');
 
-export function getImageGenerationRouteBrief(): string {
+export function getImageGenerationRouteBrief(context?: any): string {
   const settings = getRuntimeImageSettings();
+  if (!settings.enabled) return '[Image generation route]\nDisabled in External service settings. Do not call image_generator.';
   const provider = settings.provider;
   const meta = IMAGE_PROVIDER_META[provider];
   const model = settings.modelByProvider[provider] || meta.defaultModel;
-  const activeCredentialReady = !meta.requiresKey || keysForProvider(provider, settings).length > 0;
+  const activeCredentialReady = !meta.requiresKey || keysForProvider(provider, settings, context).length > 0;
   const fallbackCredentialState = settings.fallbackProviders.map(item => {
     const fallbackMeta = IMAGE_PROVIDER_META[item];
-    return `${fallbackMeta.label}: ${!fallbackMeta.requiresKey || keysForProvider(item, settings).length > 0 ? 'ready' : 'missing credentials'}`;
+    return `${fallbackMeta.label} (${item}): ${!fallbackMeta.requiresKey || keysForProvider(item, settings, context).length > 0 ? 'configured' : 'missing credentials'}`;
   }).join(', ') || 'none';
   const fallbackText = settings.fallbackProviders
     .map(item => `${IMAGE_PROVIDER_META[item].label}/${settings.modelByProvider[item] || IMAGE_PROVIDER_META[item].defaultModel}`)
@@ -122,45 +138,20 @@ export function getImageGenerationRouteBrief(): string {
   const status = meta.available ? 'available' : `unavailable: ${meta.unavailableReason || 'connection not installed'}`;
   return [
     '[Image generation route]',
-    `Active provider: ${meta.label}. Model: ${model}. Status: ${status}. Credential: ${activeCredentialReady ? 'ready' : 'missing'}.`,
+    `Active provider: ${meta.label} (${provider}). Model: ${model}. Adapter: ${status}. Credential: ${activeCredentialReady ? 'configured' : 'missing'}.`,
     `Capabilities: text-to-image${meta.supportsEditing ? ', image editing' : ''}${meta.supportsAspectRatio ? ', aspect-ratio control' : ''}.`,
     `Fallback order: ${fallbackText}.`,
     `Fallback credentials: ${fallbackCredentialState}.`,
     'The image_generator tool reads this route again for every call. It uses the selected provider/model, rotates configured keys, switches through enabled fallbacks after a real request failure, and saves only returned raster bytes.',
+    'Optional provider chooses an enabled route for this call. A pending result includes a job: resume with that provider, model, and jobId. Configured credentials are not proof of live model access.',
   ].join('\n');
 }
 
-const withTimeout = async <T,>(promise: Promise<T>, milliseconds = 60_000): Promise<T> => {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Image request timed out after ${milliseconds}ms`)), milliseconds);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-};
+const jsonRequest = (url: string, init: RequestInit, timeout = 60_000) => externalServiceJson(url, init, timeout);
 
-const request = async (url: string, init: RequestInit, timeout = 60_000): Promise<Response> => {
-  const response = await withTimeout(fetch(url, init), timeout);
-  if (response.ok) return response;
-  const body = await response.text().catch(() => '');
-  let detail = body;
-  try {
-    const parsed = body ? JSON.parse(body) : null;
-    detail = parsed?.error?.message || parsed?.error || parsed?.message || body;
-  } catch { }
-  throw new Error(`${response.status} ${response.statusText}${detail ? `: ${String(detail).slice(0, 320)}` : ''}`);
-};
-
-const jsonRequest = async (url: string, init: RequestInit, timeout = 60_000): Promise<any> => {
-  const response = await request(url, init, timeout);
-  const text = await response.text();
-  try { return text ? JSON.parse(text) : {}; } catch { throw new Error('Image provider returned a non-JSON response.'); }
-};
+const freepikAuthHeaders = (baseURL: string, key: string): Record<string, string> => ({
+  [new URL(baseURL).hostname === 'api.magnific.com' ? 'x-magnific-api-key' : 'x-freepik-api-key']: key,
+});
 
 const sizeFor = (width: number, height: number): string => {
   if (width > height) return '1536x1024';
@@ -192,13 +183,28 @@ const modelPath = (model: string) => model.split('/').map(segment => encodeURICo
 type ImageSource = { base64?: string; url?: string; contentType?: string };
 
 const sourceFromPayload = (payload: any): ImageSource => {
-  const item = payload?.data?.[0] || payload?.images?.[0] || payload?.result?.images?.[0] || payload?.result?.urls?.[0] || payload?.result?.[0] || payload?.output?.[0] || payload;
-  if (typeof item === 'string') return { url: item };
-  const base64 = item?.b64_json || item?.b64Json || item?.base64 || item?.image_base64 || item?.image;
-  const url = item?.url || item?.image_url || item?.imageUrl || item?.generated?.[0];
-  const contentType = item?.content_type || item?.media_type;
-  if (typeof base64 === 'string' && base64.trim()) return { base64: base64.trim(), contentType };
-  if (typeof url === 'string' && /^https?:\/\//i.test(url)) return { url: url.trim(), contentType };
+  const find = (item: any, depth = 0): ImageSource | undefined => {
+    if (!item || depth > 8) return undefined;
+    if (typeof item === 'string') {
+      if (/^data:image\/[^;]+;base64,/i.test(item)) return { base64: item };
+      if (item.length > 64 && /^(?:iVBORw0KGgo|\/9j\/|UklGR)/.test(item)) return { base64: item };
+      if (/^https?:\/\//i.test(item)) return { url: item };
+      return undefined;
+    }
+    if (Array.isArray(item)) {
+      for (const entry of item) { const source = find(entry, depth + 1); if (source) return source; }
+      return undefined;
+    }
+    const base64 = item.b64_json || item.b64Json || item.base64 || item.image_base64;
+    if (typeof base64 === 'string' && base64.trim()) return { base64: base64.trim() };
+    for (const field of ['data', 'images', 'image', 'result', 'urls', 'output', 'generated', 'choices', 'message', 'url', 'image_url', 'imageUrl']) {
+      const source = find(item[field], depth + 1);
+      if (source) return source;
+    }
+    return undefined;
+  };
+  const source = find(payload);
+  if (source) return source;
   throw new Error('Image provider returned no image bytes or downloadable image URL.');
 };
 
@@ -208,7 +214,7 @@ const imageBytes = async (source: ImageSource): Promise<Buffer> => {
     return Buffer.from(clean, 'base64');
   }
   if (!source.url) throw new Error('Image provider returned no image source.');
-  const response = await request(source.url, { method: 'GET', headers: { Accept: 'image/*' } }, 45_000);
+  const response = await downloadExternalServiceAsset(source.url, { method: 'GET', headers: { Accept: 'image/*' } }, 45_000);
   const contentType = response.headers.get('content-type') || source.contentType || '';
   if (/svg|html/i.test(contentType)) throw new Error('Image provider returned a non-raster asset.');
   return Buffer.from(await response.arrayBuffer());
@@ -229,7 +235,8 @@ const rasterExtension = (bytes: Buffer): string => {
 
 const executeOpenAICompatible = async (provider: ImageProvider, model: string, prompt: string, key: string, settings: ImageSettings, width: number, height: number): Promise<Buffer> => {
   const baseURL = providerBaseURL(provider, settings);
-  const body: Record<string, unknown> = { model, prompt, size: sizeFor(width, height) };
+  const body: Record<string, unknown> = { model, prompt };
+  if (provider !== 'xai') body.size = sizeFor(width, height);
   if (provider === 'xai') {
     body.aspect_ratio = aspectRatioFor(width, height);
     body.resolution = Math.max(width, height) >= 1536 ? '2k' : '1k';
@@ -255,41 +262,50 @@ const executeDeepInfra = async (model: string, prompt: string, key: string, sett
 
 const executeFal = async (model: string, prompt: string, key: string, settings: ImageSettings, width: number, height: number): Promise<Buffer> => {
   const baseURL = providerBaseURL('fal', settings);
-  const submit = await jsonRequest(`${baseURL}/${modelPath(model)}`, {
+  const submit = externalServiceJob()?.id ? { request_id: externalServiceJob()!.id } : await jsonRequest(`${baseURL}/${modelPath(model)}`, {
     method: 'POST',
     headers: { Authorization: `Key ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ prompt, image_size: { width, height } }),
   });
   const requestId = String(submit?.request_id || '').trim();
   if (!requestId) throw new Error('FAL did not return a request_id.');
-  const statusURL = String(submit?.status_url || `${baseURL}/${modelPath(model)}/requests/${encodeURIComponent(requestId)}/status`);
-  const responseURL = String(submit?.response_url || `${baseURL}/${modelPath(model)}/requests/${encodeURIComponent(requestId)}`);
-  for (let attempt = 0; attempt < 90; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
+  rememberExternalServiceJob('fal', model, requestId);
+  const queuePath = modelPath(model.split('/').slice(0, 2).join('/'));
+  const statusURL = String(submit?.status_url || `${baseURL}/${queuePath}/requests/${encodeURIComponent(requestId)}/status`);
+  const responseURL = String(submit?.response_url || `${baseURL}/${queuePath}/requests/${encodeURIComponent(requestId)}`);
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    await waitForExternalService(1000);
     const status = await jsonRequest(statusURL, { headers: { Authorization: `Key ${key}`, Accept: 'application/json' } }, 30_000);
     if (status?.status === 'COMPLETED') {
-      const result = await jsonRequest(responseURL, { headers: { Authorization: `Key ${key}`, Accept: 'application/json' } }, 45_000);
-      return imageBytes(sourceFromPayload(result));
+      try {
+        const result = await jsonRequest(responseURL, { headers: { Authorization: `Key ${key}`, Accept: 'application/json' } }, 45_000);
+        return imageBytes(sourceFromPayload(result));
+      } catch (error: any) {
+        if (error?.status === 422 && !error?.assetURL) throw externalServiceJobFailed(error.message);
+        throw error;
+      }
     }
-    if (status?.status === 'FAILED' || status?.status === 'ERROR') throw new Error(status?.error || 'FAL image request failed.');
+    if (['FAILED', 'ERROR', 'CANCELLED', 'CANCELED'].includes(status?.status)) throw externalServiceJobFailed(status?.error || 'FAL image request failed.');
   }
   throw new Error('FAL image request timed out while waiting in the queue.');
 };
 
 const executeKrea = async (model: string, prompt: string, key: string, settings: ImageSettings, width: number, height: number): Promise<Buffer> => {
   const baseURL = providerBaseURL('krea', settings);
-  const payload = await jsonRequest(`${baseURL}/generate/image/${model}`, {
+  const aspect = aspectRatioFor(width, height);
+  const payload = externalServiceJob()?.id ? { job_id: externalServiceJob()!.id } : await jsonRequest(`${baseURL}/generate/image/${modelPath(model)}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ prompt, aspect_ratio: aspectRatioFor(width, height), resolution: '1K', creativity: 'medium' }),
+    body: JSON.stringify({ prompt, aspect_ratio: aspect === '3:4' ? '4:5' : aspect, resolution: '1K', creativity: 'medium' }),
   });
   const jobId = String(payload?.job_id || '').trim();
   if (!jobId) return imageBytes(sourceFromPayload(payload));
-  for (let attempt = 0; attempt < 90; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
+  rememberExternalServiceJob('krea', model, jobId);
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    await waitForExternalService(2000);
     const job = await jsonRequest(`${baseURL}/jobs/${encodeURIComponent(jobId)}`, { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } }, 30_000);
     if (job?.status === 'completed') return imageBytes(sourceFromPayload(job));
-    if (job?.status === 'failed' || job?.status === 'canceled') throw new Error(`Krea job ${job.status}.`);
+    if (['failed', 'canceled', 'cancelled'].includes(job?.status)) throw externalServiceJobFailed(`Krea job ${job.status}: ${job?.result?.error || 'No result returned.'}`);
   }
   throw new Error('Krea image request timed out while waiting for the job.');
 };
@@ -297,19 +313,20 @@ const executeKrea = async (model: string, prompt: string, key: string, settings:
 const executeFreepik = async (model: string, prompt: string, key: string, settings: ImageSettings, width: number, height: number): Promise<Buffer> => {
   const baseURL = providerBaseURL('freepik', settings);
   const endpoint = `${baseURL}/v1/ai/text-to-image/${encodeURIComponent(model)}`;
-  const payload = await jsonRequest(endpoint, {
+  const payload = externalServiceJob()?.id ? { data: { task_id: externalServiceJob()!.id } } : await jsonRequest(endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-freepik-api-key': key, Accept: 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...freepikAuthHeaders(baseURL, key), Accept: 'application/json' },
     body: JSON.stringify({ prompt, aspect_ratio: freepikAspectRatioFor(width, height) }),
   });
   const taskId = String(payload?.data?.task_id || '').trim();
   if (!taskId) throw new Error('Freepik did not return a task_id.');
-  for (let attempt = 0; attempt < 45; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    const status = await jsonRequest(`${endpoint}/${encodeURIComponent(taskId)}`, { headers: { 'x-freepik-api-key': key, Accept: 'application/json' } }, 30_000);
+  rememberExternalServiceJob('freepik', model, taskId);
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    await waitForExternalService(2000);
+    const status = await jsonRequest(`${endpoint}/${encodeURIComponent(taskId)}`, { headers: { ...freepikAuthHeaders(baseURL, key), Accept: 'application/json' } }, 30_000);
     const state = String(status?.data?.status || '').toUpperCase();
     if (state === 'COMPLETED') return imageBytes(sourceFromPayload(status?.data?.generated?.[0] || status));
-    if (state === 'FAILED') throw new Error('Freepik image task failed.');
+    if (['FAILED', 'ERROR', 'CANCELED', 'CANCELLED'].includes(state)) throw externalServiceJobFailed('Freepik image task failed.');
   }
   throw new Error('Freepik image task timed out.');
 };
@@ -327,69 +344,112 @@ const executeProvider = async (provider: ImageProvider, model: string, prompt: s
   }
 };
 
-export async function executeImageGeneration(input: ImageGenerationInput): Promise<ImageGenerationResult> {
+export async function executeImageGeneration(input: ImageGenerationInput, context?: ExternalServiceContext): Promise<ImageGenerationResult> {
   const settings = getRuntimeImageSettings();
+  const preferred = input.provider || settings.provider;
+  if (input.jobId && (!input.provider || !input.model?.trim())) throw new Error('Resuming an image requires the provider and model returned with the job ID.');
+  if (!providerOrder(settings).includes(preferred)) throw new Error('The requested image provider is not enabled in the primary or fallback order.');
+  if (input.jobId && !['fal', 'krea', 'freepik'].includes(preferred)) throw new Error('This image provider does not expose resumable generation jobs.');
+  const model = input.model?.trim() || settings.modelByProvider[preferred] || IMAGE_PROVIDER_META[preferred].defaultModel;
+  return withExternalServiceContext({ ...context, serviceSettings: settings, job: input.jobId ? { id: input.jobId, provider: preferred, model } : undefined }, () => executeImageRoute(input, settings, context));
+}
+
+async function executeImageRoute(input: ImageGenerationInput, settings: ImageSettings, context?: ExternalServiceContext): Promise<ImageGenerationResult> {
+  throwIfExternalServiceCancelled();
   if (!settings.enabled) return { success: false, filePath: '', provider: '', model: '', providerActionMode: 'failed', message: 'Image generation is disabled in External service settings.' };
+  if (!input.prompt?.trim()) throw new Error('Image generation requires a non-empty prompt.');
   const width = Math.min(1920, Math.max(512, Math.round(input.width || 1024)));
   const height = Math.min(1920, Math.max(512, Math.round(input.height || 1024)));
-  const attempted: string[] = [];
-  const failures: string[] = [];
-  for (const provider of providerOrder(settings)) {
+  const attemptedProviders: ImageProvider[] = [];
+  const failedProviders: NonNullable<ImageGenerationResult['failedProviders']> = [];
+  const preferred = input.provider || settings.provider;
+  const order = input.jobId ? [preferred] : [preferred, ...providerOrder(settings).filter(provider => provider !== preferred)];
+  for (const provider of order) {
+    throwIfExternalServiceCancelled();
     const meta = IMAGE_PROVIDER_META[provider];
-    const model = input.model && provider === settings.provider ? input.model : (settings.modelByProvider[provider] || meta.defaultModel);
-    attempted.push(`${meta.label}/${model}`);
-    const keys = meta.requiresKey ? keysForProvider(provider, settings) : [''];
+    const model = input.model?.trim() && provider === preferred ? input.model.trim() : (settings.modelByProvider[provider] || meta.defaultModel);
+    if (!meta.available) { failedProviders.push({ provider, model, error: 'Provider is unavailable.' }); continue; }
+    const keys = meta.requiresKey ? keysForProvider(provider, settings) : ['__no_key__'];
     if (meta.requiresKey && keys.length === 0) {
-      failures.push(`${meta.label}: no credential configured`);
+      failedProviders.push({ provider, model, error: 'No credential configured.' });
       continue;
     }
+    attemptedProviders.push(provider);
     const start = keyCursor[provider] || 0;
     const orderedKeys = keys.map((_, offset) => keys[(start + offset) % keys.length]);
-    for (let index = 0; index < orderedKeys.length; index += 1) {
-      const key = orderedKeys[index];
-      try {
-        const bytes = await executeProvider(provider, model, input.prompt, key, settings, width, height);
+    let bytes: Buffer;
+    try {
+      bytes = await withApiKeyRounds(orderedKeys, context?.runtimeSettings, async (key, attempt) => {
+        let bytes: Buffer;
+        try { bytes = await executeProvider(provider, model, input.prompt, key === '__no_key__' ? '' : key, settings, width, height); }
+        catch (error) { throw externalServiceJobAccessError(error); }
         assertRaster(bytes);
-        await fs.mkdir(path.dirname(input.filePath), { recursive: true });
-        const outputPath = path.join(path.dirname(input.filePath), `${path.basename(input.filePath, path.extname(input.filePath))}${rasterExtension(bytes)}`);
-        await fs.writeFile(outputPath, bytes);
-        keyCursor[provider] = (start + index + 1) % Math.max(1, keys.length);
-        return {
-          success: true,
-          filePath: outputPath,
-          provider,
-          model,
-          providerActionMode: 'provider-native',
-          message: `Real raster image generated by ${meta.label} using ${model}. Saved at ${outputPath}.`,
-        };
-      } catch (error: any) {
-        failures.push(`${meta.label}/${model}: ${error?.message || String(error)}`);
+        keyCursor[provider] = (start + attempt + 1) % keys.length;
+        return bytes;
+      }, externalServiceSignal(), (_attempt, _total, error) => {
+        failedProviders.push({ provider, model, error: error instanceof Error ? error.message : String(error) });
+      });
+    } catch (error: any) {
+      throwIfExternalServiceCancelled();
+      failedProviders.push({ provider, model, error: error?.message || String(error) });
+      const job = externalServiceJob();
+      if (job) {
+        return { success: false, filePath: '', provider, model, providerActionMode: 'pending', attemptedProviders, failedProviders, job,
+          message: `Image job ${job.id} needs follow-up: ${error?.message || error}. Resume with provider="${provider}", model="${job.model}", and jobId="${job.id}"; do not submit a replacement generation.` };
       }
+      if (error?.assetURL) return { success: false, filePath: '', provider, model, providerActionMode: 'failed', attemptedProviders, failedProviders, downloadURL: error.assetURL,
+        message: `${error.message}. The provider returned an image URL; retry its download instead of generating another image.` };
+      continue;
     }
+    const outputPath = path.join(path.dirname(input.filePath), `${path.basename(input.filePath, path.extname(input.filePath))}${rasterExtension(bytes)}`);
+    try {
+      throwIfExternalServiceCancelled();
+      await fs.mkdir(path.dirname(outputPath), { recursive: true });
+      await fs.writeFile(outputPath, bytes);
+    } catch (error: any) {
+      throwIfExternalServiceCancelled();
+      return { success: false, filePath: '', provider, model, providerActionMode: 'failed', attemptedProviders, failedProviders, job: externalServiceJob(),
+        message: `Image generation succeeded, but saving ${outputPath} failed: ${error?.message || error}. No additional generation was submitted.` };
+    }
+    return { success: true, filePath: outputPath, provider, model, providerActionMode: 'provider-native', attemptedProviders, failedProviders,
+      message: `Real raster image generated by ${meta.label} using ${model}. Saved at ${outputPath}.` };
   }
+  const job = externalServiceJob();
   return {
     success: false,
     filePath: '',
-    provider: '',
-    model: '',
-    providerActionMode: 'failed',
-    message: `No image provider completed a real raster request. Attempted ${attempted.join(', ')}. ${failures.slice(0, 5).join(' | ')}`,
+    provider: job ? job.provider as ImageProvider : '',
+    model: job?.model || '',
+    providerActionMode: job ? 'pending' : 'failed',
+    attemptedProviders, failedProviders, job,
+    message: `${job ? `Existing image job ${job.id} could not be resumed; keep its provider, model, and jobId for a later retry.` : 'No image provider completed a real raster request.'} ${failedProviders.map(item => `${item.provider}/${item.model}: ${item.error}`).join(' | ')}`,
   };
 }
 
-export async function testImageProvider(provider: ImageProvider, key = '', model = ''): Promise<{ provider: ImageProvider; model: string; message: string }> {
+export async function testImageProvider(provider: ImageProvider, key = '', model = '', endpoint = ''): Promise<{ provider: ImageProvider; model: string; message: string }> {
   const meta = IMAGE_PROVIDER_META[provider];
   const selectedModel = model.trim() || meta.defaultModel;
   if (!meta.available) throw new Error(meta.unavailableReason || 'Provider is unavailable.');
-  if (meta.requiresKey && !key.trim()) throw new Error(`${meta.authLabel} is required.`);
   const current = getRuntimeImageSettings();
+  key = key.trim() || keysForProvider(provider, current)[0] || '';
+  if (meta.requiresKey && !key) throw new Error(`${meta.authLabel} is required.`);
   const settings = normalizeImageSettings({
     ...current,
     provider,
     modelByProvider: { ...current.modelByProvider, [provider]: selectedModel },
     apiKeys: { ...current.apiKeys, [provider]: key ? [key] : current.apiKeys[provider] },
   });
-  const baseURL = providerBaseURL(provider, settings);
+  const baseURL = providerBaseURL(provider, settings, endpoint.trim());
+  if (provider === 'fal') {
+    await readFalModelCatalog(baseURL, key, selectedModel);
+    return { provider, model: selectedModel, message: `FAL advertised '${selectedModel}' in its public catalog. Credentials and image generation access remain unverified.` };
+  }
+  if (provider === 'deepinfra') {
+    const payload = await jsonRequest(`${baseURL}/models/list`, { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } }, 20_000);
+    const entries = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
+    if (!entries.some((entry: any) => (entry?.model_name || entry?.id) === selectedModel)) throw new Error(`DeepInfra did not advertise '${selectedModel}' in its model catalog; generation access remains unverified.`);
+    return { provider, model: selectedModel, message: `DeepInfra advertised '${selectedModel}' in its public catalog. Credentials and image generation access remain unverified.` };
+  }
   if (provider === 'openai' || provider === 'xai') {
     const payload = await jsonRequest(`${baseURL}/models`, { headers: { Authorization: `Bearer ${key.trim()}`, Accept: 'application/json' } }, 20_000);
     const entries = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
@@ -402,20 +462,16 @@ export async function testImageProvider(provider: ImageProvider, key = '', model
     if (ids.length === 0) throw new Error('OpenRouter returned no image model catalog.');
     if (!ids.includes(selectedModel)) throw new Error(`OpenRouter does not advertise the selected model '${selectedModel}'.`);
   } else {
-    const response = await withTimeout(fetch(provider === 'deepinfra'
-      ? `${baseURL}/v1/models`
-      : provider === 'fal'
-        ? `${baseURL}/${modelPath(selectedModel)}`
-        : provider === 'krea'
-          ? `${baseURL}/jobs/connection-test`
-          : `${baseURL}/v1/ai/text-to-image/${encodeURIComponent(selectedModel)}`, {
+    await jsonRequest(provider === 'krea'
+      ? `${baseURL}/jobs?limit=1`
+      : `${baseURL}/v1/ai/text-to-image/${encodeURIComponent(selectedModel)}`, {
       headers: {
-        ...(provider === 'fal' ? { Authorization: `Key ${key.trim()}` } : provider === 'freepik' ? { 'x-freepik-api-key': key.trim() } : { Authorization: `Bearer ${key.trim()}` }),
+        ...(provider === 'freepik' ? freepikAuthHeaders(baseURL, key.trim()) : { Authorization: `Bearer ${key.trim()}` }),
         Accept: 'application/json',
       },
-    }), 20_000);
-    if ([401, 403].includes(response.status)) throw new Error(`${response.status} ${response.statusText}: credentials were rejected.`);
-    if (response.status < 200 || response.status >= 300) throw new Error(`${response.status} ${response.statusText}: endpoint/model probe did not verify ${selectedModel}.`);
+    }, 20_000);
   }
-  return { provider, model: selectedModel, message: `${meta.label} credentials and the selected model '${selectedModel}' were verified without creating an image.` };
+  return { provider, model: selectedModel, message: ['openai', 'openrouter', 'xai'].includes(provider)
+    ? `${meta.label} advertised '${selectedModel}' in its catalog. This does not establish image generation access.`
+    : `${meta.label} responded to a read-only endpoint request. Model access and image generation have not been verified.` };
 }

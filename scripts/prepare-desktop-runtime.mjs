@@ -189,6 +189,7 @@ const productionDependencies = Object.fromEntries(
   }),
 );
 const stagedModules = path.join(stagingRoot, 'node_modules');
+const stagedPtyRoot = path.join(stagingRoot, 'terminal', 'node-pty');
 fs.rmSync(stagedModules, { recursive: true, force: true });
 const dependencyCopyOptions = {
   recursive: true,
@@ -199,7 +200,9 @@ const dependencyCopyOptions = {
   // broken link makes Node's fs.cpSync abort before packaging starts. The
   // packaged server never invokes npm lifecycle binaries, so omit every .bin
   // shim directory and retain the actual dependency files and native modules.
-  filter: (source) => path.basename(source) !== '.bin' && !/\/node_modules\/node-pty\/build(?:\/|$)/.test(source.replace(/\\/g, '/')),
+  // node-pty is copied separately as a physical runtime below; neither its
+  // workers nor its executable helpers may depend on ASAR path rewriting.
+  filter: (source) => path.basename(source) !== '.bin' && !/\/node_modules\/node-pty(?:\/|$)/.test(source.replace(/\\/g, '/')),
   verbatimSymlinks: true,
 };
 const targetSpec = String(process.env.ETERX_RUNTIME_TARGETS || '').trim();
@@ -270,6 +273,19 @@ for (const [index, spec] of targetSpecs.entries()) {
     if (!fs.existsSync(helper)) throw new Error(`Missing terminal spawn-helper for ${ptyOs}/${ptyCpu}.`);
     fs.chmodSync(helper, 0o755);
   }
+  // Copy the package metadata and every JS worker alongside the native
+  // runtime. Only merge the prepared target's prebuild directory: a generic
+  // build/Release directory would take precedence over the CPU-specific
+  // prebuild and could load the other architecture in a multi-arch release.
+  if (index === 0) {
+    fs.mkdirSync(stagedPtyRoot, { recursive: true });
+    for (const entry of ['package.json', 'lib', 'LICENSE']) {
+      const source = path.join(ptyRoot, entry);
+      if (entry === 'LICENSE' && !fs.existsSync(source)) continue;
+      fs.cpSync(source, path.join(stagedPtyRoot, entry), { recursive: true });
+    }
+  }
+  fs.cpSync(ptyPrebuild, path.join(stagedPtyRoot, 'prebuilds', `${ptyOs}-${ptyCpu}`), { recursive: true });
   fs.cpSync(installedModules, stagedModules, dependencyCopyOptions);
   // These modules are loaded by Electron's main process before the Next
   // server starts. Fail the build if the production archive would not contain
@@ -354,13 +370,14 @@ if (process.platform === 'win32') {
 // Builder otherwise filters directories named node_modules at any depth,
 // flattening incompatible transitive versions. Native binaries are emitted to
 // the companion .unpacked directory for Electron's process.dlopen/spawn APIs.
+// The terminal package stays entirely outside this archive so package.json,
+// worker threads, and spawn-helper always resolve against the same real tree.
 const sourceModules = path.join(stagingRoot, 'node_modules');
 const dependencyArchive = path.join(stagingRoot, 'dependencies.asar');
 await createPackageWithOptions(stagingRoot, dependencyArchive, {
   dot: true,
   pattern: '/node_modules/**/*',
   unpack: '**/*.{node,dll,exe,so,dylib}',
-  unpackDir: '**/node-pty',
 });
 fs.rmSync(sourceModules, { recursive: true, force: true });
 
@@ -368,6 +385,8 @@ const required = [
   'server.js',
   'server-launcher.js',
   'dependencies.asar',
+  path.join('terminal', 'node-pty', 'package.json'),
+  path.join('terminal', 'node-pty', 'lib', 'index.js'),
   path.join('assets', 'skills'),
   path.join('.next', 'BUILD_ID'),
   path.join('.next', 'server', 'app-paths-manifest.json'),

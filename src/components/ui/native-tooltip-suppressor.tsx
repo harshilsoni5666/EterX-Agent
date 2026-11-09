@@ -27,11 +27,32 @@ export const NativeTooltipSuppressor = () => {
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
-    // 1. Initial pass across the document to strip native title attributes
-    const existing = document.querySelectorAll('[title]');
-    existing.forEach(sanitizeElement);
+    let listenersAttached = false;
+    let firstFrame = 0;
+    let secondFrame = 0;
+    let activationTimer = 0;
 
-    // 2. Pointer/mouse hover capture listeners to neutralize titles before browser timer fires
+    // Wait until the app shell is visible before changing any React-managed DOM.
+    // The previous eager sweep/observer could remove title attributes while Next
+    // was hydrating the page, leaving the server and client trees inconsistent.
+    const activateAfterStartup = () => {
+      if (listenersAttached || !document.querySelector('[data-startup-ready="true"]')) return;
+
+      startupObserver.disconnect();
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(() => {
+          activationTimer = window.setTimeout(() => {
+            if (!document.querySelector('[data-startup-ready="true"]')) return;
+            window.addEventListener('mouseover', handleOver, { capture: true, passive: true });
+            window.addEventListener('pointerover', handleOver, { capture: true, passive: true });
+            listenersAttached = true;
+          }, 100);
+        });
+      });
+    };
+
+    // Only alter a title when its element is actually hovered. This preserves
+    // custom tooltip behavior without mutating the document during hydration.
     const handleOver = (e: Event) => {
       let node = e.target as Element | null;
       while (node && node !== document.body && node !== document.documentElement) {
@@ -42,38 +63,28 @@ export const NativeTooltipSuppressor = () => {
       }
     };
 
-    window.addEventListener('mouseover', handleOver, { capture: true, passive: true });
-    window.addEventListener('pointerover', handleOver, { capture: true, passive: true });
-
-    // 3. MutationObserver to catch dynamically added or updated elements
-    const observer = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        if (m.type === 'attributes' && m.attributeName === 'title') {
-          sanitizeElement(m.target as Element);
-        } else if (m.type === 'childList') {
-          m.addedNodes.forEach((node) => {
-            if (node instanceof Element) {
-              sanitizeElement(node);
-              if (node.querySelectorAll) {
-                node.querySelectorAll('[title]').forEach(sanitizeElement);
-              }
-            }
-          });
-        }
-      }
+    // Observe only the app's readiness marker. Watching title attributes or
+    // inserted subtrees here would race with React's selective hydration.
+    const startupObserver = new MutationObserver(() => {
+      activateAfterStartup();
     });
 
-    observer.observe(document.documentElement, {
+    startupObserver.observe(document.documentElement, {
       subtree: true,
-      childList: true,
       attributes: true,
-      attributeFilter: ['title'],
+      attributeFilter: ['data-startup-ready'],
     });
+    activateAfterStartup();
 
     return () => {
-      window.removeEventListener('mouseover', handleOver, { capture: true } as any);
-      window.removeEventListener('pointerover', handleOver, { capture: true } as any);
-      observer.disconnect();
+      startupObserver.disconnect();
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(activationTimer);
+      if (listenersAttached) {
+        window.removeEventListener('mouseover', handleOver, true);
+        window.removeEventListener('pointerover', handleOver, true);
+      }
     };
   }, []);
 

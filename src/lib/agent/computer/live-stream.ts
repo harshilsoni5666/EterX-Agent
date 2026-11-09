@@ -32,6 +32,7 @@ export interface StreamConfig {
   maxWidth?: number;  // resize to this width (default 1280)
   chatId?: string;
   targetTitle?: string;
+  captureProvider?: 'native' | 'cua';
 }
 
 export interface LiveStreamHandle {
@@ -179,6 +180,10 @@ async function getChildProcess(): Promise<ChildProcessWithoutNullStreams | null>
 
 // ─── Single frame capture via warm child process ─────────────────────────────
 async function captureFrame(cfg: Required<StreamConfig>): Promise<string | null> {
+  if (cfg.captureProvider === 'cua') {
+    const { captureCuaPreview } = await import('./cua-driver');
+    return (await captureCuaPreview(cfg.chatId))?.vision?.inlineData.data || null;
+  }
   if (_pendingFrameResolve) return null;
 
   if (process.platform !== 'win32') {
@@ -257,6 +262,7 @@ let _stream: {
   lastHash: string;
   staleFrames: number;
   currentFps: number;
+  stop: () => void;
 } | null = null;
 
 // ─── Quick visual hash (for changed-frame detection) ─────────────────────────
@@ -269,20 +275,17 @@ function quickHash(b64: string): string {
 }
 
 // ─── Start streaming ──────────────────────────────────────────────────────────
-export async function startLiveStream(config: StreamConfig = {}): Promise<LiveStreamHandle> {
+export async function startLiveStream(config: StreamConfig = {}, onStop?: () => void): Promise<LiveStreamHandle> {
   // Stop existing
-  if (_stream) {
-    _stream.active = false;
-    if (_stream.timer) clearTimeout(_stream.timer);
-    _stream = null;
-  }
+  _stream?.stop();
 
   const cfg: Required<StreamConfig> = {
-    fps:      Math.min(12, Math.max(1, config.fps ?? 8)),
+    fps:      config.captureProvider === 'cua' ? 1 : Math.min(12, Math.max(1, config.fps ?? 8)),
     quality:  Math.min(95, Math.max(40, config.quality ?? 80)),
     maxWidth: config.maxWidth ?? 1280,
     chatId:   config.chatId ?? '',
     targetTitle: config.targetTitle ?? '',
+    captureProvider: config.captureProvider ?? 'native',
   };
 
   const state = {
@@ -293,6 +296,14 @@ export async function startLiveStream(config: StreamConfig = {}): Promise<LiveSt
     lastHash: '',
     staleFrames: 0,
     currentFps: cfg.fps,
+    stop: () => {},
+  };
+  state.stop = () => {
+    if (!state.active) return;
+    state.active = false;
+    if (state.timer) clearTimeout(state.timer);
+    if (_stream === state) _stream = null;
+    onStop?.();
   };
   _stream = state;
 
@@ -301,7 +312,11 @@ export async function startLiveStream(config: StreamConfig = {}): Promise<LiveSt
     const t0 = Date.now();
     state.stats.activeTitle = state.cfg.targetTitle || getComputerCaptureTarget(state.cfg.chatId);
 
-    const frame = await captureFrame(state.cfg);
+    const frame = await captureFrame(state.cfg).catch(() => null);
+    if (!frame && state.cfg.captureProvider === 'cua') {
+      state.stop();
+      return;
+    }
     state.stats.activeTitle = state.cfg.targetTitle || getComputerCaptureTarget(state.cfg.chatId);
     if (frame && state.active) {
       const hash = quickHash(frame);
@@ -313,7 +328,11 @@ export async function startLiveStream(config: StreamConfig = {}): Promise<LiveSt
         state.stats.framesSent++;
         state.stats.kbStreamed += Math.round(frame.length * 0.75 / 1024); // base64 → bytes → KB
         state.stats.fps = state.currentFps;
-        monitorEmitter.liveFrame(frame, cfg.maxWidth, Math.round(cfg.maxWidth * 0.5625), cfg.quality, cfg.chatId || undefined);
+        if (cfg.captureProvider === 'cua') {
+          monitorEmitter.desktopScreenshot(frame, undefined, cfg.chatId || undefined);
+        } else {
+          monitorEmitter.liveFrame(frame, cfg.maxWidth, Math.round(cfg.maxWidth * 0.5625), cfg.quality, cfg.chatId || undefined);
+        }
       } else {
         // No change — slow down adaptively
         state.staleFrames++;
@@ -335,14 +354,12 @@ export async function startLiveStream(config: StreamConfig = {}): Promise<LiveSt
 
   return {
     stop() {
-      state.active = false;
-      if (state.timer) clearTimeout(state.timer);
-      if (_stream === state) _stream = null;
+      state.stop();
       cleanupChild();
     },
     setConfig(newCfg) {
       Object.assign(state.cfg, newCfg);
-      if (newCfg.fps) state.currentFps = Math.min(12, newCfg.fps);
+      if (newCfg.fps) state.currentFps = state.cfg.captureProvider === 'cua' ? 1 : Math.min(12, newCfg.fps);
       state.staleFrames = 0;
     },
     getStats() { return { ...state.stats }; },
@@ -350,13 +367,17 @@ export async function startLiveStream(config: StreamConfig = {}): Promise<LiveSt
 }
 
 // ─── Stop / status ────────────────────────────────────────────────────────────
-export function stopLiveStream(): void {
-  if (_stream) {
-    _stream.active = false;
-    if (_stream.timer) clearTimeout(_stream.timer);
-    _stream = null;
-  }
+export function stopLiveStream(chatId?: string): void {
+  if (chatId && _stream?.cfg.chatId !== chatId) return;
+  if (_autoStopTimer) { clearTimeout(_autoStopTimer); _autoStopTimer = null; }
+  _stream?.stop();
   cleanupChild();
+}
+
+/** Do not let a legacy capture stream publish a different desktop's frames. */
+export function stopNativeLiveStream(): void {
+  if (_autoStopTimer) { clearTimeout(_autoStopTimer); _autoStopTimer = null; }
+  if (_stream?.cfg.captureProvider === 'native') stopLiveStream();
 }
 
 export function isLiveStreaming(): boolean { return _stream?.active === true; }
@@ -382,7 +403,7 @@ export function autoStreamPing(chatId: string): void {
 
 // ─── Single frame for vision ──────────────────────────────────────────────────
 export async function captureFrameForVision(quality = 82, maxWidth = 1280, chatId = ''): Promise<string | null> {
-  return captureFrame({ fps: 8, quality, maxWidth, chatId, targetTitle: '' });
+  return captureFrame({ fps: 8, quality, maxWidth, chatId, targetTitle: '', captureProvider: 'native' });
 }
 
 // ─── Active window title ──────────────────────────────────────────────────────

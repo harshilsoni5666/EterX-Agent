@@ -3,6 +3,9 @@ export const isRequestTimeout = (error: unknown): boolean =>
   typeof error === 'object' && error !== null &&
   'code' in error && error.code === 'ETERX_REQUEST_TIMEOUT';
 
+export const isRequestUnavailable = (error: unknown): boolean =>
+  error instanceof TypeError && /failed to fetch|fetch failed|networkerror|load failed/i.test(error.message);
+
 /** For finite settings/storage endpoints only; never use for generation or edits. */
 export async function requestJson(
   input: string,

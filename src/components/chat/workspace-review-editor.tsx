@@ -433,7 +433,7 @@ function StatsButton({
         event.stopPropagation();
         onClick?.();
       }}
-      className="eterx-professional-number inline-flex h-6 items-center gap-1 rounded-full px-1.5 text-[11.5px] font-bold transition-all hover:bg-white/[0.08] hover:shadow-none focus:outline-none focus:ring-1 focus:ring-white/18"
+      className="eterx-professional-number inline-flex h-6 items-center gap-1 rounded-full px-1.5 text-[11.5px] font-bold transition-all hover:bg-white/[0.08] hover:shadow-none focus:outline-hidden focus:ring-1 focus:ring-white/18"
     >
       <span className="eterx-file-change-added">+{stats.added}</span>
       <span className="eterx-file-change-removed">-{stats.removed}</span>
@@ -520,7 +520,7 @@ function SubagentDetailPanel({
               {events.slice().reverse().map((event, index) => (
                 <div key={`${event.timestamp || index}-${index}`} className="rounded-[12px] border border-white/[0.055] bg-[#101010]/72 px-3 py-2">
                   <div className="flex items-center gap-2">
-                    <span className="rounded bg-white/[0.045] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/34">{event.type || 'trace'}</span>
+                    <span className="rounded-sm bg-white/[0.045] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-white/34">{event.type || 'trace'}</span>
                     {event.secondary && <span className="min-w-0 truncate font-mono text-[10.5px] text-white/28">{event.secondary}</span>}
                   </div>
                   <div className="mt-1.5 whitespace-pre-wrap break-words text-[12.5px] leading-5 text-white/62">{event.text}</div>

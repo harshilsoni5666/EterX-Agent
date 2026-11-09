@@ -56,7 +56,7 @@ export const connectorMcpTool: ToolDefinition = {
     arguments: z.record(z.string(), z.any()).optional(),
     method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional(),
     path: z.string().optional(),
-    query: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+    query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
     body: z.any().optional(),
     headers: z.record(z.string(), z.string()).optional(),
     confirm: z.boolean().optional().describe('Required true for connector writes or unknown MCP actions.'),

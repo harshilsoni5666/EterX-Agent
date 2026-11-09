@@ -9,6 +9,7 @@
 import { distillEvidence } from './evidence-distiller';
 import { getToolResultOutcome } from '../tool-semantics';
 import { resolveTerminalOutputKind, terminalOutputPageChars } from '../source-read-policy';
+import { splitComputerToolResult } from '../computer/tool-vision';
 
 function isSourceRead(toolName: string, args: Record<string, any>, result?: any): boolean {
   if (toolName === 'context_memory' && args.action === 'open') return true;
@@ -77,6 +78,13 @@ export class ToolResultCompactor {
    */
   compact(toolName: string, args: Record<string, any>, result: any): any {
     if (result === null || result === undefined) return result;
+    if (toolName === 'computer' || toolName === 'screen_agent') {
+      const desktop = splitComputerToolResult(toolName, result);
+      const output = this.compactComputerResult(desktop.output, MAX_COMPACT_SIZE);
+      // Images bypass text compaction, then the provider adapter extracts them
+      // into native image parts before compactBatch accounts for JSON.
+      return desktop.image ? { ...output, vision: { inlineData: desktop.image } } : output;
+    }
     if (isSourceRead(toolName, args, result)) return this.pageReadOutput(toolName, result, terminalOutputPageChars(args.maxOutputChars ?? args.maxChars));
     
     // Estimate size
@@ -169,6 +177,7 @@ export class ToolResultCompactor {
     maxChars: number,
   ): any {
     if (isSourceRead(toolName, args, result)) return this.pageReadOutput(toolName, result, maxChars);
+    if (toolName === 'computer' || toolName === 'screen_agent') return this.compactComputerResult(result, maxChars);
     const exactContextPageRef = typeof result?.exactContextPageRef === 'string'
       ? result.exactContextPageRef
       : undefined;
@@ -220,6 +229,47 @@ export class ToolResultCompactor {
       recovery: 'Use a narrower follow-up read/search call if omitted detail becomes decision-relevant.',
       ...(exactContextPageRef ? { exactContextPageRef } : {}),
     };
+  }
+
+  /** Preserve complete target IDs and control tokens; never turn them into a prose digest. */
+  private compactComputerResult(result: any, maxChars: number): any {
+    if (!result || typeof result !== 'object' || this.estimateSize(result) <= maxChars) return result;
+    const { vision: _vision, _visionParts, observation, result: actionResult, ...envelope } = result;
+    const matches = Array.isArray(actionResult?.matches) ? actionResult.matches : [];
+    const observed = Array.isArray(observation?.elements) ? observation.elements : [];
+    const priority = new Set(matches.map((element: any) => element.element_token).filter(Boolean));
+    const elements = [...observed].sort((a, b) => Number(priority.has(b.element_token)) - Number(priority.has(a.element_token)));
+    const bounded: any = {
+      ...envelope,
+      result: typeof actionResult === 'string' ? actionResult.slice(0, Math.max(200, Math.floor(maxChars / 4)))
+        : this.estimateSize(actionResult) <= Math.max(600, maxChars / 4) ? actionResult
+          : Array.isArray(actionResult) ? [] : { message: actionResult?.message, effect: actionResult?.effect, status: actionResult?.status, target: actionResult?.target, matches: [] },
+      ...(observation ? { observation: { ...observation, elements: [], tree: typeof observation.tree === 'string' ? observation.tree.slice(0, 1500) : undefined, truncated: true } } : {}),
+      _compacted: true,
+      recovery: 'Use find with a narrower query for omitted controls. Use only complete tokens from the latest observation of this target.',
+    };
+    // App discovery needs complete process/window IDs just as control reads
+    // need complete tokens. Keep arrays as arrays for computer's selectors.
+    const rows = Array.isArray(actionResult) ? actionResult : matches;
+    const destination = Array.isArray(bounded.result) ? bounded.result : bounded.result?.matches;
+    if (Array.isArray(destination) && destination.length === 0 && rows.length) {
+      for (const row of rows) {
+        destination.push(row);
+        if (this.estimateSize(bounded) > maxChars) { destination.pop(); break; }
+      }
+      if (destination.length < rows.length) {
+        bounded.omittedResults = rows.length - destination.length;
+        if (Array.isArray(actionResult)) bounded.recovery = 'Use list_apps with an app name or filter to narrow the window list. Select a complete pid and window_id pair.';
+      }
+    }
+    // Keep each element intact; half a token or target ID is never usable.
+    if (bounded.observation) {
+      for (const element of elements) {
+        bounded.observation.elements.push(element);
+        if (this.estimateSize(bounded) > maxChars) { bounded.observation.elements.pop(); break; }
+      }
+    }
+    return bounded;
   }
 
   /** Preserve the complete multi-file manifest while bounding heavy previews. */

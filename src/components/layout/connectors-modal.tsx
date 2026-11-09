@@ -173,7 +173,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
                     value={search}
                     onChange={e => setSearch(e.target.value)}
                     placeholder="Search connectors..."
-                    className="eterx-connectors-search-input pl-9 pr-4 py-2 rounded-xl text-[13px] text-white placeholder-[#555] outline-none w-[200px]"
+                    className="eterx-connectors-search-input pl-9 pr-4 py-2 rounded-xl text-[13px] text-white placeholder-[#555] outline-hidden w-[200px]"
                     style={{ background: '#1E1E1E', border: '1px solid rgba(255,255,255,0.08)' }}
                   />
                 </div>
@@ -223,7 +223,7 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="eterx-connectors-name text-[14px] font-medium text-white truncate">{connector.name}</span>
-                        {connector.id === 'slack' && <span className="eterx-connectors-live px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wide" style={{ background: '#34D39922', color: '#34D399', border: '1px solid #34D39933' }}>OAUTH</span>}
+                        {connector.id === 'slack' && <span className="eterx-connectors-live px-1.5 py-0.5 rounded-sm text-[9px] font-bold tracking-wide" style={{ background: '#34D39922', color: '#34D399', border: '1px solid #34D39933' }}>OAUTH</span>}
                       </div>
                       <p className="eterx-connectors-desc text-[12px] text-[#555] mt-0.5 truncate">{connector.desc}</p>
                     </div>
@@ -261,9 +261,9 @@ export const ConnectorsModal: React.FC<ConnectorsModalProps> = ({ open, onClose,
                       <div><h3 className="text-[18px] font-semibold text-white">Connect {setupConnector.name}</h3><p className="mt-1 text-[12px] leading-5 text-[#888]">Enter the API origin and credential. EterX verifies the connection before the agent can use it.</p></div>
                       <button type="button" onClick={() => setSetupConnector(null)} className="rounded-lg p-1 text-[#777] hover:bg-white/10 hover:text-white"><X className="h-4 w-4" /></button>
                     </div>
-                    <label className="mt-5 block text-[12px] font-medium text-[#bbb]">API base URL<span className="ml-1 text-[#777]">(optional when EterX has a default)</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com" className="mt-1.5 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-[13px] text-white outline-none focus:border-[#5aaeff]" /></label>
-                    <label className="mt-3 block text-[12px] font-medium text-[#bbb]">API key / access token<input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Stored encrypted on this device" className="mt-1.5 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-[13px] text-white outline-none focus:border-[#5aaeff]" /></label>
-                    <label className="mt-3 block text-[12px] font-medium text-[#bbb]">Health-check path<span className="ml-1 text-[#777]">(optional)</span><input value={healthPath} onChange={(event) => setHealthPath(event.target.value)} placeholder="/user or /v1/me" className="mt-1.5 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-[13px] text-white outline-none focus:border-[#5aaeff]" /></label>
+                    <label className="mt-5 block text-[12px] font-medium text-[#bbb]">API base URL<span className="ml-1 text-[#777]">(optional when EterX has a default)</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com" className="mt-1.5 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-[13px] text-white outline-hidden focus:border-[#5aaeff]" /></label>
+                    <label className="mt-3 block text-[12px] font-medium text-[#bbb]">API key / access token<input type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Stored encrypted on this device" className="mt-1.5 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-[13px] text-white outline-hidden focus:border-[#5aaeff]" /></label>
+                    <label className="mt-3 block text-[12px] font-medium text-[#bbb]">Health-check path<span className="ml-1 text-[#777]">(optional)</span><input value={healthPath} onChange={(event) => setHealthPath(event.target.value)} placeholder="/user or /v1/me" className="mt-1.5 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-[13px] text-white outline-hidden focus:border-[#5aaeff]" /></label>
                     {setupError && <div className="mt-3 rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-[12px] leading-5 text-red-200">{setupError}</div>}
                     <div className="mt-5 flex items-center justify-end gap-2"><button type="button" onClick={() => setSetupConnector(null)} className="rounded-lg border border-white/10 px-3 py-2 text-[12px] text-[#aaa]">Cancel</button><button type="button" disabled={saving} onClick={() => void saveSetup()} className="rounded-lg bg-white px-3.5 py-2 text-[12px] font-semibold text-black disabled:opacity-50">{saving ? 'Verifying…' : 'Verify and connect'}</button></div>
                   </motion.div>

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from 
 
 type Position = { top: number; left: number };
 
-export function useWorkspaceReadingPosition(scroll: RefObject<HTMLElement>, path: string, mode: string, ready: boolean, active: boolean) {
+export function useWorkspaceReadingPosition(scroll: RefObject<HTMLElement | null>, path: string, mode: string, ready: boolean, active: boolean) {
   const key = `${path}\0${mode}`;
   const positions = useRef(new Map<string, Position>());
   const current = useRef({ key, active });

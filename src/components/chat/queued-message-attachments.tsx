@@ -49,8 +49,8 @@ function Attachment({ attachment, media }: { attachment: QueuedMessageAttachment
         else if (path) void openLocalFilePath(path);
       }}
       className={hasThumbnail
-        ? 'relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50'
-        : 'inline-flex max-w-full items-center gap-1.5 rounded-lg border border-white/10 px-2 py-1.5 text-xs text-white/75 hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50 disabled:opacity-60'}
+        ? 'relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-white/10 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/50'
+        : 'inline-flex max-w-full items-center gap-1.5 rounded-lg border border-white/10 px-2 py-1.5 text-xs text-white/75 hover:bg-white/5 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/50 disabled:opacity-60'}
     >
       {hasThumbnail ? isVideo
         ? <video src={preview} muted playsInline preload="metadata" onError={() => setFailedSource(preview)} className="h-full w-full object-cover" />

@@ -18,6 +18,7 @@ import { LocalFileLinkChip, LocalFilePathsContext, getLocalFileName, decodeLocal
 import { ReplyImage } from './image-gallery';
 import { remarkRichMath } from '../../lib/markdown/remark-rich-math';
 import { remarkAnswerStructure } from '../../lib/markdown/remark-answer-structure';
+import { normalizeSourceCitations } from '../../lib/imports/presentation';
 
 // Text paints immediately. Expensive code/diagram work is settled once its
 // stream closes instead of retokenizing a growing block on every word.
@@ -73,6 +74,9 @@ export const rehypePlugins: any[] = [rehypeAnswerMath];
 const MERMAID_LANGUAGE_ALIASES = new Set(['mermaid', 'mmd']);
 const MERMAID_FONT_FAMILY = '"Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif';
 const PROTECTED_MARKDOWN_CODE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`\n]*?`+)/g;
+// Mermaid configuration is global. Keep initialization and rendering together
+// so concurrent replies cannot change a diagram's theme midway through work.
+let mermaidRenderQueue: Promise<void> = Promise.resolve();
 
 const slugify = (value: string) =>
   value
@@ -203,7 +207,7 @@ export const normalizeMarkdownForRendering = (value: string) => {
     .replace(/\u0000/g, '');
   return text.split(PROTECTED_MARKDOWN_CODE_SPLIT).map(chunk => {
     if (/^(```|~~~|`)/.test(chunk)) return chunk;
-    return normalizeLocalImageMarkdown(chunk.replace(/<(analysis|thinking|reasoning|thought|scratchpad|reflection)\b[^>]*>[\s\S]*?<\/\1>/gi, ''));
+    return normalizeLocalImageMarkdown(normalizeSourceCitations(chunk.replace(/<(analysis|thinking|reasoning|thought|scratchpad|reflection)\b[^>]*>[\s\S]*?<\/\1>/gi, '')));
   }).join('');
 };
 
@@ -270,18 +274,37 @@ const MarkdownCopyAction = ({ text, label }: { text: string; label: string }) =>
   </>;
 };
 
-const MarkdownTable = ({ children, copyText, label, ...props }:
-  React.TableHTMLAttributes<HTMLTableElement> & { copyText: string; label: string }) => (
-  <div className="eterx-table-block">
+const MarkdownTable = ({ children, copyText, csv, label, rowCount, columnCount, ...props }:
+  React.TableHTMLAttributes<HTMLTableElement> & {
+    copyText: string; csv: string; label: string; rowCount: number; columnCount: number;
+  }) => {
+  const [expanded, setExpanded] = useState(false);
+  const regionId = useId();
+  const tall = rowCount > 12;
+  return <div className="eterx-table-block" data-expanded={expanded || !tall ? 'true' : 'false'}>
     <div className="eterx-table-toolbar">
-      <span>Table</span>
-      <MarkdownCopyAction text={copyText} label="Copy table" />
+      <span className="eterx-table-summary">
+        Table{columnCount > 0 && <span>{rowCount} {rowCount === 1 ? 'row' : 'rows'} · {columnCount} {columnCount === 1 ? 'column' : 'columns'}</span>}
+      </span>
+      <div className="eterx-table-actions">
+        <MarkdownCopyAction text={copyText} label="Copy table for a spreadsheet" />
+        <button type="button" className="eterx-content-copy" title="Download CSV" aria-label="Download table as CSV"
+          onClick={() => downloadTextFile(`\uFEFF${csv}`, 'eterx-table.csv', 'text/csv;charset=utf-8')}>
+          <Download aria-hidden="true" size={15} />
+        </button>
+        {tall && <button type="button" className="eterx-content-copy"
+          title={expanded ? 'Collapse table height' : 'Show full table height'}
+          aria-label={expanded ? 'Collapse table height' : 'Show full table height'}
+          aria-controls={regionId} aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
+          {expanded ? <Minimize2 aria-hidden="true" size={15} /> : <Maximize2 aria-hidden="true" size={15} />}
+        </button>}
+      </div>
     </div>
-    <div className="eterx-markdown-table-wrap eterx-scrollbar" role="region" aria-label={label} tabIndex={0}>
+    <div id={regionId} className="eterx-markdown-table-wrap eterx-scrollbar" role="region" aria-label={label} tabIndex={0}>
       <table className="eterx-markdown-table" {...props}>{children}</table>
     </div>
-  </div>
-);
+  </div>;
+};
 
 const ToolbarButton = ({
   label,
@@ -490,7 +513,9 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
   const [svgSize, setSvgSize] = useState({ width: 460, height: 300 });
   const renderTokenRef = useRef(0);
   const errorTimerRef = useRef<number | null>(null);
+  const actionTimerRef = useRef<number | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const previewPanelRef = useRef<HTMLDivElement>(null);
   const displayWidth = useMemo(() => getMermaidDisplayWidth(svgSize), [svgSize]);
 
   useEffect(() => {
@@ -506,7 +531,9 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
 
     const render = async () => {
       try {
+        if (cancelled || renderTokenRef.current !== token) return;
         const mermaidModule = await import('mermaid');
+        if (cancelled || renderTokenRef.current !== token) return;
         const mermaid = mermaidModule.default;
         const palette = MERMAID_PALETTES[theme];
         mermaid.initialize({
@@ -580,7 +607,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
       }
     };
 
-    render();
+    mermaidRenderQueue = mermaidRenderQueue.then(render, render);
     return () => {
       cancelled = true;
       if (errorTimerRef.current) {
@@ -608,22 +635,45 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
 
   useEffect(() => {
     if (!previewOpen) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    previewPanelRef.current?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setPreviewOpen(false);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setPreviewOpen(false);
+      } else if (event.key === 'Tab') {
+        const controls = previewPanelRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), [href], [tabindex="0"]');
+        if (!controls?.length) { event.preventDefault(); return; }
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === previewPanelRef.current)) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === previewPanelRef.current)) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', closeOnEscape);
+      if (previousFocus?.isConnected) previousFocus.focus();
     };
   }, [previewOpen]);
 
   const flashStatus = (message: string) => {
     setActionStatus(message);
-    window.setTimeout(() => setActionStatus(''), 1800);
+    if (actionTimerRef.current) window.clearTimeout(actionTimerRef.current);
+    actionTimerRef.current = window.setTimeout(() => setActionStatus(''), 1800);
   };
+  useEffect(() => () => {
+    if (actionTimerRef.current) window.clearTimeout(actionTimerRef.current);
+  }, []);
 
   const copyText = async (value: string, label: string) => {
     const ok = await safeCopyTextToClipboard(value);
@@ -782,7 +832,7 @@ const MermaidDiagram = ({ chart }: { chart: string }) => {
       )}
       {previewOpen && typeof document !== 'undefined' && createPortal(
         <div className="eterx-mermaid-popout" role="dialog" aria-modal="true" aria-label="Large diagram view" onClick={() => setPreviewOpen(false)}>
-          <div className="eterx-mermaid-popout-panel" onClick={(event) => event.stopPropagation()}>
+          <div ref={previewPanelRef} className="eterx-mermaid-popout-panel" tabIndex={-1} onClick={(event) => event.stopPropagation()}>
             <div className="eterx-mermaid-popout-toolbar">
               <div className="eterx-mermaid-popout-title min-w-0 flex-1 truncate">Diagram preview</div>
               <div className="eterx-mermaid-zoom-controls" aria-label="Diagram zoom controls">
@@ -850,8 +900,8 @@ const codeLanguageLabels: Record<string, string> = {
   c: 'C', cpp: 'C++', csharp: 'C#', go: 'Go', rust: 'Rust', java: 'Java',
 };
 
-const CodeBlock = React.memo(({ language, content, forceSource = false, ...props }: { language: string; content: string; forceSource?: boolean;[key: string]: any }) => {
-  const streaming = React.useContext(MarkdownStreamContext);
+const CodeBlock = React.memo(({ language, content, forceSource = false, complete = false, ...props }: { language: string; content: string; forceSource?: boolean; complete?: boolean;[key: string]: any }) => {
+  const streaming = React.useContext(MarkdownStreamContext) && !complete;
   const displayLanguage = language || 'text';
   const languageLabel = codeLanguageLabels[displayLanguage.toLowerCase()] || displayLanguage.toUpperCase();
   const [wrapLines, setWrapLines] = useState(() => ['text', 'txt', 'plaintext'].includes(displayLanguage.toLowerCase()));
@@ -950,9 +1000,10 @@ const CodeBlock = React.memo(({ language, content, forceSource = false, ...props
       )}
     </div>
   );
-}, (prevProps, nextProps) => prevProps.content === nextProps.content && prevProps.language === nextProps.language && prevProps.forceSource === nextProps.forceSource);
+}, (prevProps, nextProps) => prevProps.content === nextProps.content && prevProps.language === nextProps.language
+  && prevProps.forceSource === nextProps.forceSource && prevProps.complete === nextProps.complete);
 
-export const makeMarkdownHeading = (Tag: keyof JSX.IntrinsicElements, className: string) => {
+export const makeMarkdownHeading = (Tag: keyof React.JSX.IntrinsicElements, className: string) => {
   const Heading = ({ node, children, className: authoredClassName = '', ...props }: any) => {
     const text = getNodeText(children);
     const sourceLine = Number(node?.position?.start?.line || 0);
@@ -985,7 +1036,7 @@ export const markdownComponents = {
       ? <ResponsiveMath className={className} source={getMathSource(node)} {...props}>{children}</ResponsiveMath>
       : <span className={className} {...props}>{children}</span>;
   },
-  code: function MarkdownCode({ inline, className, children, node, 'data-block-code': blockCode, ...props }: any) {
+  code: function MarkdownCode({ inline, className, children, node, 'data-block-code': blockCode, 'data-code-complete': codeComplete, ...props }: any) {
     const streaming = React.useContext(MarkdownStreamContext);
     const match = /language-([^\s]+)/.exec(className || '');
     const language = match ? match[1].toLowerCase() : '';
@@ -998,7 +1049,8 @@ export const markdownComponents = {
     );
 
     if (!isInlineCode && streaming) {
-      return <CodeBlock language={language} content={content} forceSource {...props} />;
+      const complete = codeComplete === true || codeComplete === 'true';
+      return <CodeBlock language={language} content={content} complete={complete} forceSource={!complete} {...props} />;
     }
 
     if (!isInlineCode && language === 'js-preview') {
@@ -1043,7 +1095,7 @@ export const markdownComponents = {
   ol: ({ node, className = '', ...props }: any) => <ol className={`eterx-markdown-list mb-3 list-decimal space-y-1 pl-5 marker:text-[#8C8A88] text-[13.5px] leading-[1.6] ${className}`} {...props} />,
   li: ({ node, className = '', ...props }: any) => <li className={`eterx-markdown-list-item leading-[1.6] pl-0.5 ${className}`} {...props} />,
   input: ({ node, type, ...props }: any) => type === 'checkbox'
-    ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-3.5 w-3.5 translate-y-[2px] rounded border-white/20 accent-[#E2765A]" {...props} disabled aria-label={props.checked ? 'Completed task' : 'Incomplete task'} />
+    ? <input type="checkbox" className="eterx-markdown-checkbox mr-2 h-3.5 w-3.5 translate-y-[2px] rounded-sm border-white/20 accent-[#E2765A]" {...props} disabled aria-label={props.checked ? 'Completed task' : 'Incomplete task'} />
     : <input type={type} {...props} />,
   h1: makeMarkdownHeading('h1', 'eterx-answer-heading-1'),
   h2: makeMarkdownHeading('h2', 'eterx-answer-heading-2'),
@@ -1062,15 +1114,17 @@ export const markdownComponents = {
         : 'quote';
     return (
       <blockquote
-        className="eterx-markdown-callout my-3 rounded-lg border-l-[3px] border-[#E2765A] bg-[#222120]/70 px-3.5 py-2.5 text-[12.5px] leading-relaxed shadow-none backdrop-blur-sm"
+        className="eterx-markdown-callout my-3 rounded-lg border-l-[3px] border-[#E2765A] bg-[#222120]/70 px-3.5 py-2.5 text-[12.5px] leading-relaxed shadow-none backdrop-blur-xs"
         data-callout={callout}
         {...props}
       />
     );
   },
   hr: ({ node, ...props }: any) => <hr className="eterx-markdown-hr my-4 border-white/[0.08]" {...props} />,
-  table: ({ node, 'data-table-copy': copyText = '', 'data-table-label': label = 'Data table', ...props }: any) => (
-    <MarkdownTable copyText={String(copyText)} label={String(label)} {...props} />
+  table: ({ node, 'data-table-copy': copyText = '', 'data-table-csv': csv = '', 'data-table-label': label = 'Data table',
+    'data-table-row-count': rowCount = 0, 'data-table-column-count': columnCount = 0, ...props }: any) => (
+    <MarkdownTable copyText={String(copyText)} csv={String(csv)} label={String(label)}
+      rowCount={Number(rowCount)} columnCount={Number(columnCount)} {...props} />
   ),
   thead: ({ node, ...props }: any) => <thead className="eterx-markdown-thead bg-white/[0.04] border-b border-white/[0.08]" {...props} />,
   tbody: ({ node, ...props }: any) => <tbody className="eterx-markdown-tbody" {...props} />,

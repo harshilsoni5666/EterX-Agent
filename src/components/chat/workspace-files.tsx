@@ -449,7 +449,7 @@ export function WorkspaceFiles({ owner, tab, isActive = true, workspacePath, roo
   const [folderMenu, setFolderMenu] = useState('');
   const toolbar = useRef<HTMLDivElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
-  const copyTimer = useRef<ReturnType<typeof setTimeout>>();
+  const copyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const selected = tab.path || '';
   const markdown = isMarkdownDocument(selected);
   const markdownPreview = markdown && !sourceViews[selected];
@@ -457,7 +457,7 @@ export function WorkspaceFiles({ owner, tab, isActive = true, workspacePath, roo
   const media = /\.(png|jpg|jpeg|webp|gif|svg|avif|ico|mp4|webm|mov|mp3|wav|ogg|pdf)$/i.test(selected);
   const office = /\.(xlsx?|docx?|pptx?|od[stp]|rtf|numbers|pages|key|zip|7z|exe|dll)$/i.test(selected);
   const revision = useFolderRevision(selected ? parentPath(selected) : '', isActive);
-  const request = useRef<AbortController>();
+  const request = useRef<AbortController>(undefined);
   const documents = useRef(new Map<string, { doc: Document | null; binary: boolean }>());
   const docRef = useRef(doc); docRef.current = doc;
   const saveReadingPosition = useWorkspaceReadingPosition(scroll, selected, markdownPreview ? 'preview' : 'source', Boolean(doc && documents.current.get(selected)?.doc === doc), isActive);

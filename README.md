@@ -110,7 +110,7 @@ Windows uses the NSIS updater; Linux updates the matching AppImage. Signed macOS
 
 For example: “Review this project and update its README to match the implemented features. Preserve the screenshots and edit only the README.”
 
-Web search and image/video generation have their own setup under **Settings → External service**. Live voice has separate credentials under **Settings → Live Convo**.
+Web search and image/video generation have their own setup under **Settings → External service**. Configure voice under **Settings → Live Convo**; native voice providers can reuse their saved provider connection or use dedicated Live credentials.
 
 ## Choose your agent
 
@@ -259,7 +259,9 @@ Provider availability, credentials, supported actions, and fallback behavior are
 
 EterX supports **local voice dictation** in the desktop chat input through `whisper.cpp`, and **Live Convo** for interactive provider-backed voice sessions.
 
-Configure Live Convo's provider, dedicated credentials, model, and voice in **Settings → Live Convo**. The current provider adapters include Google Gemini Live, OpenAI Realtime, xAI Grok Voice, Deepgram Voice Agent, and ElevenLabs Conversational Agent. ElevenLabs also requires a configured agent ID.
+Configure Live Convo's provider, model, and voice in **Settings → Live Convo**. Choose **Any configured model** to use an added model's saved connection with desktop dictation and system speech. Native audio adapters include Google Gemini Live, OpenAI Realtime, xAI Grok Voice, Deepgram Voice Agent, and ElevenLabs Conversational Agent. Native adapters accept an optional dedicated Live key; ElevenLabs also requires a configured agent ID.
+
+Start Live from an existing chat, including while its agent is working. Live can deliver steering or queue follow-ups, while the task keeps its own model and workspace. The task's Stop control remains available during the conversation. See [Live connection setup](./docs/live-connections.md) for model selection, voices, and provider requirements.
 
 Live tools can inspect app context and perform supported app actions. Camera and screen sharing are available through the Gemini Live transport when enabled; the other listed transports are audio-only in EterX. Microphone, camera, and screen access depend on the permissions you grant.
 

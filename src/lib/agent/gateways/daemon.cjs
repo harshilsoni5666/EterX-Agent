@@ -11,6 +11,10 @@ const { buildGatewaySessionKey, GatewaySessionLanes } = require('./session.cjs')
 const { GatewayHookBus } = require('./hooks.cjs');
 const { EmailGatewayAdapter, sendEmailMessage } = require('./email.cjs');
 const { TelegramBots, normalizeBots, publicBot } = require('./telegram-bots.cjs');
+const { selectChannelProfile, canDispatchChannel } = require('./routing.cjs');
+const { normalizeTelegramToken } = require('./telegram-token.cjs');
+const { telegramApi } = require('./telegram-api.cjs');
+const { formatTelegramText } = require('./telegram-presentation.cjs');
 
 const PLATFORMS = ['telegram', 'whatsapp', 'messenger', 'email', 'discord', 'signal', 'generic'];
 const DEFAULT_CONFIG = Object.freeze({
@@ -109,7 +113,7 @@ function mergeConfig(raw = {}) {
     runScheduledTasksInBackground: raw.runScheduledTasksInBackground !== false,
     launchAtLogin: Boolean(raw.launchAtLogin),
     autoDispatch: raw.autoDispatch === true,
-    busyInputMode: ['queue', 'steer', 'interrupt'].includes(raw.busyInputMode) ? raw.busyInputMode : 'queue',
+    busyInputMode: raw.busyInputMode === 'steer' ? 'steer' : 'queue',
     mcpBridgeEnabled: raw.mcpBridgeEnabled !== false,
     // Connector credentials have their own encrypted AppData vault. Never
     // duplicate them into gateway configuration or return them to a renderer.
@@ -123,12 +127,60 @@ function mergeConfig(raw = {}) {
   };
   for (const platform of PLATFORMS) {
     config.platforms[platform] = { ...DEFAULT_CONFIG.platforms[platform], ...(raw.platforms?.[platform] || {}) };
+    delete config.platforms[platform].configured;
+    delete config.platforms[platform].credentials;
     config.platforms[platform].enabled = Boolean(config.platforms[platform].enabled);
     config.platforms[platform].accessPolicy = ['open', 'allowlist', 'pairing'].includes(config.platforms[platform].accessPolicy) ? config.platforms[platform].accessPolicy : DEFAULT_CONFIG.platforms[platform].accessPolicy;
     config.platforms[platform].allowlist = Array.isArray(config.platforms[platform].allowlist) ? config.platforms[platform].allowlist.map(String).slice(0, 1000) : [];
     config.platforms[platform].groupSessionsPerUser = config.platforms[platform].groupSessionsPerUser !== false;
   }
   return config;
+}
+
+function platformConfigurationError(id, settings = {}) {
+  const has = key => Boolean(String(settings[key] || '').trim());
+  const missing = (fields) => fields.filter(([key]) => !has(key)).map(([, label]) => label);
+  let required = [];
+  if (['telegram', 'discord'].includes(id)) required = [['token', 'bot token']];
+  if (['whatsapp', 'messenger'].includes(id)) required = [['token', 'access token'], ['accountId', id === 'whatsapp' ? 'phone number ID' : 'Page ID'], ['appSecret', 'Meta app secret'], ['webhookSecret', 'verification token']];
+  if (id === 'email') required = [['emailAddress', 'mailbox address'], ['imapHost', 'IMAP host'], ['smtpHost', 'SMTP host']];
+  if (id === 'signal') required = [['endpoint', 'bridge URL'], ['accountId', 'account number']];
+  if (id === 'generic') required = [['webhookSecret', 'webhook signing secret']];
+  const fields = missing(required);
+  if (id === 'email' && !has('password') && !has('appPassword') && !has('emailPassword')) fields.push('app password');
+  if (fields.length) return `Add ${fields.join(', ')} before enabling ${id}.`;
+  if (id === 'telegram') {
+    try { normalizeTelegramToken(settings.token); } catch { return 'Paste a complete Telegram bot token from BotFather.'; }
+  }
+  if (id === 'email') {
+    for (const key of ['imapPort', 'smtpPort']) {
+      if (!Number.isInteger(Number(settings[key])) || Number(settings[key]) < 1 || Number(settings[key]) > 65535) return 'Email ports must be between 1 and 65535.';
+    }
+  }
+  if (has('endpoint')) {
+    try {
+      const url = new URL(settings.endpoint);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return 'Use an HTTP or HTTPS bridge URL without credentials in the address.';
+    } catch { return 'Enter a complete HTTP or HTTPS bridge URL.'; }
+  }
+  return null;
+}
+
+function validateGatewayConfig(config) {
+  const port = Number(config.port);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Use a gateway port between 1024 and 65535.');
+  if (!config.enabled) return;
+  for (const id of PLATFORMS) {
+    const settings = config.platforms?.[id];
+    if (!settings?.enabled) continue;
+    const error = platformConfigurationError(id, settings);
+    if (error) throw new Error(error);
+    if (id === 'telegram') {
+      const token = normalizeTelegramToken(settings.token);
+      if ((config.telegramBots || []).some(bot => bot.enabled && bot.token === token)) throw new Error('This Telegram token is already used by Connect as bot. Use a different bot token for the channel gateway.');
+      settings.token = token;
+    }
+  }
 }
 
 function safeEqual(left, right) {
@@ -260,10 +312,11 @@ class GatewayDaemon {
       platforms[id] = {
         enabled: source.enabled,
         mode: source.mode,
-        configured: Boolean(source.token || source.webhookSecret || source.publicKey || source.endpoint || source.emailAddress),
+        configured: !platformConfigurationError(id, source),
+        credentials: Object.fromEntries(['token', 'webhookSecret', 'appSecret', 'publicKey', 'password'].map(key => [key, Boolean(source[key] || (key === 'password' && (source.appPassword || source.emailPassword)))])),
         accountId: source.accountId || '',
         apiVersion: source.apiVersion || '',
-        endpoint: id === 'signal' ? source.endpoint || '' : '',
+        endpoint: id === 'signal' || id === 'generic' ? source.endpoint || '' : '',
         emailAddress: id === 'email' ? source.emailAddress || '' : '',
         imapHost: id === 'email' ? source.imapHost || '' : '',
         smtpHost: id === 'email' ? source.smtpHost || '' : '',
@@ -295,7 +348,9 @@ class GatewayDaemon {
       lastError: this.lastError,
       activeSessionLanes: this.lanes.activeCount,
       pendingApprovalCount: this.store.listApprovals().filter((item) => item.status === 'pending').length,
-      pendingDeliveryCount: this.store.listPendingDeliveries(500).length,
+      pendingDeliveryCount: [...this.store.deliveries.values()].filter(item => ['pending', 'sending', 'retrying'].includes(item.status)).length,
+      failedDeliveryCount: [...this.store.deliveries.values()].filter(item => item.status === 'failed').length,
+      lastDeliveryError: [...this.store.deliveries.values()].reverse().find(item => ['retrying', 'failed'].includes(item.status) && item.error)?.error || null,
       mcpEndpoint: this.config.mcpBridgeEnabled ? `http://${this.config.host}:${this.config.port}/mcp` : null,
       platforms: Object.fromEntries(PLATFORMS.map((id) => [id, {
         enabled: this.config.platforms[id].enabled,
@@ -307,12 +362,28 @@ class GatewayDaemon {
 
   publishStatus() { this.onStatus(this.status()); }
 
+  canDispatch(event) { return canDispatchChannel(this.config, event); }
+
+  async deliverAgentReply({ eventId, profileId, runId, text }) {
+    const event = this.store.eventIndex.get(String(eventId || ''));
+    if (!event || event.botId || event.direction === 'outbound') throw new Error('The original channel message could not be found.');
+    if (!String(runId || '').trim()) throw new Error('A run identity is required for channel reply delivery.');
+    const profile = selectChannelProfile(this.config.channelAgent, event.platform);
+    if (!this.canDispatch(event) || !profile || profile.id !== profileId || profile.operatingMode !== 'autonomous' || profile.sendPolicy !== 'autonomous') {
+      return { ok: true, suppressed: true, reason: 'The current channel policy keeps this reply as a draft.' };
+    }
+    const settings = this.config.platforms[event.platform];
+    if (!this.store.authorize(event, settings.accessPolicy, settings.allowlist).authorized) return { ok: true, suppressed: true, reason: 'This sender is no longer approved.' };
+    return this.deliverMessage(event.platform, event.replyTarget, text, { source: 'channel-agent', eventId: event.id, profileId: profile.id, conversationId: event.conversationId, deliveryKey: `agent-run:${String(runId)}` });
+  }
+
   configure(raw) {
     const run = async () => {
       const nextConfig = mergeConfig(raw);
-      const { telegramBots: previousBots, ...previousTransportConfig } = this.config;
-      const { telegramBots: nextBots, ...nextTransportConfig } = nextConfig;
-      if (this.server?.listening && JSON.stringify(previousTransportConfig) === JSON.stringify(nextTransportConfig)) {
+      const transportConfig = config => ({ enabled: config.enabled, host: config.host, port: config.port, platforms: config.platforms });
+      const previousTransportConfig = transportConfig(this.config);
+      const nextTransportConfig = transportConfig(nextConfig);
+      if (this.server?.listening && !Object.values(this.platformState).some(state => ['conflict', 'needs-configuration'].includes(state.state)) && JSON.stringify(previousTransportConfig) === JSON.stringify(nextTransportConfig)) {
         this.config = nextConfig;
         await this.telegramBots.reconfigure();
         this.publishStatus();
@@ -369,7 +440,11 @@ class GatewayDaemon {
     }
     this.startedAt = Date.now();
     this.telegramBots.start();
-    for (const id of PLATFORMS) this.platformState[id] = { state: this.config.platforms[id].enabled ? 'listening' : 'disabled' };
+    for (const id of PLATFORMS) {
+      const settings = this.config.platforms[id];
+      const error = settings.enabled ? platformConfigurationError(id, settings) : null;
+      this.platformState[id] = !settings.enabled ? { state: 'disabled' } : error ? { state: 'needs-configuration', lastError: error } : { state: settings.mode === 'webhook' ? 'listening' : 'connecting' };
+    }
     if (this.config.platforms.telegram.enabled && this.config.platforms.telegram.mode === 'polling') {
       const pollingTask = this.startTelegramPolling();
       this.telegramPollingTask = pollingTask;
@@ -495,6 +570,7 @@ class GatewayDaemon {
   }
 
   accept(platform, payload) {
+    if (!this.config.enabled || !this.config.platforms[platform]?.enabled) return { accepted: 0, received: 0 };
     const events = this.registry.normalize(platform, payload);
     let accepted = 0;
     for (const event of events) {
@@ -509,7 +585,7 @@ class GatewayDaemon {
         if (authorization.reason === 'pairing-required' && authorization.approval && !authorization.approval.notifiedAt) {
           authorization.approval.notifiedAt = Date.now();
           this.store.flushCollection(this.store.identitiesPath, this.store.identities);
-          void this.deliverMessage(platform, event.replyTarget, `EterX pairing required. Your approval code is ${authorization.approval.code}. Approve this request in Channels → Gateway.`, { kind: 'pairing' }).catch(() => {});
+          if (platform !== 'generic' || platformConfig.endpoint) void this.deliverMessage(platform, event.replyTarget, `EterX pairing required. Your approval code is ${authorization.approval.code}. Approve this request in Channels → Gateway.`, { kind: 'pairing' }).catch(() => {});
         }
         void this.hooks.emit('authorization:denied', { event, authorization });
         continue;
@@ -626,19 +702,13 @@ class GatewayDaemon {
       } while (Date.now() < deadline);
       return { events: [], cursor: after };
     }
-    if (name === 'messages_send') return this.deliverMessage(String(args.platform || ''), args.target || {}, String(args.text || ''), { source: 'mcp', deliveryKey: args.delivery_key });
+    if (name === 'messages_send') {
+      const source = [...this.store.eventIndex.values()].reverse().find(event => event.direction !== 'outbound' && event.platform === args.platform && JSON.stringify(event.replyTarget) === JSON.stringify(args.target));
+      return this.deliverMessage(String(args.platform || ''), args.target || {}, String(args.text || ''), { source: 'mcp', deliveryKey: args.delivery_key, conversationId: source?.conversationId });
+    }
     if (name === 'channels_list') return PLATFORMS.map((id) => ({ id, ...this.status().platforms[id] }));
     if (name === 'agent_profile_get') {
-      const hasExplicitProfile = Boolean(String(args.profile_id || '').trim());
-      const requested = String(args.profile_id || this.config.channelAgent.defaultProfileId || '').trim();
-      const platform = String(args.platform || '').trim().toLowerCase();
-      const requestedProfile = this.config.channelAgent.profiles.find((item) => item.id === requested);
-      const matchingProfile = platform
-        ? this.config.channelAgent.profiles.find((item) => Array.isArray(item.channels) && item.channels.includes(platform))
-        : null;
-      const profile = hasExplicitProfile
-        ? (requestedProfile && (!platform || requestedProfile.channels.length === 0 || requestedProfile.channels.includes(platform)) ? requestedProfile : null)
-        : (matchingProfile || requestedProfile || this.config.channelAgent.profiles[0] || null);
+      const profile = selectChannelProfile(this.config.channelAgent, args.platform, args.profile_id);
       return {
         enabled: this.config.channelAgent.enabled,
         defaultProfileId: this.config.channelAgent.defaultProfileId,
@@ -713,68 +783,73 @@ class GatewayDaemon {
 
   async startTelegramPolling() {
     const settings = this.config.platforms.telegram;
-    if (!settings.token) {
-      this.platformState.telegram = { state: 'needs-configuration', lastError: 'Bot token is required.' };
+    try { settings.token = normalizeTelegramToken(settings.token); }
+    catch {
+      this.platformState.telegram = { state: 'needs-configuration', lastError: 'Paste the complete bot token from BotFather.' };
       return this.publishStatus();
     }
     if (!this.acquireTelegramLock(settings.token)) {
-      this.platformState.telegram = { state: 'conflict', lastError: 'Another EterX process is already using this bot token. Close the other EterX instance, then save again.' };
+      this.platformState.telegram = { state: 'conflict', lastError: 'Another EterX process is using this bot token. Stop it before reconnecting.' };
       return this.publishStatus();
     }
     const pollAbort = new AbortController();
     this.pollAbort = pollAbort;
+    const offsetsPath = path.join(this.dataDir, 'telegram-channel-offsets.json');
+    const tokenKey = crypto.createHash('sha256').update(settings.token).digest('hex');
+    let offsets = {};
+    try { const saved = JSON.parse(fs.readFileSync(offsetsPath, 'utf8')); if (saved && typeof saved === 'object' && !Array.isArray(saved)) offsets = saved; } catch { }
+    this.telegramOffset = Number(offsets[tokenKey]) || 0;
+    let verified = false;
     try {
-      this.platformState.telegram = { state: 'connecting' };
-      this.publishStatus();
-      const api = async (method, query = '') => {
-        const response = await fetch(`https://api.telegram.org/bot${settings.token}/${method}${query}`, { signal: pollAbort.signal });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok || result?.ok === false) throw new Error(result?.description || `Telegram ${method} failed (${response.status})`);
-        return result;
-      };
-      await api('getMe');
-      await api('deleteWebhook', '?drop_pending_updates=false');
       while (!pollAbort.signal.aborted && this.config.enabled && settings.enabled) {
         try {
-          const result = await api('getUpdates', `?timeout=25&offset=${this.telegramOffset}&allowed_updates=${encodeURIComponent('["message","edited_message","channel_post","business_message"]')}`);
-          this.platformState.telegram = { state: 'connected' };
-          for (const update of result.result || []) {
-            this.telegramOffset = Math.max(this.telegramOffset, Number(update.update_id) + 1);
-            this.accept('telegram', update);
+          if (!verified) {
+            this.platformState.telegram = { state: 'connecting' }; this.publishStatus();
+            await telegramApi(settings.token, 'getMe', {}, pollAbort.signal);
+            const webhook = await telegramApi(settings.token, 'getWebhookInfo', {}, pollAbort.signal);
+            if (webhook.url) {
+              this.platformState.telegram = { state: 'conflict', lastError: 'This bot already has a webhook. Remove it in the service that owns it, or use a separate bot token.' };
+              this.publishStatus(); break;
+            }
+            verified = true;
           }
-          this.publishStatus();
+          const updates = await telegramApi(settings.token, 'getUpdates', { timeout: 25, offset: this.telegramOffset, allowed_updates: ['message', 'edited_message', 'channel_post', 'business_message'] }, pollAbort.signal);
+          for (const update of updates) {
+            // Store the accepted event before advancing the durable cursor.
+            this.accept('telegram', update);
+            this.telegramOffset = Math.max(this.telegramOffset, Number(update.update_id) + 1);
+          }
+          if (updates.length) {
+            offsets[tokenKey] = this.telegramOffset;
+            const temporary = `${offsetsPath}.tmp-${process.pid}`;
+            fs.writeFileSync(temporary, JSON.stringify(offsets), { encoding: 'utf8', mode: 0o600 });
+            fs.renameSync(temporary, offsetsPath);
+          }
+          this.platformState.telegram = { state: 'connected' }; this.publishStatus();
         } catch (error) {
           if (pollAbort.signal.aborted) break;
-          const message = error?.message || String(error);
-          if (/terminated by other getupdates|another getupdates|conflict/i.test(message)) {
-            this.platformState.telegram = { state: 'conflict', lastError: 'Telegram is already being polled by another bot instance. Stop that instance, then save again.' };
-            this.publishStatus();
-            break;
+          if (error.code === 401 || error.code === 404) {
+            this.platformState.telegram = { state: 'needs-configuration', lastError: 'Telegram rejected the bot credential. Replace it with the current token from BotFather.' };
+            this.publishStatus(); break;
           }
-          if (/unauthorized|invalid token|not found/i.test(message)) {
-            this.platformState.telegram = { state: 'needs-configuration', lastError: 'Telegram rejected this bot token. Paste the complete token from @BotFather, for example 123456789:AA…' };
-            this.publishStatus();
-            break;
+          if (error.code === 409) {
+            this.platformState.telegram = { state: 'conflict', lastError: 'Another process is receiving updates for this bot. Stop that connection, then save to reconnect.' };
+            this.publishStatus(); break;
           }
-          this.platformState.telegram = { state: 'retrying', lastError: message };
+          this.platformState.telegram = { state: 'retrying', lastError: error?.message || 'Telegram connection interrupted.' };
           this.publishStatus();
-          await new Promise((resolve) => setTimeout(resolve, 3000));
+          await new Promise(resolve => {
+            const complete = () => { clearTimeout(timer); pollAbort.signal.removeEventListener('abort', complete); resolve(); };
+            const timer = setTimeout(complete, Math.max(3000, Number(error.retryAfter || 0) * 1000));
+            pollAbort.signal.addEventListener('abort', complete, { once: true });
+          });
         }
-      }
-    } catch (error) {
-      if (!pollAbort.signal.aborted) {
-        const message = error?.message || String(error);
-        const state = /unauthorized|invalid token|not found/i.test(message) ? 'needs-configuration' : /terminated by other getupdates|another getupdates|conflict/i.test(message) ? 'conflict' : 'retrying';
-        const lastError = state === 'needs-configuration' ? 'Telegram rejected this bot token. Paste the complete token from @BotFather, for example 123456789:AA…' : state === 'conflict' ? 'Telegram is already being polled by another bot instance. Stop that instance, then save again.' : message;
-        this.platformState.telegram = { state, lastError };
-        this.publishStatus();
       }
     } finally {
       if (this.pollAbort === pollAbort) this.pollAbort = null;
       this.releaseTelegramLock();
     }
   }
-
   async startDiscordGateway() {
     const settings = this.config.platforms.discord;
     if (!settings.token) {
@@ -864,9 +939,13 @@ class GatewayDaemon {
 
   async deliverMessage(platform, target, text, metadata = {}) {
     const normalized = String(text || '').trim();
+    if (!normalized) throw new Error('A reply cannot be empty.');
     const delivery = this.store.createDelivery(platform, target, normalized, metadata);
     if (delivery.status === 'delivered') return { ok: true, deliveryId: delivery.id, result: delivery.result };
+    if (delivery.status === 'suppressed') return { ok: true, suppressed: true, deliveryId: delivery.id };
+    if (delivery.status === 'failed') return { ok: false, deliveryId: delivery.id, error: delivery.error || 'Delivery failed.' };
     if (delivery.status === 'sending') return { ok: false, retrying: true, deliveryId: delivery.id };
+    if (delivery.status === 'retrying' && delivery.nextAttemptAt > Date.now()) return { ok: false, retrying: true, deliveryId: delivery.id, error: delivery.error };
     if (['[SILENT]', 'SILENT', 'NO_REPLY', 'NO REPLY'].includes(normalized.toUpperCase())) {
       this.store.updateDelivery(delivery.id, { status: 'suppressed', deliveredAt: Date.now() });
       return { ok: true, suppressed: true, deliveryId: delivery.id };
@@ -875,27 +954,50 @@ class GatewayDaemon {
   }
 
   async attemptDelivery(delivery) {
+    // A renderer retry and the background retry timer can overlap.
+    if (delivery.status === 'sending') return { ok: false, retrying: true, deliveryId: delivery.id };
+    if (delivery.metadata?.source === 'channel-agent') {
+      const event = this.store.eventIndex.get(delivery.metadata.eventId);
+      const profile = selectChannelProfile(this.config.channelAgent, delivery.platform);
+      const settings = this.config.platforms[delivery.platform];
+      if (!event || !this.canDispatch(event) || profile?.id !== delivery.metadata.profileId || profile.operatingMode !== 'autonomous' || profile.sendPolicy !== 'autonomous' || !this.store.authorize(event, settings.accessPolicy, settings.allowlist).authorized) {
+        this.store.updateDelivery(delivery.id, { status: 'suppressed', deliveredAt: Date.now() });
+        this.publishStatus();
+        return { ok: true, suppressed: true, deliveryId: delivery.id };
+      }
+    }
     const attempts = Number(delivery.attempts || 0) + 1;
     this.store.updateDelivery(delivery.id, { status: 'sending', attempts, lastAttemptAt: Date.now() });
     await this.hooks.emit('delivery:attempt', { ...delivery, attempts });
     try {
       const result = await this.sendRawMessage(delivery.platform, delivery.target, delivery.text, delivery);
       this.store.updateDelivery(delivery.id, { status: 'delivered', deliveredAt: Date.now(), result });
+      if (delivery.metadata?.conversationId) {
+        try {
+          this.store.append({ id: `sent_${delivery.id}`, dedupeKey: `outbound:${delivery.id}`, platform: delivery.platform, direction: 'outbound', kind: 'message', conversationId: delivery.metadata.conversationId, actor: { id: 'eterx', displayName: 'EterX', isBot: true }, text: delivery.text, replyTarget: delivery.target, attachments: [], receivedAt: Date.now() });
+        } catch { console.warn('[gateway] Reply delivered, but conversation history could not be updated.'); }
+      }
       await this.hooks.emit('delivery:delivered', { delivery, result });
       this.publishStatus();
       return { ok: true, deliveryId: delivery.id, result };
     } catch (error) {
       const terminal = attempts >= 10;
+      let safeError = String(error?.message || 'The channel reply could not be delivered.');
+      const settings = this.config.platforms[delivery.platform] || {};
+      for (const key of ['token', 'webhookSecret', 'appSecret', 'password', 'appPassword', 'emailPassword']) {
+        const secret = String(settings[key] || '');
+        if (secret.length >= 4) safeError = safeError.split(secret).join('[redacted]');
+      }
       const retryDelay = Math.max(Number(error?.retryAfter || 0) * 1000, Math.min(15 * 60 * 1000, 5000 * (2 ** Math.min(attempts - 1, 8))));
       this.store.updateDelivery(delivery.id, {
         status: terminal ? 'failed' : 'retrying',
-        error: error?.message || String(error),
+        error: safeError.slice(0, 600),
         nextAttemptAt: terminal ? null : Date.now() + retryDelay,
       });
       await this.hooks.emit('delivery:failed', { delivery, error, terminal });
       this.publishStatus();
-      if (terminal) throw error;
-      return { ok: false, retrying: true, deliveryId: delivery.id, error: error?.message || String(error) };
+      if (terminal) throw new Error(safeError.slice(0, 600));
+      return { ok: false, retrying: true, deliveryId: delivery.id, error: safeError.slice(0, 600) };
     }
   }
 
@@ -912,8 +1014,15 @@ class GatewayDaemon {
       return registeredAdapter.send(target, text, settings);
     }
     if (platform === 'telegram') {
-      const response = await fetch(`https://api.telegram.org/bot${settings.token}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: target.chatId, text, reply_to_message_id: target.messageId || undefined }) });
-      return readPlatformResponse(response, 'Telegram');
+      if (!delivery.telegramChunks) this.store.updateDelivery(delivery.id, { telegramChunks: formatTelegramText(text), telegramSentCount: 0 });
+      const results = Array.isArray(delivery.telegramResults) ? [...delivery.telegramResults] : [];
+      for (let index = Number(delivery.telegramSentCount) || 0; index < delivery.telegramChunks.length; index += 1) {
+        const chunk = delivery.telegramChunks[index];
+        const result = await telegramApi(settings.token, 'sendMessage', { chat_id: target.chatId, text: chunk.text, entities: chunk.entities, message_thread_id: target.threadId ? Number(target.threadId) : undefined, reply_parameters: target.messageId ? { message_id: Number(target.messageId), allow_sending_without_reply: true } : undefined });
+        results.push({ message_id: result.message_id });
+        this.store.updateDelivery(delivery.id, { telegramSentCount: index + 1, telegramResults: results });
+      }
+      return results;
     }
     if (platform === 'whatsapp') {
       const version = settings.apiVersion || 'v23.0';
@@ -936,8 +1045,18 @@ class GatewayDaemon {
       const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: crypto.randomUUID(), method: 'send', params }) });
       return readPlatformResponse(response, 'signal-cli');
     }
+    if (platform === 'generic') {
+      if (!settings.endpoint) throw new Error('Custom webhook is receive-only until a reply endpoint is configured.');
+      const endpoint = new URL(settings.endpoint);
+      if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error('Invalid custom reply endpoint.');
+      const body = JSON.stringify({ target, text, deliveryId: delivery.id });
+      const signature = crypto.createHmac('sha256', String(settings.webhookSecret)).update(body).digest('hex');
+      const response = await fetch(endpoint, { method: 'POST', redirect: 'error', headers: { 'content-type': 'application/json', 'x-eterx-signature': `sha256=${signature}`, 'idempotency-key': delivery.id }, body, signal: AbortSignal.timeout(30000) });
+      if (!response.ok) throw new Error(`Custom reply endpoint returned HTTP ${response.status}.`);
+      return { accepted: true, status: response.status };
+    }
     throw new Error(`Outbound messages are not implemented for ${platform}`);
   }
 }
 
-module.exports = { GatewayDaemon, DEFAULT_CONFIG, mergeConfig, PLATFORMS };
+module.exports = { GatewayDaemon, DEFAULT_CONFIG, mergeConfig, validateGatewayConfig, PLATFORMS };

@@ -9,16 +9,15 @@ import {
   listManagedWindows,
   typeManagedText,
 } from '../../computer/managed-computer';
-import { platformControlProvider } from '../../computer/platform-control';
-import { cuaDriverProvider } from '../../computer/cua-driver';
+import { cuaDriverProvider, getCuaDriverStatus } from '../../computer/cua-driver';
 import { enforceToolCapability } from '../security/tool_policy';
 
 async function executePortableComputerAction(action: string, input: any, ctx: any, chatId?: string) {
   const { screenAgentTool } = await import('./screen_agent');
-  const appName = String(input.app || input.text || '').trim();
+  const appName = String(input.app || (['type_into', 'read_text', 'click_in'].includes(action) ? '' : input.text) || '').trim();
   const invoke = (screenAction: string, extra: Record<string, any> = {}) => (
     screenAgentTool as any
-  ).execute({ ...input, ...extra, action: screenAction, chatId }, ctx);
+  ).execute({ ...input, app: appName || undefined, ...extra, action: screenAction, chatId }, ctx);
 
   if (action === 'get_stats') {
     const { getLiveStreamStats, isLiveStreaming } = await import('../../computer/live-stream');
@@ -26,7 +25,7 @@ async function executePortableComputerAction(action: string, input: any, ctx: an
       success: true,
       action,
       result: {
-        provider: ctx?.allowHostControl === true && ctx?.computerUseEnabled !== false ? cuaDriverProvider() : platformControlProvider(),
+        provider: (await getCuaDriverStatus()).installed ? cuaDriverProvider() : 'Not configured',
         streaming: isLiveStreaming(),
         streamStats: getLiveStreamStats(),
         monitorStats: monitorEmitter.getStats(),
@@ -35,63 +34,48 @@ async function executePortableComputerAction(action: string, input: any, ctx: an
   }
 
   if (action === 'see_window') {
-    if (appName) {
-      const focused = await invoke('focus_app', { text: appName });
-      if (!focused.success) return { success: false, action, result: focused.result };
-    }
-    const captured = await invoke('see');
-    return { ...captured, action, result: appName ? `Window "${appName}" captured` : captured.result };
+    return { ...(await invoke('see', { scope: 'window' })), action };
   }
 
   if (action === 'find_app') {
     const listed = await invoke('list_apps');
     const apps = Array.isArray(listed.result) ? listed.result : [];
     const needle = appName.toLowerCase();
-    const match = apps.find((app: any) => JSON.stringify(app).toLowerCase().includes(needle));
-    return match
-      ? { success: true, action, result: match }
+    if (!listed.success) return { ...listed, action };
+    if (!needle) return { success: false, action, result: 'An app name or window title is required.' };
+    const matches = apps.filter((app: any) => JSON.stringify(app).toLowerCase().includes(needle));
+    return matches.length
+      ? { success: true, action, result: matches.length === 1 ? matches[0] : { matches, next: 'Select an exact pid and window_id.' } }
       : { success: false, action, result: `App not found: "${appName}"` };
   }
 
   if (action === 'connect') {
     if (!appName) return { success: false, action, result: 'An app name or window title is required.' };
-    let connected = await invoke('focus_app', { text: appName });
-    if (!connected.success) connected = await invoke('launch_app', { text: appName });
-    if (!connected.success) return { success: false, action, result: connected.result };
-    monitorEmitter.appConnected(appName, undefined, appName, chatId);
-    return { success: true, action, result: { connected: appName, provider: ctx?.allowHostControl === true && ctx?.computerUseEnabled !== false ? cuaDriverProvider() : platformControlProvider() } };
+    const listed = await invoke('list_apps');
+    if (!listed.success) return { ...listed, action };
+    const exists = Array.isArray(listed.result) && listed.result.some((app: any) => JSON.stringify(app).toLowerCase().includes(appName.toLowerCase()));
+    const connected = exists ? await invoke('see', { scope: 'window' }) : await invoke('launch_app', { text: appName });
+    if (connected.success) monitorEmitter.appConnected(appName, undefined, appName, chatId);
+    return { ...connected, action };
   }
 
-  if (action === 'type_into') return { ...(await invoke('type', { text: input.text || '' })), action };
-
-  if (action === 'click_in') {
-    if (input.x == null || input.y == null) {
-      return {
-        success: false,
-        action,
-        result: 'Named control clicks are not portable across desktop toolkits. Use see, then click with x and y coordinates.',
-      };
+  if (action === 'type_into' || action === 'click_in') {
+    const control = String(input.control || input.filter || (action === 'click_in' ? input.text : '') || '').trim();
+    if (control && !input.element_token) {
+      const found = await invoke('find', { query: control });
+      if (!found.success) return { ...found, action };
+      const matches = Array.isArray(found.result?.matches) ? found.result.matches : [];
+      const exact = matches.filter((item: any) => String(item.text).toLowerCase() === control.toLowerCase());
+      const candidates = exact.length ? exact : matches;
+      if (candidates.length !== 1 || !candidates[0].element_token || candidates[0].enabled === false) {
+        return { ...found, success: false, action, result: { matches, message: 'Choose one enabled control from get_controls and pass its element_token.' } };
+      }
+      return { ...(await invoke(action === 'type_into' ? 'type' : 'click', {
+        element_token: candidates[0].element_token, x: undefined, y: undefined,
+        ...found.observation?.target,
+      })), action };
     }
-    return { ...(await invoke('click', { x: input.x, y: input.y })), action };
-  }
-
-  if (action === 'get_controls') {
-    return {
-      success: false,
-      action,
-      result: `Named UI control enumeration is not provided by the ${platformControlProvider()} backend. Use see plus coordinate actions, or browser_control for browser controls.`,
-    };
-  }
-
-  if (action === 'get_active') {
-    return {
-      success: true,
-      action,
-      result: {
-        provider: ctx?.allowHostControl === true && ctx?.computerUseEnabled !== false ? cuaDriverProvider() : platformControlProvider(),
-        note: 'Use list_apps and focus_app for portable foreground-window control.',
-      },
-    };
+    return { ...(await invoke(action === 'type_into' ? 'type' : 'click')), action };
   }
 
   const screenAction: Record<string, string> = {
@@ -101,7 +85,11 @@ async function executePortableComputerAction(action: string, input: any, ctx: an
     list_apps: 'list_apps',
     focus_app: 'focus_app',
     launch_app: 'launch_app',
+    open_file: 'open_file',
+    open_url: 'open_url',
     read_text: 'read',
+    get_controls: 'get_controls',
+    get_active: 'get_active',
   };
   const mapped = screenAction[action];
   if (!mapped) return { success: false, action, result: `Action ${action} is not supported by the portable desktop provider.` };
@@ -110,41 +98,37 @@ async function executePortableComputerAction(action: string, input: any, ctx: an
 
 export const computerTool: ToolDefinition = {
   name: 'computer',
-  description: `ETERX COMPUTER CONTROL - safe app control inside the isolated EterX Computer.
-
-On Windows, default behavior is isolated and does not move the host mouse, type into host apps, launch host apps, or attach to the user's real Chrome. When Computer Use is explicitly enabled, the same interface uses Cua Driver for background desktop control. On macOS and Linux, Cua Driver is preferred when installed and the native desktop provider remains an honest fallback.
-
-ACTIONS:
-  see          - capture the isolated EterX Computer screen
-  see_window   - focus a managed app, then capture the isolated screen
-  stream_start - stream isolated EterX Computer frames to the monitor
-  stream_stop  - stop streaming
-  list_apps    - list windows inside EterX Computer
-  find_app     - find a managed window by title
-  focus_app    - focus a managed app
-  launch_app   - launch an app inside EterX Computer
-  connect      - focus or launch a managed app
-  read_text    - list managed window titles
-  type_into    - type into the focused managed app
-  get_active   - return managed computer status
-
-Host UI Automation actions (get_controls and click_in) are disabled unless ETERX_ALLOW_UNSAFE_HOST_COMPUTER=1 is set.`,
+  description: `Inspect and control native desktop apps on Windows, macOS and Linux when Computer Use is enabled for this task.
+Start with list_apps, then see_window with a unique app/title or exact pid and window_id. The returned observation and screenshot refer to that window; selecting it does not raise it. focus_app explicitly raises it.
+get_controls returns accessibility labels, roles and element_token values. read_text reads the selected window. click_in and type_into accept a fresh element_token or a unique control name; ambiguous matches are returned for selection. Pixel input uses coordinates from the latest screenshot of that same target.
+connect selects an existing app window or requests an app launch. launch_app reports the actual launch state; a launch request alone does not prove a window is ready. In the desktop app, open_file opens an absolute file/folder/application path and open_url opens an HTTP(S) URL with its default app. Select and observe the resulting window before input. get_active reports the foreground window and selected target. see captures the selected target; scope=desktop explicitly returns to the desktop. stream_start/stream_stop control the preview; get_stats reports runtime information.
+Desktop and browser access are separate settings. Use screen_agent for detailed mouse, keyboard and wait actions. An input being sent is not proof of the requested result; inspect the returned observation. If observation fails after input, observe again before repeating the action.`,
 
   category: 'core',
 
   inputSchema: z.object({
     action: z.enum([
       'see', 'see_window', 'stream_start', 'stream_stop',
-      'list_apps', 'find_app', 'focus_app', 'launch_app', 'connect',
+      'list_apps', 'find_app', 'focus_app', 'launch_app', 'open_file', 'open_url', 'connect',
       'get_controls', 'read_text', 'type_into', 'click_in',
       'get_active', 'get_stats',
     ]).describe('Action to perform'),
     app: z.string().optional().describe('App name or window title'),
+    scope: z.enum(['desktop', 'window']).optional().describe('Selected target scope; omitted retains this chat’s selected window'),
+    pid: z.number().int().positive().optional().describe('Process ID from list_apps; pass with window_id'),
+    window_id: z.number().int().positive().optional().describe('Exact window ID from list_apps; pass with pid'),
+    element_token: z.string().optional().describe('Fresh control token from the latest observation of this window'),
+    capture_id: z.string().optional().describe('Capture ID associated with the screenshot used for coordinates'),
+    delivery_mode: z.enum(['background', 'foreground']).optional().describe('Explicitly choose foreground when the intended app requires visible input; delivery mode is never changed automatically'),
     control: z.string().optional().describe('Control name to interact with'),
+    path: z.string().optional().describe('Absolute file, folder or application path for open_file'),
+    url: z.string().optional().describe('HTTP or HTTPS URL for open_url'),
+    max_elements: z.number().int().min(1).max(2000).optional().describe('Accessibility walk limit; prefer filter before expanding a truncated tree'),
     text: z.string().optional().describe('Text to type or app/control to find'),
+    delay_ms: z.number().int().min(0).max(200).optional().describe('Inter-character typing delay; default 10 ms, 0 for fastest delivery'),
     fps: z.number().min(1).max(20).optional().describe('Stream frames per second'),
     quality: z.number().min(10).max(95).optional().describe('JPEG quality 10-95'),
-    maxWidth: z.number().optional().describe('Max frame width in px'),
+    maxWidth: z.number().int().min(320).max(4096).optional().describe('Maximum screenshot dimension; default 1920 pixels'),
     x: z.number().optional().describe('X coordinate for portable click actions'),
     y: z.number().optional().describe('Y coordinate for portable click actions'),
     filter: z.string().optional().describe('Filter controls by name'),
@@ -157,12 +141,16 @@ Host UI Automation actions (get_controls and click_in) are disabled unless ETERX
     result: z.any(),
     vision: z.object({
       inlineData: z.object({ data: z.string(), mimeType: z.enum(['image/png', 'image/jpeg']) }),
-    }).optional(),
+    }).nullable().optional(),
+    observation: z.record(z.string(), z.any()).optional(),
+    observationError: z.string().optional(),
+    provider: z.string().optional(),
+    actionStatus: z.enum(['not_sent', 'sent', 'unknown']).optional(),
   }),
 
   execute: async (input: any, ctx: any) => {
     const action = input.action;
-    const chatId = input.chatId || ctx?.chatId;
+    const chatId = ctx?.chatId || ctx?.projectId || input.chatId;
     const decision = enforceToolCapability('computer', input, ctx);
     if (!decision.allowed) {
       return { success: false, action, result: decision.reason || 'Computer control is not allowed' };

@@ -45,18 +45,18 @@ export async function POST(request: NextRequest) {
       env: body.env && typeof body.env === 'object'
         ? Object.fromEntries(Object.entries(body.env).map(([key, value]) => [String(key), String(value)]))
         : previous?.env,
-      enabled: body.enabled !== false,
-      connectedAt: Date.now(),
+      enabled: false,
     };
     const saved = saveMcpServerRecord(record);
+    if (body.enabled === false || body.verify === false) return NextResponse.json({ ok: true, server: redactConnector(saved), servers: publicServers() });
     let tools: unknown = undefined;
     if (body.verify !== false) {
-      try { tools = await listConnectedMcpTools(saved.id); } catch (error) {
+      try { tools = await listConnectedMcpTools(saved.id, { allowDisabled: true }); } catch (error) {
         const failed = saveMcpServerRecord({ ...saved, enabled: false, lastCheckedAt: Date.now(), lastError: error instanceof Error ? error.message : String(error) });
         return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : String(error), server: redactConnector(failed) }, { status: 422 });
       }
     }
-    const verified = saveMcpServerRecord({ ...saved, enabled: true, lastCheckedAt: Date.now(), lastError: undefined });
+    const verified = saveMcpServerRecord({ ...saved, enabled: true, connectedAt: Date.now(), lastCheckedAt: Date.now(), lastError: undefined });
     return NextResponse.json({ ok: true, server: redactConnector(verified), tools, servers: publicServers() });
   } catch (error) {
     return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, { status: 500 });

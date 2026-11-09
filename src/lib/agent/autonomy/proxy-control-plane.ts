@@ -10,11 +10,15 @@ export type ProxyControlState = {
   paused: boolean;
   intervention: ProxyInterventionLevel;
   modelSelection: string;
+  followChatModel: boolean;
   dormantDirectives: ProxyManagerDirective[];
   taskQueue: ProxyQueuedTask[];
   stopGeneration: number;
+  revision: number;
   updatedAt: number;
 };
+
+export type ProxyControlSettings = Pick<ProxyControlState, 'enabled' | 'paused' | 'intervention' | 'modelSelection' | 'followChatModel'>;
 
 export type ProxyQueuedTask = {
   id: string;
@@ -27,6 +31,7 @@ export type ProxyQueuedTask = {
   error?: string;
   mediaAttachments?: ProxyTaskInput['mediaAttachments'];
   model?: ProxyTaskInput['model'];
+  workspace?: ProxyTaskInput['workspace'];
   dependsOnTaskId?: string;
   result?: string;
   completedAt?: number;
@@ -38,10 +43,15 @@ export type ProxyTaskInput = {
   dependency?: string;
   mediaAttachments?: Array<{ id?: string; name?: string; path: string; mimeType: string }>;
   model?: { provider: string; modelId: string };
+  workspace?: { path: string | null; paths: string[]; runLocation: 'local' | 'sandbox' | 'worktree' };
 };
 
 const MAX_TASKS = 20;
-const controlListeners = new Map<string, Set<(state: ProxyControlState) => void>>();
+const proxyControlGlobal = globalThis as typeof globalThis & {
+  __eterxProxyControlListeners?: Map<string, Set<(state: ProxyControlState) => void>>;
+};
+const controlListeners = proxyControlGlobal.__eterxProxyControlListeners
+  || (proxyControlGlobal.__eterxProxyControlListeners = new Map<string, Set<(state: ProxyControlState) => void>>());
 export function subscribeProxyControl(chatId: string, listener: (state: ProxyControlState) => void): () => void {
   const listeners = controlListeners.get(chatId) || new Set();
   listeners.add(listener);
@@ -84,9 +94,11 @@ export function readProxyControl(chatId: string): ProxyControlState {
         paused: saved.enabled === true && saved.paused === true,
         intervention: ['minimal', 'normal', 'high'].includes(saved.intervention) ? saved.intervention : 'normal',
         modelSelection: compact(saved.modelSelection, 320) || 'auto',
+        followChatModel: saved.followChatModel !== false,
         dormantDirectives: Array.isArray(saved.dormantDirectives) ? saved.dormantDirectives.filter((item: any) => item && typeof item.message === 'string' && (!item.expiresAt || item.expiresAt > Date.now())) : [],
         taskQueue: Array.isArray(saved.taskQueue) ? retainTaskQueue(saved.taskQueue.filter((task: any) => task && typeof task.id === 'string' && typeof task.prompt === 'string')) : [],
         stopGeneration: Number(saved.stopGeneration || 0),
+        revision: typeof saved.revision === 'number' && Number.isFinite(saved.revision) ? Math.max(0, saved.revision) : 1,
         updatedAt: Number(saved.updatedAt || Date.now()),
         };
       }
@@ -101,14 +113,17 @@ export function readProxyControl(chatId: string): ProxyControlState {
     paused: false,
     intervention: 'normal',
     modelSelection: 'auto',
+    followChatModel: true,
     dormantDirectives: [],
     taskQueue: [],
     stopGeneration: 0,
+    revision: 0,
     updatedAt: Date.now(),
   };
 }
 
 function writeProxyControl(state: ProxyControlState): void {
+  state.updatedAt = Date.now();
   fs.ensureDirSync(getEterxWorkspaceDir('autonomy', 'proxy-control'));
   const target = controlPath(state.chatId);
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
@@ -128,7 +143,7 @@ function writeProxyControl(state: ProxyControlState): void {
 
 export function updateProxyControl(
   chatId: string,
-  patch: Partial<Pick<ProxyControlState, 'enabled' | 'paused' | 'intervention' | 'modelSelection'>>,
+  patch: Partial<ProxyControlSettings>,
 ): ProxyControlState {
   const state = readProxyControl(chatId);
   if (typeof patch.enabled === 'boolean') state.enabled = patch.enabled;
@@ -141,9 +156,27 @@ export function updateProxyControl(
   if (typeof patch.modelSelection === 'string') {
     state.modelSelection = compact(patch.modelSelection, 320) || 'auto';
   }
+  if (typeof patch.followChatModel === 'boolean') state.followChatModel = patch.followChatModel;
+  // A model/catalog refresh does not constitute opting into or out of
+  // autonomy. Leave an unconfigured record eligible for first-run bootstrap.
+  if (state.revision > 0 || typeof patch.enabled === 'boolean' || typeof patch.paused === 'boolean') state.revision += 1;
   writeProxyControl(state);
   for (const listener of controlListeners.get(chatId) || []) listener(state);
   return state;
+}
+
+// Main can be launched through /api/chat, /api/agent/start, or an internal
+// dispatcher. Bootstrap the first explicit selection in their shared registry;
+// subsequent launches must never undo a newer toggle, pause, or model choice.
+export function initializeProxyControl(chatId: string, autonomy: any): ProxyControlState {
+  const current = readProxyControl(chatId);
+  if (current.revision > 0 || typeof autonomy?.enabled !== 'boolean') return current;
+  return updateProxyControl(chatId, {
+    enabled: autonomy.enabled,
+    paused: autonomy.paused === true,
+    intervention: autonomy.intervention,
+    modelSelection: autonomy.proxyModelSelection,
+  });
 }
 
 export function saveDormantProxyDirective(
@@ -210,6 +243,7 @@ export function enqueueProxyTasks(
     dependency: promptText(input.dependency) || undefined,
     mediaAttachments: input.mediaAttachments?.length ? input.mediaAttachments : undefined,
     model: input.model,
+    workspace: input.workspace,
     createdAt: Date.now(),
     status: 'pending',
   }));

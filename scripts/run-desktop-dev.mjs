@@ -76,7 +76,7 @@ async function findAvailablePort(startPort) {
 }
 
 async function waitForHttpTarget(target) {
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + 300_000;
   while (!shuttingDown && Date.now() < deadline) {
     if (childHasExited(nextProcess)) {
       throw new Error('Next.js exited before the local page became available.');
@@ -98,7 +98,7 @@ async function waitForHttpTarget(target) {
     }
     await delay(500);
   }
-  throw new Error(shuttingDown ? 'Desktop startup cancelled.' : 'The local workspace did not become ready within two minutes.');
+  throw new Error(shuttingDown ? 'Desktop startup cancelled.' : 'The local workspace did not become ready within five minutes.');
 }
 
 function waitForPort(port, timeoutMs = 30000) {

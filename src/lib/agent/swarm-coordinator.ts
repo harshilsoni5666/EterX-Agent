@@ -16,6 +16,7 @@ export type SwarmContract = {
 export type SwarmNodeState = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled' | 'blocked';
 export type SwarmNode = SwarmContract & {
   id: string; name: string; task: string; projectId: string; scope: string;
+  provider?: string;
   parentAgentId?: string; parentAgentName: string; depth: number;
   state: SwarmNodeState; reason?: string; createdAt: number; updatedAt: number;
   dependencies: string[]; claims: WorkClaim[]; resourceScope: boolean; fingerprint: string;
@@ -67,7 +68,7 @@ class SwarmCoordinator {
     return () => { listeners.delete(wake); if (!listeners.size) this.listeners.delete(projectId); };
   }
 
-  admit(plans: Array<SwarmContract & { id: string; name: string; task: string }>, context: any): SwarmNode[] {
+  admit(plans: Array<SwarmContract & { id: string; name: string; task: string; provider?: string }>, context: any): SwarmNode[] {
     if (context.abortSignal?.aborted || (typeof context.isCancelled === 'function' && context.isCancelled())) throw new Error('This execution was cancelled; no new tasks were admitted.');
     if (this.clearingProjects.has(context.projectId)) throw new Error('Retained task data is being cleared. Wait for that operation to finish before delegating.');
     const scope = scopeFor(context);
@@ -166,19 +167,27 @@ class SwarmCoordinator {
     return true;
   }
 
-  canStart(id: string): boolean {
+  canStart(id: string, hasProviderCapacity?: (node: SwarmNode) => boolean): boolean {
     const node = this.get(id);
     if (!node) return true; // Older direct conversation continuations.
     if (this.clearingProjects.has(node.projectId)) return false;
     if (node.state !== 'queued') return false;
     const cached = this.nextReady.get(node.projectId);
-    if (cached?.generation === this.generation) return cached.id === id;
+    if (!hasProviderCapacity && cached?.generation === this.generation) return cached.id === id;
     // Priority plus age: old ready work eventually outranks fresh high priority work.
     const score = (item: SwarmNode) => (item.priority || 0) + (Date.now() - item.createdAt) / 30_000;
     const queue = [...this.nodes.values()].filter(candidate => candidate.projectId === node.projectId && candidate.state === 'queued')
       .sort((a, b) => score(b) - score(a) || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-    const next = queue.find(candidate => this.ready(candidate));
-    this.nextReady.set(node.projectId, { generation: this.generation, id: next?.id });
+    const next = queue.find(candidate => {
+      if (!this.ready(candidate)) return false;
+      if (hasProviderCapacity && !hasProviderCapacity(candidate)) {
+        candidate.reason = 'Waiting for provider capacity';
+        return false;
+      }
+      return true;
+    });
+    // API-key availability changes independently of the graph generation.
+    if (!hasProviderCapacity) this.nextReady.set(node.projectId, { generation: this.generation, id: next?.id });
     return next?.id === id;
   }
   private transition(node: SwarmNode, state: SwarmNodeState, reason?: string) {
@@ -190,17 +199,24 @@ class SwarmCoordinator {
     this.changed(node);
   }
   start(id: string) { const node = this.get(id); if (node) this.transition(node, 'running'); }
-  reopen(id: string) {
+  reopen(id: string, provider?: string) {
     const node = this.get(id);
     if (node && terminal.has(node.state)) {
       node.evidenceReady = false;
       node.resultSummary = undefined;
       node.attempt = (node.attempt || 0) + 1;
+      if (provider) node.provider = provider;
       this.transition(node, 'queued', 'Continuing a direct user conversation');
     }
   }
   suspend(id: string) { const node = this.get(id); if (node && !terminal.has(node.state)) this.transition(node, 'waiting', 'Joining delegated work'); }
-  resume(id: string) { const node = this.get(id); if (node && node.state === 'waiting') this.transition(node, 'queued'); }
+  resume(id: string, provider?: string) {
+    const node = this.get(id);
+    if (node && node.state === 'waiting') {
+      if (provider) node.provider = provider;
+      this.transition(node, 'queued');
+    }
+  }
   settle(id: string, state: SwarmNodeState, reason?: string, result?: string) {
     const node = this.get(id); if (!node || terminal.has(node.state)) return;
     node.evidenceReady = state === 'completed' && assessDelegatedAgent({ status: state, result }).evidenceReady;

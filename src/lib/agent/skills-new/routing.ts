@@ -1,4 +1,4 @@
-import { SKILL_REGISTRY } from './index';
+import { SKILL_REGISTRY, refreshSkillRegistry } from './index';
 
 export type SkillLoadDecision = {
   allowed: boolean;
@@ -63,6 +63,7 @@ export function evaluateSkillLoad(
   requestedSkill: unknown,
   loadedThisTask: ReadonlySet<string>,
 ): SkillLoadDecision {
+  refreshSkillRegistry();
   const skillId = normalizeSkillId(requestedSkill);
   if (!SKILL_REGISTRY[skillId]) {
     return { allowed: false, skillId, reason: `Skill "${skillId}" is not in the cached skill catalog.` };

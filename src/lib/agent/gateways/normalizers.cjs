@@ -58,7 +58,7 @@ function normalizeTelegram(payload) {
     kind: payload.edited_message || payload.edited_channel_post ? 'edit' : 'message',
     threadId: message.message_thread_id,
     attachments,
-    replyTarget: { chatId: clean(chat.id), messageId: clean(message.message_id) },
+    replyTarget: { chatId: clean(chat.id), messageId: clean(message.message_id), ...(message.message_thread_id ? { threadId: clean(message.message_thread_id) } : {}) },
     metadata: { updateId: payload.update_id, chatType: chat.type },
   })];
 }
@@ -166,7 +166,7 @@ function normalizeSignal(payload) {
   }, data.message, Number(envelope.timestamp || data.timestamp), {
     attachments,
     replyTarget: { recipient: clean(source), groupId: clean(groupId), account: clean(params.account || payload.account) },
-    metadata: { sourceUuid: envelope.sourceUuid, sourceDevice: envelope.sourceDevice },
+    metadata: { sourceUuid: envelope.sourceUuid, sourceDevice: envelope.sourceDevice, groupId },
   })];
 }
 

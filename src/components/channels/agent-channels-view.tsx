@@ -1,23 +1,28 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { ChannelSelect as ModernSelect } from './channel-select';
+import styles from './channels.module.css';
+import * as Dialog from '@radix-ui/react-dialog';
+import { selectChannelProfile } from '../../lib/agent/gateways/routing.cjs';
 import { ArrowLeft, CheckCircle2, ChevronRight, Copy, Eye, EyeOff, Loader2, MessageCircle, Radio, RefreshCw, Save, Search, Server, Settings2, ShieldCheck, Activity, Wifi, WifiOff, Undo2, Redo2 } from 'lucide-react';
 import { PremiumAgent } from '../ui/premium-icons';
 import { safeCopyTextToClipboard } from '../ui/copy-button';
 import { appStorage } from '../../lib/client-storage';
 import { createLazyPanel } from '../ui/lazy-panel';
+import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
+import { requestJson } from '../../lib/request-json';
 
 const ConnectAsBot = createLazyPanel('Connect as bot', () => import('./connect-as-bot').then(mod => mod.ConnectAsBot));
 
 type PlatformId = 'telegram' | 'whatsapp' | 'messenger' | 'email' | 'discord' | 'signal' | 'generic';
-type PlatformConfig = { enabled: boolean; mode: string; configured?: boolean; token?: string; password?: string; webhookSecret?: string; appSecret?: string; publicKey?: string; accountId?: string; apiVersion?: string; endpoint?: string; emailAddress?: string; imapHost?: string; smtpHost?: string; imapPort?: number; smtpPort?: number; pollInterval?: number; imapSecure?: boolean; smtpSecure?: boolean; accessPolicy?: 'open' | 'allowlist' | 'pairing'; allowlist?: string[]; groupSessionsPerUser?: boolean };
+type PlatformConfig = { enabled: boolean; mode: string; configured?: boolean; credentials?: Record<string, boolean>; token?: string; password?: string; webhookSecret?: string; appSecret?: string; publicKey?: string; accountId?: string; apiVersion?: string; endpoint?: string; emailAddress?: string; imapHost?: string; smtpHost?: string; imapPort?: number; smtpPort?: number; pollInterval?: number; imapSecure?: boolean; smtpSecure?: boolean; accessPolicy?: 'open' | 'allowlist' | 'pairing'; allowlist?: string[]; groupSessionsPerUser?: boolean };
 type ChannelAgentProfile = { id: string; name: string; role: 'sales' | 'support' | 'operations' | 'custom'; objective: string; instructions: string; channels: PlatformId[]; operatingMode: 'manual' | 'assist' | 'autonomous'; readPolicy: 'on-demand' | 'unread' | 'all'; sendPolicy: 'draft-only' | 'direct' | 'autonomous'; escalationRules: string; responseStyle: string; pollIntervalMinutes: number };
 type ChannelAgentConfig = { enabled: boolean; defaultProfileId: string; profiles: ChannelAgentProfile[] };
 type GatewayMode = 'communication' | 'agents' | 'mcp' | 'skills';
 type GatewayConfig = { enabled: boolean; keepRunningOnClose: boolean; keepActiveChatsOnClose: boolean; runScheduledTasksInBackground: boolean; launchAtLogin: boolean; autoDispatch: boolean; busyInputMode: 'queue' | 'steer' | 'interrupt'; mcpBridgeEnabled: boolean; host: string; port: number; channelAgent: ChannelAgentConfig; platforms: Record<PlatformId, PlatformConfig> };
-type GatewayStatus = { running: boolean; conversationCount: number; eventCount: number; lastEventAt: number | null; mcpEndpoint?: string | null; platforms: Record<string, { enabled: boolean; state: string; lastError?: string }> };
-type GatewayApproval = { id: string; platform: PlatformId; displayName: string; status: string };
+type GatewayStatus = { running: boolean; conversationCount: number; eventCount: number; lastEventAt: number | null; mcpEndpoint?: string | null; lastError?: string; pendingDeliveryCount?: number; failedDeliveryCount?: number; lastDeliveryError?: string | null; bots?: Array<{ id: string; enabled: boolean; paired: boolean }>; platforms: Record<string, { enabled: boolean; state: string; lastError?: string }> };
+type GatewayApproval = { id: string; platform: PlatformId; displayName: string; code?: string; status: string };
 type GatewayConversation = { id: string; platform: PlatformId; title: string; lastMessageAt: number; lastMessagePreview: string; unreadCount: number; messageCount: number };
 type ConnectorCatalogItem = { id: string; label: string; description: string; setup: string; transport: string; credential: string; kind: 'native' | 'mcp' | 'pathway'; logo?: string; guideUrl?: string };
 
@@ -95,26 +100,46 @@ const CONNECTOR_CATALOG: ConnectorCatalogItem[] = ([
 const defaultChannelAgentProfile = (): ChannelAgentProfile => ({ id: 'channel-operator', name: 'Channel operator', role: 'custom', objective: 'Help me inspect and act on connected conversations when I ask.', instructions: '', channels: [], operatingMode: 'manual', readPolicy: 'on-demand', sendPolicy: 'direct', escalationRules: 'Escalate pricing commitments, legal or security issues, angry customers, and anything outside the objective.', responseStyle: 'Clear, concise, human, and appropriate for the channel.', pollIntervalMinutes: 5 });
 const defaultConfig = (): GatewayConfig => ({ enabled: false, keepRunningOnClose: true, keepActiveChatsOnClose: true, runScheduledTasksInBackground: true, launchAtLogin: false, autoDispatch: false, busyInputMode: 'queue', mcpBridgeEnabled: true, host: '127.0.0.1', port: 47821, channelAgent: { enabled: true, defaultProfileId: 'channel-operator', profiles: [defaultChannelAgentProfile()] }, platforms: { telegram: { enabled: false, mode: 'polling', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: true }, whatsapp: { enabled: false, mode: 'webhook', apiVersion: 'v23.0', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: true }, messenger: { enabled: false, mode: 'webhook', apiVersion: 'v23.0', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: true }, email: { enabled: false, mode: 'polling', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: false, imapPort: 993, smtpPort: 587, pollInterval: 15, imapSecure: true, smtpSecure: false }, discord: { enabled: false, mode: 'gateway', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: true }, signal: { enabled: false, mode: 'bridge', endpoint: 'http://127.0.0.1:8080', accessPolicy: 'pairing', allowlist: [], groupSessionsPerUser: true }, generic: { enabled: false, mode: 'webhook', accessPolicy: 'allowlist', allowlist: [], groupSessionsPerUser: true } } });
 
-const Toggle = ({ checked, onChange, disabled = false, label = 'Toggle setting' }: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; label?: string }) => <button type="button" role="switch" aria-label={label} aria-checked={checked} title={`${label}: ${checked ? 'enabled' : 'disabled'}`} disabled={disabled} onClick={() => onChange(!checked)} className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full p-1 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--muted-foreground)] ${checked ? 'justify-end bg-[#1d8cff]' : 'justify-start bg-black/15 dark:bg-white/15'} ${disabled ? 'cursor-not-allowed opacity-45' : ''}`}><span className="block h-4 w-4 shrink-0 rounded-full bg-white shadow-none transition-transform" /></button>;
-const stateTone = (state: string) => state === 'connected' || state === 'listening' ? 'text-emerald-600 dark:text-emerald-400' : state === 'retrying' || state === 'connecting' ? 'text-amber-600 dark:text-amber-400' : state === 'conflict' || state === 'needs-configuration' ? 'text-red-500 dark:text-red-400' : 'text-black/40 dark:text-white/40';
-
-function ModernSelect({ value, onChange, options }: { value: string; onChange: (value: string) => void; options: Array<{ value: string; label: string }> }) {
-  const [open, setOpen] = useState(false);
-  useEffect(() => { if (!open) return; const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); }; window.addEventListener('keydown', closeOnEscape); return () => window.removeEventListener('keydown', closeOnEscape); }, [open]);
-  useEffect(() => { if (!open) return; const closeOnOutsidePointer = (event: PointerEvent) => { const target = event.target as Element | null; if (!target?.closest('.eterx-modern-select')) setOpen(false); }; const closeAfterOptionClick = (event: MouseEvent) => { const target = event.target as Element | null; if (target?.closest('.eterx-modern-select [role="option"]')) setOpen(false); }; document.addEventListener('pointerdown', closeOnOutsidePointer, true); document.addEventListener('click', closeAfterOptionClick); return () => { document.removeEventListener('pointerdown', closeOnOutsidePointer, true); document.removeEventListener('click', closeAfterOptionClick); }; }, [open]);
-  const selected = options.find((option) => option.value === value) || options[0];
-  return <div className="eterx-modern-select relative"><button type="button" aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)} className="flex h-12 w-full items-center justify-between rounded-[14px] border border-black/10 bg-white px-4 text-left text-[14px] font-medium text-black/80 shadow-none transition hover:border-[var(--muted-foreground)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--muted-foreground)] dark:border-white/12 dark:bg-[#1b1b1b] dark:text-white/85"><span>{selected.label}</span><span className={`text-black/40 transition-transform dark:text-white/45 ${open ? 'rotate-180' : ''}`}>⌄</span></button>{open && <><button type="button" aria-label="Close options" onClick={() => setOpen(false)} className="fixed inset-0 z-[80] cursor-default" /><div role="listbox" className="absolute left-0 right-0 top-[calc(100%+6px)] z-[90] overflow-hidden rounded-[14px] border border-black/10 bg-white p-1.5 shadow-none dark:border-white/12 dark:bg-[#1b1b1b] dark:shadow-none">{options.map((option) => <button key={option.value} type="button" role="option" aria-selected={option.value === value} onMouseDown={(event) => { event.preventDefault(); onChange(option.value); setOpen(false); }} className={`flex w-full items-center rounded-[10px] px-3 py-2.5 text-left text-[14px] transition ${option.value === value ? 'bg-[#e8f3ff] font-semibold text-[#126fc1] dark:bg-[#183047] dark:text-[#b9dcff]' : 'text-black/75 hover:bg-black/[0.05] dark:text-white/75 dark:hover:bg-white/[0.08]'}`}>{option.label}</button>)}</div></>}</div>;
-}
+const Toggle = ({ checked, onChange, disabled = false, label = 'Toggle setting' }: { checked: boolean; onChange: (value: boolean) => void; disabled?: boolean; label?: string }) => <button type="button" role="switch" aria-label={label} aria-checked={checked} title={`${label}: ${checked ? 'enabled' : 'disabled'}`} disabled={disabled} onClick={() => onChange(!checked)} className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full p-1 transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--muted-foreground)] ${checked ? 'justify-end bg-[#1d8cff]' : 'justify-start bg-black/15 dark:bg-white/15'} ${disabled ? 'cursor-not-allowed opacity-45' : ''}`}><span className="block h-4 w-4 shrink-0 rounded-full bg-white shadow-none transition-transform" /></button>;
 
 function NativeSetupFields({ platform, item, patchPlatform, revealed, setRevealed }: { platform: typeof PLATFORMS[number]; item: PlatformConfig; patchPlatform: (id: PlatformId, patch: Partial<PlatformConfig>) => void; revealed: Record<string, boolean>; setRevealed: React.Dispatch<React.SetStateAction<Record<string, boolean>>> }) {
-  return <div className="grid gap-4 sm:grid-cols-2"><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Access policy</span><ModernSelect value={item.accessPolicy || 'pairing'} onChange={(value) => patchPlatform(platform.id, { accessPolicy: value as PlatformConfig['accessPolicy'] })} options={[{ value: 'pairing', label: 'Pair new people' }, { value: 'allowlist', label: 'Allowlist only' }, { value: 'open', label: 'Open access' }]} /></label>{item.accessPolicy === 'allowlist' && <label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Allowed IDs</span><input value={(item.allowlist || []).join(', ')} onChange={(event) => patchPlatform(platform.id, { allowlist: event.target.value.split(',').map((value) => value.trim()).filter(Boolean) })} placeholder="123456, @username or email" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label>}{platform.id !== 'signal' && platform.id !== 'email' && <label className="relative"><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">{platform.credential}</span><input type={revealed[`${platform.id}:token`] ? 'text' : 'password'} placeholder={item.configured ? 'Saved securely - enter to replace' : platform.credential} value={item.token || (platform.id === 'generic' ? item.webhookSecret || '' : '')} onChange={(event) => patchPlatform(platform.id, platform.id === 'generic' ? { webhookSecret: event.target.value } : { token: event.target.value })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 pr-9 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /><button type="button" onClick={() => setRevealed((current) => ({ ...current, [`${platform.id}:token`]: !current[`${platform.id}:token`] }))} className="absolute bottom-0 right-0 flex h-10 w-9 items-center justify-center text-black/35 dark:text-white/35">{revealed[`${platform.id}:token`] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}</button></label>}{platform.id === 'whatsapp' && <><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Phone number ID</span><input value={item.accountId || ''} onChange={(event) => patchPlatform(platform.id, { accountId: event.target.value })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Meta app secret</span><input type="password" value={item.appSecret || ''} onChange={(event) => patchPlatform(platform.id, { appSecret: event.target.value })} placeholder="App secret" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Verify token</span><input type="password" value={item.webhookSecret || ''} onChange={(event) => patchPlatform(platform.id, { webhookSecret: event.target.value })} placeholder="Webhook verification token" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label></>}{platform.id === 'messenger' && <><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Page ID</span><input value={item.accountId || ''} onChange={(event) => patchPlatform(platform.id, { accountId: event.target.value })} placeholder="Facebook Page ID" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Meta app secret</span><input type="password" value={item.appSecret || ''} onChange={(event) => patchPlatform(platform.id, { appSecret: event.target.value })} placeholder="App secret" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Verify token</span><input type="password" value={item.webhookSecret || ''} onChange={(event) => patchPlatform(platform.id, { webhookSecret: event.target.value })} placeholder="Webhook verification token" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label></>}{platform.id === 'email' && <><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Agent mailbox</span><input type="email" value={item.emailAddress || ''} onChange={(event) => patchPlatform(platform.id, { emailAddress: event.target.value })} placeholder="agent@example.com" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">App password</span><input type="password" value={item.password || ''} onChange={(event) => patchPlatform(platform.id, { password: event.target.value })} placeholder={item.configured ? 'Saved securely - enter to replace' : 'Provider app password'} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">IMAP host</span><input value={item.imapHost || ''} onChange={(event) => patchPlatform(platform.id, { imapHost: event.target.value })} placeholder="imap.gmail.com" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">SMTP host</span><input value={item.smtpHost || ''} onChange={(event) => patchPlatform(platform.id, { smtpHost: event.target.value })} placeholder="smtp.gmail.com" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">IMAP port</span><input type="number" value={item.imapPort ?? 993} onChange={(event) => patchPlatform(platform.id, { imapPort: Number(event.target.value) || 993 })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">SMTP port</span><input type="number" value={item.smtpPort ?? 587} onChange={(event) => patchPlatform(platform.id, { smtpPort: Number(event.target.value) || 587 })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Poll interval (seconds)</span><input type="number" min="5" value={item.pollInterval ?? 15} onChange={(event) => patchPlatform(platform.id, { pollInterval: Math.max(5, Number(event.target.value) || 15) })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.04]" /></label></>}{platform.id === 'telegram' && <label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Webhook secret (optional)</span><input type="password" value={item.webhookSecret || ''} onChange={(event) => patchPlatform(platform.id, { webhookSecret: event.target.value })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label>}{platform.id === 'discord' && <label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Interactions public key</span><input type="password" value={item.publicKey || ''} onChange={(event) => patchPlatform(platform.id, { publicKey: event.target.value })} placeholder="Ed25519 public key" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label>}{platform.id === 'signal' && <><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">signal-cli endpoint</span><input value={item.endpoint || ''} onChange={(event) => patchPlatform(platform.id, { endpoint: event.target.value })} className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label><label><span className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">Account number</span><input value={item.accountId || ''} onChange={(event) => patchPlatform(platform.id, { accountId: event.target.value })} placeholder="+15551234567" className="h-10 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:bg-white/[0.04]" /></label></>}</div>;
+  const [allowlistText, setAllowlistText] = useState((item.allowlist || []).join(', '));
+  useEffect(() => {
+    setAllowlistText(current => JSON.stringify(current.split(/[;,\n]/).map(value => value.trim()).filter(Boolean)) === JSON.stringify(item.allowlist || []) ? current : (item.allowlist || []).join(', '));
+  }, [item.allowlist, platform.id]);
+  const fields: Array<{ key: keyof PlatformConfig; label: string; placeholder?: string; secret?: boolean; type?: string }> = [];
+  if (['telegram', 'whatsapp', 'messenger', 'discord'].includes(platform.id)) fields.push({ key: 'token', label: platform.credential, secret: true });
+  if (platform.id === 'whatsapp' || platform.id === 'messenger') fields.push(
+    { key: 'accountId', label: platform.id === 'whatsapp' ? 'Phone number ID' : 'Page ID' },
+    { key: 'appSecret', label: 'Meta app secret', secret: true },
+    { key: 'webhookSecret', label: 'Webhook verification token', secret: true },
+    { key: 'apiVersion', label: 'Graph API version', placeholder: 'v23.0' },
+  );
+  if (platform.id === 'email') fields.push(
+    { key: 'emailAddress', label: 'Agent mailbox', placeholder: 'agent@example.com', type: 'email' },
+    { key: 'password', label: 'App password', secret: true },
+    { key: 'imapHost', label: 'IMAP host', placeholder: 'imap.example.com' },
+    { key: 'smtpHost', label: 'SMTP host', placeholder: 'smtp.example.com' },
+    { key: 'imapPort', label: 'IMAP port', type: 'number' },
+    { key: 'smtpPort', label: 'SMTP port', type: 'number' },
+    { key: 'pollInterval', label: 'Poll interval (seconds)', type: 'number' },
+  );
+  if (platform.id === 'discord') fields.push({ key: 'publicKey', label: 'Interactions public key (optional)' });
+  if (platform.id === 'signal') fields.push({ key: 'endpoint', label: 'signal-cli bridge URL', placeholder: 'http://127.0.0.1:8080' }, { key: 'accountId', label: 'Account number', placeholder: '+15551234567' });
+  if (platform.id === 'generic') fields.push({ key: 'webhookSecret', label: 'Webhook signing secret', secret: true }, { key: 'endpoint', label: 'Reply endpoint (optional)', placeholder: 'https://your-bridge.example/replies' });
+  return <div className={styles.fields}>
+    <label className={styles.field}>Who can message the agent<ModernSelect label="Channel access policy" value={item.accessPolicy || 'pairing'} onChange={value => patchPlatform(platform.id, { accessPolicy: value as PlatformConfig['accessPolicy'] })} options={[{ value: 'pairing', label: 'Approve each new person' }, { value: 'allowlist', label: 'Only listed people' }, { value: 'open', label: 'Anyone on this channel' }]} /></label>
+    {item.accessPolicy === 'allowlist' && <label className={styles.field}>Allowed sender IDs<input value={allowlistText} onChange={event => { setAllowlistText(event.target.value); patchPlatform(platform.id, { allowlist: event.target.value.split(/[;,\n]/).map(value => value.trim()).filter(Boolean) }); }} placeholder="Comma-separated IDs, usernames or emails" /><small className={styles.muted}>An empty list allows nobody.</small></label>}
+    {fields.map(field => {
+      const revealKey = `${platform.id}:${field.key}`;
+      const stored = Boolean(item.credentials?.[field.key]);
+      return <label key={field.key} className={styles.field}>{field.label}<span className="relative block"><input autoComplete="off" spellCheck={false} type={field.secret ? revealed[revealKey] ? 'text' : 'password' : field.type || 'text'} min={field.type === 'number' ? 1 : undefined} max={field.key.endsWith('Port') ? 65535 : undefined} value={String(item[field.key] ?? '')} placeholder={stored ? 'Saved securely · enter to replace' : field.placeholder || field.label} onChange={event => patchPlatform(platform.id, { [field.key]: field.type === 'number' ? Number(event.target.value) : event.target.value })} style={field.secret ? { paddingRight: 42 } : undefined} />{field.secret && <button type="button" className="absolute inset-y-0 right-0 flex w-10 items-center justify-center opacity-60" aria-label={`${revealed[revealKey] ? 'Hide' : 'Show'} ${field.label.toLowerCase()}`} onClick={() => setRevealed(current => ({ ...current, [revealKey]: !current[revealKey] }))}>{revealed[revealKey] ? <EyeOff size={15} /> : <Eye size={15} />}</button>}</span></label>;
+    })}
+    {platform.id === 'email' && <><div className={styles.setting}><span>IMAP over TLS</span><Toggle label="IMAP TLS" checked={item.imapSecure !== false} onChange={imapSecure => patchPlatform(platform.id, { imapSecure })} /></div><div className={styles.setting}><span>SMTP implicit TLS<small>Use for port 465; port 587 uses STARTTLS.</small></span><Toggle label="SMTP implicit TLS" checked={item.smtpSecure === true} onChange={smtpSecure => patchPlatform(platform.id, { smtpSecure })} /></div></>}
+    <div className={`${styles.setting} ${styles.wide}`}><span>Separate people in group conversations<small>Keep each sender’s working history separate.</small></span><Toggle label="Separate group sessions per person" checked={item.groupSessionsPerUser !== false} onChange={groupSessionsPerUser => patchPlatform(platform.id, { groupSessionsPerUser })} /></div>
+    {platform.id === 'generic' && <p className={`${styles.muted} ${styles.wide}`}>Replies POST JSON with target, text and deliveryId to your configured endpoint, signed with the webhook secret. Without a reply endpoint, this channel only receives messages.</p>}
+  </div>;
 }
-
-function GatewayModeTabs({ active, onChange }: { active: GatewayMode; onChange: (mode: GatewayMode) => void }) {
-  const items: Array<{ id: GatewayMode; label: string }> = [{ id: 'communication', label: 'Communication' }, { id: 'agents', label: 'Channel Agents' }, { id: 'mcp', label: 'MCP' }, { id: 'skills', label: 'Skills' }];
-  return <div className="eterx-gateway-mode-tabs mb-4 inline-flex items-center gap-1 rounded-full border border-black/10 bg-white/80 p-1 shadow-none dark:border-white/10 dark:bg-white/[0.06]">{items.map((item) => <button key={item.id} type="button" onClick={() => onChange(item.id)} className={`relative rounded-full px-4 py-2 text-[13px] font-semibold transition-colors ${active === item.id ? 'text-[#126fc1] dark:text-[#b9dcff]' : 'text-black/50 hover:text-black/80 dark:text-white/50 dark:hover:text-white/80'}`}>{active === item.id && <span className="eterx-gateway-mode-pill" aria-hidden="true" /> }<span className="relative z-10">{item.label}</span></button>)}</div>;
-}
-
 const ROLE_TEMPLATES: Record<ChannelAgentProfile['role'], Pick<ChannelAgentProfile, 'name' | 'objective' | 'instructions' | 'escalationRules' | 'responseStyle'>> = {
   sales: { name: 'Sales agent', objective: 'Review inbound leads, identify intent and fit, answer approved product questions, and move qualified prospects toward the next step.', instructions: 'Prioritize new and high-intent leads. Ask only the minimum qualifying questions. Never invent pricing, availability, discounts, customer references, or product capabilities.', escalationRules: 'Escalate custom pricing, discounts, contracts, security reviews, procurement requests, complaints, and commitments outside approved information.', responseStyle: 'Warm, concise, consultative, and focused on a clear next step.' },
   support: { name: 'Support agent', objective: 'Triage customer issues, use available evidence to provide accurate help, and escalate cases that require a human or privileged action.', instructions: 'Acknowledge the issue, gather missing facts, avoid repeated troubleshooting, and distinguish observed evidence from hypotheses.', escalationRules: 'Escalate security, billing disputes, data loss, legal threats, account access changes, repeated failures, and incidents affecting multiple customers.', responseStyle: 'Calm, empathetic, precise, and action-oriented.' },
@@ -124,383 +149,518 @@ const ROLE_TEMPLATES: Record<ChannelAgentProfile['role'], Pick<ChannelAgentProfi
 
 function ChannelAgentsPanel({ value, onChange, conversations }: { value: ChannelAgentConfig; onChange: (value: ChannelAgentConfig) => void; conversations: GatewayConversation[] }) {
   const profiles = value.profiles.length ? value.profiles : [defaultChannelAgentProfile()];
-  const activeId = profiles.some((item) => item.id === value.defaultProfileId) ? value.defaultProfileId : profiles[0].id;
-  const profile = profiles.find((item) => item.id === activeId) || profiles[0];
-  const patchProfile = (patch: Partial<ChannelAgentProfile>) => onChange({ ...value, profiles: profiles.map((item) => item.id === profile.id ? { ...item, ...patch } : item) });
-  const chooseRole = (role: ChannelAgentProfile['role']) => patchProfile({ role, ...ROLE_TEMPLATES[role] });
+  const [editingId, setEditingId] = useState(value.defaultProfileId);
+  const profile = profiles.find(item => item.id === editingId) || profiles.find(item => item.id === value.defaultProfileId) || profiles[0];
+  const patchProfile = (patch: Partial<ChannelAgentProfile>) => onChange({ ...value, profiles: profiles.map(item => item.id === profile.id ? { ...item, ...patch } : item) });
   const addProfile = () => {
-    const id = `channel-agent-${Date.now().toString(36)}`;
-    const next = { ...defaultChannelAgentProfile(), id, name: 'New channel agent' };
-    onChange({ ...value, defaultProfileId: id, profiles: [...profiles, next] });
+    const next = { ...defaultChannelAgentProfile(), id: `channel-agent-${crypto.randomUUID()}`, name: 'New channel agent' };
+    onChange({ ...value, profiles: [...profiles, next] }); setEditingId(next.id);
   };
   const removeProfile = () => {
     if (profiles.length === 1) return;
-    const next = profiles.filter((item) => item.id !== profile.id);
-    onChange({ ...value, defaultProfileId: next[0].id, profiles: next });
+    const next = profiles.filter(item => item.id !== profile.id);
+    onChange({ ...value, defaultProfileId: value.defaultProfileId === profile.id ? next[0].id : value.defaultProfileId, profiles: next });
+    setEditingId(next[0].id);
   };
-  const boundConversations = conversations.filter((item) => profile.channels.length === 0 || profile.channels.includes(item.platform)).slice(0, 6);
-  const inputClass = 'w-full rounded-xl border border-black/10 bg-white px-3 py-2.5 text-[12px] outline-none focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.045]';
-  return <section className="mt-7 overflow-hidden rounded-2xl border border-black/[0.08] bg-white shadow-none dark:border-white/[0.08] dark:bg-white/[0.035]">
-    <div className="border-b border-black/[0.07] p-5 dark:border-white/[0.07]"><div className="flex flex-wrap items-start justify-between gap-4"><div className="flex items-start gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#1d8cff]/10"><PremiumAgent className="h-6 w-6 brightness-0 dark:invert" /></span><div><h2 className="text-[20px] font-semibold">Channel Agent</h2><p className="mt-1 max-w-2xl text-[12px] leading-5 text-black/45 dark:text-white/45">The role and workflow load only when needed. Manual and Assist keep you in control; Autonomous can wake on incoming messages and send replies without asking every time.</p></div></div><div className="flex items-center gap-3"><span className="text-[11px] font-semibold text-black/45 dark:text-white/45">Agent enabled</span><Toggle checked={value.enabled} onChange={(enabled) => onChange({ ...value, enabled })} /></div></div></div>
-    <div className="grid min-h-[610px] lg:grid-cols-[260px_minmax(0,1fr)]"><aside className="border-b border-black/[0.07] p-4 dark:border-white/[0.07] lg:border-b-0 lg:border-r"><div className="flex items-center justify-between"><span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-black/40 dark:text-white/40">Profiles</span><button type="button" onClick={addProfile} className="rounded-lg border border-black/10 px-2.5 py-1.5 text-[10px] font-semibold dark:border-white/10">Add</button></div><div className="mt-3 space-y-1">{profiles.map((item) => <button key={item.id} type="button" onClick={() => onChange({ ...value, defaultProfileId: item.id })} className={`w-full rounded-xl px-3 py-2.5 text-left ${item.id === activeId ? 'bg-[#e8f3ff] text-[#126fc1] dark:bg-[#183047] dark:text-[#b9dcff]' : 'hover:bg-black/[0.035] dark:hover:bg-white/[0.05]'}`}><div className="truncate text-[12px] font-semibold">{item.name}</div><div className="mt-0.5 text-[10px] capitalize opacity-60">{item.role} · {item.operatingMode}</div></button>)}</div><div className="mt-5 rounded-xl bg-black/[0.025] p-3 text-[11px] leading-5 text-black/50 dark:bg-white/[0.04] dark:text-white/50"><div className="font-semibold text-black/65 dark:text-white/65">How a user invokes it</div><p className="mt-1">“Use the {profile.name} profile. Check unread conversations, summarize priorities, and draft replies. Do not send.”</p><p className="mt-2">The agent first loads this profile, then reads only the requested inbox data.</p></div><div className="mt-4"><div className="text-[11px] font-semibold text-black/55 dark:text-white/55">Recent bound inbox</div><div className="mt-2 space-y-2">{boundConversations.map((item) => <div key={item.id} className="rounded-lg border border-black/[0.07] px-2.5 py-2 dark:border-white/[0.07]"><div className="flex gap-2"><span className="min-w-0 flex-1 truncate text-[10px] font-semibold">{item.title}</span>{item.unreadCount > 0 && <span className="text-[9px] text-[#126fc1]">{item.unreadCount} new</span>}</div><div className="mt-1 truncate text-[9px] text-black/40 dark:text-white/40">{item.platform} · {item.lastMessagePreview}</div></div>)}{boundConversations.length === 0 && <div className="text-[10px] text-black/35 dark:text-white/35">No stored conversations yet.</div>}</div></div></aside>
-      <main className="p-5 lg:p-7"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-[18px] font-semibold">Agent contract</h3><p className="mt-1 text-[11px] text-black/40 dark:text-white/40">Saved securely with Gateway settings. No channel secrets are copied into agent prompts.</p></div><button type="button" disabled={profiles.length === 1} onClick={removeProfile} className="rounded-lg border border-red-500/20 px-3 py-2 text-[10px] font-semibold text-red-500 disabled:opacity-30">Delete profile</button></div>
-        <div className="mt-5 grid gap-4 sm:grid-cols-2"><label><span className="mb-1.5 block text-[11px] font-semibold">Profile name</span><input className={inputClass} value={profile.name} onChange={(event) => patchProfile({ name: event.target.value })} /></label><label><span className="mb-1.5 block text-[11px] font-semibold">Role template</span><select className={inputClass} value={profile.role} onChange={(event) => chooseRole(event.target.value as ChannelAgentProfile['role'])}><option value="sales">Sales</option><option value="support">Support</option><option value="operations">Operations</option><option value="custom">Custom</option></select></label></div>
-        <label className="mt-4 block"><span className="mb-1.5 block text-[11px] font-semibold">Objective</span><textarea rows={3} className={inputClass} value={profile.objective} onChange={(event) => patchProfile({ objective: event.target.value })} /></label>
-        <label className="mt-4 block"><span className="mb-1.5 block text-[11px] font-semibold">Working instructions</span><textarea rows={4} className={inputClass} placeholder="Product facts, qualification rules, tone, required CRM steps, information the agent may use..." value={profile.instructions} onChange={(event) => patchProfile({ instructions: event.target.value })} /></label>
-        <div className="mt-4"><span className="text-[11px] font-semibold">Bound channels</span><div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={() => patchProfile({ channels: [] })} className={`rounded-full border px-3 py-1.5 text-[10px] font-semibold ${profile.channels.length === 0 ? 'border-[#1d8cff]/30 bg-[#1d8cff]/10 text-[#126fc1]' : 'border-black/10 dark:border-white/10'}`}>All enabled</button>{PLATFORMS.map((platform) => { const active = profile.channels.includes(platform.id); return <button key={platform.id} type="button" onClick={() => patchProfile({ channels: active ? profile.channels.filter((id) => id !== platform.id) : [...profile.channels, platform.id] })} className={`rounded-full border px-3 py-1.5 text-[10px] font-semibold ${active ? 'border-[#1d8cff]/30 bg-[#1d8cff]/10 text-[#126fc1]' : 'border-black/10 dark:border-white/10'}`}>{platform.label}</button>; })}</div></div>
-        <div className="mt-5 grid gap-4 sm:grid-cols-3">
-          <label><span className="mb-1.5 block text-[11px] font-semibold">Operating mode</span><select className={inputClass} value={profile.operatingMode} onChange={(event) => patchProfile({ operatingMode: event.target.value as ChannelAgentProfile['operatingMode'] })}><option value="manual">Manual</option><option value="assist">Assist / polling</option><option value="autonomous">Autonomous</option></select></label>
-          <label><span className="mb-1.5 block text-[11px] font-semibold">Read policy</span><select className={inputClass} value={profile.readPolicy} onChange={(event) => patchProfile({ readPolicy: event.target.value as ChannelAgentProfile['readPolicy'] })}><option value="on-demand">On demand</option><option value="unread">Unread first</option><option value="all">All matching</option></select></label>
-          <label><span className="mb-1.5 block text-[11px] font-semibold">Send policy</span><select className={inputClass} value={profile.sendPolicy} onChange={(event) => patchProfile({ sendPolicy: event.target.value as ChannelAgentProfile['sendPolicy'] })}><option value="draft-only">Draft only</option><option value="direct">Send directly</option><option value="autonomous">Autonomous</option></select></label>
-        </div>
-        {profile.operatingMode !== 'manual' && <label className="mt-4 block"><span className="mb-1.5 block text-[11px] font-semibold">Polling interval (minutes)</span><input type="number" min={1} max={1440} className={inputClass} value={profile.pollIntervalMinutes} onChange={(event) => patchProfile({ pollIntervalMinutes: Number(event.target.value) || 5 })} /><span className="mt-1 block text-[10px] text-amber-600 dark:text-amber-400">Background polling is opt-in. Automatic message execution also requires “Auto-run incoming messages” in Advanced settings.</span></label>}
-        <div className="mt-4 grid gap-4 sm:grid-cols-2"><label><span className="mb-1.5 block text-[11px] font-semibold">Escalation rules</span><textarea rows={4} className={inputClass} value={profile.escalationRules} onChange={(event) => patchProfile({ escalationRules: event.target.value })} /></label><label><span className="mb-1.5 block text-[11px] font-semibold">Reply style</span><textarea rows={4} className={inputClass} value={profile.responseStyle} onChange={(event) => patchProfile({ responseStyle: event.target.value })} /></label></div>
-      </main></div>
+  const boundConversations = conversations.filter(item => profile.channels.length === 0 || profile.channels.includes(item.platform));
+  return <section className={styles.card}>
+    <div className={styles.row}><div><h2>Channel agent profiles</h2><p className={styles.muted}>A channel-specific profile takes priority. An unrestricted default handles other channels.</p></div><Toggle label="Enable channel agent profiles" checked={value.enabled} onChange={enabled => onChange({ ...value, enabled })} /></div>
+    <div className={`${styles.row} my-5`}><div className="min-w-[200px] flex-1"><ModernSelect label="Profile to edit" value={profile.id} onChange={setEditingId} options={profiles.map(item => ({ value: item.id, label: `${item.name}${item.id === value.defaultProfileId ? ' · Default' : ''}` }))} /></div><div className={styles.actions}><button type="button" className={styles.button} onClick={addProfile}>Add profile</button>{value.defaultProfileId !== profile.id && <button type="button" className={styles.button} onClick={() => onChange({ ...value, defaultProfileId: profile.id })}>Set as default</button>}<button type="button" className={styles.button} disabled={profiles.length === 1} onClick={removeProfile}>Remove profile</button></div></div>
+    <div className={styles.fields}>
+      <label className={styles.field}>Profile name<input value={profile.name} onChange={event => patchProfile({ name: event.target.value })} /></label>
+      <label className={styles.field}>Role template<ModernSelect label="Role template" value={profile.role} onChange={role => patchProfile({ role: role as ChannelAgentProfile['role'], ...ROLE_TEMPLATES[role as ChannelAgentProfile['role']] })} options={[{ value: 'custom', label: 'Custom' }, { value: 'sales', label: 'Sales' }, { value: 'support', label: 'Support' }, { value: 'operations', label: 'Operations' }]} /></label>
+      <label className={`${styles.field} ${styles.wide}`}>Objective<textarea rows={2} value={profile.objective} onChange={event => patchProfile({ objective: event.target.value })} /></label>
+      <label className={`${styles.field} ${styles.wide}`}>Working instructions<textarea rows={4} placeholder="Product facts, workflow, trusted sources and tasks this agent should handle…" value={profile.instructions} onChange={event => patchProfile({ instructions: event.target.value })} /></label>
+      <div className={`${styles.field} ${styles.wide}`}>Channels<div className={styles.actions}><button type="button" aria-pressed={!profile.channels.length} className={`${styles.button} ${!profile.channels.length ? styles.primary : ''}`} onClick={() => patchProfile({ channels: [] })}>All enabled</button>{PLATFORMS.map(platform => { const active = profile.channels.includes(platform.id); return <button type="button" key={platform.id} aria-pressed={active} className={`${styles.button} ${active ? styles.primary : ''}`} onClick={() => patchProfile({ channels: active ? profile.channels.filter(id => id !== platform.id) : [...profile.channels, platform.id] })}>{platform.label}</button>; })}</div><small className={styles.muted}>If multiple profiles name the same channel, the first matching profile is used.</small></div>
+      <label className={styles.field}>Incoming messages<ModernSelect label="Operating mode" value={profile.operatingMode} onChange={mode => patchProfile({ operatingMode: mode as ChannelAgentProfile['operatingMode'] })} options={[{ value: 'manual', label: 'Manual · work only when asked' }, { value: 'assist', label: 'Assist · prepare a draft' }, { value: 'autonomous', label: 'Autonomous · handle messages' }]} /></label>
+      <label className={styles.field}>Reply policy<ModernSelect label="Reply policy" value={profile.sendPolicy} onChange={policy => patchProfile({ sendPolicy: policy as ChannelAgentProfile['sendPolicy'] })} options={[{ value: 'draft-only', label: 'Draft only' }, { value: 'direct', label: 'Send when requested' }, { value: 'autonomous', label: 'Send automatically in Autonomous mode' }]} /></label>
+      <label className={styles.field}>Inbox reading<ModernSelect label="Inbox reading" value={profile.readPolicy} onChange={policy => patchProfile({ readPolicy: policy as ChannelAgentProfile['readPolicy'] })} options={[{ value: 'on-demand', label: 'On demand' }, { value: 'unread', label: 'Unread first' }, { value: 'all', label: 'All matching conversations' }]} /></label>
+      <label className={styles.field}>Recovery interval (minutes)<input type="number" min={1} max={1440} value={profile.pollIntervalMinutes} onChange={event => patchProfile({ pollIntervalMinutes: Number(event.target.value) || 1 })} /><small className={styles.muted}>Live messages arrive immediately. This interval recovers missed events.</small></label>
+      <label className={styles.field}>Escalation rules<textarea rows={4} value={profile.escalationRules} onChange={event => patchProfile({ escalationRules: event.target.value })} /></label>
+      <label className={styles.field}>Reply style<textarea rows={4} value={profile.responseStyle} onChange={event => patchProfile({ responseStyle: event.target.value })} /></label>
+    </div>
+    <div className={styles.setup}><strong>How the agent gets context</strong>Each message is routed to its own conversation. The agent loads this profile and the recent channel history before drafting. Automatic delivery requires both Autonomous mode and the automatic reply policy. Keep automatic replies off to review drafts in EterX.<div className="mt-2">{boundConversations.length} stored conversations match this profile. Telegram bot teammates keep their own model and agent settings in Connect as bot.</div></div>
   </section>;
 }
+type McpServerDraft = { id: string; name: string; transport: 'stdio' | 'streamable-http'; endpoint: string; command: string; args: string[]; status: 'ready' | 'connected'; lastError?: string };
+const publicMcpServer = (server: any): McpServerDraft => ({ id: String(server.id), name: String(server.name), transport: server.transport, endpoint: server.endpoint || '', command: server.command || '', args: Array.isArray(server.args) ? server.args : [], status: server.enabled && server.lastCheckedAt && !server.lastError ? 'connected' : 'ready', lastError: server.lastError });
 
-type McpServerDraft = { id: string; name: string; transport: 'stdio' | 'streamable-http'; endpoint: string; command: string; args: string; status: 'ready' | 'connected'; lastError?: string };
-
-function McpGatewayPanel({ baseUrl, endpoint, enabled, onToggle, onCopy, onNotice, servers, setServers }: { baseUrl: string; endpoint: string; enabled: boolean; onToggle: (value: boolean) => void; onCopy: () => void; onNotice: (value: string) => void; servers: McpServerDraft[]; setServers: React.Dispatch<React.SetStateAction<McpServerDraft[]>> }) {
+function McpGatewayPanel({ endpoint, enabled, running, onToggle, onCopy, onNotice, servers, setServers }: { baseUrl: string; endpoint: string; enabled: boolean; running: boolean; onToggle: (value: boolean) => void; onCopy: () => void; onNotice: (value: string) => void; servers: McpServerDraft[]; setServers: React.Dispatch<React.SetStateAction<McpServerDraft[]>> }) {
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | undefined>();
   const [name, setName] = useState('');
   const [transport, setTransport] = useState<McpServerDraft['transport']>('streamable-http');
   const [serverEndpoint, setServerEndpoint] = useState('');
   const [command, setCommand] = useState('');
   const [args, setArgs] = useState('');
+  const [headers, setHeaders] = useState('');
+  const [env, setEnv] = useState('');
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
   useEffect(() => {
     let active = true;
-    void fetch('/api/connectors/mcp').then((response) => response.json()).then((payload) => {
-      if (!active || !Array.isArray(payload?.servers)) return;
-      setServers(payload.servers.map((server: any) => ({ id: String(server.id), name: String(server.name), transport: server.transport, endpoint: server.endpoint || '', command: server.command || '', args: Array.isArray(server.args) ? server.args.join(' ') : '', status: server.enabled ? 'connected' : 'ready', lastError: server.lastError })));
-    }).catch(() => {});
+    void fetch('/api/connectors/mcp').then(response => { if (!response.ok) throw new Error('Could not load MCP servers.'); return response.json(); }).then(payload => {
+      if (active) setServers((payload.servers || []).map(publicMcpServer));
+    }).catch(reason => { if (active) setError(reason.message); });
     return () => { active = false; };
   }, [setServers]);
   const saveDraft = async () => {
-    if (!name.trim()) return onNotice('Enter a server name first.');
-    const response = await fetch('/api/connectors/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name.trim(), transport, endpoint: serverEndpoint.trim(), command: command.trim(), args: args.trim(), verify: true }) });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || !payload.ok) return onNotice(payload.error || 'MCP server verification failed.');
-    const server = payload.server;
-    setServers((current) => [...current.filter((item) => item.id !== server.id), { id: String(server.id), name: String(server.name), transport: server.transport, endpoint: server.endpoint || '', command: server.command || '', args: Array.isArray(server.args) ? server.args.join(' ') : '', status: 'connected' }]);
-    setName(''); setServerEndpoint(''); setCommand(''); setArgs(''); setAdding(false); onNotice('MCP server verified and registered as a live agent connector.');
+    if (busy) return;
+    setError('');
+    try {
+      if (!name.trim()) throw new Error('Enter a server name.');
+      if (transport === 'streamable-http') {
+        const url = new URL(serverEndpoint);
+        if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('Use an HTTP or HTTPS endpoint without credentials in the URL.');
+      } else if (!command.trim()) throw new Error('Enter the command that starts the MCP server.');
+      const parseMap = (text: string, label: string) => {
+        if (!text.trim()) return undefined;
+        const value = JSON.parse(text);
+        if (!value || Array.isArray(value) || typeof value !== 'object' || Object.values(value).some(item => typeof item !== 'string')) throw new Error(`${label} must be a JSON object of string values.`);
+        return value;
+      };
+      // One argument per line preserves spaces in Windows paths without shell parsing.
+      const argumentsList = args.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+      const request = { id: editingId, name: name.trim(), transport, endpoint: serverEndpoint.trim(), command: command.trim(), args: argumentsList, headers: parseMap(headers, 'Headers'), env: parseMap(env, 'Environment variables'), verify: true };
+      setBusy('save');
+      const response = await fetch('/api/connectors/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(request) });
+      const payload = await response.json();
+      if (payload.server) setServers(current => [...current.filter(item => item.id !== payload.server.id), publicMcpServer(payload.server)]);
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'The MCP server could not be connected.');
+      setName(''); setServerEndpoint(''); setCommand(''); setArgs(''); setHeaders(''); setEnv(''); setEditingId(undefined); setAdding(false);
+      onNotice('MCP server connected. Its discovered tools are available through the agent’s connector tools.');
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save MCP server.'); }
+    finally { setBusy(''); }
   };
-  return <section className="eterx-mcp-panel mt-7 space-y-4">
-    <div className="rounded-2xl border border-black/[0.08] bg-white p-5 shadow-none dark:border-white/[0.08] dark:bg-white/[0.035]">
-      <div className="flex flex-wrap items-start justify-between gap-4"><div className="flex items-start gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-[#1d8cff]/10 text-[#126fc1] dark:text-[#8bc8ff]"><Server className="h-5 w-5" /></span><div><h2 className="text-[22px] font-semibold tracking-[-0.03em]">MCP gateway</h2><p className="mt-1 max-w-xl text-[13px] leading-5 text-black/50 dark:text-white/50">Connect EterX conversations, tools, resources, and permissions to any MCP-compatible client.</p></div></div><div className="flex items-center gap-3"><span className={`rounded-full px-3 py-1.5 text-[11px] font-semibold ${enabled ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-black/[0.05] text-black/45 dark:bg-white/[0.06] dark:text-white/45'}`}>{enabled ? 'Ready' : 'Off'}</span><Toggle checked={enabled} onChange={onToggle} label="MCP gateway" /></div></div>
-      <div className="mt-5 grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-black/[0.025] p-3 dark:bg-white/[0.045]"><div className="text-[11px] text-black/40 dark:text-white/40">Transport</div><div className="mt-1 text-[13px] font-semibold">Streamable HTTP</div></div><div className="rounded-xl bg-black/[0.025] p-3 dark:bg-white/[0.045]"><div className="text-[11px] text-black/40 dark:text-white/40">Tools</div><div className="mt-1 text-[13px] font-semibold">10 gateway tools</div></div><div className="rounded-xl bg-black/[0.025] p-3 dark:bg-white/[0.045]"><div className="text-[11px] text-black/40 dark:text-white/40">Security</div><div className="mt-1 text-[13px] font-semibold">Bearer token</div></div></div>
-    </div>
-    <div className="rounded-2xl border border-black/[0.08] bg-white p-5 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-[15px] font-semibold">Client connection</h3><p className="mt-1 text-[12px] text-black/45 dark:text-white/45">Copy once, then paste into Cursor, Claude Desktop, Windsurf, or another MCP client.</p></div><button type="button" onClick={onCopy} className="rounded-xl bg-[#1d8cff] px-3.5 py-2 text-[12px] font-semibold text-white shadow-none"><Copy className="mr-1.5 inline h-3.5 w-3.5" />Copy client config</button></div><div className="mt-4 flex items-center gap-2 rounded-xl border border-black/[0.08] bg-black/[0.025] px-3 py-2.5 dark:border-white/[0.08] dark:bg-white/[0.045]"><code className="min-w-0 flex-1 truncate text-[12px] text-black/60 dark:text-white/60">{endpoint}</code><button type="button" onClick={() => { void safeCopyTextToClipboard(endpoint).then((ok) => { if (ok) onNotice('MCP endpoint copied.'); }); }} className="rounded-lg border border-black/10 px-2.5 py-1.5 text-[11px] font-semibold dark:border-white/10"><Copy className="mr-1 inline h-3 w-3" />Copy URL</button></div></div>
-    <div className="rounded-2xl border border-black/[0.08] bg-white p-5 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-[15px] font-semibold">Connected servers</h3><p className="mt-1 text-[12px] text-black/45 dark:text-white/45">Add a local stdio server or a remote Streamable HTTP server.</p></div><button type="button" onClick={() => setAdding((value) => !value)} className="rounded-xl border border-black/10 px-3.5 py-2 text-[12px] font-semibold dark:border-white/10">{adding ? 'Close' : 'Add server'}</button></div>{adding && <div className="mt-4 rounded-xl border border-[#1d8cff]/20 bg-[#1d8cff]/[0.045] p-4"><div className="grid gap-3 sm:grid-cols-2"><label className="text-[12px] font-semibold">Server name<input value={name} onChange={(event) => setName(event.target.value)} placeholder="Filesystem, GitHub, browser…" className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.06]" /></label><label className="text-[12px] font-semibold">Transport<select value={transport} onChange={(event) => setTransport(event.target.value as McpServerDraft['transport'])} className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none dark:border-white/10 dark:bg-white/[0.06]"><option value="streamable-http">Streamable HTTP</option><option value="stdio">Local stdio</option></select></label></div>{transport === 'streamable-http' ? <label className="mt-3 block text-[12px] font-semibold">Server URL<input value={serverEndpoint} onChange={(event) => setServerEndpoint(event.target.value)} placeholder="https://…/mcp" className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.06]" /></label> : <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-[12px] font-semibold">Command<input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="npx" className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none dark:border-white/10 dark:bg-white/[0.06]" /></label><label className="text-[12px] font-semibold">Arguments<input value={args} onChange={(event) => setArgs(event.target.value)} placeholder="-y @modelcontextprotocol/server-filesystem …" className="mt-1.5 h-10 w-full rounded-lg border border-black/10 bg-white px-3 font-normal outline-none dark:border-white/10 dark:bg-white/[0.06]" /></label></div>}<button type="button" onClick={saveDraft} className="mt-3 rounded-lg bg-[#1d8cff] px-3.5 py-2 text-[12px] font-semibold text-white">Save server</button></div>}{servers.length === 0 && !adding && <div className="mt-4 flex items-center gap-3 rounded-xl border border-dashed border-black/10 px-4 py-5 dark:border-white/10"><span className="flex h-9 w-9 items-center justify-center rounded-lg bg-black/[0.04] text-black/45 dark:bg-white/[0.06] dark:text-white/45"><Server className="h-4 w-4" /></span><div><div className="text-[13px] font-semibold">No MCP servers yet</div><div className="mt-0.5 text-[12px] text-black/45 dark:text-white/45">Add one to make its tools available to your agent.</div></div></div>}{servers.length > 0 && <div className="mt-4 space-y-2">{servers.map((server) => <div key={server.id} className="flex items-center gap-3 rounded-xl border border-black/[0.07] px-3 py-3 dark:border-white/[0.07]"><span className="h-2 w-2 rounded-full bg-emerald-500" /><div className="min-w-0 flex-1"><div className="truncate text-[13px] font-semibold">{server.name}</div><div className="truncate text-[11px] text-black/40 dark:text-white/40">{server.transport === 'stdio' ? `${server.command} ${server.args}` : server.endpoint}</div></div><span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">Saved</span></div>)}</div>}</div>
-    <div className="grid gap-3 sm:grid-cols-3"><div className="rounded-xl border border-black/[0.08] bg-white p-4 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-black/40 dark:text-white/40">Tools</div><p className="mt-2 text-[12px] text-black/55 dark:text-white/55">Send, read, list, and wait for gateway events.</p></div><div className="rounded-xl border border-black/[0.08] bg-white p-4 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-black/40 dark:text-white/40">Resources</div><p className="mt-2 text-[12px] text-black/55 dark:text-white/55">Conversation history and attachments stay addressable.</p></div><div className="rounded-xl border border-black/[0.08] bg-white p-4 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-black/40 dark:text-white/40">Permissions</div><p className="mt-2 text-[12px] text-black/55 dark:text-white/55">Pairing approvals remain under your control.</p></div></div>
-  </section>;
+  const remove = async (id: string) => {
+    setBusy(id); setError('');
+    try {
+      const response = await fetch('/api/connectors/mcp', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'Could not remove MCP server.');
+      setServers((payload.servers || []).map(publicMcpServer));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not remove server.'); }
+    finally { setBusy(''); }
+  };
+  return <div>
+    <section className={styles.card}><div className={styles.row}><div><h2>Expose EterX to an MCP client</h2><p className={styles.muted}>Let another client read gateway conversations and use channel tools.</p></div><div className={styles.actions}><span className={`${styles.status} ${running ? styles.online : ''}`}>{running ? 'Listening' : enabled ? 'Gateway offline' : 'Off'}</span><Toggle label="MCP gateway bridge" checked={enabled} onChange={onToggle} /></div></div><div className={styles.endpoint}><code>{endpoint}</code><button type="button" className={styles.button} disabled={!running} onClick={onCopy}><Copy />Copy client config</button></div><p className={`${styles.muted} mt-3`}>Save gateway changes before connecting. The copied configuration includes the private access token.</p></section>
+    <section className={styles.card}><div className={styles.row}><div><h2>Give EterX tools from MCP servers</h2><p className={styles.muted}>Connect a remote endpoint or a local server. Tools are discovered when you connect. When editing, blank header and environment fields keep their saved values.</p></div><button type="button" className={styles.button} disabled={Boolean(busy)} onClick={() => { setAdding(current => !current); setEditingId(undefined); setName(""); setServerEndpoint(""); setCommand(""); setArgs(""); setHeaders(""); setEnv(""); }}>{adding ? 'Close editor' : 'Add server'}</button></div>
+      {error && <div role="alert" className={`${styles.notice} ${styles.error} mt-4`}>{error}</div>}
+      {adding && <fieldset disabled={Boolean(busy)} className="mt-5 min-w-0 border-0 p-0"><div className={styles.fields}>
+        <label className={styles.field}>Server name<input value={name} onChange={event => setName(event.target.value)} placeholder="My tool server" /></label>
+        <label className={styles.field}>Transport<ModernSelect label="MCP transport" value={transport} onChange={value => setTransport(value as McpServerDraft['transport'])} options={[{ value: 'streamable-http', label: 'Streamable HTTP' }, { value: 'stdio', label: 'Local stdio' }]} /></label>
+        {transport === 'streamable-http' ? <><label className={`${styles.field} ${styles.wide}`}>Server endpoint<input value={serverEndpoint} onChange={event => setServerEndpoint(event.target.value)} placeholder="https://example.com/mcp" /></label><label className={`${styles.field} ${styles.wide}`}>Headers (optional JSON)<textarea autoComplete="off" rows={3} value={headers} onChange={event => setHeaders(event.target.value)} placeholder={'{"Authorization": "Bearer …"}'} /></label></> : <><label className={styles.field}>Command<input value={command} onChange={event => setCommand(event.target.value)} placeholder="npx" /></label><label className={styles.field}>Arguments · one per line<textarea rows={3} value={args} onChange={event => setArgs(event.target.value)} placeholder={'-y\nserver-package\nC:\\My Documents'} /></label><label className={`${styles.field} ${styles.wide}`}>Environment variables (optional JSON)<textarea rows={3} autoComplete="off" value={env} onChange={event => setEnv(event.target.value)} placeholder={'{"API_KEY": "…"}'} /></label></>}
+      </div><button type="button" className={`${styles.button} ${styles.primary} mt-4`} onClick={() => void saveDraft()}>{busy === 'save' ? <Loader2 className="animate-spin" /> : <Server />}{busy === 'save' ? 'Connecting…' : 'Connect server'}</button></fieldset>}
+      <div className={styles.inbox}>{servers.map(server => <div key={server.id} className={styles.inboxRow}><div className={styles.row}><div><strong className="text-sm">{server.name}</strong><p>{server.transport === 'stdio' ? `${server.command} ${server.args.join(' ')}` : server.endpoint}</p></div><div className={styles.actions}><span className={`${styles.status} ${server.status === 'connected' ? styles.online : ''}`}>{server.status === 'connected' ? 'Connected' : 'Needs attention'}</span><button type="button" className={styles.button} disabled={Boolean(busy)} onClick={() => { setEditingId(server.id); setName(server.name); setTransport(server.transport); setServerEndpoint(server.endpoint); setCommand(server.command); setArgs(server.args.join("\n")); setHeaders(""); setEnv(""); setAdding(true); }}>Edit</button><button type="button" className={styles.button} disabled={Boolean(busy)} onClick={() => void remove(server.id)}>{busy === server.id ? 'Removing…' : 'Remove'}</button></div></div>{server.lastError && <p className={styles.error}>{server.lastError}</p>}</div>)}{!servers.length && <p className={styles.muted}>No MCP servers connected yet.</p>}</div>
+    </section>
+  </div>;
 }
-
-function SkillsGatewayPanel() {
-  const skills = ['Research', 'Coding', 'Files', 'Data analysis', 'Web browsing', 'Writing'];
-  return <section className="eterx-skills-panel mt-7 rounded-2xl border border-black/[0.08] bg-white p-4 shadow-none dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="grid h-full min-h-[430px] gap-4 lg:grid-cols-[2fr_1fr]"><div className="rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 dark:border-white/[0.07] dark:bg-white/[0.025]"><div className="flex items-start justify-between gap-3"><div><h2 className="text-[20px] font-semibold tracking-[-0.03em]">Agent skills</h2><p className="mt-1 text-[12px] text-black/45 dark:text-white/45">Choose the skills available to conversations routed through Gateway.</p></div><span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">Ready</span></div><div className="mt-5 grid gap-2 sm:grid-cols-2">{skills.map((skill, index) => <button key={skill} type="button" className="flex items-center justify-between rounded-lg border border-black/[0.07] bg-white px-3 py-3 text-left text-[12px] transition hover:border-[#1d8cff]/40 dark:border-white/[0.07] dark:bg-white/[0.035]"><span><span className="block font-semibold">{skill}</span><span className="mt-0.5 block text-[10px] text-black/40 dark:text-white/40">{index % 2 === 0 ? 'Available to the agent' : 'Available when requested'}</span></span><span className="h-2 w-2 rounded-full bg-emerald-500" /></button>)}</div></div><div className="rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 dark:border-white/[0.07] dark:bg-white/[0.025]"><h3 className="text-[15px] font-semibold">Skill policy</h3><p className="mt-1 text-[12px] leading-5 text-black/45 dark:text-white/45">Keep routing predictable and permission-aware.</p><div className="mt-5 space-y-2"><div className="rounded-lg bg-white px-3 py-3 text-[12px] dark:bg-white/[0.045]"><div className="text-[10px] text-black/40 dark:text-white/40">Default access</div><div className="mt-1 font-semibold">Allowlisted skills</div></div><div className="rounded-lg bg-white px-3 py-3 text-[12px] dark:bg-white/[0.045]"><div className="text-[10px] text-black/40 dark:text-white/40">Routing</div><div className="mt-1 font-semibold">Agent decides</div></div><div className="rounded-lg bg-white px-3 py-3 text-[12px] dark:bg-white/[0.045]"><div className="text-[10px] text-black/40 dark:text-white/40">Changes</div><div className="mt-1 font-semibold">New sessions</div></div></div></div></div></section>;
-}
-
-function SkillImportCard() {
-  const open = (kind: string) => window.dispatchEvent(new CustomEvent('eterx_open_skill_creator', { detail: { kind } }));
-  const optionClass = 'inline-flex items-center gap-2 rounded-xl border border-black/[0.09] bg-white px-3.5 py-2 text-[12px] font-semibold transition hover:-translate-y-px hover:border-[#1d8cff]/45 hover:bg-[#1d8cff]/[0.045] dark:border-white/[0.1] dark:bg-white/[0.035]';
-  return <div className="eterx-skill-import mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.08] bg-white px-4 py-3 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="text-[14px] font-semibold">Bring your skills</div><div className="flex flex-wrap items-center justify-end gap-2"><button type="button" onClick={() => open('manual')} className={optionClass}>Create manually</button><button type="button" onClick={() => open('agent')} className={optionClass}>Create with Agent</button><button type="button" onClick={() => window.dispatchEvent(new CustomEvent('eterx_open_skill_import'))} className={`${optionClass} border-[#1d8cff]/25 bg-[#1d8cff]/[0.08] text-[#1268c4] dark:text-[#69b1ff]`}>Import skill</button></div></div>;
-}
-
 type LiveSkill = { id: string; name: string; description: string; editable?: boolean };
 function LiveSkillsGatewayPanel() {
   const [skills, setSkills] = useState<LiveSkill[]>([]);
   const [query, setQuery] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState('');
   const [content, setContent] = useState('');
-  const [saved, setSaved] = useState(true);
+  const [savedContent, setSavedContent] = useState('');
   const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [message, setMessage] = useState('');
+  const [messageError, setMessageError] = useState(false);
+  const [dialog, setDialog] = useState<'create' | 'rename' | 'delete' | null>(null);
+  const [name, setName] = useState('');
   const [undoStack, setUndoStack] = useState<string[]>([]);
   const [redoStack, setRedoStack] = useState<string[]>([]);
-  const [catalogRevision, setCatalogRevision] = useState(0);
-  const [skillDialog, setSkillDialog] = useState<{ type: 'rename' | 'delete'; id: string; name: string } | null>(null);
-  const [creatorKind, setCreatorKind] = useState<'manual' | 'agent' | null>(null);
-  const [creatorName, setCreatorName] = useState('');
-  const [skillNotice, setSkillNotice] = useState<{ text: string; error?: boolean } | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const selected = skills.find(skill => skill.id === selectedId);
+  const dirty = content !== savedContent;
+  const notify = (value: string, error = false) => { setMessage(value); setMessageError(error); };
+  const request = async (url: string, options?: RequestInit) => {
+    const response = await fetch(url, options);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || result.rejected?.map((item: any) => `${item.name}: ${item.reason}`).join(' ') || 'The skill could not be updated.');
+    return result;
+  };
+  const loadCatalog = async (nextId?: string) => {
+    setCatalogLoading(true);
+    try {
+      const result = await request('/api/skills');
+      const next: LiveSkill[] = result.skills || [];
+      setSkills(next);
+      setSelectedId(current => next.some(skill => skill.id === (nextId || current)) ? (nextId || current) : next[0]?.id || '');
+    } catch (reason) { notify(reason instanceof Error ? reason.message : 'Could not load skills.', true); }
+    finally { setCatalogLoading(false); }
+  };
+  useEffect(() => { void loadCatalog(); }, []);
   useEffect(() => {
-    let active = true;
-    fetch('/api/skills')
-      .then((response) => { if (!response.ok) throw new Error('Could not load skills.'); return response.json(); })
-      .then((data) => {
-        if (!active) return;
-        const next = Array.isArray(data?.skills) ? data.skills : [];
-        setSkills(next);
-        setSelectedId((current) => current && next.some((skill: LiveSkill) => skill.id === current) ? current : (next[0]?.id || null));
-      })
-      .catch(() => { if (active) { setSkills([]); setSelectedId(null); } });
-    return () => { active = false; };
-  }, [catalogRevision]);
-  const selected = skills.find((skill) => skill.id === selectedId);
-  useEffect(() => {
-    if (!selectedId) {
-      setContent('');
-      setSaved(true);
-      setLoading(false);
-      setLoadError(null);
-      return;
-    }
-    let active = true;
-    setLoading(true);
-    setSaved(true);
-    setLoadError(null);
-    fetch(`/api/skills/${encodeURIComponent(selectedId)}`)
-      .then((response) => { if (!response.ok) throw new Error('Could not load this skill.'); return response.json(); })
-      .then((data) => {
-        if (!active) return;
-        setContent(typeof data?.content === 'string' ? data.content : '');
-        setUndoStack([]);
-        setRedoStack([]);
-        setSaved(true);
-        setLoading(false);
-      })
-      .catch((error) => {
-        if (!active) return;
-        setContent('');
-        setSaved(true);
-        setLoading(false);
-        setLoadError(error instanceof Error ? error.message : 'Could not load this skill.');
-      });
-    return () => { active = false; };
+    if (!selectedId) { setContent(''); setSavedContent(''); return; }
+    const controller = new AbortController();
+    setLoading(true); setLoadError('');
+    void request(`/api/skills/${encodeURIComponent(selectedId)}`, { signal: controller.signal }).then(result => {
+      if (controller.signal.aborted) return;
+      setContent(result.content || ''); setSavedContent(result.content || ''); setUndoStack([]); setRedoStack([]);
+    }).catch(reason => { if (!controller.signal.aborted) setLoadError(reason.message); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
   }, [selectedId]);
-  useEffect(() => {
-    if (!selectedId || !selected?.editable || saved || loading || loadError) return;
-    const timer = window.setTimeout(() => {
-      fetch(`/api/skills/${encodeURIComponent(selectedId)}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content }) })
-        .then((response) => { if (!response.ok) throw new Error('Could not save this skill.'); setSaved(true); })
-        .catch((error) => { setSaved(true); setLoadError(error instanceof Error ? error.message : 'Could not save this skill.'); });
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [content, selectedId, selected?.editable, saved, loading, loadError]);
-  const visible = skills.filter((skill) => `${skill.name} ${skill.description}`.toLowerCase().includes(query.toLowerCase()));
-  useEffect(() => {
-    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.eterx-live-skills-panel aside > div:last-child > button'));
-    buttons.forEach((button, index) => { if (!button.dataset.skillId && visible[index]) button.dataset.skillId = visible[index].id; });
-    const cleanups = buttons.map((button) => {
-      if (!visible[buttons.indexOf(button)]?.editable) return () => {};
-      if (button.dataset.actionsReady) return () => {};
-      button.dataset.actionsReady = 'true';
-      const actions = document.createElement('span'); actions.className = 'eterx-skill-row-actions';
-      const makeIcon = (paths: string[]) => { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('aria-hidden', 'true'); svg.classList.add('eterx-skill-action-icon'); paths.forEach((d) => { const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.setAttribute('d', d); path.setAttribute('stroke', 'currentColor'); path.setAttribute('stroke-width', '1.8'); path.setAttribute('stroke-linecap', 'round'); path.setAttribute('stroke-linejoin', 'round'); svg.append(path); }); return svg; };
-      const rename = document.createElement('span'); rename.setAttribute('role', 'button'); rename.tabIndex = 0; rename.title = 'Rename skill'; rename.append(makeIcon(['M12 3H7a4 4 0 0 0-4 4v10a4 4 0 0 0 4 4h10a4 4 0 0 0 4-4v-5', 'M18.4 2.6a2.121 2.121 0 0 1 3 3L11.5 15.5l-4.5 1 1-4.5L18.4 2.6z']));
-      const remove = document.createElement('span'); remove.setAttribute('role', 'button'); remove.tabIndex = 0; remove.title = 'Delete skill'; remove.append(makeIcon(['M3 6h18', 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2', 'M10 11v6', 'M14 11v6']));
-      const skillId = button.getAttribute('data-skill-id') || '';
-      rename.onclick = (event) => { event.stopPropagation(); if (skillId) setSkillDialog({ type: 'rename', id: skillId, name: button.querySelector('div')?.textContent || '' }); };
-      remove.onclick = (event) => { event.stopPropagation(); if (skillId) setSkillDialog({ type: 'delete', id: skillId, name: button.querySelector('div')?.textContent || '' }); };
-      rename.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); rename.onclick?.(event as any); } };
-      remove.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); remove.onclick?.(event as any); } };
-      actions.append(rename, remove); button.append(actions); return () => { actions.remove(); delete button.dataset.actionsReady; };
-    });
-    return () => cleanups.forEach((cleanup) => cleanup());
-  }, [visible, selectedId]);
-  useEffect(() => {
-    if (!skillDialog) return;
-    const overlay = document.createElement('div'); overlay.className = 'eterx-skill-action-dialog';
-    const card = document.createElement('div'); card.className = 'eterx-skill-action-dialog-card';
-    const title = document.createElement('h3'); title.textContent = skillDialog.type === 'rename' ? 'Rename skill' : 'Delete skill';
-    const message = document.createElement('p'); message.textContent = skillDialog.type === 'rename' ? 'Choose a new name for this markdown skill file.' : `Delete “${skillDialog.name}” permanently?`;
-    card.append(title, message);
-    let input: HTMLInputElement | null = null;
-    if (skillDialog.type === 'rename') { input = document.createElement('input'); input.value = skillDialog.name; input.className = 'eterx-skill-action-dialog-input'; card.append(input); }
-    const actions = document.createElement('div'); actions.className = 'eterx-skill-action-dialog-actions';
-    const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.onclick = () => setSkillDialog(null);
-    const confirm = document.createElement('button'); confirm.className = skillDialog.type === 'delete' ? 'danger' : 'primary'; confirm.textContent = skillDialog.type === 'rename' ? 'Rename' : 'Delete';
-    confirm.onclick = async () => { const response = await fetch(`/api/skills/${encodeURIComponent(skillDialog.id)}`, { method: skillDialog.type === 'rename' ? 'PATCH' : 'DELETE', headers: { 'content-type': 'application/json' }, body: skillDialog.type === 'rename' ? JSON.stringify({ name: input?.value || '' }) : undefined }); if (response.ok) { if (skillDialog.type === 'delete' && selectedId === skillDialog.id) setSelectedId(null); setCatalogRevision((value) => value + 1); setSkillDialog(null); } };
-    actions.append(cancel, confirm); card.append(actions); overlay.append(card); document.body.append(overlay); input?.focus();
-    return () => overlay.remove();
-  }, [skillDialog, selectedId]);
-  useEffect(() => {
-    const toast = (text: string, error = false) => { const node = document.createElement('div'); node.textContent = text; node.className = `eterx-skill-toast${error ? ' is-error' : ''}`; document.body.append(node); window.setTimeout(() => node.remove(), 4200); };
-    const openImport = () => {
-      const input = document.createElement('input'); input.type = 'file'; input.accept = '.md,text/markdown'; input.multiple = true;
-      input.onchange = async () => { const files = Array.from(input.files || []); const payload = await Promise.all(files.map(async (file) => ({ name: file.name, content: await file.text() }))); const response = await fetch('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ files: payload }) }); const result = await response.json().catch(() => ({})); if (result.imported?.length) toast(`${result.imported.length} skill${result.imported.length === 1 ? '' : 's'} imported.`); if (result.rejected?.length) toast(result.rejected.map((item: { reason: string }) => item.reason).join(' '), true); setCatalogRevision((value) => value + 1); };
-      input.click();
-    };
-    const openCreator = (event: Event) => { const kind = (event as CustomEvent<{ kind?: 'manual' | 'agent' }>).detail?.kind; if (!kind) return; const overlay = document.createElement('div'); overlay.className = 'eterx-skill-action-dialog'; const card = document.createElement('div'); card.className = 'eterx-skill-action-dialog-card'; card.innerHTML = `<h3>${kind === 'agent' ? 'Create with Agent' : 'Create manually'}</h3><p>Choose a name for the new markdown skill.</p>`; const input = document.createElement('input'); input.className = 'eterx-skill-action-dialog-input'; input.placeholder = 'my-skill'; const actions = document.createElement('div'); actions.className = 'eterx-skill-action-dialog-actions'; const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.onclick = () => overlay.remove(); const create = document.createElement('button'); create.className = 'primary'; create.textContent = 'Create'; create.onclick = async () => { const name = input.value.trim(); if (!name) return; const response = await fetch('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ createName: name }) }); const result = await response.json().catch(() => ({})); if (!response.ok) { toast(result.error || 'Could not create skill.', true); return; } overlay.remove(); setCatalogRevision((value) => value + 1); window.setTimeout(() => setSelectedId(result.id), 250); toast('Skill created and opened for editing.'); }; actions.append(cancel, create); card.append(input, actions); overlay.append(card); overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); }; document.body.append(overlay); input.focus(); };
-    window.addEventListener('eterx_open_skill_import', openImport); window.addEventListener('eterx_open_skill_creator', openCreator);
-    return () => { window.removeEventListener('eterx_open_skill_import', openImport); window.removeEventListener('eterx_open_skill_creator', openCreator); };
-  }, []);
-  const createSkill = async () => { const name = creatorName.trim(); if (!name) return; const response = await fetch('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ createName: name }) }); const result = await response.json().catch(() => ({})); if (!response.ok) { setSkillNotice({ text: result.error || 'Could not create skill.', error: true }); return; } setCreatorKind(null); setSkillNotice({ text: 'Skill created and opened for editing.' }); setSelectedId(result.id); setCatalogRevision((value) => value + 1); };
-  const editContent = (next: string) => { if (!selected?.editable) return; setUndoStack((current) => [...current, content]); setRedoStack([]); setContent(next); setSaved(false); };
-  const undo = () => { if (!selected?.editable) return; const previous = undoStack.at(-1); if (previous === undefined) return; setRedoStack((current) => [...current, content]); setUndoStack((current) => current.slice(0, -1)); setContent(previous); setSaved(false); };
-  const redo = () => { if (!selected?.editable) return; const next = redoStack.at(-1); if (next === undefined) return; setUndoStack((current) => [...current, content]); setRedoStack((current) => current.slice(0, -1)); setContent(next); setSaved(false); };
-  return <section className="eterx-live-skills-panel mt-7 rounded-2xl border border-black/[0.08] bg-white p-4 dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="grid h-full min-h-[500px] gap-4 lg:grid-cols-[1fr_2fr]"><aside className="min-h-0 rounded-xl border border-black/[0.07] bg-black/[0.018] p-3 dark:border-white/[0.07] dark:bg-white/[0.025]"><div className="flex items-center justify-between"><h2 className="text-[18px] font-semibold">Skill Catalog</h2><span className="text-[11px] text-black/45 dark:text-white/45">{skills.length}</span></div><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search skills" className="mt-3 h-9 w-full rounded-lg border border-black/10 bg-white px-3 text-[12px] outline-none dark:border-white/10 dark:bg-white/[0.05]" /><div className="mt-3 max-h-[430px] space-y-1 overflow-y-auto pr-1">{visible.map((skill) => <button type="button" key={skill.id} onClick={() => setSelectedId(skill.id)} className={`w-full rounded-lg px-3 py-2 text-left ${selectedId === skill.id ? 'bg-[#e8f3ff] text-[#126fc1] dark:bg-[#183047] dark:text-[#b9dcff]' : 'hover:bg-black/[0.04] dark:hover:bg-white/[0.05]'}`}><div className="truncate text-[12px] font-semibold">{skill.name}</div><div className="mt-0.5 truncate text-[10px] text-black/40 dark:text-white/40">{skill.description}</div></button>)}{visible.length === 0 && <div className="py-8 text-center text-[12px] text-black/40">No skills found</div>}</div></aside><main className="min-h-0 rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 dark:border-white/[0.07] dark:bg-white/[0.025]"><div className="flex items-start justify-between gap-3"><div><h2 className="text-[18px] font-semibold">{selected?.name || 'Select a skill'}</h2><p className="mt-1 text-[11px] text-black/45 dark:text-white/45">{selected?.description || 'Choose a skill from the catalog to view and edit its markdown.'}</p></div><div className="flex items-center gap-2"><button type="button" onClick={undo} disabled={!selected?.editable || !undoStack.length} aria-label="Undo" title="Undo" className="rounded-lg border border-black/10 p-2 disabled:opacity-30 dark:border-white/10"><Undo2 className="h-4 w-4" /></button><button type="button" onClick={redo} disabled={!selected?.editable || !redoStack.length} aria-label="Redo" title="Redo" className="rounded-lg border border-black/10 p-2 disabled:opacity-30 dark:border-white/10"><Redo2 className="h-4 w-4" /></button><span className={`ml-1 text-[11px] ${loadError ? 'text-red-600 dark:text-red-400' : selected && !selected.editable ? 'text-slate-500' : saved ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600'}`}>{loading ? 'Loading…' : loadError ? loadError : selected && !selected.editable ? 'Read-only' : saved ? 'Saved' : 'Saving…'}</span></div></div>{selected ? <textarea value={content} onChange={(event) => editContent(event.target.value)} readOnly={!selected.editable || loading || Boolean(loadError)} placeholder={loadError || (!selected.editable ? 'Bundled skill — read-only' : 'Skill content')} spellCheck={false} className="mt-4 h-[420px] w-full resize-none rounded-lg border border-black/10 bg-white p-3 font-mono text-[11px] leading-5 outline-none focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.04]" /> : <div className="flex h-[420px] items-center justify-center text-[14px] text-black/40">Select and edit your skill</div>}</main></div></section>;
+  const save = async () => {
+    if (!selected?.editable || !dirty || busy || loading) return;
+    setBusy(true);
+    try {
+      await request(`/api/skills/${encodeURIComponent(selectedId)}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ content }) });
+      setSavedContent(content); notify('Skill saved. Future agent requests can load the updated instructions.');
+      await loadCatalog(selectedId);
+    } catch (reason) { notify(reason instanceof Error ? reason.message : 'Could not save skill.', true); }
+    finally { setBusy(false); }
+  };
+  const mutate = async () => {
+    setBusy(true);
+    try {
+      const creating = dialog === 'create';
+      const result = await request(creating ? '/api/skills' : `/api/skills/${encodeURIComponent(selectedId)}`, {
+        method: creating ? 'POST' : dialog === 'rename' ? 'PATCH' : 'DELETE', headers: { 'content-type': 'application/json' },
+        body: dialog === 'delete' ? undefined : JSON.stringify(creating ? { createName: name } : { name }),
+      });
+      setContent(''); setSavedContent(''); setSelectedId(''); setDialog(null);
+      notify(dialog === 'delete' ? 'Skill removed.' : dialog === 'rename' ? 'Skill renamed.' : 'Skill created. Add its instructions below.');
+      await loadCatalog(result.id);
+    } catch (reason) { notify(reason instanceof Error ? reason.message : 'Could not update skill.', true); }
+    finally { setBusy(false); }
+  };
+  const importSkills = async (files: File[]) => {
+    if (!files.length) return;
+    setBusy(true);
+    try {
+      const payload = await Promise.all(files.map(async file => ({ name: file.name, content: await file.text() })));
+      const result = await request('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ files: payload }) });
+      const failures = (result.rejected || []).map((item: any) => `${item.name}: ${item.reason}`).join(' ');
+      notify(`${result.imported?.length || 0} skills imported.${failures ? ` ${failures}` : ''}`, Boolean(failures));
+      await loadCatalog();
+    } catch (reason) { notify(reason instanceof Error ? reason.message : 'Could not import skills.', true); }
+    finally { setBusy(false); if (fileInput.current) fileInput.current.value = ''; }
+  };
+  const edit = (next: string) => { setUndoStack(current => [...current.slice(-99), content]); setRedoStack([]); setContent(next); };
+  const visible = skills.filter(skill => `${skill.name} ${skill.description}`.toLowerCase().includes(query.toLowerCase()));
+  return <>
+    <section className={styles.card}><div className={styles.row}><div><h2>Agent skills</h2><p className={styles.muted}>Saved workflows the agent can discover and load when relevant. Bundled skills are read-only.</p></div><div className={styles.actions}><button type="button" disabled={busy || dirty} className={styles.button} onClick={() => { setName(''); setDialog('create'); }}>New skill</button><button type="button" disabled={busy || dirty} className={styles.button} onClick={() => fileInput.current?.click()}>Import .md</button><button type="button" disabled={busy || dirty || catalogLoading} className={styles.button} onClick={() => void loadCatalog()} aria-label="Refresh skills"><RefreshCw className={catalogLoading ? 'animate-spin' : ''} /></button></div></div><input type="file" ref={fileInput} hidden multiple accept=".md,text/markdown" onChange={event => void importSkills(Array.from(event.target.files || []))} /></section>
+    {message && <div role={messageError ? 'alert' : 'status'} className={`${styles.notice} ${messageError ? styles.error : ''}`}>{message}</div>}
+    <section className={styles.connections}><aside className={styles.rail}><label className={styles.search}><Search size={15} /><input aria-label="Search skills" placeholder="Search skills" value={query} onChange={event => setQuery(event.target.value)} /></label><div className={styles.railList}>{visible.map(skill => <button type="button" key={skill.id} disabled={busy || loading} className={styles.connector} aria-current={selectedId === skill.id ? 'true' : undefined} onClick={() => { if (dirty) { notify('Save or discard your edits before selecting another skill.'); return; } setSelectedId(skill.id); }}><span><strong>{skill.name}</strong><small>{skill.editable ? 'Your skill' : 'Built in'}</small></span></button>)}{!visible.length && <p className={`${styles.muted} p-3`}>{catalogLoading ? 'Loading skills…' : 'No matching skills.'}</p>}</div></aside>
+      <div className={styles.connectorBody}>{selected ? <><div className={styles.row}><div><h2 className="text-lg font-semibold">{selected.name}</h2><p className={styles.muted}>{dirty ? 'Unsaved changes' : selected.editable ? 'Saved' : 'Read only'}</p></div><div className={styles.actions}>
+        <button type="button" className={styles.button} aria-label="Undo skill edit" disabled={!undoStack.length || busy || loading} onClick={() => { const previous = undoStack.at(-1)!; setUndoStack(current => current.slice(0, -1)); setRedoStack(current => [...current, content]); setContent(previous); }}><Undo2 /></button>
+        <button type="button" className={styles.button} aria-label="Redo skill edit" disabled={!redoStack.length || busy || loading} onClick={() => { const next = redoStack.at(-1)!; setRedoStack(current => current.slice(0, -1)); setUndoStack(current => [...current, content]); setContent(next); }}><Redo2 /></button>
+        {selected.editable && <><button type="button" className={styles.button} disabled={busy || dirty || loading} onClick={() => { setName(selected.name); setDialog('rename'); }}>Rename</button><button type="button" className={styles.button} disabled={busy || loading} onClick={() => setDialog('delete')}>Delete</button></>}
+      </div></div>{loadError ? <div role="alert" className={`${styles.notice} ${styles.error} mt-4`}>{loadError}</div> : <label className={`${styles.field} mt-5`}><span className="sr-only">Skill Markdown instructions</span><textarea className={styles.skillEditor} spellCheck={false} readOnly={!selected.editable || loading || busy} value={loading ? 'Loading skill…' : content} onChange={event => edit(event.target.value)} /></label>}
+      {selected.editable && <div className={`${styles.actions} mt-4`}><button type="button" className={`${styles.button} ${styles.primary}`} disabled={!dirty || busy || loading || Boolean(loadError)} onClick={() => void save()}>{busy ? <Loader2 className="animate-spin" /> : <Save />}Save skill</button><button type="button" className={styles.button} disabled={!dirty || busy} onClick={() => { setContent(savedContent); setUndoStack([]); setRedoStack([]); }}>Discard edits</button></div>}</> : <p className={styles.muted}>Select a skill, create one, or import a Markdown skill file.</p>}</div>
+    </section>
+    <Dialog.Root open={Boolean(dialog)} onOpenChange={open => { if (!open && !busy) setDialog(null); }}><Dialog.Portal><Dialog.Overlay className={styles.dialogOverlay} /><Dialog.Content className={styles.dialog}>
+      <Dialog.Title className="text-lg font-semibold">{dialog === 'delete' ? 'Delete skill' : dialog === 'rename' ? 'Rename skill' : 'Create skill'}</Dialog.Title>
+      <Dialog.Description className={`${styles.muted} mt-2`}>{dialog === 'delete' ? `Remove “${selected?.name}” and its local instructions?` : 'Use a clear name that describes when the agent should use this workflow.'}</Dialog.Description>
+      {dialog !== 'delete' && <label className={`${styles.field} mt-4`}>Skill name<input autoFocus disabled={busy} value={name} onChange={event => setName(event.target.value)} placeholder="Customer support workflow" /></label>}
+      {messageError && <p role="alert" className={`${styles.error} mt-3 text-xs`}>{message}</p>}
+      <div className={`${styles.actions} mt-5`}><button type="button" className={`${styles.button} ${styles.primary}`} disabled={busy || (dialog !== 'delete' && !name.trim())} onClick={() => void mutate()}>{busy ? 'Saving…' : dialog === 'delete' ? 'Delete skill' : dialog === 'rename' ? 'Rename' : 'Create'}</button><Dialog.Close asChild><button type="button" className={styles.button} disabled={busy}>Cancel</button></Dialog.Close></div>
+    </Dialog.Content></Dialog.Portal></Dialog.Root>
+  </>;
 }
-
 const LegacyAgentChannelsView = React.memo(() => {
   const [screen, setScreen] = useState<'landing' | 'gateway' | 'bots'>('landing');
-  const [landingHeadline, setLandingHeadline] = useState(0);
   const [config, setConfig] = useState<GatewayConfig>(defaultConfig);
+  const [savedConfig, setSavedConfig] = useState('');
   const [status, setStatus] = useState<GatewayStatus | null>(null);
   const [conversations, setConversations] = useState<GatewayConversation[]>([]);
   const [externalConnectorStatus, setExternalConnectorStatus] = useState<Record<string, any>>({});
   const [approvals, setApprovals] = useState<GatewayApproval[]>([]);
+  const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [connectorSearch, setConnectorSearch] = useState('');
   const [selectedConnector, setSelectedConnector] = useState('telegram');
   const [gatewayMode, setGatewayMode] = useState<GatewayMode>('communication');
   const [mcpServers, setMcpServers] = useState<McpServerDraft[]>([]);
-  const previousConnector = useRef('telegram');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const autosaveReady = useRef(false);
-  const lastAutosaved = useRef('');
+  const savingRef = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [noticeError, setNoticeError] = useState(false);
   const [secureStorage, setSecureStorage] = useState(true);
-  const api = typeof window !== 'undefined' ? (window as any).electronAPI : null;
-  const baseUrl = useMemo(() => `http://${config.host}:${config.port}`, [config.host, config.port]);
   const [pathwayProfiles, setPathwayProfiles] = useState<Record<string, Record<string, string>>>({});
-  const communicationCatalog = CONNECTOR_CATALOG.filter((connector) => connector.id !== 'mcp' && connector.id !== 'skills');
-  const selected = CONNECTOR_CATALOG.find((connector) => connector.id === selectedConnector) || communicationCatalog[0];
-  const selectedNative = PLATFORMS.find((platform) => platform.id === selected.id);
+  const api = typeof window !== 'undefined' ? (window as any).electronAPI : null;
+  const dirty = useMemo(() => Boolean(savedConfig && JSON.stringify(config) !== savedConfig), [config, savedConfig]);
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const baseUrl = `http://${config.host.includes(':') ? `[${config.host}]` : config.host}:${config.port}`;
+  const communicationCatalog = CONNECTOR_CATALOG.filter(connector => connector.id !== 'mcp' && connector.id !== 'skills');
+  const selected = communicationCatalog.find(connector => connector.id === selectedConnector) || communicationCatalog[0];
+  const selectedNative = PLATFORMS.find(platform => platform.id === selected.id);
   const selectedItem = selectedNative ? config.platforms[selectedNative.id] : null;
-  const visibleConnectors = communicationCatalog.filter((connector) => `${connector.label} ${connector.description}`.toLowerCase().includes(connectorSearch.trim().toLowerCase()));
-  const connectorState = (connector: ConnectorCatalogItem) => {
-    const native = PLATFORMS.find((platform) => platform.id === connector.id);
-    if (native) return status?.platforms?.[native.id]?.state || (config.platforms[native.id].enabled ? 'saved' : '');
-    if (connector.kind === 'mcp') return 'MCP';
-    const record = externalConnectorStatus[connector.id];
-    return record?.connected ? 'connected' : record?.lastError ? 'needs attention' : '';
+  const visibleConnectors = communicationCatalog.filter(connector => `${connector.label} ${connector.description}`.toLowerCase().includes(connectorSearch.trim().toLowerCase()));
+  const selectedStatus = selectedNative ? status?.platforms?.[selectedNative.id] : undefined;
+  const pendingApprovals = approvals.filter(item => item.status === 'pending');
+  const notify = (message: string, error = false) => { setNotice(message); setNoticeError(error); };
+  const mergeState = (raw: Partial<GatewayConfig>): GatewayConfig => {
+    const defaults = defaultConfig();
+    return { ...defaults, ...raw, busyInputMode: raw.busyInputMode === 'steer' ? 'steer' : 'queue', channelAgent: raw.channelAgent || defaults.channelAgent, platforms: Object.fromEntries(PLATFORMS.map(platform => [platform.id, { ...defaults.platforms[platform.id], ...raw.platforms?.[platform.id] }])) as GatewayConfig['platforms'] };
   };
-
-  const loadState = useCallback(async () => { setLoading(true); try { if (api?.getGatewayState) { const state = await api.getGatewayState(); if (state?.config) setConfig((current) => ({ ...current, ...state.config, channelAgent: state.config.channelAgent || current.channelAgent, platforms: { ...current.platforms, ...state.config.platforms } })); setStatus(state?.status || null); setConversations(Array.isArray(state?.conversations) ? state.conversations : []); setApprovals((await api.listGatewayApprovals?.()) || []); setSecureStorage(state?.available !== false); } else { setSecureStorage(false); setNotice('Install the EterX desktop app to configure channels.'); } } catch (error: any) { setNotice(error?.message || 'Could not load gateway state.'); } finally { setLoading(false); autosaveReady.current = true; } }, [api]);
+  const loadState = useCallback(async (discard = false) => {
+    setLoading(true);
+    try {
+      if (!api?.getGatewayState) { setSecureStorage(false); return; }
+      const state = await api.getGatewayState();
+      if (!state?.config) throw new Error('The desktop gateway is not ready. Try refreshing in a moment.');
+      if (!dirtyRef.current || discard) {
+        const next = mergeState(state.config);
+        setConfig(next);
+        setSavedConfig(JSON.stringify(next));
+      }
+      setStatus(state.status || null);
+      setConversations(Array.isArray(state.conversations) ? state.conversations : []);
+      setApprovals(await api.listGatewayApprovals?.() || []);
+      setSecureStorage(state.available !== false);
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not load gateway state.'); setNoticeError(true); }
+    finally { setLoading(false); }
+  }, [api]);
   useEffect(() => { void loadState(); }, [loadState]);
   useEffect(() => {
     const openBots = () => setScreen('bots');
+    const back = () => setScreen('landing');
     window.addEventListener('eterx_connect_as_bot', openBots);
-    return () => window.removeEventListener('eterx_connect_as_bot', openBots);
+    window.addEventListener('eterx_gateway_back', back);
+    return () => { window.removeEventListener('eterx_connect_as_bot', openBots); window.removeEventListener('eterx_gateway_back', back); };
   }, []);
+  useEffect(() => {
+    // Legacy body selectors hid controls and imposed viewport-sized panels.
+    // This workspace owns its layout; the shared header uses the screen event.
+    window.dispatchEvent(new CustomEvent('eterx_gateway_screen', { detail: screen === 'gateway' }));
+    return () => { window.dispatchEvent(new CustomEvent('eterx_gateway_screen', { detail: false })); };
+  }, [screen]);
+  useEffect(() => {
+    const off = api?.onGatewayStatus?.((next: GatewayStatus) => {
+      setStatus(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
+    });
+    return () => { if (typeof off === 'function') off(); };
+  }, [api]);
   useEffect(() => {
     if (screen !== 'gateway') return;
     let active = true;
-    const refresh = () => fetch('/api/connectors/status').then((response) => response.json()).then((payload) => {
-      if (active && payload?.connectors && typeof payload.connectors === 'object') setExternalConnectorStatus(payload.connectors);
-    }).catch(() => {});
-    void refresh();
-    window.addEventListener('eterx_connector_status_refresh', refresh);
-    return () => { active = false; window.removeEventListener('eterx_connector_status_refresh', refresh); };
-  }, [screen]);
-  useEffect(() => { if (screen !== 'landing') return; const timer = window.setInterval(() => setLandingHeadline((value) => (value + 1) % 4), 4200); return () => window.clearInterval(timer); }, [screen]);
-  useEffect(() => { document.body.classList.toggle('eterx-gateway-view', screen === 'gateway'); document.body.classList.toggle('eterx-channel-agents-mode', screen === 'gateway' && gatewayMode === 'agents'); document.body.classList.toggle('eterx-mcp-mode', screen === 'gateway' && gatewayMode === 'mcp'); document.body.classList.toggle('eterx-skills-mode', screen === 'gateway' && gatewayMode === 'skills'); return () => { document.body.classList.remove('eterx-gateway-view', 'eterx-channel-agents-mode', 'eterx-mcp-mode', 'eterx-skills-mode'); }; }, [screen, gatewayMode]);
-  useEffect(() => { if (gatewayMode === 'communication' && (selectedConnector === 'mcp' || selectedConnector === 'skills')) setSelectedConnector('telegram'); }, [gatewayMode, selectedConnector]);
-  useEffect(() => { if (selectedConnector === 'mcp' && previousConnector.current !== 'mcp') setGatewayMode('mcp'); previousConnector.current = selectedConnector; }, [selectedConnector]);
-  useEffect(() => { if (screen !== 'gateway') return; document.body.classList.remove('eterx-gateway-content-bounce'); void document.body.offsetWidth; document.body.classList.add('eterx-gateway-content-bounce'); const timer = window.setTimeout(() => document.body.classList.remove('eterx-gateway-content-bounce'), 560); return () => window.clearTimeout(timer); }, [screen, gatewayMode, selectedConnector]);
-  useEffect(() => { window.dispatchEvent(new CustomEvent('eterx_gateway_screen', { detail: screen === 'gateway' })); return () => { window.dispatchEvent(new CustomEvent('eterx_gateway_screen', { detail: false })); }; }, [screen]);
-  useEffect(() => { const back = () => setScreen('landing'); window.addEventListener('eterx_gateway_back', back); return () => window.removeEventListener('eterx_gateway_back', back); }, []);
-  useEffect(() => {
-    const offStatus = api?.onGatewayStatus?.((next: GatewayStatus) => setStatus(next));
-    return () => {
-      if (typeof offStatus === 'function') offStatus();
+    let refreshing = false;
+    const controller = new AbortController();
+    const refresh = async () => {
+      if (!active || refreshing || !isAppVisible()) return;
+      refreshing = true;
+      try {
+        const results = await Promise.allSettled([
+          api?.getGatewayState?.(), api?.listGatewayApprovals?.(),
+          requestJson('/api/connectors/status', { signal: controller.signal }, 15_000).then(response => { if (!response.ok) throw new Error('Could not load connector status.'); return response.json(); }),
+        ]);
+        if (!active) return;
+        const [state, permissions, connectors] = results;
+        if (state.status === 'fulfilled' && state.value) {
+          const nextStatus = state.value.status || null;
+          const nextConversations = Array.isArray(state.value.conversations) ? state.value.conversations : [];
+          setStatus(previous => JSON.stringify(previous) === JSON.stringify(nextStatus) ? previous : nextStatus);
+          setConversations(previous => JSON.stringify(previous) === JSON.stringify(nextConversations) ? previous : nextConversations);
+        }
+        if (permissions.status === 'fulfilled' && Array.isArray(permissions.value)) {
+          const nextApprovals = permissions.value;
+          setApprovals(previous => JSON.stringify(previous) === JSON.stringify(nextApprovals) ? previous : nextApprovals);
+        }
+        if (connectors.status === 'fulfilled') {
+          const nextConnectors = connectors.value.connectors || {};
+          setExternalConnectorStatus(previous => JSON.stringify(previous) === JSON.stringify(nextConnectors) ? previous : nextConnectors);
+        }
+      } finally { refreshing = false; }
     };
-  }, [api]);
-  useEffect(() => { if (!autosaveReady.current || screen !== 'gateway') return; const key = JSON.stringify(config); if (key === lastAutosaved.current) return; const timer = window.setTimeout(() => { lastAutosaved.current = key; void save(); }, 350); return () => window.clearTimeout(timer); }, [config, screen]);
-  const patchPlatform = (id: PlatformId, patch: Partial<PlatformConfig>) => setConfig((current) => ({ ...current, platforms: { ...current.platforms, [id]: { ...current.platforms[id], ...patch } } }));
-  const save = async () => { setSaving(true); setNotice(null); try { if (!api?.saveGatewayConfig) { setNotice('Install the EterX desktop app to save channel configuration.'); return; } const result = await api.saveGatewayConfig(config); if (!result?.ok) throw new Error(result?.error || 'Could not save gateway configuration.'); if (result.config) setConfig((current) => ({ ...current, ...result.config, platforms: { ...current.platforms, ...result.config.platforms } })); if (result.status) setStatus(result.status); appStorage.setItem('eterx_background_active_chats', String(Boolean(config.enabled && config.keepActiveChatsOnClose))); appStorage.setItem('eterx_background_scheduled_tasks', String(Boolean(config.enabled && config.runScheduledTasksInBackground))); window.dispatchEvent(new CustomEvent('eterx-background-settings-updated', { detail: config })); setNotice(config.enabled ? 'Gateway saved and running in the background.' : 'Gateway settings saved.'); } catch (error: any) { setNotice(error?.message || 'Could not save gateway configuration.'); } finally { setSaving(false); } };
-  const copyMcpConfig = async () => { const connection = await api?.getGatewayMcpConnection?.(); if (!connection) return setNotice('Start the desktop gateway before copying its MCP connection.'); const copied = await safeCopyTextToClipboard(JSON.stringify({ mcpServers: { 'eterx-gateway': { url: connection.url, headers: connection.headers } } }, null, 2)); setNotice(copied ? 'MCP connection copied.' : 'Could not copy MCP connection.'); };
-  const resolveApproval = async (id: string, approved: boolean) => { await api?.resolveGatewayApproval?.(id, approved); setApprovals((current) => current.map((item) => item.id === id ? { ...item, status: approved ? 'approved' : 'denied' } : item)); };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5000);
+    const onRefresh = () => void refresh();
+    const unsubscribeVisibility = subscribeAppVisibility(onRefresh);
+    window.addEventListener('eterx_connector_status_refresh', onRefresh);
+    return () => {
+      active = false;
+      controller.abort();
+      unsubscribeVisibility();
+      window.clearInterval(timer);
+      window.removeEventListener('eterx_connector_status_refresh', onRefresh);
+    };
+  }, [api, screen]);
+  const patchPlatform = (id: PlatformId, patch: Partial<PlatformConfig>) => setConfig(current => ({ ...current, platforms: { ...current.platforms, [id]: { ...current.platforms[id], ...patch } } }));
+  const save = async () => {
+    if (savingRef.current) return;
+    if (!api?.saveGatewayConfig || !savedConfig) return notify('Open the desktop app and load the gateway before saving.', true);
+    if (!Number.isInteger(config.port) || config.port < 1024 || config.port > 65535) return notify('Use a gateway port between 1024 and 65535.', true);
+    savingRef.current = true;
+    setSaving(true); setNotice(null);
+    try {
+      const result = await api.saveGatewayConfig(config);
+      if (!result?.ok) throw new Error(result?.error || 'Could not save gateway configuration.');
+      const next = mergeState(result.config || config);
+      setConfig(next); setSavedConfig(JSON.stringify(next)); setStatus(result.status || null);
+      setRevealed({});
+      appStorage.setItem('eterx_background_active_chats', String(Boolean(next.enabled && next.keepActiveChatsOnClose)));
+      appStorage.setItem('eterx_background_scheduled_tasks', String(Boolean(next.enabled && next.runScheduledTasksInBackground)));
+      window.dispatchEvent(new CustomEvent('eterx-background-settings-updated', { detail: next }));
+      const problems = Object.values(result.status?.platforms || {}).some((item: any) => item.enabled && item.lastError);
+      notify(problems ? 'Settings saved. A connection needs attention; select it to see the error.' : result.status?.running ? 'Settings saved. The gateway is running; each connection reports its live status below.' : 'Settings saved. The gateway is off.', problems);
+    } catch (error) { notify(error instanceof Error ? error.message : 'Could not save gateway configuration.', true); }
+    finally { savingRef.current = false; setSaving(false); }
+  };
+  const copyMcpConfig = async () => {
+    try {
+      if (!status?.running || !status.mcpEndpoint) throw new Error('Enable the gateway and MCP bridge, then save before copying the connection.');
+      const connection = await api?.getGatewayMcpConnection?.();
+      if (!connection) throw new Error('The desktop gateway connection is unavailable.');
+      const copied = await safeCopyTextToClipboard(JSON.stringify({ mcpServers: { 'eterx-gateway': { url: connection.url, headers: connection.headers } } }, null, 2));
+      notify(copied ? 'MCP connection copied.' : 'Could not copy MCP connection.', !copied);
+    } catch (error) { notify(error instanceof Error ? error.message : 'Could not copy MCP connection.', true); }
+  };
+  const resolveApproval = async (id: string, approved: boolean) => {
+    setApprovalBusy(id);
+    try {
+      const resolved = await api?.resolveGatewayApproval?.(id, approved);
+      if (!resolved) throw new Error('This approval could not be updated. Refresh and try again.');
+      setApprovals(current => current.map(item => item.id === id ? { ...item, status: approved ? 'approved' : 'denied' } : item));
+      notify(approved ? 'Person approved. Ask them to send their message again to start the conversation.' : 'Connection request denied.');
+    } catch (error) { notify(error instanceof Error ? error.message : 'Could not update approval.', true); }
+    finally { setApprovalBusy(null); }
+  };
+  const stateLabel = (id: string) => {
+    const native = PLATFORMS.some(platform => platform.id === id);
+    if (!native) return externalConnectorStatus[id]?.connected ? 'API available' : externalConnectorStatus[id]?.lastError ? 'Needs attention' : 'API setup';
+    const live = status?.platforms?.[id];
+    if (!live?.enabled) return 'Not connected';
+    if (!status?.running) return 'Gateway off';
+    return ({ listening: 'Listening', connected: 'Connected', connecting: 'Connecting', retrying: 'Reconnecting', 'needs-configuration': 'Setup required', conflict: 'Connection conflict', stopped: 'Stopped', external: 'Other instance', disabled: 'Not connected' } as Record<string, string>)[live.state] || live.state;
+  };
+  const matchedProfile = selectChannelProfile(config.channelAgent, selected.id);
+  const routeDescription = !config.autoDispatch || !config.channelAgent.enabled || !matchedProfile || matchedProfile.operatingMode === 'manual'
+    ? 'Messages stay in the inbox until you ask the agent to read them.'
+    : matchedProfile.operatingMode === 'autonomous' && matchedProfile.sendPolicy === 'autonomous'
+      ? 'New approved messages start the agent. Its completed answer returns to this conversation.'
+      : 'New approved messages start the agent and create a draft in EterX. Replies are not sent automatically.';
 
   if (screen === 'bots') return <ConnectAsBot onBack={() => setScreen('landing')} onChanged={() => void loadState()} />;
-
   if (screen === 'landing') {
-    const orbit = [['whatsapp', 'WhatsApp', '/icons/connectors/whatsapp.svg', '0s'], ['telegram', 'Telegram', '/icons/connectors/telegram.svg', '-1.65s'], ['messenger', 'Messenger', '/icons/connectors/messenger.svg', '-3.3s'], ['line', 'LINE', '/icons/connectors/line.svg', '-4.95s'], ['slack', 'Slack', '/icons/connectors/slack.svg', '-6.6s']];
-    const features = [[ShieldCheck, 'Trusted agent identity', 'One voice and policy across every customer touchpoint.'], [Activity, 'Context that follows', 'Carry history, tools, and decisions from one channel to the next.'], [Settings2, 'Skill routing', 'Send each request to the right workflow or specialist agent.'], [MessageCircle, 'Native handoff', 'Meet customers on the channels they already use.']];
-    const headlines = ['Launch your agent across every customer channel', 'Deploy one agent across every conversation', 'Route every message to the right specialist agent', 'Keep every customer handoff context-aware'];
-    return <div className="eterx-channels-view flex h-full min-h-0 w-full overflow-y-auto bg-[var(--eterx-channel-surface)] px-5 py-5 text-[#33302d] md:px-8"><div className="mx-auto flex min-h-full w-full max-w-[1420px] flex-col items-center justify-center py-4"><div className="mb-3 flex w-full shrink-0 justify-end"><button type="button" onClick={() => setScreen('bots')} className="inline-flex items-center gap-2.5 rounded-xl border border-[#DCD7CF] bg-white px-4 py-2.5 text-[13px] font-semibold text-[#353230] transition hover:bg-[#F1EFEB] dark:border-white/10 dark:bg-white/[0.06] dark:text-white"><img src="/icons/connectors/telegram.svg" alt="" className="h-4 w-4" />Connect as bot<span className="rounded-full bg-black/[0.055] px-2 py-0.5 text-[10px] dark:bg-white/10">{(config as any).telegramBots?.length || 0}</span><ChevronRight className="h-4 w-4" /></button></div><motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} className="eterx-channel-orbit-stage relative h-[282px] w-full max-w-[520px] shrink-0"><div className="eterx-channel-phone absolute left-1/2 top-[68px] z-10 h-[206px] w-[252px] -translate-x-1/2 rounded-[34px] border-[5px] border-[#D9D8D5] bg-[linear-gradient(180deg,#F9F9F8_0%,#ECEBE8_100%)] shadow-none" /><div className="eterx-channel-agent-card absolute left-1/2 top-[142px] z-30 flex h-[72px] w-[min(372px,84vw)] -translate-x-1/2 items-center gap-3 rounded-[18px] border border-[#E5E2DE] bg-white/95 px-4 shadow-none backdrop-blur-sm"><span className="flex h-[46px] w-[46px] items-center justify-center rounded-full border border-[#EEEAE4] bg-[#F7F5F2]"><PremiumAgent className="h-[23px] w-[23px] brightness-0" /></span><span className="min-w-0 flex-1"><span className="flex items-center gap-1.5 text-[18px] font-semibold">EterX <CheckCircle2 className="h-4 w-4 text-[#1398FF]" fill="#1398FF" stroke="white" /></span><span className="mt-1 block text-[11.5px] text-[#85817c]">Enterprise assistant ready</span><span className="block truncate text-[11px] text-[#8A8680]">Connected across critical channels</span></span></div>{orbit.map(([id, label, logo, delay]) => <span key={id} aria-label={label} className="eterx-channel-orbit-icon absolute left-1/2 top-[146px] flex h-16 w-16 items-center justify-center rounded-full bg-white shadow-none ring-1 ring-[#ECE9E5]" style={{ '--delay': delay } as React.CSSProperties}><img src={logo} alt="" className="h-9 w-9 object-contain" /></span>)}</motion.div><div className="relative mt-1 flex min-h-[62px] w-full items-center justify-center text-center font-sans text-[clamp(30px,3vw,44px)] font-semibold leading-tight tracking-[-0.025em] text-[#3B3835]"><AnimatePresence mode="wait"><motion.h1 key={headlines[landingHeadline]} initial={{ opacity: 0, y: 10, filter: 'blur(8px)' }} animate={{ opacity: 1, y: 0, filter: 'blur(0)' }} exit={{ opacity: 0, y: -8 }} className="max-w-[900px]">{headlines[landingHeadline]}</motion.h1></AnimatePresence></div><div className="mt-5 grid w-full gap-4 md:grid-cols-2 xl:grid-cols-4">{features.map(([Icon, title, description]: any[]) => <div key={title} className="eterx-channel-feature-card min-h-[150px] rounded-[20px] border border-[#DEDBD6] bg-white px-5 py-5 text-left shadow-none"><Icon className="h-6 w-6 text-[#34312f]" strokeWidth={1.85} /><h2 className="mt-5 text-[18px] font-semibold text-[#3B3835]">{title}</h2><p className="mt-2 text-[14px] leading-[1.5] text-[#85817c]">{description}</p></div>)}</div><button type="button" onClick={() => setScreen('gateway')} className="eterx-channel-cta group mt-6 inline-flex h-12 items-center gap-3 rounded-[14px] border border-[#DCD7CF] bg-[#F1EFEB] px-6 text-[15px] font-bold text-[#353230] shadow-none transition hover:bg-[#E9E5DE] active:scale-[0.98]">Go to gateway<ChevronRight aria-hidden="true" className="eterx-channel-cta-arrow ml-auto h-5 w-5 shrink-0 transition-transform duration-150 group-hover:translate-x-[3px]" strokeWidth={2.25} /></button></div></div>;
+    const features = [
+      { icon: ShieldCheck, title: 'Your agent, connected', text: 'Bring your EterX agent to the conversations that matter.' },
+      { icon: MessageCircle, title: 'Context per conversation', text: 'Keep messages and replies together, with separate working histories.' },
+      { icon: Settings2, title: 'You choose the workflow', text: 'Read on request, prepare drafts, or enable automatic replies.' },
+      { icon: Activity, title: 'Stay in control', text: 'See connection status and approve who can reach your agent.' },
+    ];
+    return <div className={styles.surface}><div className={styles.landing}>
+      <div className={styles.illustration} aria-hidden="true">
+        <div className={styles.phone} />
+        <div className={styles.identity}><span className={styles.avatar}><PremiumAgent className="h-6 w-6 brightness-0" /></span><div><strong>EterX <CheckCircle2 size={15} className="text-blue-500" /></strong><small>Your agent, wherever you work</small></div></div>
+        {([['whatsapp', '0s'], ['telegram', '-1.65s'], ['messenger', '-3.3s']] as const).map(([id, delay]) => <span key={id} className={styles.orbitIcon} data-platform={id} style={{ '--orbit-delay': delay } as React.CSSProperties}><img src={`/icons/connectors/${id}.svg`} alt="" /></span>)}
+      </div>
+      <h1 className={styles.headline}>One agent. Every conversation.</h1>
+      <p className={styles.subtitle}>Work with your agent on Telegram, or connect your team’s channels through the EterX gateway.</p>
+      <div className={styles.landingActions}>
+        <button type="button" className={`${styles.button} ${styles.primary}`} onClick={() => setScreen('bots')}><img src="/icons/connectors/telegram.svg" alt="" className="h-[18px] w-[18px]" />Connect as bot{(status?.bots?.length || 0) > 0 && <span className={styles.count}>{status?.bots?.length}</span>}<ChevronRight /></button>
+        <button type="button" className={styles.button} onClick={() => setScreen('gateway')}><Radio />Go to gateway<ChevronRight /></button>
+      </div>
+      <div className={styles.features}>{features.map(({ icon: Icon, title, text }) => <article key={title} className={styles.feature}><Icon /><h2>{title}</h2><p>{text}</p></article>)}</div>
+    </div></div>;
   }
-
-  const selectedStatus = selectedNative ? status?.platforms?.[selectedNative.id] : undefined;
-  const selectedState = selectedNative ? (selectedStatus?.state === 'disabled' && selectedItem?.enabled && !selectedItem?.configured ? 'needs setup' : selectedStatus?.state || (selectedItem?.enabled ? 'saved' : 'not connected')) : selected.kind === 'mcp' ? (config.mcpBridgeEnabled ? 'available' : 'off') : connectorState(selected);
-
-  return <div className="h-full min-h-0 w-full overflow-y-auto bg-[#f5f5f3] text-[#272624] dark:bg-[#0d0d0d] dark:text-[#efefed]"><div className="mx-auto w-full max-w-[1280px] px-6 pb-10 pt-16 lg:px-10 lg:pt-16"><header className="flex items-start justify-between gap-5"><div className="flex items-start gap-3"><button type="button" onClick={() => setScreen('landing')} aria-label="Back to Channels" className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-black/10 bg-white shadow-none dark:border-white/10 dark:bg-white/[0.04]"><ArrowLeft className="h-4 w-4" /></button><div><div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-black/40 dark:text-white/40"><Radio className="h-3.5 w-3.5" /> Gateway</div><h1 className="mt-2 text-[32px] font-semibold tracking-[-0.04em]">Connect EterX</h1><p className="mt-2 max-w-xl text-[14px] leading-6 text-black/50 dark:text-white/50">Choose one connector at a time. EterX keeps the setup focused and the background companion always available.</p></div></div><div className="flex shrink-0 items-center gap-2"><button type="button" onClick={() => void loadState()} aria-label="Refresh gateway" className="flex h-10 w-10 items-center justify-center rounded-xl border border-black/10 bg-white shadow-none dark:border-white/10 dark:bg-white/[0.04]"><RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /></button><button type="button" onClick={() => void save()} disabled={saving} className="flex h-10 items-center gap-2 rounded-xl bg-[#1e1e1e] px-4 text-[13px] font-semibold text-white shadow-none disabled:opacity-60 dark:bg-white dark:text-black">{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save</button></div></header>
-    {notice && <div className="mt-5 rounded-xl border border-[#1d8cff]/20 bg-[#1d8cff]/[0.07] px-4 py-3 text-[13px] text-[#126fc1] dark:text-[#72baff]">{notice}</div>}
-    {!secureStorage && <div className="mt-5 flex gap-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.07] px-4 py-3 text-[13px] text-amber-700 dark:text-amber-300"><ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />Credentials are available only in the desktop app secure storage.</div>}
-    <GatewayModeTabs active={gatewayMode} onChange={(mode) => { setGatewayMode(mode); if (mode === 'mcp' || mode === 'skills') setSelectedConnector(mode); }} /><section className="mt-7 rounded-2xl border border-black/[0.08] bg-white p-5 shadow-none dark:border-white/[0.08] dark:bg-white/[0.035]"><div className="flex items-center justify-between gap-4"><div className="flex items-center gap-3"><span className={`flex h-10 w-10 items-center justify-center rounded-xl ${status?.running ? 'bg-emerald-500/10 text-emerald-600' : 'bg-black/[0.05] text-black/40 dark:bg-white/[0.06] dark:text-white/40'}`}>{status?.running ? <Wifi className="h-5 w-5" /> : <WifiOff className="h-5 w-5" />}</span><div><div className="text-[15px] font-semibold">Background companion</div><div className="mt-0.5 text-[12px] text-black/45 dark:text-white/45">{status?.running ? `Online - ${baseUrl}` : 'Turn on to receive messages while EterX is hidden'}</div></div></div><Toggle checked={config.enabled} onChange={(enabled) => setConfig((current) => ({ ...current, enabled }))} /></div><div className="mt-5 flex flex-wrap items-center gap-2 text-[12px]"><button type="button" onClick={() => setConfig((current) => ({ ...current, keepRunningOnClose: !current.keepRunningOnClose }))} className={`rounded-full border px-3 py-1.5 ${config.keepRunningOnClose ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'border-black/10 text-black/45 dark:border-white/10 dark:text-white/45'}`}>{config.keepRunningOnClose ? 'Runs after close' : 'Runs only while open'}</button><button type="button" onClick={() => setConfig((current) => ({ ...current, launchAtLogin: !current.launchAtLogin }))} className={`rounded-full border px-3 py-1.5 ${config.launchAtLogin ? 'border-[#1d8cff]/30 bg-[#1d8cff]/10 text-[#126fc1] dark:text-[#72baff]' : 'border-black/10 text-black/45 dark:border-white/10 dark:text-white/45'}`}>{config.launchAtLogin ? 'Starts at sign-in' : 'Starts manually'}</button><span className="ml-auto text-black/35 dark:text-white/35">{status?.conversationCount || 0} conversations - {status?.eventCount || 0} events</span></div><details className="mt-4 rounded-xl border border-black/[0.07] px-4 py-3 dark:border-white/[0.07]"><summary className="cursor-pointer text-[12px] font-semibold">Advanced settings</summary><div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="flex items-center justify-between rounded-lg bg-black/[0.025] px-3 py-2.5 text-[12px] dark:bg-white/[0.04]"><span>Send messages to agent</span><Toggle checked={config.autoDispatch} onChange={(autoDispatch) => setConfig((current) => ({ ...current, autoDispatch }))} /></label><label className="flex items-center justify-between rounded-lg bg-black/[0.025] px-3 py-2.5 text-[12px] dark:bg-white/[0.04]"><span>MCP gateway bridge</span><Toggle checked={config.mcpBridgeEnabled} onChange={(mcpBridgeEnabled) => setConfig((current) => ({ ...current, mcpBridgeEnabled }))} /></label><label className="flex items-center gap-2 rounded-lg bg-black/[0.025] px-3 py-2.5 text-[12px] dark:bg-white/[0.04]"><Server className="h-4 w-4 text-black/35 dark:text-white/35" /><input value={config.host} readOnly className="w-24 bg-transparent outline-none" /><span className="text-black/25">:</span><input type="number" value={config.port} onChange={(event) => setConfig((current) => ({ ...current, port: Number(event.target.value) }))} className="w-16 bg-transparent outline-none" /></label><label className="flex items-center gap-2 rounded-lg bg-black/[0.025] px-3 py-2.5 text-[12px] dark:bg-white/[0.04]"><span>Busy messages</span><select value={config.busyInputMode} onChange={(event) => setConfig((current) => ({ ...current, busyInputMode: event.target.value as GatewayConfig['busyInputMode'] }))} className="ml-auto bg-transparent outline-none"><option value="queue">Queue</option><option value="steer">Steer</option><option value="interrupt">Interrupt</option></select></label></div>{config.mcpBridgeEnabled && <div className="mt-3 flex items-center gap-2"><code className="min-w-0 flex-1 truncate text-[10px] text-black/45 dark:text-white/45">{status?.mcpEndpoint || `${baseUrl}/mcp`}</code><button type="button" onClick={() => void copyMcpConfig()} className="rounded-lg border border-black/10 px-2.5 py-1.5 text-[10px] font-semibold dark:border-white/10"><Copy className="mr-1 inline h-3 w-3" />Copy MCP config</button></div>}</details></section>
-    {approvals.filter((item) => item.status === 'pending').length > 0 && <section className="mt-5 rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4"><div className="flex items-center gap-2 text-[13px] font-semibold text-amber-700 dark:text-amber-300"><ShieldCheck className="h-4 w-4" /> {approvals.filter((item) => item.status === 'pending').length} connection approval{approvals.filter((item) => item.status === 'pending').length === 1 ? '' : 's'} waiting</div><div className="mt-3 space-y-2">{approvals.filter((item) => item.status === 'pending').map((item) => <div key={item.id} className="flex items-center gap-3 rounded-xl bg-white/70 px-3 py-2 dark:bg-black/20"><div className="min-w-0 flex-1 truncate text-[12px]">{item.displayName} - {item.platform}</div><button type="button" onClick={() => void resolveApproval(item.id, false)} className="rounded-md px-2 py-1 text-[10px] text-red-500">Deny</button><button type="button" onClick={() => void resolveApproval(item.id, true)} className="rounded-md bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">Approve</button></div>)}</div></section>}
-    {gatewayMode === 'communication' && <section className="mt-8 grid min-h-[620px] overflow-hidden rounded-2xl border border-black/[0.08] bg-white dark:border-white/[0.08] dark:bg-white/[0.035] lg:grid-cols-[280px_minmax(0,1fr)]"><aside className="border-b border-black/[0.07] p-3 dark:border-white/[0.07] lg:border-b-0 lg:border-r"><div className="px-2 pb-3 text-[12px] font-semibold uppercase tracking-[0.14em] text-black/40 dark:text-white/40">Connections <span className="ml-1 normal-case tracking-normal">{CONNECTOR_CATALOG.length}</span></div><label className="flex items-center gap-2 rounded-xl border border-black/10 bg-black/[0.02] px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]"><Search className="h-4 w-4 text-black/35 dark:text-white/35" /><input value={connectorSearch} onChange={(event) => setConnectorSearch(event.target.value)} placeholder="Search connections" className="min-w-0 flex-1 bg-transparent text-[12px] outline-none" /></label><div className="mt-3 max-h-[500px] space-y-1 overflow-y-auto pr-1">{visibleConnectors.map((connector) => { const active = selectedConnector === connector.id; const native = PLATFORMS.find((platform) => platform.id === connector.id); const state = native ? (status?.platforms?.[native.id]?.state || (config.platforms[native.id].enabled ? 'saved' : '')) : connector.kind === 'mcp' ? 'MCP' : ''; return <button type="button" key={connector.id} onClick={() => setSelectedConnector(connector.id)} className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition ${active ? 'bg-[#e8f3ff] text-[#126fc1] dark:bg-[#183047] dark:text-[#9dceff]' : 'text-black/60 hover:bg-black/[0.04] dark:text-white/60 dark:hover:bg-white/[0.05]'}`}><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-black/[0.045] text-[10px] font-bold dark:bg-white/[0.07]">{connector.logo ? <img src={connector.logo} alt="" className="h-5 w-5 object-contain" /> : connector.label.slice(0, 1)}</span><span className="min-w-0 flex-1 truncate text-[12px] font-medium">{connector.label}</span>{state && <span className={`max-w-[66px] truncate text-[9px] ${native && stateTone(state)}`}>{state}</span>}</button>; })}{visibleConnectors.length === 0 && <div className="px-2 py-8 text-center text-[11px] text-black/40 dark:text-white/40">No matches</div>}</div></aside><main className="min-w-0 p-6 lg:p-8">{selectedNative && selectedItem ? <><div className="flex flex-wrap items-start justify-between gap-4"><div className="flex items-start gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-black/[0.045] dark:bg-white/[0.07]"><img src={selectedNative.logo} alt="" className="h-7 w-7 object-contain" /></span><div><h2 className="text-[24px] font-semibold tracking-[-0.03em]">{selectedNative.label}</h2><p className="mt-1 text-[13px] text-black/45 dark:text-white/45">{selected.description}</p></div></div><div className="flex items-center gap-3"><span className={`rounded-full bg-black/[0.045] px-3 py-1.5 text-[10px] font-semibold ${stateTone(selectedState)}`}>{selectedState}</span><Toggle checked={selectedItem.enabled} onChange={(enabled) => patchPlatform(selectedNative.id, { enabled })} /></div></div><div className="mt-8 rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 dark:border-white/[0.07] dark:bg-white/[0.025]"><div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-black/40 dark:text-white/40">Setup</div><p className="mt-2 text-[13px] leading-5 text-black/55 dark:text-white/55">{selected.setup}</p></div><div className="mt-7"><NativeSetupFields platform={selectedNative} item={selectedItem} patchPlatform={patchPlatform} revealed={revealed} setRevealed={setRevealed} /></div>{selectedNative.id !== 'signal' && selectedNative.id !== 'email' && <div className="mt-6 flex items-center gap-2 rounded-xl border border-black/[0.07] bg-black/[0.018] px-3 py-2.5 dark:border-white/[0.07] dark:bg-white/[0.025]"><code className="min-w-0 flex-1 truncate text-[11px] text-black/50 dark:text-white/50">{baseUrl}/webhooks/{selectedNative.id}</code><button type="button" onClick={() => void safeCopyTextToClipboard(`${baseUrl}/webhooks/${selectedNative.id}`)} className="rounded-lg border border-black/10 p-2 dark:border-white/10"><Copy className="h-3.5 w-3.5" /></button></div>}{selectedStatus?.lastError && <div className="mt-4 text-[12px] text-red-500">{selectedStatus.lastError}</div>}</> : selected.kind === 'mcp' ? <><div className="flex items-start justify-between gap-4"><div><h2 className="text-[24px] font-semibold tracking-[-0.03em]">MCP server</h2><p className="mt-1 text-[13px] text-black/45 dark:text-white/45">Expose EterX gateway conversations and channel actions to an MCP client.</p></div><Toggle checked={config.mcpBridgeEnabled} onChange={(mcpBridgeEnabled) => setConfig((current) => ({ ...current, mcpBridgeEnabled }))} /></div><div className="mt-8 rounded-xl border border-black/[0.07] bg-black/[0.018] p-4 text-[13px] leading-5 text-black/55 dark:border-white/[0.07] dark:bg-white/[0.025] dark:text-white/55">{selected.setup}</div><div className="mt-5 flex items-center gap-2"><code className="min-w-0 flex-1 truncate rounded-lg bg-black/[0.035] px-3 py-2 text-[11px] text-black/50 dark:bg-white/[0.06] dark:text-white/50">{status?.mcpEndpoint || `${baseUrl}/mcp`}</code><button type="button" onClick={() => void copyMcpConfig()} className="rounded-lg border border-black/10 px-3 py-2 text-[11px] font-semibold dark:border-white/10"><Copy className="mr-1 inline h-3.5 w-3.5" />Copy config</button></div></> : <><div className="flex items-start gap-3"><span className="flex h-11 w-11 items-center justify-center rounded-xl bg-black/[0.045] text-lg font-bold dark:bg-white/[0.07]">{selected.logo ? <img src={selected.logo} alt="" className="h-7 w-7 object-contain" /> : selected.label.slice(0, 1)}</span><div><h2 className="text-[24px] font-semibold tracking-[-0.03em]">{selected.label}</h2><p className="mt-1 text-[13px] text-black/45 dark:text-white/45">{selected.description}</p></div></div><div className="mt-8 rounded-xl border border-[#1d8cff]/15 bg-[#1d8cff]/[0.05] p-5"><div className="text-[11px] font-semibold tracking-[0.14em] text-[#126fc1] dark:text-[#72baff]">Setup pathway</div><p className="mt-3 text-[14px] leading-6 text-black/60 dark:text-white/60">{selected.setup}</p><div className="mt-5 grid gap-3 sm:grid-cols-2"><div className="rounded-lg bg-white/70 px-3 py-2.5 text-[12px] dark:bg-black/20"><span className="block text-[10px] text-black/35 dark:text-white/35">Transport</span><span className="mt-1 block font-medium">{selected.transport}</span></div><div className="rounded-lg bg-white/70 px-3 py-2.5 text-[12px] dark:bg-black/20"><span className="block text-[10px] text-black/35 dark:text-white/35">Required</span><span className="mt-1 block font-medium">{selected.credential}</span></div></div></div><PathwaySetup connector={selected} profile={pathwayProfiles[selected.id] || {}} onChange={(key, value) => setPathwayProfiles((current) => ({ ...current, [selected.id]: { ...(current[selected.id] || {}), [key]: value } }))} /></>}</main></section>}
-    {gatewayMode === 'agents' && <ChannelAgentsPanel value={config.channelAgent} onChange={(channelAgent) => setConfig((current) => ({ ...current, channelAgent }))} conversations={conversations} />}
-    {gatewayMode === 'mcp' && <McpGatewayPanel baseUrl={baseUrl} endpoint={status?.mcpEndpoint || `${baseUrl}/mcp`} enabled={config.mcpBridgeEnabled} onToggle={(mcpBridgeEnabled) => setConfig((current) => ({ ...current, mcpBridgeEnabled }))} onCopy={() => void copyMcpConfig()} onNotice={setNotice} servers={mcpServers} setServers={setMcpServers} />}
-    {gatewayMode === 'skills' && <><LiveSkillsGatewayPanel /><SkillImportCard /></>}
+  return <div className={styles.surface}><div className={styles.workspace}>
+    <header className={styles.header}>
+      <div className={styles.actions}><button type="button" className={styles.button} aria-label="Back to Channels" onClick={() => setScreen('landing')}><ArrowLeft /></button><div><h1>Gateway</h1><p>Connect channels, choose a workflow, and manage incoming messages.</p></div></div>
+      <div className={styles.actions}>
+        {dirty && <span className={styles.muted}>Unsaved changes</span>}
+        <button type="button" className={styles.button} disabled={loading || saving} onClick={() => void loadState(dirty)}>{dirty ? <Undo2 /> : <RefreshCw className={loading ? 'animate-spin' : ''} />}{dirty ? 'Discard edits' : 'Refresh'}</button>
+        <button type="button" className={`${styles.button} ${styles.primary}`} disabled={saving || loading || !savedConfig || !api?.saveGatewayConfig} onClick={() => void save()}>{saving ? <Loader2 className="animate-spin" /> : <Save />}{saving ? 'Saving…' : 'Save changes'}</button>
+      </div>
+    </header>
+    {notice && <div role={noticeError ? 'alert' : 'status'} className={`${styles.notice} ${noticeError ? styles.error : ''}`}>{notice}</div>}
+    {!secureStorage && <div className={styles.notice}>Channel credentials require EterX desktop secure storage. Open this workspace in the desktop app to connect.</div>}
+    {status?.lastError && <div role="alert" className={`${styles.notice} ${styles.error}`}>{status.lastError}</div>}
+    {status?.lastDeliveryError && <div role="alert" className={`${styles.notice} ${styles.error}`}>Reply delivery: {status.lastDeliveryError}</div>}<div className={styles.tabs} aria-label="Gateway sections">{([{ id: 'communication', label: 'Connections' }, { id: 'agents', label: 'Agent routing' }, { id: 'mcp', label: 'MCP' }, { id: 'skills', label: 'Skills' }] as const).map(tab => <button type="button" key={tab.id} aria-pressed={gatewayMode === tab.id} onClick={() => setGatewayMode(tab.id)}>{tab.label}</button>)}</div>
+    <fieldset disabled={saving || loading || !savedConfig} className="min-w-0 border-0 p-0">
+      <section className={styles.card}>
+        <div className={styles.row}>
+          <div className={styles.actions}>{status?.running ? <Wifi size={19} className="text-emerald-500" /> : <WifiOff size={19} />}<div><h2>Background gateway</h2><p className={styles.muted}>Keep EterX running and this computer awake to receive messages.</p></div></div>
+          <div className={styles.actions}><span className={`${styles.status} ${status?.running ? styles.online : ''}`}><span className={styles.dot} />{status?.running ? 'Running' : 'Offline'}</span><Toggle checked={config.enabled} onChange={enabled => setConfig(current => ({ ...current, enabled }))} label="Background gateway" /></div>
+        </div>
+        <div className={styles.settingsGrid}>
+          <div className={styles.setting}><span>Run after closing the window<small>EterX stays available in the system tray.</small></span><Toggle checked={config.keepRunningOnClose} onChange={keepRunningOnClose => setConfig(current => ({ ...current, keepRunningOnClose }))} label="Run after closing" /></div>
+          <div className={styles.setting}><span>Start at sign-in<small>Start the gateway when you sign in.</small></span><Toggle checked={config.launchAtLogin} onChange={launchAtLogin => setConfig(current => ({ ...current, launchAtLogin }))} label="Start at sign-in" /></div>
+        </div>
+        <details className="mt-4"><summary className="cursor-pointer text-xs font-medium">Advanced settings</summary><div className={styles.fields} style={{ marginTop: 16 }}>
+          <label className={styles.field}>Gateway port<input type="number" min={1024} max={65535} value={config.port} onChange={event => setConfig(current => ({ ...current, port: Number(event.target.value) }))} /></label>
+          <label className={styles.field}>Messages arriving during a task<ModernSelect label="Messages during a task" value={config.busyInputMode} onChange={busyInputMode => setConfig(current => ({ ...current, busyInputMode: busyInputMode as GatewayConfig['busyInputMode'] }))} options={[{ value: 'queue', label: 'Queue for the next task' }, { value: 'steer', label: 'Add to the current task' }]} /></label>
+        </div><p className={`${styles.muted} mt-3`}>Listener: {baseUrl}. Public webhook providers need an HTTPS tunnel or reverse proxy.</p></details>
+      </section>
+      {pendingApprovals.length > 0 && <section className={styles.card}><h2>People waiting for approval <span className={styles.count}>{pendingApprovals.length}</span></h2><p className={styles.muted}>Approve only the person whose channel identity and pairing code you recognize.</p><div className={styles.inbox}>{pendingApprovals.map(item => <div key={item.id} className={`${styles.inboxRow} ${styles.row}`}><div><strong className="text-xs">{item.displayName}</strong><p>{item.platform}{item.code ? ` · ${item.code}` : ''}</p></div><div className={styles.actions}><button type="button" className={styles.button} disabled={Boolean(approvalBusy)} onClick={() => void resolveApproval(item.id, false)}>Deny</button><button type="button" className={styles.button} disabled={Boolean(approvalBusy)} onClick={() => void resolveApproval(item.id, true)}>{approvalBusy === item.id ? 'Updating…' : 'Approve'}</button></div></div>)}</div></section>}
+      {gatewayMode === 'agents' && <>
+        <section className={styles.card}><div className={styles.row}><div><h2>Run agents on incoming messages</h2><p className={styles.muted}>Manual profiles stay on demand. Assist creates drafts; Autonomous can send completed replies.</p></div><Toggle label="Run agents on incoming messages" checked={config.autoDispatch} onChange={autoDispatch => setConfig(current => ({ ...current, autoDispatch }))} /></div><div className={styles.flow}><span>Approved sender</span><ChevronRight /><span>Matching profile</span><ChevronRight /><span>EterX agent</span><ChevronRight /><span>Draft or channel reply</span></div></section>
+        <ChannelAgentsPanel value={config.channelAgent} onChange={channelAgent => setConfig(current => ({ ...current, channelAgent }))} conversations={conversations} />
+      </>}
+      {gatewayMode === 'communication' && <section className={styles.connections}>
+        <aside className={styles.rail}><label className={styles.search}><Search size={15} /><input aria-label="Search connections" placeholder="Search connections" value={connectorSearch} onChange={event => setConnectorSearch(event.target.value)} /></label><nav className={styles.railList} aria-label="Connections">{visibleConnectors.map(connector => <button type="button" key={connector.id} className={styles.connector} aria-current={selected.id === connector.id ? 'true' : undefined} onClick={() => setSelectedConnector(connector.id)}>{connector.logo ? <img src={connector.logo} alt="" /> : <Server size={23} />}<span><strong>{connector.label}</strong><small>{stateLabel(connector.id)}</small></span></button>)}{!visibleConnectors.length && <p className={`${styles.muted} p-3`}>No matching connections.</p>}</nav></aside>
+        <div className={styles.connectorBody}>
+          <div className={styles.row}><div className={styles.connectorHeading}>{selected.logo && <img src={selected.logo} alt="" />}<div><h2>{selected.label}</h2><p className={styles.muted}>{selected.description}</p></div></div><div className={styles.actions}><span className={`${styles.status} ${['Connected', 'Listening', 'API available'].includes(stateLabel(selected.id)) ? styles.online : ''}`}>{stateLabel(selected.id)}</span>{selectedNative && selectedItem && <Toggle label={`Enable ${selected.label}`} checked={selectedItem.enabled} onChange={enabled => patchPlatform(selectedNative.id, { enabled })} />}</div></div>
+          {selectedNative && selectedItem ? <>
+            <div className={styles.setup}><strong>Connect {selected.label}</strong>{selected.setup}{selected.guideUrl && <div className="mt-2"><a href={selected.guideUrl} target="_blank" rel="noreferrer">Setup guide ↗</a></div>}</div>
+            {selectedNative.id === 'telegram' && <div className={styles.setup}><strong>Looking for your personal Telegram agent?</strong>Use Connect as bot to select its model, pair your account, and send it tasks. Use a separate bot token for this channel gateway.<button type="button" className={`${styles.button} mt-3`} onClick={() => setScreen('bots')}>Connect as bot<ChevronRight /></button></div>}
+            <NativeSetupFields key={selectedNative.id} platform={selectedNative} item={selectedItem} patchPlatform={patchPlatform} revealed={revealed} setRevealed={setRevealed} />
+            {selectedNative.mode === 'webhook' && <><div className={styles.endpoint}><code>{baseUrl}/webhooks/{selectedNative.id}</code><button type="button" className={styles.button} aria-label="Copy local webhook URL" onClick={() => void safeCopyTextToClipboard(`${baseUrl}/webhooks/${selectedNative.id}`).then(ok => notify(ok ? 'Local webhook URL copied.' : 'Could not copy URL.', !ok))}><Copy /></button></div><p className={`${styles.muted} mt-2`}>This is a local address. Use your public HTTPS forwarding address in the provider’s webhook settings.</p></>}
+            {selectedStatus?.lastError && <div role="alert" className={`${styles.notice} ${styles.error} mt-4`}>{selectedStatus.lastError}</div>}
+            <div className={styles.setup}><strong>{matchedProfile ? `Routes to ${matchedProfile.name}` : 'No matching agent profile'}</strong>{routeDescription}<div className="mt-3"><button type="button" className={styles.button} onClick={() => setGatewayMode('agents')}>Configure agent routing<ChevronRight /></button></div></div>
+            <div className={styles.row}><p className={styles.muted}>Changes apply when you save. Credentials stay encrypted on this computer.</p><button type="button" className={`${styles.button} ${styles.primary}`} onClick={() => void save()}><Save />Save changes</button></div>
+          </> : <>
+            <div className={styles.setup}><strong>Agent API connection</strong>This gives the agent access to the service API. Receiving messages automatically requires a native channel above or a bridge that forwards events to Custom webhook.</div>
+            <PathwaySetup key={selected.id} connector={selected} profile={pathwayProfiles[selected.id] || {}} saved={externalConnectorStatus[selected.id]} onChange={(key, value) => setPathwayProfiles(current => ({ ...current, [selected.id]: { ...(current[selected.id] || {}), [key]: value } }))} onSaved={() => setPathwayProfiles(current => ({ ...current, [selected.id]: {} }))} />
+          </>}
+        </div>
+      </section>}
+      {gatewayMode === 'mcp' && <McpGatewayPanel baseUrl={baseUrl} endpoint={status?.mcpEndpoint || `${baseUrl}/mcp`} enabled={config.mcpBridgeEnabled} running={Boolean(status?.running && status?.mcpEndpoint)} onToggle={mcpBridgeEnabled => setConfig(current => ({ ...current, mcpBridgeEnabled }))} onCopy={() => void copyMcpConfig()} onNotice={setNotice} servers={mcpServers} setServers={setMcpServers} />}
+    </fieldset>
+    {gatewayMode === 'communication' && <section className={`${styles.card} mt-5`}><div className={styles.row}><h2>Recent conversations</h2><span className={styles.muted}>{status?.pendingDeliveryCount || 0} pending · {status?.failedDeliveryCount || 0} failed replies</span></div><div className={styles.inbox}>{conversations.filter(item => item.platform === selected.id).slice(0, 6).map(item => <div key={item.id} className={styles.inboxRow}><div className={styles.row}><strong className="text-xs">{item.title}</strong><span className={styles.muted}>{item.unreadCount ? `${item.unreadCount} unread` : `${item.messageCount} messages`}</span></div><p>{item.lastMessagePreview}</p></div>)}{!conversations.some(item => item.platform === selected.id) && <p className={styles.muted}>No messages received here yet. Connect the channel, save, and send a message from an approved account.</p>}</div></section>}
+    <div hidden={gatewayMode !== 'skills'} className={styles.skills}><LiveSkillsGatewayPanel /></div>
   </div></div>;
 });
-
-const PATHWAY_FIELDS: Record<string, Array<{ key: string; label: string; placeholder: string; secret?: boolean }>> = {
-  mattermost: [{ key: 'serverUrl', label: 'Server URL', placeholder: 'https://chat.example.com' }, { key: 'botToken', label: 'Bot token', placeholder: 'Paste the bot token', secret: true }, { key: 'allowedChannels', label: 'Allowed channels', placeholder: 'town-square, support' }],
-  matrix: [{ key: 'homeserverUrl', label: 'Homeserver URL', placeholder: 'https://matrix.example.org' }, { key: 'accessToken', label: 'Access token', placeholder: 'Paste the Matrix access token', secret: true }, { key: 'userId', label: 'Bot user ID', placeholder: '@eterx:example.org' }, { key: 'roomIds', label: 'Room IDs', placeholder: '!room:example.org, !support:example.org' }],
-  slack: [{ key: 'botToken', label: 'Bot token', placeholder: 'xoxb-…', secret: true }, { key: 'appToken', label: 'App-level token', placeholder: 'xapp-…', secret: true }, { key: 'signingSecret', label: 'Signing secret', placeholder: 'Paste signing secret', secret: true }],
-  bluebubbles: [{ key: 'serverUrl', label: 'Private API URL', placeholder: 'http://mac.local:1234' }, { key: 'password', label: 'API password', placeholder: 'Paste password', secret: true }],
-  homeassistant: [{ key: 'instanceUrl', label: 'Instance URL', placeholder: 'http://homeassistant.local:8123' }, { key: 'accessToken', label: 'Long-lived access token', placeholder: 'Paste token', secret: true }],
-  email: [{ key: 'imapHost', label: 'IMAP host', placeholder: 'imap.example.com' }, { key: 'smtpHost', label: 'SMTP host', placeholder: 'smtp.example.com' }, { key: 'username', label: 'Mailbox username', placeholder: 'agent@example.com' }, { key: 'appPassword', label: 'App password', placeholder: 'Paste app password', secret: true }],
-  sms: [{ key: 'accountSid', label: 'Account SID', placeholder: 'AC…' }, { key: 'authToken', label: 'Auth token', placeholder: 'Paste auth token', secret: true }, { key: 'phoneNumber', label: 'Twilio phone number', placeholder: '+1…' }],
-  dingtalk: [{ key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://oapi.dingtalk.com/robot/send?...' }, { key: 'signingSecret', label: 'Signing secret', placeholder: 'Paste secret', secret: true }],
-  feishu: [{ key: 'appId', label: 'App ID', placeholder: 'cli_…' }, { key: 'appSecret', label: 'App secret', placeholder: 'Paste app secret', secret: true }, { key: 'verificationToken', label: 'Verification token', placeholder: 'Paste token', secret: true }],
-  'google-chat': [{ key: 'serviceAccountJson', label: 'Service account JSON', placeholder: 'Paste or upload JSON', secret: true }, { key: 'webhookUrl', label: 'HTTPS endpoint', placeholder: 'https://example.com/google-chat' }],
-  'wecom-group': [{ key: 'webhookKey', label: 'Webhook key', placeholder: 'Paste key', secret: true }],
-  'wecom-app': [{ key: 'corpId', label: 'Corp ID', placeholder: 'ww…' }, { key: 'agentId', label: 'Agent ID', placeholder: '1000002' }, { key: 'secret', label: 'App secret', placeholder: 'Paste secret', secret: true }, { key: 'callbackToken', label: 'Callback token', placeholder: 'Paste token', secret: true }],
-  weixin: [{ key: 'bridgeEndpoint', label: 'Bridge endpoint', placeholder: 'http://127.0.0.1:8787' }, { key: 'pairingSecret', label: 'Pairing secret', placeholder: 'Paste secret', secret: true }],
-  qq: [{ key: 'appId', label: 'App ID', placeholder: 'Paste App ID' }, { key: 'appSecret', label: 'App secret', placeholder: 'Paste app secret', secret: true }, { key: 'callbackUrl', label: 'Callback URL', placeholder: 'https://example.com/qq' }],
-  yuanbao: [{ key: 'bridgeEndpoint', label: 'Bridge endpoint', placeholder: 'http://127.0.0.1:8787' }, { key: 'credential', label: 'Bridge credential', placeholder: 'Paste credential', secret: true }],
-  'api-server': [{ key: 'url', label: 'Gateway URL', placeholder: 'http://127.0.0.1:47821' }, { key: 'bearerToken', label: 'Bearer token', placeholder: 'Paste token', secret: true }],
-  webhooks: [{ key: 'webhookSecret', label: 'Signing secret', placeholder: 'Paste HMAC secret', secret: true }],
-  photon: [{ key: 'bridgeUrl', label: 'Photon bridge URL', placeholder: 'http://127.0.0.1:2080' }, { key: 'password', label: 'Bridge password', placeholder: 'Paste password', secret: true }],
-  irc: [{ key: 'server', label: 'IRC server', placeholder: 'irc.example.net' }, { key: 'port', label: 'TLS port', placeholder: '6697' }, { key: 'nick', label: 'Bot nickname', placeholder: 'eterx-bot' }, { key: 'saslPassword', label: 'SASL password', placeholder: 'Optional password', secret: true }],
-  line: [{ key: 'channelAccessToken', label: 'Channel access token', placeholder: 'Paste token', secret: true }, { key: 'channelSecret', label: 'Channel secret', placeholder: 'Paste secret', secret: true }, { key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://example.com/line' }],
-  skills: [{ key: 'skillAllowlist', label: 'Enabled skills', placeholder: 'research, coding, files' }, { key: 'skillPolicy', label: 'Skill policy', placeholder: 'Allowlisted skills only' }],
-};
-
-function PathwaySetup({ connector, profile, onChange }: { connector: ConnectorCatalogItem; profile: Record<string, string>; onChange: (key: string, value: string) => void }) {
-  const fields = PATHWAY_FIELDS[connector.id] || [{ key: 'credential', label: 'Connection credential', placeholder: connector.credential }];
+function PathwaySetup({ connector, profile, saved, onChange, onSaved }: { connector: ConnectorCatalogItem; profile: Record<string, string>; saved?: { connected?: boolean; baseUrl?: string; healthPath?: string; authHeader?: string; tokenPrefix?: string; lastError?: string }; onChange: (key: string, value: string) => void; onSaved: () => void }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const [failed, setFailed] = useState(false);
   const connect = async () => {
-    const configuredUrl = String(
-      profile.baseUrl
-      || profile.serverUrl
-      || profile.homeserverUrl
-      || profile.instanceUrl
-      || profile.bridgeEndpoint
-      || profile.bridgeUrl
-      || profile.url
-      || profile.webhookUrl
-      || '',
-    ).trim();
-    if (!configuredUrl) return setMessage('Enter the service API or bridge URL first.');
-    let baseUrl = configuredUrl;
-    let healthPath = String(profile.healthPath || '').trim();
+    if (saving) return;
+    setSaving(true); setMessage(''); setFailed(false);
     try {
-      const parsed = new URL(configuredUrl);
-      baseUrl = parsed.origin;
-      if (!healthPath && `${parsed.pathname}${parsed.search}` !== '/') {
-        healthPath = `${parsed.pathname}${parsed.search}`;
-      }
-    } catch {
-      return setMessage('Enter a complete HTTP or HTTPS service URL.');
-    }
-    setSaving(true);
-    setMessage('');
-    try {
-      const credentials = Object.fromEntries(Object.entries(profile).filter(([key, value]) => !['baseUrl', 'healthPath'].includes(key) && value.trim()));
-      const response = await fetch('/api/connectors/status', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: connector.id, baseUrl, healthPath: healthPath || '/', credentials }) });
-      const result = await response.json().catch(() => ({}));
-      if (response.ok && result.ok) {
-        setMessage('Verified and connected. The main agent can use this connector now.');
-        window.dispatchEvent(new CustomEvent('eterx_connector_status_refresh'));
-      } else {
-        setMessage(result.error || 'Verification failed.');
-      }
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSaving(false);
-    }
+      const configuredUrl = (profile.baseUrl ?? saved?.baseUrl ?? '').trim();
+      const url = new URL(configuredUrl);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Enter an HTTP or HTTPS API base URL without a password, query or fragment.');
+      const healthPath = (profile.healthPath ?? saved?.healthPath ?? '').trim();
+      if (!healthPath) throw new Error('Enter an authenticated identity endpoint such as /v1/me. A public home page cannot verify API access.');
+      const response = await fetch('/api/connectors/status', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: connector.id, baseUrl: configuredUrl, healthPath, authHeader: profile.authHeader ?? saved?.authHeader ?? 'Authorization', tokenPrefix: profile.tokenPrefix ?? saved?.tokenPrefix ?? 'Bearer', credentials: profile.apiToken?.trim() ? { token: profile.apiToken.trim() } : undefined }) });
+      const result = await response.json();
+      window.dispatchEvent(new CustomEvent('eterx_connector_status_refresh'));
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Could not connect to the API.');
+      setMessage('API access verified. The agent can call this service through connector tools. Incoming message delivery still needs a native channel or webhook bridge.');
+      onSaved();
+    } catch (reason) { setFailed(true); setMessage(reason instanceof Error ? reason.message : 'Connection failed.'); }
+    finally { setSaving(false); }
   };
-  return <div className="mt-6 space-y-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="text-[12px] font-semibold text-black/60 dark:text-white/60">Connection details</div>{connector.guideUrl && <a href={connector.guideUrl} target="_blank" rel="noreferrer" className="text-[12px] font-semibold text-[#126fc1] underline-offset-4 hover:underline dark:text-white/45">Open official setup guide</a>}</div><div className="grid gap-4 sm:grid-cols-2"><label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-black/65 dark:text-white/65">API or bridge URL</span><input value={profile.baseUrl || ''} onChange={(event) => onChange('baseUrl', event.target.value)} placeholder="https://api.example.com" className="h-11 w-full rounded-xl border border-black/10 bg-black/[0.025] px-3 text-[13px] outline-none transition placeholder:text-black/30 focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.04] dark:placeholder:text-white/30" /></label><label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-black/65 dark:text-white/65">Health-check path</span><input value={profile.healthPath || ''} onChange={(event) => onChange('healthPath', event.target.value)} placeholder="/health or /v1/me" className="h-11 w-full rounded-xl border border-black/10 bg-black/[0.025] px-3 text-[13px] outline-none transition placeholder:text-black/30 focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.04] dark:placeholder:text-white/30" /></label><label className="block"><span className="mb-1.5 block text-[12px] font-semibold text-black/65 dark:text-white/65">API token / bearer credential</span><input type="password" value={profile.apiToken || ''} onChange={(event) => onChange('apiToken', event.target.value)} placeholder="Optional universal token" className="h-11 w-full rounded-xl border border-black/10 bg-black/[0.025] px-3 text-[13px] outline-none transition placeholder:text-black/30 focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.04] dark:placeholder:text-white/30" /></label>{fields.map((field) => <label key={field.key} className="block"><span className="mb-1.5 block text-[12px] font-semibold text-black/65 dark:text-white/65">{field.label}</span><input type={field.secret ? 'password' : 'text'} value={profile[field.key] || ''} onChange={(event) => onChange(field.key, event.target.value)} placeholder={field.placeholder} className="h-11 w-full rounded-xl border border-black/10 bg-black/[0.025] px-3 text-[13px] outline-none transition placeholder:text-black/30 focus:border-[#1d8cff] dark:border-white/10 dark:bg-white/[0.04] dark:placeholder:text-white/30" /></label>)}</div><div className="flex flex-wrap items-center gap-3"><button type="button" onClick={() => void connect()} disabled={saving} className="rounded-xl bg-[#1d8cff] px-4 py-2.5 text-[12px] font-semibold text-white disabled:opacity-50">{saving ? 'Verifying…' : 'Verify and connect'}</button><span className="text-[12px] leading-5 text-black/45 dark:text-white/45">Credentials are encrypted locally and never shown to the agent.</span></div>{message && <div className="rounded-xl border border-[#1d8cff]/20 bg-[#1d8cff]/[0.06] px-4 py-3 text-[12px] leading-5 text-[#126fc1] dark:text-[#9dceff]">{message}</div>}</div>;
+  const disconnect = async () => {
+    setSaving(true); setMessage(''); setFailed(false);
+    try {
+      const response = await fetch('/api/connectors/status', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: connector.id }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || 'Could not disconnect API.');
+      window.dispatchEvent(new CustomEvent('eterx_connector_status_refresh')); onSaved(); setMessage('API connection removed.');
+    } catch (reason) { setFailed(true); setMessage(reason instanceof Error ? reason.message : 'Could not disconnect.'); }
+    finally { setSaving(false); }
+  };
+  return <fieldset disabled={saving} className="min-w-0 border-0 p-0">
+    {connector.guideUrl && <a href={connector.guideUrl} target="_blank" rel="noreferrer" className="mb-4 inline-block text-xs underline underline-offset-4">Service setup guide ↗</a>}
+    <div className={styles.fields}>
+      <label className={styles.field}>API base URL<input value={profile.baseUrl ?? saved?.baseUrl ?? ''} onChange={event => onChange('baseUrl', event.target.value)} placeholder="https://api.example.com/v1" /></label>
+      <label className={styles.field}>Identity endpoint<input value={profile.healthPath ?? saved?.healthPath ?? ''} onChange={event => onChange('healthPath', event.target.value)} placeholder="/me" /><small className={styles.muted}>A read-only endpoint that requires the credential.</small></label>
+      <label className={`${styles.field} ${styles.wide}`}>API credential<input type="password" autoComplete="off" value={profile.apiToken || ''} onChange={event => onChange('apiToken', event.target.value)} placeholder={saved ? 'Saved securely · enter to replace' : 'API token'} /></label>
+      <label className={styles.field}>Authentication header<input value={profile.authHeader ?? saved?.authHeader ?? 'Authorization'} onChange={event => onChange('authHeader', event.target.value)} placeholder="Authorization" /></label>
+      <label className={styles.field}>Token prefix<ModernSelect label="API credential prefix" value={(profile.tokenPrefix ?? saved?.tokenPrefix) === '' ? 'none' : profile.tokenPrefix || saved?.tokenPrefix || 'Bearer'} onChange={value => onChange('tokenPrefix', value === 'none' ? '' : value)} options={[{ value: 'Bearer', label: 'Bearer' }, { value: 'Bot', label: 'Bot' }, { value: 'Basic', label: 'Basic (encoded credentials)' }, { value: 'none', label: 'No prefix' }]} /></label>
+    </div>
+    <div className={`${styles.actions} mt-5`}><button type="button" className={`${styles.button} ${styles.primary}`} onClick={() => void connect()}>{saving ? <Loader2 className="animate-spin" /> : <Wifi />}{saving ? 'Connecting…' : 'Connect API'}</button>{saved && <button type="button" className={styles.button} onClick={() => void disconnect()}>Disconnect</button>}</div>
+    {(message || saved?.lastError) && <div role={failed || !message ? 'alert' : 'status'} className={`${styles.notice} ${failed || !message ? styles.error : ''} mt-4`}>{message || saved?.lastError}</div>}
+  </fieldset>;
 }
-
 LegacyAgentChannelsView.displayName = 'LegacyAgentChannelsView';
 
 // Keep the established Channels experience as the public entry point. The

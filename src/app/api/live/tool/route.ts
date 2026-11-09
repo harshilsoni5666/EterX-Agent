@@ -55,18 +55,21 @@ export async function POST(req: NextRequest) {
       }), session);
     }
 
+    const computerUseEnabled = body.computerUseEnabled === true;
     const result = await tool.execute(parsed.data, {
       chatId,
       projectId: chatId,
+      runId: cleanString(body.runId, 180) || `live-${session.sessionId}`,
+      abortSignal: req.signal,
       agentSessionId: session.sessionId,
       allowBrowserControl: true,
-      allowHostControl: true,
+      allowHostControl: computerUseEnabled,
+      computerUseEnabled,
       allowNetwork: true,
       networkPolicy: 'allow',
       allowedCapabilities: [
         'browser.control',
-        'host.control',
-        'host.screenshot',
+        ...(computerUseEnabled ? ['host.control', 'host.screenshot'] : []),
         'network.public',
       ],
     });

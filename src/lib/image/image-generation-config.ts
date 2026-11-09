@@ -204,7 +204,7 @@ export const normalizeImageSettings = (value: unknown): ImageSettings => {
     : {};
   const provider = isProvider(source.provider) ? source.provider : DEFAULT_IMAGE_SETTINGS.provider;
   const fallbackProviders = Array.from(new Set(
-    (Array.isArray(source.fallbackProviders) ? source.fallbackProviders : DEFAULT_IMAGE_SETTINGS.fallbackProviders)
+    (Array.isArray(source.fallbackProviders) ? source.fallbackProviders : IMAGE_PROVIDER_IDS.filter(id => id !== provider))
       .filter(isProvider)
       .filter(candidate => candidate !== provider),
   )) as ImageProvider[];

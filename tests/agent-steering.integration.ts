@@ -141,13 +141,13 @@ async function testDuplicateSteeringIdsAreIdempotent(): Promise<void> {
       'a retry must not rewrite or duplicate an already-admitted message',
     );
 
-    const receivedBeforeDrain = agentRegistry.getTraces(run.chatId, -1).traces.filter(trace => trace.type === 'steering_received');
-    assert.equal(receivedBeforeDrain.length, 1);
+    const queuedBeforeDrain = agentRegistry.getTraces(run.chatId, -1).traces.filter(trace => trace.type === 'steering_queued');
+    assert.equal(queuedBeforeDrain.length, 1);
     assert.equal(agentRegistry.drainSteeringQueue(run.chatId).length, 1);
     assert.equal(agentRegistry.addSteeringMessage(run.chatId, 'late duplicate', 'same-id', undefined, run.runId), true);
     assert.deepEqual(agentRegistry.peekSteeringQueue(run.chatId), [], 'an applied ID must remain idempotent');
-    const receivedAfterRetry = agentRegistry.getTraces(run.chatId, -1).traces.filter(trace => trace.type === 'steering_received');
-    assert.equal(receivedAfterRetry.length, 1);
+    const queuedAfterRetry = agentRegistry.getTraces(run.chatId, -1).traces.filter(trace => trace.type === 'steering_queued');
+    assert.equal(queuedAfterRetry.length, 1);
   } finally {
     await settle(run);
   }

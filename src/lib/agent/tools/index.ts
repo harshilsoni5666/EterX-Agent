@@ -50,8 +50,8 @@ const PLATFORM_TOOL_CANDIDATES: PlatformToolCandidate[] = process.platform === '
   ? [
       { tool: desktopNotifyTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
       { tool: screenshotTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
-      { tool: computerTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
-      { tool: screenAgentTool, available: () => isExecutableAvailable(['powershell.exe', 'pwsh.exe']) },
+      { tool: computerTool, available: () => true },
+      { tool: screenAgentTool, available: () => true },
     ]
   : process.platform === 'darwin'
     ? [

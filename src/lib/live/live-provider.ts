@@ -1,3 +1,5 @@
+import { parseModelEntryKey } from '../agent/model-selector-store';
+
 export type LiveModelOption = {
   value: string;
   label: string;
@@ -6,6 +8,7 @@ export type LiveModelOption = {
 };
 
 export type LiveProviderTransport =
+  | 'model-voice'
   | 'gemini-native'
   | 'openai-webrtc'
   | 'xai-native'
@@ -22,7 +25,7 @@ export type LiveProviderOption = {
   description: string;
   transport: LiveProviderTransport;
   /** Whether the server must mint a short-lived browser credential. */
-  browserAuth: 'api-key' | 'ephemeral' | 'signed-url';
+  browserAuth: 'api-key' | 'ephemeral' | 'signed-url' | 'none';
   /** True only for transports that can send visual frames to the model. */
   supportsVision: boolean;
   /** A provider-specific setup value, such as an ElevenLabs agent id. */
@@ -31,13 +34,23 @@ export type LiveProviderOption = {
 
 export const LIVE_PROVIDER_OPTIONS: LiveProviderOption[] = [
   {
+    value: 'model-voice',
+    provider: 'model-voice',
+    keyProvider: '',
+    label: 'Any configured model',
+    description: 'Speak to any model added in Models, including local and custom providers, and run real agent tasks',
+    transport: 'model-voice',
+    browserAuth: 'none',
+    supportsVision: false,
+  },
+  {
     value: 'agent-live-convo',
     provider: 'gemini',
     keyProvider: 'gemini',
     label: 'Google Gemini Live',
     description: 'Native bidirectional audio, video, transcription, and tool-calling session',
     transport: 'gemini-native',
-    browserAuth: 'api-key',
+    browserAuth: 'ephemeral',
     supportsVision: true,
   },
   {
@@ -84,8 +97,13 @@ export const LIVE_PROVIDER_OPTIONS: LiveProviderOption[] = [
 ];
 
 export const LIVE_PROVIDER_MODELS: Record<string, LiveModelOption[]> = {
+  'model-voice': [
+    { value: 'auto', label: 'Use selected chat model', description: 'Uses the exact model selected in the chat composer' },
+  ],
   'agent-live-convo': [
     { value: 'auto', label: 'Auto (Latest Gemini Live Model)', tag: 'AUTO', description: 'Uses the newest compatible Live model returned by Gemini' },
+    { value: 'gemini-3.8-live', label: 'Gemini 3.8 Live', tag: 'LIVE', description: 'Native realtime audio with fixed latency' },
+    { value: 'gemini-3.8-live-extended-thinking', label: 'Gemini 3.8 Live Extended Thinking', tag: 'THINKING', description: 'Native realtime audio with configurable reasoning and asynchronous tools' },
     { value: 'gemini-3.1-flash-live-preview', label: 'Gemini 3.1 Flash Live Preview', tag: 'LIVE', description: 'Native realtime audio and multimodal model' },
   ],
   'openai-realtime': [
@@ -93,7 +111,6 @@ export const LIVE_PROVIDER_MODELS: Record<string, LiveModelOption[]> = {
     { value: 'gpt-realtime-2.1', label: 'GPT Realtime 2.1', tag: 'REALTIME', description: 'OpenAI reasoning realtime audio model over WebRTC' },
     { value: 'gpt-realtime-2.1-mini', label: 'GPT Realtime 2.1 Mini', tag: 'REALTIME', description: 'OpenAI lower-cost reasoning realtime audio model over WebRTC' },
     { value: 'gpt-realtime-2', label: 'GPT Realtime 2', tag: 'REALTIME', description: 'OpenAI reasoning realtime audio model over WebRTC' },
-    { value: 'gpt-realtime-translate', label: 'GPT Realtime Translate', tag: 'TRANSLATE', description: 'OpenAI realtime speech-to-speech translation model over WebRTC' },
     { value: 'gpt-realtime', label: 'GPT Realtime', tag: 'REALTIME', description: 'OpenAI realtime audio model over WebRTC' },
     { value: 'gpt-realtime-mini', label: 'GPT Realtime Mini', tag: 'REALTIME', description: 'OpenAI cost-efficient realtime audio model over WebRTC' },
     { value: 'gpt-realtime-1.5', label: 'GPT Realtime 1.5', tag: 'REALTIME', description: 'OpenAI realtime audio model over WebRTC' },
@@ -101,8 +118,7 @@ export const LIVE_PROVIDER_MODELS: Record<string, LiveModelOption[]> = {
   'grok-realtime': [
     { value: 'auto', label: 'Auto (Grok Voice Latest)', tag: 'AUTO', description: 'Uses xAI’s recommended realtime voice model' },
     { value: 'grok-voice-latest', label: 'Grok Voice Latest', tag: 'VOICE', description: 'xAI’s best direct WebSocket voice experience' },
-    { value: 'grok-voice-think-fast-2.0', label: 'Grok Voice Think Fast 2.0', tag: 'VOICE', description: 'Lower-latency xAI voice model' },
-    { value: 'grok-voice-think-fast-1.0', label: 'Grok Voice Think Fast 1.0', tag: 'VOICE', description: 'Fast xAI voice model' },
+    { value: 'grok-voice-3.0', label: 'Grok Voice 3.0', tag: 'VOICE', description: 'xAI flagship speech-to-speech model' },
   ],
   'deepgram-voice-agent': [
     { value: 'auto', label: 'Auto (Flux General English)', tag: 'AUTO', description: 'Uses Deepgram Flux for conversational listening' },
@@ -147,6 +163,7 @@ export const readDeepgramGrantCredential = (payload: unknown): { token: string; 
 
 export const getDefaultLiveVoice = (providerValue: unknown): string => {
   const provider = getLiveProvider(providerValue).provider;
+  if (provider === 'model-voice') return 'system-default';
   if (provider === 'gemini') return 'Kore';
   if (provider === 'openai') return 'marin';
   if (provider === 'grok') return 'eve';
@@ -184,7 +201,8 @@ export const getLiveProvider = (value: unknown): LiveProviderOption => {
     elevenlabs: 'elevenlabs-convai',
   };
   const resolved = aliases[normalized] || normalized;
-  return LIVE_PROVIDER_OPTIONS.find(option => option.value === resolved) || LIVE_PROVIDER_OPTIONS[0];
+  return LIVE_PROVIDER_OPTIONS.find(option => option.value === resolved)
+    || LIVE_PROVIDER_OPTIONS.find(option => option.value === 'agent-live-convo')!;
 };
 
 export const normalizeLiveProvider = (value: unknown): LiveProviderOption => getLiveProvider(value);
@@ -198,6 +216,7 @@ export const isLiveModelForProvider = (providerValue: unknown, modelValue: unkno
   const model = String(modelValue || '').trim();
   if (model === 'auto') return true;
   const provider = getLiveProvider(providerValue);
+  if (provider.transport === 'model-voice') return parseModelEntryKey(model) !== null;
   if (provider.provider === 'deepgram') return isDeepgramLiveModel(model);
   if (provider.provider === 'gemini') return isGeminiLiveModel(model);
   if (provider.provider === 'openai') return isOpenAIRealtimeModel(model);

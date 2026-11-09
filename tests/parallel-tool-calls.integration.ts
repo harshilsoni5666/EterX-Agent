@@ -5,10 +5,10 @@ import {
 } from '../src/lib/agent/parallel-tool-calls';
 
 const calls = [
-  { name: 'workspace_read_file', args: { filename: 'a.ts' } },
-  { name: 'workspace_search_text', args: { pattern: 'parallel' } },
-  { name: 'workspace_write_file', args: { filename: 'out.txt' } },
-  { name: 'workspace_read_file', args: { filename: 'out.txt' } },
+  { name: 'workspace_run_command', args: { command: 'Get-Content src/app/page.tsx' } },
+  { name: 'workspace_run_command', args: { command: 'rg --files src' } },
+  { name: 'workspace_edit_file', args: { filename: 'out.txt', edits: [] } },
+  { name: 'workspace_run_command', args: { command: 'Get-Content out.txt' } },
 ];
 
 assert.equal(isParallelSafeToolCall(calls[0]), true);

@@ -69,6 +69,10 @@ export function getDocumentedThinkingCapabilities(
   if (provider === 'gemini') {
     const gemini = id.replace(/^models\//, '').replace(/-preview(?:-\d{2}-\d{2})?$/, '');
     switch (gemini) {
+      case 'gemini-3.8-live':
+        return { levels: [], source: 'documented' };
+      case 'gemini-3.8-live-extended-thinking':
+        return contract('thinkingLevel', ['low', 'medium', 'high'], 'low');
       case 'gemini-3.8-flash':
         return contract('thinkingLevel', ['low', 'medium', 'high']);
       case 'gemini-3.6-flash':

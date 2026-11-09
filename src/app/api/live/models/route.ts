@@ -18,13 +18,14 @@ export async function POST(req: NextRequest) {
   if (originError) return originError;
   const body = await req.json().catch(() => ({}));
   const provider = normalizeLiveProvider(body?.provider);
-  const client = createLiveCatalogRequest(provider.value, body?.key);
+  const client = createLiveCatalogRequest(provider.value, body?.key, req.signal, body?.modelId);
   const reply = (models: CatalogModel[], source: string, error?: string, status = 200) => NextResponse.json({
     ok: !error, provider: provider.value, connected: !error && client.hasKey,
     source, models, updatedAt: Date.now(), ...(error ? { error } : {}),
     connectionStatus: error ? 'unavailable' : 'catalog-loaded',
   }, { status });
-  if (!client.hasKey) return reply([], 'unavailable', `Add a dedicated ${provider.label} Live API key.`, 400);
+  if (provider.transport === 'model-voice') return reply([], 'configured-models', 'Choose a model added in Settings → Models. This mode uses the agent model selector.', 400);
+  if (!client.hasKey) return reply([], 'unavailable', `Connect ${provider.label} in Models or add a key in Live settings.`, 400);
 
   try {
     let models: CatalogModel[] = [];

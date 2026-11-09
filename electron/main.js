@@ -36,7 +36,7 @@ if (packagedDependencyModuleRoot) {
   require('module').Module._initPaths();
 }
 
-const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig } = require(app.isPackaged
+const { GatewayDaemon, DEFAULT_CONFIG: DEFAULT_GATEWAY_CONFIG, mergeConfig: normalizeGatewayConfig, validateGatewayConfig } = require(app.isPackaged
   ? '../runtime/assets/gateways/daemon.cjs'
   : '../src/lib/agent/gateways/daemon.cjs');
 const { normalizeTelegramToken, verifyTelegramToken, setTelegramTransport, safeTelegramError, TELEGRAM_CLIENT_VERSION } = require(app.isPackaged
@@ -47,6 +47,7 @@ const { installedProfileRoot, workspaceRoot } = require('./storage-layout');
 const { createHostEnvironment } = require('./host-environment');
 const { WhisperDictation } = require('./whisper-dictation');
 const IS_DESKTOP_DEVELOPMENT = !app.isPackaged;
+let computerUseOverlay = null;
 
 // Development should never display a stale local bundle. Packaged builds keep
 // Chromium's HTTP cache so repeat launches do not reload every compiled asset.
@@ -273,6 +274,7 @@ function queueRendererPreferencesUpdate(update) {
 Menu.setApplicationMenu(null);
 
 let mainWindow;
+const chatWindows = new Set();
 require('./chat-terminal').registerChatTerminals({ ipcMain, app, getWindow: () => mainWindow });
 require('./managed-workspaces').startWorkspaceCleanup();
 require('./workspace-panel').registerWorkspacePanel({ ipcMain, app, getWindow: () => mainWindow });
@@ -280,6 +282,7 @@ let petWindow;
 let petWindowReadyPromise = null;
 let backgroundTray;
 let gatewayDaemon;
+let savedGatewaySettings = normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG);
 let latestPetStatus = null;
 // Development should surface a missing local server promptly. A packaged app
 // has a child-process lifecycle signal instead, so it must not be replaced by
@@ -763,13 +766,13 @@ function restoreDesktopRuntimeAfterInstallerFailure(error) {
 }
 
 async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1, options = {}) {
-  // The main renderer owns chats, preferences, and scheduled-task persistence.
+  // Full chat renderers own chats, preferences, and scheduled-task persistence.
   // Auxiliary Settings and Live windows do not register that durability
   // contract and must never block a native update waiting for an ACK they
   // cannot send.
-  const windows = mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()
-    ? [mainWindow]
-    : [];
+  const { targetWindow, ...flushOptions } = options;
+  const windows = (targetWindow ? [targetWindow] : [mainWindow, ...chatWindows])
+    .filter(window => window && !window.isDestroyed() && !window.webContents.isDestroyed());
   if (windows.length === 0) return Promise.resolve(true);
 
   const requestWindowFlush = (targetWindow) => {
@@ -782,7 +785,7 @@ async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1, optio
       }, timeoutMs);
       pendingRendererFlushes.set(requestId, { resolve, timer, sender: targetWindow.webContents });
       try {
-        targetWindow.webContents.send('desktop-prepare-for-quit', requestId, options);
+        targetWindow.webContents.send('desktop-prepare-for-quit', requestId, flushOptions);
       } catch (error) {
         clearTimeout(timer);
         pendingRendererFlushes.delete(requestId);
@@ -793,9 +796,12 @@ async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1, optio
   };
 
   for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
-    const results = await Promise.all(windows
-      .filter(window => !window.isDestroyed())
-      .map(requestWindowFlush));
+    const results = [];
+    // Each renderer reserves its snapshot timestamp when asked to flush.
+    // Serial requests avoid racing two windows' final durable revisions.
+    for (const window of windows.filter(window => !window.isDestroyed())) {
+      results.push(await requestWindowFlush(window));
+    }
     if (results.length === windows.length && results.every(Boolean)) return true;
     if (attempt < attempts - 1) {
       logToFile(`[shutdown] Renderer durable flush attempt ${attempt + 1}/${attempts} did not confirm every AppData write; retrying while the app remains connected.`);
@@ -808,7 +814,9 @@ async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1, optio
 function desktopBackgroundPolicy() {
   // Settings are saved before daemon reconfiguration finishes. A close during
   // that restart must use the saved choice, not the daemon's previous config.
-  const config = readGatewaySettings();
+  // Keep the last successfully saved value in memory so this synchronous
+  // close decision does not depend on Electron's async secure-storage API.
+  const config = savedGatewaySettings;
   const keepRuntime = Boolean(config.enabled && config.keepRunningOnClose);
   return {
     keepRuntime,
@@ -817,10 +825,10 @@ function desktopBackgroundPolicy() {
   };
 }
 
-async function stopDesktopRunsForClose({ keepScheduled = false, keepChannels = false, resume = false } = {}) {
+async function stopDesktopRunsForClose({ keepScheduled = false, keepChannels = false, stopTerminals = false, resume = false } = {}) {
   try {
     const target = new URL('/api/agent/stop', getAppTarget());
-    const payload = JSON.stringify({ all: true, confirm: 'STOP_ALL_AGENTS', desktopClose: !resume, desktopResume: resume, keepScheduled, keepChannels });
+    const payload = JSON.stringify({ all: true, confirm: 'STOP_ALL_AGENTS', desktopClose: !resume, desktopResume: resume, keepScheduled, keepChannels, stopTerminals });
     return await new Promise((resolve, reject) => {
       const client = target.protocol === 'https:' ? https : http;
       const request = client.request(target, {
@@ -839,7 +847,7 @@ async function stopDesktopRunsForClose({ keepScheduled = false, keepChannels = f
           } catch (error) { reject(error); }
         });
       });
-      request.setTimeout(8000, () => request.destroy(new Error('Agent shutdown timed out.')));
+      request.setTimeout(stopTerminals ? 15_000 : 8_000, () => request.destroy(new Error('Agent shutdown timed out.')));
       request.on('error', reject);
       request.end(payload);
     });
@@ -855,7 +863,7 @@ async function prepareDesktopClose(background = false, timeoutMs = 8000) {
   const policy = desktopBackgroundPolicy();
   const operation = (async () => {
     const stoppedChatIds = !background || !policy.keepActive
-      ? await stopDesktopRunsForClose({ keepScheduled: background && policy.keepScheduled, keepChannels: background && policy.keepRuntime })
+      ? await stopDesktopRunsForClose({ keepScheduled: background && policy.keepScheduled, keepChannels: background && policy.keepRuntime, stopTerminals: !background })
       : [];
     return requestRendererDurableFlush(timeoutMs, 1, { stoppedChatIds });
   })();
@@ -1107,10 +1115,11 @@ function publishMainWindowVisibility() {
 }
 
 ipcMain.handle('desktop-window-visibility-get', (event) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) {
+  const target = BrowserWindow.fromWebContents(event.sender);
+  if (!target || (target !== mainWindow && !chatWindows.has(target)) || event.senderFrame !== event.sender.mainFrame) {
     throw new Error('Window visibility access denied');
   }
-  return isMainWindowVisible();
+  return !target.isDestroyed() && target.isVisible() && !target.isMinimized();
 });
 
 async function performDesktopUpdateCheck({ silent = false } = {}) {
@@ -1385,9 +1394,9 @@ function secureRuntimeSettingsPath() {
   return path.join(getEterxSettingsRoot(), SECURE_RUNTIME_SETTINGS_FILE);
 }
 
-function secureStorageAvailable() {
+async function secureStorageAvailable() {
   try {
-    return safeStorage.isEncryptionAvailable();
+    return await safeStorage.isAsyncEncryptionAvailable();
   } catch {
     return false;
   }
@@ -1540,22 +1549,22 @@ function normalizeSecureRuntimeSettings(raw) {
   return { apiKeys, liveApiKeys, modelApiKeys, modelOverrides, baseURLs, ...(search ? { search } : {}), ...(image ? { image } : {}), ...(video ? { video } : {}) };
 }
 
-function readSecureRuntimeSettings() {
-  if (!secureStorageAvailable()) return { available: false, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {}, image: undefined, video: undefined };
+async function readSecureRuntimeSettings() {
+  if (!await secureStorageAvailable()) return { available: false, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {}, image: undefined, video: undefined };
 
   for (const source of [secureRuntimeSettingsPath(), `${secureRuntimeSettingsPath()}.backup`]) {
     try {
       if (!fs.existsSync(source)) continue;
       const encrypted = fs.readFileSync(source);
-      const decoded = safeStorage.decryptString(encrypted);
+      const { result: decoded } = await safeStorage.decryptStringAsync(encrypted);
       return { available: true, ...normalizeSecureRuntimeSettings(JSON.parse(decoded)) };
     } catch { }
   }
   return { available: true, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {}, image: undefined };
 }
 
-function writeSecureRuntimeSettings(raw) {
-  if (!secureStorageAvailable()) {
+async function writeSecureRuntimeSettings(raw) {
+  if (!await secureStorageAvailable()) {
     return { ok: false, available: false, error: 'OS secure storage is unavailable.' };
   }
 
@@ -1566,7 +1575,7 @@ function writeSecureRuntimeSettings(raw) {
 
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(temporary, safeStorage.encryptString(serialized), { mode: 0o600 });
+    fs.writeFileSync(temporary, await safeStorage.encryptStringAsync(serialized), { mode: 0o600 });
     if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
     let replaced = false;
     let lastError = null;
@@ -1601,14 +1610,17 @@ function clearSecureRuntimeSettings() {
   }
 }
 
-function connectorStoreSecret() {
+async function connectorStoreSecret() {
   const target = path.join(getEterxSettingsRoot(), 'eterx-connector-secret.bin');
-  if (!secureStorageAvailable()) return '';
+  if (!await secureStorageAvailable()) return '';
   try {
-    if (fs.existsSync(target)) return safeStorage.decryptString(fs.readFileSync(target));
+    if (fs.existsSync(target)) {
+      const { result } = await safeStorage.decryptStringAsync(fs.readFileSync(target));
+      return result;
+    }
     const secret = crypto.randomBytes(32).toString('hex');
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, safeStorage.encryptString(secret), { mode: 0o600 });
+    fs.writeFileSync(target, await safeStorage.encryptStringAsync(secret), { mode: 0o600 });
     return secret;
   } catch (error) {
     console.warn('[EterX] Connector secret unavailable:', error?.message || error);
@@ -1654,35 +1666,44 @@ function decryptFallbackGatewaySettings(raw) {
   return JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.data, 'base64')), decipher.final()]).toString('utf8'));
 }
 
-function readGatewaySettings() {
-  if (secureStorageAvailable()) {
+async function readGatewaySettings() {
+  if (await secureStorageAvailable()) {
     for (const source of [secureGatewaySettingsPath(), `${secureGatewaySettingsPath()}.backup`]) {
       try {
         if (!fs.existsSync(source)) continue;
         const encrypted = fs.readFileSync(source);
-        return normalizeGatewayConfig(JSON.parse(safeStorage.decryptString(encrypted)));
+        const { result } = await safeStorage.decryptStringAsync(encrypted);
+        savedGatewaySettings = normalizeGatewayConfig(JSON.parse(result));
+        return savedGatewaySettings;
       } catch { }
     }
   }
   for (const source of [fallbackGatewaySettingsPath(), `${fallbackGatewaySettingsPath()}.backup`]) {
     try {
-      if (fs.existsSync(source)) return normalizeGatewayConfig(decryptFallbackGatewaySettings(fs.readFileSync(source, 'utf8')));
+      if (fs.existsSync(source)) {
+        savedGatewaySettings = normalizeGatewayConfig(decryptFallbackGatewaySettings(fs.readFileSync(source, 'utf8')));
+        return savedGatewaySettings;
+      }
     } catch { }
   }
-  return normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG);
+  savedGatewaySettings = normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG);
+  return savedGatewaySettings;
 }
 
-function writeGatewaySettings(raw) {
+async function writeGatewaySettings(raw) {
   const settings = normalizeGatewayConfig(raw);
-  const useSecureStorage = secureStorageAvailable();
+  const useSecureStorage = await secureStorageAvailable();
   const target = useSecureStorage ? secureGatewaySettingsPath() : fallbackGatewaySettingsPath();
   const temporary = `${target}.tmp-${process.pid}`;
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(temporary, useSecureStorage ? safeStorage.encryptString(JSON.stringify(settings)) : encryptFallbackGatewaySettings(settings), { mode: 0o600 });
+    const serialized = JSON.stringify(settings);
+    const encrypted = useSecureStorage ? await safeStorage.encryptStringAsync(serialized) : encryptFallbackGatewaySettings(settings);
+    fs.writeFileSync(temporary, encrypted, { mode: 0o600 });
     if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
     fs.rmSync(target, { force: true });
     fs.renameSync(temporary, target);
+    savedGatewaySettings = settings;
     return { ok: true, settings };
   } catch (error) {
     try { fs.rmSync(temporary, { force: true }); } catch { }
@@ -1758,10 +1779,10 @@ function setGatewayLaunchAtLogin(enabled) {
   }
 }
 
-async function initializeGatewayDaemon() {
+async function initializeGatewayDaemon(config) {
   gatewayDaemon = new GatewayDaemon({
     dataDir: path.join(getEterxDataRoot(), 'gateways'),
-    config: readGatewaySettings(),
+    config,
     onEvent: (event) => publishGatewayEvent('gateway-input', event),
     onStatus: (status) => publishGatewayEvent('gateway-status', status),
   });
@@ -2735,7 +2756,7 @@ async function startPackagedServer() {
   const port = await findAvailablePort(Number.isInteger(startPort) && startPort > 0 ? startPort : 3000);
   if (isQuitting) return null;
   const persistentEnv = readEnvFile(path.join(getEterxDataRoot(), '.env.local'));
-  const secureSettings = readSecureRuntimeSettings();
+  const secureSettings = await readSecureRuntimeSettings();
   const dataRoot = getEterxDataRoot();
   const runtimeModules = getPackagedDependencyModuleRoot() || path.join(runtimeRoot, 'modules');
   const env = removeDesktopRuntimeSettingEnvironment({
@@ -2751,7 +2772,7 @@ async function startPackagedServer() {
     ETERX_DESKTOP_PARENT_PID: String(process.pid),
     NODE_PATH: runtimeModules,
   });
-  const connectorSecret = connectorStoreSecret();
+  const connectorSecret = await connectorStoreSecret();
   if (connectorSecret) env.ETERX_CONNECTOR_SECRET = connectorSecret;
   Object.assign(env, secureRuntimeSettingsEnvironment(secureSettings));
 
@@ -3312,6 +3333,72 @@ async function bootApp(options = {}) {
   }
 }
 
+// Chat windows share the app runtime and durable store, but own their view/navigation.
+ipcMain.handle('chat-window-open', async (event, chatId) => {
+  if (!isTrustedRenderer(event.sender) || event.senderFrame !== event.sender.mainFrame
+      || typeof chatId !== 'string' || !chatId.trim() || chatId.length > 200) {
+    return { ok: false, error: 'Invalid chat window request.' };
+  }
+  const colors = nativeThemeColors(readNativeTheme());
+  const chrome = process.platform === 'darwin'
+    ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 12 } }
+    : { titleBarStyle: 'hidden', titleBarOverlay: { color: colors.titleBar, symbolColor: colors.titleSymbol, height: NATIVE_FRAME_HEIGHT } };
+  const chatWindow = new BrowserWindow({
+    width: 1400, height: 900, minWidth: 400, minHeight: 400,
+    title: 'EterX', icon: getSystemIconPath(), backgroundColor: colors.background,
+    ...chrome, show: false, autoHideMenuBar: true,
+    webPreferences: {
+      devTools: IS_DESKTOP_DEVELOPMENT, nodeIntegration: false,
+      contextIsolation: true, backgroundThrottling: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+  chatWindows.add(chatWindow);
+  registerNativeThemedWindow(chatWindow);
+  attachNativeContextMenu(chatWindow);
+  chatWindow.setMenuBarVisibility(false);
+  const publishVisibility = () => {
+    if (!chatWindow.isDestroyed() && !chatWindow.webContents.isDestroyed()) {
+      chatWindow.webContents.send('desktop-window-visibility-changed', chatWindow.isVisible() && !chatWindow.isMinimized());
+    }
+  };
+  for (const name of ['show', 'hide', 'minimize', 'restore']) chatWindow.on(name, publishVisibility);
+  chatWindow.webContents.on('dom-ready', publishVisibility);
+  chatWindow.on('page-title-updated', event => { event.preventDefault(); });
+  chatWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  chatWindow.webContents.on('will-navigate', (event, url) => {
+    if (!isTrustedAppUrl(url)) { event.preventDefault(); }
+  });
+  let closing = false;
+  let flushed = false;
+  chatWindow.on('close', event => {
+    if (isQuitting || flushed) return;
+    event.preventDefault();
+    if (closing) return;
+    closing = true;
+    void requestRendererDurableFlush(15000, 2, { targetWindow: chatWindow }).then(ok => {
+      closing = false;
+      if (chatWindow.isDestroyed()) return;
+      if (ok) { flushed = true; chatWindow.close(); }
+      else void dialog.showMessageBox(chatWindow, { type: 'error', message: 'Your chat could not be saved yet. Please try closing this window again.' });
+    });
+  });
+  chatWindow.on('closed', () => chatWindows.delete(chatWindow));
+  try {
+    const target = new URL(getAppTarget());
+    target.searchParams.set('chat', chatId);
+    await chatWindow.loadURL(target.toString());
+    chatWindow.show();
+    return { ok: true };
+  } catch (error) {
+    if (!chatWindow.isDestroyed()) chatWindow.destroy();
+    return { ok: false, error: String(error?.message || 'Could not load chat window.') };
+  }
+});
+
 function createWindow() {
   if (isQuitting || (mainWindow && !mainWindow.isDestroyed())) return;
   mainWindowWantsVisible = !launchInBackground;
@@ -3503,6 +3590,20 @@ function createWindow() {
   let durableClosePending = false;
   mainWindow.on('close', (event) => {
     if (isQuitting || closeAfterDurableFlush) return;
+    if (chatWindows.size > 0) {
+      event.preventDefault();
+      if (durableClosePending) return;
+      durableClosePending = true;
+      const closingWindow = mainWindow;
+      void requestRendererDurableFlush(15000, 2, { targetWindow: closingWindow }).then(ok => {
+        durableClosePending = false;
+        if (ok && closingWindow && !closingWindow.isDestroyed()) {
+          closeAfterDurableFlush = true;
+          closingWindow.close();
+        }
+      });
+      return;
+    }
     if (desktopBackgroundPolicy().keepRuntime) {
       event.preventDefault();
       mainWindowWantsVisible = false;
@@ -3778,6 +3879,12 @@ ipcMain.handle('open-external', async (event, url) => {
 
 let rendererReloadPending = false;
 ipcMain.handle('app-reload', async (event) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  if (chatWindows.has(senderWindow) && isTrustedRenderer(event.sender)) {
+    if (!await requestRendererDurableFlush(15000, 1, { targetWindow: senderWindow })) return false;
+    senderWindow.webContents.reload();
+    return true;
+  }
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false;
   if (rendererReloadPending || bootInProgress || isQuitting) return false;
   rendererReloadPending = true;
@@ -3805,7 +3912,12 @@ ipcMain.handle('app-restart', async () => {
   return true;
 });
 
-ipcMain.handle('app-close', async () => {
+ipcMain.handle('app-close', async (event) => {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  if (chatWindows.has(senderWindow)) {
+    senderWindow.close();
+    return { hiddenToTray: false };
+  }
   const hiddenToTray = desktopBackgroundPolicy().keepRuntime;
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
   else app.quit();
@@ -3847,14 +3959,14 @@ ipcMain.handle('renderer-preferences-update', async (_event, update) => {
 
 // Desktop credentials stay out of renderer storage. Electron encrypts this
 // AppData payload with the operating system credential store.
-ipcMain.handle('secure-runtime-settings-get', () => readSecureRuntimeSettings());
+ipcMain.handle('secure-runtime-settings-get', async () => readSecureRuntimeSettings());
 
-ipcMain.handle('secure-runtime-settings-save', (_event, settings) => writeSecureRuntimeSettings(settings));
+ipcMain.handle('secure-runtime-settings-save', async (_event, settings) => writeSecureRuntimeSettings(settings));
 
 ipcMain.handle('secure-runtime-settings-clear', () => clearSecureRuntimeSettings());
 
-ipcMain.handle('gateway-get-state', () => ({
-  available: secureStorageAvailable(),
+ipcMain.handle('gateway-get-state', async () => ({
+  available: await secureStorageAvailable(),
   telegramClientVersion: TELEGRAM_CLIENT_VERSION,
   config: gatewayDaemon?.publicConfig() || normalizeGatewayConfig(DEFAULT_GATEWAY_CONFIG),
   status: gatewayDaemon?.status() || null,
@@ -3897,7 +4009,7 @@ ipcMain.handle('telegram-bot-save', (_event, raw) => serializeTelegramBotMutatio
     const bot = { ...raw, id: previous?.id || crypto.randomUUID(), token, username: identity.username, telegramId: String(identity.id) };
     const bots = [...gatewayDaemon.config.telegramBots.filter(item => item.id !== bot.id), bot];
     if (bots.length > 30) throw new Error('You can connect up to 30 bots on this device.');
-    const saved = writeGatewaySettings({ ...gatewayDaemon.config, enabled: true, keepRunningOnClose: true, telegramBots: bots });
+    const saved = await writeGatewaySettings({ ...gatewayDaemon.config, enabled: true, keepRunningOnClose: true, telegramBots: bots });
     if (!saved.ok) throw new Error(saved.error || 'Could not save bot settings.');
     stage = 'Start bot connection';
     const state = await gatewayDaemon.configure(saved.settings);
@@ -3927,7 +4039,7 @@ ipcMain.handle('telegram-bot-pair', (_event, id) => {
 });
 ipcMain.handle('telegram-bot-remove', (_event, id) => serializeTelegramBotMutation(async () => {
   try {
-    const saved = writeGatewaySettings({ ...gatewayDaemon.config, telegramBots: gatewayDaemon.config.telegramBots.filter(bot => bot.id !== id) });
+    const saved = await writeGatewaySettings({ ...gatewayDaemon.config, telegramBots: gatewayDaemon.config.telegramBots.filter(bot => bot.id !== id) });
     if (!saved.ok) return saved;
     const state = await gatewayDaemon.configure(saved.settings);
     delete gatewayDaemon.telegramBots.data.owners[id];
@@ -3939,7 +4051,8 @@ ipcMain.handle('telegram-bot-remove', (_event, id) => serializeTelegramBotMutati
 
 ipcMain.handle('gateway-save-config', (_event, raw) => serializeTelegramBotMutation(async () => {
   if (!gatewayDaemon) return { ok: false, error: 'Gateway daemon is not ready.' };
-  const current = readGatewaySettings();
+  try {
+  const current = await readGatewaySettings();
   const incoming = raw && typeof raw === 'object' ? raw : {};
   const merged = { ...current, ...incoming, telegramBots: gatewayDaemon.config.telegramBots, platforms: {} };
   const secretFields = ['token', 'webhookSecret', 'appSecret', 'publicKey', 'password', 'appPassword', 'emailPassword'];
@@ -3951,10 +4064,11 @@ ipcMain.handle('gateway-save-config', (_event, raw) => serializeTelegramBotMutat
       if (typeof next[field] !== 'string' || !next[field].trim()) merged.platforms[platform][field] = previous[field];
     }
   }
-  const saved = writeGatewaySettings(merged);
-  if (!saved.ok) return saved;
-  const startup = setGatewayLaunchAtLogin(saved.settings.launchAtLogin);
+  validateGatewayConfig(merged);
+  const startup = setGatewayLaunchAtLogin(merged.launchAtLogin);
   if (!startup.ok) return startup;
+  const saved = await writeGatewaySettings(merged);
+  if (!saved.ok) return saved;
   const state = await gatewayDaemon.configure(saved.settings);
   if (saved.settings.enabled && saved.settings.keepRunningOnClose) ensureBackgroundTray();
   if (!saved.settings.enabled && backgroundTray) {
@@ -3962,6 +4076,7 @@ ipcMain.handle('gateway-save-config', (_event, raw) => serializeTelegramBotMutat
     backgroundTray = null;
   }
   return { ok: true, ...state };
+  } catch (error) { return { ok: false, error: error?.message || 'Could not save gateway configuration.' }; }
 }));
 
 ipcMain.handle('gateway-start', async () => gatewayDaemon?.start());
@@ -3970,7 +4085,7 @@ ipcMain.handle('gateway-list-events', (_event, limit) => gatewayDaemon?.store.li
 ipcMain.handle('gateway-claim-inputs', (_event, limit) => {
   if (!gatewayDaemon) return [];
   const enabledBots = new Set(gatewayDaemon.config.telegramBots.filter(bot => bot.enabled).map(bot => bot.id));
-  return gatewayDaemon.store.listPending(Number(limit) || 25, event => !event.botId || enabledBots.has(event.botId));
+  return gatewayDaemon.store.listPending(Number(limit) || 25, event => event.botId ? enabledBots.has(event.botId) : gatewayDaemon.canDispatch(event));
 });
 ipcMain.handle('gateway-ack-input', (_event, eventId) => gatewayDaemon?.store.acknowledge(String(eventId || '')) || false);
 ipcMain.handle('gateway-list-conversations', () => gatewayDaemon?.store.listConversations() || []);
@@ -3992,6 +4107,10 @@ ipcMain.handle('gateway-get-mcp-connection', () => {
 ipcMain.handle('gateway-send-message', async (_event, platform, target, text) => {
   if (!gatewayDaemon) throw new Error('Gateway daemon is not ready.');
   return gatewayDaemon.deliverMessage(String(platform || ''), target || {}, String(text || ''));
+});
+ipcMain.handle('gateway-deliver-agent-reply', async (_event, request) => {
+  if (!gatewayDaemon) throw new Error('Gateway daemon is not ready.');
+  return gatewayDaemon.deliverAgentReply(request || {});
 });
 
 ipcMain.handle('desktop-update-get-state', () => desktopUpdateState);
@@ -4368,6 +4487,12 @@ app.on('ready', async () => {
   migrateLegacyUserData();
 
   try {
+    computerUseOverlay = await require('./computer-use-overlay').startComputerUseOverlay(getEterxDataRoot());
+  } catch (error) {
+    logToFile(`[computer-use] Desktop overlay could not start: ${error.message || error}`);
+  }
+
+  try {
     await startPackagedServer();
   } catch (error) {
     console.error('[EterX] Could not prepare bundled server:', error);
@@ -4378,7 +4503,8 @@ app.on('ready', async () => {
 
   // Connector discovery must not block the first native paint. The daemon
   // still starts immediately and remains independent of the renderer.
-  const gatewayInitialization = initializeGatewayDaemon().catch((error) => {
+  const gatewaySettings = await readGatewaySettings();
+  const gatewayInitialization = initializeGatewayDaemon(gatewaySettings).catch((error) => {
     console.error('[EterX] Could not initialize gateway daemon:', error);
   });
   // Login/background launches should stay out of the Dock until the user
@@ -4408,6 +4534,8 @@ app.on('window-all-closed', function () {
 });
 
 app.on('before-quit', (event) => {
+  computerUseOverlay?.dispose();
+  computerUseOverlay = null;
   clearBootRetry();
   activeBootId += 1;
   bootInProgress = false;

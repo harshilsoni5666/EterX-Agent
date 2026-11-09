@@ -1,17 +1,10 @@
-import type { Config } from "tailwindcss";
-
-const config: Config = {
-  content: [
-    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
-  ],
+module.exports = {
   darkMode: "class",
   theme: {
     extend: {
       fontFamily: {
         sans: ["Segoe UI", "-apple-system", "BlinkMacSystemFont", "Arial", "sans-serif"],
-        mono: ["var(--font-mono)", "JetBrains Mono", "ui-monospace", "Cascadia Code", "Fira Code", "monospace"],
+        mono: ["var(--font-mono)"],
       },
       backgroundImage: {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",
@@ -25,7 +18,7 @@ const config: Config = {
           muted: "#6B6966",
           text: "#E8E6E3",
           accent: "#E2765A",
-        }
+        },
       },
       animation: {
         "spin-slow": "spin 2s linear infinite",
@@ -34,4 +27,3 @@ const config: Config = {
   },
   plugins: [],
 };
-export default config;

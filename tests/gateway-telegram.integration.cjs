@@ -13,20 +13,21 @@ async function main() {
   global.fetch = async (url) => {
     requests.push(String(url));
     if (String(url).includes('/getMe')) return { ok: true, json: async () => ({ ok: true, result: { id: 1 } }) };
-    if (String(url).includes('/deleteWebhook')) return { ok: true, json: async () => ({ ok: true, result: true }) };
-    return { ok: true, json: async () => ({ ok: false, description: 'Conflict: terminated by other getUpdates request' }) };
+    if (String(url).includes('/getWebhookInfo')) return { ok: true, json: async () => ({ ok: true, result: { url: '' } }) };
+    if (String(url).includes('/getUpdates')) return { ok: true, json: async () => ({ ok: false, error_code: 409, description: 'Conflict: terminated by other getUpdates request' }) };
+    return { ok: true, json: async () => ({ ok: true, result: {} }) };
   };
 
   const daemon = new GatewayDaemon({
     dataDir,
-    config: { enabled: true, platforms: { telegram: { enabled: true, mode: 'polling', token: 'test-token' } } },
+    config: { enabled: true, platforms: { telegram: { enabled: true, mode: 'polling', token: '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' } } },
     onEvent: () => {},
     onStatus: () => {},
   });
   await daemon.startTelegramPolling();
   assert.equal(daemon.status().platforms.telegram.state, 'conflict');
   assert.equal(requests.some((url) => url.includes('/getMe')), true);
-  assert.equal(requests.some((url) => url.includes('/deleteWebhook')), true);
+  assert.equal(requests.some((url) => url.includes('/getWebhookInfo')), true);
   assert.equal(requests.some((url) => url.includes('/getUpdates')), true);
 
   global.fetch = originalFetch;

@@ -47,7 +47,7 @@ html[data-theme="light"] .eterx-turn-changes-popup { color-scheme:light; }
 .eterx-turn-diff-heading > .eterx-turn-file-label { flex:1; min-width:0; }
 .eterx-turn-diff-heading > button { display:flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:6px; flex:none; }
 .eterx-turn-diff-scroll { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; }
-.eterx-turn-diff-lines { min-width:100%; width:max-content; font-family:var(--font-geist-mono,ui-monospace),monospace; font-size:12px; line-height:1.85; tab-size:4; }
+.eterx-turn-diff-lines { min-width:100%; width:max-content; font-family:var(--font-mono); font-size:12px; line-height:1.85; tab-size:4; }
 .eterx-turn-diff-line { display:flex; width:100%; min-height:22px; padding-right:16px; }
 .eterx-turn-diff-line[data-kind="added"] { background:color-mix(in srgb,var(--change-added) 14%,transparent); }
 .eterx-turn-diff-line[data-kind="removed"] { background:color-mix(in srgb,var(--change-removed) 14%,transparent); }

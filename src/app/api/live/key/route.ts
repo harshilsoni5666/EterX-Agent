@@ -1,18 +1,14 @@
-import { createLiveCatalogRequest, splitLiveKeys } from '../../../../lib/live/catalog-request';
+import { createLiveCatalogRequest } from '../../../../lib/live/catalog-request';
 import { NextRequest, NextResponse } from 'next/server';
-import { rejectCrossOrigin } from '../../agent/_shared';
-import { readStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
+import { rejectCrossOrigin, getOrCreateAgentApiSession, ensureChatOwner, isSafeChatId, attachAgentApiSessionCookie } from '../../agent/_shared';
 import { normalizeLiveProvider } from '../../../../lib/live/live-provider';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * POST /api/live/key — Return the dedicated selected Live Convo provider key.
- * 
- * The client calls this before connecting to the selected Live transport. Credentials
- * are configured only by Settings and never accepted by this endpoint. Live
- * credentials are intentionally separate from ordinary provider/model pools.
+ * Establish the Live owner and report credential presence. Long-lived provider
+ * keys never leave this route; /api/live/session mints browser credentials.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -21,41 +17,24 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json().catch(() => ({}));
     const provider = normalizeLiveProvider(body?.provider);
-    const stored = readStoredRuntimeSettings();
-    const rawKeys = stored.liveApiKeys?.[provider.keyProvider];
-    const keys = splitLiveKeys(rawKeys);
-    let apiKey = keys[0] || '';
-    if (!apiKey) {
+    const chatId = String(body.chatId || '').trim();
+    if (!isSafeChatId(chatId)) return NextResponse.json({ error: 'A valid Live chat ID is required.' }, { status: 400 });
+    const session = getOrCreateAgentApiSession(req);
+    if (!ensureChatOwner(chatId, session.sessionId)) return NextResponse.json({ error: 'This Live chat belongs to another session.' }, { status: 403 });
+    const client = createLiveCatalogRequest(provider.value, undefined, req.signal, body?.model);
+    if (provider.transport !== 'model-voice' && !client.hasKey) {
       return NextResponse.json(
-        { error: `No separate ${provider.label} Live API key is configured.` },
+        { error: `Connect ${provider.label} in Models or add a key in Live settings.` },
         { status: 503 },
       );
     }
-    // Native browser transports receive only short-lived credentials from
-    // /api/live/session. Keep long-lived OpenAI, xAI, Deepgram, and
-    // ElevenLabs keys on the server; Gemini still uses its documented key in
-    // the WebSocket URL and therefore retains the legacy client key path.
-    if (provider.browserAuth !== 'api-key') {
-      return NextResponse.json({
-        apiKey: '',
-        available: true,
-        provider: provider.value,
-        providerKey: provider.keyProvider,
-        chatId: body.chatId || `live_${Date.now()}`,
-      });
-    }
-    
-    // Lease the same authorized pool member used by catalog discovery.
-    const client = createLiveCatalogRequest(provider.value);
-    await client.request('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000');
-    apiKey = client.selectedKey;
-    return NextResponse.json({ 
-      apiKey,
+    return attachAgentApiSessionCookie(NextResponse.json({
+      apiKey: '',
       available: true,
       provider: provider.value,
       providerKey: provider.keyProvider,
-      chatId: body.chatId || `live_${Date.now()}`,
-    });
+      chatId,
+    }, { headers: { 'Cache-Control': 'no-store' } }), session);
     
   } catch (error: any) {
     console.error('[LiveKey] Error leasing key:', error);

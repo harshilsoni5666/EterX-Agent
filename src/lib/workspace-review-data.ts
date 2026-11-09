@@ -1,5 +1,6 @@
 import type { FilePanelProps } from '../components/chat/file-panel';
 import { resolveTouchPath, workspacePathKey } from './workspace-paths';
+import { numberDiffLines } from './diff-line-numbers';
 type ReviewChange = FilePanelProps & { status?: string };
 type Line = NonNullable<FilePanelProps['diffLines']>[number];
 
@@ -26,6 +27,15 @@ export function collectWorkspaceReviewFiles(logs: any[], owner?: string): Review
         files.set(workspacePathKey(path), { filepath: path, filename: path.split(/[\\/]/).pop() || path, status, isEdit: true, updatedAt: log.timestamp });
       }
     }
+    if (log.importedFrom && Array.isArray(result.changes)) for (const change of result.changes) {
+      if (!change || !['created', 'modified', 'deleted'].includes(change.action)) continue;
+      const filepath = resolveTouchPath(change.path, cwd);
+      if (!filepath) continue;
+      files.set(workspacePathKey(filepath), { filepath, filename: filepath.split(/[\\/]/).pop() || filepath,
+        diffLines: Array.isArray(change.diffLines) ? change.diffLines : [], content: change.readback,
+        linesAdded: change.additions, linesRemoved: change.deletions, isEdit: true, updatedAt: log.timestamp,
+        status: change.action === 'created' ? 'A' : change.action === 'deleted' ? 'D' : 'M' });
+    }
     if (log.type !== 'file_preview') continue;
     const filepath = typeof log.filepath === 'string' ? log.filepath : log.filePath;
     if (!filepath || typeof filepath !== 'string') continue;
@@ -42,12 +52,14 @@ export function collectWorkspaceReviewFiles(logs: any[], owner?: string): Review
 // never from today's on-disk file, which another chat may have changed.
 export function workspaceChatDiffLines(file: ReviewChange | undefined, full: boolean): Line[] {
   if (!file) return [];
-  const compact = (file.diffLines || []).map(line => line.type === 'context' && !line.isGap && line.oldLine != null && line.newLine != null ? { ...line, type: 'unchanged' as const } : line);
+  const compact = numberDiffLines((file.diffLines || []).map(line => line.type === 'context' && !line.isGap ? { ...line, type: 'unchanged' as const } : line));
   if (!full || typeof file.content !== 'string' || !file.content || file.truncated) return compact;
   const after = file.content.replace(/\r\n/g, '\n').split('\n');
   if (after.length > 10000 || (file.totalLines && after.length < file.totalLines)) return compact;
   if (file.status === 'A') return after.map((content, index) => ({ type: 'added', content, newLine: index + 1 }));
   if (!compact.some(line => line.type === 'added' || line.type === 'removed')) return compact;
+  // Relative display numbers cannot locate a hunk in a full file snapshot.
+  if (compact.some(line => !line.isGap && (line.type !== 'added' && line.oldLine == null || line.type !== 'removed' && line.newLine == null))) return compact;
   if (compact.some(line => !line.isGap && line.newLine != null && after[line.newLine - 1] !== line.content.replace(/\r$/, ''))) return compact;
   const result: Line[] = [];
   let oldLine = 1, newLine = 1;

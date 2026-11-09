@@ -389,7 +389,7 @@ interface ChatInputProps {
   liveState?: 'idle' | 'connecting' | 'connected' | 'listening' | 'thinking' | 'speaking' | 'error';
   hasBackgroundLiveSession?: boolean;
   onLiveStart?: () => void;
-  onLiveSendText?: (text: string) => void;
+  onLiveSendText?: (text: string) => boolean | void;
   onLiveStop?: () => void;
   liveOutputText?: string;
   liveInputText?: string;
@@ -693,7 +693,7 @@ const DocumentPreviewIframe = React.memo(({ src }: { src: string }) => {
 });
 DocumentPreviewIframe.displayName = 'DocumentPreviewIframe';
 
-const inputControlButton = "eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.07] bg-[#2D2D2D] text-white shadow-none transition-[background-color,border-color,box-shadow,color] duration-120 ease-out active:bg-[#2F2F2F] active:shadow-none hover:text-white hover:bg-[#333333] hover:border-white/[0.10] hover:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/15 group relative overflow-hidden";
+const inputControlButton = "eterx-control-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-white/[0.07] bg-[#2D2D2D] text-white shadow-none transition-[background-color,border-color,box-shadow,color] duration-120 ease-out active:bg-[#2F2F2F] active:shadow-none hover:text-white hover:bg-[#333333] hover:border-white/[0.10] hover:shadow-none focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/15 group relative overflow-hidden";
 const inputControlSheen = "hidden";
 
 type SlashTrigger = {
@@ -1077,6 +1077,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   pinnedItems = [], setPinnedItems = () => { },
   liveState = 'idle', hasBackgroundLiveSession = false, onLiveStart = () => { }, onLiveStop = () => { },
   liveOutputText = '', liveInputText = '',
+  liveError = null,
   liveMicVolume = 0, liveModelVolume = 0, liveActiveTool = null,
   isMicMuted = false, onToggleMicMute = () => { },
   isSpeakerMuted = false, onToggleSpeakerMute = () => { },
@@ -1650,7 +1651,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   // Let the editor grow with the draft, but keep long prompts from taking over
   // the chat. Once this bound is reached, the textarea itself becomes the
   // scroll viewport and the rest of the composer stays in place.
-  const textareaMinHeight = 26;
+  const textareaMinHeight = 32;
   const textareaMaxHeight = isCompressed ? 180 : 240;
   // Agent identity and model selection have different lifecycles. A worker's
   // identity stays fixed, while choosing a model during its current response
@@ -1718,8 +1719,17 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   useEffect(() => {
     refreshStoredModelSettings();
-
-    const onSettingsUpdated = () => {
+    let disposed = false;
+    const modelStorageKeys = new Set([
+      MODEL_API_KEY_STORAGE_KEY, MODEL_API_KEY_PRESENCE_STORAGE_KEY,
+      MODEL_SELECTOR_STORAGE_KEY, MODEL_CATALOG_STORAGE_KEY, MODEL_OVERRIDE_STORAGE_KEY,
+      MODEL_THINKING_CAPABILITIES_STORAGE_KEY, MODEL_THINKING_LEVELS_STORAGE_KEY,
+      CHAT_MODEL_SELECTION_STORAGE_KEY,
+    ]);
+    const onSettingsUpdated = (event?: Event) => {
+      if (disposed) return;
+      const key = (event as CustomEvent | undefined)?.detail?.key;
+      if (event?.type === 'eterx-folder-storage-updated' && key && !modelStorageKeys.has(key)) return;
       refreshStoredModelSettings();
     };
 
@@ -1727,7 +1737,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     window.addEventListener('eterx-settings-updated', onSettingsUpdated);
     window.addEventListener(FOLDER_STORAGE_READY_EVENT, onSettingsUpdated);
     window.addEventListener('eterx-folder-storage-updated', onSettingsUpdated);
-    void appStorageReady.then(onSettingsUpdated);
+    void appStorageReady.then(() => onSettingsUpdated());
 
     let channel: BroadcastChannel | null = null;
     try {
@@ -1738,6 +1748,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
 
     return () => {
+      disposed = true;
       window.removeEventListener('focus', onSettingsUpdated);
       window.removeEventListener('eterx-settings-updated', onSettingsUpdated);
       window.removeEventListener(FOLDER_STORAGE_READY_EVENT, onSettingsUpdated);
@@ -2580,7 +2591,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
   }, [activeChatId, handleStop, showComposerNotice]);
 
   useEffect(() => {
-    if (managedWorkspace.busy || queuedSendRef.current !== activeComposerChatKey || hasPreparingAttachments || hasErroredAttachments) return;
+    if (isLiveActive || managedWorkspace.busy || queuedSendRef.current !== activeComposerChatKey || hasPreparingAttachments || hasErroredAttachments) return;
     if (!latestInputValueRef.current.trim() && attachments.length === 0) {
       queuedSendRef.current = null;
       return;
@@ -2603,7 +2614,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     }
     notifyAgentFaceSend();
     handleSend();
-  }, [managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isNetworkPaused, isThinking, showComposerNotice]);
+  }, [isLiveActive, managedWorkspace.busy, activeComposerChatKey, activeConfiguredChatModel, attachments.length, getAttachmentCompatibilityIssue, handleSend, handleSteer, hasComposerPayload, hasErroredAttachments, hasPreparingAttachments, isNetworkPaused, isThinking, showComposerNotice]);
 
   const submitPrompt = useCallback(() => {
     if (managedWorkspace.busy) {
@@ -2613,6 +2624,10 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     const hasCurrentPayload = Boolean(latestInputValueRef.current.trim()) || attachments.length > 0;
     if (isNetworkPaused) {
       onNetworkPausedAction();
+      return;
+    }
+    if (isLiveActive && attachments.length > 0) {
+      showComposerNotice('Attachments are saved in your draft', 'End Live to send this message with its attachments.');
       return;
     }
     if (hasPreparingAttachments) {
@@ -2633,10 +2648,13 @@ export const ChatInput: React.FC<ChatInputProps> = ({
     if (isLiveActive) {
       const textToSubmit = latestInputValueRef.current.trim();
       if (textToSubmit) {
+        if (!onLiveSendText || onLiveSendText(textToSubmit) === false) {
+          showComposerNotice('Live message not sent', 'Your draft is kept. Wait for Live to connect, then send again.');
+          return;
+        }
         latestInputValueRef.current = '';
         setHasPromptText(false);
         setInputValue('');
-        onLiveSendText?.(textToSubmit);
       }
       return;
     }
@@ -3043,21 +3061,34 @@ export const ChatInput: React.FC<ChatInputProps> = ({
           </button>
         )}
 
+      {liveError && (
+        <div role="alert" className="mb-2 flex items-center gap-3 rounded-xl border border-amber-400/20 bg-[#25221d] px-3 py-2 text-[12px] text-amber-100">
+          <span className="min-w-0 flex-1 break-words">{liveError}</span>
+          {!isLiveActive && <button type="button" onClick={onLiveStart} className="shrink-0 rounded-lg px-2 py-1 font-medium hover:bg-white/10">Retry Live</button>}
+        </div>
+      )}
       {traceLogsLength === 0 && !isThinking && liveState === 'idle' && (
           <div
             className={`absolute bottom-full left-1/2 -translate-x-1/2 flex flex-col items-center w-full pointer-events-none ${ isCompressed ? 'mb-4 max-w-[460px]' : 'mb-6 max-w-[660px]' }`}
           >
-            <div className={`flex items-center ${ isCompressed ? 'gap-3' : 'gap-5'}`}>
+            <div className={`flex w-fit max-w-full items-center ${ isCompressed ? 'gap-3' : 'gap-5'}`}>
               <div
-                className={`${ isCompressed ? 'h-[44px] w-[44px]' : 'h-[56px] w-[56px]' } shrink-0 relative group cursor-pointer pointer-events-auto transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-105`}
+                className={`relative inline-flex shrink-0 items-center justify-center group cursor-pointer pointer-events-auto transition-all duration-500 ease-[cubic-bezier(0.2,0.8,0.2,1)] hover:scale-105 ${ isCompressed ? 'h-[44px] w-[44px]' : 'h-[58px] w-[58px]' }`}
                 onMouseEnter={() => {
                   setLogoHoverText(logoHoverPhrases[Math.floor(Math.random() * logoHoverPhrases.length)]);
                   setIsLogoHovered(true);
                 }}
                 onMouseLeave={() => setIsLogoHovered(false)}
+                onFocus={() => {
+                  if (!isLogoHovered) {
+                    setLogoHoverText(logoHoverPhrases[Math.floor(Math.random() * logoHoverPhrases.length)]);
+                    setIsLogoHovered(true);
+                  }
+                }}
+                onBlur={() => setIsLogoHovered(false)}
               >
                 <AgentFace
-                  size="welcome"
+                  size={isCompressed ? 'work' : 'welcome'}
                   mode="idle"
                   interactive
                   ariaLabel="EterX agent face"
@@ -3066,23 +3097,23 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 <AnimatePresence>
                   {isLogoHovered && (
                     <motion.div
-                      initial={{ opacity: 0, y: 12, x: -32, scale: 0.9, filter: "blur(4px)" }}
-                      animate={{ opacity: 1, y: 0, x: -32, scale: 1, filter: "blur(0px)" }}
-                      exit={{ opacity: 0, y: 8, x: -32, scale: 0.95, filter: "blur(2px)" }}
+                      initial={{ opacity: 0, y: 12, x: '-50%', scale: 0.9, filter: "blur(4px)" }}
+                      animate={{ opacity: 1, y: 0, x: '-50%', scale: 1, filter: "blur(0px)" }}
+                      exit={{ opacity: 0, y: 8, x: '-50%', scale: 0.95, filter: "blur(2px)" }}
                       transition={{ type: "spring", stiffness: 300, damping: 25 }}
-                      className="eterx-composer-popout absolute bottom-[120%] left-1/2 whitespace-nowrap bg-[#111111]/60 backdrop-blur-[24px] px-4 py-2.5 rounded-[14px] shadow-none border border-white/10 z-50 pointer-events-none origin-[32px_bottom] flex items-center justify-center"
+                      className="eterx-composer-popout absolute bottom-full left-1/2 z-50 isolate flex max-w-[calc(100vw-24px)] items-center justify-center whitespace-nowrap rounded-[14px] border border-white/10 bg-[#111111]/60 px-4 py-2.5 shadow-none backdrop-blur-[24px] pointer-events-auto origin-bottom"
                     >
                       {/* Glass tail using rotated square placed behind */}
-                      <div className="eterx-composer-popout-caret absolute -bottom-[5px] left-[26px] w-[12px] h-[12px] bg-[#111111]/60 backdrop-blur-[24px] border-b border-r border-white/10 rotate-45 rounded-[2px] shadow-none -z-10"></div>
+                      <div className="eterx-composer-popout-caret pointer-events-none absolute -bottom-[5px] left-1/2 z-0 h-[12px] w-[12px] -translate-x-1/2 rotate-45 rounded-[2px] border-b border-r border-white/10 bg-[#111111]/60 shadow-none backdrop-blur-[24px]"></div>
 
-                      <span className="eterx-logo-popout-text text-[13px] font-medium tracking-wide text-transparent bg-clip-text bg-gradient-to-b from-white via-white/90 to-white/50 drop-shadow-none">
+                      <span className="eterx-logo-popout-text relative z-10 min-w-0 truncate text-[13px] font-medium tracking-wide text-transparent bg-clip-text bg-gradient-to-b from-white via-white/90 to-white/50 drop-shadow-none">
                         {logoHoverText}
                       </span>
                     </motion.div>
                   )}
                 </AnimatePresence>
               </div>
-              <h1 className={`eterx-home-greeting select-none font-sans tracking-tight leading-[1.2] pb-1 font-medium text-[var(--foreground)] bg-transparent shadow-none border-none ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap'}`}>
+              <h1 className={`eterx-home-greeting m-0 min-w-0 select-none border-none bg-transparent p-0 text-left font-sans font-medium leading-[1.08] tracking-tight text-[var(--foreground)] shadow-none ${ isCompressed ? 'max-w-[360px] truncate text-[30px]' : 'text-[44px] whitespace-nowrap'}`}>
                 {greeting}
               </h1>
             </div>
@@ -3132,7 +3163,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           finishQueueAction(queueActionKey);
                         }
                       }}
-                      className="flex h-8 shrink-0 items-center justify-center gap-1 rounded-full px-2 text-[11px] text-white/65 transition-colors hover:bg-white/[0.08] hover:text-white/90 disabled:cursor-default disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                      className="flex h-8 shrink-0 items-center justify-center gap-1 rounded-full px-2 text-[11px] text-white/65 transition-colors hover:bg-white/[0.08] hover:text-white/90 disabled:cursor-default disabled:opacity-45 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/30"
                       aria-label={`${actionLabel} queued message`}
                       aria-busy={isSending || isPending}
                       title={actionLabel === 'Steer' ? 'Send this message to the active agent' : actionLabel}
@@ -3156,7 +3187,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           finishQueueAction(removalKey);
                         }
                       }}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white/50 transition-colors hover:bg-white/[0.08] hover:text-white/80 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white/50 transition-colors hover:bg-white/[0.08] hover:text-white/80 disabled:opacity-40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-white/30"
                       aria-label="Remove queued follow-up"
                       title="Remove"
                     >
@@ -3430,7 +3461,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                 onChange={(event) => setGoalDraft(event.target.value)}
                 onInput={syncGoalTextareaHeight}
                 placeholder="Write the goal for this chat..."
-                className="block min-h-[86px] w-full resize-none rounded-[16px] border border-white/[0.08] bg-[#1D1D1D] px-3.5 py-3 text-[13.5px] font-medium leading-5 text-[#F2F0EC] outline-none placeholder:text-[#716E69] focus:border-white/[0.16] eterx-scrollbar select-text"
+                className="block min-h-[86px] w-full resize-none rounded-[16px] border border-white/[0.08] bg-[#1D1D1D] px-3.5 py-3 text-[13.5px] font-medium leading-5 text-[#F2F0EC] outline-hidden placeholder:text-[#716E69] focus:border-white/[0.16] eterx-scrollbar select-text"
               />
             </div>
           </div>
@@ -3599,9 +3630,25 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   }}
                   placeholder="Type..."
                   rows={1}
-                  className="flex-1 bg-transparent border-0 outline-none ring-0 text-[14.5px] text-[#F0F0F0] placeholder:text-[#6B6964] font-normal pr-3 resize-none min-h-[26px] max-h-[150px] leading-[1.45] py-2 overflow-y-auto eterx-scrollbar scrollbar-no-buttons"
+                  className="flex-1 bg-transparent border-0 outline-hidden ring-0 text-[14.5px] text-[#F0F0F0] placeholder:text-[#6B6964] font-normal pr-3 resize-none min-h-[42px] max-h-[150px] leading-[1.45] py-2 overflow-y-auto eterx-scrollbar scrollbar-no-buttons"
                   style={{ caretColor: '#F0F0F0' }}
                 />
+              )}
+              {(isThinking || canStop || isStopping) && (
+                <Tooltip text={isStopping ? 'Stopping task' : 'Stop task'} side="top">
+                  <button
+                    type="button"
+                    onClick={handleStopClick}
+                    disabled={isStopping}
+                    aria-label={isStopping ? 'Stopping task' : 'Stop task'}
+                    aria-busy={isStopping}
+                    className="mb-0.5 mr-1 flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-[#2D2D2D] text-white hover:bg-[#383838] disabled:cursor-wait"
+                  >
+                    {isStopping
+                      ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" aria-hidden="true" />
+                      : <span className="h-3 w-3 rounded-[2.5px] bg-current" aria-hidden="true" />}
+                  </button>
+                </Tooltip>
               )}
               <button
                 type="button"
@@ -3962,7 +4009,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                 event.preventDefault(); event.currentTarget.click();
                               }
                             }}
-                            className={`relative flex items-center bg-[var(--muted)] text-[var(--foreground)] border ${ isErrored ? 'border-[#E2765A]/45' : 'border-[var(--border)]' } rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[260px] shadow-none select-none h-[42px] shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current ${ isDocPreviewable ? 'cursor-pointer' : 'cursor-default' }`}
+                            className={`relative flex items-center bg-[var(--muted)] text-[var(--foreground)] border ${ isErrored ? 'border-[#E2765A]/45' : 'border-[var(--border)]' } rounded-[12px] pl-1.5 pr-8 py-1.5 min-w-[125px] max-w-[260px] shadow-none select-none h-[42px] shrink-0 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-current ${ isDocPreviewable ? 'cursor-pointer' : 'cursor-default' }`}
                           >
                             {/* Left Icon Square Box */}
                             <div className="w-[30px] h-[30px] rounded-[8px] bg-black/40 border border-white/[0.05] flex items-center justify-center shrink-0 overflow-hidden relative">
@@ -4037,7 +4084,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       placeholder={resolvedComposerPlaceholder}
                       spellCheck={false}
                       aria-label={resolvedComposerPlaceholder}
-                      className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-none ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-none focus:ring-0 min-h-[26px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 scrollbar-no-buttons ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
+                      className={`eterx-composer-textarea w-full appearance-none border-0 bg-transparent shadow-none outline-hidden ring-0 text-[14.5px] font-normal text-[#F0F0F0] placeholder:text-[#8B8984] focus:border-0 focus:outline-hidden focus:ring-0 min-h-[32px] max-h-[400px] resize-none leading-[1.45] selection:bg-white/15 transition-colors duration-200 relative z-0 py-1 scrollbar-no-buttons ${ isOverflowing ? 'overflow-y-auto eterx-scrollbar pr-2' : 'overflow-hidden' }`}
                       style={{
                         ['--eterx-composer-textarea-max' as any]: `${ textareaMaxHeight }px`,
                         height: hasPromptText ? undefined : textareaMinHeight,
@@ -4100,7 +4147,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     className={`eterx-composer-popout eterx-pin-popout absolute ${ controlPopoutVerticalClass } left-1/2 z-[120] flex w-[148px] origin-bottom flex-col rounded-[14px] border border-white/[0.105] bg-[#1A1A1A]/95 backdrop-blur-2xl p-[4px] shadow-none`}
                   >
                     <span className="eterx-composer-popout-caret pointer-events-none absolute -bottom-[4px] left-1/2 z-0 h-[9px] w-[9px] -translate-x-1/2 rotate-45 border-b border-r border-white/[0.105] bg-[#1A1A1A]/95" />
-                    <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[38px] w-full items-center gap-[8px] rounded-[10px] px-[8px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-none focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                    <button type="button" onClick={handlePinFolder} className="group/menu relative z-10 flex h-[38px] w-full items-center gap-[8px] rounded-[10px] px-[8px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-none focus-visible:bg-white/[0.095] focus-visible:outline-hidden active:scale-[0.99]">
                       <span className="flex h-[23px] w-[23px] shrink-0 items-center justify-center text-white transition-colors">
                         <PinFolderIcon className="h-[22px] w-[22px]" />
                       </span>
@@ -4109,7 +4156,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       </span>
                     </button>
                     <div className="relative z-10 mx-[8px] h-px bg-white/[0.05]" />
-                    <button type="button" onClick={handlePinFiles} className="group/menu relative z-10 flex h-[38px] w-full items-center gap-[8px] rounded-[10px] px-[8px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-none focus-visible:bg-white/[0.095] focus-visible:outline-none active:scale-[0.99]">
+                    <button type="button" onClick={handlePinFiles} className="group/menu relative z-10 flex h-[38px] w-full items-center gap-[8px] rounded-[10px] px-[8px] text-left text-white transition-all duration-150 hover:bg-white/[0.095] hover:shadow-none focus-visible:bg-white/[0.095] focus-visible:outline-hidden active:scale-[0.99]">
                       <span className="flex h-[23px] w-[23px] shrink-0 items-center justify-center text-white transition-colors">
                         <PinFileIcon className="h-[22px] w-[22px]" />
                       </span>
@@ -4470,7 +4517,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                           onClick={event => event.stopPropagation()}
                           aria-label="Search models"
                           placeholder="Search models"
-                          className="h-10 w-full rounded-[12px] border border-white/[0.10] bg-[#171717] pl-9 pr-3 text-[12.5px] font-medium text-[#F4F1EA] outline-none placeholder:text-white/35 focus:border-white/[0.22] focus:bg-[#191919]"
+                          className="h-10 w-full rounded-[12px] border border-white/[0.10] bg-[#171717] pl-9 pr-3 text-[12.5px] font-medium text-[#F4F1EA] outline-hidden placeholder:text-white/35 focus:border-white/[0.22] focus:bg-[#191919]"
                         />
                       </div>
                     )}
@@ -4535,7 +4582,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                                     <span
                                       role="button"
                                       tabIndex={0}
-                                      className={`eterx-model-thinking-trigger flex h-4 w-4 shrink-0 items-center justify-center rounded text-white/45 transition-colors duration-100 hover:text-white focus-visible:text-white focus-visible:outline-none ${ thinkingMenuOpen ? 'text-white' : '' }`}
+                                      className={`eterx-model-thinking-trigger flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-white/45 transition-colors duration-100 hover:text-white focus-visible:text-white focus-visible:outline-hidden ${ thinkingMenuOpen ? 'text-white' : '' }`}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         const row = (event.currentTarget as HTMLElement).closest('.eterx-model-option-row') as HTMLElement | null;
@@ -4619,10 +4666,12 @@ export const ChatInput: React.FC<ChatInputProps> = ({
               )}
 
               {showVoiceControls && <DictationButton phase={dictationPhase} onClick={toggleSpeech} />}
-              {false && <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : isThinking ? "Wait for this run to finish" : "Start Live Conversation"} side="top">
+              {showVoiceControls && !isLiveActive && (hasComposerPayload || isThinking || canStop || isStopping) && <Tooltip text={hasBackgroundLiveSession ? "Move Live to this chat" : "Start Live Conversation"} side="top">
                 <button
-                  onClick={isLiveActive ? onLiveStop : onLiveStart}
-                  disabled={isNetworkPaused || (!hasBackgroundLiveSession && liveState === 'idle' && isThinking)}
+                  type="button"
+                  onClick={onLiveStart}
+                  disabled={isNetworkPaused}
+                  aria-label={hasBackgroundLiveSession ? "Move Live to this chat" : "Start Live Conversation"}
                   className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#2D2D2D] text-white shadow-none transition-all duration-150 active:bg-[#333333] cursor-pointer group relative overflow-hidden hover:bg-[#333333] hover:border-transparent hover:text-white disabled:cursor-not-allowed disabled:opacity-45 ${ hasAnyLiveSession ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-none' : '' }`}
                 >
                   <div className={inputControlSheen} />
@@ -4710,9 +4759,11 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                   ) : (
                     /* Empty composer: live replaces send on voice-enabled surfaces. */
                     <div key="live">
-                      <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Open Live Conversation" : "Start Live Conversation"} side="top">
+                      <Tooltip text={isLiveActive ? "End Live Conversation" : hasBackgroundLiveSession ? "Move Live to this chat" : "Start Live Conversation"} side="top">
                         <button
+                          type="button"
                           onClick={isLiveActive ? onLiveStop : onLiveStart}
+                          aria-label={hasBackgroundLiveSession ? "Move Live to this chat" : "Start Live Conversation"}
                           disabled={isNetworkPaused}
                           data-active={hasAnyLiveSession ? 'true' : undefined}
                           className={`eterx-control-button eterx-composer-live-button w-[38px] h-[38px] shrink-0 flex items-center justify-center rounded-full border border-transparent bg-[#292929] text-white shadow-none transition-all duration-150 active:bg-[#222222] cursor-pointer group relative overflow-hidden hover:bg-[#373737] hover:border-transparent hover:text-white disabled:cursor-not-allowed disabled:opacity-45 ${ hasAnyLiveSession ? '!bg-[#252525] !text-[#10B981] !border-emerald-500/50 shadow-none' : '' }`}

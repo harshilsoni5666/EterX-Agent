@@ -8,6 +8,7 @@ import { getEterxWorkspaceDir } from '../storage-paths';
 import { adaptiveExperience, resolveSelfImprovementEnabled } from '../self-improvement/engine';
 import { rebaseContextCompactionWindow } from '../model-context-window';
 import { CONVERSATION_INTENT_POLICY } from '../conversation-intent-policy';
+import { parseModelEntryKey } from '../model-selector-store';
 import {
   delegationTelemetryFromTrace,
   type DelegatedAgentEvidence,
@@ -191,7 +192,13 @@ type RuntimeOptions = {
 
 export type ProxyInterventionLevel = 'minimal' | 'normal' | 'high';
 
-const runtimes = new Map<string, UserProxyRuntime>();
+// Chat execution and control routes can have separate module instances.
+// They must operate on the same live supervisor, including across hot reloads.
+const proxyRuntimeGlobal = globalThis as typeof globalThis & {
+  __eterxUserProxyRuntimes?: Map<string, UserProxyRuntime>;
+};
+const runtimes = proxyRuntimeGlobal.__eterxUserProxyRuntimes
+  || (proxyRuntimeGlobal.__eterxUserProxyRuntimes = new Map<string, UserProxyRuntime>());
 const AUTONOMY_RUNTIME = 'autonomy_v1';
 const MAX_EVENTS = 120;
 const MAX_INTERVENTIONS = 24;
@@ -553,7 +560,7 @@ export class UserProxyRuntime {
   }
 
   resume(): void {
-    if (this.stopped) return;
+    if (this.stopped || !this.paused) return;
     this.paused = false;
     this.state.status = 'watching';
     this.mainPhase = 'working';
@@ -595,15 +602,28 @@ export class UserProxyRuntime {
     runtimeSettings?: ScopedRuntimeSettings | null;
     modelSelection?: string;
   }): void {
-    this.reviewEpoch += 1;
-    this.reviewAbortController?.abort();
+    const context = this.options.context as any;
+    const changed = this.options.mode !== input.mode || this.options.apiKey !== input.apiKey ||
+      (input.modelSelection !== undefined && context.autonomy?.proxyModelSelection !== input.modelSelection);
     this.options.mode = input.mode;
     this.options.apiKey = input.apiKey;
     this.options.runtimeSettings = input.runtimeSettings;
     if (input.modelSelection !== undefined) {
-      const context = this.options.context as any;
       context.autonomy = { ...context.autonomy, proxyModelSelection: input.modelSelection };
     }
+    if (!changed) return;
+    const trigger = this.armedReviewTrigger || this.deferredReviewTrigger ||
+      (this.state.managerDirectives.some(item => item.status === 'active') ? 'proxy_manager_directive' : 'model_changed');
+    this.reviewEpoch += 1;
+    this.reviewAbortController?.abort();
+    if (this.reviewTimer) clearTimeout(this.reviewTimer);
+    this.reviewTimer = null;
+    this.armedReviewTrigger = null;
+    if (!this.stopped && !this.paused && this.state.status !== 'complete') {
+      this.state.status = 'watching';
+      if (this.state.events.length || this.state.managerDirectives.some(item => item.status === 'active')) this.scheduleReview(trigger);
+    }
+    this.schedulePersist();
   }
 
   receiveManagerDirective(input: Omit<ProxyManagerDirective, 'id' | 'createdAt' | 'status'>): { accepted: boolean; status: ProxyManagerDirective['status']; id?: string } {
@@ -1510,19 +1530,16 @@ export class UserProxyRuntime {
     signal.throwIfAborted();
     const client = createIsolatedClient(this.options.apiKey, this.options.mode, this.options.runtimeSettings);
     const selectedProxyModel = String((this.options.context as any).autonomy?.proxyModelSelection || '').trim();
-    const selectedProxySeparator = selectedProxyModel.indexOf(':');
-    const selectedProxyProvider = selectedProxySeparator > 0
-      ? selectedProxyModel.slice(0, selectedProxySeparator).trim()
-      : '';
-    const selectedProxyModelName = selectedProxySeparator > 0
-      ? selectedProxyModel.slice(selectedProxySeparator + 1).trim()
-      : '';
+    const selectedProxyEntry = parseModelEntryKey(selectedProxyModel);
+    const selectedProxyProvider = selectedProxyEntry?.provider || '';
+    const selectedProxyModelName = selectedProxyEntry?.modelId || '';
     const inheritedContextPolicy = (this.options.context as any).contextCompaction;
     const proxyContextPolicy = selectedProxyProvider && selectedProxyModelName
       ? rebaseContextCompactionWindow(inheritedContextPolicy, selectedProxyProvider, selectedProxyModelName)
       : { ...inheritedContextPolicy };
     const proxyContext: any = {
       projectId: `${this.options.context.projectId}::user-proxy`,
+      providerLeaseId: `${this.options.context.ownerChatId || this.options.context.projectId}_sub_user_proxy`,
       abortSignal: signal,
       agentRuntime: 'user_proxy',
       isUserProxy: true,
@@ -1858,6 +1875,8 @@ export class UserProxyRuntime {
     }
   }
 }
+
+for (const runtime of runtimes.values()) Object.setPrototypeOf(runtime, UserProxyRuntime.prototype);
 
 export function startUserProxyRuntime(options: RuntimeOptions): UserProxyRuntime | null {
   if (!isAutonomous(options.context)) return null;

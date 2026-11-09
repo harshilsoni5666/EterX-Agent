@@ -20,6 +20,10 @@ export type ManagedTerminalSnapshot = ManagedTerminalTask & {
   outputStart: number;
   outputEnd: number;
   running: boolean;
+  hasMoreOutput?: boolean;
+  outputReadError?: string;
+  outputPersistenceError?: string;
+  statusPersistenceError?: string;
 };
 
 async function request(url: string, options?: RequestInit) {
@@ -42,18 +46,24 @@ async function request(url: string, options?: RequestInit) {
   }
 }
 export const managedTerminalCache = new Map<string, ManagedTerminalTask[]>();
+const listVersions = new Map<string, number>();
 export async function listManagedTerminals(chatId: string, signal?: AbortSignal): Promise<ManagedTerminalTask[]> {
+  const version = (listVersions.get(chatId) || 0) + 1;
+  listVersions.set(chatId, version);
   const tasks = (await request(`/api/agent/terminal?${new URLSearchParams({ chatId })}`, { signal })).tasks;
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  if (listVersions.get(chatId) !== version) return managedTerminalCache.get(chatId) || tasks;
   managedTerminalCache.set(chatId, tasks);
   return tasks;
 }
 const pendingSnapshots = new Map<string, Promise<ManagedTerminalSnapshot>>();
 export async function readManagedTerminal(chatId: string, taskId: string, sinceOffset: number, signal?: AbortSignal): Promise<ManagedTerminalSnapshot> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const key = `${chatId}:${taskId}:${sinceOffset}`;
   let pending = pendingSnapshots.get(key);
   if (!pending) {
     pending = request(`/api/agent/terminal?${new URLSearchParams({ chatId, taskId, sinceOffset: String(sinceOffset) })}`)
-      .then(data => data.task).finally(() => pendingSnapshots.delete(key));
+      .then(data => ({ ...data.task, id: data.task.taskId })).finally(() => pendingSnapshots.delete(key));
     pendingSnapshots.set(key, pending!);
   }
   const task = await pending;
@@ -64,6 +74,9 @@ export async function stopManagedTerminal(chatId: string, taskId: string): Promi
   const task = (await request('/api/agent/terminal', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chatId, taskId }),
   })).task;
+  listVersions.set(chatId, (listVersions.get(chatId) || 0) + 1);
+  const cached = managedTerminalCache.get(chatId);
+  if (cached) managedTerminalCache.set(chatId, cached.map(item => item.id === taskId ? { ...item, ...task, id: taskId } : item));
   window.dispatchEvent(new CustomEvent('eterx-terminal-task-changed', { detail: { chatId, taskId } }));
-  return task;
+  return { ...task, id: taskId };
 }

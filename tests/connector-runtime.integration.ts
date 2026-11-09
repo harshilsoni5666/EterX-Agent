@@ -110,7 +110,7 @@ assert.equal(builderAttachResult.success, true);
 const builderProfile = await readAgentBuilderProfile('connector-test');
 assert.deepEqual(
   builderProfile.directMainTools.map((tool: any) => tool.toolName).sort(),
-  ['connector_mcp', 'gateway_bridge'],
+  ['channel_agent', 'connector_mcp', 'gateway_bridge'],
 );
 
 const connectorTrace = createCustomToolActionLog({

@@ -26,6 +26,7 @@ export type McpServerRecord = {
   transport: 'stdio' | 'streamable-http';
   endpoint?: string;
   command?: string;
+  cwd?: string;
   args?: string[];
   headers?: Record<string, string>;
   env?: Record<string, string>;

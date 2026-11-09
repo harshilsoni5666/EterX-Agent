@@ -4,14 +4,22 @@ import type { AgentToolSettings, BuiltinAgentId } from './builtin-agent-settings
 
 let cachedRevision = '';
 let cachedSettings: AgentToolSettings = {};
+let cachedComputerUse: boolean | undefined;
 
 export function readAgentToolSettings(): AgentToolSettings {
   const revision = getStoredRuntimeSettingsRevision();
   if (revision !== cachedRevision) {
-    cachedSettings = readStoredRuntimeSettings().agentTools || {};
+    const stored = readStoredRuntimeSettings();
+    cachedSettings = stored.agentTools || {};
+    cachedComputerUse = stored.computerUse;
     cachedRevision = revision;
   }
   return cachedSettings;
+}
+
+export function isComputerUseDisabled(): boolean {
+  readAgentToolSettings();
+  return cachedComputerUse === false;
 }
 
 export function isBuiltinToolEnabled(agent: BuiltinAgentId, name: string): boolean {

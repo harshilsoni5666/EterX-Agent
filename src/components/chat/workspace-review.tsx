@@ -14,10 +14,11 @@ import { highlightWorkspaceCode, workspaceLanguage, type WorkspaceToken } from '
 import { updateWorkspaceTab, type WorkspaceTab } from '../../lib/side-workspace-store';
 import { isWithinWorkspace, workspacePathKey, workspaceParent } from '../../lib/workspace-paths';
 import { workspaceChatDiffLines } from '../../lib/workspace-review-data';
+import { diffLineNumber, diffLineNumberTitle } from '../../lib/diff-line-numbers';
 import { WorkspaceTreePane } from './workspace-tree-pane';
 import { WorkspaceImagePreview } from './workspace-image-preview';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
-import { diffWordRanges } from './diff-syntax';
+import { diffWordRanges, isPlaceholderDiffGap } from './diff-syntax';
 
 type Line = NonNullable<FilePanelProps['diffLines']>[number];
 type Scope = 'chat' | 'working' | 'branch';
@@ -33,6 +34,7 @@ function makeRows(lines: Line[], split: boolean, expanded: boolean, unfolded: Se
   const result: Row[] = [];
   for (let i = 0; i < lines.length;) {
     const line = lines[i];
+    if (isPlaceholderDiffGap(line)) { i++; continue; }
     if (line.isGap && line.skipped) { result.push({ key: 'gap-' + i, hidden: line.skipped, requestContext: true }); i++; continue; }
     if (!expanded && line.type === 'unchanged') {
       let end = i; while (lines[end]?.type === 'unchanged') end++;
@@ -286,8 +288,8 @@ export function WorkspaceReview({ owner, tab, isActive = true, files, workspaceP
           {active && !imagePreview && split && rows.length > 0 && <div className="eterx-workspace-diff-pair eterx-workspace-diff-columns"><span>Before</span><span>After</span></div>}
           {active && !imagePreview && rows.slice(0, rowLimit).map(row => row.hidden ? <button className="eterx-workspace-diff-fold" key={row.key} onClick={() => { if (row.requestContext) { if (!loadFull && active.content && !active.truncated) setLoadFull(true); else onOpenFile(active.filepath); } else setUnfolded(current => new Set([...current, row.key])); }}><ChevronDown size={13} />{row.hidden} {row.requestContext && (loadFull || !active.content || active.truncated) ? 'lines omitted · Open file' : 'unchanged lines'}</button>
             : row.line?.type === 'context' ? <div key={row.key} className="eterx-workspace-diff-context">{row.line.content}{!loadFull && scope !== 'chat' && <button onClick={() => setLoadFull(true)}>Show surrounding lines</button>}</div>
-            : split ? <div className="eterx-workspace-diff-pair" key={row.key}>{[row.left || (row.line?.type === 'unchanged' ? row.line : undefined), row.right || (row.line?.type === 'unchanged' ? row.line : undefined)].map((line, side) => <div className={'eterx-workspace-diff-cell diff-' + (line?.type || 'empty')} key={side}><span>{side === 0 ? line?.oldLine : line?.newLine}</span><code>{renderCode(line)}</code></div>)}</div>
-            : <div key={row.key} className={'eterx-workspace-diff-row diff-' + row.line?.type}><span>{row.line?.oldLine || ''}</span><span>{row.line?.newLine || ''}</span><b>{row.line?.type === 'added' ? '+' : row.line?.type === 'removed' ? '−' : ' '}</b><code>{renderCode(row.line)}</code></div>)}
+            : split ? <div className="eterx-workspace-diff-pair" key={row.key}>{[row.left || (row.line?.type === 'unchanged' ? row.line : undefined), row.right || (row.line?.type === 'unchanged' ? row.line : undefined)].map((line, side) => <div className={'eterx-workspace-diff-cell diff-' + (line?.type || 'empty')} key={side}><span title={line ? diffLineNumberTitle(line, side === 0 ? 'old' : 'new') : undefined}>{line ? diffLineNumber(line, side === 0 ? 'old' : 'new') : ''}</span><code>{renderCode(line)}</code></div>)}</div>
+            : <div key={row.key} className={'eterx-workspace-diff-row diff-' + row.line?.type}><span title={row.line ? diffLineNumberTitle(row.line, 'old') : undefined}>{row.line ? diffLineNumber(row.line, 'old') : ''}</span><span title={row.line ? diffLineNumberTitle(row.line, 'new') : undefined}>{row.line ? diffLineNumber(row.line, 'new') : ''}</span><b>{row.line?.type === 'added' ? '+' : row.line?.type === 'removed' ? '−' : ' '}</b><code>{renderCode(row.line)}</code></div>)}
           {(!changed.length || (active && !imagePreview && !rows.length)) && <div className="eterx-workspace-empty">{rootsLoading || loading || diffLoading ? <><Loader2 size={21} className="animate-spin" /><p>Reading changes…</p></> : <><FileCodeCorner size={30} strokeWidth={1.5} /><h3>{active ? 'No text diff' : 'No changes to show'}</h3><p>{currentDiff?.notice || (active ? 'Open this file in Files to see its contents.' : scope === 'chat' ? 'Completed edits from this conversation appear here.' : roots.length ? 'No changes in these folders for this comparison.' : 'Select a workspace or use files in this chat to start reviewing.')}</p></>}</div>}
           {active && !imagePreview && rows.length > rowLimit && <button className="eterx-workspace-load-more" onClick={() => setRowLimit(value => value + 1500)}>Show more diff lines</button>}
           {(currentDiff?.truncated || repository?.truncated || lines.length >= 10000) && <p className="eterx-workspace-tree-status">Some content is omitted from this preview. Open Files for the complete file.</p>}

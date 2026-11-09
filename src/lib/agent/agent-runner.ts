@@ -1,4 +1,5 @@
 import { isRuntimePlanMode, setRuntimePlanMode, PLAN_MODE_INSTRUCTION } from './plan-mode';
+import { splitComputerToolResult } from './computer/tool-vision';
 import { isRuntimeSwarmMode, setRuntimeSwarmMode } from './swarm-mode';
 import { swarmCoordinator, SWARM_MODE_INSTRUCTION } from './swarm-coordinator';
 import { globalSubAgentSpawner } from './roles/sub_agent';
@@ -786,8 +787,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
           selectedModelName: resolvedModel,
           runtimeSettings: config.runtimeSettings,
         }),
-        getImageGenerationRouteBrief(),
-        getVideoGenerationRouteBrief(),
+        getImageGenerationRouteBrief({ runtimeSettings: config.runtimeSettings }),
+        getVideoGenerationRouteBrief({ runtimeSettings: config.runtimeSettings }),
         'Use web_search, image_generator, or video_generator for the real task and treat the actual result as route evidence. Do not claim success without source-backed results or a validated local media artifact.',
         '--- END LIVE EXTERNAL SERVICE ROUTES ---',
       );
@@ -1562,8 +1563,9 @@ Current date/time and per-run evidence are supplied with the latest request.`);
 
             // Keep provider responses in call order even when executions finish
             // out of order, which preserves Gemini's function-call contract.
-              const individuallyBoundedResults = functionCalls.map(call =>
-                toolResultCompactor.compact(call.name, call.args, callResults.get(call))
+              const desktopResults = functionCalls.map(call => splitComputerToolResult(normalizeRegistryToolName(call.name), callResults.get(call)));
+              const individuallyBoundedResults = functionCalls.map((call, index) =>
+                toolResultCompactor.compact(call.name, call.args, desktopResults[index].output)
               );
               const providerToolResults = toolResultCompactor.compactBatch(
                 functionCalls.map(call => call.name),
@@ -1589,6 +1591,9 @@ Current date/time and per-run evidence are supplied with the latest request.`);
                   ...(call.providerCallId ? { id: call.providerCallId } : {}),
                 },
               });
+            }
+            for (const desktop of desktopResults) {
+              if (desktop.image) toolResultParts.push({ inlineData: desktop.image });
             }
           }
 
@@ -1862,6 +1867,7 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       allowAgentSpawning: isRuntimeSwarmMode(chatId, config.pinnedContext?.swarmMode === true) || config.pinnedContext?.allowAgentSpawning === true,
       _baseDelegation: { allowed: config.pinnedContext?.allowAgentSpawning === true, disabled: config.pinnedContext?.allowAgentSpawning !== true },
       allowHostControl: config.pinnedContext?.allowHostControl === true && config.pinnedContext?.computerUseEnabled !== false,
+      computerUseEnabled: config.pinnedContext?.allowHostControl === true && config.pinnedContext?.computerUseEnabled !== false,
       allowExternalCommunication: config.pinnedContext?.allowExternalCommunication === true,
       userInitiatedCommunication: this.userInitiatedCommunication,
       userId: 'default',

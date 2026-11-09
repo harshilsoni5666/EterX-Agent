@@ -33,7 +33,8 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const provider = normalizeLiveProvider(body?.provider);
-    const client = createLiveCatalogRequest(provider.value);
+    if (provider.transport === 'model-voice') return NextResponse.json({ ok: false, error: 'Configured models use the agent connection and do not need a realtime token.' }, { status: 400 });
+    const client = createLiveCatalogRequest(provider.value, undefined, req.signal, body?.model);
     if (!client.hasKey) {
       return NextResponse.json({ ok: false, error: `No ${provider.label} API key is configured.` }, { status: 503 });
     }
@@ -41,6 +42,22 @@ export async function POST(req: NextRequest) {
     const model = providerModel(provider.value, body?.model);
     const voice = providerVoice(body?.voice);
     const instructions = String(body?.instructions || '').trim().slice(0, 20_000);
+
+    if (provider.transport === 'gemini-native') {
+      const expiresAt = Date.now() + 30 * 60_000;
+      const payload = await client.request('https://generativelanguage.googleapis.com/v1beta/auth_tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uses: 1,
+          expireTime: new Date(expiresAt).toISOString(),
+          newSessionExpireTime: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      });
+      const token = String(payload?.name || '').trim();
+      if (!token.startsWith('auth_tokens/')) throw new Error('Gemini did not return an ephemeral Live token.');
+      return NextResponse.json({ ok: true, provider: provider.value, token, expiresAt, model }, { headers: { 'Cache-Control': 'no-store' } });
+    }
 
     if (provider.transport === 'openai-webrtc') {
       const payload = await client.request('https://api.openai.com/v1/realtime/client_secrets', {
@@ -58,14 +75,14 @@ export async function POST(req: NextRequest) {
                 transcription: { model: 'gpt-4o-mini-transcribe' },
                 turn_detection: { type: 'server_vad', create_response: true, interrupt_response: true },
               },
-              output: { format: { type: 'audio/pcm' }, voice: voice || 'marin' },
+              output: { format: { type: 'audio/pcm', rate: 24000 }, voice: voice || 'marin' },
             },
           },
         }),
       });
       const credential = readLiveRealtimeCredential(payload);
       if (!credential.token) throw new Error(`${provider.label} did not return a client secret.`);
-      return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model });
+      return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model }, { headers: { 'Cache-Control': 'no-store' } });
     }
 
     if (provider.transport === 'xai-native') {
@@ -76,7 +93,7 @@ export async function POST(req: NextRequest) {
       });
       const credential = readLiveRealtimeCredential(payload);
       if (!credential.token) throw new Error(`${provider.label} did not return a client secret.`);
-      return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model });
+      return NextResponse.json({ ok: true, provider: provider.value, token: credential.token, expiresAt: credential.expiresAt, model }, { headers: { 'Cache-Control': 'no-store' } });
     }
 
     if (provider.transport === 'deepgram-native') {
@@ -92,7 +109,7 @@ export async function POST(req: NextRequest) {
         token: credential.token,
         expiresIn: credential.expiresIn,
         thinkModel: DEFAULT_DEEPGRAM_THINK_MODEL,
-      });
+      }, { headers: { 'Cache-Control': 'no-store' } });
     }
 
     if (provider.transport === 'elevenlabs-native') {
@@ -125,7 +142,7 @@ export async function POST(req: NextRequest) {
       ) {
         throw new Error('ElevenLabs returned an invalid signed conversation URL.');
       }
-      return NextResponse.json({ ok: true, provider: provider.value, signedUrl, allowPromptOverride });
+      return NextResponse.json({ ok: true, provider: provider.value, signedUrl, allowPromptOverride }, { headers: { 'Cache-Control': 'no-store' } });
     }
 
     return NextResponse.json({ ok: false, error: `No realtime authorization adapter is available for ${provider.label}.` }, { status: 400 });

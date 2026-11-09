@@ -590,6 +590,16 @@
   min-height: 0;
 }
 
+/* File previews fit short reads/edits and scroll only above the shared cap.
+   A two-line diff must not reserve an entire terminal-sized result panel. */
+:is(.eterx-inline-diff-panel, .eterx-inline-code-panel).eterx-activity-child-panel {
+  height: auto;
+}
+
+:is(.eterx-inline-diff-panel, .eterx-inline-code-panel).eterx-activity-child-panel > .eterx-activity-child-frame {
+  flex: 0 1 auto;
+}
+
 .eterx-activity-child-scroll {
   --eterx-sb-size: 6px;
   flex: 1 1 auto;

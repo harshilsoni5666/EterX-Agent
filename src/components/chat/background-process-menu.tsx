@@ -18,12 +18,15 @@ export function BackgroundProcessMenu({ chatId, onOpen, onMouseEnter }: { chatId
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     if (!open) return;
+    const cached = managedTerminalCache.get(chatId) || [];
+    setTasks(cached);
+    setLoaded(managedTerminalCache.has(chatId));
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     let busy = false;
     let failures = 0;
     let polls = 0;
-    let previous = JSON.stringify(managedTerminalCache.get(chatId) || []);
+    let previous = JSON.stringify(cached);
     const refresh = async () => {
       if (busy || controller.signal.aborted || !isAppVisible()) return;
       clearTimeout(timer);
@@ -87,7 +90,7 @@ export function BackgroundProcessMenu({ chatId, onOpen, onMouseEnter }: { chatId
             <TerminalSquare className="h-4 w-4 shrink-0 text-neutral-500" />
             <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-800 dark:text-white/90">{label}</span>
           </button>
-          {active && <button type="button" aria-label={`Stop ${label}`} title="Stop process" disabled={stopping.includes(task.id)} className="rounded p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-50" onClick={async event => {
+          {active && <button type="button" aria-label={`Stop ${label}`} title="Stop process" disabled={stopping.includes(task.id)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100 hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-50" onClick={async event => {
             event.stopPropagation(); setActionError(''); setStopping(ids => [...ids, task.id]);
             try {
               const result = await stopManagedTerminal(chatId, task.id);

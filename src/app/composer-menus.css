@@ -50,6 +50,7 @@
 .eterx-workspace-option { display: flex; align-items: center; border-radius: 10px; min-height: 34px; }
 .eterx-workspace-option:is(:hover, :focus-within, [data-selected="true"]) { background: var(--composer-menu-active); }
 .eterx-workspace-option > button:first-child { display: flex; flex: 1; min-width: 0; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12px; text-align: left; border-radius: 10px; }
+.eterx-workspace-option > button:first-child > span { line-height: 1.5; padding-block: 1px; }
 .eterx-workspace-info { display: grid; place-items: center; width: 32px; height: 32px; margin-right: 2px; flex-shrink: 0; border-radius: 8px; opacity: .6; }
 .eterx-workspace-info:is(:hover, :focus-visible) { opacity: 1; }
 .eterx-workspace-option button:disabled { opacity: .45; cursor: wait; }
@@ -145,8 +146,9 @@
 }
 
 :root .eterx-composer-shell .eterx-status-popout-project .eterx-status-search {
-  height: 38px;
-  min-height: 38px;
+  height: 40px;
+  min-height: 40px;
+  flex: 0 0 40px;
   margin: 0 8px 4px;
   padding: 0 4px;
   gap: 10px;

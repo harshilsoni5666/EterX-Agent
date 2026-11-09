@@ -1,8 +1,9 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getEterxAppRoot, getEterxAssetPath, getEterxWorkspaceDir } from '../../../lib/agent/storage-paths';
+import { rejectCrossOrigin } from '../agent/_shared';
 
 const roots = () => {
   const sourceRoot = path.join(getEterxAppRoot(), 'src', 'lib', 'agent', 'skills-new');
@@ -43,7 +44,9 @@ export async function GET() {
   return NextResponse.json({ skills: result.map(({ path: _path, ...skill }) => skill) });
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const originError = rejectCrossOrigin(request);
+  if (originError) return originError;
   const body = await request.json().catch(() => null);
   if (typeof body?.createName === 'string') {
     const safe = body.createName.trim();

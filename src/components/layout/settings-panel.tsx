@@ -1,6 +1,7 @@
 'use client';
 import { formatModelName, groupModelsByProvider } from '../../lib/agent/model-presentation';
 import { requestJson } from '../../lib/request-json';
+import { yieldToMainThread } from '../../lib/yield-to-main';
 import { DEFAULT_GIT_PREFERENCES, normalizeGitPreferences } from '../../lib/git/preferences';
 import { DEFAULT_SCRATCH_RETENTION_DAYS, normalizeScratchRetention } from '../../lib/managed-workspaces';
 import { ScratchRetentionControl } from './scratch-retention-control';
@@ -10,6 +11,7 @@ import { AgentToolsSettings } from './agent-tools-settings';
 import { ComputerUseSettings } from './computer-use-settings';
 import { MicrophoneSettings } from './microphone-settings';
 import { SettingsProfile } from './settings-profile';
+import { ImportSettings } from './import-settings';
 import { buildProfileActivity, EMPTY_PROFILE_ACTIVITY, type ProfileActivityStats } from '../../lib/profile-activity';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createPortal, flushSync } from 'react-dom';
@@ -66,6 +68,7 @@ import {
   SquareCheck,
   Sparkle,
   Users,
+  ArrowDownToLine,
 } from 'lucide-react';
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
 import { appStorage, appStorageReady, registerDurableFlush, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
@@ -86,7 +89,8 @@ import {
   isLiveModelForProvider,
   normalizeLiveProvider,
 } from '../../lib/live/live-provider';
-import { getLiveVoiceOptions } from '../../lib/live/voice-catalog';
+import { getLiveVoiceOptions, getSystemLiveVoiceOptions } from '../../lib/live/voice-catalog';
+import { getGeminiLiveThinkingLevels } from '../../lib/live/gemini-live-contract';
 import { safeCopyTextToClipboard, safeReadTextFromClipboard } from '../ui/copy-button';
 import {
   DEFAULT_SEARCH_SETTINGS,
@@ -568,6 +572,7 @@ const getTerminalShellOptions = (platform: 'unknown' | 'windows' | 'mac' | 'linu
 
 type Tab =
   | 'agents'
+  | 'import'
   | 'general'
   | 'profile'
   | 'appearance'
@@ -951,6 +956,7 @@ const sumStoredTokenMetrics = (logs: any[]): StoredTokenMetrics =>
 const normalizeSettingsTab = (tab: any): Tab => {
   const validTabs: Tab[] = [
     'agents',
+    'import',
     'general',
     'profile',
     'appearance',
@@ -1184,7 +1190,7 @@ const ThemePreviewSelector: React.FC<{
             aria-pressed={selected}
             aria-label={`Use ${option.label.toLowerCase()} theme`}
             onClick={() => onChange(option.value)}
-            className="group min-w-0 rounded-[13px] text-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--muted-foreground)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
+            className="group min-w-0 rounded-[13px] text-center focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[var(--muted-foreground)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
           >
             <div
               className={`rounded-[13px] border-2 p-[2px] transition-all duration-200 ${selected ? 'border-[var(--muted-foreground)]' : 'border-transparent group-hover:border-white/25'}`}
@@ -1496,7 +1502,7 @@ const ApiKeyPoolEditor: React.FC<{
                   type={isVisible ? 'text' : 'password'}
                   spellCheck={false}
                   placeholder={index === 0 ? 'Paste provider API key' : 'Paste another key'}
-                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
                 />
                 {showTest && <button
                   type="button"
@@ -1734,7 +1740,7 @@ const UserManualOverlay: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </header>
         <div className="flex min-h-0 flex-1">
           <aside className="hidden w-[265px] shrink-0 flex-col border-r border-white/[0.08] bg-[#181818] lg:flex">
-            <div className="border-b border-white/[0.07] p-4"><div className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-[#777]">Contents</div><div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search the manual" className="h-9 w-full rounded-lg border border-white/[0.09] bg-[#121212] pl-8 pr-3 text-[12px] text-[#F1F1F1] outline-none placeholder:text-[#666] focus:border-[#3D9BFF]/50" /></div></div>
+            <div className="border-b border-white/[0.07] p-4"><div className="mb-3 text-[10px] font-bold uppercase tracking-[0.16em] text-[#777]">Contents</div><div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[#777]" /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search the manual" className="h-9 w-full rounded-lg border border-white/[0.09] bg-[#121212] pl-8 pr-3 text-[12px] text-[#F1F1F1] outline-hidden placeholder:text-[#666] focus:border-[#3D9BFF]/50" /></div></div>
             <nav className="eterx-scrollbar flex-1 overflow-y-auto p-3">{visibleSections.map(({ section, index }) => <button key={section.title} type="button" onClick={() => jumpToSection(index)} className={`mb-1 flex w-full items-start gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors ${activeSection === index ? 'bg-[#2B3B4D] text-[#F1F1F1]' : 'text-[#A2A2A2] hover:bg-white/[0.05] hover:text-[#F1F1F1]'}`}><span className={`mt-0.5 text-[10px] font-bold ${activeSection === index ? 'text-[#76B9FF]' : 'text-[#666]'}`}>{String(index + 1).padStart(2, '0')}</span><span className="text-[12px] leading-4">{section.title}</span></button>)}</nav>
             <div className="border-t border-white/[0.07] p-4 text-[11px] leading-5 text-[#777]">Read in order for first-time setup, then use Contents to jump to a feature.</div>
           </aside>
@@ -1795,7 +1801,7 @@ const ModernSelect: React.FC<{
           if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
         }, 0)}
         aria-expanded={open}
-        className="eterx-settings-select-trigger flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+        className="eterx-settings-select-trigger flex h-9 w-full items-center justify-between gap-3 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-hidden transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
       >
         <span className="truncate">{selected?.label || placeholder}</span>
         <ChevronRight className={`h-4 w-4 shrink-0 text-[#A7A7A7] transition-transform ${open ? '-rotate-90' : 'rotate-90'}`} />
@@ -1813,7 +1819,7 @@ const ModernSelect: React.FC<{
                   if (event.key === 'Escape') setOpen(false);
                 }}
                 placeholder={`Search ${options.length} options`}
-                className="h-9 w-full rounded-lg border border-black/10 dark:border-white/[0.08] bg-neutral-100 dark:bg-[#191919] pl-8 pr-3 text-[12px] text-neutral-900 dark:text-[#F2F2F2] outline-none placeholder:text-neutral-400 dark:placeholder:text-[#707070] focus:border-black/20 dark:focus:border-white/[0.18]"
+                className="h-9 w-full rounded-lg border border-black/10 dark:border-white/[0.08] bg-neutral-100 dark:bg-[#191919] pl-8 pr-3 text-[12px] text-neutral-900 dark:text-[#F2F2F2] outline-hidden placeholder:text-neutral-400 dark:placeholder:text-[#707070] focus:border-black/20 dark:focus:border-white/[0.18]"
               />
             </div>
           )}
@@ -1892,7 +1898,7 @@ const ProviderSelect: React.FC<{
         onBlur={() => window.setTimeout(() => {
           if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
         }, 0)}
-        className="flex h-9 w-full items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-none transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
+        className="flex h-9 w-full items-center justify-between gap-2.5 rounded-xl border border-white/[0.08] bg-[#2D2D2D] px-3 text-left text-[13px] font-medium text-[#F2F2F2] shadow-none outline-hidden transition-colors hover:bg-[#363636] focus:border-white/[0.20]"
       >
         <span className="flex min-w-0 items-center gap-2">
           <ProviderMark provider={value} />
@@ -1915,7 +1921,7 @@ const ProviderSelect: React.FC<{
                   if (event.key === 'Escape') setOpen(false);
                 }}
                 placeholder={`Search ${providers.length} providers`}
-                className="h-9 w-full rounded-lg border border-black/10 dark:border-white/[0.08] bg-neutral-100 dark:bg-[#191919] pl-8 pr-3 text-[12px] text-neutral-900 dark:text-[#F2F2F2] outline-none placeholder:text-neutral-400 dark:placeholder:text-[#707070] focus:border-black/20 dark:focus:border-white/[0.18]"
+                className="h-9 w-full rounded-lg border border-black/10 dark:border-white/[0.08] bg-neutral-100 dark:bg-[#191919] pl-8 pr-3 text-[12px] text-neutral-900 dark:text-[#F2F2F2] outline-hidden placeholder:text-neutral-400 dark:placeholder:text-[#707070] focus:border-black/20 dark:focus:border-white/[0.18]"
               />
             </div>
           )}
@@ -2025,7 +2031,7 @@ const ApiKeyRow: React.FC<{
               if (e.key === 'Enter') { onUpdate(draft); setEditing(false); }
               if (e.key === 'Escape') setEditing(false);
             }}
-            className="flex-1 bg-[#141414] border border-white/[0.10] rounded-lg px-3 py-2 text-[12px] font-mono text-[#E8E6E3] outline-none focus:border-white/25 transition-colors"
+            className="flex-1 bg-[#141414] border border-white/[0.10] rounded-lg px-3 py-2 text-[12px] font-mono text-[#E8E6E3] outline-hidden focus:border-white/25 transition-colors"
             placeholder="Enter API key..."
           />
           <button type="button" onClick={() => { onUpdate(draft); setEditing(false); }} className="px-3 py-2 bg-white/[0.08] text-[#E8E6E3] rounded-lg text-[12px] font-medium hover:bg-white/[0.12] transition-colors">Save</button>
@@ -2116,6 +2122,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const [selectedApiModelValue, setSelectedApiModelValue] = useState('');
   const [exactModelDraft, setExactModelDraft] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
+  const [computerAccessError, setComputerAccessError] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showBatmanEgg] = useState(false);
   const [eggQuoteIndex] = useState(0);
@@ -2136,6 +2143,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const providerBaseURLsRef = useRef<Record<string, string>>({});
   const runtimeSettingsHydratedRef = useRef(false);
   const settingsRevisionRef = useRef(0);
+  const settingsRef = useRef(settings);
+  const contextChatOverridesRef = useRef(contextChatOverrides);
+  const modelThinkingCapabilitiesRef = useRef(modelThinkingCapabilities);
   const runtimeSettingsWriteRef = useRef<Promise<unknown>>(Promise.resolve());
   const runtimeSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runtimeSyncPendingRef = useRef<RuntimeSettingsSnapshot | null>(null);
@@ -2153,6 +2163,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     (updateState.status === 'error' && Boolean(updateState.checkError))
   );
   apiKeysRef.current = apiKeys;
+  settingsRef.current = settings;
+  contextChatOverridesRef.current = contextChatOverrides;
+  modelThinkingCapabilitiesRef.current = modelThinkingCapabilities;
   modelEntriesRef.current = modelEntries;
   searchSettingsRef.current = searchSettings;
   imageSettingsRef.current = imageSettings;
@@ -2240,33 +2253,34 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         if (Array.isArray(payload.shells)) {
           const shells = payload.shells.map(String);
           setAvailableTerminalShells(shells);
-          setSettings(previous => {
-            if (shells.includes(previous.terminalShell)) return previous;
-            const next = { ...previous, terminalShell: 'auto' as const };
+          if (!shells.includes(settingsRef.current.terminalShell)) {
+            const next = { ...settingsRef.current, terminalShell: 'auto' as const };
+            settingsRef.current = next;
+            setSettings(next);
             try {
               const saved = JSON.parse(appStorage.getItem('eterx_settings') || '{}');
               const nextStored = { ...saved, terminalShell: 'auto' };
               appStorage.setItem('eterx_settings', JSON.stringify(nextStored));
               broadcastEterxSettingsUpdate(nextStored);
             } catch { }
-            return next;
-          });
+          }
         }
       })
       .catch(() => {
         // If the runtime probe is unavailable, keep only the portable auto
         // choice so an unverified shell is never offered or persisted.
         setAvailableTerminalShells(['auto']);
-        setSettings(previous => {
-          if (previous.terminalShell === 'auto') return previous;
+        if (settingsRef.current.terminalShell !== 'auto') {
+          const next = { ...settingsRef.current, terminalShell: 'auto' as const };
+          settingsRef.current = next;
+          setSettings(next);
           try {
             const saved = JSON.parse(appStorage.getItem('eterx_settings') || '{}');
             const nextStored = { ...saved, terminalShell: 'auto' };
             appStorage.setItem('eterx_settings', JSON.stringify(nextStored));
             broadcastEterxSettingsUpdate(nextStored);
           } catch { }
-          return { ...previous, terminalShell: 'auto' };
-        });
+        }
       });
   }, []);
 
@@ -2375,15 +2389,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     };
     const write = async () => {
       let saved = true;
+      const computerUse = settingsRef.current.computerUse;
       const writes: Promise<unknown>[] = [
         fetch('/api/settings/runtime', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ settings: snapshot }),
+          body: JSON.stringify({ settings: { ...snapshot, computerUse } }),
+          signal: AbortSignal.timeout(10_000),
         }).then(response => {
           if (!response.ok) throw new Error(`Folder runtime settings HTTP ${ response.status }`);
+          if (settingsRef.current.computerUse === computerUse) setComputerAccessError('');
         }).catch(error => {
           saved = false;
+          if (settingsRef.current.computerUse === computerUse) {
+            setComputerAccessError('Desktop access could not be saved. Save settings again; press Escape to stop any active computer use.');
+          }
           console.warn('Could not persist folder-backed runtime settings:', error);
         }),
       ];
@@ -2425,6 +2445,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   useEffect(() => {
     if (!isOpen || activeTab !== 'context') return;
     let cancelled = false;
+    const controller = new AbortController();
     setContextChatsLoading(true);
     setActiveContextChatId(appStorage.getItem('eterx_active_chat') || '');
 
@@ -2444,9 +2465,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       setContextChatOverrides({});
     }
 
-    const normalizeChats = (rawChats: any[]): ContextChatSummary[] => rawChats
-      .filter(chat => chat && typeof chat.id === 'string')
-      .map(chat => {
+    const normalizeChats = async (rawChats: any[]): Promise<ContextChatSummary[]> => {
+      const summaries: ContextChatSummary[] = [];
+      let batchStarted = performance.now();
+      for (const chat of rawChats) {
+        if (cancelled) return summaries;
+        if (!chat || typeof chat.id !== 'string') continue;
         const logs = selectMainContextLogs(Array.isArray(chat.traceLogs) ? chat.traceLogs : [], chat.id);
         const meter = readContextUsageMeter(logs);
         const usage = meter.latestContextUsage;
@@ -2455,7 +2479,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         const provider = selection?.provider || String(measured?.provider || '');
         const modelId = selection?.modelId || String(measured?.model || measured?.modelId || '');
         const measuredModelMatches = usage?.provider === provider && String(usage?.model || usage?.modelId || '') === modelId;
-        return {
+        summaries.push({
           id: String(chat.id),
           title: String(chat.title || 'Untitled chat').trim() || 'Untitled chat',
           updatedAt: Number(chat.updatedAt || 0),
@@ -2464,13 +2488,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           modelMaximum: measuredModelMatches ? normalizeContextWindow(usage?.modelContextWindow) : 0,
           provider,
           modelId,
-        };
-      })
-      .sort((left, right) => right.updatedAt - left.updatedAt);
+        });
+        if (performance.now() - batchStarted >= 8) {
+          await yieldToMainThread();
+          batchStarted = performance.now();
+        }
+      }
+      return summaries.sort((left, right) => right.updatedAt - left.updatedAt);
+    };
 
-    const applyChats = (rawChats: any[]) => {
+    const applyChats = async (rawChats: any[]) => {
       if (cancelled) return;
-      const next = normalizeChats(rawChats);
+      const next = await normalizeChats(rawChats);
+      if (cancelled) return;
       setContextChats(next);
       setSelectedContextChatId(previous => {
         if (previous && next.some(chat => chat.id === previous)) return previous;
@@ -2479,11 +2509,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       });
     };
 
-    const durableLoad = fetch('/api/chats', { cache: 'no-store' })
+    const durableLoad = requestJson('/api/chats', { cache: 'no-store', signal: controller.signal }, 15_000)
       .then(response => response.ok ? response.json() : Promise.reject(new Error('Unable to load chats')));
     Promise.resolve(durableLoad)
-      .then((snapshot: any) => {
-        if (Array.isArray(snapshot?.chats)) applyChats(snapshot.chats);
+      .then(async (snapshot: any) => {
+        if (Array.isArray(snapshot?.chats)) await applyChats(snapshot.chats);
       })
       .catch(() => undefined)
       .finally(() => {
@@ -2492,12 +2522,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [activeTab, isOpen]);
 
   useEffect(() => {
     if (!isOpen || (activeTab !== 'profile' && activeTab !== 'tokens')) return;
     let cancelled = false;
+    const controller = new AbortController();
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     let refreshInFlight: Promise<void> | null = null;
     let lastSnapshotText: string | null = null;
     let lastStatisticsDay = '';
@@ -2508,8 +2541,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       refreshInFlight = (async () => {
        if (lastSnapshotText === null) setTokenStatsLoading(true);
        try {
-      const snapshot = await requestJson('/api/chats', { cache: 'no-store' }, 15_000)
+      const snapshot = await requestJson('/api/chats', { cache: 'no-store', signal: controller.signal }, 15_000)
         .then(response => response.ok ? response.json() : Promise.reject(new Error('Unable to load chats')));
+      if (cancelled || !isAppVisible()) return;
       const snapshotText = JSON.stringify(snapshot);
       const statisticsDay = new Date().toDateString();
       if (cancelled) return;
@@ -2519,9 +2553,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const chats = snapshot.chats;
       const uniqueProviderUsageLogs = (logs: any[]) => uniqueModelUsageLogs(logs)
         .filter(log => tokenCountForStoredLog(log) > 0);
-      const nextTokenChats: TokenChatSummary[] = chats
-        .filter((chat: any) => chat && typeof chat.id === 'string')
-        .map((chat: any) => {
+      const nextTokenChats: TokenChatSummary[] = [];
+      let batchStarted = performance.now();
+      // Profile uses the activity aggregate; only the Tokens tab needs per-chat rows.
+      for (const chat of activeTab === 'tokens' ? chats : []) {
+          if (!chat || typeof chat.id !== 'string') continue;
           const logs = Array.isArray(chat.traceLogs) ? chat.traceLogs : [];
           const usageLogs = uniqueProviderUsageLogs(logs);
           const totalUsage = sumStoredTokenMetrics(usageLogs);
@@ -2562,7 +2598,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                 timestamp: Number(log.timestamp || log.endTime || log.startTime || chat.updatedAt || Date.now()),
               };
             });
-          return {
+          nextTokenChats.push({
             id: String(chat.id),
             title: String(chat.title || 'Untitled chat').trim() || 'Untitled chat',
             updatedAt: Number(chat.updatedAt || 0),
@@ -2574,13 +2610,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
             recentRunUsage,
             model: dominantModel,
             actions,
-          };
-        })
-        .sort((left: any, right: any) => right.updatedAt - left.updatedAt);
-      if (cancelled) return;
-      setTokenChats(nextTokenChats);
-      setSelectedTokenChatId(previous => previous && nextTokenChats.some(chat => chat.id === previous) ? previous : nextTokenChats[0]?.id || '');
-      setTokenStats(buildProfileActivity(chats));
+          });
+          if (performance.now() - batchStarted >= 8) {
+            await yieldToMainThread();
+            if (cancelled || !isAppVisible()) return;
+            batchStarted = performance.now();
+          }
+      }
+      await yieldToMainThread();
+      if (cancelled || !isAppVisible()) return;
+      if (activeTab === 'tokens') {
+        nextTokenChats.sort((left, right) => right.updatedAt - left.updatedAt);
+        setTokenChats(nextTokenChats);
+        setSelectedTokenChatId(previous => previous && nextTokenChats.some(chat => chat.id === previous) ? previous : nextTokenChats[0]?.id || '');
+      } else {
+        setTokenStats(buildProfileActivity(chats));
+      }
       lastSnapshotText = snapshotText;
       lastStatisticsDay = statisticsDay;
        } catch {
@@ -2597,16 +2642,26 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       })();
       return refreshInFlight;
     };
+    const scheduleRefresh = () => {
+      if (cancelled || refreshTimer !== undefined || !isAppVisible()) return;
+      // Coalesce bursts of chat/settings notifications into one history read.
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined;
+        void refreshTokenStats();
+      }, 250);
+    };
     void refreshTokenStats();
     const interval = window.setInterval(refreshTokenStats, 5000);
-    window.addEventListener('eterx_chats_updated', refreshTokenStats);
-    window.addEventListener('eterx-settings-updated', refreshTokenStats);
+    window.addEventListener('eterx_chats_updated', scheduleRefresh);
+    window.addEventListener('eterx-settings-updated', scheduleRefresh);
     const unsubscribeVisibility = subscribeAppVisibility(refreshTokenStats);
     return () => {
       cancelled = true;
+      controller.abort();
+      clearTimeout(refreshTimer);
       window.clearInterval(interval);
-      window.removeEventListener('eterx_chats_updated', refreshTokenStats);
-      window.removeEventListener('eterx-settings-updated', refreshTokenStats);
+      window.removeEventListener('eterx_chats_updated', scheduleRefresh);
+      window.removeEventListener('eterx-settings-updated', scheduleRefresh);
       unsubscribeVisibility();
     };
   }, [activeTab, isOpen]);
@@ -2707,14 +2762,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         ...withoutRefreshedProviders(storedWireCapabilities),
         ...discoveredWireCapabilities,
       }));
-      setModelThinkingCapabilities(previous => {
-        const next = { ...withoutRefreshedProviders(previous), ...discoveredThinkingCapabilities };
-        appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
-        broadcastEterxSettingsUpdate({
-          type: 'model-thinking-capabilities-updated',
-          thinkingCapabilities: next,
-        });
-        return next;
+      const nextThinking = { ...withoutRefreshedProviders(modelThinkingCapabilitiesRef.current), ...discoveredThinkingCapabilities };
+      modelThinkingCapabilitiesRef.current = nextThinking;
+      setModelThinkingCapabilities(nextThinking);
+      appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(nextThinking));
+      broadcastEterxSettingsUpdate({
+        type: 'model-thinking-capabilities-updated',
+        thinkingCapabilities: nextThinking,
       });
       // Preserve exact IDs and never choose a replacement automatically.
       const discoveredContextWindows: Record<string, number> = {};
@@ -2924,6 +2978,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       if (Number.isFinite(persistedApiRetries)) {
         nextSettings.maxRetries = Math.max(0, Math.min(3, Math.floor(persistedApiRetries)));
       }
+      if (typeof folderRuntimeSettings?.computerUse === 'boolean') {
+        nextSettings.computerUse = folderRuntimeSettings.computerUse;
+      }
       if (
         (!saved || !Object.prototype.hasOwnProperty.call(JSON.parse(saved), 'selfImprovementEnabled'))
         && folderRuntimeSettings?.selfImprovement
@@ -3035,7 +3092,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         },
       };
       const effectiveImageSettings = normalizeImageSettings(effectiveImageSource);
-      const effectiveVideoSettings = normalizeVideoSettings({ ...(secureVideoSettings || {}), ...(folderVideoSettings || {}), apiKeys: { ...(secureVideoSettings?.apiKeys || {}), ...(folderVideoSettings?.apiKeys || {}) }, modelByProvider: { ...(secureVideoSettings?.modelByProvider || {}), ...(folderVideoSettings?.modelByProvider || {}) } });
+      const effectiveVideoSettings = normalizeVideoSettings({ ...(secureVideoSettings || {}), ...(folderVideoSettings || {}), apiKeys: { ...(secureVideoSettings?.apiKeys || {}), ...(folderVideoSettings?.apiKeys || {}) }, baseURLs: { ...(secureVideoSettings?.baseURLs || {}), ...(folderVideoSettings?.baseURLs || {}) }, modelByProvider: { ...(secureVideoSettings?.modelByProvider || {}), ...(folderVideoSettings?.modelByProvider || {}) } });
       const normalizedLiveApiKeys = parsedLiveApiKeys && typeof parsedLiveApiKeys === 'object'
         ? Object.fromEntries(
           Object.entries(parsedLiveApiKeys as Record<string, unknown>)
@@ -3078,6 +3135,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         : usableResolvedEntries[0]
           ? modelEntryKey(usableResolvedEntries[0].provider, usableResolvedEntries[0].modelId)
           : AUTO_MODEL_SELECTION;
+      settingsRef.current = nextSettings;
       setSettings(nextSettings);
       appStorage.setItem('eterx_settings', JSON.stringify(nextSettings));
       setModelEntries(resolvedModelEntries);
@@ -3235,6 +3293,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         ...(secure?.video || {}),
         ...(runtime.video || {}),
         apiKeys: { ...(secure?.video?.apiKeys || {}), ...(runtime.video?.apiKeys || {}) },
+        baseURLs: { ...(secure?.video?.baseURLs || {}), ...(runtime.video?.baseURLs || {}) },
         modelByProvider: { ...(secure?.video?.modelByProvider || {}), ...(runtime.video?.modelByProvider || {}) },
       };
       const nextSearchSettings = normalizeSearchSettings(
@@ -3257,7 +3316,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           ) as Record<string, ModelThinkingCapabilities>
         : {};
 
-      setSettings(current => normalizeAppSettings({ ...current, ...storedSettings }));
+      const nextAppSettings = normalizeAppSettings({
+        ...settingsRef.current, ...storedSettings,
+        ...(typeof runtime.computerUse === 'boolean' ? { computerUse: runtime.computerUse } : {}),
+      });
+      settingsRef.current = nextAppSettings;
+      setSettings(nextAppSettings);
       setApiKeys(runtimeApiKeys);
       setSearchSettings(current => JSON.stringify(current) === JSON.stringify(nextSearchSettings) ? current : nextSearchSettings);
       setImageSettings(current => JSON.stringify(current) === JSON.stringify(nextImageSettings) ? current : nextImageSettings);
@@ -3459,15 +3523,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     settingsRevisionRef.current += 1;
-    const commitSetting = () => setSettings(prev => {
+    // React may evaluate a state updater while rendering. Publish storage and
+    // runtime changes from this event handler, never from that updater.
+    const commitSetting = () => {
       const safeValue = key === 'followUpBehavior'
         ? (value === 'queue' ? 'queue' : 'steer')
         : value;
       const next = normalizeAppSettings({
-        ...prev,
+        ...settingsRef.current,
         [key]: safeValue,
         ...(key === 'contextWindowSizeSelection' ? { contextWindowSizeSelectionTouched: true } : {}),
       });
+      settingsRef.current = next;
+      setSettings(next);
       appStorage.setItem('eterx_settings', JSON.stringify(next));
       if (key === 'contextWindowSizeSelection') markContextBudgetEdit();
       broadcastEterxSettingsUpdate(next);
@@ -3485,8 +3553,30 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           body: JSON.stringify({ settings: { apiRetries: next.maxRetries } }),
         }).catch(error => console.warn('Could not persist API retry setting:', error));
       }
-      return next;
-    });
+      if (key === 'computerUse') {
+        setComputerAccessError('');
+        const write = async () => {
+          const computerUse = settingsRef.current.computerUse;
+          try {
+            const response = await fetch('/api/settings/runtime', {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ settings: { computerUse } }),
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (!response.ok) throw new Error('Desktop access could not be saved.');
+            if (settingsRef.current.computerUse === computerUse) setComputerAccessError('');
+            return true;
+          } catch (error) {
+            if (settingsRef.current.computerUse === computerUse) {
+              setComputerAccessError('Desktop access could not be saved. Save settings again; press Escape to stop any active computer use.');
+            }
+            console.warn('Could not persist desktop access:', error);
+            return false;
+          }
+        };
+        runtimeSettingsWriteRef.current = runtimeSettingsWriteRef.current.then(write, write);
+      }
+    };
     if (key === 'theme') {
       transitionEterxTheme(
         value as AppSettings['theme'],
@@ -3514,18 +3604,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     if (!selectedContextChatId) return;
     const validSelections = new Set(['global', ...CONTEXT_WINDOW_SIZE_OPTIONS.map(option => option.value)]);
     if (!validSelections.has(value)) return;
-    setContextChatOverrides(previous => {
-      const next = { ...previous };
-      if (value === 'global') delete next[selectedContextChatId];
-      else next[selectedContextChatId] = value;
-      appStorage.setItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY, JSON.stringify(next));
-      markContextBudgetEdit(selectedContextChatId);
-      broadcastEterxSettingsUpdate({
-        type: 'context-window-overrides-updated',
-        chatId: selectedContextChatId,
-        contextWindowSizeSelection: value,
-      });
-      return next;
+    const next = { ...contextChatOverridesRef.current };
+    if (value === 'global') delete next[selectedContextChatId];
+    else next[selectedContextChatId] = value;
+    contextChatOverridesRef.current = next;
+    setContextChatOverrides(next);
+    appStorage.setItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY, JSON.stringify(next));
+    markContextBudgetEdit(selectedContextChatId);
+    broadcastEterxSettingsUpdate({
+      type: 'context-window-overrides-updated',
+      chatId: selectedContextChatId,
+      contextWindowSizeSelection: value,
     });
     setHasChanges(true);
   }, [selectedContextChatId]);
@@ -3606,6 +3695,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           provider,
           key: imageSettingsRef.current.apiKeys[provider]?.[0] || '',
           model: imageSettingsRef.current.modelByProvider[provider] || IMAGE_PROVIDER_META[provider].defaultModel,
+          baseURL: imageSettingsRef.current.baseURLs[provider] || '',
         }),
       });
       const payload = await response.json();
@@ -3648,7 +3738,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const response = await fetch('/api/settings/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, key: videoSettingsRef.current.apiKeys[provider]?.[0] || '', model: videoSettingsRef.current.modelByProvider[provider] || VIDEO_PROVIDER_META[provider].defaultModel }),
+        body: JSON.stringify({ provider, key: videoSettingsRef.current.apiKeys[provider]?.[0] || '', model: videoSettingsRef.current.modelByProvider[provider] || VIDEO_PROVIDER_META[provider].defaultModel, baseURL: videoSettingsRef.current.baseURLs[provider] || '' }),
       });
       const payload = await response.json();
       if (!response.ok || !payload?.ok) throw new Error(payload?.error || 'Connection test failed.');
@@ -3731,7 +3821,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   // Close on escape
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('[data-import-dialog]')) handleClose(); };
     if (isOpen) window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isOpen, handleClose]);
@@ -3747,6 +3837,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     });
     const handleTab = (event: KeyboardEvent) => {
       if (event.key !== 'Tab') return;
+      if (document.querySelector('[data-import-dialog]')) return;
       const focusable = Array.from(settingsDialogRef.current?.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
       ) || []).filter(element => element.offsetParent !== null);
@@ -3784,6 +3875,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
   useEffect(() => {
     if (!isOpen || activeTab !== 'live-convo') return;
+    if (activeLiveProviderValue === 'model-voice') {
+      const loadVoices = () => setLiveVoiceOptionsFromApi(previous => ({
+        ...previous, 'model-voice': getSystemLiveVoiceOptions(),
+      }));
+      loadVoices();
+      window.speechSynthesis?.addEventListener('voiceschanged', loadVoices);
+      setLiveCatalogStatus('ready');
+      setLiveCatalogMessage('Uses models added in Models and their saved connections. Desktop speech recognition runs locally; browser speech recognition may use its speech service.');
+      return () => window.speechSynthesis?.removeEventListener('voiceschanged', loadVoices);
+    }
     const controller = new AbortController();
     const providerValue = activeLiveProviderValue;
     let cancelled = false;
@@ -3797,7 +3898,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         const response = await requestJson(endpoint, {
           signal: controller.signal, method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider: providerValue, key: activeLiveApiKey,
+          body: JSON.stringify({ provider: providerValue, ...(activeLiveApiKey.trim() ? { key: activeLiveApiKey } : {}),
             agentId: settings.liveConvoAgentId || '', modelId: settings.liveConvoModel || 'auto' }),
         }, 40_000);
         const payload = await response.json();
@@ -3833,11 +3934,35 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   }, [activeLiveApiKey, activeLiveProviderLabel, activeLiveProviderValue, activeTab, isOpen,
     settings.liveConvoModel, settings.liveConvoAgentId, liveCatalogRefresh]);
 
-  const liveCatalogOptions = liveModelOptionsFromApi[activeLiveProvider.value] || [];
+  const liveCatalogOptions = activeLiveProvider.transport === 'model-voice'
+    ? [
+        { value: 'auto', label: 'Use selected chat model' },
+        ...modelEntries.map(entry => ({
+          value: modelEntryKey(entry.provider, entry.modelId),
+          label: `${entry.provider} / ${entry.modelId}`,
+          description: 'Uses this exact model and its saved connection for agent work',
+        })),
+      ]
+    : liveModelOptionsFromApi[activeLiveProvider.value] || [];
   const selectedLiveModel = settings.liveConvoModel || 'auto';
+  const resolvedGeminiLiveModel = selectedLiveModel === 'auto'
+    ? liveCatalogOptions.find(option => option.value !== 'auto')?.value || ''
+    : selectedLiveModel;
+  const geminiLiveThinkingLevels = activeLiveProvider.provider === 'gemini'
+    ? getGeminiLiveThinkingLevels(resolvedGeminiLiveModel) : [];
+  const geminiLiveThinkingOptions = geminiLiveThinkingLevels.length ? [
+    { value: 'ultra-low', label: `${geminiLiveThinkingLevels[0][0].toUpperCase()}${geminiLiveThinkingLevels[0].slice(1)} (Lowest latency)` },
+    ...(geminiLiveThinkingLevels.includes('medium') ? [{ value: 'balanced', label: 'Medium' }] : []),
+    ...(geminiLiveThinkingLevels.includes('high') ? [{ value: 'high-quality', label: 'High' }] : []),
+  ] : [];
   // Saved choices remain preferences, but never become available catalog entries.
   const activeLiveModelOptions = liveCatalogOptions.length ? liveCatalogOptions
     : [{ value: 'auto', label: 'Auto (Available provider model)' }];
+  const displayedLiveModelOptions = selectedLiveModel !== 'auto'
+    && activeLiveProvider.transport !== 'model-voice'
+    && !activeLiveModelOptions.some(option => option.value === selectedLiveModel)
+    ? [...activeLiveModelOptions, { value: selectedLiveModel, label: selectedLiveModel, description: 'Exact model ID; availability is resolved when connecting' }]
+    : activeLiveModelOptions;
   const selectedLiveModelUnavailable = selectedLiveModel !== 'auto' && liveCatalogOptions.length > 0
     && !liveCatalogOptions.some(option => option.value === selectedLiveModel);
   const liveVoiceOptions = liveVoiceOptionsFromApi[activeLiveProvider.value] || [];
@@ -3851,6 +3976,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     { id: 'general', label: 'General', icon: SlidersHorizontal },
     { id: 'profile', label: 'Profile', icon: CircleUserRound },
     { id: 'appearance', label: 'Appearance', icon: Palette },
+    { id: 'import', label: 'Import', icon: ArrowDownToLine },
     { id: 'configuration', label: 'Configuration', icon: ShieldCheck },
     { id: 'agents', label: 'Agents', icon: Users },
     { id: 'personalization', label: 'Personalization', icon: Wand2 },
@@ -4063,14 +4189,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
     const liveCapability = modelDirectory[provider]?.models.find(model => model.id === modelId)?.thinking;
     if (!liveCapability) return;
     const key = modelEntryKey(provider, modelId);
-    setModelThinkingCapabilities(previous => {
-      const next = { ...previous, [key]: liveCapability };
-      appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
-      broadcastEterxSettingsUpdate({
-        type: 'model-thinking-capabilities-updated',
-        thinkingCapabilities: next,
-      });
-      return next;
+    const next = { ...modelThinkingCapabilitiesRef.current, [key]: liveCapability };
+    modelThinkingCapabilitiesRef.current = next;
+    setModelThinkingCapabilities(next);
+    appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
+    broadcastEterxSettingsUpdate({
+      type: 'model-thinking-capabilities-updated',
+      thinkingCapabilities: next,
     });
   }, [modelDirectory]);
 
@@ -4161,14 +4286,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
     const removedKey = modelEntryKey(cleanProvider, cleanModelId);
     const nextEntries = saveModelEntries(removeModelSelectorEntry(modelEntriesRef.current, cleanProvider, cleanModelId));
-    setModelThinkingCapabilities(previous => {
-      if (!(removedKey in previous)) return previous;
-      const next = { ...previous };
+    if (removedKey in modelThinkingCapabilitiesRef.current) {
+      const next = { ...modelThinkingCapabilitiesRef.current };
       delete next[removedKey];
+      modelThinkingCapabilitiesRef.current = next;
+      setModelThinkingCapabilities(next);
       appStorage.setItem(MODEL_THINKING_CAPABILITIES_STORAGE_KEY, JSON.stringify(next));
       broadcastEterxSettingsUpdate({ type: 'model-thinking-capabilities-updated', thinkingCapabilities: next });
-      return next;
-    });
+    }
     try {
       const storedLevels = JSON.parse(appStorage.getItem(MODEL_THINKING_LEVELS_STORAGE_KEY) || '{}');
       if (storedLevels && typeof storedLevels === 'object' && removedKey in storedLevels) {
@@ -4566,6 +4691,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                       )}
 
                       {activeTab === 'agents' && <AgentToolsSettings />}
+                      {activeTab === 'import' && <ImportSettings />}
 
                       {activeTab === 'appearance' && (
                         <div>
@@ -4664,7 +4790,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               onChange={event => updateSetting('contextCompactionInstructions', event.target.value.slice(0, 12000))}
                               placeholder="Add details the context compactor should preserve or emphasize..."
                               rows={10}
-                              className="min-h-[210px] w-full resize-y rounded-xl border border-white/[0.08] bg-[#141414] px-4 py-3 text-[13px] leading-6 text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                              className="min-h-[210px] w-full resize-y rounded-xl border border-white/[0.08] bg-[#141414] px-4 py-3 text-[13px] leading-6 text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
                             />
                             <div className="mt-2 flex items-center justify-between text-[11px] text-[#777]">
                               <span>Applied to every model-generated capsule.</span>
@@ -4857,7 +4983,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                       updateSetting('maxSubAgents', Math.min(20, Math.floor(next)));
                                     }
                                   }}
-                                  className="w-24 rounded-md border border-white/10 bg-white/[0.06] px-2 py-1.5 text-right text-[13px] font-mono text-[#DCD8D2] outline-none focus:border-white/25"
+                                  className="w-24 rounded-md border border-white/10 bg-white/[0.06] px-2 py-1.5 text-right text-[13px] font-mono text-[#DCD8D2] outline-hidden focus:border-white/25"
                                 />
                                 <span className="text-[12px] text-[#8E8A84]">agents</span>
                               </div>
@@ -4946,7 +5072,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   }}
                                   placeholder={selectedConnectionProvider === 'custom' ? 'https://host.example/v1' : 'Use provider default'}
                                   spellCheck={false}
-                                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
                                 />
                                  {providerBaseURLs[selectedConnectionProvider] && (
                                   <SoftButton onClick={() => {
@@ -4982,7 +5108,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     if (event.key === 'Escape') setExactModelDraft(selectedProviderModel);
                                   }}
                                   placeholder={selectedConnectionProvider === 'openrouter' ? 'provider/model-id' : 'model-id'}
-                                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                                  className="h-9 min-w-0 flex-1 rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
                                 />
                                 <SoftButton onClick={() => addModelToSelector(selectedConnectionProvider, exactModelDraft.trim(), true)}>Add</SoftButton>
                               </div>
@@ -5178,7 +5304,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           <SectionHeader
                             title="Live Convo"
                             badge={settings.liveConvoEnabled ? 'Live' : 'Disabled'}
-                            info="Configure a documented native realtime provider, its model, voice, and dedicated key pool. Client-side speech fallbacks and undocumented provider adapters are not used."
+                            info="Choose a native realtime provider, or speak to any configured model through the agent runtime."
                           />
                           <SettingsStack>
                             <SettingsStackRow
@@ -5193,8 +5319,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                             <SettingsStackRow
                               title="Live Provider"
-                              description="Select the native realtime provider for the active Live session."
-                              info="Each provider uses its documented transport and audio protocol. Long-lived keys stay server-side where the provider supports ephemeral browser credentials."
+                              description="Use a native voice provider or any model you have added in Models."
+                              info="Any configured model uses local desktop dictation and system speech. Native providers use their own realtime audio transports."
                             >
                               <ModernSelect
                                 value={activeLiveProvider.value}
@@ -5214,22 +5340,34 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                             <SettingsStackRow
                               title="Live Model"
-                              description={selectedLiveModelUnavailable ? 'The saved model is no longer available. Choose another model.' : 'Specific model engine active for current provider stream.'}
-                              info={`Models are loaded for ${activeLiveProvider.label} and never fall back to another provider.`}
+                              description={selectedLiveModelUnavailable ? (activeLiveProvider.transport === 'model-voice' ? 'The saved model was removed. Choose another added model.' : 'This ID is not listed. The provider will resolve it when connecting.') : activeLiveProvider.transport === 'model-voice' ? 'Choose any added provider/model, including local and custom endpoints.' : 'Specific model engine active for current provider stream.'}
+                              info={activeLiveProvider.transport === 'model-voice' ? 'Use selected chat model follows your explicit chat selection. Add models in the Models tab first. Tool use depends on the model and server capabilities.' : `Models are loaded for ${activeLiveProvider.label} and never fall back to another provider.`}
                             >
                               <ModernSelect
                                 value={settings.liveConvoModel || 'auto'}
                                 onChange={(val) => updateSetting('liveConvoModel', val)}
                                 className="w-[340px]"
                                 placeholder={selectedLiveModelUnavailable ? 'Model unavailable — choose another' : 'Load available models'}
-                                options={activeLiveModelOptions}
+                                options={displayedLiveModelOptions}
                               />
                             </SettingsStackRow>
+
+                            {activeLiveProvider.transport !== 'model-voice' && !activeLiveProvider.requiresAgentId && (
+                              <SettingsStackRow title="Exact model ID" description="Use an account-specific model or snapshot even when the provider directory omits it. Leave empty for automatic selection.">
+                                <input
+                                  aria-label="Exact Live model ID"
+                                  value={settings.liveConvoModel === 'auto' ? '' : settings.liveConvoModel || ''}
+                                  onChange={event => updateSetting('liveConvoModel', event.target.value.trim() || 'auto')}
+                                  placeholder="Provider model ID"
+                                  className="h-9 w-[340px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 font-mono text-[12px] text-[#F1F1F1] outline-hidden focus:border-white/[0.20]"
+                                />
+                              </SettingsStackRow>
+                            )}
 
                             <SettingsStackRow
                               title="Voice Persona"
                               description={selectedLiveVoiceUnavailable ? 'The saved voice is no longer available for this connection.' : 'Choose the synthesized output voice for live responses.'}
-                              info={`Voices are loaded for the selected ${activeLiveProvider.label} model.`}
+                              info={activeLiveProvider.transport === 'model-voice' ? 'Voices come from your device. The microphone pauses during spoken replies to prevent echo. Dictation model and language are configured in General.' : `Voices are loaded for the selected ${activeLiveProvider.label} model.`}
                             >
                               <ModernSelect
                                 value={settings.liveConvoVoice || 'auto'}
@@ -5250,7 +5388,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   value={settings.liveConvoAgentId || ''}
                                   onChange={(event) => updateSetting('liveConvoAgentId', event.target.value.trim())}
                                   placeholder="agent_…"
-                                  className="h-9 w-[340px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 font-mono text-[12px] text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                                  className="h-9 w-[340px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 font-mono text-[12px] text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
                                 />
                               </SettingsStackRow>
                             )}
@@ -5272,20 +5410,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               </div>
                             </SettingsStackRow>
 
-                            {activeLiveProvider.provider === 'gemini' && (
+                            {activeLiveProvider.provider === 'gemini' && geminiLiveThinkingOptions.length > 0 && (
                               <SettingsStackRow
                                 title="Gemini Thinking Level"
-                                description="Choose the documented Gemini 3.1 Live thinking level used for this session."
+                                description="Choose a thinking level supported by the selected Live model."
                               >
                                 <ModernSelect
                                   value={settings.liveConvoLatencyMode || 'ultra-low'}
                                   onChange={(val) => updateSetting('liveConvoLatencyMode', val as AppSettings['liveConvoLatencyMode'])}
                                   className="w-[220px]"
-                                  options={[
-                                    { value: 'ultra-low', label: 'Minimal (Lowest latency)' },
-                                    { value: 'balanced', label: 'Medium' },
-                                    { value: 'high-quality', label: 'High' },
-                                  ]}
+                                  options={geminiLiveThinkingOptions}
                                 />
                               </SettingsStackRow>
                             )}
@@ -5313,6 +5447,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             </SettingsStackRow>
                           </SettingsStack>
 
+                          {activeLiveProvider.transport !== 'model-voice' && <>
                           <SectionHeader title="Live System Instructions" />
                           <p className="-mt-2 mb-4 text-[14px] leading-relaxed text-[#A5A5A5]">
                             Custom system directives sent to the live API session to define how the live agent speaks and behaves during realtime interaction.
@@ -5321,14 +5456,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             value={settings.liveConvoSystemInstruction || ''}
                             onChange={(e) => updateSetting('liveConvoSystemInstruction', e.target.value)}
                             placeholder="e.g. You are a fast, concise live voice coding assistant. Speak directly, avoid long intros, and answer code questions immediately."
-                            className="min-h-[120px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 font-mono text-[13px] leading-6 text-[#F1F1F1] outline-none transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
+                            className="min-h-[120px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 font-mono text-[13px] leading-6 text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
                           />
+                          </>}
 
+                          {activeLiveProvider.transport !== 'model-voice' && <>
                             <SectionHeader title={`${activeLiveProvider.label} API Key`} />
                           <SettingsStack>
                             <SettingsStackRow
                               title="Live Convo Key Pool"
-                              description={`Dedicated ${activeLiveProvider.label} key pool. It is stored separately from the provider key in Models/API and is tested against the selected provider.`}
+                              description={`Optional dedicated ${activeLiveProvider.label} key pool. When empty, Live uses this provider's saved connection in Models. Custom gateway credentials are kept with their configured host.`}
                               tall
                             >
                               <ApiKeyPoolEditor
@@ -5343,6 +5480,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               />
                             </SettingsStackRow>
                           </SettingsStack>
+                          </>}
                         </div>
                       )}
 
@@ -5354,7 +5492,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               <input
                                 value={settings.userName || ''}
                                 onChange={(e) => updateSetting('userName', e.target.value)}
-                                className="h-9 w-[240px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[13px] text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
+                                className="h-9 w-[240px] rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[13px] text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-white/[0.20]"
                               />
                             </SettingsStackRow>
                             <SettingsStackRow title="Language" description="Interface language preference for the local app shell.">
@@ -5392,7 +5530,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                             value={settings.customInstructions || ''}
                             onChange={(event) => updateSetting('customInstructions', event.target.value)}
                             placeholder="Add your custom instructions..."
-                            className="min-h-[260px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 font-mono text-[13px] leading-6 text-[#F1F1F1] outline-none transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
+                            className="min-h-[260px] w-full resize-y rounded-xl border border-white/[0.09] bg-[#202020] px-4 py-3 font-mono text-[13px] leading-6 text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#777] focus:border-white/[0.20]"
                           />
 
 
@@ -5429,7 +5567,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               <Toggle enabled={settings.gitAutoDetect} onChange={v => updateSetting('gitAutoDetect', v)} />
                             </SettingsStackRow>
                             <SettingsStackRow title="Branch prefix" description="Prefill new branch names. You can edit the full name before creating a branch.">
-                              <input aria-label="Git branch prefix" value={settings.gitBranchPrefix} maxLength={120} onChange={event => updateSetting('gitBranchPrefix', event.target.value)} placeholder="eterx/" className="w-36 rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 font-mono text-[13px] text-[#CFCFCF] outline-none focus:border-white/30" />
+                              <input aria-label="Git branch prefix" value={settings.gitBranchPrefix} maxLength={120} onChange={event => updateSetting('gitBranchPrefix', event.target.value)} placeholder="eterx/" className="w-36 rounded-lg border border-white/[0.08] bg-[#141414] px-3 py-2 font-mono text-[13px] text-[#CFCFCF] outline-hidden focus:border-white/30" />
                             </SettingsStackRow>
                             <SettingsStackRow title="Branch merge method" description="Merge creates or fast-forwards a commit. Squash stages the combined changes for you to review and commit.">
                               <SegmentedControl
@@ -5481,7 +5619,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </div>
 
                           <SettingsStack>
-                            <SettingsStackRow title="Primary provider" description="This provider receives the first live request. Choose another service at any time without changing the agent or research tools.">
+                            <SettingsStackRow title="Primary provider" description="This external provider runs after enabled built-in search, or first when built-in search is off. Enabled fallbacks follow in order.">
                               <ModernSelect
                                 value={searchSettings.provider}
                                 onChange={(value) => {
@@ -5490,7 +5628,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   updateSearchSettings(current => ({
                                     ...current,
                                     provider,
-                                    fallbackProviders: current.fallbackProviders.filter(item => item !== provider),
+                                    fallbackProviders: [current.provider, ...current.fallbackProviders].filter(item => item !== provider),
                                   }));
                                 }}
                                 className="w-[280px]"
@@ -5501,7 +5639,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 }))}
                               />
                             </SettingsStackRow>
-                            {selectedSearchMeta.requiresEndpoint && (
+                            {(
                               <SettingsStackRow
                                 title={selectedSearchMeta.requiresEndpoint ? 'Service URL' : 'Custom endpoint'}
                                 description={selectedSearchMeta.requiresEndpoint ? `Required for ${selectedSearchMeta.label}. Enter the base URL of the service instance.` : 'Only needed for a private relay or custom deployment.'}
@@ -5514,7 +5652,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     baseURLs: { ...current.baseURLs, [searchSettings.provider]: event.target.value },
                                   }))}
                                   placeholder={selectedSearchMeta.baseURLPlaceholder || selectedSearchMeta.defaultBaseURL || 'Service URL'}
-                                  className="h-10 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-sky-300/35"
+                                  className="h-10 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-sky-300/35"
                                 />
                               </SettingsStackRow>
                             )}
@@ -5546,7 +5684,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               </div>
                             </SettingsStackRow>
                             <SettingsStackRow title="Provider credentials" description={selectedSearchMeta.credentialDescription || (selectedSearchMeta.requiresKey ? `Up to three ${selectedSearchMeta.label} keys. Keys are tried in order and rotate after a successful request.` : 'This provider does not require a credential.')} tall>
-                              {selectedSearchMeta.requiresKey ? (
+                              {selectedSearchMeta.requiresKey || searchSettings.provider === 'firecrawl_selfhosted' ? (
                                 <ApiKeyPoolEditor
                                   key={`search-${searchSettings.provider}`}
                                   provider={searchSettings.provider}
@@ -5608,7 +5746,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   updateImageSettings(current => ({
                                     ...current,
                                     provider,
-                                    fallbackProviders: current.fallbackProviders.filter(item => item !== provider),
+                                    fallbackProviders: [current.provider, ...current.fallbackProviders].filter(item => item !== provider),
                                   }));
                                 }}
                                 className="w-[280px]"
@@ -5619,12 +5757,30 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 }))}
                               />
                             </SettingsStackRow>
-                            <SettingsStackRow title="Model" description="Choose the model sent to the selected provider. The exact model id is shown so the agent route stays transparent.">
+                            <SettingsStackRow title="Model" description="Choose a suggested model or enter the exact model ID available to your account.">
+                              <div className="flex w-full flex-col gap-2">
                               <ModernSelect
                                 value={selectedImageModel}
                                 onChange={model => updateImageSettings(current => ({ ...current, modelByProvider: { ...current.modelByProvider, [current.provider]: model } }))}
                                 className="w-[360px]"
                                 options={selectedImageMeta.models.map(model => ({ value: model.id, label: model.label, description: `${model.id} · ${model.description}` }))}
+                              />
+                              <input
+                                aria-label="Image model ID"
+                                value={selectedImageModel}
+                                onChange={event => updateImageSettings(current => ({ ...current, modelByProvider: { ...current.modelByProvider, [current.provider]: event.target.value } }))}
+                                placeholder="Exact model ID"
+                                className="h-9 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden focus:border-sky-300/35"
+                              />
+                              </div>
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Custom endpoint" description="Optional base URL for your provider account or private relay." tall>
+                              <input
+                                aria-label="Image service endpoint"
+                                value={imageSettings.baseURLs[imageSettings.provider] || ''}
+                                onChange={event => updateImageSettings(current => ({ ...current, baseURLs: { ...current.baseURLs, [current.provider]: event.target.value } }))}
+                                placeholder={selectedImageMeta.defaultBaseURL}
+                                className="h-10 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden focus:border-sky-300/35"
                               />
                             </SettingsStackRow>
                             <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.07] px-4 py-3">
@@ -5634,7 +5790,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               {selectedImageMeta.supportsAspectRatio && <span className="rounded-full border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium text-[#BDBDBD]">{IMAGE_CAPABILITY_LABELS.ratio}</span>}
                               <span className="rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-emerald-200">Provider-native</span>
                             </div>
-                            <SettingsStackRow title="Provider credentials" description={`Up to three ${selectedImageMeta.authLabel} values. Keys are attempted in order and rotate after a successful request.`} tall>
+                            <SettingsStackRow title="Provider credentials" description={`Up to three ${selectedImageMeta.authLabel} values. An empty pool uses a matching model-provider key when available, then environment credentials. Keys rotate after success.`} tall>
                               <ApiKeyPoolEditor
                                 key={`image-${imageSettings.provider}`}
                                 provider={imageSettings.provider}
@@ -5643,7 +5799,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 minRows={1}
                                 maxRows={3}
                                 testEndpoint="/api/settings/image"
-                                testBody={(key) => ({ provider: imageSettings.provider, key, model: selectedImageModel })}
+                                testBody={(key) => ({ provider: imageSettings.provider, key, model: selectedImageModel, baseURL: imageSettings.baseURLs[imageSettings.provider] || '' })}
                                 onChange={value => updateImageKeyPool(imageSettings.provider, value)}
                               />
                             </SettingsStackRow>
@@ -5686,10 +5842,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 onChange={value => {
                                   if (!VIDEO_PROVIDER_IDS.includes(value as VideoProvider)) return;
                                   const provider = value as VideoProvider;
-                                  updateVideoSettings(current => ({ ...current, provider, fallbackProviders: current.fallbackProviders.filter(item => item !== provider) }));
+                                  updateVideoSettings(current => ({ ...current, provider, fallbackProviders: [current.provider, ...current.fallbackProviders].filter(item => item !== provider) }));
                                 }}
                                 className="w-[280px]"
                                 options={VIDEO_PROVIDER_IDS.map(provider => ({ value: provider, label: VIDEO_PROVIDER_META[provider].label, description: VIDEO_PROVIDER_META[provider].description }))}
+                              />
+                            </SettingsStackRow>
+                            <SettingsStackRow title="Custom endpoint" description="Optional base URL for your provider account or private relay." tall>
+                              <input
+                                aria-label="Video service endpoint"
+                                value={videoSettings.baseURLs[videoSettings.provider] || ''}
+                                onChange={event => updateVideoSettings(current => ({ ...current, baseURLs: { ...current.baseURLs, [current.provider]: event.target.value } }))}
+                                placeholder={selectedVideoMeta.defaultBaseURL}
+                                className="h-10 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden focus:border-sky-300/35"
                               />
                             </SettingsStackRow>
                             <SettingsStackRow title="Model" description="Choose a suggested model or enter an exact current model ID for FAL and Replicate catalogs.">
@@ -5704,7 +5869,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   value={selectedVideoModel}
                                   onChange={event => updateVideoSettings(current => ({ ...current, modelByProvider: { ...current.modelByProvider, [current.provider]: event.target.value } }))}
                                   placeholder="Exact model ID"
-                                  className="h-9 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-none transition-colors placeholder:text-[#666] focus:border-sky-300/35"
+                                  className="h-9 w-full rounded-xl border border-white/[0.08] bg-[#141414] px-3 text-[12px] font-mono text-[#F1F1F1] outline-hidden transition-colors placeholder:text-[#666] focus:border-sky-300/35"
                                 />
                               </div>
                             </SettingsStackRow>
@@ -5715,7 +5880,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               {selectedVideoMeta.supportsAudioOutput && <span className="rounded-full border border-sky-300/15 bg-sky-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-sky-200">Synced audio</span>}
                               <span className="rounded-full border border-emerald-300/15 bg-emerald-300/[0.07] px-2.5 py-1 text-[10px] font-medium text-emerald-200">Provider-native</span>
                             </div>
-                            <SettingsStackRow title="Provider credentials" description={`Up to three ${selectedVideoMeta.authLabel} values. Keys are attempted in order and rotate after a successful request.`} tall>
+                            <SettingsStackRow title="Provider credentials" description={`Up to three ${selectedVideoMeta.authLabel} values. An empty pool uses a matching model-provider key when available, then environment credentials. Keys rotate after success.`} tall>
                               <ApiKeyPoolEditor
                                 key={`video-${videoSettings.provider}`}
                                 provider={videoSettings.provider}
@@ -5724,7 +5889,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                 minRows={1}
                                 maxRows={3}
                                 testEndpoint="/api/settings/video"
-                                testBody={(key) => ({ provider: videoSettings.provider, key, model: selectedVideoModel })}
+                                testBody={(key) => ({ provider: videoSettings.provider, key, model: selectedVideoModel, baseURL: videoSettings.baseURLs[videoSettings.provider] || '' })}
                                 onChange={value => updateVideoKeyPool(videoSettings.provider, value)}
                               />
                             </SettingsStackRow>
@@ -5758,6 +5923,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           runtime={browserRuntimeStatus}
                           runtimeBusy={browserRuntimeBusy}
                           runtimeMessage={browserRuntimeMessage}
+                          accessError={computerAccessError}
                           platform={terminalPlatform}
                           onSettingChange={updateSetting}
                           onBrowserAction={runBrowserRuntimeAction}
@@ -5808,6 +5974,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                     appStorage.removeItem(MODEL_CONTEXT_WINDOWS_STORAGE_KEY);
                                     appStorage.removeItem(PROVIDER_BASE_URLS_STORAGE_KEY);
                                     appStorage.removeItem(CHAT_CONTEXT_WINDOW_OVERRIDES_STORAGE_KEY);
+                                    settingsRef.current = DEFAULT_SETTINGS;
                                     transitionEterxTheme(DEFAULT_SETTINGS.theme, () => {
                                       flushSync(() => setSettings(DEFAULT_SETTINGS));
                                     });
@@ -6016,7 +6183,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                               <input
                                 value={settings.userName || ''}
                                 onChange={(e) => updateSetting('userName', e.target.value)}
-                                className="bg-transparent border-b border-white/[0.1] focus:border-white/25 outline-none text-[15px] font-semibold text-[#E8E6E3] w-full pb-0.5 mb-1 transition-colors"
+                                className="bg-transparent border-b border-white/[0.1] focus:border-white/25 outline-hidden text-[15px] font-semibold text-[#E8E6E3] w-full pb-0.5 mb-1 transition-colors"
                               />
                               <div className="text-[12px] text-[#666] mt-0.5">Local workspace / Desktop Agent</div>
                             </div>
@@ -6108,11 +6275,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           type="button"
                           onClick={() => {
                             settingsRevisionRef.current += 1;
+                            settingsRef.current = DEFAULT_SETTINGS;
                             transitionEterxTheme(DEFAULT_SETTINGS.theme, () => {
                               flushSync(() => setSettings(DEFAULT_SETTINGS));
                             });
-                            appStorage.setItem('eterx_settings', JSON.stringify(DEFAULT_SETTINGS));
-                            broadcastEterxSettingsUpdate(DEFAULT_SETTINGS);
+                            updateSetting('computerUse', DEFAULT_SETTINGS.computerUse);
                             void fetch('/api/settings/self-improvement', {
                               method: 'PUT',
                               headers: { 'Content-Type': 'application/json' },
