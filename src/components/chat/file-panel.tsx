@@ -471,8 +471,8 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           original={original}
           modified={modified}
           onMount={editor => {
-            editor.getOriginalEditor().updateOptions({ lineNumbers: line => originalLines[line - 1] ? String(diffLineNumber(originalLines[line - 1], 'old')) : '' });
-            editor.getModifiedEditor().updateOptions({ lineNumbers: line => modifiedLines[line - 1] ? String(diffLineNumber(modifiedLines[line - 1], 'new')) : '' });
+            editor.getOriginalEditor().updateOptions({ lineNumbers: (line: number) => originalLines[line - 1] ? String(diffLineNumber(originalLines[line - 1], 'old')) : '' });
+            editor.getModifiedEditor().updateOptions({ lineNumbers: (line: number) => modifiedLines[line - 1] ? String(diffLineNumber(modifiedLines[line - 1], 'new')) : '' });
           }}
           options={{
             minimap: { enabled: false },

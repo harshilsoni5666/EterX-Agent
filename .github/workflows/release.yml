@@ -100,7 +100,7 @@ jobs:
             target: win
             runtime_targets: win32:x64,win32:arm64
           - platform: macOS
-            runner: macos-14
+            runner: macos-15
             target: mac
             runtime_targets: darwin:x64,darwin:arm64
           - platform: Linux
