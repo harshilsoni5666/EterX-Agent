@@ -290,7 +290,7 @@ for (const [index, spec] of targetSpecs.entries()) {
   // These modules are loaded by Electron's main process before the Next
   // server starts. Fail the build if the production archive would not contain
   // them; otherwise users receive an installer that crashes on first launch.
-  for (const requiredModule of ['next', 'react', 'react-dom', 'ws']) {
+  for (const requiredModule of ['next', 'react', 'react-dom', 'ws', 'fraction.js']) {
     const moduleManifest = path.join(stagedModules, requiredModule, 'package.json');
     if (!fs.existsSync(moduleManifest)) {
       throw new Error(`Required packaged dependency is missing: ${requiredModule}`);

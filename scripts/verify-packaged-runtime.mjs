@@ -39,15 +39,7 @@ const requiredDependencies = [
   'node_modules/ws/package.json',
   'node_modules/complex.js/dist/complex.js',
   'node_modules/mathjs/lib/cjs/index.js',
-];
-const requiredDependencyAlternatives = [
-  {
-    label: 'fraction.js runtime used by mathjs',
-    paths: [
-      'node_modules/fraction.js/fraction.js',
-      'node_modules/mathjs/node_modules/fraction.js/fraction.js',
-    ],
-  },
+  'node_modules/fraction.js/fraction.js',
 ];
 const swcPackageByTarget = {
   'win32:x64': 'node_modules/@next/swc-win32-x64-msvc/package.json',
@@ -93,13 +85,6 @@ for (const archive of archives) {
   for (const required of requiredDependencies) {
     if (!dependencyEntries.has(required)) {
       throw new Error(`${dependencyArchive} is missing required dependency entry: ${required}`);
-    }
-  }
-  for (const requirement of requiredDependencyAlternatives) {
-    if (!requirement.paths.some((candidate) => dependencyEntries.has(candidate))) {
-      throw new Error(
-        `${dependencyArchive} is missing ${requirement.label}; expected one of: ${requirement.paths.join(', ')}`,
-      );
     }
   }
   const launcherSource = extractFile(archive, 'runtime/server-launcher.js').toString('utf8');
