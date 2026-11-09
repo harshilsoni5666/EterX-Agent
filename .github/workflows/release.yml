@@ -115,6 +115,8 @@ jobs:
       # auto-discovering a developer certificate on hosted runners.
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       ETERX_RUNTIME_TARGETS: ${{ matrix.runtime_targets }}
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+      ELECTRON_BUILDER_BINARIES_MIRROR: https://mirrors.huaweicloud.com/electron-builder-binaries/
 
     steps:
       - name: Check out release source
@@ -152,6 +154,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Compile native speech runtimes
+        env:
+          ETERX_WHISPER_BUILD_FROM_SOURCE: ${{ matrix.target == 'win' }}
         run: npm run desktop:prepare-whisper
 
       - name: Compile application
@@ -217,7 +221,7 @@ jobs:
           archive="$release_dir/appimage-12.0.1.7z"
           mkdir -p "$release_dir"
           curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 180 --max-time 300 \
-            "https://github.com/electron-userland/electron-builder-binaries/releases/download/appimage-12.0.1/appimage-12.0.1.7z" \
+            "${ELECTRON_BUILDER_BINARIES_MIRROR%/}/appimage-12.0.1/appimage-12.0.1.7z" \
             --output "$archive"
           printf '%s  %s\n' \
             'd12ff7eb8f1d1ec4652ca5237a7fbdca33acc0c758045636feca62dc6ecb8ec4' "$archive" \
