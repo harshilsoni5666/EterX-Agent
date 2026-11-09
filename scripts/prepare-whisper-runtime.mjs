@@ -59,35 +59,63 @@ function runtimeReady(target) {
 }
 
 async function downloadVerified(url, sha256, destination, expectedBytes) {
-  const controller = new AbortController();
-  let timer;
-  const progress = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => controller.abort(new Error('Speech runtime download stalled. Retry the preparation command.')), 90_000);
-    timer.unref?.();
-  };
-  progress();
-  try {
-    const response = await fetch(url, { redirect: 'follow', signal: controller.signal });
-    if (!response.ok || !response.body) throw new Error(`Could not download speech runtime (${response.status}).`);
-    const hash = crypto.createHash('sha256');
-    let received = 0;
-    const meter = new Transform({
-      transform(chunk, _encoding, callback) {
-        progress();
-        received += chunk.length;
-        if (expectedBytes && received > expectedBytes) return callback(new Error('Speech download has an unexpected size.'));
-        hash.update(chunk);
-        callback(null, chunk);
-      },
-    });
-    await pipeline(response.body, meter, fs.createWriteStream(destination), { signal: controller.signal });
-    if ((expectedBytes && received !== expectedBytes) || hash.digest('hex') !== sha256) throw new Error('The speech download did not match its pinned checksum.');
-  } catch (error) {
-    fs.rmSync(destination, { force: true });
-    throw error;
-  } finally {
-    clearTimeout(timer);
+  const maxAttempts = 4;
+  const retryableStatuses = new Set([408, 425, 429, 500, 502, 503, 504]);
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    let timer;
+    const progress = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const error = new Error('Speech runtime download stalled.');
+        error.retryable = true;
+        controller.abort(error);
+      }, 90_000);
+      timer.unref?.();
+    };
+    progress();
+    try {
+      const response = await fetch(url, { redirect: 'follow', signal: controller.signal });
+      if (!response.ok || !response.body) {
+        const error = new Error(`Could not download speech runtime (${response.status}).`);
+        error.retryable = retryableStatuses.has(response.status) || (response.ok && !response.body);
+        const retryAfter = response.headers.get('retry-after');
+        const retryAfterSeconds = Number(retryAfter);
+        error.retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+          ? Math.min(retryAfterSeconds * 1000, 30_000)
+          : 0;
+        throw error;
+      }
+      const hash = crypto.createHash('sha256');
+      let received = 0;
+      const meter = new Transform({
+        transform(chunk, _encoding, callback) {
+          progress();
+          received += chunk.length;
+          if (expectedBytes && received > expectedBytes) return callback(new Error('Speech download has an unexpected size.'));
+          hash.update(chunk);
+          callback(null, chunk);
+        },
+      });
+      await pipeline(response.body, meter, fs.createWriteStream(destination), { signal: controller.signal });
+      if ((expectedBytes && received !== expectedBytes) || hash.digest('hex') !== sha256) {
+        throw new Error('The speech download did not match its pinned checksum.');
+      }
+      return;
+    } catch (error) {
+      fs.rmSync(destination, { force: true });
+      const retryableNetworkError = error?.name === 'AbortError'
+        || error?.name === 'TimeoutError'
+        || error instanceof TypeError
+        || ['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ECONNREFUSED', 'ENETUNREACH'].includes(error?.code);
+      if (!(error?.retryable || retryableNetworkError) || attempt === maxAttempts) throw error;
+      const backoffMs = 1000 * (2 ** (attempt - 1));
+      const waitMs = Math.max(backoffMs, error?.retryAfterMs || 0);
+      console.warn(`Speech runtime download attempt ${attempt}/${maxAttempts} failed: ${error.message} Retrying in ${Math.ceil(waitMs / 1000)}s.`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 

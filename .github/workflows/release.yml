@@ -169,7 +169,15 @@ jobs:
             Remove-Item Env:CSC_KEY_PASSWORD -ErrorAction SilentlyContinue
             $env:CSC_IDENTITY_AUTO_DISCOVERY = 'false'
           }
-          npx electron-builder --win --x64 --arm64 --publish never
+          for ($attempt = 1; $attempt -le 4; $attempt += 1) {
+            $logPath = Join-Path $env:RUNNER_TEMP "electron-builder-win-$attempt.log"
+            & npx electron-builder --win --x64 --arm64 --publish never 2>&1 | Tee-Object -FilePath $logPath
+            $buildExit = $LASTEXITCODE
+            if ($buildExit -eq 0) { break }
+            $transientDownloadFailure = Select-String -Path $logPath -Pattern 'Response code (408|425|429|5\d\d)|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|ENOTFOUND|UND_ERR_CONNECT_TIMEOUT' -Quiet
+            if (-not $transientDownloadFailure -or $attempt -eq 4) { exit $buildExit }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
 
       - name: Package macOS
         if: matrix.target == 'mac'
@@ -180,7 +188,41 @@ jobs:
           # APFS DMG resize step with `hdiutil ... Device not configured (6)`.
           # The public updater consumes ZIP artifacts, so build only the stable
           # ZIP target here and avoid the fragile DMG image path entirely.
-          npx electron-builder --mac zip --x64 --arm64 --publish never
+          run_with_download_retries() {
+            local attempt=1
+            local log_file
+            local build_status
+            while [ "$attempt" -le 4 ]; do
+              log_file="$RUNNER_TEMP/electron-builder-mac-$attempt.log"
+              set +e
+              npx electron-builder --mac zip --x64 --arm64 --publish never 2>&1 | tee "$log_file"
+              build_status=${PIPESTATUS[0]}
+              set -e
+              if [ "$build_status" -eq 0 ]; then return 0; fi
+              if ! grep -Eiq 'Response code (408|425|429|5[0-9]{2})|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|ENOTFOUND|UND_ERR_CONNECT_TIMEOUT' "$log_file" || [ "$attempt" -eq 4 ]; then
+                return "$build_status"
+              fi
+              sleep "$((5 * attempt))"
+              attempt=$((attempt + 1))
+            done
+          }
+          run_with_download_retries
+
+      - name: Prepare Linux AppImage tool cache
+        if: matrix.target == 'linux'
+        run: |
+          set -euo pipefail
+          builder_cache="$RUNNER_TEMP/eterx-electron-builder-cache"
+          release_dir="$builder_cache/appimage-12.0.1"
+          archive="$release_dir/appimage-12.0.1.7z"
+          mkdir -p "$release_dir"
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 180 --max-time 300 \
+            "https://github.com/electron-userland/electron-builder-binaries/releases/download/appimage-12.0.1/appimage-12.0.1.7z" \
+            --output "$archive"
+          printf '%s  %s\n' \
+            'd12ff7eb8f1d1ec4652ca5237a7fbdca33acc0c758045636feca62dc6ecb8ec4' "$archive" \
+            | sha256sum --check --status
+          echo "ELECTRON_BUILDER_CACHE=$builder_cache" >> "$GITHUB_ENV"
 
       - name: Package Linux
         if: matrix.target == 'linux'
@@ -191,7 +233,25 @@ jobs:
           # release path deterministic by avoiding electron-builder's
           # optional multi-arch Debian/fpm packaging, which can fail after
           # both AppImages have already been built successfully.
-          npx electron-builder --linux AppImage --x64 --arm64 --publish never
+          run_with_download_retries() {
+            local attempt=1
+            local log_file
+            local build_status
+            while [ "$attempt" -le 4 ]; do
+              log_file="$RUNNER_TEMP/electron-builder-linux-$attempt.log"
+              set +e
+              npx electron-builder --linux AppImage --x64 --arm64 --publish never 2>&1 | tee "$log_file"
+              build_status=${PIPESTATUS[0]}
+              set -e
+              if [ "$build_status" -eq 0 ]; then return 0; fi
+              if ! grep -Eiq 'Response code (408|425|429|5[0-9]{2})|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|ENOTFOUND|UND_ERR_CONNECT_TIMEOUT' "$log_file" || [ "$attempt" -eq 4 ]; then
+                return "$build_status"
+              fi
+              sleep "$((5 * attempt))"
+              attempt=$((attempt + 1))
+            done
+          }
+          run_with_download_retries
 
       - name: Include Linux launcher icon
         if: matrix.target == 'linux'
