@@ -9,11 +9,28 @@ import { spawn } from 'node:child_process';
 const searchRoot = path.resolve(process.argv[2] || 'dist');
 
 function findArchive(root) {
-  // Exercise the host architecture when a Windows job packages both targets.
-  if (process.platform === 'win32') {
-    const directory = process.arch === 'arm64' ? 'win-arm64-unpacked' : 'win-unpacked';
-    const nativeArchive = path.join(root, directory, 'resources', 'app.asar');
-    if (fs.existsSync(nativeArchive)) return nativeArchive;
+  // Exercise the host architecture when a runner packages multiple targets.
+  const preferredDirectories = {
+    win32: process.arch === 'arm64'
+      ? ['win-arm64-unpacked', 'win-unpacked']
+      : ['win-unpacked', 'win-arm64-unpacked'],
+    darwin: process.arch === 'arm64' ? ['mac-arm64', 'mac'] : ['mac', 'mac-arm64'],
+    linux: process.arch === 'arm64'
+      ? ['linux-arm64-unpacked', 'linux-unpacked']
+      : ['linux-unpacked', 'linux-arm64-unpacked'],
+  }[process.platform] || [];
+  for (const directory of preferredDirectories) {
+    const preferredRoot = path.join(root, directory);
+    if (!fs.existsSync(preferredRoot)) continue;
+    const queue = [preferredRoot];
+    while (queue.length) {
+      const current = queue.shift();
+      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        const target = path.join(current, entry.name);
+        if (entry.isDirectory()) queue.push(target);
+        else if (entry.isFile() && entry.name === 'app.asar') return target;
+      }
+    }
   }
   const queue = [root];
   while (queue.length) {
@@ -27,13 +44,18 @@ function findArchive(root) {
   throw new Error(`No packaged app.asar was found under ${root}.`);
 }
 
-function getElectronBinary() {
-  const electronRoot = path.resolve('node_modules', 'electron', 'dist');
-  if (process.platform === 'win32') return path.join(electronRoot, 'electron.exe');
-  if (process.platform === 'darwin') {
-    return path.join(electronRoot, 'Electron.app', 'Contents', 'MacOS', 'Electron');
+function getElectronBinary(archive) {
+  const resourcesRoot = path.dirname(archive);
+  const packagedRoot = path.dirname(resourcesRoot);
+  const executable = process.platform === 'win32'
+    ? path.join(packagedRoot, 'EterX.exe')
+    : process.platform === 'darwin'
+      ? path.join(packagedRoot, 'MacOS', 'EterX')
+      : path.join(packagedRoot, 'eterx');
+  if (!fs.existsSync(executable)) {
+    throw new Error(`Packaged Electron executable is missing: ${executable}`);
   }
-  return path.join(electronRoot, 'electron');
+  return executable;
 }
 
 function reservePort() {
@@ -79,7 +101,7 @@ function request(port, options = {}) {
 }
 
 const archive = findArchive(searchRoot);
-const electronBinary = getElectronBinary();
+const electronBinary = getElectronBinary(archive);
 const serverEntry = path.join(archive, 'runtime', 'server-launcher.js');
 const modulesRoot = path.join(path.dirname(archive), 'runtime', 'dependencies.asar', 'node_modules');
 const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'eterx-release-smoke-'));
