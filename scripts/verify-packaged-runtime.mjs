@@ -39,7 +39,7 @@ const requiredDependencies = [
   'node_modules/ws/package.json',
   'node_modules/complex.js/dist/complex.js',
   'node_modules/mathjs/lib/cjs/index.js',
-  'node_modules/fraction.js/fraction.js',
+  'node_modules/fraction.js/dist/fraction.js',
 ];
 const swcPackageByTarget = {
   'win32:x64': 'node_modules/@next/swc-win32-x64-msvc/package.json',

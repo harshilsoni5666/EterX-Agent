@@ -296,6 +296,10 @@ for (const [index, spec] of targetSpecs.entries()) {
       throw new Error(`Required packaged dependency is missing: ${requiredModule}`);
     }
   }
+  const fractionRuntimeEntry = path.join(stagedModules, 'fraction.js', 'dist', 'fraction.js');
+  if (!fs.existsSync(fractionRuntimeEntry)) {
+    throw new Error('Required packaged dependency entry is missing: fraction.js/dist/fraction.js');
+  }
   fs.rmSync(dependencyInstallRoot, { recursive: true, force: true });
 }
 fs.rmSync(path.join(stagingRoot, 'node_modules', '.bin'), { recursive: true, force: true });
