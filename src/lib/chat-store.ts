@@ -4,7 +4,6 @@ import path from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { buildChatCopy, nextChatCopyTitle } from './chat-copy';
 import { copyChatMedia, removeChatMedia } from './chat-media-store';
-import { getContextFabricForChat } from './agent/context-fabric';
 import { getEterxDataDir } from './agent/storage-paths';
 import { filterUserVisibleTraces } from './agent/trace-visibility';
 import { buildTemporaryTitle, mergeChatTitleMetadata } from './chat/title-generation';
@@ -42,7 +41,7 @@ let pendingSnapshotRead: Promise<PersistedChatSnapshot> | null = null;
 // still serialize against the same durable transcript in this process.
 const chatStoreGlobal = globalThis as typeof globalThis & { __eterxChatWrites?: { queue: Promise<unknown> } };
 const chatWrites = chatStoreGlobal.__eterxChatWrites ||= { queue: Promise.resolve() };
-const auditedDialogueChats = new Set<string>();
+const auditedDialogueChats = new WeakMap<object, any>();
 
 const emptySnapshot = (): PersistedChatSnapshot => ({
   version: CHAT_STORE_VERSION,
@@ -193,6 +192,7 @@ const hasExactImportedTrace = (
 };
 
 async function loadRecoveredDialogue(chatId: string, traceLogs: any[]): Promise<RecoveredDialogue> {
+  const { getContextFabricForChat } = await import('./agent/context-fabric');
   const fabric = await getContextFabricForChat(chatId);
   const episodes = fabric.listEpisodes().filter(episode =>
     ['user', 'runtime'].includes(String(episode?.source || '')),
@@ -465,10 +465,11 @@ async function hydrateRecoveredDialogue(snapshot: PersistedChatSnapshot): Promis
     const chatId = String(chat?.id || '').trim();
     if (!chatId) return chat;
     const requiresRepair = chatNeedsDialogueRecovery(traceLogs);
-    // Audit every durable chat once per process so a whole turn lost by an
-    // interrupted snapshot write is still reconstructed. Subsequent normal
-    // saves stay cheap unless the visible terminal lifecycle proves a gap.
-    if (auditedDialogueChats.has(chatId) && !requiresRepair) return chat;
+    // Recovery belongs to opening a conversation, not the global read/write
+    // queue. Cache the recovered revision, so a second open cannot lose a
+    // recovered turn before the renderer has saved it.
+    const audited = auditedDialogueChats.get(chat);
+    if (audited && !requiresRepair) return audited;
     let dialogue: RecoveredDialogue;
     try {
       dialogue = await loadRecoveredDialogue(chatId, traceLogs);
@@ -478,12 +479,12 @@ async function hydrateRecoveredDialogue(snapshot: PersistedChatSnapshot): Promis
       console.warn(`[ChatStore] Dialogue recovery unavailable for ${chatId}`, error);
       return chat;
     }
-    auditedDialogueChats.add(chatId);
-    if (dialogue.requests.length === 0 && dialogue.responses.length === 0) return chat;
-    return {
+    const recovered = dialogue.requests.length === 0 && dialogue.responses.length === 0 ? chat : {
       ...chat,
       traceLogs: settleFeedTraceLifecycles(recoveredDialogueTraces(chatId, traceLogs, dialogue)),
     };
+    auditedDialogueChats.set(chat, recovered);
+    return recovered;
   };
   // Large histories must not open every context store simultaneously on
   // launch. A small worker pool keeps disk and memory pressure bounded.
@@ -572,6 +573,17 @@ function readFromDisk(): Promise<PersistedChatSnapshot> {
 }
 
 async function readSnapshotFromDisk(): Promise<PersistedChatSnapshot> {
+  const readSnapshotFile = async (filePath: string): Promise<PersistedChatSnapshot> => {
+    const raw = await fs.readJson(filePath);
+    if (!raw || (
+      !Array.isArray(raw) &&
+      !Array.isArray(raw.chats) &&
+      !Array.isArray(raw.chatHistory) &&
+      !Array.isArray(raw.sessions)
+    )) throw new SyntaxError('Invalid chat snapshot');
+    return normalizeSnapshot(raw);
+  };
+  let primaryError: any;
   try {
     const stat = await fs.stat(CHAT_STORE_PATH);
     const fileSignature = `${ stat.mtimeMs }:${ stat.size }`;
@@ -579,16 +591,7 @@ async function readSnapshotFromDisk(): Promise<PersistedChatSnapshot> {
       return cachedSnapshot;
     }
 
-    const raw = await fs.readJson(CHAT_STORE_PATH);
-    if (!raw || (
-      !Array.isArray(raw) &&
-      !Array.isArray(raw.chats) &&
-      !Array.isArray(raw.chatHistory) &&
-      !Array.isArray(raw.sessions)
-    )) {
-      throw new Error('Invalid chat snapshot');
-    }
-    const normalized = await hydrateRecoveredDialogue(normalizeSnapshot(raw));
+    const normalized = await readSnapshotFile(CHAT_STORE_PATH);
     // A first launch may have created an empty marker before the legacy
     // location was discovered. An unsaved empty marker is not authoritative;
     // import real legacy chats when they still exist.
@@ -602,37 +605,39 @@ async function readSnapshotFromDisk(): Promise<PersistedChatSnapshot> {
     }
     cachedSnapshot = normalized;
     cachedSnapshotFileSignature = fileSignature;
+    return cachedSnapshot;
   } catch (error: any) {
-    if (error?.code === 'ENOENT') {
-      const legacySnapshot = await readLegacySnapshot();
-      if (legacySnapshot) {
-        cachedSnapshot = legacySnapshot;
-        cachedSnapshotFileSignature = null;
-        return cachedSnapshot;
-      }
-      try {
-        cachedSnapshot = await hydrateRecoveredDialogue(normalizeSnapshot(await fs.readJson(CHAT_STORE_BACKUP_PATH)));
-        cachedSnapshotFileSignature = null;
-        return cachedSnapshot;
-      } catch {
-        cachedSnapshot = emptySnapshot();
-        cachedSnapshotFileSignature = null;
-        return cachedSnapshot;
-      }
-    }
-
-    if (await fs.pathExists(CHAT_STORE_PATH)) {
-      const corruptPath = path.join(CHAT_STORE_DIR, `chats.corrupt-${Date.now()}.json`);
-      await fs.move(CHAT_STORE_PATH, corruptPath, { overwrite: false }).catch(() => {});
-      console.warn(`[ChatStore] Preserved unreadable chat data at ${corruptPath}`);
-    }
-    try {
-      cachedSnapshot = await hydrateRecoveredDialogue(normalizeSnapshot(await fs.readJson(CHAT_STORE_BACKUP_PATH)));
-    } catch {
-      cachedSnapshot = emptySnapshot();
-    }
-    cachedSnapshotFileSignature = null;
+    // A Windows lock, permission failure, or I/O error does not mean the
+    // transcript is corrupt. Keep it in place and let the caller retry.
+    if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+    primaryError = error;
   }
+
+  // The same-directory recovery copy is newer and more authoritative than
+  // an old installation's legacy store, including when the main file is gone.
+  let recovered: PersistedChatSnapshot | null = null;
+  let backupError: any;
+  try {
+    recovered = await readSnapshotFile(CHAT_STORE_BACKUP_PATH);
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+    backupError = error;
+  }
+  if (!recovered) recovered = await readLegacySnapshot();
+  if (!recovered) {
+    // Only a genuinely new store may start empty. Returning an empty success
+    // after a damaged read would allow the next save to erase real history.
+    if (primaryError?.code !== 'ENOENT') throw primaryError;
+    if (backupError?.code !== 'ENOENT') throw backupError;
+    recovered = emptySnapshot();
+  }
+  if (primaryError instanceof SyntaxError) {
+    const corruptPath = path.join(CHAT_STORE_DIR, `chats.corrupt-${Date.now()}-${randomUUID()}.json`);
+    await fs.rename(CHAT_STORE_PATH, corruptPath);
+    console.warn(`[ChatStore] Preserved malformed chat data at ${corruptPath}`);
+  }
+  cachedSnapshot = recovered;
+  cachedSnapshotFileSignature = null;
   return cachedSnapshot;
 }
 
@@ -642,10 +647,24 @@ async function writeAtomic(snapshot: PersistedChatSnapshot): Promise<string | nu
   await fs.writeFile(temporaryPath, `${JSON.stringify(snapshot)}\n`, { encoding: 'utf8', mode: 0o600 });
   // Keep a same-directory recovery copy before replacing the authoritative
   // file. Both files remain inside the per-user AppData chat store.
-  if (await fs.pathExists(CHAT_STORE_PATH)) {
+  if (cachedSnapshotFileSignature !== null) {
     await fs.copyFile(CHAT_STORE_PATH, CHAT_STORE_BACKUP_PATH).catch(() => {});
   }
-  await fs.move(temporaryPath, CHAT_STORE_PATH, { overwrite: true });
+  try {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        // fs-extra.move(overwrite) unlinks the destination before renaming.
+        // Keep the current transcript intact while retrying Windows locks.
+        await fs.rename(temporaryPath, CHAT_STORE_PATH);
+        break;
+      } catch (error: any) {
+        if (attempt >= 5 || !['EPERM', 'EACCES', 'EBUSY'].includes(error?.code)) throw error;
+        await new Promise(resolve => setTimeout(resolve, 80 * (attempt + 1)));
+      }
+    }
+  } finally {
+    await fs.remove(temporaryPath).catch(() => {});
+  }
   // Retain the normalized snapshot after a save instead of reading and
   // rebuilding every conversation again on the very next request.
   return fs.stat(CHAT_STORE_PATH)
@@ -659,10 +678,14 @@ export async function loadChatSnapshot(): Promise<PersistedChatSnapshot> {
   return { ...snapshot, chats: [...snapshot.chats] };
 }
 
-export async function loadChatById(chatId: string): Promise<unknown | null> {
+export async function loadChatById(chatId: string, recoverDialogue = false): Promise<unknown | null> {
   await chatWrites.queue.catch(() => {});
   const snapshot = await readFromDisk();
-  return (snapshot.chats as any[]).find(chat => chat?.id === chatId) || null;
+  const chat = (snapshot.chats as any[]).find(chat => chat?.id === chatId);
+  if (!chat) return null;
+  if (!recoverDialogue) return chat;
+  const recovered = await hydrateRecoveredDialogue({ ...snapshot, chats: [chat] });
+  return recovered.chats[0] || chat;
 }
 
 function mergeChatForAction(durable: any, incoming: unknown) {
@@ -767,17 +790,17 @@ export async function saveChatSnapshot(chats: unknown[], savedAt: number, mutati
         ),
       };
     });
-    const next = await hydrateRecoveredDialogue(normalizeSnapshot({
+    const next = normalizeSnapshot({
       ...requested,
       chats: [
         ...mergedChats,
-        // Imports can commit while an older client is saving a full snapshot.
+        // Another window can commit while a client is saving a full snapshot.
         // Deletion remains explicit through patchChatSnapshot's deleted IDs.
-        ...(current.chats as any[]).filter(chat => chat.importOrigin && !requestedIds.has(chat.id)),
+        ...(current.chats as any[]).filter(chat => !requestedIds.has(chat.id)),
       ],
       savedAt: Math.max(requested.savedAt, current.savedAt + 1),
       lastMutationId: mutationId,
-    }));
+    });
     const signature = await writeAtomic(next);
     cachedSnapshot = next;
     cachedSnapshotFileSignature = signature;
@@ -822,7 +845,7 @@ export async function patchChatSnapshot(
     }
     deletedIds.forEach(id => byId.delete(id));
     const orderedIds = new Set(safeIds);
-    const next = await hydrateRecoveredDialogue(normalizeSnapshot({
+    const next = normalizeSnapshot({
       savedAt: Math.max(savedAt, current.savedAt + 1),
       lastMutationId: mutationId,
       // The client list can be stale while a restore or another tab is in
@@ -832,7 +855,7 @@ export async function patchChatSnapshot(
         ...safeIds.map(id => byId.get(id)).filter(Boolean),
         ...Array.from(byId.values()).filter(chat => !orderedIds.has(chat.id)),
       ],
-    }));
+    });
     const signature = await writeAtomic(next);
     cachedSnapshot = next;
     cachedSnapshotFileSignature = signature;

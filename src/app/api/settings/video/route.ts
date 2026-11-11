@@ -3,7 +3,7 @@ import { rejectCrossOrigin } from '../../agent/_shared';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { updateStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
 import { applyRuntimeVideoSettings, testVideoProvider } from '../../../../lib/video/video-generation-runtime';
-import { VIDEO_PROVIDER_IDS, type VideoProvider } from '../../../../lib/video/video-generation-config';
+import { VIDEO_PROVIDER_IDS, normalizeVideoSettings, type VideoProvider } from '../../../../lib/video/video-generation-config';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -31,12 +31,16 @@ export async function PUT(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
   if (originError) return originError;
   try {
-    const body = await req.json().catch(() => ({}));
-    const settings = body?.video && typeof body.video === 'object' ? body.video : body;
-    const applied = applyRuntimeVideoSettings(settings);
-    await updateStoredRuntimeSettings({ video: applied });
+    const body = await req.json().catch(() => null);
+    const settings = body && Object.prototype.hasOwnProperty.call(body, 'video') ? body.video : body;
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      return NextResponse.json({ ok: false, error: 'A video settings object is required.' }, { status: 400 });
+    }
+    const normalized = normalizeVideoSettings(settings);
+    await updateStoredRuntimeSettings({ video: normalized });
+    const applied = applyRuntimeVideoSettings(normalized);
     return NextResponse.json({ ok: true, provider: applied.provider, fallbackProviders: applied.fallbackProviders });
   } catch (error: any) {
-    return NextResponse.json({ ok: false, error: error?.message || 'Could not apply video generation settings.' }, { status: 400 });
+    return NextResponse.json({ ok: false, error: error?.message || 'Could not apply video generation settings.' }, { status: 500 });
   }
 }

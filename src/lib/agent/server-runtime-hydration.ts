@@ -6,6 +6,7 @@ import {
   applyRuntimeApiKeys,
   applyRuntimeModelOverrides,
   applyRuntimeApiRetries,
+  type RuntimeApiKeyApplyResult,
 } from './runtime-api-keys';
 import { applyRuntimeProviderBaseURLs } from './provider-runtime';
 import { applyRuntimeSearchSettings } from '../search/search-runtime';
@@ -21,9 +22,9 @@ const runtimeHydrationGlobal = globalThis as typeof globalThis & {
  * from server entry points. This module must never be imported by client UI
  * code because runtime-settings-store uses node:crypto and filesystem APIs.
  */
-export function hydrateServerRuntimeSettings(): void {
+export function hydrateServerRuntimeSettings(force = false): RuntimeApiKeyApplyResult | undefined {
   const revision = getStoredRuntimeSettingsRevision();
-  if (runtimeHydrationGlobal.__eterxServerRuntimeSettingsRevision === revision) return;
+  if (!force && runtimeHydrationGlobal.__eterxServerRuntimeSettingsRevision === revision) return;
   try {
     const stored = readStoredRuntimeSettings();
     applyRuntimeApiRetries(stored.apiRetries);
@@ -40,25 +41,16 @@ export function hydrateServerRuntimeSettings(): void {
       const values = Array.isArray(current) ? current : current ? [current] : [];
       hydratedApiKeys[provider] = [...values, value];
     }
-    if (Object.keys(hydratedApiKeys).length > 0) {
-      applyRuntimeApiKeys(hydratedApiKeys);
-    }
-    if (stored.modelOverrides && Object.keys(stored.modelOverrides).length > 0) {
-      applyRuntimeModelOverrides(stored.modelOverrides);
-    }
-    if (stored.baseURLs && Object.keys(stored.baseURLs).length > 0) {
-      applyRuntimeProviderBaseURLs(stored.baseURLs);
-    }
-    if (stored.search) {
-      applyRuntimeSearchSettings(stored.search, stored.apiKeys?.tavily);
-    }
-    if (stored.image) {
-      applyRuntimeImageSettings(stored.image);
-    }
-    if (stored.video) {
-      applyRuntimeVideoSettings(stored.video);
-    }
+    // Empty maps are explicit removals. Skipping them keeps deleted keys,
+    // model overrides, and endpoints alive until the desktop is restarted.
+    const apiKeyResult = applyRuntimeApiKeys(hydratedApiKeys);
+    applyRuntimeModelOverrides(stored.modelOverrides || {});
+    applyRuntimeProviderBaseURLs(stored.baseURLs || {});
+    applyRuntimeSearchSettings(stored.search || {}, stored.apiKeys?.tavily);
+    applyRuntimeImageSettings(stored.image || {});
+    applyRuntimeVideoSettings(stored.video || {});
     runtimeHydrationGlobal.__eterxServerRuntimeSettingsRevision = revision;
+    return apiKeyResult;
   } catch (error) {
     console.warn('[EterX] Could not hydrate persisted runtime settings:', error instanceof Error ? error.message : error);
   }

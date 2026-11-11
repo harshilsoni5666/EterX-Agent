@@ -71,7 +71,7 @@ import {
   ArrowDownToLine,
 } from 'lucide-react';
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../theme/theme-bridge';
-import { appStorage, appStorageReady, registerDurableFlush, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
+import { appStorage, appStorageReady, isAppStorageLoaded, registerDurableFlush, FOLDER_STORAGE_READY_EVENT } from '../../lib/client-storage';
 import { isLocalModelProvider } from '../../lib/agent/provider-runtime';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { resolveModelContextWindow } from '../../lib/agent/model-context-window';
@@ -2933,14 +2933,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   // Load preferences and runtime credentials from the AppData-backed stores.
   useEffect(() => {
     let cancelled = false;
+    let loading = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const loadRevision = settingsRevisionRef.current;
     const loadSettings = async () => {
+      if (cancelled || loading || runtimeSettingsHydratedRef.current) return;
+      loading = true;
       try {
-      const storageLoaded = await appStorageReady;
+      await appStorageReady;
       // A transient storage failure must never turn an empty in-memory view
       // into a saved empty model/settings snapshot. The storage-ready event
       // below retries synchronization after the durable store recovers.
-      if (!storageLoaded || cancelled || settingsRevisionRef.current !== loadRevision) return;
+      if (!isAppStorageLoaded() || cancelled || settingsRevisionRef.current !== loadRevision) return;
       const saved = appStorage.getItem('eterx_settings');
       let nextSettings = normalizeAppSettings(saved ? JSON.parse(saved) : {});
       if (saved) {
@@ -2970,10 +2974,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const normalizedEntries = normalizeModelSelectorEntries(migratedEntries, parsedModelCatalog);
       const normalizedCatalog = entriesToModelCatalog(normalizedEntries) as ModelCatalog;
       const desktopApi = (window as any)?.electronAPI;
-      const folderRuntimeSettings = await fetch('/api/settings/runtime', { cache: 'no-store' })
-        .then(response => response.ok ? response.json() : null)
-        .then(payload => payload?.settings && typeof payload.settings === 'object' ? payload.settings : {})
-        .catch(() => ({}));
+      const folderRuntimeResponse = await fetch('/api/settings/runtime', { cache: 'no-store', signal: AbortSignal.timeout(10_000) });
+      const folderRuntimePayload = await folderRuntimeResponse.json();
+      if (!folderRuntimeResponse.ok || !folderRuntimePayload?.ok || !folderRuntimePayload.settings || typeof folderRuntimePayload.settings !== 'object' || Array.isArray(folderRuntimePayload.settings)) {
+        throw new Error('Saved runtime settings could not be loaded.');
+      }
+      const folderRuntimeSettings = folderRuntimePayload.settings;
       const persistedApiRetries = Number(folderRuntimeSettings?.apiRetries);
       if (Number.isFinite(persistedApiRetries)) {
         nextSettings.maxRetries = Math.max(0, Math.min(3, Math.floor(persistedApiRetries)));
@@ -3019,16 +3025,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         : null;
       const folderApiKeys = folderRuntimeSettings?.apiKeys && typeof folderRuntimeSettings.apiKeys === 'object'
         ? folderRuntimeSettings.apiKeys
-        : {};
+        : null;
       const folderLiveApiKeys = folderRuntimeSettings?.liveApiKeys && typeof folderRuntimeSettings.liveApiKeys === 'object'
         ? folderRuntimeSettings.liveApiKeys
-        : {};
+        : null;
       const folderModelApiKeys = folderRuntimeSettings?.modelApiKeys && typeof folderRuntimeSettings.modelApiKeys === 'object'
         ? folderRuntimeSettings.modelApiKeys
-        : {};
+        : null;
       const folderModelOverrides = folderRuntimeSettings?.modelOverrides && typeof folderRuntimeSettings.modelOverrides === 'object'
         ? folderRuntimeSettings.modelOverrides
-        : {};
+        : null;
       const folderBaseURLs = folderRuntimeSettings && Object.prototype.hasOwnProperty.call(folderRuntimeSettings, 'baseURLs')
         && folderRuntimeSettings.baseURLs && typeof folderRuntimeSettings.baseURLs === 'object' && !Array.isArray(folderRuntimeSettings.baseURLs)
         ? folderRuntimeSettings.baseURLs
@@ -3042,61 +3048,31 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const folderVideoSettings = folderRuntimeSettings?.video && typeof folderRuntimeSettings.video === 'object'
         ? folderRuntimeSettings.video
         : null;
-      const parsedApiKeys = { ...folderApiKeys, ...(secureApiKeys || {}) };
-      const parsedLiveApiKeys = { ...folderLiveApiKeys, ...(secureLiveApiKeys || {}) };
-      const parsedModelApiKeys = { ...folderModelApiKeys, ...(secureModelApiKeys || {}) };
-      const effectiveModelOverrides = Object.keys(folderModelOverrides).length > 0 || Object.keys(secureModelOverrides || {}).length > 0
-        ? { ...folderModelOverrides, ...(secureModelOverrides || {}) }
-        : parsedModelOverrides;
+      // The OS-encrypted copy is a migration/recovery fallback. Merging it
+      // over the current file resurrects removed keys and stale endpoints.
+      const parsedApiKeys = folderApiKeys ?? secureApiKeys ?? {};
+      const parsedLiveApiKeys = folderLiveApiKeys ?? secureLiveApiKeys ?? {};
+      const parsedModelApiKeys = folderModelApiKeys ?? secureModelApiKeys ?? {};
+      const effectiveModelOverrides = folderModelOverrides ?? secureModelOverrides ?? parsedModelOverrides;
       const normalizedApiKeys = parsedApiKeys && typeof parsedApiKeys === 'object'
         ? Object.fromEntries(
           Object.entries(parsedApiKeys as Record<string, unknown>)
-            .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
+            .map(([key, value]) => [key, Array.isArray(value) ? value.filter(item => typeof item === 'string').join('\n') : typeof value === 'string' ? value.trim() : ''])
             .filter(([, value]) => Boolean(value)),
         )
         : {};
-      const effectiveSearchSource = {
-        ...(secureSearchSettings || {}),
-        ...(folderSearchSettings || {}),
-        apiKeys: {
-          ...(secureSearchSettings?.apiKeys || {}),
-          ...(folderSearchSettings?.apiKeys || {}),
-        },
-        baseURLs: {
-          ...(secureSearchSettings?.baseURLs || {}),
-          ...(folderSearchSettings?.baseURLs || {}),
-        },
-        enabledServices: {
-          ...(secureSearchSettings?.enabledServices || {}),
-          ...(folderSearchSettings?.enabledServices || {}),
-        },
-      };
+      const effectiveSearchSource = folderSearchSettings ?? secureSearchSettings ?? {};
       const effectiveSearchSettings = normalizeSearchSettings(
         { ...effectiveSearchSource, enabled: nextSettings.groundingSearch },
         (folderSearchSettings || secureSearchSettings) ? undefined : normalizedApiKeys.tavily,
       );
-      const effectiveImageSource = {
-        ...(secureImageSettings || {}),
-        ...(folderImageSettings || {}),
-        apiKeys: {
-          ...(secureImageSettings?.apiKeys || {}),
-          ...(folderImageSettings?.apiKeys || {}),
-        },
-        baseURLs: {
-          ...(secureImageSettings?.baseURLs || {}),
-          ...(folderImageSettings?.baseURLs || {}),
-        },
-        modelByProvider: {
-          ...(secureImageSettings?.modelByProvider || {}),
-          ...(folderImageSettings?.modelByProvider || {}),
-        },
-      };
+      const effectiveImageSource = folderImageSettings ?? secureImageSettings ?? {};
       const effectiveImageSettings = normalizeImageSettings(effectiveImageSource);
-      const effectiveVideoSettings = normalizeVideoSettings({ ...(secureVideoSettings || {}), ...(folderVideoSettings || {}), apiKeys: { ...(secureVideoSettings?.apiKeys || {}), ...(folderVideoSettings?.apiKeys || {}) }, baseURLs: { ...(secureVideoSettings?.baseURLs || {}), ...(folderVideoSettings?.baseURLs || {}) }, modelByProvider: { ...(secureVideoSettings?.modelByProvider || {}), ...(folderVideoSettings?.modelByProvider || {}) } });
+      const effectiveVideoSettings = normalizeVideoSettings(folderVideoSettings ?? secureVideoSettings ?? {});
       const normalizedLiveApiKeys = parsedLiveApiKeys && typeof parsedLiveApiKeys === 'object'
         ? Object.fromEntries(
           Object.entries(parsedLiveApiKeys as Record<string, unknown>)
-            .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : ''])
+            .map(([key, value]) => [key, Array.isArray(value) ? value.filter(item => typeof item === 'string').join('\n') : typeof value === 'string' ? value.trim() : ''])
             .filter(([, value]) => Boolean(value)),
         )
         : {};
@@ -3206,11 +3182,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       runtimeSettingsHydratedRef.current = true;
       } catch (error) {
         console.warn('Could not load runtime settings:', error);
+        if (!cancelled && settingsRevisionRef.current === loadRevision) {
+          retryTimer = setTimeout(() => { void loadSettings(); }, 3_000);
+        }
+      } finally {
+        loading = false;
       }
     };
+    const retryLoad = () => { void loadSettings(); };
+    window.addEventListener(FOLDER_STORAGE_READY_EVENT, retryLoad);
+    window.addEventListener('focus', retryLoad);
     void loadSettings();
     return () => {
       cancelled = true;
+      clearTimeout(retryTimer);
+      window.removeEventListener(FOLDER_STORAGE_READY_EVENT, retryLoad);
+      window.removeEventListener('focus', retryLoad);
     };
   }, [persistApiKeyPresence, persistDesktopRuntimeSettings]);
 
@@ -3220,6 +3207,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   useEffect(() => {
     if (hasChanges) return;
     let cancelled = false;
+    let loadSequence = 0;
     const readJson = (key: string, fallback: unknown) => {
       try {
         const raw = appStorage.getItem(key);
@@ -3237,8 +3225,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       );
     };
     const syncExternalSettings = async () => {
+      const sequence = ++loadSequence;
+      const loadRevision = settingsRevisionRef.current;
       await appStorageReady;
-      if (cancelled || hasChanges) return;
+      if (cancelled || hasChanges || !isAppStorageLoaded() || !runtimeSettingsHydratedRef.current) return;
 
       const storedSettings = readJson('eterx_settings', {}) as Record<string, unknown>;
       const storedCatalog = readJson(MODEL_CATALOG_STORAGE_KEY, {}) as ModelCatalog;
@@ -3256,12 +3246,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           ? modelEntryKey(syncedEntries[0].provider, syncedEntries[0].modelId)
           : AUTO_MODEL_SELECTION;
 
-      let runtime: any = {};
+      let runtime: any;
       try {
-        const response = await fetch('/api/settings/runtime', { cache: 'no-store' });
+        const response = await fetch('/api/settings/runtime', { cache: 'no-store', signal: AbortSignal.timeout(10_000) });
         const payload = await response.json();
-        if (response.ok && payload?.settings && typeof payload.settings === 'object') runtime = payload.settings;
-      } catch { }
+        if (!response.ok || !payload?.ok || !payload.settings || typeof payload.settings !== 'object' || Array.isArray(payload.settings)) return;
+        runtime = payload.settings;
+      } catch { return; }
       const desktopApi = (window as any)?.electronAPI;
       let secure: any = null;
       try {
@@ -3269,45 +3260,26 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           ? await desktopApi.getSecureRuntimeSettings()
           : null;
       } catch { }
-      if (cancelled || hasChanges) return;
-      const runtimeApiKeys = normalizeStringMap({ ...(runtime.apiKeys || {}), ...(secure?.apiKeys || {}) });
-      const runtimeLiveApiKeys = normalizeStringMap({ ...(runtime.liveApiKeys || {}), ...(secure?.liveApiKeys || {}) });
-      const runtimeModelApiKeys = normalizeStringMap({ ...(runtime.modelApiKeys || {}), ...(secure?.modelApiKeys || {}) });
-      const runtimeOverrides = normalizeStringMap({ ...(runtime.modelOverrides || {}), ...(secure?.modelOverrides || {}) });
-      const runtimeBaseURLs = normalizeStringMap({ ...(runtime.baseURLs || {}), ...(secure?.baseURLs || {}) });
-      const runtimeSearchSettings = {
-        ...(secure?.search || {}),
-        ...(runtime.search || {}),
-        apiKeys: { ...(secure?.search?.apiKeys || {}), ...(runtime.search?.apiKeys || {}) },
-        baseURLs: { ...(secure?.search?.baseURLs || {}), ...(runtime.search?.baseURLs || {}) },
-        enabledServices: { ...(secure?.search?.enabledServices || {}), ...(runtime.search?.enabledServices || {}) },
-      };
-      const runtimeImageSettings = {
-        ...(secure?.image || {}),
-        ...(runtime.image || {}),
-        apiKeys: { ...(secure?.image?.apiKeys || {}), ...(runtime.image?.apiKeys || {}) },
-        baseURLs: { ...(secure?.image?.baseURLs || {}), ...(runtime.image?.baseURLs || {}) },
-        modelByProvider: { ...(secure?.image?.modelByProvider || {}), ...(runtime.image?.modelByProvider || {}) },
-      };
-      const runtimeVideoSettings = {
-        ...(secure?.video || {}),
-        ...(runtime.video || {}),
-        apiKeys: { ...(secure?.video?.apiKeys || {}), ...(runtime.video?.apiKeys || {}) },
-        baseURLs: { ...(secure?.video?.baseURLs || {}), ...(runtime.video?.baseURLs || {}) },
-        modelByProvider: { ...(secure?.video?.modelByProvider || {}), ...(runtime.video?.modelByProvider || {}) },
-      };
+      if (cancelled || hasChanges || sequence !== loadSequence || settingsRevisionRef.current !== loadRevision) return;
+      // Use whole fields from the authoritative file, including empty maps.
+      // The encrypted backup must not reintroduce deleted credentials.
+      runtime = { ...(secure?.available ? secure : {}), ...runtime };
+      const runtimeApiKeys = normalizeStringMap(runtime.apiKeys);
+      const runtimeLiveApiKeys = normalizeStringMap(runtime.liveApiKeys);
+      const runtimeModelApiKeys = normalizeStringMap(runtime.modelApiKeys);
+      const runtimeOverrides = normalizeStringMap(runtime.modelOverrides);
+      const runtimeBaseURLs = normalizeStringMap(runtime.baseURLs);
+      const runtimeSearchSettings = runtime.search || {};
+      const runtimeImageSettings = runtime.image || {};
+      const runtimeVideoSettings = runtime.video || {};
       const nextSearchSettings = normalizeSearchSettings(
         runtimeSearchSettings,
         (runtime.search || secure?.search) ? undefined : runtimeApiKeys.tavily,
       );
       const nextImageSettings = normalizeImageSettings(runtimeImageSettings);
       const nextVideoSettings = normalizeVideoSettings(runtimeVideoSettings);
-      const nextOverrides = Object.keys(storedOverrides).length > 0 || appStorage.getItem(MODEL_OVERRIDE_STORAGE_KEY) !== null
-        ? storedOverrides
-        : runtimeOverrides;
-      const nextBaseURLs = Object.keys(storedBaseURLs).length > 0 || appStorage.getItem(PROVIDER_BASE_URLS_STORAGE_KEY) !== null
-        ? storedBaseURLs
-        : runtimeBaseURLs;
+      const nextOverrides = runtime.modelOverrides ? runtimeOverrides : storedOverrides;
+      const nextBaseURLs = runtime.baseURLs ? runtimeBaseURLs : storedBaseURLs;
       const syncedThinking = storedThinking && typeof storedThinking === 'object' && !Array.isArray(storedThinking)
         ? Object.fromEntries(
             Object.entries(storedThinking as Record<string, unknown>)

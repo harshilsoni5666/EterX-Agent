@@ -17,18 +17,31 @@ export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
   try {
-    hydrateServerRuntimeSettings();
     const originError = rejectCrossOrigin(req);
     if (originError) return originError;
+    hydrateServerRuntimeSettings();
 
-    const body = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json({ ok: false, error: 'A settings object is required.' }, { status: 400 });
+    }
     const hasExplicitApiKeys = Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'apiKeys'));
     const hasModelOverrides = Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'modelOverrides'));
     const hasBaseURLs = Boolean(body && typeof body === 'object' && Object.prototype.hasOwnProperty.call(body, 'baseURLs'));
+    // Commit first. A failed disk write must not change the live credentials
+    // while the UI reports that the user's settings were not saved.
+    const persistedPatch: Record<string, unknown> = {};
+    if (hasExplicitApiKeys) persistedPatch.apiKeys = body.apiKeys;
+    if (hasModelOverrides) persistedPatch.modelOverrides = body.modelOverrides;
+    if (hasBaseURLs) persistedPatch.baseURLs = body.baseURLs;
+    const shouldPersist = body.persist !== false && Object.keys(persistedPatch).length > 0;
+    if (shouldPersist) await updateStoredRuntimeSettings(persistedPatch as any);
+    const persistedResult = shouldPersist ? hydrateServerRuntimeSettings(true) : undefined;
+
     const currentProviderStatus = getRuntimeApiKeyStatus();
-    const result = hasExplicitApiKeys
+    const result = hasExplicitApiKeys && !shouldPersist
       ? applyRuntimeApiKeys(body.apiKeys)
-      : {
+      : persistedResult || {
           acceptedCount: Object.keys(currentProviderStatus)
             .reduce((total, provider) => total + getRuntimeApiKeyValues(provider as keyof typeof currentProviderStatus).length, 0),
           rejectedCount: 0,
@@ -39,27 +52,16 @@ export async function POST(req: NextRequest) {
             ...(accepted ? {} : { reason: 'No key configured in Settings' }),
           })),
         };
-    const modelOverrides = hasModelOverrides
+    const modelOverrides = hasModelOverrides && !shouldPersist
       ? applyRuntimeModelOverrides(body.modelOverrides)
       : Object.entries(getRuntimeModelOverrides())
         .filter(([, model]) => Boolean(model))
         .map(([provider, model]) => ({ provider: provider as any, accepted: true, model }));
-    const pool = apiKeyPool.getPoolStatus();
-    const baseURLs = hasBaseURLs
+    const baseURLs = hasBaseURLs && !shouldPersist
       ? applyRuntimeProviderBaseURLs(body.baseURLs)
       : getRuntimeProviderBaseURLs();
 
-    // The settings route is the authoritative server-side sync point. Persist
-    // every explicit runtime mutation here as well as applying it in memory,
-    // so closing the Settings panel cannot strand the only durable write in a
-    // renderer promise.
-    const persistedPatch: Record<string, unknown> = {};
-    if (hasExplicitApiKeys) persistedPatch.apiKeys = body.apiKeys;
-    if (hasModelOverrides) persistedPatch.modelOverrides = body.modelOverrides;
-    if (hasBaseURLs) persistedPatch.baseURLs = body.baseURLs;
-    if (body?.persist !== false && Object.keys(persistedPatch).length > 0) {
-      await updateStoredRuntimeSettings(persistedPatch as any);
-    }
+    const pool = apiKeyPool.getPoolStatus();
 
     return NextResponse.json({
       ok: true,

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+const desktopCommonJsPackages = ['cheerio', 'undici', 'fs-extra', 'pdf-parse', 'mathjs', 'playwright-core', 'koffi', 'typescript'];
 
 /** @type {import('next').NextConfig} */
 const repositoryRoot = path.resolve(process.cwd());
@@ -25,7 +26,7 @@ const nextConfig = {
   outputFileTracingExcludes: {
     '*': runtimeDataExcludes,
   },
-  serverExternalPackages: ['cheerio', 'undici', 'fs-extra', 'pdf-parse', 'mathjs', 'playwright-core', 'koffi', 'typescript'],
+  serverExternalPackages: desktopCommonJsPackages,
   experimental: {
     optimizePackageImports: ['lucide-react'],
   },
@@ -66,10 +67,20 @@ const nextConfig = {
       ],
     };
     if (isServer) {
-      config.externals = config.externals || [];
-      if (Array.isArray(config.externals)) {
-        config.externals.push('playwright-core');
-      }
+      // The desktop launcher exposes dependencies.asar through NODE_PATH.
+      // Native import() ignores NODE_PATH, so dual-export packages such as
+      // cheerio must use their CommonJS entry even for ESM source imports.
+      // Run before Next's externalizer, which otherwise emits import().
+      const existingExternals = config.externals || [];
+      config.externals = [
+        ({ request }, callback) => {
+          if (request && desktopCommonJsPackages.some(name => request === name || request.startsWith(`${name}/`))) {
+            return callback(null, `commonjs ${request}`);
+          }
+          callback();
+        },
+        ...(Array.isArray(existingExternals) ? existingExternals : [existingExternals]),
+      ];
     }
     return config;
   },

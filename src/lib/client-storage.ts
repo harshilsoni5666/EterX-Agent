@@ -23,6 +23,7 @@ let storageHydrated = false;
 let storageLoadFailed = false;
 let persistRequestedDuringHydration = false;
 let storageRefreshPromise: Promise<boolean> | null = null;
+let activeRefreshMutations: Set<string> | null = null;
 let storageRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 let storageRecoveryAttempt = 0;
 const durableFlushers = new Set<() => Promise<boolean | void> | boolean | void>();
@@ -75,7 +76,13 @@ const loadStoredValues = async (): Promise<StorageValues | null> => {
 const saveStoredValues = async (values: StorageValues, remove: string[]): Promise<void> => {
   const desktopApi = getDesktopPreferencesApi();
   if (desktopApi?.updateRendererPreferences) {
-    const payload = await desktopApi.updateRendererPreferences({ values, remove });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const payload = await Promise.race([
+      desktopApi.updateRendererPreferences({ values, remove }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Desktop preference write timed out.')), 10_000);
+      }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
     if (!payload?.ok) throw new Error(payload?.error || 'Desktop preference write failed.');
     return;
   }
@@ -224,6 +231,7 @@ export const appStorage = {
     keys.forEach(key => {
       pendingRemovals.add(key);
       pendingMutations.set(key, null);
+      activeRefreshMutations?.add(key);
     });
     persist();
     keys.forEach(key => dispatchStorageUpdate(key, true));
@@ -239,6 +247,7 @@ export const appStorage = {
     memory.delete(normalizedKey);
     pendingRemovals.add(normalizedKey);
     pendingMutations.set(normalizedKey, null);
+    activeRefreshMutations?.add(normalizedKey);
     persist();
     dispatchStorageUpdate(normalizedKey, true);
   },
@@ -254,6 +263,7 @@ export const appStorage = {
     memory.set(normalizedKey, normalizedValue);
     pendingRemovals.delete(normalizedKey);
     pendingMutations.set(normalizedKey, normalizedValue);
+    activeRefreshMutations?.add(normalizedKey);
     if (!isSensitive(normalizedKey)) persist();
     dispatchStorageUpdate(normalizedKey);
   },
@@ -269,6 +279,7 @@ export const appStorage = {
       memory.set(normalizedKey, normalizedValue);
       pendingRemovals.delete(normalizedKey);
       pendingMutations.set(normalizedKey, normalizedValue);
+      activeRefreshMutations?.add(normalizedKey);
       changed.push(normalizedKey);
     });
     if (changed.some(key => !isSensitive(key))) persist();
@@ -336,6 +347,11 @@ export async function refreshAppStorage(): Promise<boolean> {
   if (storageRefreshPromise) return storageRefreshPromise;
 
   storageRefreshPromise = (async () => {
+    // A local write may finish while this read is in flight, clearing the
+    // pending map before an older server snapshot arrives. Protect every
+    // key pending at the start or changed during the refresh regardless.
+    const protectedKeys = new Set(pendingMutations.keys());
+    activeRefreshMutations = protectedKeys;
     let storedValues: StorageValues | null = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
@@ -348,11 +364,13 @@ export async function refreshAppStorage(): Promise<boolean> {
     if (!storedValues) return false;
     const storedKeys = new Set(Object.keys(storedValues));
     for (const key of Array.from(memory.keys())) {
-      if (isSensitive(key) || storedKeys.has(key) || pendingMutations.has(key)) continue;
+      if (isSensitive(key) || storedKeys.has(key) || protectedKeys.has(key) || pendingMutations.has(key)) continue;
       memory.delete(key);
       dispatchStorageUpdate(key, true);
     }
-    Object.entries(storedValues).forEach(([key, value]) => memory.set(key, value));
+    Object.entries(storedValues).forEach(([key, value]) => {
+      if (!protectedKeys.has(key) && !pendingMutations.has(key)) memory.set(key, value);
+    });
     for (const [key, value] of pendingMutations.entries()) {
       if (value === null) memory.delete(key);
       else memory.set(key, value);
@@ -371,6 +389,7 @@ export async function refreshAppStorage(): Promise<boolean> {
     if (!pendingWriteSaved) persistRequestedDuringHydration = true;
     return pendingWriteSaved;
   })().finally(() => {
+    activeRefreshMutations = null;
     storageRefreshPromise = null;
   });
 

@@ -3,7 +3,7 @@ import { rejectCrossOrigin } from '../../agent/_shared';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 import { updateStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
 import { applyRuntimeSearchSettings, testSearchProvider } from '../../../../lib/search/search-runtime';
-import { SEARCH_PROVIDER_IDS, type SearchProvider } from '../../../../lib/search/search-config';
+import { SEARCH_PROVIDER_IDS, normalizeSearchSettings, type SearchProvider } from '../../../../lib/search/search-config';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -42,12 +42,16 @@ export async function PUT(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
   if (originError) return originError;
   try {
-    const body = await req.json().catch(() => ({}));
-    const settings = body?.search && typeof body.search === 'object' ? body.search : body;
-    const applied = applyRuntimeSearchSettings(settings, body?.legacyTavilyKeys);
-    await updateStoredRuntimeSettings({ search: applied });
+    const body = await req.json().catch(() => null);
+    const settings = body && Object.prototype.hasOwnProperty.call(body, 'search') ? body.search : body;
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      return NextResponse.json({ ok: false, error: 'A search settings object is required.' }, { status: 400 });
+    }
+    const normalized = normalizeSearchSettings(settings, body?.legacyTavilyKeys);
+    await updateStoredRuntimeSettings({ search: normalized });
+    const applied = applyRuntimeSearchSettings(normalized);
     return NextResponse.json({ ok: true, provider: applied.provider, fallbackProviders: applied.fallbackProviders });
   } catch (error: any) {
-    return NextResponse.json({ ok: false, error: error?.message || 'Could not apply external service settings.' }, { status: 400 });
+    return NextResponse.json({ ok: false, error: error?.message || 'Could not apply external service settings.' }, { status: 500 });
   }
 }

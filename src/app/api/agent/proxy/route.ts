@@ -50,13 +50,14 @@ export async function POST(req: NextRequest) {
       settings = {
         enabled: input.enabled, paused: input.paused, intervention: input.intervention,
         modelSelection: input.modelSelection.trim().slice(0, 320) || 'auto',
-        followChatModel: input.followChatModel !== false || !input.modelSelection.trim() || input.modelSelection.trim() === 'auto',
+        followChatModel: !input.modelSelection.trim() || input.modelSelection.trim() === 'auto'
+          || (typeof input.followChatModel === 'boolean' ? input.followChatModel : readProxyControl(chatId).followChatModel),
       };
     }
     const value = action === 'model' ? modelSelection : level;
     hydrateServerRuntimeSettings();
     const success = agentRegistry.controlUserProxy(chatId, action as any, value as any, settings,
-      typeof body.followChatModel === 'boolean' ? body.followChatModel : undefined);
+      typeof body.followChatModel === 'boolean' ? body.followChatModel : action === 'model' ? modelSelection === 'auto' : undefined);
     if (!success) return attachAgentApiSessionCookie(jsonError(action === 'resume'
       ? 'Turn on Autonomous before resuming Proxy.'
       : 'The requested Proxy setting is not available.', 409), session);

@@ -65,9 +65,6 @@ const replaceFileWithRetry = async (temporary: string, target: string) => {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 6; attempt += 1) {
     try {
-      if (process.platform === 'win32') {
-        fs.rmSync(target, { force: true, maxRetries: 3, retryDelay: 100 });
-      }
       fs.renameSync(temporary, target);
       return;
     } catch (error) {
@@ -125,8 +122,8 @@ export async function PUT(req: NextRequest) {
         current[key] = value;
       }
       if (Array.isArray(body?.remove)) {
-        body.remove.slice(0, 500).forEach((key: unknown) => {
-          if (typeof key === 'string') delete current[key];
+        body.remove.forEach((key: unknown) => {
+          if (typeof key === 'string' && key.length <= 180) delete current[key];
         });
       }
       await writePreferences(current);

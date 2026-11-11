@@ -30,6 +30,7 @@ const requiredFiles = [
   'runtime/server.js',
   'runtime/server-launcher.js',
   'runtime/.next/BUILD_ID',
+  'runtime/.next/server/app/api/imports/route.js',
   'runtime/assets/skills',
 ];
 const requiredDependencies = [
@@ -40,6 +41,8 @@ const requiredDependencies = [
   'node_modules/complex.js/dist/complex.js',
   'node_modules/mathjs/lib/cjs/index.js',
   'node_modules/fraction.js/dist/fraction.js',
+  'node_modules/typescript/lib/typescript.js',
+  'node_modules/fzstd/package.json',
 ];
 const swcPackageByTarget = {
   'win32:x64': 'node_modules/@next/swc-win32-x64-msvc/package.json',

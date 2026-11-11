@@ -158,7 +158,7 @@ function writeStore(store: ManagerStore): void {
   try {
     fs.writeJsonSync(temporary, { ...store, messages: store.messages, updatedAt: Date.now() }, { spaces: 2 });
     if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
-    fs.moveSync(temporary, target, { overwrite: true });
+    fs.renameSync(temporary, target);
   } finally {
     if (fs.existsSync(temporary)) fs.removeSync(temporary);
   }

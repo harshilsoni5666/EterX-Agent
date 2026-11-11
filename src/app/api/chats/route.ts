@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
   if (originError) return originError;
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => null);
     if (!['copy', 'prepare'].includes(body?.action) || typeof body.id !== 'string' || !body.id.trim()) {
       return NextResponse.json({ error: 'A chat ID and supported action are required.' }, { status: 400, headers: noStoreHeaders });
     }
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
   try {
     const chatId = req.nextUrl.searchParams.get('id')?.trim();
     if (chatId) {
-      const chat = await loadChatById(chatId);
+      const chat = await loadChatById(chatId, true);
       return NextResponse.json({ chat }, { headers: noStoreHeaders });
     }
     return NextResponse.json(await loadChatSnapshot(), { headers: noStoreHeaders });
@@ -50,7 +50,7 @@ export async function PUT(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
   if (originError) return originError;
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => null);
     if (!body || !Array.isArray(body.chats)) {
       return NextResponse.json({ error: 'chats must be an array' }, { status: 400, headers: noStoreHeaders });
     }
@@ -69,7 +69,10 @@ export async function PUT(req: NextRequest) {
       ? await patchChatSnapshot(body.chats, body.chatIds, savedAt, body.deletedChatIds, mutationId)
       : await saveChatSnapshot(body.chats, savedAt, mutationId);
     if (snapshot.applied && body.partial === true && Array.isArray(body.deletedChatIds)) {
-      await removeChatMedia(body.deletedChatIds.filter((id: unknown) => typeof id === 'string'));
+      // The transcript mutation is already committed. A media cleanup error
+      // must not report that successful save as failed and trigger a replay.
+      await removeChatMedia(body.deletedChatIds.filter((id: unknown) => typeof id === 'string'))
+        .catch(error => console.warn('[Chats] Deleted chat media cleanup failed', error));
     }
     return NextResponse.json({ ok: true, applied: snapshot.applied, savedAt: snapshot.savedAt }, { headers: noStoreHeaders });
   } catch (error: any) {

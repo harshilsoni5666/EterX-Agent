@@ -5,11 +5,6 @@ import {
   updateStoredRuntimeSettings,
 } from '../../../../lib/agent/runtime-settings-store';
 import { rejectCrossOrigin } from '../../agent/_shared';
-import { applyRuntimeApiKeys, applyRuntimeApiRetries, applyRuntimeModelOverrides } from '../../../../lib/agent/runtime-api-keys';
-import { applyRuntimeProviderBaseURLs } from '../../../../lib/agent/provider-runtime';
-import { applyRuntimeSearchSettings, getRuntimeSearchSettings } from '../../../../lib/search/search-runtime';
-import { applyRuntimeImageSettings } from '../../../../lib/image/image-generation-runtime';
-import { applyRuntimeVideoSettings } from '../../../../lib/video/video-generation-runtime';
 import { hydrateServerRuntimeSettings } from '../../../../lib/agent/server-runtime-hydration';
 
 export const dynamic = 'force-dynamic';
@@ -32,35 +27,15 @@ export async function PUT(req: NextRequest) {
   if (originError) return originError;
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const settings = body?.settings && typeof body.settings === 'object' && !Array.isArray(body.settings)
-      ? body.settings
-      : body;
-    await updateStoredRuntimeSettings(settings || {});
-    if (Object.prototype.hasOwnProperty.call(settings || {}, 'apiRetries')) {
-      applyRuntimeApiRetries(settings?.apiRetries);
+    const body = await req.json().catch(() => null);
+    const settings = body && Object.prototype.hasOwnProperty.call(body, 'settings') ? body.settings : body;
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      return NextResponse.json({ ok: false, error: 'A settings object is required.' }, { status: 400, headers: noStoreHeaders });
     }
-    if (Object.prototype.hasOwnProperty.call(settings || {}, 'apiKeys')) {
-      applyRuntimeApiKeys(settings?.apiKeys && typeof settings.apiKeys === 'object' ? settings.apiKeys : {});
-    }
-    if (Object.prototype.hasOwnProperty.call(settings || {}, 'modelOverrides')) {
-      applyRuntimeModelOverrides(settings?.modelOverrides && typeof settings.modelOverrides === 'object' ? settings.modelOverrides : {});
-    }
-    if (Object.prototype.hasOwnProperty.call(settings || {}, 'baseURLs')) {
-      applyRuntimeProviderBaseURLs(settings?.baseURLs && typeof settings.baseURLs === 'object' ? settings.baseURLs : {});
-    }
-    if (settings?.search) {
-      applyRuntimeSearchSettings(settings?.search || {}, settings?.apiKeys?.tavily);
-    } else if (Object.prototype.hasOwnProperty.call(settings || {}, 'apiKeys')
-      && settings?.apiKeys && Object.prototype.hasOwnProperty.call(settings.apiKeys, 'tavily')) {
-      const currentSearch = getRuntimeSearchSettings();
-      applyRuntimeSearchSettings({
-        ...currentSearch,
-        apiKeys: { ...currentSearch.apiKeys, tavily: settings.apiKeys.tavily },
-      });
-    }
-    if (settings?.image) applyRuntimeImageSettings(settings.image);
-    if (settings?.video) applyRuntimeVideoSettings(settings.video);
+    await updateStoredRuntimeSettings(settings);
+    // Apply the committed snapshot, including model-specific credentials.
+    // Applying only apiKeys here dropped those keys until the next request.
+    hydrateServerRuntimeSettings(true);
     return NextResponse.json(
       { ok: true, settings: readStoredRuntimeSettings() },
       { headers: noStoreHeaders },
@@ -76,13 +51,11 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const originError = rejectCrossOrigin(req);
   if (originError) return originError;
-  await clearStoredRuntimeSettings();
-  applyRuntimeApiKeys({});
-  applyRuntimeApiRetries(undefined);
-  applyRuntimeModelOverrides({});
-  applyRuntimeProviderBaseURLs({});
-  applyRuntimeSearchSettings({});
-  applyRuntimeImageSettings({});
-  applyRuntimeVideoSettings({});
-  return NextResponse.json({ ok: true }, { headers: noStoreHeaders });
+  try {
+    await clearStoredRuntimeSettings();
+    hydrateServerRuntimeSettings(true);
+    return NextResponse.json({ ok: true }, { headers: noStoreHeaders });
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: error?.message || 'Could not clear runtime settings.' }, { status: 500, headers: noStoreHeaders });
+  }
 }

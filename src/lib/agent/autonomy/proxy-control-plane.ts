@@ -65,12 +65,12 @@ const compact = (value: unknown, max: number): string =>
 // Keep executable instructions intact, including indentation and line breaks.
 const promptText = (value: unknown): string => String(value ?? '').replace(/\u0000/g, '').trim();
 const retainTaskQueue = (tasks: ProxyQueuedTask[]): ProxyQueuedTask[] => {
-  const settled = tasks.filter(task => !['pending', 'starting'].includes(task.status)).slice(-MAX_TASKS);
+  const settled = tasks.filter(task => !['pending', 'starting', 'started'].includes(task.status)).slice(-MAX_TASKS);
   const retained = new Set(settled.map(task => task.id));
   tasks.filter(task => ['pending', 'starting', 'started'].includes(task.status)).forEach(task => {
     if (task.dependsOnTaskId) retained.add(task.dependsOnTaskId);
   });
-  return tasks.filter(task => ['pending', 'starting'].includes(task.status) || retained.has(task.id));
+  return tasks.filter(task => ['pending', 'starting', 'started'].includes(task.status) || retained.has(task.id));
 };
 
 const controlPath = (chatId: string): string => {
@@ -135,7 +135,7 @@ function writeProxyControl(state: ProxyControlState): void {
       updatedAt: Date.now(),
     }, { spaces: 2 });
     if (fs.existsSync(target)) fs.copyFileSync(target, `${target}.backup`);
-    fs.moveSync(temporary, target, { overwrite: true });
+    fs.renameSync(temporary, target);
   } finally {
     if (fs.existsSync(temporary)) fs.removeSync(temporary);
   }
@@ -157,11 +157,15 @@ export function updateProxyControl(
     state.modelSelection = compact(patch.modelSelection, 320) || 'auto';
   }
   if (typeof patch.followChatModel === 'boolean') state.followChatModel = patch.followChatModel;
+  if (state.modelSelection === 'auto') state.followChatModel = true;
   // A model/catalog refresh does not constitute opting into or out of
   // autonomy. Leave an unconfigured record eligible for first-run bootstrap.
   if (state.revision > 0 || typeof patch.enabled === 'boolean' || typeof patch.paused === 'boolean') state.revision += 1;
   writeProxyControl(state);
-  for (const listener of controlListeners.get(chatId) || []) listener(state);
+  for (const listener of controlListeners.get(chatId) || []) {
+    try { listener(state); }
+    catch (error) { console.warn('[Proxy] Control listener failed after settings were saved:', error); }
+  }
   return state;
 }
 
@@ -176,6 +180,7 @@ export function initializeProxyControl(chatId: string, autonomy: any): ProxyCont
     paused: autonomy.paused === true,
     intervention: autonomy.intervention,
     modelSelection: autonomy.proxyModelSelection,
+    followChatModel: autonomy.followChatModel !== false,
   });
 }
 

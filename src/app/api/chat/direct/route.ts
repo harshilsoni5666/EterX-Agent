@@ -8,6 +8,7 @@ import {
   cleanString,
   getOrCreateAgentApiSession,
   isSafeChatId,
+  isSafeRunId,
   jsonError,
   normalizeHistory,
   normalizeMediaAttachments,
@@ -18,7 +19,7 @@ import {
 import { isModelProvider } from '../../../../lib/agent/model-selector-store';
 import { resolveChatMediaForRequest } from '../../../../lib/chat-media-store';
 import { formatUnknownError } from '../../../../lib/agent/error-format';
-import { beginDirectChatRun, isManualCompactionActive } from '../../../../lib/agent/manual-compaction';
+import { beginDirectChatRun, isDirectChatRunning, isManualCompactionActive } from '../../../../lib/agent/manual-compaction';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -86,6 +87,12 @@ export async function POST(req: NextRequest) {
     if (isManualCompactionActive(chatId)) {
       return attachAgentApiSessionCookie(jsonError('Context is compacting. Please wait until it finishes.', 409), session);
     }
+    if (runId !== '' && !isSafeRunId(runId)) {
+      return attachAgentApiSessionCookie(jsonError('runId must be a valid identifier when provided', 400), session);
+    }
+    if (isDirectChatRunning(chatId)) {
+      return attachAgentApiSessionCookie(jsonError('A reply is already running in this chat. Stop it or wait for it to finish.', 409), session);
+    }
     const finishDirectRun = beginDirectChatRun(chatId);
     const encoder = new TextEncoder();
     const streamAbortController = new AbortController();
@@ -93,6 +100,7 @@ export async function POST(req: NextRequest) {
     let streamClosed = false;
     const forwardAbort = () => streamAbortController.abort();
     req.signal.addEventListener('abort', forwardAbort, { once: true });
+    if (req.signal.aborted) forwardAbort();
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         const close = () => {
@@ -107,6 +115,7 @@ export async function POST(req: NextRequest) {
             return true;
           } catch {
             streamClosed = true;
+            streamAbortController.abort();
             return false;
           }
         };

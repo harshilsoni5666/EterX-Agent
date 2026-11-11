@@ -196,11 +196,8 @@ async function replaceRendererPreferencesFile(temporary, target) {
   let lastError = null;
   for (let attempt = 0; attempt < 6; attempt += 1) {
     try {
-      // POSIX rename replaces atomically. Windows requires the old file to be
-      // released first; the backup remains readable during this small window.
-      if (process.platform === 'win32') {
-        fs.rmSync(target, { force: true, maxRetries: 3, retryDelay: 100 });
-      }
+      // Replace in one rename on every platform. Deleting first can expose
+      // stale backup data to another window and lose the latest save on error.
       fs.renameSync(temporary, target);
       return;
     } catch (error) {
@@ -256,7 +253,7 @@ async function updateRendererPreferences(rawUpdate) {
     current[key] = value;
   }
   if (Array.isArray(rawUpdate?.remove)) {
-    rawUpdate.remove.slice(0, 500).forEach((key) => {
+    rawUpdate.remove.forEach((key) => {
       if (typeof key === 'string' && !RESERVED_RENDERER_PREFERENCE_KEYS.has(key)) delete current[key];
     });
   }
@@ -1549,6 +1546,14 @@ function normalizeSecureRuntimeSettings(raw) {
   return { apiKeys, liveApiKeys, modelApiKeys, modelOverrides, baseURLs, ...(search ? { search } : {}), ...(image ? { image } : {}), ...(video ? { video } : {}) };
 }
 
+let secureRuntimeSettingsWrites = Promise.resolve();
+
+function queueSecureRuntimeSettingsMutation(operation) {
+  const write = secureRuntimeSettingsWrites.then(operation, operation);
+  secureRuntimeSettingsWrites = write.then(() => undefined, () => undefined);
+  return write;
+}
+
 async function readSecureRuntimeSettings() {
   if (!await secureStorageAvailable()) return { available: false, apiKeys: {}, liveApiKeys: {}, modelApiKeys: {}, modelOverrides: {}, baseURLs: {}, image: undefined, video: undefined };
 
@@ -1584,12 +1589,12 @@ async function writeSecureRuntimeSettings(raw) {
         // NSIS installs and Windows security scanners can briefly hold the
         // previous encrypted file. Retry the replace before reporting a save
         // failure to the renderer's update flush.
-        fs.rmSync(target, { force: true, maxRetries: 3, retryDelay: 100 });
         fs.renameSync(temporary, target);
         replaced = true;
         break;
       } catch (error) {
         lastError = error;
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 80 * (attempt + 1)));
       }
     }
     if (!replaced) throw lastError || new Error('Could not atomically replace secure settings.');
@@ -3959,11 +3964,16 @@ ipcMain.handle('renderer-preferences-update', async (_event, update) => {
 
 // Desktop credentials stay out of renderer storage. Electron encrypts this
 // AppData payload with the operating system credential store.
-ipcMain.handle('secure-runtime-settings-get', async () => readSecureRuntimeSettings());
+ipcMain.handle('secure-runtime-settings-get', async () => {
+  await secureRuntimeSettingsWrites;
+  return readSecureRuntimeSettings();
+});
 
-ipcMain.handle('secure-runtime-settings-save', async (_event, settings) => writeSecureRuntimeSettings(settings));
+ipcMain.handle('secure-runtime-settings-save', (_event, settings) =>
+  queueSecureRuntimeSettingsMutation(() => writeSecureRuntimeSettings(settings)));
 
-ipcMain.handle('secure-runtime-settings-clear', () => clearSecureRuntimeSettings());
+ipcMain.handle('secure-runtime-settings-clear', () =>
+  queueSecureRuntimeSettingsMutation(() => clearSecureRuntimeSettings()));
 
 ipcMain.handle('gateway-get-state', async () => ({
   available: await secureStorageAvailable(),

@@ -425,7 +425,6 @@ export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
     runtimeApiKeys[provider] = [];
     runtimeApiKeyCursor[provider] = 0;
   });
-  apiKeyPool.setRuntimeKeys([]);
 
   for (const provider of PROVIDERS) {
     const values = normalizeKeyValues(payload[provider]);
@@ -447,7 +446,6 @@ export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
 
     if (provider === 'gemini') {
       runtimeApiKeys.gemini = validValues;
-      apiKeyPool.setRuntimeKeys(validValues);
       preferredGeminiApiKey = userKeys[0] || '';
     } else {
       runtimeApiKeys[provider] = validValues;
@@ -456,6 +454,11 @@ export function applyRuntimeApiKeys(raw: unknown): RuntimeApiKeyApplyResult {
     acceptedCount += validValues.length;
     providers.push({ provider, accepted: true, count: validValues.length });
   }
+
+  // Replace the pool once with the final set. Clearing it first discards
+  // active leases/cache affinity and rejects waiting agents on every save,
+  // even when the user has not changed a single Gemini key.
+  apiKeyPool.setRuntimeKeys(runtimeApiKeys.gemini);
 
   return {
     acceptedCount,

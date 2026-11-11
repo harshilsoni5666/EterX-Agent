@@ -287,10 +287,10 @@ for (const [index, spec] of targetSpecs.entries()) {
   }
   fs.cpSync(ptyPrebuild, path.join(stagedPtyRoot, 'prebuilds', `${ptyOs}-${ptyCpu}`), { recursive: true });
   fs.cpSync(installedModules, stagedModules, dependencyCopyOptions);
-  // These modules are loaded by Electron's main process before the Next
-  // server starts. Fail the build if the production archive would not contain
-  // them; otherwise users receive an installer that crashes on first launch.
-  for (const requiredModule of ['next', 'react', 'react-dom', 'ws', 'fraction.js']) {
+  // Include runtime parsers as well as startup dependencies. The import route
+  // uses TypeScript's AST parser, so omitting it breaks every import provider
+  // before the route can return a JSON error.
+  for (const requiredModule of ['next', 'react', 'react-dom', 'ws', 'fraction.js', 'typescript', 'fzstd']) {
     const moduleManifest = path.join(stagedModules, requiredModule, 'package.json');
     if (!fs.existsSync(moduleManifest)) {
       throw new Error(`Required packaged dependency is missing: ${requiredModule}`);

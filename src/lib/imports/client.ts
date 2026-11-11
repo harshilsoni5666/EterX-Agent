@@ -4,13 +4,29 @@ import { requestJson } from '../request-json';
 import type { ImportJob, ImportReport, ImportStatus } from './types';
 
 export const IMPORT_UPDATED_EVENT = 'eterx_imports_updated';
+async function readImportResponse<T>(response: Pick<Response, 'ok' | 'status' | 'json'>): Promise<T> {
+  const invalidResponse = () => new Error(`The import service returned an invalid response (HTTP ${response.status}). Restart EterX and try again. If this continues, update EterX.`);
+  let data: unknown;
+  try { data = await response.json(); }
+  catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    throw invalidResponse();
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw invalidResponse();
+  if (!response.ok) {
+    const error = (data as { error?: unknown }).error;
+    throw new Error(typeof error === 'string' && error.trim() ? error : `Import request failed (HTTP ${response.status}). Try again.`);
+  }
+  return data as T;
+}
+
 export async function importRequest<T = any>(body?: unknown, signal?: AbortSignal): Promise<T> {
+  const upload = typeof FormData !== 'undefined' && body instanceof FormData;
   const response = await requestJson('/api/imports', body === undefined ? { cache: 'no-store', signal } : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal,
+    method: 'POST', signal,
+    ...(upload ? { body } : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   }, 120_000);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || 'Import request failed.');
-  return data;
+  return readImportResponse<T>(response);
 }
 export async function waitForImportJob(job: ImportJob, onProgress?: (job: ImportJob) => void, signal?: AbortSignal): Promise<ImportJob> {
   let current = job;
@@ -19,8 +35,8 @@ export async function waitForImportJob(job: ImportJob, onProgress?: (job: Import
     onProgress?.(current);
     await new Promise<void>(resolve => setTimeout(resolve, 900));
     const response = await requestJson(`/api/imports?job=${encodeURIComponent(job.id)}`, { cache: 'no-store', signal }, 20_000);
-    const data = await response.json();
-    if (!response.ok || !data.job) throw new Error(data.error || 'Could not load import progress.');
+    const data = await readImportResponse<{ job?: ImportJob }>(response);
+    if (!data.job) throw new Error('Could not load import progress. Try again.');
     current = data.job;
   }
   onProgress?.(current);

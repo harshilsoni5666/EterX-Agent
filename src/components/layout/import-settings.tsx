@@ -49,6 +49,7 @@ function Notices({ warnings }: { warnings: string[] }) {
 export function ImportSettings() {
   const [status, setStatus] = useState<ImportStatus | null>(null);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
   const [job, setJob] = useState<ImportJob | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
@@ -71,13 +72,13 @@ export function ImportSettings() {
   statusRef.current = status;
   const load = useCallback(async () => {
     const next = await importRequest<ImportStatus>(undefined, controller.current?.signal);
-    if (mounted.current) setStatus(next);
+    if (mounted.current) { setStatus(next); setLoadError(''); }
     return next;
   }, []);
   useEffect(() => {
     mounted.current = true;
     controller.current = new AbortController();
-    const refresh = () => { void load().catch(reason => { if (mounted.current && reason.name !== 'AbortError') setError(reason.message); }); };
+    const refresh = () => { void load().catch(reason => { if (mounted.current && reason.name !== 'AbortError') setLoadError(reason.message); }); };
     refresh();
     window.addEventListener(IMPORT_UPDATED_EVENT, refresh);
     const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('eterx-imports') : null;
@@ -145,9 +146,7 @@ export function ImportSettings() {
       if (files.reduce((total, file) => total + file.size, 0) > 64 * 1024 * 1024) throw new Error('Choose export files totaling less than 64 MB.');
       const form = new FormData(); form.set('provider', uploadProvider.current);
       files.forEach(file => form.append('files', file));
-      const response = await fetch('/api/imports', { method: 'POST', body: form, signal: controller.current?.signal });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not read this export.');
+      const data = await importRequest<{ job: ImportJob }>(form, controller.current?.signal);
       setSourceDialog(null); await track(data.job);
     });
   };
@@ -192,13 +191,14 @@ export function ImportSettings() {
     ...(status?.folders || []),
   ]));
   const destinationValue = destination === '__new__' ? 'new-folder' : destination ? `folder:${encodeURIComponent(destination)}` : 'recents';
+  const visibleError = error || loadError;
 
   return <div className={styles.root}>
     <p className={styles.intro}>Bring your conversations, projects, and familiar workflows into EterX. Pick exactly what comes with you.</p>
     <input ref={fileInput} type="file" multiple accept=".json,.jsonl,.md,.txt,.mdc,.toml,.zip" hidden onChange={handleUpload} />
-    {error && <div className={styles.error} role="alert"><CircleAlert size={16} /><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Dismiss error"><X size={14} /></button></div>}
-    {!status && !error && <div className={styles.loading} role="status"><Loader2 size={17} className={styles.spin} /> Finding local sources…</div>}
-    {!status && error && <button className={styles.secondary} type="button" onClick={() => { setError(''); void run(async () => { await load(); }); }}>Try again</button>}
+    {visibleError && <div className={styles.error} role="alert"><CircleAlert size={16} /><span>{visibleError}</span><button type="button" onClick={() => { setError(''); setLoadError(''); }} aria-label="Dismiss error"><X size={14} /></button></div>}
+    {!status && !visibleError && <div className={styles.loading} role="status"><Loader2 size={17} className={styles.spin} /> Finding local sources…</div>}
+    {!status && visibleError && <button className={styles.secondary} type="button" disabled={busy} onClick={() => { setError(''); setLoadError(''); void run(async () => { await load().catch(reason => { if (mounted.current && reason.name !== 'AbortError') setLoadError(reason.message); }); }); }}>Try again</button>}
 
     <section className={styles.section}>
       <div className={styles.sectionHeading}><h4>Automatic sync</h4><span className={styles.eyebrow}>Local &amp; Private</span></div>

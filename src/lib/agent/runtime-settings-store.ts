@@ -37,9 +37,8 @@ const replaceFileWithRetry = async (temporary: string, target: string) => {
   // the small replace window instead of failing an otherwise safe update.
   for (let attempt = 0; attempt < 6; attempt += 1) {
     try {
-      if (process.platform === 'win32') {
-        fs.rmSync(target, { force: true, maxRetries: 3, retryDelay: 100 });
-      }
+      // Rename replaces the destination on Windows too. Never unlink it
+      // first: a failed rename must leave the last saved settings readable.
       fs.renameSync(temporary, target);
       return;
     } catch (error) {

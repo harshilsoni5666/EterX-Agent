@@ -6590,8 +6590,8 @@ function DeepWorkUI() {
 
       restoreInFlight = (async () => {
         try {
-          // Cold history recovery can take longer than the startup animation.
-          // Keep showing progress instead of launching overlapping retries.
+          // Load the durable snapshot first. Recovery of historical context is
+          // requested separately for the conversation the user opens.
           const response = await requestJson('/api/chats', {
             cache: 'no-store', signal: restoreController.signal,
           }, 120_000);
@@ -6625,7 +6625,10 @@ function DeepWorkUI() {
           if (restoredActive) {
             setTraceLogs(mergeFeedTraceHistories(restoredActive.traceLogs, traceLogsRef.current, restoredActive.title));
           }
-          hydratedChatIdsRef.current = new Set(appDataChats.map(chat => chat.id));
+          const restoredIds = new Set(restoredChats.map(chat => chat.id));
+          hydratedChatIdsRef.current = new Set(
+            [...hydratedChatIdsRef.current].filter(id => restoredIds.has(id)),
+          );
           if (firstRestore && !hasLocalChatsBeforeRestore) {
             // Restored rows are already durable. The first later edit should
             // save that edit, not serialize every imported conversation.
@@ -6646,6 +6649,7 @@ function DeepWorkUI() {
           // Preserve chats created while the initial durable-write gate was
           // closed. Ordinary refreshes are reads and must not trigger saves.
           if (firstRestore && hasLocalChatsBeforeRestore) void persistChats(restoredChats);
+          if (restoredActive) void hydrateChatHistory(restoredActive.id);
           return true;
         } catch (error) {
           if (cancelled) return false;
@@ -7444,7 +7448,10 @@ function DeepWorkUI() {
       ),
     }));
   const persistChats = async (chatList: ChatSession[], keepalive = false, forceFull = false): Promise<boolean> => {
-    if (!chatSnapshotReadyRef.current) return false;
+    if (!chatSnapshotReadyRef.current) {
+      debouncedSaveToFolder();
+      return false;
+    }
     // Reserve chronology before yielding or entering the queue. A snapshot
     // captured now must never acquire a newer revision merely by saving late.
     const reservedSavedAt = Math.max(Date.now(), lastChatSnapshotAtRef.current + 1, chatWriteReservationRef.current + 1);
@@ -7453,6 +7460,12 @@ function DeepWorkUI() {
     // serialize whole histories at once or compute against an older baseline.
     const write = async (): Promise<boolean> => {
     if (!chatSnapshotReadyRef.current) return false;
+    if (pendingChatRestoreRevisionRef.current > lastChatSnapshotAtRef.current) {
+      if (!await requestChatRestoreRef.current?.(true)) return false;
+    }
+    // A refresh or another queued operation can supersede this captured
+    // snapshot. Retry from the current ledger instead of promoting old data.
+    if (reservedSavedAt < lastChatSnapshotAtRef.current) return false;
     let sliceStartedAt = performance.now();
     const yieldToInteraction = async () => {
       if (keepalive || performance.now() - sliceStartedAt < 6) return;
@@ -7503,7 +7516,6 @@ function DeepWorkUI() {
     const deletedChatIds = Array.from(pendingChatDeletionIdsRef.current)
       .filter(chatId => !chatIdSet.has(chatId));
     const savedAt = reservedSavedAt;
-    lastChatSnapshotAtRef.current = Math.max(lastChatSnapshotAtRef.current, savedAt);
     const mutationId = crypto.randomUUID();
     // State updaters can schedule several writes in one turn. Serialize
     // filesystem writes so an older request cannot finish after a newer one
@@ -7530,13 +7542,25 @@ function DeepWorkUI() {
           window.dispatchEvent(new CustomEvent('eterx_chats_updated', { detail: { savedAt: durableSavedAt, durable: true } }));
           return true;
         }
+        if (response?.ok && payload?.applied === false && Number.isFinite(durableSavedAt)) {
+          // Retrying this body would repeat the same revision conflict. Merge
+          // the latest durable history before scheduling a fresh snapshot.
+          pendingChatRestoreRevisionRef.current = Math.max(pendingChatRestoreRevisionRef.current, durableSavedAt);
+          await requestChatRestoreRef.current?.(true);
+          return false;
+        }
         if (attempt < 2) await new Promise(resolve => window.setTimeout(resolve, 250 * (attempt + 1)));
       }
       return false;
     };
-    const queuedWrite = durableChatWriteChainRef.current.then(write, write);
+    const queuedWrite = durableChatWriteChainRef.current.then(write, write).catch(error => {
+      console.warn('[Chats] Could not save chat history; retrying.', error);
+      return false;
+    });
     durableChatWriteChainRef.current = queuedWrite.then(() => undefined, () => undefined);
-    return queuedWrite;
+    const saved = await queuedWrite;
+    if (!saved) debouncedSaveToFolder();
+    return saved;
   };
   useEffect(() => {
     const flushChatSnapshot = () => {
@@ -7822,6 +7846,9 @@ function DeepWorkUI() {
           setTraceLogs(canonicalizeClientTraceLogs(hydratedChat.traceLogs || [], chatId));
           setActiveWorkspacePath(hydratedChat.workspacePath || null);
         }
+        // Persist exact recovered turns without blocking startup or other
+        // conversations on their context stores.
+        void persistChats(chatsRef.current);
       })
       .catch(() => {
         // A later open retries because the folder-backed detail was not marked
@@ -8022,10 +8049,20 @@ function DeepWorkUI() {
 
   const copyChatRequestIdsRef = useRef(new Map<string, string>());
   const saveSelectedChatForAction = useEventCallback(async (id: string, action: 'copy' | 'prepare', requestId?: string) => {
-    const source = flushBackgroundChatUpdates(id).find(chat => chat.id === id);
-    if (!source) throw new Error('This chat is no longer available. Refresh the chat list and try again.');
-    const snapshot = stripChatsForStorage([source])[0];
     try {
+      if (!chatSnapshotReadyRef.current && !await requestChatRestoreRef.current?.(true)) {
+        throw new Error('Chat history is still loading. Please try again when it reconnects.');
+      }
+      // New chats can reach this menu before their initial queued save. The
+      // action endpoint requires a durable source, so finish that save first.
+      if (!persistedChatVersionsRef.current.has(id)) {
+        let saved = await persistChats(flushBackgroundChatUpdates(id));
+        if (!saved) saved = await persistChats(flushBackgroundChatUpdates(id));
+        if (!saved) throw new Error('Could not save this chat. Please try again when it reconnects.');
+      }
+      const source = flushBackgroundChatUpdates(id).find(chat => chat.id === id);
+      if (!source) throw new Error('This chat is no longer available. Refresh the chat list and try again.');
+      const snapshot = stripChatsForStorage([source])[0];
       // Save only this conversation, merged atomically with its durable
       // version. Unrelated imports/saves must not reject the menu action.
       const response = await requestJson('/api/chats', {
@@ -13061,7 +13098,7 @@ function DeepWorkUI() {
       setChats(prev => {
         const updated = [newChat, ...prev];
         chatsRef.current = updated;
-        persistChats(updated, false, true);
+        void persistChats(updated);
         return updated;
       });
       if (!runOptionsOverride?.backgroundChat) setTraceLogs([userLog]);
@@ -13128,7 +13165,7 @@ function DeepWorkUI() {
         ? { ...chat, modelSelection: requestedRunModelSelection }
         : chat
       );
-      persistChats(updated, false, true);
+      void persistChats(updated);
       return updated;
     });
 
@@ -13158,6 +13195,7 @@ function DeepWorkUI() {
     // never enters AgentRegistry, AgentOrchestrator, or an agent prompt path.
     if (runChatMode) {
       const controller = new AbortController();
+      let directReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       directChatRunsRef.current.add(chatIdToUse!);
       directChatRunIdsRef.current.set(chatIdToUse!, clientRunId);
       abortControllersRef.current.set(chatIdToUse!, controller);
@@ -13189,11 +13227,12 @@ function DeepWorkUI() {
         });
         if (!response.ok) {
           const payload = await response.json().catch(() => ({}));
-          throw new Error(payload?.error || `Chat request failed (${ response.status }).`);
+          throw new Error(formatAgentErrorDetail(payload?.details || payload?.error, `Chat request failed (${ response.status }).`));
         }
         if (!response.body) throw new Error('No readable stream from Chat.');
 
         const reader = response.body.getReader();
+        directReader = reader;
         const decoder = new TextDecoder();
         let buffer = '';
         let streamCompleted = false;
@@ -13265,7 +13304,7 @@ function DeepWorkUI() {
           }
         };
 
-        while (true) {
+        while (!streamCompleted) {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
@@ -13320,6 +13359,10 @@ function DeepWorkUI() {
         }
         return false;
       } finally {
+        if (directReader) {
+          void directReader.cancel().catch(() => undefined);
+          directReader.releaseLock();
+        }
         // Cleanup is run-owned. A late finalizer from an older stream must not
         // clear a successor that was admitted for the same chat.
         if (directChatRunIdsRef.current.get(chatIdToUse!) === clientRunId) {
@@ -13816,6 +13859,7 @@ function DeepWorkUI() {
           intervention: executionProxyIntervention,
           // Resolve the follow-chat choice from each run's exact model.
           proxyModelSelection: executionProxyRuntimeModelSelection,
+          followChatModel: targetProxyControls.followChatModel !== false,
         },
       } : {}),
       ...(runSelectedAgentId === 'autonomous' && !isBuilderChat ? { agentRuntime: 'autonomy_v1' } : {}),
@@ -13857,7 +13901,13 @@ function DeepWorkUI() {
         void updateProxyControl(chatIdToUse!, readStoredProxyControlSettings(chatIdToUse!));
       }
       if (!await waitForProxyControlWrites(chatIdToUse!)) {
-        throw new Error('The chat settings could not be saved. Please retry your message.');
+        // A prior failed toggle remains recorded after the UI rolls back.
+        // Resave the current controls so retrying a message can recover.
+        let settingsError = '';
+        const saved = await updateProxyControl(chatIdToUse!, readStoredProxyControlSettings(chatIdToUse!), message => { settingsError = message; });
+        if (!saved || !await waitForProxyControlWrites(chatIdToUse!)) {
+          throw new Error(settingsError || 'The chat settings could not be saved. Please retry your message.');
+        }
       }
       controller.signal.throwIfAborted();
       const runLocationVal = executionRunLocation;
@@ -13903,7 +13953,7 @@ function DeepWorkUI() {
         let errorPayload: any = {};
         try {
           errorPayload = await response.json();
-          message = errorPayload.error || errorPayload.details || message;
+          message = formatAgentErrorDetail(errorPayload.details || errorPayload.error, message);
         } catch { }
 
         if (errorPayload?.status === 'cancelled') {
