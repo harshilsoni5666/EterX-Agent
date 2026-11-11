@@ -8075,17 +8075,113 @@
   outline: none !important;
 }
 
+.eterx-update-notice,
+.eterx-release-highlights {
+  --update-notice-bg: #202020;
+  --update-text: #f1f1f1;
+  --update-muted: #a3a3a3;
+  --update-accent: #94c6fa;
+  --update-divider: #ffffff14;
+  color: var(--update-text);
+}
+
 .eterx-update-notice {
-  background: #202020;
+  max-height: min(420px, calc(100dvh - 5rem));
+  background: var(--update-notice-bg);
   border-color: #ffffff1f;
-  color: #f1f1f1;
   -webkit-app-region: no-drag;
 }
 
+:root[data-theme="light"] .eterx-update-notice,
+:root[data-theme="light"] .eterx-release-highlights {
+  --update-notice-bg: #fff;
+  --update-text: #242424;
+  --update-muted: #656565;
+  --update-accent: #1765ad;
+  --update-divider: #00000012;
+}
+
 :root[data-theme="light"] .eterx-update-notice {
-  background: #fff;
   border-color: #0000001f;
-  color: #222;
+}
+
+.eterx-update-preview {
+  flex: 0 1 auto;
+  max-height: 260px;
+}
+
+.eterx-update-notice-fade {
+  background: linear-gradient(to bottom, transparent, var(--update-notice-bg) 92%);
+}
+
+.eterx-update-notice-footer {
+  border-color: var(--update-divider);
+  color: var(--update-accent);
+}
+
+.eterx-update-notice-open {
+  border: 0;
+  background: transparent;
+}
+
+.eterx-update-notice-open:focus-visible {
+  outline: 2px solid var(--update-accent);
+  outline-offset: -3px;
+}
+
+.eterx-update-notice:has(.eterx-update-notice-open:hover) .eterx-update-notice-footer {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.eterx-release-highlights {
+  background: var(--update-notice-bg);
+  border-color: var(--update-divider);
+}
+
+.eterx-release-muted { color: var(--update-muted); }
+.eterx-release-accent { color: var(--update-accent); }
+
+.eterx-release-icon {
+  color: var(--update-accent);
+  background: color-mix(in srgb, var(--update-accent) 10%, transparent);
+}
+
+.eterx-release-version {
+  border-color: var(--update-divider);
+  color: var(--update-muted);
+}
+
+.eterx-release-category {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--update-accent);
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.eterx-release-category[data-kind="improved"] { color: #c3b0ed; }
+.eterx-release-category[data-kind="fixed"] { color: #8acdb2; }
+.eterx-release-category[data-kind="security"] { color: #e4bd77; }
+:root[data-theme="light"] .eterx-release-category[data-kind="improved"] { color: #7052a4; }
+:root[data-theme="light"] .eterx-release-category[data-kind="fixed"] { color: #247454; }
+:root[data-theme="light"] .eterx-release-category[data-kind="security"] { color: #865e19; }
+
+@media (forced-colors: active) {
+  .eterx-update-notice,
+  .eterx-release-highlights {
+    --update-notice-bg: Canvas;
+    --update-text: CanvasText;
+    --update-muted: CanvasText;
+    --update-accent: LinkText;
+    --update-divider: CanvasText;
+  }
+
+  .eterx-update-notice-fade { forced-color-adjust: none; }
 }
 
 /* Keep the thread switcher quiet at rest. Its pill surface is feedback for

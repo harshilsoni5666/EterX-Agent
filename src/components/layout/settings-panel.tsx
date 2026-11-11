@@ -7,6 +7,7 @@ import { DEFAULT_SCRATCH_RETENTION_DAYS, normalizeScratchRetention } from '../..
 import { ScratchRetentionControl } from './scratch-retention-control';
 import { beginModelCatalogRequest } from '../../lib/model-catalog-client';
 import { useDesktopUpdates } from '../../lib/desktop-updates';
+import { UpdateWhatsNew } from '../updates/release-notes';
 import { AgentToolsSettings } from './agent-tools-settings';
 import { ComputerUseSettings } from './computer-use-settings';
 import { MicrophoneSettings } from './microphone-settings';
@@ -2158,7 +2159,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const providerBaseURLSyncChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const providerBaseURLDirtyRef = useRef(false);
   const { updateState, updateActionError, updateActionPending, runUpdateAction, markUpdateViewed } = useDesktopUpdates(isOpen);
-  const quietUpdateCheck = !updateState.availableVersion && (
+  const quietUpdateCheck = !updateState.checkErrorVisible && !updateState.availableVersion && (
     updateState.status === 'idle' || updateState.status === 'pending' ||
     (updateState.status === 'error' && Boolean(updateState.checkError))
   );
@@ -6024,8 +6025,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                       {/* ═══ UPDATES TAB ═══ */}
                       {activeTab === 'updates' && (
-                        <div>
+                        <div className="flex min-h-full flex-col">
                           <SectionHeader title="Application updates" />
+                          <UpdateWhatsNew state={updateState} />
+                          <div className="mt-auto pt-7">
+                          {updateState.lastInstall && updateState.status !== 'installing' && (
+                            <p role="status" className={`mb-4 rounded-xl border px-4 py-3 text-[12px] leading-relaxed ${
+                              updateState.lastInstall.status === 'succeeded'
+                                ? 'border-emerald-500/20 bg-emerald-500/[0.06] text-emerald-400'
+                                : 'border-amber-500/20 bg-amber-500/[0.06] text-amber-400'
+                            }`}>
+                              {updateState.lastInstall.message}
+                            </p>
+                          )}
                           <div className="mb-5 rounded-xl border border-white/[0.07] bg-white/[0.025] p-5">
                             <div className="flex items-start justify-between gap-5">
                               <div>
@@ -6048,7 +6060,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                                   updateState.status === 'pending' ? 'Preparing release' :
                                   updateState.status === 'current' ? 'Up to date' :
                                   updateState.status === 'ready' ? 'Ready' :
-                                  updateState.status === 'installing' ? 'Installing' :
+                                  updateState.status === 'installing' ? 'Restarting' :
                                   updateState.status.charAt(0).toUpperCase() + updateState.status.slice(1)}
                               </span>
                               )}
@@ -6086,7 +6098,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
 
                           <div className="flex flex-wrap gap-3">
                             {updateState.status === 'installing' ? (
-                              <SoftButton disabled>Installing...</SoftButton>
+                              <SoftButton disabled>Restarting to update...</SoftButton>
                             ) : updateState.status === 'ready' || (
                               updateState.status === 'error' && Boolean(updateState.availableVersion) && updateState.downloadReady
                             ) ? (
@@ -6120,12 +6132,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           </div>
 
                           {updateActionError && <p role="alert" className="mt-3 text-[12px] text-red-400">{updateActionError}</p>}
+                          {updateState.checkErrorVisible && updateState.checkError && updateState.availableVersion && (
+                            <p role="alert" className="mt-3 text-[12px] text-red-400">{updateState.checkError}</p>
+                          )}
 
                           <p className="mt-5 text-[12px] leading-relaxed text-[#666]">
                             {updateState.automaticChecks
                               ? 'EterX checks automatically shortly after opening, every 30 minutes while visible, and when returning to the app if the last check was more than 5 minutes ago. Failed checks retry after 1, 2, 5, 10, then 30 minutes; reconnecting also schedules a retry. Scans pause while the app is hidden, minimized, or asleep, and while an update downloads or waits for installation.'
                               : 'Automatic updates are available in supported desktop installations.'}
-                            {' '}Click the blue Update button to open these settings and start downloading. Restart to update installs the verified package when you are ready. Updates replace the application while keeping chats, workspaces, encrypted API settings, browser profiles, and preferences in the device data directory. Windows uses NSIS, macOS uses ZIP updates, and Linux uses AppImage.
+                            {' '}Click Update to download the new version, then Restart to update when you are ready. EterX saves your work, applies the update, and reopens. Windows updates run without the setup wizard; an administrator approval may still be needed for a system-wide installation. Your chats, workspaces, API settings, browser profiles, and preferences are kept. The restart result appears here when EterX opens again.
                           </p>
                           {updateState.releaseDate && updateState.availableVersion && (
                             <p className="mt-2 text-[11px] text-[#555]">
@@ -6140,6 +6155,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
                           {updateState.nextCheckAt && (
                             <p className="mt-2 text-[11px] text-[#555]">Next automatic check around {new Date(updateState.nextCheckAt).toLocaleTimeString()}</p>
                           )}
+                          </div>
                         </div>
                       )}
 

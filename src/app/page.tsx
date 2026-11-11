@@ -9,6 +9,7 @@ import { importedWorkspaceMetadata } from '../lib/imports/workspace';
 import { createDictationCapture, DICTATION_FINISH_TIMEOUT_MS, type DictationPhase } from '../lib/microphone';
 import { DictationButton } from '../components/ui/dictation-button';
 import { useDesktopUpdates } from '../lib/desktop-updates';
+import { UpdateNotification } from '../components/updates/update-notification';
 import { isAppVisible, subscribeAppVisibility, useAppVisibility } from '../lib/app-visibility';
 import Loading from './loading';
 import { reloadApp } from '../lib/reload-app';
@@ -16787,16 +16788,11 @@ function DeepWorkUI() {
       </div>
       {!isSettingsOpen && updateNoticeKey && dismissedUpdateNotice !== updateNoticeKey &&
         ((desktopUpdate.status === 'available' && desktopUpdate.updateAvailableUnread) || desktopUpdate.status === 'ready' || desktopUpdate.status === 'error') && (
-        <div className="eterx-update-notice fixed right-4 top-14 z-[250] w-[320px] max-w-[calc(100vw-2rem)] rounded-xl border p-3.5 shadow-xl" role="status" aria-live="polite">
-          <div className="min-w-0">
-            <p className="pr-7 text-[13px] font-semibold leading-5 break-words">{desktopUpdate.status === 'error' ? 'Update needs attention' : `EterX ${desktopUpdate.availableVersion} ${desktopUpdate.downloadReady ? 'is ready' : 'is available'}`}</p>
-            <p className="mt-1 pr-5 text-[12px] leading-[18px] opacity-70 break-words [overflow-wrap:anywhere]">{desktopUpdate.status === 'error' ? desktopUpdate.message : desktopUpdate.downloadReady ? 'Restart when you are ready to install.' : 'Get the latest improvements.'}</p>
-            <button type="button" className="mt-3 inline-flex min-h-8 max-w-full items-center justify-center rounded-lg bg-[#168eea] px-3 py-1.5 text-[12px] font-medium leading-4 text-white transition-colors hover:bg-[#087cd4] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" onClick={openAndStartUpdate}>
-              {desktopUpdate.downloadReady ? 'Restart to update' : desktopUpdate.status === 'error' ? 'Retry download' : 'Update now'}
-            </button>
-          </div>
-          <button type="button" aria-label="Dismiss update notification" className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2" onClick={() => { setDismissedUpdateNotice(updateNoticeKey); markUpdateViewed(); }}><X size={15} /></button>
-        </div>
+        <UpdateNotification
+          state={desktopUpdate}
+          onOpen={() => openSettingsWindow('updates')}
+          onDismiss={() => { setDismissedUpdateNotice(updateNoticeKey); markUpdateViewed(); }}
+        />
       )}
       {updateActionError && isSettingsOpen && settingsInitialTab === 'updates' && (
         <div role="alert" className="fixed bottom-5 left-1/2 z-[10000] -translate-x-1/2 rounded-xl bg-[#402020] px-5 py-3 text-sm text-white">{updateActionError}</div>

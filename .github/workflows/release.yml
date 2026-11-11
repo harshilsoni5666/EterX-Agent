@@ -66,6 +66,20 @@ jobs:
             exit 1
           fi
 
+      - name: Check out release notes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Set up Node.js for release notes
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Prepare customer release notes
+        run: node scripts/prepare-release-notes.mjs "$RUNNER_TEMP/eterx-release-notes.md"
+
       - name: Create or reset draft release
         shell: bash
         run: |
@@ -87,6 +101,12 @@ jobs:
               --title "EterX $RELEASE_TAG" \
               --notes "Verified native EterX installers are being built."
           fi
+          gh release edit "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --notes-file "$RUNNER_TEMP/eterx-release-notes.md"
+          gh release upload "$RELEASE_TAG" release-notes.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
 
   build:
     name: Build ${{ matrix.platform }}
@@ -281,7 +301,7 @@ jobs:
               ;;
             mac)
               required_patterns=(dist/latest-mac.yml 'dist/EterX-*-mac-x64.zip' 'dist/EterX-*-mac-arm64.zip')
-              files=(dist/EterX-*.dmg dist/EterX-*.zip dist/latest-mac.yml)
+              files=(dist/EterX-*.dmg dist/EterX-*.zip dist/EterX-*.zip.blockmap dist/latest-mac.yml)
               ;;
             linux)
               # electron-updater requests latest-linux.yml on x64 and an

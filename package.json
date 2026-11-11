@@ -194,6 +194,7 @@
       "electron/splash.html",
       "electron/splash.css",
       "package.json",
+      "release-notes.json",
       {
         "from": "desktop-runtime",
         "to": "runtime",
@@ -267,6 +268,7 @@
       ]
     },
     "nsis": {
+      "include": "setup/nsis-update.nsh",
       "buildUniversalInstaller": false,
       "oneClick": false,
       "perMachine": false,

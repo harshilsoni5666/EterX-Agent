@@ -9,10 +9,11 @@ The `.github/workflows/release.yml` workflow builds Windows, macOS, and Linux
 packages for x64 and ARM64. It publishes:
 
 - Windows NSIS installers and differential-update blockmaps
-- macOS ZIP/DMG packages
+- macOS ZIP packages and differential-update blockmaps (local builds can also produce DMGs)
 - Linux AppImage packages
 - electron-updater metadata for each platform and Linux architecture
 - `SHA256SUMS.txt`, consumed by both public bootstrap scripts
+- `release-notes.json`, shared customer-facing highlights for every desktop platform
 
 The AppImage is the canonical Linux package for both initial installation and
 manual in-app updates. Keeping one package format per Linux architecture avoids
@@ -79,9 +80,10 @@ clients already at that version do not require a `latest*.yml` asset. For newer
 versions, it pins downloads to the release tag and selects the installed OS and
 architecture. If channel metadata is missing, a matching installer in the
 official `SHA256SUMS.txt` permits a full download verified by electron-updater.
-Missing packages, checksums, and release-host failures retry quietly without an
-error message or badge in Settings. Diagnostics remain in the desktop log, and
-failed checks never count as a successful up-to-date check. This compatibility fallback
+Missing packages, checksums, and release-host failures retry quietly during
+automatic discovery. Manual checks show the failure in Settings and keep any
+previously discovered update available. Diagnostics remain in the desktop log,
+and failed checks never count as a successful up-to-date check. This compatibility fallback
 does not replace the requirement to publish every metadata file for new releases.
 
 The packaged `app-update.yml` points at the `harshilsoni5666/EterX-Agent`
@@ -96,7 +98,7 @@ The metadata requested by each installed package is:
 | Installed package | Hosted metadata | Hosted application artifact |
 |---|---|---|
 | Windows x64/ARM64 | `latest.yml` | matching NSIS `.exe` plus `.blockmap` |
-| macOS x64/ARM64 | `latest-mac.yml` | matching `.zip` (DMG remains available for manual install) |
+| macOS x64/ARM64 | `latest-mac.yml` | matching `.zip` plus its generated `.blockmap` |
 | Linux x64 AppImage | `latest-linux.yml` | matching `.AppImage` |
 | Linux ARM64 AppImage | `latest-linux-arm64.yml` | matching `.AppImage` |
 
@@ -114,6 +116,69 @@ restart and install** instead of losing AppData.
 Each release contains a compiled Next.js standalone runtime inside the native
 application package. The updater replaces that immutable package while the
 canonical per-user EterX data directory remains untouched.
+
+Windows starts NSIS with `--updated /S --force-run` and waits for the installer
+(or elevation helper) to spawn before quitting, so a failed launch leaves the
+verified download available for retry. `/S` skips the assisted setup wizard and
+allows `--force-run` to reopen EterX even with `runAfterFinish: false`. First-time
+installation retains its assisted UI. System-wide installations can still need
+Windows administrator approval; silent updates do not bypass elevation.
+The NSIS `customInit` hook also selects silent mode for `--updated`, so existing
+clients that omit `/S` get this behavior on their next update to a new installer.
+Linux stages the new AppImage on the installation filesystem, keeps the old
+image until the replacement is ready, and atomically replaces the existing path.
+Custom filenames and symlink launchers keep working, and relaunch waits for the
+old process to exit before starting the replacement. The previous image remains
+in its transaction directory until the new version's server and main window
+load successfully. Failed startup leaves that backup available for recovery.
+
+Unsigned macOS updates use a separate helper that refuses to replace a bundle
+until the old process exits. Each attempt has its own staging directory; failed
+replacement or startup restores the previous bundle, retaining the backup if
+restoration itself fails. Signed macOS updates use Squirrel, with late install
+callbacks removed after recovery so a timed-out attempt cannot restart the app
+unexpectedly.
+
+All platforms reject an install request unless the verified download matches
+the version shown and is newer than the running application. After saving user
+state, EterX records the target version and installation location outside the
+application package. A successful startup at that location records whether the
+new version is running or the previous version reopened, and Settings shows the
+result independently of update discovery. This receipt never triggers another
+installation. A failed or cancelled installation remains an explicit retry.
+
+## Writing What’s New
+
+`release-notes.json` is the source for the in-app notification, the full notes in
+Settings → Updates, and the public GitHub release description. Update its
+`version` alongside `package.json` for each release. Its editor schema lives in
+`docs/release-notes.schema.json`.
+
+Write a short `summary`, then group highlights into `new`, `improved`, `fixed`,
+or `security`. Use each group at most once and omit empty groups. Each highlight
+has a short `title` and an optional `description`. Describe the benefit or the
+problem a customer experienced in plain language. Leave out commit hashes,
+internal filenames, dependency bumps, build logs, and developer-only changes.
+The app renders these fields as plain text; no Markdown or HTML is needed.
+Keep the file below 64 KiB, with at most 100 highlights across all groups.
+
+The release workflow prepares Markdown from the same file, attaches the JSON
+to the draft release, and publishes both with the native packages. The version
+must match the release tag. The file is also included in the installed app so
+Settings can show the current version’s notes without a network connection.
+
+For a newer release, the updater retrieves highlights from that exact release
+tag, accepts only notes matching its version, and shares the result with both
+views. Notes have a separate short timeout and are optional for older releases;
+missing or invalid notes display a neutral empty state and do not block updates.
+Raw commit lists are never displayed or automatically turned into product claims.
+
+The notification uses a bounded preview. A matching background fade appears
+only when the content overflows, including after a window resize or font load.
+Clicking the card or using its keyboard action opens Settings → Updates without
+starting a download or restart. Its separate dismiss button only acknowledges
+the notice. Settings shows the complete highlights above the existing update
+status, download/restart controls, and scheduling information.
 
 ## Recovery
 

@@ -46,6 +46,9 @@ setTelegramTransport((url, options) => electronNet.fetch(url, options));
 const { installedProfileRoot, workspaceRoot } = require('./storage-layout');
 const { createHostEnvironment } = require('./host-environment');
 const { WhisperDictation } = require('./whisper-dictation');
+const { launchWindowsUpdateInstaller, prepareAppImageUpdate, activateAppImageUpdate, discardAppImageUpdate } = require('./update-installers');
+const { readUpdateInstallAttempt, writeUpdateInstallAttempt } = require('./update-install-state');
+const { normalizeReleaseNotes } = require('./release-notes');
 const IS_DESKTOP_DEVELOPMENT = !app.isPackaged;
 let computerUseOverlay = null;
 
@@ -312,6 +315,8 @@ let desktopUpdateCheckSilent = false;
 let desktopUpdateDownloadPromise = null;
 let desktopUpdateInstallPromise = null;
 let desktopUpdateInstallWatchdog = null;
+let desktopUpdateRecoveryPromise = null;
+let desktopUpdateNativeInstallCleanup = null;
 let desktopUpdateRevision = 0;
 let desktopUpdateCheckTimer = null;
 let desktopUpdateViewedVersion = null;
@@ -323,6 +328,8 @@ let desktopUpdateDownloadCancellation = null;
 let desktopUpdateDownloadActivityAt = 0;
 let desktopUpdateDownloadWatchdog = null;
 let DesktopUpdateCancellationToken = null;
+let desktopUpdateSemver = null;
+let desktopUpdateStartupOutcomeHandled = false;
 const desktopUpdateNotifications = new Map();
 const DESKTOP_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const DESKTOP_UPDATE_RESUME_INTERVAL_MS = 5 * 60 * 1000;
@@ -342,6 +349,12 @@ const DESKTOP_UPDATE_PACKAGE_TYPE = !app.isPackaged
       : process.env.APPIMAGE
         ? 'AppImage'
         : 'unsupported Linux package';
+let bundledReleaseNotes = null;
+try {
+  bundledReleaseNotes = normalizeReleaseNotes(require('../release-notes.json'), app.getVersion());
+} catch {
+  // Older/development bundles may not carry customer release highlights.
+}
 let desktopUpdateState = {
   revision: desktopUpdateRevision,
   status: app.isPackaged
@@ -366,6 +379,7 @@ let desktopUpdateState = {
   lastCheckAttemptAt: null,
   nextCheckAt: null,
   checkError: null,
+  checkErrorVisible: false,
   checking: false,
   openSettingsRequest: null,
   platform: process.platform,
@@ -375,7 +389,9 @@ let desktopUpdateState = {
   releasePage: DESKTOP_UPDATE_RELEASE_PAGE,
   releaseName: null,
   releaseDate: null,
+  releaseNotes: bundledReleaseNotes,
   updateAvailableUnread: false,
+  lastInstall: null,
 };
 const launchInBackground = process.argv.includes('--background');
 
@@ -613,11 +629,74 @@ function desktopUpdateInfoPatch(info) {
     availableVersion: info?.version || null,
     releaseName: typeof info?.releaseName === 'string' ? info.releaseName : null,
     releaseDate: typeof info?.releaseDate === 'string' ? info.releaseDate : null,
+    releaseNotes: normalizeReleaseNotes(info?.releaseHighlights, info?.version)
+      || (desktopUpdateState.releaseNotes?.version === info?.version ? desktopUpdateState.releaseNotes : null),
+    releasePage: typeof info?.tag === 'string'
+      ? `https://github.com/harshilsoni5666/EterX-Agent/releases/tag/${encodeURIComponent(info.tag)}`
+      : DESKTOP_UPDATE_RELEASE_PAGE,
   };
 }
 
 function desktopUpdateViewStatePath() {
   return path.join(getEterxSettingsRoot(), DESKTOP_UPDATE_VIEW_STATE_FILE);
+}
+
+function desktopUpdateInstallStatePath() {
+  return path.join(getEterxSettingsRoot(), 'eterx-update-install-state.json');
+}
+
+function desktopUpdateInstallLocation() {
+  const location = process.platform === 'darwin'
+    ? getRunningMacApplicationBundle()
+    : process.platform === 'linux' ? process.env.APPIMAGE : app.getPath('exe');
+  if (!location || !path.isAbsolute(location)) throw new Error('The installed application path is unavailable.');
+  const resolved = fs.realpathSync(location);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+async function finishDesktopUpdateInstallAttempt() {
+  if (!app.isPackaged || desktopUpdateStartupOutcomeHandled) return;
+  desktopUpdateStartupOutcomeHandled = true;
+  try {
+    const receiptPath = desktopUpdateInstallStatePath();
+    const attempt = readUpdateInstallAttempt(receiptPath);
+    // Multiple installations can share a profile. Only the installation that
+    // requested this restart may acknowledge it or remove its backup.
+    if (!attempt || attempt.installLocation !== desktopUpdateInstallLocation()) return;
+    const currentVersion = app.getVersion();
+    const succeeded = currentVersion === attempt.targetVersion || Boolean(
+      desktopUpdateSemver?.valid(attempt.targetVersion) && desktopUpdateSemver.gte(currentVersion, attempt.targetVersion),
+    );
+    if (!succeeded && currentVersion !== attempt.fromVersion) return;
+    const status = succeeded ? 'succeeded' : 'incomplete';
+    const completedAt = attempt.status === status && attempt.observedVersion === currentVersion && attempt.completedAt
+      ? attempt.completedAt
+      : new Date().toISOString();
+    const completed = { ...attempt, status, observedVersion: currentVersion, completedAt };
+    writeUpdateInstallAttempt(receiptPath, completed);
+    publishDesktopUpdateState({
+      lastInstall: {
+        status,
+        version: attempt.targetVersion,
+        completedAt,
+        message: succeeded
+          ? `Updated successfully. You are running EterX ${currentVersion}.`
+          : `The update to EterX ${attempt.targetVersion} did not finish. You are still running ${currentVersion}. Retry the update when ready.`,
+      },
+    });
+    logToFile(`[update] Restart outcome: ${status}; requested ${attempt.targetVersion}, running ${currentVersion}.`);
+    if (succeeded && process.platform === 'linux' && attempt.appImage?.targetPath === attempt.installLocation) {
+      // The server and main window have now loaded from the replacement. Keep
+      // the previous image until this point, including across a failed launch.
+      await discardAppImageUpdate(attempt.appImage);
+      if (readUpdateInstallAttempt(receiptPath)?.id === attempt.id) {
+        writeUpdateInstallAttempt(receiptPath, { ...completed, appImage: null });
+      }
+    }
+  } catch (error) {
+    // Receipt/backup housekeeping must never prevent the installed app opening.
+    logToFile(`[update] Could not finish update recovery bookkeeping: ${error?.message || error}`);
+  }
 }
 
 function readDesktopUpdateViewedVersion() {
@@ -702,14 +781,14 @@ function describeDesktopUpdateError(error, operation = 'Update') {
   const detail = String(error?.message || error || 'unknown error').trim();
   const code = String(error?.code || '');
   if (code === 'ERR_ETERX_RELEASE_PENDING') return detail;
-  if (/ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|ERR_UPDATER_LATEST_VERSION_NOT_FOUND|\b404\b/i.test(`${code} ${detail}`)) {
-    return `${operation} could not find a published update on the official release host. EterX will retry automatically.`;
-  }
   if (/\b(?:429|503)\b|rate.?limit/i.test(detail)) return `${operation} is temporarily unavailable. The release host is busy; EterX will retry later.`;
   if (/ENOSPC|not enough space|disk.*full/i.test(`${code} ${detail}`)) return `${operation} failed: free some disk space and try again.`;
   if (/checksum|sha512|sha256|ERR_CHECKSUM_MISMATCH/i.test(`${code} ${detail}`)) return `${operation} failed: the downloaded package could not be verified. Retry the download.`;
   if (/ERR_INTERNET_DISCONNECTED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ECONNRESET|network|internet|timed? ?out/i.test(`${code} ${detail}`)) {
     return `${operation} failed: the release host could not be reached. Check the internet connection and try again.`;
+  }
+  if (/ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|ERR_UPDATER_LATEST_VERSION_NOT_FOUND|\b404\b/i.test(`${code} ${detail}`)) {
+    return `${operation} could not find a published update on the official release host. EterX will retry automatically.`;
   }
   return `${operation} failed: ${detail}`;
 }
@@ -749,6 +828,9 @@ function clearDesktopUpdateDownloadWatchdog() {
 function restoreDesktopRuntimeAfterInstallerFailure(error) {
   if (desktopUpdateInstallWatchdog) clearTimeout(desktopUpdateInstallWatchdog);
   desktopUpdateInstallWatchdog = null;
+  desktopUpdateNativeInstallCleanup?.();
+  desktopUpdateNativeInstallCleanup = null;
+  if (desktopUpdateRecoveryPromise) return desktopUpdateRecoveryPromise;
   isQuitting = false;
   publishDesktopUpdateState({
     status: 'error',
@@ -757,9 +839,12 @@ function restoreDesktopRuntimeAfterInstallerFailure(error) {
     downloadReady: true,
     message: `The update is still downloaded, but the native installer could not start: ${error?.message || 'unknown error'}`,
   });
-  void startPackagedServer()
+  desktopUpdateRecoveryPromise = startPackagedServer()
     .then(() => bootApp({ retryOnFailure: true }))
-    .catch(recoveryError => logToFile(`[update] Could not restore the app runtime after installer failure: ${recoveryError?.message || recoveryError}`));
+    .then(() => notifyDesktopResume())
+    .catch(recoveryError => logToFile(`[update] Could not restore the app runtime after installer failure: ${recoveryError?.message || recoveryError}`))
+    .finally(() => { desktopUpdateRecoveryPromise = null; });
+  return desktopUpdateRecoveryPromise;
 }
 
 async function requestRendererDurableFlush(timeoutMs = 8000, attempts = 1, options = {}) {
@@ -925,8 +1010,9 @@ function prepareUnsignedMacUpdateInstaller() {
   }
 
   const updateRoot = path.join(app.getPath('userData'), 'updates');
-  const helperPath = path.join(updateRoot, 'install-macos-update.sh');
+  const helperPath = path.join(updateRoot, `install-macos-${process.pid}-${crypto.randomBytes(6).toString('hex')}.sh`);
   const installLog = path.join(app.getPath('userData'), 'update-install.log');
+  const executablePattern = `^${path.join(targetBundle, 'Contents', 'MacOS', 'EterX').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([[:space:]]|$)`;
   fs.mkdirSync(updateRoot, { recursive: true });
   fs.writeFileSync(helperPath, `#!/bin/sh
 set -eu
@@ -934,63 +1020,88 @@ ARCHIVE="$1"
 TARGET="$2"
 APP_PID="$3"
 LOG_FILE="$4"
+EXECUTABLE_PATTERN="$5"
 exec >>"$LOG_FILE" 2>&1
 printf '[%s] Installing verified EterX update from %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$ARCHIVE"
+
+EXTRACT_ROOT=""
+TRANSACTION_ROOT=""
+PREVIOUS=""
+parent_exited=0
+previous_moved=0
+replacement_installed=0
+install_complete=0
+cleanup() {
+  exit_code=$?
+  trap - EXIT INT TERM HUP
+  if [ "$install_complete" -ne 1 ] && [ "$previous_moved" -eq 1 ]; then
+    if [ "$replacement_installed" -eq 1 ]; then rm -rf "$TARGET"; fi
+    if mv "$PREVIOUS" "$TARGET"; then
+      previous_moved=0
+      printf '[%s] Update failed; restored the previous application bundle.\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    else
+      printf 'Could not restore the previous bundle; recover it from %s\\n' "$PREVIOUS"
+    fi
+  fi
+  [ -z "$EXTRACT_ROOT" ] || rm -rf "$EXTRACT_ROOT"
+  if [ -n "$TRANSACTION_ROOT" ] && { [ "$install_complete" -eq 1 ] || [ "$previous_moved" -eq 0 ]; }; then
+    rm -rf "$TRANSACTION_ROOT"
+  fi
+  if [ "$install_complete" -ne 1 ] && [ "$parent_exited" -eq 1 ] && [ -d "$TARGET" ]; then
+    /usr/bin/open "$TARGET" >/dev/null 2>&1 || true
+  fi
+  rm -f "$0"
+  exit "$exit_code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 wait_count=0
 while kill -0 "$APP_PID" 2>/dev/null && [ "$wait_count" -lt 120 ]; do
   sleep 0.25
   wait_count=$((wait_count + 1))
 done
+if kill -0 "$APP_PID" 2>/dev/null; then
+  printf 'EterX did not exit; leaving the installed application untouched.\\n'
+  exit 1
+fi
+parent_exited=1
 
 TEMP_BASE="\${TMPDIR:-/tmp}"
 EXTRACT_ROOT="$(mktemp -d "$TEMP_BASE/eterx-update.XXXXXX")"
-STAGING="$TARGET.staging.$$"
-PREVIOUS="$TARGET.previous.$$"
-install_complete=0
-cleanup() {
-  rm -rf "$EXTRACT_ROOT" "$STAGING"
-  if [ "$install_complete" -ne 1 ]; then
-    if [ -d "$PREVIOUS" ]; then
-      rm -rf "$TARGET"
-      mv "$PREVIOUS" "$TARGET" || true
-      printf '[%s] Update failed; restored the previous application bundle.\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    fi
-    if [ -d "$TARGET" ]; then
-      /usr/bin/open "$TARGET" >/dev/null 2>&1 || true
-    fi
-  fi
-}
-trap cleanup EXIT INT TERM HUP
+TRANSACTION_ROOT="$(mktemp -d "$TARGET.update.XXXXXX")"
+STAGING="$TRANSACTION_ROOT/EterX.app"
+PREVIOUS="$TRANSACTION_ROOT/previous.app"
 
 /usr/bin/ditto -x -k "$ARCHIVE" "$EXTRACT_ROOT"
 APP_SOURCE="$(find "$EXTRACT_ROOT" -type d -name 'EterX.app' -print | head -n 1)"
 [ -n "$APP_SOURCE" ] || { printf 'EterX.app is missing from the verified update archive.\\n'; exit 1; }
-rm -rf "$STAGING" "$PREVIOUS"
 /usr/bin/ditto "$APP_SOURCE" "$STAGING"
 [ -f "$STAGING/Contents/MacOS/EterX" ] || { printf 'The updated EterX executable is missing.\\n'; exit 1; }
 chmod 755 "$STAGING/Contents/MacOS/EterX"
 /usr/bin/xattr -dr com.apple.quarantine "$STAGING" 2>/dev/null || true
 [ ! -x /usr/bin/codesign ] || /usr/bin/codesign --force --deep --sign - "$STAGING" >/dev/null 2>&1 || true
 
-if [ -d "$TARGET" ]; then mv "$TARGET" "$PREVIOUS"; fi
+mv "$TARGET" "$PREVIOUS"
+previous_moved=1
 if ! mv "$STAGING" "$TARGET"; then
-  [ -d "$PREVIOUS" ] && mv "$PREVIOUS" "$TARGET"
-  printf 'Could not replace the EterX application bundle; the previous version was restored.\\n'
+  printf 'Could not replace the EterX application bundle; restoring the previous version.\\n'
   exit 1
 fi
+replacement_installed=1
 printf '[%s] Update installed; opening %s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$TARGET"
 /usr/bin/open "$TARGET"
 sleep 6
-if ! pgrep -f "$TARGET/Contents/MacOS/EterX" >/dev/null 2>&1; then
+if ! /usr/bin/pgrep -f "$EXECUTABLE_PATTERN" >/dev/null 2>&1; then
   printf '[%s] The replacement application exited during startup; rolling back.\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   exit 1
 fi
 install_complete=1
-rm -rf "$PREVIOUS"
 `, { encoding: 'utf8', mode: 0o700 });
   fs.chmodSync(helperPath, 0o700);
-  return { helperPath, archivePath, targetBundle, installLog };
+  return { helperPath, archivePath, targetBundle, installLog, executablePattern };
 }
 
 function launchUnsignedMacUpdateInstaller(prepared) {
@@ -1001,6 +1112,7 @@ function launchUnsignedMacUpdateInstaller(prepared) {
       prepared.targetBundle,
       String(process.pid),
       prepared.installLog,
+      prepared.executablePattern,
     ], {
       detached: true,
       stdio: 'ignore',
@@ -1120,7 +1232,7 @@ ipcMain.handle('desktop-window-visibility-get', (event) => {
 });
 
 async function performDesktopUpdateCheck({ silent = false } = {}) {
-  if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
+  if (isQuitting || !app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED) return desktopUpdateState;
   if (desktopUpdateCheckPromise) {
     if (!silent) {
       desktopUpdateCheckSilent = false;
@@ -1141,6 +1253,7 @@ async function performDesktopUpdateCheck({ silent = false } = {}) {
   publishDesktopUpdateState({
     checking: true,
     checkError: null,
+    checkErrorVisible: false,
     lastCheckAttemptAt: new Date(desktopUpdateLastAttemptAt).toISOString(),
     ...(!silent && !desktopUpdateState.availableVersion ? { status: 'checking', message: 'Checking for updates...' } : {}),
   });
@@ -1152,20 +1265,21 @@ async function performDesktopUpdateCheck({ silent = false } = {}) {
       }
       desktopUpdateCheckFailures = 0;
       desktopUpdateNextCheckAt = Date.now() + DESKTOP_UPDATE_CHECK_INTERVAL_MS;
-      publishDesktopUpdateState({ lastCheckedAt: new Date().toISOString(), checkError: null });
+      publishDesktopUpdateState({ lastCheckedAt: new Date().toISOString(), checkError: null, checkErrorVisible: false });
     } catch (error) {
       desktopUpdateCheckFailures += 1;
       const retryMinutes = [1, 2, 5, 10, 30][Math.min(desktopUpdateCheckFailures - 1, 4)];
       desktopUpdateNextCheckAt = Date.now() + retryMinutes * 60_000;
       const message = describeDesktopUpdateError(error, 'Update check');
       logToFile(`[update] ${message}`);
-      // Keep release discovery failures quiet and retry in the background.
-      // Retain a known update, but never claim "up to date" after a failed check.
+      // Background failures stay quiet. A manual request must explain why it
+      // failed, while retaining any previously discovered, usable release.
       publishDesktopUpdateState({
         checkError: message,
+        checkErrorVisible: !desktopUpdateCheckSilent,
         ...(!desktopUpdateState.availableVersion ? {
-          status: 'idle',
-          message: '',
+          status: desktopUpdateCheckSilent ? 'idle' : error?.code === 'ERR_ETERX_RELEASE_PENDING' ? 'pending' : 'error',
+          message: desktopUpdateCheckSilent ? '' : message,
         } : {}),
       });
     } finally {
@@ -1210,6 +1324,7 @@ function initializeDesktopUpdates() {
     ({ autoUpdater: desktopAutoUpdater } = require(updaterEntry));
     const updaterRequire = require('module').createRequire(updaterEntry);
     ({ CancellationToken: DesktopUpdateCancellationToken } = updaterRequire('builder-util-runtime'));
+    desktopUpdateSemver = updaterRequire('semver');
     const { createDesktopUpdateProvider } = require('./update-provider');
     desktopAutoUpdater.setFeedURL({
       provider: 'custom',
@@ -1219,6 +1334,8 @@ function initializeDesktopUpdates() {
     });
     desktopAutoUpdater.autoDownload = false;
     desktopAutoUpdater.autoInstallOnAppQuit = false;
+    desktopAutoUpdater.autoRunAppAfterInstall = true;
+    desktopAutoUpdater.disableWebInstaller = true;
     // electron-updater >=7 exposes the more explicit install-event setting;
     // keep it manual when present while retaining the v6 compatibility flag.
     if ('autoInstallEvent' in desktopAutoUpdater) {
@@ -1246,6 +1363,7 @@ function initializeDesktopUpdates() {
         downloadReady: false,
         releaseName: null,
         releaseDate: null,
+        releaseNotes: bundledReleaseNotes,
         message: 'Checking GitHub Releases for a newer EterX version...',
       });
     });
@@ -1280,6 +1398,8 @@ function initializeDesktopUpdates() {
       downloadReady: false,
       releaseName: null,
       releaseDate: null,
+      releaseNotes: bundledReleaseNotes,
+      releasePage: DESKTOP_UPDATE_RELEASE_PAGE,
       message: 'EterX is up to date',
       lastCheckedAt: new Date().toISOString(),
     }));
@@ -3319,6 +3439,7 @@ async function bootApp(options = {}) {
       clearBootRetry();
       bootFailureCount = 0;
       migrateOldPackagedRuntimeData();
+      void finishDesktopUpdateInstallAttempt();
     }
   } catch (error) {
     if (!isCurrent()) return;
@@ -4140,6 +4261,7 @@ ipcMain.handle('desktop-update-check', async () => {
 });
 
 ipcMain.handle('desktop-update-download', async () => {
+  if (isQuitting) return desktopUpdateState;
   if (desktopUpdateDownloadPromise) return desktopUpdateDownloadPromise;
   // A header click can arrive during a periodic scan of an already-known
   // release. Wait for that scan before choosing the download provider/version.
@@ -4148,7 +4270,7 @@ ipcMain.handle('desktop-update-download', async () => {
   const retryableDownload = desktopUpdateState.status === 'error'
     && Boolean(desktopUpdateState.availableVersion)
     && !desktopUpdateState.downloadReady;
-  if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED ||
+  if (isQuitting || !app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED ||
     (desktopUpdateState.status !== 'available' && !retryableDownload)) {
     return desktopUpdateState;
   }
@@ -4157,6 +4279,7 @@ ipcMain.handle('desktop-update-download', async () => {
   publishDesktopUpdateState({
     status: 'downloading',
     checkError: null,
+    checkErrorVisible: false,
     percent: 0,
     transferred: 0,
     bytesPerSecond: 0,
@@ -4186,13 +4309,21 @@ ipcMain.handle('desktop-update-download', async () => {
         throw new Error('The download ended before package verification completed. Retry the download.');
       }
     } catch (error) {
+      // Cache housekeeping can fail after update-downloaded. Keep the verified
+      // package installable instead of turning that into a failed transfer.
+      const downloadedPath = desktopAutoUpdater.downloadedUpdateHelper?.file;
+      const stillReady = desktopUpdateState.downloadReady && downloadedPath && fs.existsSync(downloadedPath);
       publishDesktopUpdateState({
-        status: 'error',
+        status: stillReady ? 'ready' : 'error',
+        downloadReady: Boolean(stillReady),
         bytesPerSecond: 0,
-        message: stalled
+        message: stillReady
+          ? `EterX ${desktopUpdateState.availableVersion} is ready - restart when convenient`
+          : stalled
           ? 'The download stopped making progress. Check your connection and retry the download.'
           : describeDesktopUpdateError(error, 'Update download'),
       });
+      if (stillReady) logToFile(`[update] Post-download cache maintenance failed: ${error?.message || error}`);
     } finally {
       clearDesktopUpdateDownloadWatchdog();
       desktopUpdateDownloadCancellation = null;
@@ -4205,34 +4336,42 @@ ipcMain.handle('desktop-update-download', async () => {
 });
 
 ipcMain.handle('desktop-update-install', async () => {
+  if (desktopUpdateInstallPromise) return desktopUpdateInstallPromise;
+  // update-downloaded can arrive before the client finishes writing its cache.
+  if (desktopUpdateDownloadPromise) await desktopUpdateDownloadPromise;
+  if (desktopUpdateInstallPromise) return desktopUpdateInstallPromise;
   const packageReady = Boolean(desktopUpdateState.downloadReady) && (
     desktopUpdateState.status === 'ready' || desktopUpdateState.status === 'error'
   );
-  if (!app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED || !packageReady) return false;
-  if (desktopUpdateInstallPromise) return desktopUpdateInstallPromise;
+  if (isQuitting || desktopUpdateRecoveryPromise || !app.isPackaged || !desktopAutoUpdater || !DESKTOP_UPDATES_SUPPORTED || !packageReady) return desktopUpdateState;
 
-  desktopUpdateInstallPromise = (async () => {
+  let preparedAppImage = null;
+  let unsignedMacInstaller = null;
+  let unsignedMacInstallerStarted = false;
+  desktopUpdateInstallPromise = Promise.resolve().then(async () => {
+    const targetVersion = desktopAutoUpdater.downloadedUpdateHelper?.versionInfo?.version;
+    // A stale cache or a repeated action must never reinstall the running
+    // release, downgrade it, or install a different package from the one shown.
+    if (!desktopUpdateSemver?.valid(targetVersion) ||
+      !desktopUpdateSemver.gt(targetVersion, app.getVersion()) ||
+      targetVersion !== desktopUpdateState.availableVersion) {
+      publishDesktopUpdateState({
+        status: 'error', downloadReady: false, availableVersion: null,
+        percent: 0, transferred: 0, total: 0, bytesPerSecond: 0,
+        releaseName: null, releaseDate: null, releaseNotes: bundledReleaseNotes,
+        updateAvailableUnread: false,
+        message: 'This download no longer matches a newer EterX release. Check for updates again.',
+      });
+      return desktopUpdateState;
+    }
     const downloadedPath = desktopAutoUpdater.downloadedUpdateHelper?.file || desktopAutoUpdater.installerPath;
     if (!downloadedPath || !fs.existsSync(downloadedPath)) {
       publishDesktopUpdateState({
         status: 'error', downloadReady: false, percent: 0, transferred: 0, bytesPerSecond: 0,
         message: 'The downloaded update is no longer on this device. Download it again to continue.',
       });
-      return false;
+      return desktopUpdateState;
     }
-    if (process.platform === 'linux') {
-      try {
-        fs.accessSync(process.env.APPIMAGE, fs.constants.R_OK | fs.constants.W_OK);
-        fs.accessSync(path.dirname(process.env.APPIMAGE), fs.constants.W_OK);
-      } catch {
-        publishDesktopUpdateState({
-          status: 'error', downloadReady: true,
-          message: 'EterX cannot replace this AppImage. Move it to a folder you can write to, reopen it, and retry the update.',
-        });
-        return false;
-      }
-    }
-    let unsignedMacInstaller = null;
     if (process.platform === 'darwin') {
       const runningBundle = getRunningMacApplicationBundle();
       if (!macBundleHasDeveloperSignature(runningBundle)) {
@@ -4247,7 +4386,7 @@ ipcMain.handle('desktop-update-install', async () => {
             downloadReady: true,
             message: describeDesktopUpdateError(error, 'Update installation'),
           });
-          return false;
+          return desktopUpdateState;
         }
       }
     }
@@ -4258,6 +4397,19 @@ ipcMain.handle('desktop-update-install', async () => {
       bytesPerSecond: 0,
       message: 'Preparing EterX to restart and apply the update...',
     });
+    if (process.platform === 'linux') {
+      try {
+        preparedAppImage = await prepareAppImageUpdate(downloadedPath, process.env.APPIMAGE);
+      } catch (error) {
+        publishDesktopUpdateState({
+          status: 'error', downloadReady: true,
+          message: /EACCES|EPERM|EROFS/.test(String(error?.code))
+            ? 'EterX cannot replace this AppImage. Move it to a folder you can write to, reopen it, and retry the update.'
+            : describeDesktopUpdateError(error, 'Update installation'),
+        });
+        return desktopUpdateState;
+      }
+    }
     const flushed = await prepareDesktopClose(false, 15000);
     if (!flushed) {
       publishDesktopUpdateState({
@@ -4266,27 +4418,60 @@ ipcMain.handle('desktop-update-install', async () => {
         message: 'EterX could not finish saving your work. The update is still downloaded; retry Restart to update when saving finishes.',
       });
       void notifyDesktopResume();
-      return false;
+      return desktopUpdateState;
     }
+    writeUpdateInstallAttempt(desktopUpdateInstallStatePath(), {
+      schemaVersion: 1,
+      id: crypto.randomUUID(),
+      status: 'pending',
+      fromVersion: app.getVersion(),
+      targetVersion,
+      installLocation: desktopUpdateInstallLocation(),
+      attemptedAt: new Date().toISOString(),
+      appImage: preparedAppImage,
+    });
     isQuitting = true;
     publishDesktopUpdateState({
       status: 'installing',
       percent: 100,
-      message: 'Starting the native installer...',
+      lastInstall: null,
+      message: 'Restarting EterX to apply the update...',
     });
     // Release the local server before handing control to the installer. This
     // avoids locked runtime files on Windows and a stale helper process on
     // macOS, while leaving AppData untouched.
     await stopPackagedServer(5000);
+    if (preparedAppImage) {
+      await activateAppImageUpdate(preparedAppImage);
+      // Electron waits for this instance to exit, avoiding a race with the
+      // single-instance lock and preserving versioned/custom launcher paths.
+      app.relaunch({ execPath: preparedAppImage.targetPath, args: process.argv.slice(1).filter(arg => arg !== '--background') });
+      // The new process cleans up only after its application window loads.
+      // A failed relaunch must leave the previous image available for recovery.
+      preparedAppImage = null;
+      setImmediate(() => app.quit());
+      return desktopUpdateState;
+    }
+    if (process.platform === 'win32') {
+      // NsisUpdater.quitAndInstall() schedules quit before its async spawn can
+      // report a launch failure. Wait for spawn so failure stays retryable.
+      await launchWindowsUpdateInstaller(desktopAutoUpdater, process.resourcesPath);
+      setImmediate(() => app.quit());
+      return desktopUpdateState;
+    }
     if (unsignedMacInstaller) {
       try {
         await launchUnsignedMacUpdateInstaller(unsignedMacInstaller);
+        unsignedMacInstallerStarted = true;
         logToFile(`[update] macOS update helper started; log: ${unsignedMacInstaller.installLog}`);
+        desktopUpdateInstallWatchdog = setTimeout(() => {
+          restoreDesktopRuntimeAfterInstallerFailure(new Error('EterX could not close for the macOS update. Close any pending dialogs and retry.'));
+        }, 45_000);
         setTimeout(() => app.quit(), 100);
-        return true;
+        return desktopUpdateState;
       } catch (error) {
         restoreDesktopRuntimeAfterInstallerFailure(error);
-        return false;
+        return desktopUpdateState;
       }
     }
 
@@ -4300,16 +4485,51 @@ ipcMain.handle('desktop-update-install', async () => {
           if (!mainWindow || mainWindow.isDestroyed()) return;
           restoreDesktopRuntimeAfterInstallerFailure(new Error('The native installer did not take control of the application.'));
         }, process.platform === 'darwin' ? 5 * 60_000 : 30_000);
-        desktopAutoUpdater.quitAndInstall(false, true);
+        const nativeUpdater = desktopAutoUpdater.nativeUpdater;
+        if (process.platform === 'darwin' && nativeUpdater && typeof desktopAutoUpdater.handleUpdateDownloaded === 'function') {
+          if (desktopAutoUpdater.squirrelDownloadedUpdate) {
+            desktopAutoUpdater.handleUpdateDownloaded();
+          } else {
+            // A failed/timed-out Squirrel handoff may finish later. Remove our
+            // listener on recovery so it cannot quit an app the user resumed.
+            const onReady = () => {
+              desktopUpdateNativeInstallCleanup?.();
+              desktopUpdateNativeInstallCleanup = null;
+              if (!isQuitting || desktopUpdateState.status !== 'installing') return;
+              try {
+                desktopAutoUpdater.handleUpdateDownloaded();
+              } catch (error) {
+                restoreDesktopRuntimeAfterInstallerFailure(error);
+              }
+            };
+            desktopUpdateNativeInstallCleanup = () => nativeUpdater.removeListener('update-downloaded', onReady);
+            nativeUpdater.once('update-downloaded', onReady);
+            nativeUpdater.checkForUpdates();
+          }
+        } else {
+          desktopAutoUpdater.quitAndInstall(true, true);
+        }
       } catch (error) {
         restoreDesktopRuntimeAfterInstallerFailure(error);
       }
     });
-    return true;
-  })().catch(error => {
-    restoreDesktopRuntimeAfterInstallerFailure(error);
-    return false;
-  }).finally(() => {
+    return desktopUpdateState;
+  }).catch(async error => {
+    if (preparedAppImage) {
+      await discardAppImageUpdate(preparedAppImage, true).catch(rollbackError => {
+        logToFile(`[update] AppImage recovery failed; backup retained at ${preparedAppImage.previousPath}: ${rollbackError?.message || rollbackError}`);
+      });
+      preparedAppImage = null;
+    }
+    await restoreDesktopRuntimeAfterInstallerFailure(error);
+    return desktopUpdateState;
+  }).finally(async () => {
+    if (preparedAppImage) {
+      await discardAppImageUpdate(preparedAppImage).catch(error => logToFile(`[update] Could not remove AppImage staging files: ${error?.message || error}`));
+    }
+    if (unsignedMacInstaller && !unsignedMacInstallerStarted) {
+      await fs.promises.rm(unsignedMacInstaller.helperPath, { force: true }).catch(error => logToFile(`[update] Could not remove unused macOS helper: ${error?.message || error}`));
+    }
     desktopUpdateInstallPromise = null;
   });
   return desktopUpdateInstallPromise;
@@ -4552,8 +4772,6 @@ app.on('before-quit', (event) => {
   mainWindowWantsVisible = false;
   desktopSpeechDictation.shutdown();
   stopAutomaticDesktopUpdateChecks();
-  if (desktopUpdateInstallWatchdog) clearTimeout(desktopUpdateInstallWatchdog);
-  desktopUpdateInstallWatchdog = null;
   if (!isQuitting) {
     event.preventDefault();
     isQuitting = true;
@@ -4565,6 +4783,13 @@ app.on('before-quit', (event) => {
   isQuitting = true;
   void gatewayDaemon?.stop();
   void stopPackagedServer();
+});
+
+app.on('will-quit', () => {
+  if (desktopUpdateInstallWatchdog) clearTimeout(desktopUpdateInstallWatchdog);
+  desktopUpdateInstallWatchdog = null;
+  desktopUpdateNativeInstallCleanup?.();
+  desktopUpdateNativeInstallCleanup = null;
 });
 
 app.on('activate', function () {

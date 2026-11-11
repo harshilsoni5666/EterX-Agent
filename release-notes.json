@@ -1,0 +1,38 @@
+{
+  "$schema": "./docs/release-notes.schema.json",
+  "version": "0.1.45",
+  "summary": "See what changed before you update, with clear release highlights and more reliable restarts.",
+  "sections": [
+    {
+      "kind": "new",
+      "items": [
+        {
+          "title": "What’s New, inside EterX",
+          "description": "Read the highlights of each release in the update notification and in Settings. Open the notification to see the full details before deciding to update."
+        }
+      ]
+    },
+    {
+      "kind": "improved",
+      "items": [
+        {
+          "title": "A quieter, more useful notification",
+          "description": "Long release notes stay within a compact notification, with a soft fade to show there is more to read. The complete notes are available in Settings."
+        },
+        {
+          "title": "Clearer update recovery",
+          "description": "If a manual update check or installation cannot finish, EterX explains what happened and keeps the available update ready to retry."
+        }
+      ]
+    },
+    {
+      "kind": "fixed",
+      "items": [
+        {
+          "title": "More reliable restarts across desktop platforms",
+          "description": "Windows waits for the installer to start before closing. macOS waits for the app to close before replacing it. Linux keeps your existing app and launcher in place until the replacement is ready."
+        }
+      ]
+    }
+  ]
+}
