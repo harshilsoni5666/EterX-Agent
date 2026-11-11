@@ -20,7 +20,7 @@ async function main(): Promise<void> {
 
   // These modules resolve their durable roots at import time, after the test
   // has isolated them from the user's real application data.
-  const [{ ContextFabric }, { saveChatSnapshot }, { stableScopeSegment }] = await Promise.all([
+  const [{ ContextFabric }, { loadChatById, saveChatSnapshot }, { stableScopeSegment }] = await Promise.all([
     import('../src/lib/agent/context-fabric'),
     import('../src/lib/chat-store'),
     import('../src/lib/agent/context-scope'),
@@ -60,7 +60,14 @@ async function main(): Promise<void> {
       },
     ],
   }], 100);
-  const firstChat = (firstStored.chats as any[]).find(chat => chat.id === firstChatId);
+  const firstSavedChat = (firstStored.chats as any[]).find(chat => chat.id === firstChatId);
+  assert.equal(
+    firstSavedChat.traceLogs.some((log: any) => log.type === 'answer'),
+    false,
+    'saving the transcript should not wait for dialogue recovery',
+  );
+  const firstChat = await loadChatById(firstChatId, true) as any;
+  assert.ok(firstChat, 'opening a chat should load its persisted snapshot');
   const recoveredAnswers = firstChat.traceLogs.filter((log: any) => log.type === 'answer');
   assert.equal(recoveredAnswers.length, 1, 'a missing terminal answer should be reconstructed exactly once');
   assert.equal(recoveredAnswers[0].text, exactAnswer);
@@ -86,7 +93,10 @@ async function main(): Promise<void> {
       traceLogs: [],
     },
   ], 200);
-  const secondChat = (secondStored.chats as any[]).find(chat => chat.id === secondChatId);
+  const secondSavedChat = (secondStored.chats as any[]).find(chat => chat.id === secondChatId);
+  assert.deepEqual(secondSavedChat.traceLogs, [], 'saving a new chat should not run dialogue recovery');
+  const secondChat = await loadChatById(secondChatId, true) as any;
+  assert.ok(secondChat, 'opening a new chat should load its persisted snapshot');
   assert.deepEqual(
     secondChat.traceLogs.filter((log: any) => ['user_action', 'answer'].includes(log.type)).map((log: any) => log.text),
     [secondRequest, secondAnswer],
@@ -134,7 +144,8 @@ async function main(): Promise<void> {
       }],
     },
   ], 300);
-  const corruptChat = (corruptStored.chats as any[]).find(chat => chat.id === corruptChatId);
+  const corruptChat = await loadChatById(corruptChatId, true) as any;
+  assert.ok(corruptChat, 'opening a chat with a corrupt recovery page should preserve the snapshot');
   assert.equal(
     corruptChat.traceLogs.some((log: any) => log.type === 'answer'),
     false,
