@@ -27,6 +27,8 @@
  * - Multiple snapshot modes (full, interactive, forms)
  */
 
+import { randomUUID } from 'node:crypto';
+
 // ═══════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════
@@ -93,12 +95,17 @@ export class DOMSnapshot {
   private forms: FormInfo[] = [];
   private lastSnapshotTime: number = 0;
   private stale: boolean = true;
+  private snapshotPage: any = null;
+  private snapshotUrl = '';
+  private nextRef = 1;
 
   /**
    * Capture a semantic snapshot of the page.
    * This is the core method — the AI's primary way to "see" the page.
    */
   async capture(page: any, options: SnapshotOptions = {}): Promise<SnapshotResult> {
+    this.invalidate();
+    const snapshotToken = randomUUID();
     const {
       mode = 'full',
       maxElements = 100,        // Reduced from 200 for speed — 100 is plenty for most pages
@@ -107,6 +114,11 @@ export class DOMSnapshot {
       viewportOnly = false,
       textMaxLength = 50,        // Shorter text for faster processing
     } = options;
+    const elementLimit = Math.max(1, Math.min(1000, Math.floor(Number(maxElements) || 100)));
+    const firstRef = this.nextRef;
+    // References from a previous observation must not be reassigned to a new
+    // element, including when another agent takes a snapshot of the same tab.
+    this.nextRef += elementLimit + 1;
 
     // Some TS runtimes wrap serialized functions with an esbuild __name helper.
     // Playwright evaluates that wrapper inside Chrome, so define a tiny compatible
@@ -114,7 +126,7 @@ export class DOMSnapshot {
     await page.evaluate('var __name = globalThis.__name = globalThis.__name || ((fn, name) => fn)').catch(() => {});
 
     // Step 1: Inject our scanner into the page and capture DOM state
-    const rawData = await page.evaluate(({ mode, maxElements, includeText, viewportOnly, textMaxLength }: any) => {
+    const rawData = await page.evaluate(({ mode, maxElements, includeText, viewportOnly, textMaxLength, snapshotToken, firstRef }: any) => {
       // ─── Scanner Functions (run in browser context) ───
       
       function getImplicitRole(tag: string): string {
@@ -259,7 +271,7 @@ export class DOMSnapshot {
 
       // ─── Main Scanner ───
       
-      let refCounter = 1;
+      let refCounter = firstRef;
       const elements: any[] = [];
       const forms: any[] = [];
       const textBlocks: any[] = [];
@@ -270,7 +282,7 @@ export class DOMSnapshot {
         // child while the tree is being traversed. Treat it as a skipped node
         // instead of failing the entire snapshot.
         if (!el || typeof el !== 'object') return;
-        if (refCounter > maxElements) return;
+        if (refCounter >= firstRef + maxElements) return;
         
         const tag = el.tagName?.toLowerCase();
         if (!tag) return;
@@ -298,6 +310,7 @@ export class DOMSnapshot {
         if (shouldReference) {
           const ref = refCounter++;
           el.setAttribute('data-ref', String(ref));
+          el.setAttribute('data-eterx-snapshot', snapshotToken);
           
           const rect = el.getBoundingClientRect();
           const inputEl = el as HTMLInputElement;
@@ -393,18 +406,18 @@ export class DOMSnapshot {
       
       // Enrich forms with their field refs
       for (const form of forms) {
-        const formEl = document.querySelector(`[data-ref="${form.ref}"]`) as HTMLFormElement;
+        const formEl = document.querySelector(`[data-ref="${form.ref}"][data-eterx-snapshot="${snapshotToken}"]`) as HTMLFormElement;
         if (!formEl) continue;
         
         form.fields = [];
         const inputs = formEl.querySelectorAll('input, textarea, select');
         inputs.forEach(input => {
           const ref = input.getAttribute('data-ref');
-          if (ref) form.fields.push(parseInt(ref));
+          if (ref && input.getAttribute('data-eterx-snapshot') === snapshotToken) form.fields.push(parseInt(ref));
         });
         
         const submitBtn = formEl.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
-        if (submitBtn) {
+        if (submitBtn?.getAttribute('data-eterx-snapshot') === snapshotToken) {
           form.submitButton = parseInt(submitBtn.getAttribute('data-ref') || '0') || undefined;
         }
       }
@@ -420,7 +433,7 @@ export class DOMSnapshot {
         totalHeight: document.documentElement.scrollHeight,
         activeElementRef: document.activeElement?.getAttribute('data-ref') || null,
       };
-    }, { mode, maxElements, includeText, viewportOnly, textMaxLength });
+    }, { mode, maxElements: elementLimit, includeText, viewportOnly, textMaxLength, snapshotToken, firstRef });
 
     // Step 2: Build our internal ref map
     this.refs.clear();
@@ -448,7 +461,7 @@ export class DOMSnapshot {
         focused: elem.focused,
         required: elem.required,
         contentEditable: elem.contentEditable,
-        selector: `[data-ref="${elem.ref}"]`,
+        selector: `[data-ref="${elem.ref}"][data-eterx-snapshot="${snapshotToken}"]`,
         cssPath: elem.cssPath,
         bbox: elem.bbox,
         isVisible: elem.isVisible,
@@ -472,6 +485,8 @@ export class DOMSnapshot {
 
     this.lastSnapshotTime = Date.now();
     this.stale = false;
+    this.snapshotPage = page;
+    this.snapshotUrl = rawData.pageUrl;
 
     return {
       snapshotText,
@@ -667,6 +682,10 @@ export class DOMSnapshot {
     this.stale = true;
   }
 
+  isForPage(page: any): boolean {
+    return page === this.snapshotPage && page.url() === this.snapshotUrl;
+  }
+
   /**
    * Check if snapshot needs refresh.
    */
@@ -694,4 +713,5 @@ export class DOMSnapshot {
 // ═══════════════════════════════════════
 // GLOBAL SINGLETON
 // ═══════════════════════════════════════
-export const domSnapshot = new DOMSnapshot();
+const globalForSnapshot = globalThis as typeof globalThis & { __eterxDomSnapshot?: DOMSnapshot };
+export const domSnapshot = globalForSnapshot.__eterxDomSnapshot ||= new DOMSnapshot();

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import '../../../../lib/agent/tools';
 import { globalToolRegistry } from '../../../../lib/agent/tools/registry';
+import { finishDesktopSession } from '../../../../lib/agent/computer/desktop-session';
 import {
   attachAgentApiSessionCookie,
   cleanString,
@@ -55,20 +56,29 @@ export async function POST(req: NextRequest) {
       }), session);
     }
 
+    const runId = cleanString(body.runId, 180) || `live-${session.sessionId}`;
+    // Ending an owned desktop session is allowed even after access is revoked.
+    // It does not grant input access or disconnect the browser.
+    if (['screen_agent', 'computer'].includes(toolName) && (parsed.data as any).action === 'session_stop') {
+      await finishDesktopSession({ chatId, runId }, body.endDesktopRun === true);
+      return attachAgentApiSessionCookie(NextResponse.json({ success: true, toolName,
+        result: { success: true, action: 'session_stop', result: 'Native desktop session ended.', desktopSession: { active: false } } }), session);
+    }
     const computerUseEnabled = body.computerUseEnabled === true;
+    const browserAccessEnabled = body.browserAccessEnabled === true;
     const result = await tool.execute(parsed.data, {
       chatId,
       projectId: chatId,
-      runId: cleanString(body.runId, 180) || `live-${session.sessionId}`,
+      runId,
       abortSignal: req.signal,
       agentSessionId: session.sessionId,
-      allowBrowserControl: true,
+      allowBrowserControl: browserAccessEnabled,
       allowHostControl: computerUseEnabled,
       computerUseEnabled,
       allowNetwork: true,
       networkPolicy: 'allow',
       allowedCapabilities: [
-        'browser.control',
+        ...(browserAccessEnabled ? ['browser.control'] : []),
         ...(computerUseEnabled ? ['host.control', 'host.screenshot'] : []),
         'network.public',
       ],

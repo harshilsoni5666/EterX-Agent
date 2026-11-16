@@ -471,13 +471,19 @@ Current date/time and per-run evidence are supplied with the latest request.`);
     messages: Array<{ role: 'user' | 'model'; content: string; contextTurnId?: string }>,
     config: AgentRunnerConfig
   ): AsyncGenerator<AgentRunnerEvent> {
+    config = { ...config, pinnedContext: { ...config.pinnedContext,
+      runId: String(config.pinnedContext?.runId || '').trim() || `custom-run-${randomUUID()}` } };
     const workspace = await initializeChatWorkspace(config.chatId || 'custom-agent-' + config.agentId, 'default',
       { ...config.pinnedContext, runLocation: config.runLocation || config.pinnedContext?.runLocation });
     const release = managedWorkspaces.acquireWorkspaceLease(workspace.workspacePath);
     try {
       yield* this.runInWorkspace(messages, { ...config, runLocation: workspace.runLocation,
         pinnedContext: { ...config.pinnedContext, workspacePath: workspace.workspacePath, runLocation: workspace.runLocation } });
-    } finally { release(); }
+    } finally {
+      release();
+      const { finishDesktopSession } = await import('./computer/desktop-session');
+      await finishDesktopSession({ ...config.pinnedContext, chatId: config.chatId || `custom-agent-${config.agentId}` }, true);
+    }
   }
 
   private async *runInWorkspace(
@@ -1883,6 +1889,8 @@ Current date/time and per-run evidence are supplied with the latest request.`);
       subAgentId: config.pinnedContext?.subAgentId,
       abortSignal: abortSignal || this.cancelController?.signal,
       signal: abortSignal || this.cancelController?.signal,
+      runAbortSignal: this.cancelController?.signal || abortSignal,
+      runIsCancelled: () => this.cancelled || this.cancelController?.signal.aborted === true,
       isCancelled: () => this.cancelled || abortSignal?.aborted === true || this.cancelController?.signal.aborted === true,
     };
     const canonicalToolName = normalizeRegistryToolName(toolName);

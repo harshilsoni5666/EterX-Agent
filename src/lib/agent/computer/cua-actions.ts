@@ -27,12 +27,13 @@ type ActionOptions = {
 // Desktop state is shared by OS processes. Serialize complete observe/action
 // transactions, including calls from different chats, and retain state per chat.
 const runtime = globalThis as typeof globalThis & {
-  __eterxCuaActions?: { tail: Promise<void>; sessions: Map<string, Session> };
+  __eterxCuaActions?: { tail: Promise<void>; sessions: Map<string, Session>; pending?: number; previewController?: AbortController };
 };
 const shared = runtime.__eterxCuaActions ||= { tail: Promise.resolve(), sessions: new Map() };
 
 async function exclusive<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   signal?.throwIfAborted();
+  shared.pending = (shared.pending || 0) + 1;
   const previous = shared.tail;
   let release!: () => void;
   const finished = new Promise<void>(resolve => { release = resolve; });
@@ -53,6 +54,7 @@ async function exclusive<T>(work: () => Promise<T>, signal?: AbortSignal): Promi
     return await work();
   } finally {
     if (onAbort) signal?.removeEventListener('abort', onAbort);
+    shared.pending = Math.max(0, (shared.pending || 1) - 1);
     release();
   }
 }
@@ -378,7 +380,9 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
       }
       // Never leave subsequent input bound to the app that preceded a launch.
       bind(state, { scope: 'desktop' });
-      return { ...response({ ...launched, next: 'Use list_apps to select the opened window before acting.' }), actionStatus: 'sent' };
+      const result = { ...launched, next: 'Use list_apps to select the opened window before acting.' };
+      try { return { ...(await observe(state, options)), success: true, result, actionStatus: 'sent' }; }
+      catch (error: any) { return { ...response(result), actionStatus: 'sent', observationError: String(error?.message || error) }; }
     }
     if (action === 'focus_app') {
       if (!input.app && !input.text && input.pid == null) throw new Error('Select an app or exact window to focus.');
@@ -445,7 +449,11 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
     }
 
     if (!state.frameHash || !state.observation || Date.now() - state.observation.capturedAt > 120_000) {
-      throw new Error('Observe this exact target with see before sending input. A recent visual observation is required.');
+      const observed = await observe(state, options);
+      return { ...observed, actionStatus: 'not_sent', observationRequired: true,
+        result: observed.success
+          ? 'A fresh screenshot was captured automatically. The requested input has not been sent. Inspect this image, then choose the next action.'
+          : observed.result };
     }
     const delivery = input.delivery_mode ? { delivery_mode: input.delivery_mode } : {};
     const modifiers = Array.isArray(input.modifiers) && input.modifiers.length
@@ -514,6 +522,11 @@ async function execute(action: string, input: any, options: ActionOptions): Prom
 
 export async function executeCuaScreenAction(action: string, input: any, options: ActionOptions = {}): Promise<CuaActionResult | null> {
   if (!ACTIONS.has(action)) return null;
+  if (shared.previewController) {
+    const reason = new Error('Preview yielded to a desktop action.');
+    reason.name = 'DesktopPreviewYield';
+    shared.previewController.abort(reason);
+  }
   try {
     return await exclusive(async () => {
       const status = await ensureCuaDriverDaemon();
@@ -529,12 +542,18 @@ export async function executeCuaScreenAction(action: string, input: any, options
 }
 
 /** Display-only frames never replace the tokens or coordinate frame an agent read. */
-export async function captureCuaPreview(chatId: string): Promise<Frame | null> {
-  return exclusive(async () => {
+export async function captureCuaPreview(chatId: string, signal?: AbortSignal): Promise<Frame | null> {
+  // Previews are expendable; never queue them in front of a pending action.
+  if (shared.pending) return null;
+  const controller = new AbortController();
+  const previewSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  shared.previewController = controller;
+  try { return await exclusive(async () => {
     if (isComputerUseDisabled()) return null;
     const state = shared.sessions.get(chatId);
-    if (!state || Date.now() - state.updatedAt > 60_000) return null;
-    const previewOptions = { chatId: `${chatId}:preview` };
+    if (!state) return null;
+    state.updatedAt = Date.now();
+    const previewOptions = { chatId: `${chatId}:preview`, signal: previewSignal, deadline: Date.now() + 5000 };
     if (!state.previewStarted) {
       await call('start_session', {}, previewOptions);
       state.previewStarted = true;
@@ -542,7 +561,13 @@ export async function captureCuaPreview(chatId: string): Promise<Frame | null> {
     // Desktop capture has no display_only parameter. A separate lifecycle
     // session keeps its preview pixels out of the agent's action frame.
     return capture(state.target, previewOptions, true);
-  }).catch(() => null);
+  }, previewSignal); }
+  catch (error: any) {
+    if (error?.name === 'DesktopPreviewYield') return null;
+    throw error;
+  } finally {
+    if (shared.previewController === controller) shared.previewController = undefined;
+  }
 }
 
 export async function endCuaSession(chatId: string): Promise<void> {

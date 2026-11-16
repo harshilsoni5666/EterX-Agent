@@ -20,6 +20,7 @@ import { createPortal, flushSync } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { createLazyPanel } from '../components/ui/lazy-panel';
 import { Sidebar } from '../components/layout/sidebar';
+import { chatMatchesScope, chatScopeForChat, RECENTS_CHAT_SCOPE, type ChatScope } from '../lib/chat-scope';
 import { CommandPalette } from '../components/layout/command-palette';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { transitionEterxTheme, broadcastEterxSettingsUpdate } from '../components/theme/theme-bridge';
@@ -33,7 +34,7 @@ import { ChatTerminalDock } from '../components/chat/chat-terminal-dock';
 import { BackgroundProcessMenu } from '../components/chat/background-process-menu';
 import { SideWorkspace } from '../components/chat/side-workspace';
 import { MessagesCircle } from '../components/chat/workspace-icons';
-import type { SideChatActions } from '../components/chat/workspace-side-chat';
+import type { SideChatActions, SideChatSettings } from '../components/chat/workspace-side-chat';
 import { addWorkspaceTab, disposeWorkspace, resolveWorkspaceOwner, toggleWorkspace, transferWorkspace, useSideWorkspaceControls, workspaceTabOwner } from '../lib/side-workspace-store';
 import type { BrowserCapture } from '../components/chat/workspace-browser';
 import { createTerminal, disposeChatTerminals, toggleTerminalPlacement, transferChatTerminals, useChatTerminalControls } from '../lib/chat-terminal-store';
@@ -52,7 +53,7 @@ import { safeCopyTextToClipboard } from '../components/ui/copy-button';
 import { getNativeFilePath, buildFilePreviewUrl, normalizePathForComparison, isAbsolutePathLike } from '../lib/path-utils';
 import { openLocalFilePath } from '../components/chat/local-file-link';
 import { getActionPreviewCandidates, previewBelongsToAction, getDiffStats } from '../components/chat/thought-sequence';
-import { captureProxyScreenshot, hasPendingProxyControlWrites, prepareProxyAttachments, readProxyManagerResponse, waitForProxyControlWrites, writeProxyControl, type ProxyControlSettings } from '../lib/proxy-chat-client';
+import { captureProxyScreenshot, hasPendingProxyControlWrites, prepareProxyAttachments, readProxyManagerResponse, readProxyManagerSnapshot, waitForProxyControlWrites, writeProxyControl, type ProxyControlSettings, type ProxyManagerSnapshot } from '../lib/proxy-chat-client';
 import { Shimmer } from '../components/ui/shimmer';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
 import { InteractiveGrid } from '../components/ui/interactive-grid';
@@ -117,7 +118,8 @@ import {
 } from '../lib/chat-composer-ownership';
 import { buildTemporaryTitle, cleanGeneratedTitle, compactTitleHistory, mergeChatTitleMetadata, TITLE_REQUEST_TIMEOUT_MS, TITLE_REFRESH_USER_TURNS, type ChatTitleMetadata } from '../lib/chat/title-generation';
 import { getCodingMode } from '../lib/code/coding-modes';
-import { ProxyChatModelPicker, ProxyRuntimeModelLabel } from '../components/layout/proxy-runtime-model-picker';
+import { ProxyChatModelPicker } from '../components/layout/proxy-runtime-model-picker';
+import { ProxyAgentControls } from '../components/chat/proxy-agent-controls';
 import {
   GENERAL_AGENT_SELECTION,
   normalizeChatAgentSelection,
@@ -1353,23 +1355,23 @@ export interface PinnedItem {
 }
 
 const SPLIT_CHAT_WIDTH_KEY = 'eterx_split_chat_width';
-const DEFAULT_CHAT_PANEL_RATIO = 0.52;
+const SPLIT_CHAT_RATIO_KEY = 'eterx_split_chat_ratio';
+const DEFAULT_CHAT_PANEL_RATIO = 0.5;
+const SPLIT_PANEL_GUTTER = 16;
 const MIN_CHAT_PANEL_WIDTH = 420;
 const MIN_FILE_PANEL_WIDTH = 420;
-const MAX_CHAT_PANEL_WIDTH = 960;
-const MAX_FILE_PANEL_WIDTH = 940;
+
+const getSplitAvailableWidth = (containerWidth: number) => Math.max(0, containerWidth - SPLIT_PANEL_GUTTER);
 
 const getClampedSplitWidth = (width: number, containerWidth: number) => {
   if (!Number.isFinite(containerWidth) || containerWidth <= 0) return width;
 
-  const minChatBase = Math.min(MIN_CHAT_PANEL_WIDTH, Math.max(320, containerWidth * 0.42));
-  const minFile = Math.min(MIN_FILE_PANEL_WIDTH, Math.max(320, containerWidth * 0.36));
-  const minChatByMaxFile = Math.max(0, containerWidth - MAX_FILE_PANEL_WIDTH);
-  const minChat = Math.min(containerWidth - minFile, Math.max(minChatBase, minChatByMaxFile));
-  const maxByFilePanel = Math.max(minChat, containerWidth - minFile);
-  const maxChat = Math.max(minChat, Math.min(MAX_CHAT_PANEL_WIDTH, maxByFilePanel));
+  const availableWidth = getSplitAvailableWidth(containerWidth);
+  const minChat = Math.min(MIN_CHAT_PANEL_WIDTH, availableWidth * 0.4);
+  const minFile = Math.min(MIN_FILE_PANEL_WIDTH, availableWidth * 0.4);
+  const maxChat = availableWidth - minFile;
 
-  return Math.round(Math.min(Math.max(width, minChat), maxChat));
+  return Math.min(Math.max(width, minChat), maxChat);
 };
 
 const LIVE_POLL_STATUSES = new Set(['idle', 'running', 'completed', 'failed', 'stopped']);
@@ -1393,6 +1395,7 @@ function DeepWorkUI() {
   const conversationPaneRef = useRef<HTMLDivElement>(null);
   const workspaceMainPanelRef = useRef<HTMLDivElement>(null);
   const latestChatPanelWidthRef = useRef<number | null>(null);
+  const preferredChatPanelRatioRef = useRef<number | null>(null);
   const chatScrollPositionsRef = useRef<Record<string, number>>({});
   const [chatPanelWidth, setChatPanelWidth] = useState<number | null>(null);
   const [isResizingPanels, setIsResizingPanels] = useState(false);
@@ -1446,6 +1449,12 @@ function DeepWorkUI() {
   // is revision-owned per chat. Late work for one chat must never overwrite a
   // newer choice or leak into the controls for another open chat.
   const proxyControlRevisionsRef = useRef<Record<string, number>>({});
+  const proxyRunConnectionsRef = useRef(new Map<string, { promise: Promise<void>; retry: boolean; cancelled: boolean }>());
+  const connectProxyRunRef = useRef<(chatId: string, retry?: boolean) => Promise<void>>(async () => {});
+  useEffect(() => () => {
+    proxyRunConnectionsRef.current.forEach(connection => { connection.cancelled = true; });
+    proxyRunConnectionsRef.current.clear();
+  }, []);
   const autonomyDefaultRevisionRef = useRef(0);
   // A fresh composer transfers its controls to a newly reserved chat before
   // the server has necessarily materialized that run. Until the server agrees
@@ -2107,6 +2116,13 @@ function DeepWorkUI() {
     return next;
   }, [chats]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [sidebarChatScope, setSidebarChatScopeState] = useState<ChatScope>(RECENTS_CHAT_SCOPE);
+  const sidebarChatScopeRef = useRef(sidebarChatScope);
+  const draftImportFolderRef = useRef<string | undefined>(undefined);
+  const setSidebarChatScope = useCallback((scope: ChatScope) => {
+    sidebarChatScopeRef.current = scope;
+    setSidebarChatScopeState(scope);
+  }, []);
   const [newChatEntryId, setNewChatEntryId] = useState(0);
   const [compactingChats, setCompactingChats] = useState<Record<string, boolean>>({});
   const manualCompactionJobsRef = useRef(new Map<string, Promise<void>>());
@@ -2128,8 +2144,6 @@ function DeepWorkUI() {
     for (const file of queued) addWorkspaceTab(file.workspaceOwner || terminalChatId, file.activeTabMode === 'diff' ? 'review' : 'files', { path: file.filepath, title: file.activeTabMode === 'diff' ? 'Review' : file.filename });
     clearPanels();
   }, [openFiles, openedFileIndex, terminalChatId, clearPanels]);
-  const [compactProxyOpen, setCompactProxyOpen] = useState(false);
-  useEffect(() => { setCompactProxyOpen(false); }, [activeChatId, sideTerminalVisible]);
   const [buildingAgentId, setBuildingAgentId] = useState<string | null>(null);
   const [buildingAgentName, setBuildingAgentName] = useState<string | null>(null);
 
@@ -2214,7 +2228,6 @@ function DeepWorkUI() {
   const [proxyFollowChatModel, setProxyFollowChatModel] = useState(true);
   const [showProxyChat, setShowProxyChat] = useState(false);
   const [proxyChatInput, setProxyChatInput] = useState('');
-  const [showProxyInterventionMenu, setShowProxyInterventionMenu] = useState(false);
   const [proxyChatMessages, setProxyChatMessages] = useState<ProxyChatMessage[]>([]);
   const [proxyManagerContext, setProxyManagerContext] = useState<any>(null);
   const [proxyChatHistoryChatId, setProxyChatHistoryChatId] = useState<string | null>(null);
@@ -2248,7 +2261,6 @@ function DeepWorkUI() {
     type: 'drag' | 'resize';
     startX: number;
     startY: number;
-    startWindow: typeof proxyChatWindow;
     baseLeft0: number;
     baseTop0: number;
     startRect: { left: number; top: number; width: number; height: number };
@@ -2285,13 +2297,15 @@ function DeepWorkUI() {
             runLocation = storedRunLocation;
           }
           const storedWorkspacePath = appStorage.getItem('eterx_chat_workspace_path_default');
-          if (storedWorkspacePath !== null) workspacePath = storedWorkspacePath.trim() || null;
+          if (storedWorkspacePath !== null && !workspaceSelectionsRef.current.has(terminalDraftId)) {
+            workspacePath = storedWorkspacePath.trim() || null;
+          }
         }
         composerDefaultsRef.current.runLocation = runLocation;
         composerDefaultsRef.current.workspacePath = workspacePath;
         if (hasActiveChat) return;
         composerRuntimeSelectionRef.current.runLocation = runLocation;
-        workspaceSelectionsRef.current.set(terminalDraftId, workspacePath);
+        if (restorePersisted) workspaceSelectionsRef.current.set(terminalDraftId, workspacePath);
         setActiveRunLocation(runLocation);
         setActiveWorkspacePath(workspacePath);
         if (restorePersisted) updateComposerState(state => ({ ...state, runLocation }));
@@ -3330,29 +3344,31 @@ function DeepWorkUI() {
     } }, onError);
   }, []);
 
-  const handleProxyToggle = useCallback(async () => {
-    const targetChatId = activeChatIdRef.current;
+  const handleProxyToggle = useCallback(async (targetChatId: string | null = activeChatIdRef.current) => {
     const chatKey = targetChatId || 'new_chat';
+    const updatesDefault = targetChatId === activeChatIdRef.current;
     const previous = readStoredProxyControlSettings(chatKey);
     const previousDefault = readStoredProxyControlSettings('new_chat');
-    const defaultRevision = ++autonomyDefaultRevisionRef.current;
+    const defaultRevision = updatesDefault ? ++autonomyDefaultRevisionRef.current : autonomyDefaultRevisionRef.current;
     const previousEnabled = previous.enabled;
     const nextEnabled = !previousEnabled;
     transferredProxyControlsRef.current.delete(chatKey);
     const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
     proxyControlRevisionsRef.current[chatKey] = revision;
-    setProxyEnabled(nextEnabled);
     const previousPaused = previous.paused;
-    setProxyPaused(false);
-    setProxyComposerError('');
-    setShowProxyChat(nextEnabled && Boolean(targetChatId));
-    if (!nextEnabled) {
-      setShowProxyChat(false);
-      setShowProxyInterventionMenu(false);
+    if ((activeChatIdRef.current || 'new_chat') === chatKey) {
+      setProxyEnabled(nextEnabled);
+      setProxyPaused(false);
+      setProxyComposerError('');
+      setShowProxyChat(nextEnabled && Boolean(targetChatId));
+      if (!nextEnabled) {
+        setShowProxyChat(false);
+      }
     }
     const settings = { ...previous, enabled: nextEnabled, paused: false };
     try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify(settings)); } catch { }
-    if (targetChatId) {
+    setContextSettingsRevision(value => value + 1);
+    if (targetChatId && updatesDefault) {
       try {
         appStorage.setItem('eterx_proxy_controls_new_chat', JSON.stringify({
           ...previousDefault,
@@ -3368,15 +3384,16 @@ function DeepWorkUI() {
       proxyControlRevisionsRef.current[chatKey] === revision
     ) {
       try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify(previous)); } catch { }
-      if (autonomyDefaultRevisionRef.current === defaultRevision) {
+      setContextSettingsRevision(value => value + 1);
+      if (updatesDefault && autonomyDefaultRevisionRef.current === defaultRevision) {
         try { appStorage.setItem('eterx_proxy_controls_new_chat', JSON.stringify(previousDefault)); } catch { }
       }
       if ((activeChatIdRef.current || 'new_chat') === chatKey) { setProxyEnabled(previousEnabled); setProxyPaused(previousPaused); setProxyComposerError(saveError || 'Autonomous mode could not be updated. Please try again.'); }
+      else throw new Error(saveError || 'Autonomous mode could not be updated. Please try again.');
     }
   }, [activeChatId, proxyEnabled, proxyPaused, proxyIntervention, updateProxyControl]);
 
-  const handleProxyPauseToggle = useCallback(async () => {
-    const targetChatId = activeChatIdRef.current;
+  const handleProxyPauseToggle = useCallback(async (targetChatId: string | null = activeChatIdRef.current) => {
     const chatKey = targetChatId || 'new_chat';
     const previous = readStoredProxyControlSettings(chatKey);
     if (!previous.enabled) return;
@@ -3384,24 +3401,25 @@ function DeepWorkUI() {
     transferredProxyControlsRef.current.delete(chatKey);
     const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
     proxyControlRevisionsRef.current[chatKey] = revision;
-    setProxyPaused(nextPaused);
+    if ((activeChatIdRef.current || 'new_chat') === chatKey) setProxyPaused(nextPaused);
     const settings = { ...previous, paused: nextPaused };
     try { appStorage.setItem(`eterx_proxy_controls_${chatKey}`, JSON.stringify(settings)); } catch { }
+    setContextSettingsRevision(value => value + 1);
     let saveError = '';
     if (targetChatId && !await updateProxyControl(targetChatId, settings, message => { saveError = message; }) && proxyControlRevisionsRef.current[chatKey] === revision) {
       try { appStorage.setItem(`eterx_proxy_controls_${chatKey}`, JSON.stringify(previous)); } catch { }
+      setContextSettingsRevision(value => value + 1);
       if ((activeChatIdRef.current || 'new_chat') === chatKey) { setProxyPaused(previous.paused); setProxyComposerError(saveError || 'Proxy supervision could not be updated. Please try again.'); }
+      else throw new Error(saveError || 'Proxy supervision could not be updated. Please try again.');
     }
   }, [activeChatId, proxyEnabled, proxyPaused, proxyIntervention, updateProxyControl]);
 
   useEffect(() => {
     if (proxyEnabled && activeChatId) return;
     setShowProxyChat(false);
-    setShowProxyInterventionMenu(false);
   }, [activeChatId, proxyEnabled]);
 
-  const handleProxyInterventionChange = useCallback(async (level: 'minimal' | 'normal' | 'high') => {
-    const targetChatId = activeChatIdRef.current;
+  const handleProxyInterventionChange = useCallback(async (level: 'minimal' | 'normal' | 'high', targetChatId: string | null = activeChatIdRef.current) => {
     const chatKey = targetChatId || 'new_chat';
     const previous = readStoredProxyControlSettings(chatKey);
     const previousLevel = previous.intervention;
@@ -3409,9 +3427,10 @@ function DeepWorkUI() {
     transferredProxyControlsRef.current.delete(chatKey);
     const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
     proxyControlRevisionsRef.current[chatKey] = revision;
-    setProxyIntervention(level);
+    if ((activeChatIdRef.current || 'new_chat') === chatKey) setProxyIntervention(level);
     const settings = { ...previous, intervention: level };
     try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify(settings)); } catch { }
+    setContextSettingsRevision(value => value + 1);
     let saveError = '';
     if (
       targetChatId &&
@@ -3419,40 +3438,47 @@ function DeepWorkUI() {
       proxyControlRevisionsRef.current[chatKey] === revision
     ) {
       try { appStorage.setItem(`eterx_proxy_controls_${ chatKey }`, JSON.stringify(previous)); } catch { }
+      setContextSettingsRevision(value => value + 1);
       if ((activeChatIdRef.current || 'new_chat') === chatKey) { setProxyIntervention(previousLevel); setProxyComposerError(saveError || 'Proxy intervention could not be updated. Please try again.'); }
+      else throw new Error(saveError || 'Proxy intervention could not be updated. Please try again.');
     }
   }, [activeChatId, proxyEnabled, proxyPaused, proxyIntervention, updateProxyControl]);
 
-  const handleProxyModelSelectionChange = useCallback(async (selection: string) => {
-    const chatId = activeChatIdRef.current;
+  const handleProxyModelSelectionChange = useCallback(async (selection: string, chatId: string | null = activeChatIdRef.current, chatSelection?: string) => {
     if (!chatId || !parseModelEntryKey(selection)) return;
     const previous = readStoredProxyControlSettings(chatId);
-    const chatModel = parseModelEntryKey(proxyChatModelRef.current.selection);
-    const followsChat = proxyChatModelRef.current.owner === chatId && Boolean(chatModel)
+    const chatModel = parseModelEntryKey(chatSelection ?? (proxyChatModelRef.current.owner === chatId ? proxyChatModelRef.current.selection : composerStatesRef.current[chatId]?.chatModelSelection || ''));
+    const followsChat = Boolean(chatModel)
       && selection === modelEntryKey(chatModel!.provider, chatModel!.modelId);
     const settings = { ...previous, modelSelection: selection, followChatModel: followsChat };
     const revision = (proxyControlRevisionsRef.current[chatId] || 0) + 1;
     proxyControlRevisionsRef.current[chatId] = revision;
     transferredProxyControlsRef.current.delete(chatId);
-    setProxyModelSelection(selection);
-    setProxyFollowChatModel(followsChat);
-    setProxyComposerError('');
+    if (activeChatIdRef.current === chatId) {
+      setProxyModelSelection(selection);
+      setProxyFollowChatModel(followsChat);
+      setProxyComposerError('');
+    }
     try { appStorage.setItem(`eterx_proxy_controls_${chatId}`, JSON.stringify(settings)); } catch { }
+    setContextSettingsRevision(value => value + 1);
     let saveError = '';
     const saved = await writeProxyControl(chatId, { action: 'model', modelSelection: selection, followChatModel: followsChat }, message => { saveError = message; });
     if (!saved && proxyControlRevisionsRef.current[chatId] === revision) {
       try { appStorage.setItem(`eterx_proxy_controls_${chatId}`, JSON.stringify(previous)); } catch { }
+      setContextSettingsRevision(value => value + 1);
       if (activeChatIdRef.current === chatId) {
         setProxyModelSelection(previous.modelSelection);
         setProxyFollowChatModel(previous.followChatModel !== false);
         setProxyComposerError(saveError || 'The Proxy model could not be changed. Please try again.');
       }
+      else throw new Error(saveError || 'The Proxy model could not be changed. Please try again.');
     }
   }, []);
 
   useLayoutEffect(() => {
     const chatKey = activeChatId || 'new_chat';
-    const revision = (proxyControlRevisionsRef.current[chatKey] || 0) + 1;
+    // Navigation restores controls; only a control change owns a new revision.
+    const revision = proxyControlRevisionsRef.current[chatKey] || 0;
     proxyControlRevisionsRef.current[chatKey] = revision;
     let cancelled = false;
     const restoreProxyControls = () => {
@@ -3481,6 +3507,31 @@ function DeepWorkUI() {
     return () => { cancelled = true; };
   }, [activeChatId]);
 
+  const applyProxyControlSnapshot = useCallback((chatId: string, control: ProxyManagerSnapshot['control'], revision: number) => {
+    if (!control || control.revision <= 0 || hasPendingProxyControlWrites(chatId) ||
+      transferredProxyControlsRef.current.has(chatId) || (proxyControlRevisionsRef.current[chatId] || 0) !== revision) return;
+    const saved = readStoredProxyControlSettings(chatId);
+    const settings: ProxyControlSettings = {
+      enabled: control.enabled === true,
+      paused: control.enabled === true && control.paused === true,
+      intervention: ['minimal', 'normal', 'high'].includes(control.intervention) ? control.intervention : 'normal',
+      modelSelection: parseModelEntryKey(control.modelSelection) ? control.modelSelection : 'auto',
+      followChatModel: control.followChatModel !== false,
+    };
+    if (saved.enabled === settings.enabled && saved.paused === settings.paused && saved.intervention === settings.intervention &&
+      saved.modelSelection === settings.modelSelection && saved.followChatModel === settings.followChatModel) return;
+    proxyControlRevisionsRef.current[chatId] = revision + 1;
+    try { appStorage.setItem(`eterx_proxy_controls_${chatId}`, JSON.stringify(settings)); } catch { }
+    if (activeChatIdRef.current === chatId) {
+      setProxyEnabled(settings.enabled);
+      setProxyPaused(settings.paused);
+      setProxyIntervention(settings.intervention);
+      setProxyModelSelection(settings.modelSelection);
+      setProxyFollowChatModel(settings.followChatModel !== false);
+    }
+    setContextSettingsRevision(value => value + 1);
+  }, []);
+
   useEffect(() => {
     if (!showProxyChat || !activeChatId) return;
     const targetChatId = activeChatId;
@@ -3500,26 +3551,7 @@ function DeepWorkUI() {
         });
         const data = response.ok ? await response.json() : null;
         if (cancelled || activeChatIdRef.current !== targetChatId || !data?.context) return;
-        if (data.control && typeof data.control.enabled === 'boolean' && data.control.revision > 0 &&
-          !hasPendingProxyControlWrites(targetChatId) && !transferredProxyControlsRef.current.has(targetChatId) &&
-          (proxyControlRevisionsRef.current[targetChatId] || 0) === controlRevisionAtRead) {
-          const saved = readStoredProxyControlSettings(targetChatId);
-          const enabled = data.control.enabled === true;
-          const paused = enabled && data.control.paused === true;
-          const intervention = ['minimal', 'normal', 'high'].includes(data.control.intervention) ? data.control.intervention : 'normal';
-          const modelSelection = parseModelEntryKey(data.control.modelSelection) ? data.control.modelSelection : 'auto';
-          const followChatModel = data.control.followChatModel !== false;
-          if (saved.enabled !== enabled || saved.paused !== paused || saved.intervention !== intervention ||
-            saved.modelSelection !== modelSelection || saved.followChatModel !== followChatModel) {
-            proxyControlRevisionsRef.current[targetChatId] = controlRevisionAtRead + 1;
-            setProxyEnabled(enabled);
-            setProxyPaused(paused);
-            setProxyIntervention(intervention);
-            setProxyModelSelection(modelSelection);
-            setProxyFollowChatModel(followChatModel);
-            try { appStorage.setItem(`eterx_proxy_controls_${targetChatId}`, JSON.stringify({ enabled, paused, intervention, modelSelection, followChatModel })); } catch { }
-          }
-        }
+        applyProxyControlSnapshot(targetChatId, data.control, controlRevisionAtRead);
         setProxyManagerContext(data.context);
         const canonicalMessages = normalizeProxyHistoryMessages(data.messages);
         if (canonicalMessages.length) {
@@ -3558,7 +3590,6 @@ function DeepWorkUI() {
     };
   }, [activeChatId, showProxyChat]);
 
-  const proxyCardRef = useRef<HTMLDivElement>(null);
   const proxyAttachMenuRef = useRef<HTMLDivElement>(null);
   const [proxyAttachments, setProxyAttachments] = useState<ComposerAttachment[]>([]);
   const [customInputHeight, setCustomInputHeight] = useState<number | null>(null);
@@ -3569,17 +3600,20 @@ function DeepWorkUI() {
     if (!textarea || customInputHeight) return;
     textarea.style.height = 'auto';
     textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
-  }, [proxyChatInput, customInputHeight, showProxyChat, activeChatId]);
+  }, [proxyChatInput, customInputHeight, showProxyChat, activeChatId, proxyChatWindow.width]);
 
   const startInputHeightResize = useCallback((downEvent: React.PointerEvent) => {
+    if (downEvent.button !== 0) return;
     downEvent.preventDefault();
+    downEvent.stopPropagation();
     proxyInputResizeCleanupRef.current?.();
     const startY = downEvent.clientY;
-    const startHeight = customInputHeight || 36;
+    const startHeight = proxyTextareaRef.current?.getBoundingClientRect().height || 36;
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       const dy = startY - moveEvent.clientY;
-      const newHeight = Math.max(32, Math.min(360, startHeight + dy));
+      const maxHeight = Math.min(240, (proxyChatWindowRef.current?.clientHeight || 460) * 0.3);
+      const newHeight = Math.max(32, Math.min(maxHeight, startHeight + dy));
       setCustomInputHeight(newHeight);
     };
 
@@ -3594,7 +3628,7 @@ function DeepWorkUI() {
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('pointercancel', handlePointerUp);
-  }, [customInputHeight]);
+  }, []);
   const [proxyPinnedItems, setProxyPinnedItems] = useState<{ name: string; isFolder?: boolean; path?: string }[]>([]);
   const proxyDraftsRef = useRef(new Map<string, { text: string; attachments: ComposerAttachment[]; pins: typeof proxyPinnedItems }>());
   const proxyDraftOwnerRef = useRef<string | null>(null);
@@ -3693,13 +3727,10 @@ function DeepWorkUI() {
   }, [envDropdownOpen]);
 
   useEffect(() => {
-    if (!showProxyInterventionMenu && !showProxyAttachMenu) return;
+    if (!showProxyAttachMenu) return;
 
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (proxyCardRef.current && !proxyCardRef.current.contains(target)) {
-        setShowProxyInterventionMenu(false);
-      }
       if (proxyAttachMenuRef.current && !proxyAttachMenuRef.current.contains(target)) {
         setShowProxyAttachMenu(false);
       }
@@ -3709,7 +3740,7 @@ function DeepWorkUI() {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showProxyInterventionMenu, showProxyAttachMenu]);
+  }, [showProxyAttachMenu]);
 
 
   useEffect(() => {
@@ -3727,7 +3758,6 @@ function DeepWorkUI() {
     setProxyChatMessages(previous => proxyChatHistoryChatId === targetChatId ? previous : []);
     setProxyChatHistoryChatId(previous => previous === targetChatId ? previous : null);
     setProxyManagerContext(null);
-    setShowProxyInterventionMenu(false);
     setProxyChatLoading(proxyLoadingChatIdsRef.current.has(activeChatId));
     setProxyLiveTurn(proxyLiveTurnsRef.current.get(activeChatId) || null);
     waitForProxyControlWrites(targetChatId)
@@ -3841,7 +3871,6 @@ function DeepWorkUI() {
       return;
     }
     const requestChatId = activeChatIdRef.current;
-    const mainModel = parseModelEntryKey(chatSelection) || undefined;
     const mainComposer = composerStatesRef.current[composerStateKey(ownerAtSend, 'main')];
     const workspaceOwner = resolveWorkspaceOwner(activeChatIdRef.current || terminalDraftId);
     const workspacePath = workspaceSelectionsRef.current.has(workspaceOwner)
@@ -3928,7 +3957,7 @@ function DeepWorkUI() {
       parsedModel = parseModelEntryKey(resolveProxyModelSelection(latestControls, latestChatSelection));
       if (!parsedModel) throw new Error('Select a configured model for Proxy before sending this message.');
       requestStarted = true;
-      const response = await fetch('/api/agent/proxy-manager', {
+      const response = fetch('/api/agent/proxy-manager', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3938,7 +3967,7 @@ function DeepWorkUI() {
           attachmentContext,
           mediaAttachments,
           model: parsedModel || {},
-          mainModel,
+          mainModel: parseModelEntryKey(latestChatSelection) || undefined,
           workspace,
           contextCompaction: readContextCompactionSettings(parsedModel, requestChatId),
           stream: true,
@@ -3947,9 +3976,10 @@ function DeepWorkUI() {
       });
       // Rejected admission never consumed the draft. Accepted streams can be
       // recovered from history if their connection subsequently drops.
-      requestStarted = response.ok;
-      const data = await readProxyManagerResponse(response, applyProxyProgress);
-      if (!response.ok || !data.success) throw new Error(data.error || 'Proxy Manager request failed');
+      const data = await readProxyManagerResponse(response, applyProxyProgress, {
+        chatId: requestChatId, requestId: optimisticId, onAdmission: accepted => { requestStarted = accepted; },
+      });
+      if (!data.success) throw new Error(data.error || 'Proxy Manager request failed');
       const historyArr = Array.isArray(data.history) ? data.history : [];
       if (activeChatIdRef.current === requestChatId) {
         setProxyManagerContext(data.context || null);
@@ -3969,43 +3999,7 @@ function DeepWorkUI() {
         }]);
         }
       }
-      if (data.wakeRequested) {
-        const connectProxyRun = async (attempt = 0) => {
-          if (activePollersRef.current.has(requestChatId)) {
-            catchUpPollersRef.current.get(requestChatId)?.();
-            return;
-          }
-          const observedPollGeneration = pollGenerationRef.current.get(requestChatId) || 0;
-          try {
-            const poll = await fetchAgentPoll(requestChatId, -1, 5000);
-            if (
-              activePollersRef.current.has(requestChatId) ||
-              (pollGenerationRef.current.get(requestChatId) || 0) !== observedPollGeneration
-            ) return;
-            if (isTerminalAgentStatus(poll.status)) {
-              setChatLogsById(requestChatId, previous => mergeAgentPollSnapshot(previous, poll, requestChatId));
-              removeRunningChat(requestChatId);
-              return;
-            }
-            if (poll.status !== 'running') {
-              if (attempt < 11) window.setTimeout(() => connectProxyRun(attempt + 1), 500);
-              return;
-            }
-            setRunningChats(previous => new Set(previous).add(requestChatId));
-            if (poll.traces?.length) {
-              setChatLogsById(requestChatId, previous => mergeServerRunLogs(previous, poll.traces, {
-                chatId: requestChatId,
-                runId: poll.runId,
-                startedAt: poll.startedAt,
-              }));
-            }
-            startPolling(requestChatId, getPollCursor(poll), poll.startedAt, poll.runId);
-          } catch {
-            if (attempt < 11) window.setTimeout(() => connectProxyRun(attempt + 1), 700);
-          }
-        };
-        window.setTimeout(() => connectProxyRun(), 250);
-      }
+      void connectProxyRunRef.current(requestChatId, data.wakeRequested === true).catch(() => {});
     } catch (error: any) {
       if (!requestStarted) {
         const draft = proxyDraftsRef.current.get(requestChatId) || { text: '', attachments: [], pins: [] };
@@ -4034,23 +4028,35 @@ function DeepWorkUI() {
     }
   }, [activeChatId, activeRunLocation, activeWorkspacePath, terminalDraftId, proxyAttachments, proxyChatInput, proxyChatLoading, proxyModelEntries, proxyPinnedItems]);
 
+  const getProxyWindowBounds = useCallback(() => {
+    const rect = splitContainerRef.current?.getBoundingClientRect();
+    const left = Math.max(12, Math.min((rect?.left || 0) + 12, window.innerWidth - 13));
+    const top = Math.max(12, Math.min((rect?.top || 0) + 12, window.innerHeight - 13));
+    return {
+      left,
+      top,
+      right: Math.max(left + 1, Math.min(rect?.right ?? window.innerWidth, window.innerWidth) - 12),
+      bottom: Math.max(top + 1, Math.min(rect?.bottom ?? window.innerHeight, window.innerHeight) - 12),
+    };
+  }, []);
+
   const handleProxyWindowPointerMove = useCallback((event: PointerEvent) => {
     const interaction = proxyWindowInteractionRef.current;
     if (!interaction) return;
     const dx = event.clientX - interaction.startX;
     const dy = event.clientY - interaction.startY;
 
-    const containerRect = splitContainerRef.current?.getBoundingClientRect();
+    const bounds = getProxyWindowBounds();
 
     if (interaction.type === 'drag') {
       const { baseLeft0, baseTop0, startRect } = interaction;
       const targetLeft = startRect.left + dx;
       const targetTop = startRect.top + dy;
 
-      const boundaryMinLeft = (containerRect ? containerRect.left : 0) + 12;
-      const boundaryMaxLeft = (containerRect ? containerRect.right : window.innerWidth) - startRect.width - 12;
-      const boundaryMinTop = (containerRect ? containerRect.top : 0) + 12;
-      const boundaryMaxTop = (containerRect ? containerRect.bottom : window.innerHeight) - startRect.height - 12;
+      const boundaryMinLeft = bounds.left;
+      const boundaryMaxLeft = bounds.right - startRect.width;
+      const boundaryMinTop = bounds.top;
+      const boundaryMaxTop = bounds.bottom - startRect.height;
 
       const clampedLeft = Math.max(boundaryMinLeft, Math.min(Math.max(boundaryMinLeft, boundaryMaxLeft), targetLeft));
       const clampedTop = Math.max(boundaryMinTop, Math.min(Math.max(boundaryMinTop, boundaryMaxTop), targetTop));
@@ -4062,18 +4068,16 @@ function DeepWorkUI() {
       }));
     } else {
       const { baseLeft0, baseTop0, startRect } = interaction;
-      const containerRight = containerRect ? containerRect.right : window.innerWidth;
-      const containerBottom = containerRect ? containerRect.bottom : window.innerHeight;
-      const maxWidth = Math.max(280, containerRight - startRect.left - 12);
-      const maxHeight = Math.max(320, containerBottom - startRect.top - 12);
+      const maxWidth = Math.max(1, Math.min(580, bounds.right - startRect.left));
+      const maxHeight = Math.max(1, Math.min(740, bounds.bottom - startRect.top));
 
-      const nextWidth = Math.max(280, Math.min(580, maxWidth, startRect.width + dx));
-      const nextHeight = Math.max(320, Math.min(740, maxHeight, startRect.height + dy));
+      const nextWidth = Math.min(maxWidth, Math.max(280, startRect.width + dx));
+      const nextHeight = Math.min(maxHeight, Math.max(320, startRect.height + dy));
 
-      const boundaryMinLeft = (containerRect ? containerRect.left : 0) + 12;
-      const boundaryMaxLeft = containerRight - nextWidth - 12;
-      const boundaryMinTop = (containerRect ? containerRect.top : 0) + 12;
-      const boundaryMaxTop = containerBottom - nextHeight - 12;
+      const boundaryMinLeft = bounds.left;
+      const boundaryMaxLeft = bounds.right - nextWidth;
+      const boundaryMinTop = bounds.top;
+      const boundaryMaxTop = bounds.bottom - nextHeight;
 
       const clampedLeft = Math.max(boundaryMinLeft, Math.min(Math.max(boundaryMinLeft, boundaryMaxLeft), startRect.left));
       const clampedTop = Math.max(boundaryMinTop, Math.min(Math.max(boundaryMinTop, boundaryMaxTop), startRect.top));
@@ -4082,52 +4086,64 @@ function DeepWorkUI() {
         ...current,
         width: nextWidth,
         height: nextHeight,
-        x: clampedLeft - baseLeft0,
-        y: clampedTop - baseTop0,
+        // The fixed window is anchored to the bottom-right. Compensate for
+        // its new size so the opposite corner stays still during resizing.
+        x: clampedLeft - baseLeft0 + nextWidth - startRect.width,
+        y: clampedTop - baseTop0 + nextHeight - startRect.height,
       }));
     }
-  }, []);
+  }, [getProxyWindowBounds]);
 
   const handleProxyWindowPointerUp = useCallback(() => {
     proxyWindowInteractionRef.current = null;
   }, []);
 
-  useEffect(() => {
-    if (!showProxyChat) return;
+  useLayoutEffect(() => {
+    if (!showProxyChat) {
+      proxyWindowInteractionRef.current = null;
+      return;
+    }
     const clampProxyWindowToBounds = () => {
       const rect = proxyChatWindowRef.current?.getBoundingClientRect();
       if (!rect) return;
       const baseLeft0 = rect.left - proxyChatWindow.x;
       const baseTop0 = rect.top - proxyChatWindow.y;
 
-      const containerRect = splitContainerRef.current?.getBoundingClientRect();
-      const boundaryMinLeft = (containerRect ? containerRect.left : 0) + 12;
-      const boundaryMaxLeft = (containerRect ? containerRect.right : window.innerWidth) - rect.width - 12;
-      const boundaryMinTop = (containerRect ? containerRect.top : 0) + 12;
-      const boundaryMaxTop = (containerRect ? containerRect.bottom : window.innerHeight) - rect.height - 12;
+      const bounds = getProxyWindowBounds();
+      const width = Math.min(proxyChatWindow.width, bounds.right - bounds.left);
+      const height = Math.min(proxyChatWindow.height, bounds.bottom - bounds.top);
+      const boundaryMinLeft = bounds.left;
+      const boundaryMaxLeft = bounds.right - width;
+      const boundaryMinTop = bounds.top;
+      const boundaryMaxTop = bounds.bottom - height;
 
       const clampedLeft = Math.max(boundaryMinLeft, Math.min(Math.max(boundaryMinLeft, boundaryMaxLeft), rect.left));
       const clampedTop = Math.max(boundaryMinTop, Math.min(Math.max(boundaryMinTop, boundaryMaxTop), rect.top));
 
-      const nextX = clampedLeft - baseLeft0;
-      const nextY = clampedTop - baseTop0;
+      const nextX = clampedLeft - baseLeft0 + width - rect.width;
+      const nextY = clampedTop - baseTop0 + height - rect.height;
 
-      if (Math.abs(nextX - proxyChatWindow.x) > 0.5 || Math.abs(nextY - proxyChatWindow.y) > 0.5) {
+      if (Math.abs(nextX - proxyChatWindow.x) > 0.5 || Math.abs(nextY - proxyChatWindow.y) > 0.5 ||
+        width !== proxyChatWindow.width || height !== proxyChatWindow.height) {
         setProxyChatWindow(current => ({
           ...current,
           x: nextX,
           y: nextY,
+          width,
+          height,
         }));
       }
     };
 
-    const timerId = setTimeout(clampProxyWindowToBounds, 40);
+    clampProxyWindowToBounds();
+    const observer = new ResizeObserver(clampProxyWindowToBounds);
+    if (splitContainerRef.current) observer.observe(splitContainerRef.current);
     window.addEventListener('resize', clampProxyWindowToBounds);
     return () => {
-      clearTimeout(timerId);
+      observer.disconnect();
       window.removeEventListener('resize', clampProxyWindowToBounds);
     };
-  }, [showProxyChat, proxyChatWindow.x, proxyChatWindow.y, proxyChatWindow.width, proxyChatWindow.height]);
+  }, [showProxyChat, proxyChatWindow, getProxyWindowBounds, activeView, activeChatId, proxyEnabled, buildingAgentId, activeSubAgentTab]);
 
   useEffect(() => {
     window.addEventListener('pointermove', handleProxyWindowPointerMove);
@@ -4141,6 +4157,7 @@ function DeepWorkUI() {
   }, [handleProxyWindowPointerMove, handleProxyWindowPointerUp]);
 
   const startProxyWindowInteraction = useCallback((type: 'drag' | 'resize', event: React.PointerEvent) => {
+    if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     const rect = proxyChatWindowRef.current?.getBoundingClientRect();
@@ -4150,7 +4167,6 @@ function DeepWorkUI() {
       type,
       startX: event.clientX,
       startY: event.clientY,
-      startWindow: proxyChatWindow,
       baseLeft0: rect.left - proxyChatWindow.x,
       baseTop0: rect.top - proxyChatWindow.y,
       startRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
@@ -4162,13 +4178,14 @@ function DeepWorkUI() {
     if (!container) return;
 
     const containerWidth = container.getBoundingClientRect().width;
-    setChatPanelWidth(current => {
-      const baseWidth = current ?? containerWidth * DEFAULT_CHAT_PANEL_RATIO;
-      const nextWidth = getClampedSplitWidth(baseWidth + delta, containerWidth);
-      latestChatPanelWidthRef.current = nextWidth;
-      appStorage.setItem(SPLIT_CHAT_WIDTH_KEY, String(nextWidth));
-      return nextWidth;
-    });
+    const availableWidth = getSplitAvailableWidth(containerWidth);
+    if (!availableWidth) return;
+    const baseWidth = latestChatPanelWidthRef.current ?? availableWidth * (preferredChatPanelRatioRef.current ?? DEFAULT_CHAT_PANEL_RATIO);
+    const nextWidth = getClampedSplitWidth(baseWidth + delta, containerWidth);
+    preferredChatPanelRatioRef.current = nextWidth / availableWidth;
+    latestChatPanelWidthRef.current = nextWidth;
+    setChatPanelWidth(nextWidth);
+    appStorage.setItem(SPLIT_CHAT_RATIO_KEY, String(preferredChatPanelRatioRef.current));
   }, []);
 
   const resetPanelSplit = useCallback(() => {
@@ -4176,19 +4193,19 @@ function DeepWorkUI() {
     if (!container) return;
 
     const containerWidth = container.getBoundingClientRect().width;
-    const nextWidth = getClampedSplitWidth(containerWidth * DEFAULT_CHAT_PANEL_RATIO, containerWidth);
+    const nextWidth = getClampedSplitWidth(getSplitAvailableWidth(containerWidth) * DEFAULT_CHAT_PANEL_RATIO, containerWidth);
+    preferredChatPanelRatioRef.current = DEFAULT_CHAT_PANEL_RATIO;
     latestChatPanelWidthRef.current = nextWidth;
     setChatPanelWidth(nextWidth);
-      appStorage.setItem(SPLIT_CHAT_WIDTH_KEY, String(nextWidth));
+    appStorage.setItem(SPLIT_CHAT_RATIO_KEY, String(DEFAULT_CHAT_PANEL_RATIO));
   }, []);
 
   const handlePanelResizeStart = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
     const container = splitContainerRef.current;
-    if (!hasOpenFiles || !container) return;
+    if (event.button !== 0 || !hasOpenFiles || !container) return;
 
     event.preventDefault();
     panelResizeCleanupRef.current?.();
-    const containerRect = container.getBoundingClientRect();
     const previousBodyCursor = document.body.style.cursor === 'col-resize' ? '' : document.body.style.cursor;
     const previousHtmlCursor = document.documentElement.style.cursor === 'col-resize' ? '' : document.documentElement.style.cursor;
     const previousUserSelect = document.body.style.userSelect;
@@ -4204,7 +4221,11 @@ function DeepWorkUI() {
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       moveEvent.preventDefault();
-      const nextWidth = getClampedSplitWidth(moveEvent.clientX - containerRect.left, containerRect.width);
+      const containerRect = container.getBoundingClientRect();
+      const availableWidth = getSplitAvailableWidth(containerRect.width);
+      if (!availableWidth) return;
+      const nextWidth = getClampedSplitWidth(moveEvent.clientX - containerRect.left - SPLIT_PANEL_GUTTER / 2, containerRect.width);
+      preferredChatPanelRatioRef.current = nextWidth / availableWidth;
       latestChatPanelWidthRef.current = nextWidth;
       setChatPanelWidth(nextWidth);
     };
@@ -4215,8 +4236,8 @@ function DeepWorkUI() {
       document.body.style.cursor = previousBodyCursor;
       document.documentElement.style.cursor = previousHtmlCursor;
       document.body.style.userSelect = previousUserSelect;
-      if (latestChatPanelWidthRef.current !== null) {
-        appStorage.setItem(SPLIT_CHAT_WIDTH_KEY, String(latestChatPanelWidthRef.current));
+      if (preferredChatPanelRatioRef.current !== null) {
+        appStorage.setItem(SPLIT_CHAT_RATIO_KEY, String(preferredChatPanelRatioRef.current));
       }
       try {
         if (resizeButton.hasPointerCapture(event.pointerId)) resizeButton.releasePointerCapture(event.pointerId);
@@ -4277,27 +4298,32 @@ function DeepWorkUI() {
     const container = splitContainerRef.current;
     if (!container) return;
 
-    const applyWidth = (containerWidth: number, current: number | null) => {
-      const savedWidth = Number(appStorage.getItem(SPLIT_CHAT_WIDTH_KEY));
-      const fallbackWidth = containerWidth * DEFAULT_CHAT_PANEL_RATIO;
-      const requestedWidth = current ?? (Number.isFinite(savedWidth) && savedWidth > 0 ? savedWidth : fallbackWidth);
-      return getClampedSplitWidth(requestedWidth, containerWidth);
+    const applyWidth = (containerWidth: number) => {
+      const availableWidth = getSplitAvailableWidth(containerWidth);
+      if (!availableWidth) return;
+      if (preferredChatPanelRatioRef.current === null) {
+        const savedRatio = Number(appStorage.getItem(SPLIT_CHAT_RATIO_KEY));
+        const savedWidth = Number(appStorage.getItem(SPLIT_CHAT_WIDTH_KEY));
+        preferredChatPanelRatioRef.current = Number.isFinite(savedRatio) && savedRatio > 0 && savedRatio < 1
+          ? savedRatio
+          : Number.isFinite(savedWidth) && savedWidth > 0
+            ? getClampedSplitWidth(savedWidth, containerWidth) / availableWidth
+            : DEFAULT_CHAT_PANEL_RATIO;
+        appStorage.setItem(SPLIT_CHAT_RATIO_KEY, String(preferredChatPanelRatioRef.current));
+      }
+      // Constrain the rendered width, preserving the preferred ratio so it
+      // returns when the sidebar closes or the window grows again.
+      const nextWidth = getClampedSplitWidth(availableWidth * preferredChatPanelRatioRef.current, containerWidth);
+      latestChatPanelWidthRef.current = nextWidth;
+      setChatPanelWidth(current => current === nextWidth ? current : nextWidth);
     };
 
-    setChatPanelWidth(current => {
-      const nextWidth = applyWidth(container.getBoundingClientRect().width, current);
-      latestChatPanelWidthRef.current = nextWidth;
-      return nextWidth;
-    });
+    applyWidth(container.getBoundingClientRect().width);
 
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(entries => {
       const containerWidth = entries[0]?.contentRect.width ?? container.getBoundingClientRect().width;
-      setChatPanelWidth(current => {
-        const nextWidth = applyWidth(containerWidth, current);
-        latestChatPanelWidthRef.current = nextWidth;
-        return current === nextWidth ? current : nextWidth;
-      });
+      applyWidth(containerWidth);
     });
 
     observer.observe(container);
@@ -4548,6 +4574,7 @@ function DeepWorkUI() {
     const ownerWorkspacePath = currentChatId && workspaceSelectionsRef.current.has(currentChatId)
       ? workspaceSelectionsRef.current.get(currentChatId)
       : selectedChat ? selectedChat.workspacePath || null : activeWorkspacePath;
+    const ownerImportFolder = selectedChat ? selectedChat.importFolder : draftImportFolderRef.current;
     const ownerRunLocation = ownerComposer?.runLocation || selectedChat?.runLocation || activeRunLocation;
     // A new live room stays ephemeral until its first real turn. Persisting it
     // here leaves empty "Live Conversation" rows behind after disconnects.
@@ -4947,6 +4974,7 @@ function DeepWorkUI() {
                   updatedAt: completedAt,
                   traceLogs: committedLiveLogs,
                   workspacePath: ownerWorkspacePath,
+                  importFolder: ownerImportFolder,
                   runLocation: ownerRunLocation,
                 }, ...prevChats];
               })();
@@ -5510,6 +5538,7 @@ function DeepWorkUI() {
                     ?? ((dispatchChatId === currentChatId || createNewChat) ? ownerComposer?.thinkingLevel : undefined),
                   ...((dispatchChatId === currentChatId || createNewChat) ? {
                     workspacePath: ownerWorkspacePath || null,
+                    importFolder: ownerImportFolder,
                     runLocation: ownerRunLocation,
                   } : {}),
                   createNewChat: createNewChat || createLiveOwner,
@@ -7895,7 +7924,13 @@ function DeepWorkUI() {
       setActiveChatId(id);
       setTraceLogs(canonicalizeClientTraceLogs(chat.traceLogs || [], id));
       hydrateChatHistory(id);
-      setActiveWorkspacePath(chat.workspacePath || null);
+      const workspacePath = workspaceSelectionsRef.current.has(id)
+        ? workspaceSelectionsRef.current.get(id)! : chat.workspacePath || null;
+      setActiveWorkspacePath(workspacePath);
+      const scopedChat = { ...chat, workspacePath };
+      if (!id.startsWith('agent_builder_') && !chatMatchesScope(scopedChat, sidebarChatScopeRef.current)) {
+        setSidebarChatScope(chatScopeForChat(scopedChat));
+      }
       const storedState = composerStatesRef.current[id];
       const chatLogs = chat.traceLogs || [];
       const latestUserBoundaryIndex = chatLogs.findLastIndex((log: any) => log?.type === 'user_action');
@@ -8109,12 +8144,26 @@ function DeepWorkUI() {
     if (!result?.ok) throw new Error(result?.error || 'Could not open the chat window. Please try again.');
   });
 
+  const handleChatScopeChange = useEventCallback((scope: ChatScope) => {
+    setSidebarChatScope(scope);
+    // Browsing a folder never changes an existing chat's workspace. A blank
+    // composer, however, must be ready to create its first chat in that scope.
+    if (activeChatIdRef.current) return;
+    const workspacePath = scope.kind === 'project' ? scope.path : null;
+    draftImportFolderRef.current = scope.kind === 'folder' ? scope.name : undefined;
+    workspaceSelectionsRef.current.set(terminalDraftId, workspacePath);
+    setActiveWorkspacePath(workspacePath);
+  });
+
   const handleWorkspacePathChange = useCallback((path: string | null) => {
     const owner = resolveWorkspaceOwner(activeChatId || terminalDraftId);
     workspaceSelectionsRef.current.set(owner, path);
     composerDefaultsRef.current.workspacePath = path;
     try { appStorage.setItem('eterx_chat_workspace_path_default', path || ''); } catch { }
     if (terminalOwnerRef.current === owner) setActiveWorkspacePath(path);
+    if (sidebarChatScopeRef.current.kind === 'project') {
+      setSidebarChatScope(path ? { kind: 'project', path } : RECENTS_CHAT_SCOPE);
+    }
     if (activeChatId || owner !== terminalDraftId) {
       setChats(prev => {
         const updated = prev.map(chat => chat.id === owner ? { ...chat, workspacePath: path, workspaceSelectionUpdatedAt: Date.now() } : chat);
@@ -8123,7 +8172,7 @@ function DeepWorkUI() {
         return updated;
       });
     }
-  }, [activeChatId, terminalDraftId]);
+  }, [activeChatId, terminalDraftId, setSidebarChatScope]);
 
   const handleRunLocationChange = useCallback((location: 'local' | 'sandbox' | 'worktree') => {
     setActiveRunLocation(location);
@@ -8201,9 +8250,11 @@ function DeepWorkUI() {
 
   const createNewChat = useCallback(() => {
     setNewChatEntryId(previous => previous + 1);
-    const defaultWorkspacePath = composerDefaultsRef.current.workspacePath;
-    workspaceSelectionsRef.current.set(terminalDraftId, defaultWorkspacePath);
-    setActiveWorkspacePath(defaultWorkspacePath);
+    const scope = sidebarChatScopeRef.current;
+    const workspacePath = scope.kind === 'project' ? scope.path : null;
+    draftImportFolderRef.current = scope.kind === 'folder' ? scope.name : undefined;
+    workspaceSelectionsRef.current.set(terminalDraftId, workspacePath);
+    setActiveWorkspacePath(workspacePath);
     setChats(previous => {
       const updated = removeGeneratedEmptyChats(previous);
       if (updated.length === previous.length) return previous;
@@ -8333,6 +8384,9 @@ function DeepWorkUI() {
       handledTerminalAnnouncementsRef.current.delete(chatId);
       transferredProxyControlsRef.current.delete(chatId);
       delete proxyControlRevisionsRef.current[chatId];
+      const connection = proxyRunConnectionsRef.current.get(chatId);
+      if (connection) connection.cancelled = true;
+      proxyRunConnectionsRef.current.delete(chatId);
 
       appStorage.removeItem(`eterx_proxy_controls_${chatId}`);
       appStorage.removeItem(`eterx_proxy_manager_model_${chatId}`);
@@ -8361,14 +8415,9 @@ function DeepWorkUI() {
     });
 
     if (deletingActiveChat) {
-      activeChatIdRef.current = null;
-      setActiveChatId(null);
-      setActiveWorkspacePath(null);
-      setTraceLogs([]);
-      setBuildingAgentId(null);
-      setBuildingAgentName(null);
+      createNewChat();
     }
-  }, [activeChatId, stopLiveSession]);
+  }, [activeChatId, stopLiveSession, createNewChat]);
 
   const deleteChat = useCallback((id: string) => {
     deleteChats([id]);
@@ -8395,6 +8444,9 @@ function DeepWorkUI() {
     if (!chatsRef.current.some(chat => chat.id === id)) return;
     workspaceSelectionsRef.current.set(id, path);
     if (terminalOwnerRef.current === id) setActiveWorkspacePath(path);
+    if (activeChatIdRef.current === id && sidebarChatScopeRef.current.kind === 'project') {
+      setSidebarChatScope(path ? { kind: 'project', path } : RECENTS_CHAT_SCOPE);
+    }
     setChats(previous => {
       const next = previous.map(chat => chat.id === id
         ? { ...chat, workspacePath: path, workspaceSelectionUpdatedAt: Math.max(Date.now(), Number(chat.workspaceSelectionUpdatedAt || 0) + 1) }
@@ -8402,7 +8454,7 @@ function DeepWorkUI() {
       persistChats(next);
       return next;
     });
-  }, [setChats]);
+  }, [setChats, setSidebarChatScope]);
 
   const toggleFavorite = useCallback((id: string) => {
     setChats(prev => {
@@ -12663,6 +12715,7 @@ function DeepWorkUI() {
       thinkingLevel?: MainAgentThinkingLevel;
       /** Explicit execution target for background/gateway/scheduled dispatches. */
       workspacePath?: string | null;
+      importFolder?: string;
       runLocation?: 'local' | 'sandbox' | 'worktree';
       createNewChat?: boolean;
       backgroundChat?: boolean;
@@ -12744,6 +12797,8 @@ function DeepWorkUI() {
       : targetChat?.workspacePath !== undefined
         ? targetChat.workspacePath
         : (useActiveComposerContext ? activeWorkspacePath : null);
+    const executionImportFolder = runOptionsOverride?.importFolder
+      ?? (sendTarget.fromFreshComposer ? draftImportFolderRef.current : undefined);
     const executionRunLocation = runOptionsOverride?.runLocation ||
       targetComposerState?.runLocation ||
       targetChat?.runLocation ||
@@ -12975,9 +13030,11 @@ function DeepWorkUI() {
 
     if (shouldCreateTargetChat) {
       const createdChatId = String(chatIdToUse);
-      writeChatPlanMode(createdChatId, readChatPlanMode(null));
-      writeChatSwarmMode(createdChatId, readChatSwarmMode(null));
-      writeChatPlanMode(null, false);
+      if (sendTarget.fromFreshComposer) {
+        writeChatPlanMode(createdChatId, readChatPlanMode(null));
+        writeChatSwarmMode(createdChatId, readChatSwarmMode(null));
+        writeChatPlanMode(null, false);
+      }
       const createdComposerState: ChatComposerState = {
         inputValue: '',
         runLocation: executionRunLocation,
@@ -13093,6 +13150,7 @@ function DeepWorkUI() {
         traceLogs: [userLog],
         modelSelection: requestedRunModelSelection,
         workspacePath: executionWorkspacePath,
+        importFolder: executionImportFolder,
         runLocation: executionRunLocation,
       };
 
@@ -14331,10 +14389,210 @@ function DeepWorkUI() {
     };
   }, []);
 
+  const updateChatRuntimeMode = async (chatId: string, kind: 'plan' | 'swarm', enabled: boolean) => {
+    // A side draft already has an ID. Its local choice will be sent with its
+    // first run; there is no running agent to reconfigure before admission.
+    if (!chatsRef.current.some(chat => chat.id === chatId)) return;
+    const response = await fetch(`/api/agent/${kind}-mode`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId, enabled }),
+    });
+    if (!response.ok) throw new Error(`${kind === 'plan' ? 'Plan' : 'Swarm'} mode could not be updated.`);
+  };
+  const compactChatContext = async (chatId: string, modelSelection: string) => {
+    const chat = chatsRef.current.find(chat => chat.id === chatId);
+    if (!chat) throw new Error('Send a message first to create chat context.');
+    const existing = manualCompactionJobsRef.current.get(chatId);
+    if (existing) return existing;
+    setCompactingChats(current => ({ ...current, [chatId]: true }));
+    const job = (async () => {
+      const response = await fetch('/api/agent/compact', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId,
+          modelSelection,
+          history: buildAgentHistory(chat.traceLogs),
+          contextCompaction: readContextCompactionSettings(parseModelEntryKey(modelSelection), chatId),
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || 'Compaction could not complete.');
+    })().finally(() => {
+      manualCompactionJobsRef.current.delete(chatId);
+      setCompactingChats(current => {
+        const next = { ...current };
+        delete next[chatId];
+        return next;
+      });
+    });
+    manualCompactionJobsRef.current.set(chatId, job);
+    return job;
+  };
+  const readSideChatSettings = (id: string): SideChatSettings => {
+    const chat = chatsRef.current.find(chat => chat.id === id);
+    const saved = composerStatesRef.current[id];
+    const boundary = chat?.traceLogs.findLast(isFeedTurnBoundary);
+    const boundaryModel = parseModelEntryKey(boundary?.modelSelection)
+      ? String(boundary.modelSelection)
+      : boundary?.selectedModelProvider && (boundary?.selectedModelName || boundary?.selectedModelId)
+        ? modelEntryKey(boundary.selectedModelProvider, boundary.selectedModelName || boundary.selectedModelId)
+        : undefined;
+    const modelSelection = saved?.chatModelSelection || chat?.modelSelection || boundaryModel || composerDefaultsRef.current.modelSelection;
+    return {
+      modelSelection,
+      selectedAgent: normalizePrimaryAgentSelection(saved?.selectedAgent || (boundary ? {
+        agentId: boundary.selectedAgentId,
+        agentName: boundary.selectedAgentName,
+        chatMode: boundary.chatMode === true,
+      } : GENERAL_AGENT_SELECTION)),
+      thinkingLevel: normalizeMainAgentThinkingLevel(saved?.thinkingLevel || boundary?.thinkingLevel || composerDefaultsRef.current.thinkingLevel),
+      agentMode: saved?.agentMode || readRuntimeAgentMode(composerDefaultsRef.current.agentMode, modelSelection),
+      workspacePath: workspaceSelectionsRef.current.has(id) ? workspaceSelectionsRef.current.get(id)! : chat?.workspacePath || null,
+      runLocation: saved?.runLocation || chat?.runLocation || 'local',
+    };
+  };
   const handleSendLatestRef = useRef(handleSend);
   handleSendLatestRef.current = handleSend;
+  const refreshSideProxyRun = (id: string, retry = false): Promise<void> => {
+    const existing = proxyRunConnectionsRef.current.get(id);
+    if (existing) {
+      existing.retry ||= retry;
+      return existing.promise;
+    }
+    const connection = { promise: Promise.resolve(), retry, cancelled: false };
+    proxyRunConnectionsRef.current.set(id, connection);
+    const generation = pollGenerationRef.current.get(id) || 0;
+    connection.promise = (async () => {
+      for (let attempt = 0; attempt < 12; attempt++) {
+        if (connection.cancelled || (pollGenerationRef.current.get(id) || 0) !== generation) return;
+        if (activePollersRef.current.has(id)) {
+          catchUpPollersRef.current.get(id)?.();
+          return;
+        }
+        try {
+          const poll = await fetchAgentPoll(id, -1, 5000);
+          if (connection.cancelled || activePollersRef.current.has(id) || (pollGenerationRef.current.get(id) || 0) !== generation) return;
+          setChatLogsById(id, previous => mergeAgentPollSnapshot(previous, poll, id));
+          if (poll.status === 'running') {
+            setRunningChats(previous => new Set(previous).add(id));
+            startPolling(id, getPollCursor(poll), poll.startedAt, poll.runId);
+            return;
+          }
+          if (isTerminalAgentStatus(poll.status)) removeRunningChat(id);
+          if (!connection.retry || attempt === 11) return;
+        } catch (error) {
+          if (!connection.retry || attempt === 11) throw error;
+        }
+        // Starting a queued task is asynchronous. Keep connecting by chat ID
+        // even when its Proxy dialog or side tab is closed in the meantime.
+        await new Promise(resolve => window.setTimeout(resolve, 700));
+      }
+    })().finally(() => {
+      if (proxyRunConnectionsRef.current.get(id) === connection) proxyRunConnectionsRef.current.delete(id);
+    });
+    return connection.promise;
+  };
+  connectProxyRunRef.current = refreshSideProxyRun;
   const sideChatActions: SideChatActions = {
     openMain: id => loadChat(id),
+    loadProxy: async id => {
+      await appStorageReady;
+      await waitForProxyControlWrites(id);
+      const revision = proxyControlRevisionsRef.current[id] || 0;
+      let snapshot = await readProxyManagerSnapshot(id);
+      const transferred = transferredProxyControlsRef.current.get(id);
+      if (transferred && !hasPendingProxyControlWrites(id) && (proxyControlRevisionsRef.current[id] || 0) === revision &&
+        snapshot.control?.enabled === transferred.enabled && snapshot.control.paused === (transferred.paused === true) &&
+        snapshot.control.intervention === transferred.intervention && snapshot.control.modelSelection === transferred.runtimeModel &&
+        (snapshot.control.followChatModel !== false) === (transferred.followChatModel !== false)) {
+        transferredProxyControlsRef.current.delete(id);
+      }
+      const saved = readStoredProxyControlSettings(id);
+      if (snapshot.control?.revision === 0 && saved.enabled && !hasPendingProxyControlWrites(id) &&
+        (proxyControlRevisionsRef.current[id] || 0) === revision && !transferredProxyControlsRef.current.has(id)) {
+        let saveError = '';
+        if (!await updateProxyControl(id, saved, message => { saveError = message; })) throw new Error(saveError || 'Could not restore Proxy settings.');
+        snapshot = await readProxyManagerSnapshot(id);
+      }
+      applyProxyControlSnapshot(id, snapshot.control, revision);
+      return snapshot;
+    },
+    syncProxyModel: async id => {
+      await waitForProxyControlWrites(id);
+      const control = readStoredProxyControlSettings(id);
+      if (!control.enabled || control.followChatModel === false) return;
+      const settings = readSideChatSettings(id);
+      const selection = resolveProxyModelSelection(control, settings.modelSelection);
+      if (control.modelSelection !== selection && parseModelEntryKey(selection)) {
+        await handleProxyModelSelectionChange(selection, id, settings.modelSelection);
+      }
+    },
+    proxyControls: (id, settings) => {
+      const control = readStoredProxyControlSettings(id);
+      return {
+        enabled: control.enabled,
+        paused: control.paused,
+        intervention: control.intervention,
+        modelSelection: resolveProxyModelSelection(control, settings.modelSelection),
+        modelEntries: proxyModelEntries,
+        onPauseToggle: () => handleProxyPauseToggle(id),
+        onInterventionChange: level => handleProxyInterventionChange(level, id),
+        onModelSelectionChange: selection => handleProxyModelSelectionChange(selection, id, settings.modelSelection),
+      };
+    },
+    refreshProxyRun: refreshSideProxyRun,
+    sendProxy: async (id, request, onProgress) => {
+      if (proxyLoadingChatIdsRef.current.has(id)) throw new Error('Proxy is already responding in this conversation.');
+      proxyLoadingChatIdsRef.current.add(id);
+      try {
+        const settings = readSideChatSettings(id);
+        const control = readStoredProxyControlSettings(id);
+        if (!control.enabled || control.paused) throw new Error('Turn on Autonomous and resume Proxy to send this message.');
+        const selection = resolveProxyModelSelection(control, settings.modelSelection);
+        if (!proxyModelEntries.some(entry => modelEntryKey(entry.provider, entry.modelId) === selection)) throw new Error('Select a configured model for Proxy before sending this message.');
+        let saveError = '';
+        const saved = await writeProxyControl(id, { action: 'configure', settings: { ...control, modelSelection: selection } }, message => { saveError = message; });
+        if (!saved || !await waitForProxyControlWrites(id)) throw new Error(saveError || 'Proxy settings could not be saved. Please retry.');
+        if (request.attachments.length) onProgress({ text: 'Preparing attachments…' });
+        const mediaAttachments = await prepareProxyAttachments(request.attachments.map(file => ({ file })));
+        if (!await waitForProxyControlWrites(id)) throw new Error('Proxy settings could not be saved. Please retry.');
+        const latestControl = readStoredProxyControlSettings(id);
+        if (!latestControl.enabled || latestControl.paused) throw new Error('Proxy was paused or turned off. Your draft has been kept.');
+        const latestSettings = readSideChatSettings(id);
+        const model = parseModelEntryKey(resolveProxyModelSelection(latestControl, latestSettings.modelSelection));
+        if (!model) throw new Error('Select a configured model for Proxy before sending this message.');
+        if (!chatsRef.current.some(chat => chat.id === id)) {
+          setChats(previous => {
+            if (previous.some(chat => chat.id === id)) return previous;
+            const next = [...previous, { id, title: DEFAULT_CHAT_TITLE, updatedAt: Date.now(), traceLogs: [], modelSelection: latestSettings.modelSelection, workspacePath: latestSettings.workspacePath, runLocation: latestSettings.runLocation }];
+            persistChats(next);
+            return next;
+          });
+        }
+        const response = fetch('/api/agent/proxy-manager', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chatId: id,
+            message: [request.message, ...mediaAttachments.map(item => `📎 ${item.name}`)].filter(Boolean).join('\n\n'),
+            requestId: request.requestId,
+            mediaAttachments,
+            attachmentContext: mediaAttachments.map(item => `Attachment: ${item.name}\nLocal path: ${item.path}`).join('\n\n'),
+            model,
+            mainModel: parseModelEntryKey(latestSettings.modelSelection) || undefined,
+            workspace: { path: latestSettings.workspacePath, paths: Array.from(new Set([latestSettings.workspacePath, ...(composerStatesRef.current[id]?.pinnedItems || []).map(item => item.path)].filter(Boolean))), runLocation: latestSettings.runLocation },
+            contextCompaction: readContextCompactionSettings(model, id),
+            stream: true,
+          }),
+          signal: AbortSignal.timeout(240_000),
+        });
+        const result = await readProxyManagerResponse(response, onProgress, { chatId: id, requestId: request.requestId });
+        if (!result.success) throw new Error(result.error || 'Could not send this Proxy message.');
+        void connectProxyRunRef.current(id, result.wakeRequested === true).catch(() => {});
+      } finally {
+        proxyLoadingChatIdsRef.current.delete(id);
+        if (activeChatIdRef.current === id) setProxyChatLoading(false);
+      }
+    },
     workspace: (id, path) => {
       workspaceSelectionsRef.current.set(id, path);
       if (terminalOwnerRef.current === id) setActiveWorkspacePath(path);
@@ -14349,23 +14607,80 @@ function DeepWorkUI() {
       await hydrateChatHistory(id);
       if (!hydratedChatIdsRef.current.has(id)) throw new Error('Could not load this conversation. Please retry.');
     },
-    settings: id => {
-      const chat = chatsRef.current.find(chat => chat.id === id);
+    draft: id => {
       const saved = composerStatesRef.current[id];
       return {
-        modelSelection: saved?.chatModelSelection || chat?.modelSelection || composerDefaultsRef.current.modelSelection,
-        selectedAgent: saved?.selectedAgent || { agentId: null, agentName: 'General' },
-        thinkingLevel: saved?.thinkingLevel || 'low',
-        agentMode: saved?.agentMode || 'think',
-        workspacePath: workspaceSelectionsRef.current.has(id) ? workspaceSelectionsRef.current.get(id)! : chat?.workspacePath || null,
-        runLocation: saved?.runLocation || chat?.runLocation || 'local',
+        text: saved?.inputValue || '',
+        attachments: saved?.attachments || [],
+        pinnedItems: saved?.pinnedItems || [],
+        settings: readSideChatSettings(id),
       };
     },
-    send: async (id, text, attachments, settings) => {
-      const previous = composerStatesRef.current[id];
-      composerStatesRef.current[id] = { ...previous, inputValue: '', attachments: [], pinnedItems: previous?.pinnedItems || [], chatModelSelection: settings.modelSelection, selectedAgent: settings.selectedAgent, thinkingLevel: settings.thinkingLevel, agentMode: settings.agentMode, runLocation: settings.runLocation };
-      return handleSendLatestRef.current(text, attachments, id, { ...settings, createNewChat: !chatsRef.current.some(chat => chat.id === id), backgroundChat: true });
+    saveDraft: (id, draft, persist = true) => {
+      const next: ChatComposerState = {
+        inputValue: draft.text,
+        attachments: draft.attachments,
+        pinnedItems: draft.pinnedItems,
+        chatModelSelection: draft.settings.modelSelection,
+        selectedAgent: normalizePrimaryAgentSelection(draft.settings.selectedAgent),
+        thinkingLevel: draft.settings.thinkingLevel,
+        agentMode: draft.settings.agentMode,
+        runLocation: draft.settings.runLocation,
+      };
+      locallyEditedComposerOwnersRef.current.add(id);
+      workspaceSelectionsRef.current.set(id, draft.settings.workspacePath);
+      composerStatesRef.current = { ...composerStatesRef.current, [id]: next };
+      if (persist) {
+        setComposerStates(composerStatesRef.current);
+        try { appStorage.setItem('eterx_chat_composer_states', JSON.stringify(composerStatesRef.current)); } catch { }
+        // A picker/upload or a failed send can finish after this side chat was
+        // moved into the main pane. Update that same owner's visible draft.
+        if (activeChatIdRef.current === id && activeComposerSurfaceRef.current === 'main') {
+          applyComposerState(next);
+        }
+      }
     },
+    controls: (id, settings) => ({
+      queuedFollowUps: queuedFollowUps.filter(message => message.chatId === id),
+      onSendQueuedFollowUp: requested => {
+        const item = queuedFollowUpsRef.current.find(message => message.chatId === id && message.id === requested.id);
+        return item ? sendQueuedFollowUp(item) : true;
+      },
+      onRemoveQueuedFollowUp: queueId => {
+        const item = queuedFollowUpsRef.current.find(message => message.chatId === id && message.id === queueId);
+        return item ? removeQueuedFollowUp(item) : true;
+      },
+      onOpenAgents: () => { setBuildingAgentId(null); setBuildingAgentName(null); setActiveView('agents'); },
+      onOpenProjects: () => { setBuildingAgentId(null); setBuildingAgentName(null); setActiveView('projects'); },
+      onOpenAgentBuilder: handleOpenAgentBuilder,
+      onOpenPet: () => openPetWidget(),
+      onOpenSettingsTab: openSettingsWindow,
+      onPlanModeChange: enabled => updateChatRuntimeMode(id, 'plan', enabled),
+      onSwarmModeChange: enabled => updateChatRuntimeMode(id, 'swarm', enabled),
+      onCompact: () => compactChatContext(id, settings.modelSelection),
+      compacting: Boolean(compactingChats[id]),
+      isNetworkPaused,
+      onNetworkPausedAction: revealNetworkBanner,
+      proxyEnabled: readStoredProxyControlSettings(id).enabled,
+      onProxyToggle: () => handleProxyToggle(id),
+      liveState: liveChatId === id ? liveState : 'idle',
+      hasBackgroundLiveSession: Boolean(liveChatId && liveChatId !== id && liveState !== 'idle' && liveState !== 'error'),
+      liveError: liveChatId === id ? liveError : null,
+      onLiveStop: () => { if (liveChatIdRef.current === id) stopLiveSession(); },
+      onLiveSendText: text => liveChatIdRef.current === id ? liveSessionRef.current?.sendText(text) ?? false : false,
+      liveOutputText: liveChatId === id ? liveOutputText : '',
+      liveInputText: liveChatId === id ? liveInputText : '',
+      liveMicVolume: liveChatId === id ? liveMicVolume : 0,
+      liveModelVolume: liveChatId === id ? liveModelVolume : 0,
+      liveActiveTool: liveChatId === id ? liveActiveTool : null,
+      isMicMuted: liveChatId === id && liveMicMuted,
+      onToggleMicMute: () => { if (liveChatIdRef.current === id) toggleLiveMicMute(); },
+      isSpeakerMuted: liveChatId === id && liveSpeakerMuted,
+      onToggleSpeakerMute: () => { if (liveChatIdRef.current === id) toggleLiveSpeakerMute(); },
+    }),
+    send: (id, text, attachments, settings, pinnedItems) => handleSendLatestRef.current(text, attachments, id, {
+      ...settings, pinnedItems, createNewChat: !chatsRef.current.some(chat => chat.id === id), backgroundChat: true,
+    }),
     stop: id => stopChatAgent(id),
     read: id => clearUnreadChat(id),
     answer: (id, timestamp, answer, responseKey) => {
@@ -14373,8 +14688,7 @@ function DeepWorkUI() {
     },
     startLive: (id, settings) => {
       if (liveChatIdRef.current && liveChatIdRef.current !== id) stopLiveSession();
-      const previous = composerStatesRef.current[id];
-      composerStatesRef.current[id] = {
+      updateComposerStateAtKey(id, previous => ({
         ...previous,
         inputValue: previous?.inputValue || '',
         attachments: previous?.attachments || [],
@@ -14384,7 +14698,7 @@ function DeepWorkUI() {
         thinkingLevel: settings.thinkingLevel,
         agentMode: settings.agentMode,
         runLocation: settings.runLocation,
-      };
+      }));
       workspaceSelectionsRef.current.set(id, settings.workspacePath);
       loadChat(id);
       void startLiveSession(id);
@@ -15913,20 +16227,6 @@ function DeepWorkUI() {
   // Which logs to show in ChatFeed — main or sub-agent
   const autonomousSelected = selectedAgent === 'autonomous';
   const proxyAgentSelected = Boolean(activeChatId) && proxyEnabled && !buildingAgentId && !activeSubAgentTab;
-  useEffect(() => {
-    const pane = conversationPaneRef.current;
-    if (!pane || !sideTerminalVisible || !proxyAgentSelected) return;
-    const setLayout = (width: number) => {
-      const layout = width < 380 ? 'floating' : 'toolbar';
-      if (pane.dataset.proxyLayout !== layout) pane.dataset.proxyLayout = layout;
-    };
-    setLayout(pane.clientWidth);
-    const observer = new ResizeObserver(entries => {
-      for (const entry of entries) setLayout(entry.contentRect.width);
-    });
-    observer.observe(pane);
-    return () => { observer.disconnect(); delete pane.dataset.proxyLayout; };
-  }, [sideTerminalVisible, proxyAgentSelected, activeView]);
   const effectiveDisplayLogs = activeSubAgentTab && !autonomousSelected ? subAgentDisplayLogs : displayTraceLogs;
   const mainTurnWorkActive = useMemo(() => {
     let latestBoundaryIndex = -1;
@@ -16818,6 +17118,8 @@ function DeepWorkUI() {
             titlebarToggleExternal={desktopPlatform === 'macos'}
             setIsOpen={setSidebarOpen}
             createNewChat={createNewChat}
+            chatScope={sidebarChatScope}
+            onChatScopeChange={handleChatScopeChange}
             chats={nonBuilderChats}
             isLoadingChats={isChatHistoryLoading}
             historyError={chatHistoryError}
@@ -16845,10 +17147,10 @@ function DeepWorkUI() {
 
       <SettingsPanel isOpen={isSettingsOpen} initialTab={settingsInitialTab as any} onTabChange={setSettingsInitialTab} onClose={closeSettingsWindow} />
 
-      <div className="eterx-workspace-shell flex-1 flex flex-col relative overflow-hidden z-10 transition-colors duration-300">
+      <div className="eterx-workspace-shell min-w-0 flex-1 flex flex-col relative overflow-hidden z-10 transition-colors duration-300">
         {/* Absolute Header (Draggable Region for Electron) */}
         <>
-          <div ref={workspaceMainPanelRef} data-workspace-open={workspaceControls.open && activeView === 'chat'} className={`eterx-main-panel ${ !sidebarOpen ? 'eterx-main-panel-sidebar-closed' : '' } flex-1 flex flex-col relative overflow-hidden`}>
+          <div ref={workspaceMainPanelRef} data-workspace-open={workspaceControls.open && (activeView === 'chat' || (activeView === 'agents' && Boolean(buildingAgentId)))} className={`eterx-main-panel ${ !sidebarOpen ? 'eterx-main-panel-sidebar-closed' : '' } flex-1 flex flex-col relative overflow-hidden`}>
             <div className="eterx-main-header relative z-50 flex h-[var(--eterx-main-header-height)] shrink-0 items-center justify-between gap-4 border-b border-[var(--border)] pl-3 pr-6 [-webkit-app-region:drag]">
               <div className="flex min-w-0 flex-1 overflow-visible items-center gap-2 pointer-events-auto [-webkit-app-region:no-drag]">
                 <div id="agent-builder-back-portal" className="flex items-center">
@@ -17803,166 +18105,26 @@ function DeepWorkUI() {
                 <>
                   {/* Chat Container */}
                   <div
-                    className={`eterx-chat-column flex flex-col relative h-full min-w-0 ${ !sideTerminalVisible && sidebarOpen && proxyAgentSelected && activeChatId ? '[&_.eterx-chat-feed-content]:-translate-x-[80px] [&_.eterx-chat-input-dock]:-translate-x-[80px]' : '' } ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${ isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]' }` : 'w-full transition-all duration-300' }`}
+                    className={`eterx-chat-column flex flex-col relative h-full min-w-0 ${ hasOpenFiles ? `shrink-0 min-w-[320px] ${ isResizingPanels ? 'transition-none' : 'transition-[width,flex-basis] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]' }` : 'w-full transition-all duration-300' }`}
                     data-terminal-placement={sideTerminalVisible ? 'right' : terminalState.open ? 'bottom' : undefined}
-                    data-proxy-active={!sideTerminalVisible && sidebarOpen && proxyAgentSelected && activeChatId ? 'true' : 'false'}
-                    style={isRightPanelVisible ? { width: chatPanelWidth ?? undefined, flexBasis: chatPanelWidth === null ? `${ DEFAULT_CHAT_PANEL_RATIO * 100 }%` : undefined } : { width: '100%' }}
+                    data-proxy-active={proxyAgentSelected ? 'true' : 'false'}
+                    data-panel-split={isRightPanelVisible ? 'true' : 'false'}
+                    style={isRightPanelVisible ? { width: chatPanelWidth ?? `calc(${ DEFAULT_CHAT_PANEL_RATIO * 100 }% - ${ SPLIT_PANEL_GUTTER * DEFAULT_CHAT_PANEL_RATIO }px)` } : { width: '100%' }}
                   >
                     <div className="eterx-workspace-main-column">
-                    <div ref={conversationPaneRef} className="eterx-conversation-pane relative flex min-h-0 min-w-0 flex-1 flex-col">
-                    <AnimatePresence initial={false}>
-                      {startupReady && isNewChatSurface && <NewChatAtmosphere key="new-chat-atmosphere" />}
-                    </AnimatePresence>
-                    {startupReady && isNewChatSurface && <NewChatRipple key={newChatEntryId} containerRef={conversationPaneRef} />}
-                    {proxyComposerError && !showProxyChat && (
-                      <div role="alert" className="absolute inset-x-4 top-3 z-[70] mx-auto flex max-w-xl items-start gap-2 rounded-xl border border-red-400/20 bg-[var(--background)] px-3 py-2 text-[12px] leading-4 text-red-400">
-                        <span className="min-w-0 flex-1 break-words">{proxyComposerError}</span>
-                        <button type="button" aria-label="Dismiss proxy error" onClick={() => setProxyComposerError('')} className="shrink-0 rounded-sm p-0.5 hover:bg-white/10"><X className="h-3.5 w-3.5" /></button>
-                      </div>
-                    )}
-                    <AnimatePresence>
-                      {activeChatId && compactingChats[activeChatId] && !activeSubAgentTab && (
-                        <motion.div
-                          key={`compacting-${activeChatId}`}
-                          initial={{ opacity: 0, y: -6 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -4 }}
-                          transition={{ duration: 0.16 }}
-                          className="pointer-events-none absolute inset-x-0 top-3 z-50 flex justify-center"
-                        >
-                          <div role="status" aria-live="polite" aria-busy="true"
-                            className="eterx-floating-compaction inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-[12px] font-medium leading-4 backdrop-blur-md">
-                            <span aria-hidden="true" className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-current border-r-transparent opacity-70" />
-                            Compacting
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                    <div className="eterx-conversation-layout">
                     {proxyAgentSelected && (
-                      <div data-controls-open={compactProxyOpen ? 'true' : 'false'} className="eterx-proxy-dock pointer-events-none absolute right-6 top-1/2 z-[60] w-[224px] -translate-y-1/2 transition-all duration-300 ease-in-out">
-                        {sideTerminalVisible && (
-                          <div className="eterx-proxy-compact-bar">
-                            <button type="button" className="eterx-proxy-compact-title" aria-expanded={compactProxyOpen} aria-label="Proxy-Settings" onClick={() => setCompactProxyOpen(open => !open)}>
-                              <span className={`eterx-proxy-status-dot ${proxyPaused ? 'is-paused' : ''}`} />
-                              <span>Proxy-Settings</span>
-                              <ChevronDown className={`h-3.5 w-3.5 shrink-0 ${compactProxyOpen ? 'rotate-180' : ''}`} />
-                            </button>
-                            <button type="button" aria-label={proxyPaused ? 'Resume Proxy' : 'Pause Proxy'} title={proxyPaused ? 'Resume Proxy' : 'Pause Proxy'} onClick={handleProxyPauseToggle}>
-                              {proxyPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-                            </button>
-                            <button type="button" aria-label="Talk with Proxy" title="Talk with Proxy" onClick={() => { setCompactProxyOpen(false); setShowProxyChat(value => !value); }}><MessageSquare className="h-3.5 w-3.5" /></button>
-                          </div>
-                        )}
-                        <div ref={proxyCardRef} hidden={sideTerminalVisible && !compactProxyOpen} className="eterx-proxy-card pointer-events-auto flex h-fit flex-col gap-2 rounded-[20px] border border-white/[0.10] bg-[#252525]/95 px-3 pb-3 pt-3 shadow-none backdrop-blur-xl select-none">
-                          {/* Professional Header */}
-                          <div className="pt-1 pb-1 shrink-0 flex items-center justify-center w-full">
-                            <span className="eterx-proxy-title text-[14px] font-semibold tracking-[0.02em] text-white/95 text-center">Proxy-Agent</span>
-                          </div>
-
-                          {/* UNIFIED JOINED CONTROL GROUP (All 4 Controls Joined) */}
-                          <div className="eterx-proxy-group-block w-full flex flex-col rounded-2xl border border-white/[0.08] bg-white/[0.03] shrink-0">
-                            {/* 1. Pause / Resume Proxy Button (Top Item) */}
-                            <button
-                              type="button"
-                              onClick={handleProxyPauseToggle}
-                              aria-pressed={proxyPaused}
-                              title={proxyPaused ? 'Resume supervision from current progress' : 'Pause supervision; Autonomous mode stays on'}
-                              className="eterx-proxy-group-item w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-t-2xl text-[12px] font-medium text-white/85 hover:bg-white/[0.06] hover:text-white transition-colors shrink-0"
-                            >
-                              {!proxyPaused ? (
-                                <>
-                                  <Pause className="h-3.5 w-3.5 text-white/60" />
-                                  <span>Pause Proxy</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Play className="h-3.5 w-3.5 text-white/60" />
-                                  <span>Resume Proxy</span>
-                                </>
-                              )}
-                            </button>
-
-                            <div className="h-[1px] w-full bg-white/[0.06] eterx-proxy-group-divider" />
-
-                            {/* 2. Proxy Model Row */}
-                            <ProxyRuntimeModelLabel chatSelection={effectiveProxyModelSelection} entries={proxyModelEntries} />
-
-                            <div className="h-[1px] w-full bg-white/[0.06] eterx-proxy-group-divider" />
-
-                            {/* 3. Intervention Row */}
-                            <div className="group relative">
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  setShowProxyInterventionMenu(value => !value);
-                                }}
-                                aria-expanded={showProxyInterventionMenu}
-                                aria-label={`Intervention level: ${proxyIntervention}`}
-                                className="eterx-proxy-group-item w-full flex items-center justify-between gap-2 px-3 py-2.5 text-[12px] font-medium text-white/85 hover:bg-white/[0.06] cursor-pointer transition-colors"
-                              >
-                                <span className="text-white/50 shrink-0 text-[12px]">Intervention</span>
-                                <div className="flex shrink-0 items-center gap-1.5">
-                                  <span className="capitalize text-[12px] text-white/90 font-semibold">
-                                    {proxyIntervention}
-                                  </span>
-                                  <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-white/35 group-hover:text-white/70 transition-transform duration-200 ${ showProxyInterventionMenu ? 'rotate-90' : '' }`} />
-                                </div>
-                              </button>
-
-                              {/* Pop-out Dropdown to the Left */}
-                              <div hidden={!showProxyInterventionMenu} className={`absolute right-full top-1/2 -translate-y-1/2 z-[110] w-[158px] pr-2 transition-all duration-200 ${ showProxyInterventionMenu ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none opacity-0 translate-x-2' }`}>
-                                <div className="eterx-proxy-popout rounded-2xl border border-white/[0.08] bg-[#252525] shadow-none p-1.5 flex flex-col gap-1 w-full">
-                                  {(['minimal', 'normal', 'high'] as const).map((level) => {
-                                    const isSelected = proxyIntervention === level;
-                                    const subtitle = level === 'minimal' ? 'Observe more' : level === 'normal' ? 'Balanced' : 'Best Efforts';
-                                    return (
-                                      <button
-                                        key={level}
-                                        type="button"
-                                        onClick={() => {
-                                          handleProxyInterventionChange(level);
-                                          setShowProxyInterventionMenu(false);
-                                        }}
-                                        className={`eterx-proxy-popout-item w-full flex flex-col items-start rounded-xl px-2.5 py-1 text-left transition-colors relative pr-6 ${ isSelected
-                                            ? 'eterx-proxy-popout-item-active bg-white/[0.08] text-white'
-                                            : 'text-white/50 hover:bg-white/[0.04] hover:text-white/85'
-                                          }`}
-                                      >
-                                        <span className="text-[12px] font-medium capitalize">{level}</span>
-                                        <span className="text-[9.5px] text-white/30 font-normal leading-normal">{subtitle}</span>
-                                        {isSelected && (
-                                          <span className="absolute right-2 top-1/2 -translate-y-1/2">
-                                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                                          </span>
-                                        )}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="h-[1px] w-full bg-white/[0.06] eterx-proxy-group-divider" />
-
-                            {/* 4. Talk with proxy Button (Bottom Item) */}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setShowProxyInterventionMenu(false);
-                                setShowProxyChat(!showProxyChat);
-                              }}
-                              className={`eterx-proxy-group-item w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-[12px] font-medium transition-colors rounded-b-2xl shrink-0 ${ showProxyChat
-                                  ? 'bg-white/[0.08] text-white'
-                                  : 'text-white/80 hover:bg-white/[0.06] hover:text-white'
-                                }`}
-                            >
-                              <MessageSquare className="h-3.5 w-3.5 text-white/60" />
-                              <span>Talk with Proxy</span>
-                            </button>
-                          </div>
-                        </div>
-
+                      <ProxyAgentControls
+                        key={activeChatId}
+                        paused={proxyPaused}
+                        intervention={proxyIntervention}
+                        modelSelection={effectiveProxyModelSelection}
+                        modelEntries={proxyModelEntries}
+                        onPauseToggle={() => handleProxyPauseToggle()}
+                        onInterventionChange={level => handleProxyInterventionChange(level)}
+                        chatOpen={showProxyChat}
+                        onTalk={() => setShowProxyChat(value => !value)}
+                      >
                         {/* Floating Chat Container */}
                         {showProxyChat && (() => {
                           const selectedModel = proxyModelEntries.find(entry => modelEntryKey(entry.provider, entry.modelId) === effectiveProxyModelSelection);
@@ -18012,7 +18174,7 @@ function DeepWorkUI() {
                                 <div className="flex min-w-0 items-center gap-2.5">
                                   <div className="truncate text-[13.5px] font-semibold tracking-[-0.01em] text-white/90">Talk with Proxy</div>
                                 </div>
-                                <div className="flex items-center gap-1">
+                                <div className="flex shrink-0 items-center gap-1">
                                   <button
                                     type="button"
                                     onPointerDown={(event) => event.stopPropagation()}
@@ -18037,7 +18199,7 @@ function DeepWorkUI() {
 
                               {isProxyExpanded && (
                                 <div className="eterx-proxy-context-panel shrink-0 border-b border-white/[0.06] bg-white/[0.018] px-4 py-3">
-                                  <div className="flex items-center gap-3 text-[10px] text-white/38">
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-white/38">
                                     <span><span className="text-white/66">Main</span> · {proxyRunStatus}</span>
                                     <span className="h-3 w-px bg-white/[0.07]" />
                                     <span><span className="text-white/66">Supervisor</span> · {proxySupervisorStatus.replace(/_/g, ' ')}</span>
@@ -18259,7 +18421,7 @@ function DeepWorkUI() {
                                     style={customInputHeight ? { height: `${customInputHeight}px` } : undefined}
                                     className="eterx-proxy-textarea w-full bg-transparent text-white text-[12.5px] leading-relaxed outline-hidden placeholder-white/30 resize-none px-1 py-1 min-h-[32px] max-h-[360px] eterx-scrollbar"
                                   />
-                                  <div className="flex items-center justify-between mt-0.5 px-0.5 min-w-0">
+                                  <div className="flex items-center justify-between gap-2 mt-0.5 px-0.5 min-w-0">
                                     <div ref={proxyAttachMenuRef} className="relative flex items-center shrink-0">
                                       <button
                                         type="button"
@@ -18303,7 +18465,7 @@ function DeepWorkUI() {
                                         </div>
                                       )}
                                     </div>
-                                    <div className="flex items-center gap-1.5 min-w-0 shrink-0">
+                                    <div className="eterx-proxy-composer-actions flex flex-1 items-center justify-end gap-1.5 min-w-0">
                                       <ProxyChatModelPicker
                                         key={activeChatId}
                                         selection={effectiveProxyModelSelection}
@@ -18342,9 +18504,38 @@ function DeepWorkUI() {
                             document.body,
                           );
                         })()}
-                      </div>
+                      </ProxyAgentControls>
                     )}
 
+                    <div ref={conversationPaneRef} className="eterx-conversation-pane relative flex min-h-0 min-w-0 flex-1 flex-col">
+                    <AnimatePresence initial={false}>
+                      {startupReady && isNewChatSurface && <NewChatAtmosphere key="new-chat-atmosphere" />}
+                    </AnimatePresence>
+                    {startupReady && isNewChatSurface && <NewChatRipple key={newChatEntryId} containerRef={conversationPaneRef} />}
+                    {proxyComposerError && !showProxyChat && (
+                      <div role="alert" className="absolute inset-x-4 top-3 z-[70] mx-auto flex max-w-xl items-start gap-2 rounded-xl border border-red-400/20 bg-[var(--background)] px-3 py-2 text-[12px] leading-4 text-red-400">
+                        <span className="min-w-0 flex-1 break-words">{proxyComposerError}</span>
+                        <button type="button" aria-label="Dismiss proxy error" onClick={() => setProxyComposerError('')} className="shrink-0 rounded-sm p-0.5 hover:bg-white/10"><X className="h-3.5 w-3.5" /></button>
+                      </div>
+                    )}
+                    <AnimatePresence>
+                      {activeChatId && compactingChats[activeChatId] && !activeSubAgentTab && (
+                        <motion.div
+                          key={`compacting-${activeChatId}`}
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -4 }}
+                          transition={{ duration: 0.16 }}
+                          className="pointer-events-none absolute inset-x-0 top-3 z-50 flex justify-center"
+                        >
+                          <div role="status" aria-live="polite" aria-busy="true"
+                            className="eterx-floating-compaction inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-[12px] font-medium leading-4 backdrop-blur-md">
+                            <span aria-hidden="true" className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-current border-r-transparent opacity-70" />
+                            Compacting
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                     <ChatFeed
                       workspaceOwner={terminalChatId}
                       media={chatMedia}
@@ -18445,49 +18636,16 @@ function DeepWorkUI() {
                       chatUsage={composerChatUsage}
                       onSwarmModeChange={async (enabled) => {
                         if (!activeChatId) return;
-                        const response = await fetch('/api/agent/swarm-mode', {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ chatId: activeChatId, enabled }),
-                        });
-                        if (!response.ok) throw new Error('Swarm mode could not be updated.');
+                        await updateChatRuntimeMode(activeChatId, 'swarm', enabled);
                       }}
                       onPlanModeChange={async (enabled) => {
                         if (!activeChatId) return;
-                        const response = await fetch('/api/agent/plan-mode', {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ chatId: activeChatId, enabled }),
-                        });
-                        if (!response.ok) throw new Error('Plan mode could not be updated.');
+                        await updateChatRuntimeMode(activeChatId, 'plan', enabled);
                       }}
                       compacting={Boolean(activeChatId && compactingChats[activeChatId])}
                       onCompact={async () => {
                         if (!activeChatId) throw new Error('Send a message first to create chat context.');
-                        const chatId = activeChatId;
-                        const existing = manualCompactionJobsRef.current.get(chatId);
-                        if (existing) return existing;
-                        setCompactingChats(current => ({ ...current, [chatId]: true }));
-                        const job = (async () => {
-                          const response = await fetch('/api/agent/compact', {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              chatId,
-                              modelSelection: effectiveMainModelSelection,
-                              history: buildAgentHistory(chatsRef.current.find(chat => chat.id === chatId)?.traceLogs || traceLogs),
-                              contextCompaction: readContextCompactionSettings(parseModelEntryKey(effectiveMainModelSelection), chatId),
-                            }),
-                          });
-                          const result = await response.json();
-                          if (!response.ok || !result.success) throw new Error(result.error || 'Compaction could not complete.');
-                        })().finally(() => {
-                          manualCompactionJobsRef.current.delete(chatId);
-                          setCompactingChats(current => {
-                            const next = { ...current };
-                            delete next[chatId];
-                            return next;
-                          });
-                        });
-                        manualCompactionJobsRef.current.set(chatId, job);
-                        return job;
+                        await compactChatContext(activeChatId, effectiveMainModelSelection);
                       }}
                       contextUsage={activeSubAgentTab ? activeSubAgentContextUsage : composerContextUsage}
                       onOpenAgents={() => {
@@ -18531,6 +18689,7 @@ function DeepWorkUI() {
                         </div>
                       </div>
                     )}
+                    </div>
                     </div>
                     {terminalState.open && terminalState.placement === 'bottom' && <ChatTerminalDock chatId={terminalChatId} cwd={activeWorkspacePath} />}
                     </div>

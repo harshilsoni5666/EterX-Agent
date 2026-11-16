@@ -7,6 +7,7 @@ export function terminalInvocationText(args: any): string {
     return formatTerminalProgram(args.program, Array.isArray(args.args) ? args.args : []);
   }
   if (Array.isArray(args?.commands)) return args.commands.map(terminalInvocationText).join('\n');
+  if (Array.isArray(args?.tasks)) return [args?.mode, ...args.tasks.map((task: any) => task?.taskId)].filter(Boolean).join(' ');
   return [args?.mode, args?.taskId].filter(Boolean).join(' ');
 }
 
@@ -19,7 +20,11 @@ export function terminalResultText(result: any, mode = 'run'): string {
   const details = Array.isArray(result.tasks) ? JSON.stringify(result.tasks, null, 2)
     : result.environment ? JSON.stringify(result.environment, null, 2) : '';
   const status = mode !== 'run' ? text(result.message || (result.status ? `Task ${result.taskId || ''}: ${result.status}` : '')) : '';
-  const parts = [status, output, error, details].filter(Boolean);
+  const batch = result.batch && Array.isArray(result.results) && !output && !error
+    ? result.results.map((entry: any, index: number) =>
+      `[${index + 1}] ${entry.command || entry.taskId || 'Terminal task'}\n${terminalResultText(entry, mode)}`).join('\n\n')
+    : '';
+  const parts = [status, output, error, details, batch].filter(Boolean);
   return [...new Set(parts)].join('\n') || text(result.message || result.result);
 }
 

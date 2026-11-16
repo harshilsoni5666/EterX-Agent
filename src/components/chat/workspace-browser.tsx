@@ -31,6 +31,7 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
   const [ready, setReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const lastURL = useRef('');
+  const lastSourceNavigation = useRef<WorkspaceTab['browserNavigation']>(undefined);
   const viewport = useRef<HTMLDivElement>(null);
   const viewportFlags = useRef({ url: '', error: '', overlay: false });
   const scheduleViewport = useRef<() => void>(undefined);
@@ -72,10 +73,23 @@ export function WorkspaceBrowser({ owner, tab, occluded, onCapture }: { owner: s
     api.workspaceBrowserCreate(tab.id, document.documentElement.dataset.theme).then(async (current: BrowserState) => {
       if (disposed) return;
       receive({ ...current, id: tab.id }); setReady(true);
-      if (tab.url && !current.url) await api.workspaceBrowserCommand(tab.id, 'navigate', address(tab.url));
+      if (tab.url && (!current.url || current.url === 'about:blank')) await api.workspaceBrowserCommand(tab.id, 'navigate', address(tab.url));
     }).catch((error: Error) => { if (!disposed) setState({ ...initial, error: String(error.message || error) }); });
     return () => { disposed = true; unsubscribe(); api.workspaceBrowserBounds(tab.id, null); clearTimeout(copiedTimer.current); };
   }, [tab.id, owner, attempt]);
+  useEffect(() => {
+    if (!ready || !tab.browserNavigation) return;
+    const request = tab.browserNavigation;
+    const url = request.url;
+    lastSourceNavigation.current = request;
+    setValue(url);
+    setState(previous => ({ ...previous, url, loading: true, error: '' }));
+    // Consume the request so returning to this tab preserves its current page/history.
+    updateWorkspaceTab(owner, tab.id, { browserNavigation: undefined });
+    void api.workspaceBrowserCommand(tab.id, 'navigate', address(url)).catch((error: Error) => {
+      if (lastSourceNavigation.current === request) setState(previous => ({ ...previous, loading: false, error: String(error.message || error) }));
+    });
+  }, [ready, tab.id, tab.browserNavigation, api, owner]);
   useEffect(() => {
     if (!ready || !suggestions || !value.trim() || value === state.url) { setKeywords([]); return; }
     let cancelled = false;

@@ -53,6 +53,12 @@ export interface NetworkStats {
   slowestRequests: { url: string; duration: number }[];
 }
 
+type PageNetworkState = {
+  listeners: Array<[string, (...args: any[]) => void]>;
+  routes: Map<string, { matcher: string | RegExp; handler: (route: any) => Promise<void>; ruleId: string }>;
+  headers: Record<string, string>;
+};
+
 // ═══════════════════════════════════════
 // NETWORK MONITOR
 // ═══════════════════════════════════════
@@ -60,25 +66,35 @@ export interface NetworkStats {
 export class NetworkMonitor {
   private requests: Map<string, NetworkRequest> = new Map();
   private blockRules: NetworkBlockRule[] = [];
-  private customHeaders: Record<string, string> = {};
-  private isIntercepting: boolean = false;
   private maxEntries: number = 500;
   private blockedCount: number = 0;
-  private interceptedPages: WeakSet<any> = new WeakSet();
   private requestIds: WeakMap<any, string> = new WeakMap();
   
   // Per-page route handlers for cleanup
-  private routeHandlers: Map<string, any> = new Map();
+  private pageStates = new Map<any, PageNetworkState>();
+
+  private getPageState(page: any): PageNetworkState {
+    let state = this.pageStates.get(page);
+    if (!state) {
+      state = { listeners: [], routes: new Map(), headers: {} };
+      this.pageStates.set(page, state);
+    }
+    return state;
+  }
 
   /**
    * Start intercepting network traffic on a page.
    */
   async startIntercepting(page: any, pageId: string = 'main'): Promise<void> {
-    if (this.interceptedPages.has(page)) return;
-    this.interceptedPages.add(page);
+    const state = this.getPageState(page);
+    if (state.listeners.length) return;
+    const listen = (event: string, handler: (...args: any[]) => void) => {
+      state.listeners.push([event, handler]);
+      page.on(event, handler);
+    };
 
     // Listen to all requests
-    page.on('request', (req: any) => {
+    listen('request', (req: any) => {
       const id = `${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
       this.requestIds.set(req, id);
       this.requests.set(id, {
@@ -98,7 +114,7 @@ export class NetworkMonitor {
       }
     });
 
-    page.on('response', (res: any) => {
+    listen('response', (res: any) => {
       const id = this.requestIds.get(res.request?.());
       const req = id ? this.requests.get(id) : undefined;
       if (req) {
@@ -113,7 +129,7 @@ export class NetworkMonitor {
       }
     });
 
-    page.on('requestfailed', (req: any) => {
+    listen('requestfailed', (req: any) => {
       const id = this.requestIds.get(req);
       const record = id ? this.requests.get(id) : undefined;
       if (record) {
@@ -123,7 +139,7 @@ export class NetworkMonitor {
       }
     });
 
-    this.isIntercepting = true;
+    listen('close', () => { void this.stopIntercepting(page); });
     console.log(`[NetworkMonitor] 📡 Started intercepting network traffic`);
   }
 
@@ -131,15 +147,20 @@ export class NetworkMonitor {
    * Stop intercepting.
    */
   async stopIntercepting(page: any): Promise<void> {
-    // Remove route handlers
-    for (const [pattern, handler] of this.routeHandlers) {
-      try {
-        await page.unroute(pattern, handler);
-      } catch {}
+    const state = this.pageStates.get(page);
+    if (!state) return;
+    // Detach immediately so stopping and restarting cannot double-log requests.
+    for (const [event, handler] of state.listeners) page.removeListener(event, handler);
+    state.listeners = [];
+    this.pageStates.delete(page);
+    const ruleIds = new Set([...state.routes.values()].map(route => route.ruleId));
+    this.blockRules = this.blockRules.filter(rule => !ruleIds.has(rule.id));
+    for (const { matcher, handler } of state.routes.values()) {
+      try { await page.unroute(matcher, handler); } catch {}
     }
-    this.routeHandlers.clear();
-    this.interceptedPages.delete(page);
-    this.isIntercepting = false;
+    if (Object.keys(state.headers).length && !page.isClosed()) {
+      await page.setExtraHTTPHeaders({}).catch(() => {});
+    }
     console.log(`[NetworkMonitor] 🔇 Stopped intercepting`);
   }
 
@@ -147,6 +168,8 @@ export class NetworkMonitor {
    * Block requests matching URL patterns.
    */
   async blockUrls(page: any, patterns: string[], resourceTypes?: string[]): Promise<void> {
+    await this.startIntercepting(page);
+    const state = this.getPageState(page);
     for (const pattern of patterns) {
       const rule: NetworkBlockRule = {
         id: `block_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
@@ -154,7 +177,7 @@ export class NetworkMonitor {
         isRegex: pattern.startsWith('/') && pattern.endsWith('/'),
         resourceTypes,
       };
-      this.blockRules.push(rule);
+      const matcher = rule.isRegex ? new RegExp(pattern.slice(1, -1)) : pattern;
 
       // Install route handler
       const handler = async (route: any) => {
@@ -165,12 +188,19 @@ export class NetworkMonitor {
           this.blockedCount++;
           await route.abort('blockedbyclient');
         } else {
-          await route.continue();
+          await route.fallback();
         }
       };
 
-      await page.route(pattern, handler);
-      this.routeHandlers.set(pattern, handler);
+      const previous = state.routes.get(pattern);
+      if (previous) {
+        await page.unroute(previous.matcher, previous.handler);
+        this.blockRules = this.blockRules.filter(item => item.id !== previous.ruleId);
+        state.routes.delete(pattern);
+      }
+      await page.route(matcher, handler);
+      state.routes.set(pattern, { matcher, handler, ruleId: rule.id });
+      this.blockRules.push(rule);
     }
 
     console.log(`[NetworkMonitor] 🚫 Blocking ${patterns.length} URL patterns`);
@@ -180,8 +210,11 @@ export class NetworkMonitor {
    * Add custom headers to all requests.
    */
   async setCustomHeaders(page: any, headers: Record<string, string>): Promise<void> {
-    this.customHeaders = { ...this.customHeaders, ...headers };
-    await page.setExtraHTTPHeaders(this.customHeaders);
+    await this.startIntercepting(page);
+    const state = this.getPageState(page);
+    const nextHeaders = { ...state.headers, ...headers };
+    await page.setExtraHTTPHeaders(nextHeaders);
+    state.headers = nextHeaders;
     console.log(`[NetworkMonitor] 📋 Set ${Object.keys(headers).length} custom headers`);
   }
 
@@ -332,18 +365,25 @@ export class NetworkMonitor {
    * Clear block rules.
    */
   async clearBlockRules(page: any): Promise<void> {
-    for (const [pattern, handler] of this.routeHandlers) {
+    const state = this.pageStates.get(page);
+    if (!state) return;
+    for (const [pattern, { matcher, handler, ruleId }] of state.routes) {
       try {
-        await page.unroute(pattern, handler);
+        await page.unroute(matcher, handler);
+        state.routes.delete(pattern);
+        this.blockRules = this.blockRules.filter(rule => rule.id !== ruleId);
       } catch {}
     }
-    this.routeHandlers.clear();
-    this.blockRules = [];
-    this.blockedCount = 0;
+  }
+
+  async stopAll(): Promise<void> {
+    await Promise.all([...this.pageStates.keys()].map(page => this.stopIntercepting(page)));
+    this.clear();
   }
 }
 
 // ═══════════════════════════════════════
 // GLOBAL SINGLETON
 // ═══════════════════════════════════════
-export const networkMonitor = new NetworkMonitor();
+const globalForNetwork = globalThis as typeof globalThis & { __eterxNetworkMonitor?: NetworkMonitor };
+export const networkMonitor = globalForNetwork.__eterxNetworkMonitor ||= new NetworkMonitor();

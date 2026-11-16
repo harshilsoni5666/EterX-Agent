@@ -361,7 +361,7 @@ interface QueuedFollowUpItem {
   deliveryState?: 'pending' | 'uncertain' | 'rejected';
 }
 
-interface ChatInputProps {
+export interface ChatInputProps {
   showVoiceControls?: boolean;
   inputValue: string;
   inputValueRevision?: number;
@@ -3562,7 +3562,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
         <motion.div
           animate={liveAnimateState}
           transition={liveTransition}
-          className={`eterx-composer-surface eterx-composer-main relative flex w-full flex-col overflow-visible bg-[#202020] backdrop-blur-[28px] shadow-none transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${surfaceRadiusClass} ${surfacePaddingClass} ${surfaceBorderClass} ${isNewChatHome ? 'eterx-new-chat-composer-surface' : ''}`}
+          className={`eterx-composer-surface eterx-composer-main relative flex w-full flex-col overflow-visible bg-[#2D2D2D] backdrop-blur-[28px] shadow-none transition-all duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)] ${surfaceRadiusClass} ${surfacePaddingClass} ${surfaceBorderClass} ${isNewChatHome ? 'eterx-new-chat-composer-surface' : ''}`}
           style={!isCompressed ? { width: '100%', alignSelf: 'center' } : undefined}
           data-live={isLiveActive ? 'true' : undefined}
         >
@@ -4276,7 +4276,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                       animate: { opacity: 1, clipPath: 'inset(0px round 16px)' },
                       exit: { opacity: 0, clipPath: 'inset(3px 0px 3px 0px round 16px)' },
                       transition: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
-                    }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome} heightLimit={380}
+                    }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome} heightLimit={380} constrainToPane={false}
                       style={{ transform: `translateX(${ agentMenuX })`, width: codingDetails ? 320 : 224, maxHeight: agentMenuMaxHeight }}
                       className={`eterx-composer-popout eterx-agent-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex overflow-hidden max-w-[calc(100vw-32px)] flex-col rounded-xl border border-white/[0.08] bg-[#1E1E1E]/95 backdrop-blur-xl p-1.5 text-[#F4F1EA] shadow-none`}
                       role="dialog"
@@ -4492,7 +4492,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
                     animate: { opacity: 1, clipPath: 'inset(0px)', filter: 'blur(0px)' },
                     exit: { opacity: 0, clipPath: 'inset(3px 0px 3px 0px)', filter: 'blur(1px)' },
                     transition: { duration: 0.16, ease: [0.22, 1, 0.36, 1] },
-                  }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome}
+                  }} preferredSide={isNewChatHome ? 'bottom' : 'top'} allowFlip={!isNewChatHome} constrainToPane={false}
                     style={{ transform: `translateX(${ modelMenuX })` }}
                     className={`eterx-composer-popout eterx-model-menu-popout absolute ${ selectorPopoutVerticalClass } left-1/2 z-[130] flex ${ isCompressed ? 'w-[248px]' : 'w-[286px]' } max-w-[calc(100vw-32px)] flex-col rounded-[20px] border border-white/[0.10] bg-[#202020] p-1.5 text-[#F4F1EA] shadow-none`}
                     role="dialog"

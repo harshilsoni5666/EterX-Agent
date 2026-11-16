@@ -1,4 +1,5 @@
 import { getToolDisplayLabel, normalizeToolTraceName } from '../../lib/agent/tool-trace';
+import { getWebActivity, WEB_ACTIVITY_LABELS } from '../../lib/tool-result-presentation';
 
 type ActionSummary = { key: string; singular: string; plural: string; live: string };
 
@@ -69,9 +70,17 @@ const completedVerbs: Record<string, string> = {
   launching: 'Launched', opening: 'Opened', clicking: 'Clicked', using: 'Used',
 };
 
-/** Summary labels use tool identity and published UI text, never arguments,
- * output, file paths, or guesses based on command contents. */
+/** Summary labels use tool identity, a web action's declared mode, and published
+ * UI text; never command contents, query text, or file paths. */
 export function getActionSummary(log: any): ActionSummary {
+  const webActivity = getWebActivity(log);
+  if (webActivity) {
+    const labels = WEB_ACTIVITY_LABELS[webActivity];
+    return { key: `web:${webActivity}`, singular: labels.done, plural: labels.done, live: labels.live };
+  }
+  if ((log?.toolName || log?.tool) === 'imported_action_results') {
+    return { key: 'tool_results', singular: 'Tool sequence results', plural: 'Tool sequence results', live: 'Collecting tool results' };
+  }
   const tool = normalizeToolTraceName(log?.toolName || log?.tool || log?.name).toLowerCase().replace(/[\s-]+/g, '_');
   const label = typeof log?.text === 'string' ? log.text.trim() : '';
   const category = byTool[tool] || byLabel[label.toLowerCase()];

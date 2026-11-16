@@ -1,5 +1,6 @@
 import { isRuntimePlanMode, PLAN_MODE_INSTRUCTION } from './plan-mode';
 import { splitComputerToolResult } from './computer/tool-vision';
+import { randomUUID as desktopRunUUID } from 'crypto';
 import { isRuntimeSwarmMode } from './swarm-mode';
 import { swarmCoordinator, SWARM_LIMITS, SWARM_MODE_INSTRUCTION } from './swarm-coordinator';
 import { buildTelegramBotContext } from './telegram-bot-context';
@@ -5736,6 +5737,25 @@ OUTPUT CONTRACT
     mediaFiles: AgentMediaFile[] = [],
     imageBackupParts: any[] = []
   ): Promise<{ text: string, trace: any[] }> {
+    const runContext = { ...context, runId: (context as any).runId || (context as any).turnId || desktopRunUUID() };
+    try {
+      return await this.executeMessageLoopInSession(runContext, message, history, onTrace, mediaFiles, imageBackupParts);
+    } finally {
+      const { finishDesktopSession } = await import('./computer/desktop-session');
+      // A larger workflow can invoke this agent again with the same run ID.
+      // Close this loop's native resources without revoking its parent run.
+      await finishDesktopSession(runContext);
+    }
+  }
+
+  private async executeMessageLoopInSession(
+    context: ProjectContext,
+    message: string,
+    history: any[] = [],
+    onTrace?: (t: any) => void,
+    mediaFiles: AgentMediaFile[] = [],
+    imageBackupParts: any[] = []
+  ): Promise<{ text: string, trace: any[] }> {
     (context as any).chatMediaContext = await buildChatMediaContext(String((context as any).ownerChatId || (context as any).chatId || context.projectId || ''));
     const pastedReferences = mediaFiles.filter(isPastedText);
     if (pastedReferences.length) {
@@ -8787,7 +8807,13 @@ OUTPUT CONTRACT
           } else if (toolOutput?.error) {
             resultSummary = `ERROR: ${ formatAgentErrorValue(toolOutput.error).substring(0, 120) }`;
           } else if (toolOutput?.stillRunning || toolOutput?.running || toolOutput?.status === 'running') {
-            resultSummary = `PENDING: taskId=${toolOutput.taskId || toolOutput.backgroundTaskId || 'unknown'}, outputEnd=${toolOutput.outputEnd ?? 0}. Continue this process; it has not completed.`;
+            const pending = Array.isArray(toolOutput.results)
+              ? toolOutput.results.filter((entry: any) => entry.stillRunning || entry.running || entry.status === 'running')
+              : Array.isArray(toolOutput.pendingTasks) ? toolOutput.pendingTasks : [toolOutput];
+            const taskIds = pending.map((entry: any) => entry.taskId || entry.backgroundTaskId).filter(Boolean);
+            // The provider's shared output budget can still shorten read pages
+            // after this digest is recorded. Only delivered results own cursors.
+            resultSummary = `PENDING: ${taskIds.join(', ') || 'work is still running'}. Continue using each task's outputEnd from the delivered tool result; completion is not established.`;
           } else if (exitCode !== undefined && exitCode !== 0 && exitCode !== null) {
             const errSource = toolOutput.stderr || toolOutput.stdout || '';
             const trailingErr = String(errSource).slice(-100);

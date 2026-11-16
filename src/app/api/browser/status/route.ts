@@ -1,108 +1,84 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { browserEngine } from '../../../../lib/agent/browser/engine';
 import { nativeCurrentBrowser } from '../../../../lib/agent/browser/native-current-browser';
-import { isUnsafeHostControlEnabled } from '../../../../lib/agent/computer/computer-session';
-import { cuaDriverProvider, getCuaDriverStatus } from '../../../../lib/agent/computer/cua-driver';
+import { disconnectBrowserSession, launchBrowserSession, withBrowserSessionLock } from '../../../../lib/agent/browser/runtime';
+import { readStoredRuntimeSettings, updateStoredRuntimeSettings } from '../../../../lib/agent/runtime-settings-store';
+import { rejectCrossOrigin } from '../../agent/_shared';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-async function resolveWithin<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
-  const guarded = promise.then(value => value).catch(() => fallback);
-  return Promise.race([
-    guarded,
-    new Promise<T>(resolve => setTimeout(() => resolve(fallback), timeoutMs)),
-  ]);
-}
-
 async function snapshot() {
-  const native = nativeCurrentBrowser.connected;
+  const settings = readStoredRuntimeSettings();
+  const native = !browserEngine.connected && nativeCurrentBrowser.connected;
   const signedConnected = native || (browserEngine.connected && browserEngine.mode === 'cdp');
   // Settings polling must stay shallow. Full browser discovery touches the OS
   // process table and can take several seconds on a busy desktop; the signed
   // action itself is the authoritative readiness check.
   const signedReadinessPromise = Promise.resolve(signedConnected
     ? { available: true, reason: 'Signed browser control is connected.' }
-    : { available: true, reason: 'Signed-in browser will be verified when you connect it.' });
-  const [signedReadiness, cuaStatus] = await Promise.all([
-    signedReadinessPromise,
-    resolveWithin(getCuaDriverStatus(), 4500, {
-      installed: false,
-      version: null,
-      daemonRunning: false,
-      healthy: false,
-      overall: 'checking',
-      platform: process.platform,
-      message: 'Computer-use driver status is still being checked.',
-    }),
-  ]);
+    : process.env.ETERX_ALLOW_USER_CHROME === '0'
+      ? { available: false, reason: 'Signed-in browser access is disabled on this device. Choose an isolated browser.' }
+      : { available: true, reason: 'Signed-in browser will be verified when you connect it.' });
+  const signedReadiness = await signedReadinessPromise;
   return {
     platform: process.platform,
+    browserAccess: settings.browserAccess !== false,
+    preferredMode: settings.browserMode || 'cdp',
     browser: native ? nativeCurrentBrowser.info : browserEngine.connectionInfo,
     signedBrowser: signedConnected,
     signedBrowserAvailable: signedReadiness.available,
     signedBrowserReason: signedReadiness.reason,
     managedBrowser: browserEngine.connected && browserEngine.mode === 'managed',
-    computer: {
-      hostControlEnabled: isUnsafeHostControlEnabled(),
-      screenProvider: cuaStatus.installed ? cuaDriverProvider() : 'Not configured',
-      inputProvider: cuaStatus.installed ? cuaDriverProvider() : 'Not configured',
-      cuaDriver: cuaStatus,
-      note: process.platform === 'win32'
-        ? 'Native desktop control requires Computer Use enabled for the task and a running Cua Driver in the signed-in Windows session.'
-        : 'Native window control requires a running Cua Driver. macOS also requires Accessibility and Screen Recording permissions.'
-    },
+    remoteBrowser: browserEngine.connected && browserEngine.mode === 'remote',
   };
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const originError = rejectCrossOrigin(request);
+  if (originError) return originError;
   return NextResponse.json({ success: true, ...(await snapshot()) }, { headers: { 'Cache-Control': 'no-store' } });
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
+  const originError = rejectCrossOrigin(request);
+  if (originError) return originError;
   try {
-    const body = await request.json().catch(() => ({}));
-    const action = String(body?.action || 'status');
-
-    if (action === 'disconnect') {
-      nativeCurrentBrowser.disconnect();
-      await browserEngine.disconnect();
-      return NextResponse.json({ success: true, message: 'Browser control disconnected.', ...(await snapshot()) });
+    const body = await request.json().catch(() => null);
+    const action = body?.action;
+    if (!['status', 'disconnect', 'connect_signed', 'launch_managed'].includes(action)) {
+      return NextResponse.json({ success: false, error: 'A valid browser action is required.' }, { status: 400 });
     }
 
-    if (action === 'connect_signed') {
-      if (nativeCurrentBrowser.connected) {
-        return NextResponse.json({ success: true, message: 'Signed-in browser control is already connected.', ...(await snapshot()) });
+    if (action === 'status') {
+      return NextResponse.json({ success: true, ...(await snapshot()) }, { headers: { 'Cache-Control': 'no-store' } });
+    }
+
+    return await withBrowserSessionLock(async () => {
+      request.signal.throwIfAborted();
+      if (action === 'disconnect') {
+        await disconnectBrowserSession();
+        return NextResponse.json({ success: true, message: 'Browser control disconnected.', ...(await snapshot()) }, { headers: { 'Cache-Control': 'no-store' } });
       }
-      const page = await browserEngine.launch({ mode: 'cdp', headless: false });
-      return NextResponse.json({ success: true, message: 'Signed-in browser connected.', url: page?.url?.() || '', ...(await snapshot()) });
-    }
-
-    if (action === 'launch_managed') {
-      const page = await browserEngine.launch({ mode: 'managed', headless: false });
-      return NextResponse.json({ success: true, message: 'Managed browser started.', url: page?.url?.() || '', ...(await snapshot()) });
-    }
-
-    return NextResponse.json({ success: false, error: `Unknown browser action: ${action}` }, { status: 400 });
+      if (readStoredRuntimeSettings().browserAccess === false) {
+        return NextResponse.json({ success: false, error: 'Enable browser control in Settings before connecting.', ...(await snapshot()) }, { status: 403, headers: { 'Cache-Control': 'no-store' } });
+      }
+      const mode = action === 'launch_managed' ? 'managed' : 'cdp';
+      await updateStoredRuntimeSettings({ browserMode: mode });
+      const session = await launchBrowserSession({ mode, headless: false }, request.signal);
+      return NextResponse.json({
+        success: true,
+        message: mode === 'managed' ? 'Isolated browser connected. Agents will use this mode.' : 'Signed-in browser connected. Agents will use this mode.',
+        url: session.nativeResult?.currentUrl || session.page?.url() || '',
+        ...(await snapshot()),
+      }, { headers: { 'Cache-Control': 'no-store' } });
+    });
   } catch (error: any) {
     const message = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 700);
-    const native = nativeCurrentBrowser.connected;
-    const signedConnected = native || (browserEngine.connected && browserEngine.mode === 'cdp');
     return NextResponse.json({
       success: false,
       error: message,
-      platform: process.platform,
-      browser: native ? nativeCurrentBrowser.info : browserEngine.connectionInfo,
-      signedBrowser: signedConnected,
-      signedBrowserAvailable: signedConnected,
-      signedBrowserReason: signedConnected ? 'Signed browser control is connected.' : message,
-      managedBrowser: browserEngine.connected && browserEngine.mode === 'managed',
-      computer: {
-        hostControlEnabled: isUnsafeHostControlEnabled(),
-        screenProvider: 'Unknown',
-        inputProvider: 'Unknown',
-        note: 'Refresh desktop status in Settings > Computer. Native desktop control requires a running Cua Driver.'
-      },
-    }, { status: 409 });
+      ...(await snapshot()),
+    }, { status: 409, headers: { 'Cache-Control': 'no-store' } });
   }
 }

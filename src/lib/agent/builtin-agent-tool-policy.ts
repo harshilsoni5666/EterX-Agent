@@ -5,6 +5,7 @@ import type { AgentToolSettings, BuiltinAgentId } from './builtin-agent-settings
 let cachedRevision = '';
 let cachedSettings: AgentToolSettings = {};
 let cachedComputerUse: boolean | undefined;
+let cachedBrowserAccess: boolean | undefined;
 
 export function readAgentToolSettings(): AgentToolSettings {
   const revision = getStoredRuntimeSettingsRevision();
@@ -12,6 +13,7 @@ export function readAgentToolSettings(): AgentToolSettings {
     const stored = readStoredRuntimeSettings();
     cachedSettings = stored.agentTools || {};
     cachedComputerUse = stored.computerUse;
+    cachedBrowserAccess = stored.browserAccess;
     cachedRevision = revision;
   }
   return cachedSettings;
@@ -20,6 +22,11 @@ export function readAgentToolSettings(): AgentToolSettings {
 export function isComputerUseDisabled(): boolean {
   readAgentToolSettings();
   return cachedComputerUse === false;
+}
+
+export function isBrowserAccessDisabled(): boolean {
+  readAgentToolSettings();
+  return cachedBrowserAccess === false;
 }
 
 export function isBuiltinToolEnabled(agent: BuiltinAgentId, name: string): boolean {

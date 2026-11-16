@@ -105,7 +105,7 @@
     --sidebar-glow-start: clamp(320px, 36vh, 430px);
     --eterx-main-panel-border: rgba(31, 31, 29, 0.075);
     --sidebar-shell-radius: 24px;
-    --eterx-shell-sidebar-width: 256px;
+    --eterx-shell-sidebar-width: 308px;
     --eterx-shell-topbar-height: 38px;
     --eterx-main-header-height: 56px;
     --eterx-shell-radius: 24px;
@@ -191,7 +191,7 @@
     --sidebar-glow-start: 0px;
     --eterx-main-panel-border: rgba(255, 255, 255, 0.052);
     --sidebar-shell-radius: 24px;
-    --eterx-shell-sidebar-width: 256px;
+    --eterx-shell-sidebar-width: 308px;
     --eterx-shell-topbar-height: 38px;
     --eterx-main-header-height: 56px;
     --eterx-shell-radius: 24px;
@@ -2024,10 +2024,10 @@
 }
 
 :root[data-theme="dark"] .eterx-composer-shell[data-new-chat="true"] .eterx-new-chat-composer-surface {
-  --eterx-composer-fog-solid: #2A2A2A;
-  --eterx-composer-fog-strong: rgba(42, 42, 42, 0.94);
-  --eterx-composer-fog-clear: rgba(42, 42, 42, 0);
-  background: #2A2A2A !important;
+  --eterx-composer-fog-solid: #2D2D2D;
+  --eterx-composer-fog-strong: rgba(45, 45, 45, 0.94);
+  --eterx-composer-fog-clear: rgba(45, 45, 45, 0);
+  background: #2D2D2D !important;
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-bottom-color: rgba(255, 255, 255, 0.045) !important;
 }
@@ -6117,40 +6117,40 @@
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]) {
-  --eterx-composer-fog-solid-top: #212121;
-  --eterx-composer-fog-strong-top: rgba(33, 33, 33, 0.95);
-  --eterx-composer-fog-clear-top: rgba(33, 33, 33, 0);
-  --eterx-composer-fog-solid-bottom: #212121;
-  --eterx-composer-fog-strong-bottom: rgba(33, 33, 33, 0.95);
-  --eterx-composer-fog-clear-bottom: rgba(33, 33, 33, 0);
+  --eterx-composer-fog-solid-top: #2D2D2D;
+  --eterx-composer-fog-strong-top: rgba(45, 45, 45, 0.95);
+  --eterx-composer-fog-clear-top: rgba(45, 45, 45, 0);
+  --eterx-composer-fog-solid-bottom: #2D2D2D;
+  --eterx-composer-fog-strong-bottom: rgba(45, 45, 45, 0.95);
+  --eterx-composer-fog-clear-bottom: rgba(45, 45, 45, 0);
   border-color: rgba(255, 255, 255, 0.08) !important;
   border-radius: 28px !important;
-  background: #212121 !important;
+  background: #2D2D2D !important;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]):hover {
-  --eterx-composer-fog-solid-top: #212121;
-  --eterx-composer-fog-strong-top: rgba(33, 33, 33, 0.95);
-  --eterx-composer-fog-clear-top: rgba(33, 33, 33, 0);
-  --eterx-composer-fog-solid-bottom: #212121;
-  --eterx-composer-fog-strong-bottom: rgba(33, 33, 33, 0.95);
-  --eterx-composer-fog-clear-bottom: rgba(33, 33, 33, 0);
+  --eterx-composer-fog-solid-top: #2D2D2D;
+  --eterx-composer-fog-strong-top: rgba(45, 45, 45, 0.95);
+  --eterx-composer-fog-clear-top: rgba(45, 45, 45, 0);
+  --eterx-composer-fog-solid-bottom: #2D2D2D;
+  --eterx-composer-fog-strong-bottom: rgba(45, 45, 45, 0.95);
+  --eterx-composer-fog-clear-bottom: rgba(45, 45, 45, 0);
   border-color: rgba(255, 255, 255, 0.08) !important;
-  background: #212121 !important;
+  background: #2D2D2D !important;
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-surface:not([data-live="true"]):focus-within {
-  --eterx-composer-fog-solid-top: #212121;
-  --eterx-composer-fog-strong-top: rgba(33, 33, 33, 0.95);
-  --eterx-composer-fog-clear-top: rgba(33, 33, 33, 0);
-  --eterx-composer-fog-solid-bottom: #212121;
-  --eterx-composer-fog-strong-bottom: rgba(33, 33, 33, 0.95);
-  --eterx-composer-fog-clear-bottom: rgba(33, 33, 33, 0);
+  --eterx-composer-fog-solid-top: #2D2D2D;
+  --eterx-composer-fog-strong-top: rgba(45, 45, 45, 0.95);
+  --eterx-composer-fog-clear-top: rgba(45, 45, 45, 0);
+  --eterx-composer-fog-solid-bottom: #2D2D2D;
+  --eterx-composer-fog-strong-bottom: rgba(45, 45, 45, 0.95);
+  --eterx-composer-fog-clear-bottom: rgba(45, 45, 45, 0);
   border-color: rgba(255, 255, 255, 0.08) !important;
-  background: #212121 !important;
+  background: #2D2D2D !important;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25) !important;
 }
 
@@ -6249,16 +6249,16 @@
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-overflow-fade-top {
   background: linear-gradient(180deg,
-      var(--eterx-composer-fog-solid-top, #212121) 0%,
-      var(--eterx-composer-fog-strong-top, rgba(33, 33, 33, 0.95)) 56%,
-      var(--eterx-composer-fog-clear-top, rgba(33, 33, 33, 0)) 100%) !important;
+      var(--eterx-composer-fog-solid-top, #2D2D2D) 0%,
+      var(--eterx-composer-fog-strong-top, rgba(45, 45, 45, 0.95)) 56%,
+      var(--eterx-composer-fog-clear-top, rgba(45, 45, 45, 0)) 100%) !important;
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-overflow-fade-bottom {
   background: linear-gradient(0deg,
-      var(--eterx-composer-fog-solid-bottom, #212121) 0%,
-      var(--eterx-composer-fog-strong-bottom, rgba(33, 33, 33, 0.95)) 56%,
-      var(--eterx-composer-fog-clear-bottom, rgba(33, 33, 33, 0)) 100%) !important;
+      var(--eterx-composer-fog-solid-bottom, #2D2D2D) 0%,
+      var(--eterx-composer-fog-strong-bottom, rgba(45, 45, 45, 0.95)) 56%,
+      var(--eterx-composer-fog-clear-bottom, rgba(45, 45, 45, 0)) 100%) !important;
 }
 
 :root[data-theme="dark"] .eterx-composer-shell .eterx-composer-textarea::placeholder {
@@ -8586,8 +8586,6 @@
     --eterx-home-dock-top: 45%;
     --eterx-home-greeting-size: 42px;
     --eterx-home-greeting-compact-size: 30px;
-    --eterx-proxy-chat-offset: -80px;
-    --eterx-proxy-width: 200px;
     --eterx-chat-panel-min: 360px;
   }
 
@@ -8673,15 +8671,6 @@
     min-width: var(--eterx-chat-panel-min);
   }
 
-  .eterx-chat-column[data-proxy-active="true"] .eterx-chat-feed-content,
-  .eterx-chat-column[data-proxy-active="true"] .eterx-chat-input-dock {
-    transform: translateX(var(--eterx-proxy-chat-offset)) !important;
-  }
-
-  .eterx-proxy-dock {
-    width: var(--eterx-proxy-width) !important;
-  }
-
 }
 
 /* Compact laptops: 11–13 inch devices and narrow development windows. */
@@ -8702,8 +8691,6 @@
     --eterx-composer-textarea-max: 240px;
     --eterx-home-greeting-size: 36px;
     --eterx-home-greeting-compact-size: 27px;
-    --eterx-proxy-chat-offset: -40px;
-    --eterx-proxy-width: 176px;
     --eterx-chat-panel-min: 320px;
   }
 
@@ -8712,9 +8699,6 @@
     padding-right: 12px !important;
   }
 
-  .eterx-proxy-dock {
-    right: 12px !important;
-  }
 }
 
 /* Standard developer desktops. */
@@ -8766,8 +8750,6 @@
     --eterx-home-dock-top: 43%;
     --eterx-home-greeting-size: 52px;
     --eterx-home-greeting-compact-size: 34px;
-    --eterx-proxy-chat-offset: -96px;
-    --eterx-proxy-width: 220px;
     --eterx-chat-panel-min: 460px;
   }
 }
@@ -8784,8 +8766,6 @@
     --eterx-composer-dock-bottom: 38px;
     --eterx-composer-dock-top-space: 56px;
     --eterx-home-dock-top: 42%;
-    --eterx-proxy-chat-offset: -112px;
-    --eterx-proxy-width: 244px;
     --eterx-chat-panel-min: 520px;
   }
 
@@ -10995,9 +10975,8 @@ body.eterx-gateway-view section.mt-8 > main {
   }
 }
 
-/* Proxy controls sit beside the full-chat composer when autonomy is active.
-   Keep their hit targets above the composer layer and keep every selector
-   inside the viewport even when the sidebar state changes. */
+/* Proxy control surfaces share the app theme. Their responsive placement is
+   owned by conversation-layout.css; keep their hit targets above the feed. */
 .eterx-proxy-card,
 .eterx-proxy-card button,
 .eterx-proxy-runtime-model-menu,
@@ -13057,8 +13036,10 @@ body.eterx-gateway-view section.mt-8 > main {
   font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif !important;
 }
 
-:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence .eterx-terminal-console,
-:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence .eterx-terminal-console * {
+/* Expanded file previews include nested syntax spans. Preserve Geist Mono
+   on the entire code surface instead of inheriting the activity UI font. */
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence :is(.eterx-terminal-console, .eterx-inline-diff-scroll, .eterx-inline-code-scroll),
+:is(.eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-sequence :is(.eterx-terminal-console, .eterx-inline-diff-scroll, .eterx-inline-code-scroll) * {
   font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
 }
 

@@ -1803,8 +1803,8 @@ const renderFeedContextCompaction = (log: any) => <ContextCompactionNotice log={
 const EMPTY_LIVE_SEQUENCE_LOGS: any[] = [];
 
 const ThoughtSequence = ({
-  logs, liveLogs = EMPTY_LIVE_SEQUENCE_LOGS, isThinking, isLast, hasAnswer, showLiveIndicator = false, showStartupIndicator = false, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes
-}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, showLiveIndicator?: boolean, showStartupIndicator?: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number> }) => {
+  logs, liveLogs = EMPTY_LIVE_SEQUENCE_LOGS, isThinking, isLast, hasAnswer, showLiveIndicator = false, showStartupIndicator = false, stepCount, turnStartedAt, turnEndedAt, onOpenAgentTeam, isSubAgentTab = false, isAgentBuilder = false, onEditUserMessage, subAgentAssetIndexes, isTurnNavigationWorkNote = false
+}: { logs: any[], liveLogs?: any[], isThinking: boolean, isLast: boolean, hasAnswer: boolean, showLiveIndicator?: boolean, showStartupIndicator?: boolean, stepCount: number, turnStartedAt?: number | null, turnEndedAt?: number | null, onOpenAgentTeam?: (agentName?: string) => void, isSubAgentTab?: boolean, isAgentBuilder?: boolean, onEditUserMessage?: (text: string) => void, subAgentAssetIndexes?: Record<string, number>, isTurnNavigationWorkNote?: boolean }) => {
   // The trace stream is more precise than the briefly stale global running
   // flag. Scan the whole turn: terminal events are often followed by late
   // cleanup traces, and a final answer itself conclusively ends work timing.
@@ -1886,7 +1886,7 @@ const ThoughtSequence = ({
   if (!isLiveThinking && !hasRealActions && !hasNarrativeWork && !hasRenderableTimelineWork) return null;
 
   return (
-    <div className="eterx-work-sequence relative" ref={containerRef}>
+    <div className="eterx-work-sequence relative" ref={containerRef} data-chat-turn-work-note-anchor={isTurnNavigationWorkNote ? 'true' : undefined}>
       {hasRealActions && (
         <div className={`eterx-worked-summary eterx-worked-summary-complete ${ isLiveThinking ? 'eterx-worked-summary-live' : '' } mb-1 flex w-full items-center gap-3 pt-0`}>
           <button
@@ -2011,6 +2011,7 @@ const haveSameRenderedLog = (left: any, right: any) => {
 const ChatFeedMessageGroup = React.memo(({
   group,
   groupIdx,
+  showStartupIndicator = false,
   dateLabel,
   turnStartedAt,
   isThinkingTurn,
@@ -2028,6 +2029,7 @@ const ChatFeedMessageGroup = React.memo(({
 }: {
   group: any[];
   groupIdx: number;
+  showStartupIndicator?: boolean;
   dateLabel?: string;
   turnStartedAt?: number | null;
   isThinkingTurn: boolean;
@@ -2150,7 +2152,7 @@ const ChatFeedMessageGroup = React.memo(({
                 })}
               </div>
             )}
-            {userText && <div data-delegated={delegatedSource ? 'true' : undefined} className="eterx-user-message-bubble eterx-chat-feed-user-bubble relative min-w-0 max-w-full rounded-[22px] bg-[#1F1F1F] px-4 py-2.5 text-[13.5px] leading-[1.5] text-[#F4F2EE] select-text">
+            {userText && <div data-delegated={delegatedSource ? 'true' : undefined} className="eterx-user-message-bubble eterx-chat-feed-user-bubble relative min-w-0 max-w-full rounded-[22px] bg-[#2D2D2D] px-4 py-2.5 text-[13.5px] leading-[1.5] text-[#F4F2EE] select-text">
               <UserMessageText text={userText} />
             </div>}
           </div>
@@ -2326,6 +2328,13 @@ const ChatFeedMessageGroup = React.memo(({
   // rendering. Do not run a second question-content filter here; it could
   // suppress a valid repeated prompt from a later phase.
   const visibleWorkLogs = rawWorkLogs;
+  const workNoteNavigationLog = !displayFinalAnswer
+    ? [...visibleWorkLogs].reverse().find((log: any) =>
+        log?.type === 'work_note' &&
+        String(log.text || '').trim() &&
+        (isSubAgentTab || getFeedNarrativeOwner(log) === 'main')
+      ) || null
+    : null;
   const segments: { type: 'thoughts' | 'ask_user' | 'status'; logs?: any[]; log?: any; notice?: AgentRunNotice; phaseKey?: string }[] = [];
   let currentThoughts: any[] = [];
   const segmentIdentity = (seg: { logs?: any[]; log?: any }, fallback: number) => {
@@ -2488,11 +2497,17 @@ const ChatFeedMessageGroup = React.memo(({
             key={thoughtPhaseKey}
             logs={seg.logs || []}
             liveLogs={isLastThoughts ? liveActionLogs : []}
+            isTurnNavigationWorkNote={Boolean(workNoteNavigationLog && (seg.logs || []).some((log: any) =>
+              log === workNoteNavigationLog || (
+                workNoteNavigationLog._feedPresentationId &&
+                log?._feedPresentationId === workNoteNavigationLog._feedPresentationId
+              )
+            ))}
             isThinking={groupIsThinking && isLastThoughts}
             isLast={isLastThoughts}
             hasAnswer={hasSettledAnswer && isLastThoughts}
             showLiveIndicator={!displayFinalAnswer && segIdx === segments.length - 1}
-            showStartupIndicator={segIdx === 0}
+            showStartupIndicator={showStartupIndicator && segIdx === 0}
             stepCount={stepCount}
             turnStartedAt={seg.phaseKey === 'root' ? turnStartedAt : undefined}
             turnEndedAt={terminalTurnEndedAt}
@@ -2506,7 +2521,7 @@ const ChatFeedMessageGroup = React.memo(({
       })}
 
       {displayFinalAnswer && (
-        <div className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
+        <div data-chat-turn-answer-anchor="true" className="eterx-assistant-answer w-full group/assistant mt-0 [&_.professional-thought>*:first-child]:!mt-0">
 
           <div className="relative group/thought">
             <div className={`eterx-assistant-answer-body ${ isAnswerActivelyTyping ? 'eterx-assistant-live-text' : '' } text-[13.5px] leading-[1.56] text-[#F2F0EC] font-sans relative`}>
@@ -2589,6 +2604,7 @@ const ChatFeedMessageGroup = React.memo(({
   );
 }, (previous, next) => {
   if (previous.groupIdx !== next.groupIdx) return false;
+  if (previous.showStartupIndicator !== next.showStartupIndicator) return false;
   if (previous.dateLabel !== next.dateLabel) return false;
   if (previous.turnStartedAt !== next.turnStartedAt) return false;
   if (previous.isThinkingTurn !== next.isThinkingTurn) return false;
@@ -2922,15 +2938,31 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
         !isHiddenRecoveredUserBoundary(g[0])
       ) {
         const nextGroup = groups[idx + 1] || [];
-        const answerLog = [...nextGroup].reverse().find((l: any) => l.type === 'answer' && l.text && !isErrorText(l.text));
+        const hasAssistantGroup = nextGroup.length > 0 && !isFeedTurnBoundary(nextGroup[0]);
+        const answerLog = hasAssistantGroup
+          ? [...nextGroup].reverse().find((l: any) => l.type === 'answer' && l.text && !isErrorText(l.text))
+          : undefined;
+        const workNoteLog = !answerLog && hasAssistantGroup
+          ? [...nextGroup].reverse().find((log: any) =>
+              log?.type === 'work_note' &&
+              String(log.text || '').trim() &&
+              isLiveUserVisibleTrace(log) &&
+              !isHiddenStatusOnlyLog(log) &&
+              (isSubAgentTab || getFeedNarrativeOwner(log) === 'main')
+            )
+          : undefined;
+        const previewLog = answerLog || workNoteLog;
         const firstAttachment = g[0]?.attachments?.[0];
         const attachmentName = firstAttachment?.name || firstAttachment?.file?.name || null;
         return {
           idx,
+          responseIdx: hasAssistantGroup ? idx + 1 : null,
           userText: getVisibleUserBoundaryText(g[0]),
           // Navigation previews are excerpts, not another rich message renderer.
-          // Only use an answer; tool logs may contain internal execution payloads.
-          assistantText: String(answerLog?.text || '')
+          // Prefer the final answer and use the newest visible work note while
+          // a turn has not produced an answer yet.
+          assistantText: String(previewLog?.text || '')
+            .replace(/<\/?(?:thought|work_note)>/gi, ' ')
             .replace(/```[\s\S]*?```/g, ' ')
             .replace(/!?\[([^\]]*)\]\([^)]+\)/g, '$1')
             .replace(/(^|\n)\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+)/g, ' ')
@@ -2940,8 +2972,17 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
         };
       }
       return null;
-    }).filter(Boolean).slice(-MAX_TURN_NAV_ITEMS) as Array<{ idx: number; userText: string; assistantText: string; attachmentName: string | null }>;
-  }, [groups]);
+    }).filter(Boolean).slice(-MAX_TURN_NAV_ITEMS) as Array<{ idx: number; responseIdx: number | null; userText: string; assistantText: string; attachmentName: string | null }>;
+  }, [groups, isSubAgentTab]);
+
+  const getTurnNavigationTarget = (container: HTMLElement, turn: { idx: number; responseIdx?: number | null }) => {
+    const responseGroup = typeof turn.responseIdx === 'number'
+      ? container.querySelector<HTMLElement>(`[data-chat-group-index="${ turn.responseIdx }"]`)
+      : null;
+    return responseGroup?.querySelector<HTMLElement>('[data-chat-turn-answer-anchor]')
+      || responseGroup?.querySelector<HTMLElement>('[data-chat-turn-work-note-anchor]')
+      || container.querySelector<HTMLElement>(`[data-chat-group-index="${ turn.idx }"]`);
+  };
 
   useEffect(() => {
     if (userTurns.length > 0) {
@@ -3230,14 +3271,15 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
       let closestIdx = -1;
       let minDistance = Infinity;
 
-      // User-turn centers are ordered vertically. Locate the nearest one in
-      // logarithmic reads instead of measuring every turn on every scroll.
+      // A turn's answer/note anchor (or prompt when neither exists) is ordered
+      // vertically. Locate the nearest one in logarithmic reads instead of
+      // measuring every turn on every scroll.
       let low = 0;
       let high = userTurns.length - 1;
       while (low <= high) {
         const middle = (low + high) >>> 1;
         const turn = userTurns[middle];
-        const el = latestContainer.querySelector<HTMLElement>(`[data-chat-group-index="${ turn.idx }"]`);
+        const el = getTurnNavigationTarget(latestContainer, turn);
         if (!el) { high = middle - 1; continue; }
         const rect = el.getBoundingClientRect();
         const center = rect.top + rect.height / 2;
@@ -3259,6 +3301,12 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
   // late-arriving turns, and silently windowing the head of the feed makes
   // users believe history was lost behind a "previous messages" affordance.
   const visibleGroups = groups;
+  const firstPromptBoundaryGroupIndex = visibleGroups.findIndex(group =>
+    group[0]?.type === 'user_action' && !isHiddenRecoveredUserBoundary(group[0])
+  );
+  const startupIndicatorGroupIndex = firstPromptBoundaryGroupIndex >= 0
+    ? firstPromptBoundaryGroupIndex + 1
+    : -1;
   const visibleGroupMountKeys = (() => {
     const ownerOccurrences = new Map<string, number>();
     let currentOwner = 'preamble';
@@ -3284,10 +3332,10 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
     });
   })();
   const isEmptyNewChatFeed = traceLogs.length === 0 && !isThinking;
-  const navigateToTurn = (turn: { idx: number }, turnIndex: number) => {
+  const navigateToTurn = (turn: { idx: number; responseIdx?: number | null }, turnIndex: number) => {
     const scrollToTurn = () => {
       const container = scrollContainerRef.current;
-      const target = container?.querySelector<HTMLElement>(`[data-chat-group-index="${ turn.idx }"]`);
+      const target = container ? getTurnNavigationTarget(container, turn) : null;
       if (!container || !target) return;
       shouldAutoFollowRef.current = false;
       const containerRect = container.getBoundingClientRect();
@@ -3518,6 +3566,7 @@ const ChatFeedContent = React.memo<ChatFeedProps>(({
                         dateLabel={dateLabel}
                         group={group}
                         groupIdx={groupIdx}
+                        showStartupIndicator={groupIdx === startupIndicatorGroupIndex}
                         turnStartedAt={turnStartedAt}
                         isThinkingTurn={isThinkingTurn}
                         isLiveSessionActive={isLiveSessionActive}

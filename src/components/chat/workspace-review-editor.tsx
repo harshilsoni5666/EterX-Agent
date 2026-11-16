@@ -934,7 +934,7 @@ function CodePanel({
         </button>
       </div>
 
-      <div className="eterx-scrollbar eterx-review-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain bg-[#0B0B0C] p-4 font-mono text-[13px] leading-6 [scrollbar-gutter:stable]">
+      <div className="eterx-review-code-body eterx-scrollbar eterx-review-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain bg-[#0B0B0C] p-4 font-mono text-[13px] leading-6 [scrollbar-gutter:stable]">
         {shownLines.length > 0 ? (
           visibleLines.map((line, index) => (
             <div key={`${index}-${line.slice(0, 20)}`} className="grid grid-cols-[48px_minmax(0,1fr)] gap-4">

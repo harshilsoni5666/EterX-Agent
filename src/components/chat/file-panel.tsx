@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import dynamic from 'next/dynamic';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { GeistMono } from 'geist/font/mono';
 import {
   X, ExternalLink, Copy, Check, Globe, Code2,
   Columns2, RefreshCw, FileCode2, FileText, Monitor,
@@ -424,8 +425,10 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           options={{
             minimap: { enabled: false },
             fontSize: 13,
-            fontFamily: '"GeistMono", Consolas, "Liberation Mono", monospace',
-            lineHeight: 24,
+            fontFamily: GeistMono.style.fontFamily,
+            fontWeight: '400',
+            letterSpacing: 0,
+            lineHeight: 22,
             padding: { top: 16, bottom: 16 },
             scrollBeyondLastLine: false,
             smoothScrolling: false,
@@ -477,8 +480,11 @@ export const FilePanelModal = ({ filename, filepath, content: initialContent, di
           options={{
             minimap: { enabled: false },
             fontSize: 13,
-            fontFamily: '"GeistMono", Consolas, "Liberation Mono", monospace',
-            lineHeight: 24,
+            fontFamily: GeistMono.style.fontFamily,
+            fontWeight: '400',
+            letterSpacing: 0,
+            fontLigatures: false,
+            lineHeight: 22,
             padding: { top: 16, bottom: 16 },
             readOnly: true,
             renderSideBySide: true,
@@ -1658,9 +1664,11 @@ export const IdePanel = () => {
                     options={{
                       readOnly: true,
                       minimap: { enabled: false },
-                      fontSize: 14,
-                      lineHeight: 24,
-                      fontFamily: '"GeistMono", Consolas, "Liberation Mono", monospace',
+                      fontSize: 13,
+                      lineHeight: 22,
+                      fontFamily: GeistMono.style.fontFamily,
+                      fontWeight: '400',
+                      letterSpacing: 0,
                       fontLigatures: false,
                       scrollBeyondLastLine: false,
                       renderLineHighlight: 'none',

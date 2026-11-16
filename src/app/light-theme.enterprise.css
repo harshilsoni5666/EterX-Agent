@@ -2701,6 +2701,10 @@
   box-shadow: none !important;
 }
 
+:root[data-theme="dark"] .eterx-chat-feed-user-bubble {
+  background: #2D2D2D !important;
+}
+
 :root[data-theme="light"] .eterx-assistant-answer-body,
 :root[data-theme="light"] .eterx-professional-thought,
 :root[data-theme="light"] .eterx-professional-answer,

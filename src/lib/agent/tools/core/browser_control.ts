@@ -7,6 +7,8 @@ import { domSnapshot } from '../../browser/snapshot';
 import { browserSessionManager } from '../../browser/session';
 import { networkMonitor } from '../../browser/network';
 import { nativeCurrentBrowser } from '../../browser/native-current-browser';
+import { disconnectBrowserSession, launchBrowserSession, withBrowserSessionLock } from '../../browser/runtime';
+import { readStoredRuntimeSettings } from '../../runtime-settings-store';
 import { monitorEmitter } from '../../monitor/emitter';
 import {
   resolveReadableWorkspacePathForContext,
@@ -49,25 +51,28 @@ async function emitBrowserMonitorFrame(page: any, chatId?: string | null) {
 let browserMonitorTimer: ReturnType<typeof setTimeout> | null = null;
 let browserMonitorUntil = 0;
 let browserMonitorChatId: string | undefined;
+let browserMonitorCaptureInFlight = false;
 
 function stopBrowserMonitorStream() {
   browserMonitorUntil = 0;
   if (browserMonitorTimer) clearTimeout(browserMonitorTimer);
   browserMonitorTimer = null;
+  browserMonitorChatId = undefined;
 }
 
 function keepBrowserMonitorLive(chatId?: string) {
-  browserMonitorChatId = chatId || browserMonitorChatId;
+  browserMonitorChatId = chatId;
   browserMonitorUntil = Date.now() + 15_000;
-  if (browserMonitorTimer) return;
+  if (browserMonitorTimer || browserMonitorCaptureInFlight) return;
 
   const capture = async () => {
     browserMonitorTimer = null;
-    if (!browserEngine.connected || Date.now() > browserMonitorUntil) return;
+    if (!browserEngine.connected || Date.now() > browserMonitorUntil || readStoredRuntimeSettings().browserAccess === false) return;
+    browserMonitorCaptureInFlight = true;
     try {
-      const page = await browserEngine.getActivePage();
+      const page = browserEngine.getExistingActivePage();
       await emitBrowserMonitorFrame(page, browserMonitorChatId);
-    } catch {}
+    } catch {} finally { browserMonitorCaptureInFlight = false; }
     if (browserEngine.connected && Date.now() <= browserMonitorUntil) {
       browserMonitorTimer = setTimeout(capture, 750);
     }
@@ -299,7 +304,6 @@ const BROWSER_VISUAL_BOOTSTRAP = `
 // But browser actions MUST be sequential — you can't goto before launch finishes.
 // This mutex ensures all calls queue up and execute one after another.
 
-let _browserLock: Promise<void> = Promise.resolve();
 let _lastBrowserCursor: { x: number; y: number } | null = null;
 const _visualHookedPages = new WeakSet<any>();
 let _browserVisualSessionActive = false;
@@ -401,20 +405,10 @@ async function waitWithBrowserCancellation<T>(promise: Promise<T>, context?: any
 }
 
 async function withBrowserLock<T>(context: any, fn: () => Promise<T>): Promise<T> {
-  let release: () => void;
-  const acquired = new Promise<void>(resolve => { release = resolve; });
-  const previousLock = _browserLock;
-  // A cancelled waiter must release its own slot without letting later work
-  // overtake the operation that is already running.
-  _browserLock = previousLock.then(() => acquired);
-  
-  try {
-    await waitWithBrowserCancellation(previousLock, context);
+  return waitWithBrowserCancellation(withBrowserSessionLock(async () => {
     throwIfBrowserCancelled(context);
     return await fn();
-  } finally {
-    release!();
-  }
+  }), context);
 }
 
 // ═══════════════════════════════════════
@@ -502,7 +496,7 @@ async function failWithPageState(page: any, action: string, msg: string, recover
 
   try {
     const snap = await withTimeout(
-      domSnapshot.capture(page, {
+      domSnapshot.capture(browserEngine.getPageTarget(page), {
         mode: input?.snapshotMode || 'interactive',
         maxElements: maxSnapshotElements(input || {}, 120),
         textMaxLength: 80,
@@ -553,12 +547,24 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function observedRefSelector(page: any, ref: number): string {
+  const target = browserEngine.getPageTarget(page);
+  const selector = domSnapshot.getSelector(ref);
+  if (!selector || !domSnapshot.isForPage(target) || domSnapshot.isStale()) {
+    throw new Error(`Element ref [${ref}] not found in a current snapshot of this tab. Take a new snapshot.`);
+  }
+  return selector;
+}
+
 /**
  * Smart element resolver — finds an element by ref, selector, or text.
  * Priority: ref > selector > text > coordinates
- * If ref is used, it tries data-ref first, then falls back to CSS path.
+ * Refs are scoped to the observed page and snapshot; stale refs never fall
+ * back to an unrelated element at the same CSS path.
  */
 async function resolveElement(page: any, input: any): Promise<any> {
+  const refSelector = input.ref != null ? observedRefSelector(page, input.ref) : undefined;
+  page = browserEngine.getPageTarget(page);
   const resolveSelectorTarget = async (selector: string, index?: number) => {
     try {
       const locator = page.locator(selector);
@@ -579,21 +585,10 @@ async function resolveElement(page: any, input: any): Promise<any> {
   };
   // 1. By ref number (most reliable — from snapshot)
   if (input.ref != null) {
-    const elemInfo = domSnapshot.getRef(input.ref);
-    if (elemInfo) {
-      // Try data-ref selector first
-      let el = await resolveSelectorTarget(elemInfo.selector);
+    if (refSelector) {
+      const el = await resolveSelectorTarget(refSelector);
       if (el) return el;
-      
-      // Fallback to CSS path
-      if (elemInfo.cssPath) {
-        el = await resolveSelectorTarget(elemInfo.cssPath);
-        if (el) return el;
-      }
     }
-    // Last resort — try data-ref directly
-    const el = await resolveSelectorTarget(`[data-ref="${input.ref}"]`);
-    if (el) return el;
     
     throw new Error(`Element ref [${input.ref}] not found. Take a new snapshot.`);
   }
@@ -1286,12 +1281,16 @@ function actionTimeout(input: any, fallback: number, cap: number): number {
 }
 
 function normalizeBrowserUrl(value: string): string {
-  let url = String(value || '').trim();
-  if (!url) return url;
-  if (!url.startsWith('http') && !url.startsWith('file:') && !url.startsWith('data:')) {
-    url = url.includes('.') ? `https://${url}` : `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+  const url = String(value || '').trim();
+  if (!url) throw new Error('A URL or search query is required.');
+  if (url === 'about:blank') return url;
+  if (/^(?:https?|file|data):/i.test(url)) return new URL(url).href;
+  if (url.startsWith('//')) return new URL(`https:${url}`).href;
+  if (/^(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|\[[\da-f:]+\])(?::\d+)?(?:[/?#]|$)/i.test(url)) {
+    return new URL(`http://${url}`).href;
   }
-  return url;
+  if (/^[^\s/:?#]+\.[^\s/:?#]+(?::\d+)?(?:[/?#][^\s]*)?$/.test(url)) return new URL(`https://${url}`).href;
+  return `https://www.google.com/search?q=${encodeURIComponent(url)}`;
 }
 
 function visualBubbleLabel(action: string, input: any): string {
@@ -1627,15 +1626,32 @@ async function showDragLine(page: any, from: { x: number; y: number }, to: { x: 
 
 async function showRefOverlay(page: any, refs: Map<number, any>, ttl = 4500): Promise<void> {
   try {
+    let offsetX = 0;
+    let offsetY = 0;
+    let scaleX = 1;
+    let scaleY = 1;
+    const target = browserEngine.getPageTarget(page);
+    if (target !== page) {
+      const frameElement = await target.frameElement();
+      try {
+        const box = await frameElement.boundingBox();
+        const dimensions = await frameElement.evaluate((element: HTMLElement) => ({ width: element.offsetWidth, height: element.offsetHeight, left: element.clientLeft, top: element.clientTop }));
+        if (!box) return;
+        scaleX = dimensions.width ? box.width / dimensions.width : 1;
+        scaleY = dimensions.height ? box.height / dimensions.height : 1;
+        offsetX = box.x + dimensions.left * scaleX;
+        offsetY = box.y + dimensions.top * scaleY;
+      } finally { await frameElement.dispose(); }
+    }
     const refPayload = Array.from(refs.values())
       .filter((item: any) => item?.isVisible !== false && item?.bbox && item.bbox.w > 0 && item.bbox.h > 0)
       .slice(0, 80)
       .map((item: any) => ({
         ref: item.ref,
-        x: item.bbox.x,
-        y: item.bbox.y,
-        w: item.bbox.w,
-        h: item.bbox.h,
+        x: offsetX + item.bbox.x * scaleX,
+        y: offsetY + item.bbox.y * scaleY,
+        w: item.bbox.w * scaleX,
+        h: item.bbox.h * scaleY,
         kind: item.role || item.tag || item.type || 'target',
       }));
     const payload = JSON.stringify({ refs: refPayload, ttl });
@@ -1851,7 +1867,8 @@ USER CHECKPOINTS:
 - Prefer ask_user_browser over chat ask_user whenever the user's attention should stay in the browser context.
 
 CONNECTION MODES:
-- cdp: Default. Connect to the installed signed-in Chromium browser
+- Omit mode to reuse the active browser or the mode chosen in Settings. Do not switch modes unless the user asks.
+- cdp: Connect to the installed signed-in Chromium browser
 - native current-window fallback: automatically controls an already-open default browser when CDP is unavailable
 - managed: Explicit opt-in. Launch an isolated persistent browser profile
 - remote: Connect to cloud browser via WebSocket
@@ -1889,7 +1906,7 @@ USE THIS WHEN THE USER ASKS TO:
       'goto', 'back', 'forward', 'reload',
       
       // ── Snapshot & Reading (CORE) ──
-      'observe', 'snapshot', 'read_page', 'show_refs', 'get_text', 'get_html', 'get_url', 'get_title',
+      'observe', 'snapshot', 'read_page', 'show_refs', 'get_text', 'get_html', 'get_url', 'get_title', 'screenshot',
       
       // ── Interaction by ref/selector/text ──
       'click', 'dblclick', 'type', 'fill', 'clear', 'select', 'check', 'uncheck',
@@ -1934,8 +1951,8 @@ USE THIS WHEN THE USER ASKS TO:
     ]).describe('Browser action to perform. Start with "launch" then "goto" then "snapshot".'),
 
     // ── Connection ──
-    mode: z.enum(['managed', 'cdp', 'remote']).optional().default('cdp').describe('Connection mode. Default cdp uses the installed signed-in browser. managed is an explicit isolated-profile opt-in.'),
-    profile: z.string().optional().describe('Named profile for session persistence (cookies survive restarts)'),
+    mode: z.enum(['managed', 'cdp', 'remote']).optional().describe('Omit to reuse the active browser or the mode selected in Settings. managed uses an isolated persistent profile; cdp uses the signed-in browser; remote requires wsEndpoint.'),
+    profile: z.string().optional().describe('Named isolated profile for session persistence. Implies managed mode unless mode is explicitly set. Cookies survive restarts.'),
     headless: z.boolean().optional().describe('Run an explicitly managed browser without a visible window. Signed-in browser control is always visible.'),
     cdpEndpoint: z.string().optional().describe('CDP endpoint for cdp mode: http://127.0.0.1:9222'),
     wsEndpoint: z.string().optional().describe('WebSocket endpoint for remote mode'),
@@ -1974,7 +1991,7 @@ USE THIS WHEN THE USER ASKS TO:
     targetSelector: z.string().optional().describe('Target selector for drag_drop'),
 
     // ── Keyboard ──
-    key: z.string().optional().describe('Key to press: Enter, Tab, Escape, ArrowDown, Control+A, etc.'),
+    key: z.string().optional().describe('Key to press: Enter, Tab, Escape, ArrowDown, ControlOrMeta+A, etc. Use ControlOrMeta for shortcuts that use Control on Windows/Linux and Command on macOS.'),
 
     // ── Select/Check ──
     value: z.string().optional().describe('Option value for select, or attribute name for get_attribute'),
@@ -2028,6 +2045,7 @@ USE THIS WHEN THE USER ASKS TO:
     autoSnapshot: z.boolean().optional().default(false).describe('Optional compatibility mode: automatically capture DOM after launch/goto/new_tab. Default false for speed.'),
 
     // ── Screenshot Options ──
+    allowScreenshot: z.boolean().optional().default(false).describe('Explicitly enable a requested screenshot action. Use snapshot or read_page for DOM state.'),
     fullPage: z.boolean().optional().default(false),
     visualFeedback: z.boolean().optional().default(true).describe('Show live blue cursor, click rings, and focus borders during browser actions'),
     visualLabel: z.string().optional().describe('Optional generated cursor bubble label for the current action, e.g. "Checking cart items" or "Comparing delivery options"'),
@@ -2075,7 +2093,15 @@ USE THIS WHEN THE USER ASKS TO:
 
     throwIfBrowserCancelled(context);
 
-    const unsafeLaunch = action === 'launch' && input.mode === 'remote';
+    if (!['status', 'capabilities', 'disconnect', 'end_browser_session'].includes(action)
+      && (context?.allowBrowserControl === false || readStoredRuntimeSettings().browserAccess === false)) {
+      return fail(action, 'Browser control is disabled. Enable browser access in Settings and for this task before continuing.');
+    }
+    if (action === 'screenshot' && input.allowScreenshot !== true) {
+      return fail(action, 'Set allowScreenshot to true for a requested screenshot, or use snapshot/read_page for page state.');
+    }
+
+    const unsafeLaunch = ['launch', 'start_browser_session'].includes(action) && (browserEngine.resolveLaunchMode(input) === 'remote' || Boolean(input.cdpEndpoint));
     if ((SENSITIVE_BROWSER_ACTIONS.has(action) || unsafeLaunch) && !hasUnsafeBrowserCapability(context)) {
       return fail(
         action,
@@ -2097,26 +2123,27 @@ USE THIS WHEN THE USER ASKS TO:
       // CONNECTION & LIFECYCLE
       // ═══════════════════════════════════════
 
-      if (action === 'launch' || action === 'connect') {
-        try {
-          page = await waitWithBrowserCancellation(browserEngine.launch({
-            mode: input.mode || 'cdp',
-            headless: input.headless ?? false,
+      if (action === 'launch' || action === 'connect'
+        || (action === 'start_browser_session' && !browserEngine.connected && !nativeCurrentBrowser.connected)) {
+        const signals = [getAbortSignal(context), _browserUiInterruptController.signal].filter((signal): signal is AbortSignal => Boolean(signal));
+        const session = await launchBrowserSession({
+            mode: input.mode,
+            headless: input.headless,
             profile: input.profile,
             cdpEndpoint: input.cdpEndpoint,
             wsEndpoint: input.wsEndpoint,
             viewport: input.width && input.height ? { width: input.width, height: input.height } : null,
-          }), context);
-        } catch (launchError) {
-          throwIfBrowserCancelled(context);
-          if (isBrowserCancellationError(launchError) || (input.mode || 'cdp') !== 'cdp' || input.cdpEndpoint || process.env.ETERX_ALLOW_USER_CHROME === '0') throw launchError;
-          const nativeResult = await nativeCurrentBrowser.connect(
-            input.url ? normalizeBrowserUrl(input.url) : undefined,
-          );
+            timeout: input.timeout,
+          }, AbortSignal.any(signals));
+        if (session.nativeResult) {
+          const nativeResult = input.url
+            ? await nativeCurrentBrowser.execute('goto', { ...input, url: normalizeBrowserUrl(input.url) })
+            : session.nativeResult;
           throwIfBrowserCancelled(context);
           if (!nativeResult.success) {
             return {
               ...nativeResult,
+              action,
               elapsedMs: Date.now() - startedAt,
             };
           }
@@ -2135,11 +2162,13 @@ USE THIS WHEN THE USER ASKS TO:
           }
           return {
             ...nativeResult,
+            action,
             elapsedMs: Date.now() - startedAt,
           };
         }
+        page = session.page;
         throwIfBrowserCancelled(context);
-        nativeCurrentBrowser.disconnect();
+        domSnapshot.invalidate();
 
         // Restore session if profile specified
         if (input.profile) {
@@ -2156,6 +2185,7 @@ USE THIS WHEN THE USER ASKS TO:
           }), context);
           page = target.page;
         }
+        browserEngine.selectMainFrame(page);
 
         // Auto-start network monitoring (non-fatal)
         try { await networkMonitor.startIntercepting(page); } catch {}
@@ -2180,7 +2210,7 @@ USE THIS WHEN THE USER ASKS TO:
         result = {
           connected: true,
           mode: browserEngine.mode,
-          profile: input.profile || 'ephemeral',
+          profile: browserEngine.activeProfile,
           url: page.url(),
           title: await page.title().catch(() => ''),
           note: 'Use snapshot/read_page when page context is needed.',
@@ -2200,17 +2230,18 @@ USE THIS WHEN THE USER ASKS TO:
 
       if (action === 'disconnect') {
         stopBrowserMonitorStream();
-        nativeCurrentBrowser.disconnect();
         if (_browserVisualSessionPage) {
           await endBrowserActivity(_browserVisualSessionPage, 0).catch(() => {});
         }
-        await browserEngine.disconnect();
-        return { success: true, action, result: 'Browser disconnected. All sessions closed.', elapsedMs: Date.now() - startedAt };
+        await disconnectBrowserSession();
+        domSnapshot.invalidate();
+        return { success: true, action, result: 'Browser control disconnected. Isolated browser data is saved; signed-in browser windows remain open.', elapsedMs: Date.now() - startedAt };
       }
 
       if (action === 'status' || action === 'capabilities') {
-        const info = nativeCurrentBrowser.connected ? nativeCurrentBrowser.info : browserEngine.connectionInfo;
-        const tabs = nativeCurrentBrowser.connected
+        const native = nativeCurrentBrowser.connected && !browserEngine.connected;
+        const info = native ? nativeCurrentBrowser.info : browserEngine.connectionInfo;
+        const tabs = native
           ? nativeCurrentBrowser.tabs
           : info.connected ? await browserEngine.getPageListDetailed().catch(() => []) : [];
         return {
@@ -2232,8 +2263,20 @@ USE THIS WHEN THE USER ASKS TO:
         };
       }
 
+      if (action === 'profiles') {
+        const profiles = await browserSessionManager.listProfiles();
+        return { success: true, action, result: { profiles, count: profiles.length }, elapsedMs: Date.now() - startedAt };
+      }
+
+      if (action === 'end_browser_session') {
+        stopBrowserMonitorStream();
+        if (_browserVisualSessionPage) await endBrowserActivity(_browserVisualSessionPage, 0);
+        return { success: true, action, result: { ended: true }, elapsedMs: Date.now() - startedAt };
+      }
+
       if (nativeCurrentBrowser.connected && !browserEngine.connected) {
-        const nativeResult = await nativeCurrentBrowser.execute(action, input);
+        const nativeInput = input.url ? { ...input, url: normalizeBrowserUrl(input.url) } : input;
+        const nativeResult = await nativeCurrentBrowser.execute(action, nativeInput);
         throwIfBrowserCancelled(context);
         if (nativeResult.screenshotBase64) {
           monitorEmitter.browserScreenshot(
@@ -2256,10 +2299,18 @@ USE THIS WHEN THE USER ASKS TO:
 
       // For all other actions, the browser must be connected
       if (!browserEngine.connected) {
-        return fail(action, 'Browser not connected. Use action "launch" first.');
+        return fail(action, 'Browser not connected. Use action "launch" without a mode to use the selection from Settings.', undefined, 'launch');
+      }
+
+      if (!browserEngine.getExistingActivePage()) {
+        if (action === 'list_tabs') return { success: true, action, result: { tabs: [], count: 0, mode: browserEngine.mode }, elapsedMs: Date.now() - startedAt };
+        if (['close_tab', 'close_other_tabs', 'switch_tab', 'next_tab', 'previous_tab', 'duplicate_tab'].includes(action)) {
+          return fail(action, 'No browser tabs are open.', 'Open a new tab before continuing.', 'new_tab');
+        }
       }
 
       page = await waitWithBrowserCancellation(browserEngine.getActivePage(), context);
+      if (['goto', 'back', 'forward', 'reload'].includes(action)) browserEngine.selectMainFrame(page);
       throwIfBrowserCancelled(context);
       if (input.visualFeedback !== false) {
         ensureVisualHooks(page);
@@ -2274,13 +2325,6 @@ USE THIS WHEN THE USER ASKS TO:
             idleTimeoutMs: BROWSER_VISUAL_IDLE_MS,
             note: 'Browser UI session started. The visual frame stays active across browser actions until end_browser_session or idle timeout.',
           };
-          break;
-        }
-
-        case 'end_browser_session': {
-          await endBrowserActivity(page, 0);
-          activityPage = null;
-          result = { ended: true, note: 'Browser UI session ended.' };
           break;
         }
 
@@ -2303,6 +2347,7 @@ USE THIS WHEN THE USER ASKS TO:
               openIfMissing: true,
             }), context);
             page = reused.page;
+            browserEngine.selectMainFrame(page);
             activityPage = page;
             try { await networkMonitor.startIntercepting(page); } catch {}
             if (reused.reused && reused.reason !== 'blank') {
@@ -2398,7 +2443,7 @@ USE THIS WHEN THE USER ASKS TO:
         // ═══════════════════════════════════════
 
         case 'observe': {
-          const snap = await domSnapshot.capture(page, {
+          const snap = await domSnapshot.capture(browserEngine.getPageTarget(page), {
             mode: input.snapshotMode || 'full',
             maxElements: maxSnapshotElements(input, 160),
           });
@@ -2436,7 +2481,7 @@ USE THIS WHEN THE USER ASKS TO:
         }
 
         case 'snapshot': {
-          const snap = await domSnapshot.capture(page, {
+          const snap = await domSnapshot.capture(browserEngine.getPageTarget(page), {
             mode: input.snapshotMode || 'full',
             maxElements: maxSnapshotElements(input, 160),
           });
@@ -2459,8 +2504,8 @@ USE THIS WHEN THE USER ASKS TO:
 
         case 'read_page': {
           const [snapOutcome, readableOutcome] = await Promise.allSettled([
-            domSnapshot.capture(page, { mode: input.snapshotMode || 'full', maxElements: maxSnapshotElements(input, 220), textMaxLength: 90 }),
-            readPageSemantics(page, input.maxTextChars || 30000),
+            domSnapshot.capture(browserEngine.getPageTarget(page), { mode: input.snapshotMode || 'full', maxElements: maxSnapshotElements(input, 220), textMaxLength: 90 }),
+            readPageSemantics(browserEngine.getPageTarget(page), input.maxTextChars || 30000),
           ]);
           if (snapOutcome.status === 'rejected') {
             return await failWithPageState(page, action, 'Could not read page refs.', 'Refresh browser state, then retry read_page or snapshot.', 'snapshot', input, startedAt);
@@ -2485,7 +2530,7 @@ USE THIS WHEN THE USER ASKS TO:
               headings: [],
               forms: snap.forms,
               actions: [],
-              text: await page.locator('body').innerText({ timeout: 1000 }).catch(() => ''),
+              text: await browserEngine.getPageTarget(page).locator('body').innerText({ timeout: 1000 }).catch(() => ''),
             };
           if (typeof readable.text === 'string') {
             readable.text = readable.text.slice(0, Math.max(4000, Math.min(input.maxTextChars || 30000, 120000)));
@@ -2528,7 +2573,7 @@ USE THIS WHEN THE USER ASKS TO:
         }
 
         case 'show_refs': {
-          const snap = await domSnapshot.capture(page, {
+          const snap = await domSnapshot.capture(browserEngine.getPageTarget(page), {
             mode: input.snapshotMode || 'interactive',
             maxElements: maxSnapshotElements(input, 180),
           });
@@ -2573,8 +2618,9 @@ USE THIS WHEN THE USER ASKS TO:
             const el = await resolveElement(page, input);
             text = el ? (await el.textContent()) || '' : 'Element not found';
           } else {
-            text = await page.locator('body').innerText({ timeout: 2000 })
-              .catch(() => page.evaluate('document.body ? document.body.innerText.substring(0, 10000) : ""'));
+            const target = browserEngine.getPageTarget(page);
+            text = await target.locator('body').innerText({ timeout: 2000 })
+              .catch(() => target.evaluate('document.body ? document.body.innerText.substring(0, 10000) : ""'));
           }
           result = { text: text.substring(0, 8000) };
           break;
@@ -2586,19 +2632,20 @@ USE THIS WHEN THE USER ASKS TO:
             const el = await resolveElement(page, input);
             html = el ? (await el.innerHTML()) : 'Element not found';
           } else {
-            html = await page.content();
+            html = await browserEngine.getPageTarget(page).content();
           }
           result = { html: html.substring(0, 10000) };
           break;
         }
 
         case 'get_url': {
-          result = { url: page.url() };
+          result = { url: browserEngine.getPageTarget(page).url() };
           break;
         }
 
         case 'get_title': {
-          result = { title: await page.title(), url: page.url() };
+          const target = browserEngine.getPageTarget(page);
+          result = { title: await target.title(), url: target.url() };
           break;
         }
 
@@ -2860,10 +2907,9 @@ USE THIS WHEN THE USER ASKS TO:
           
           let target: any;
           if (input.targetRef != null) {
-            const targetInfo = domSnapshot.getRef(input.targetRef);
-            if (targetInfo) target = await page.$(targetInfo.selector);
+            target = await resolveElement(page, { ref: input.targetRef });
           } else if (input.targetSelector) {
-            target = await page.$(input.targetSelector);
+            target = await browserEngine.getPageTarget(page).$(input.targetSelector);
           }
           
           if (!target) return fail(action, 'Target element not found');
@@ -2899,11 +2945,19 @@ USE THIS WHEN THE USER ASKS TO:
           const deltaX = dir === 'left' ? -amt : dir === 'right' ? amt : 0;
           const deltaY = dir === 'up' ? -amt : dir === 'down' ? amt : 0;
           
+          const target = browserEngine.getPageTarget(page);
+          if (target !== page) {
+            const frameElement = await target.frameElement();
+            try {
+              const center = await elementCenter(frameElement);
+              if (center) await humanMove(page, center.x, center.y);
+            } finally { await frameElement.dispose(); }
+          }
           await page.mouse.wheel(deltaX, deltaY);
           if (input.visualFeedback !== false) void showScrollPulse(page, dir);
           await page.waitForTimeout(120);
           
-          const scrollPos = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+          const scrollPos = await browserEngine.getPageTarget(page).evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
           domSnapshot.invalidate(); // Visible elements changed
           result = { scrolled: dir, amount: amt, position: scrollPos };
           break;
@@ -2926,7 +2980,7 @@ USE THIS WHEN THE USER ASKS TO:
           
           // Scroll to position
           if (input.y != null) {
-            await page.evaluate((y: number) => window.scrollTo(0, y), input.y);
+            await browserEngine.getPageTarget(page).evaluate((y: number) => window.scrollTo(0, y), input.y);
             if (input.visualFeedback !== false) void showScrollPulse(page, 'down');
             result = { scrolledTo: { y: input.y } };
             domSnapshot.invalidate();
@@ -2952,6 +3006,8 @@ USE THIS WHEN THE USER ASKS TO:
             : await browserEngine.newPage(url);
           const { page: newPage, id } = tab;
           page = newPage;
+          browserEngine.selectMainFrame(page);
+          domSnapshot.invalidate();
           try { await networkMonitor.startIntercepting(page); } catch {}
           if (input.visualFeedback !== false) {
             ensureVisualHooks(page);
@@ -3021,7 +3077,10 @@ USE THIS WHEN THE USER ASKS TO:
 
         case 'close_tab': {
           if (!input.tabId) return fail(action, 'tabId required');
-          await browserEngine.closePage(input.tabId);
+          if (!await browserEngine.closePage(input.tabId)) return fail(action, `Tab ${input.tabId} not found. Refresh the tab list.`);
+          page = browserEngine.getExistingActivePage();
+          activityPage = page;
+          domSnapshot.invalidate();
           result = { closed: input.tabId };
           break;
         }
@@ -3080,9 +3139,9 @@ USE THIS WHEN THE USER ASKS TO:
             switch (input.waitFor) {
               case 'element': {
                 if (!input.selector && input.ref == null) return fail(action, 'selector or ref required for wait_for element');
-                const sel = input.selector || (input.ref != null ? `[data-ref="${input.ref}"]` : '');
+                const sel = input.selector || observedRefSelector(page, input.ref);
                 try {
-                  await withTimeout(page.waitForSelector(sel, { timeout, state: 'visible' }), timeout + 500, 'browser wait_for element', context);
+                  await withTimeout(browserEngine.getPageTarget(page).waitForSelector(sel, { timeout, state: 'visible' }), timeout + 500, 'browser wait_for element', context);
                   result = { found: true, selector: sel };
                 } catch (error: any) {
                   if (isBrowserCancellationError(error)) throw error;
@@ -3127,9 +3186,9 @@ USE THIS WHEN THE USER ASKS TO:
         case 'wait_for': {
           const timeout = input.timeout || 5000;
           if (input.selector || input.ref != null) {
-            const sel = input.selector || `[data-ref="${input.ref}"]`;
+            const sel = input.selector || observedRefSelector(page, input.ref);
             try {
-              await withTimeout(page.waitForSelector(sel, { timeout, state: 'visible' }), timeout + 500, 'browser wait_for element', context);
+              await withTimeout(browserEngine.getPageTarget(page).waitForSelector(sel, { timeout, state: 'visible' }), timeout + 500, 'browser wait_for element', context);
               result = { found: true, selector: sel };
             } catch (error: any) {
               if (isBrowserCancellationError(error)) throw error;
@@ -3155,21 +3214,15 @@ USE THIS WHEN THE USER ASKS TO:
 
         case 'switch_frame': {
           if (!input.frameSelector) return fail(action, 'frameSelector required');
-          
-          const frameEl = await page.$(input.frameSelector);
-          if (!frameEl) return fail(action, `Frame not found: ${input.frameSelector}`);
-          
-          const frame = await frameEl.contentFrame();
-          if (!frame) return fail(action, 'Cannot access frame content');
-          
-          // Store the frame as the "active page" for this tab
-          // Note: frame has same API as page for most operations
+          const frame = await browserEngine.selectPageFrame(page, input.frameSelector);
+          domSnapshot.invalidate();
           result = { switched: input.frameSelector, url: frame.url() };
           break;
         }
 
         case 'switch_main': {
-          // Switch back to main frame — just use the page directly
+          browserEngine.selectMainFrame(page);
+          domSnapshot.invalidate();
           result = { switched: 'main_frame', url: page.url() };
           break;
         }
@@ -3181,18 +3234,19 @@ USE THIS WHEN THE USER ASKS TO:
         case 'evaluate': {
           if (!input.script) return fail(action, 'script required');
 
+          const target = browserEngine.getPageTarget(page);
           const rawScript = String(input.script);
-          await page.evaluate('var __name = globalThis.__name = globalThis.__name || ((fn, name) => fn)').catch(() => {});
+          await target.evaluate('var __name = globalThis.__name = globalThis.__name || ((fn, name) => fn)').catch(() => {});
 
           let evalResult: any;
           let evalMode = 'expression';
           const shouldRunAsBody = /\breturn\b/.test(rawScript) || /;\s*$/.test(rawScript) || /\n/.test(rawScript);
           if (shouldRunAsBody) {
             evalMode = 'function_body';
-            evalResult = await page.evaluate(`(async () => {\nvar __name = globalThis.__name = globalThis.__name || ((fn, name) => fn);\n${rawScript}\n})()`);
+            evalResult = await target.evaluate(`(async () => {\nvar __name = globalThis.__name = globalThis.__name || ((fn, name) => fn);\n${rawScript}\n})()`);
           } else {
             try {
-              evalResult = await page.evaluate(rawScript);
+              evalResult = await target.evaluate(rawScript);
             } catch (err: any) {
               const msg = String(err?.message || '');
               const shouldWrap =
@@ -3201,7 +3255,7 @@ USE THIS WHEN THE USER ASKS TO:
               if (!shouldWrap) throw err;
 
               evalMode = 'function_body';
-              evalResult = await page.evaluate(`(async () => {\nvar __name = globalThis.__name = globalThis.__name || ((fn, name) => fn);\n${rawScript}\n})()`);
+              evalResult = await target.evaluate(`(async () => {\nvar __name = globalThis.__name = globalThis.__name || ((fn, name) => fn);\n${rawScript}\n})()`);
             }
           }
 
@@ -3287,7 +3341,7 @@ USE THIS WHEN THE USER ASKS TO:
 
         case 'get_storage': {
           const storageType = input.storageType || 'local';
-          const storageData = await page.evaluate((type: string) => {
+          const storageData = await browserEngine.getPageTarget(page).evaluate((type: string) => {
             const storage = type === 'session' ? sessionStorage : localStorage;
             const data: Record<string, string> = {};
             for (let i = 0; i < Math.min(storage.length, 100); i++) {
@@ -3304,7 +3358,7 @@ USE THIS WHEN THE USER ASKS TO:
         case 'set_storage': {
           if (!input.storageKey) return fail(action, 'storageKey required');
           const storageType = input.storageType || 'local';
-          await page.evaluate(({ type, key, value }: any) => {
+          await browserEngine.getPageTarget(page).evaluate(({ type, key, value }: any) => {
             const storage = type === 'session' ? sessionStorage : localStorage;
             if (value != null) {
               storage.setItem(key, value);
@@ -3368,43 +3422,31 @@ USE THIS WHEN THE USER ASKS TO:
         // SESSION & PROFILES
         // ═══════════════════════════════════════
 
-        case 'profiles': {
-          const profiles = await browserSessionManager.listProfiles();
-          result = {
-            profiles: profiles.map(p => ({
-              name: p.name,
-              lastUsed: p.lastUsed ? new Date(p.lastUsed).toISOString() : 'never',
-              cookies: p.cookies,
-              notes: p.notes,
-            })),
-            count: profiles.length,
-          };
-          break;
-        }
-
         case 'save_session': {
-          const profile = input.profile || 'default';
+          const profile = input.profile || browserEngine.activeProfile || 'default';
           await browserSessionManager.saveState(browserEngine.browserContext, page, profile);
           result = { saved: profile };
           break;
         }
 
         case 'restore_session': {
-          const profile = input.profile || 'default';
+          const profile = input.profile || browserEngine.activeProfile || 'default';
+          domSnapshot.invalidate();
           const restored = await browserSessionManager.restoreState(browserEngine.browserContext, page, profile);
+          if (!restored) return fail(action, `Could not restore browser session "${profile}". Its saved state is missing or could not be applied.`);
           result = { restored, profile };
           break;
         }
 
         case 'export_cookies': {
-          const profile = input.profile || 'default';
+          const profile = input.profile || browserEngine.activeProfile || 'default';
           const cookies = await browserSessionManager.exportCookies(browserEngine.browserContext, profile);
           result = { exported: cookies.length, profile };
           break;
         }
 
         case 'import_cookies': {
-          const profile = input.profile || 'default';
+          const profile = input.profile || browserEngine.activeProfile || 'default';
           const count = await browserSessionManager.importCookies(browserEngine.browserContext, profile);
           result = { imported: count, profile };
           break;
@@ -3495,8 +3537,8 @@ USE THIS WHEN THE USER ASKS TO:
         action,
         result,
         snapshotText,
-        currentUrl: page.url(),
-        pageTitle: await page.title().catch(() => ''),
+        currentUrl: page ? browserEngine.getPageTarget(page).url() : undefined,
+        pageTitle: page ? await browserEngine.getPageTarget(page).title().catch(() => '') : undefined,
         elapsedMs: Date.now() - startedAt,
       };
 
@@ -3515,9 +3557,13 @@ USE THIS WHEN THE USER ASKS TO:
         domSnapshot.invalidate();
         recovery = 'The snapshot is stale. Take a fresh snapshot, then use the new ref.';
         nextAction = 'snapshot';
-      } else if (msg.includes('browser control is not enabled')) {
-        recovery = 'Close every window of the default browser once, then launch again. EterX will reopen the same signed-in profile with control enabled.';
-        nextAction = 'launch';
+      } else if (['launch', 'connect', 'start_browser_session'].includes(action) && !browserEngine.connected) {
+        recovery = /profile.*(?:already in use|locked)/i.test(msg)
+          ? 'Close the isolated browser window using this profile, or explicitly choose a different profile. Existing profile data has been preserved.'
+          : /No supported Chromium|executable browser/i.test(msg)
+            ? 'Install a supported Chromium browser on this device or configure ETERX_BROWSER_EXECUTABLE_PATH for an isolated browser, then retry.'
+            : 'Resolve the connection error, then retry launch with the same browser mode. Do not silently switch profiles or browser modes.';
+        nextAction = 'status';
       } else if (msg.includes('not a supported Chromium browser')) {
         recovery = 'Set Chrome, Edge, or Brave as the system default browser, then launch again.';
         nextAction = 'launch';
@@ -3541,9 +3587,9 @@ USE THIS WHEN THE USER ASKS TO:
       let activePage: any;
       try {
         if (browserEngine.connected) {
-          activePage = await browserEngine.getActivePage();
-          currentUrl = activePage.url();
-          pageTitle = await activePage.title().catch(() => '');
+          activePage = browserEngine.getExistingActivePage();
+          currentUrl = activePage?.url();
+          pageTitle = activePage ? await activePage.title().catch(() => '') : undefined;
         }
       } catch {}
 
@@ -3573,7 +3619,8 @@ USE THIS WHEN THE USER ASKS TO:
       if (activityPage && input.visualFeedback !== false) {
         scheduleBrowserActivityIdleEnd(activityPage);
       }
-      if (action !== 'disconnect') {
+      if (!['disconnect', 'end_browser_session', 'status', 'capabilities', 'profiles'].includes(action)
+        && readStoredRuntimeSettings().browserAccess !== false) {
         const monitorChatId = typeof input.chatId === 'string'
           ? input.chatId
           : typeof context?.chatId === 'string'
@@ -3582,9 +3629,7 @@ USE THIS WHEN THE USER ASKS TO:
         if (activityPage && !activityPage.isClosed?.()) {
           void emitBrowserMonitorFrame(activityPage, monitorChatId);
         } else if (browserEngine.connected) {
-          void browserEngine.getActivePage()
-            .then((activePage: any) => emitBrowserMonitorFrame(activePage, monitorChatId))
-            .catch(() => undefined);
+          void emitBrowserMonitorFrame(browserEngine.getExistingActivePage(), monitorChatId);
         }
         if (browserEngine.connected) keepBrowserMonitorLive(monitorChatId);
       }

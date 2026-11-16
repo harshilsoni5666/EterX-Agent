@@ -1,3 +1,27 @@
+/* Reserve layout space for Proxy instead of translating the transcript. The
+   conversation keeps measuring only the width available to its own content. */
+.eterx-conversation-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1 1 0%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  position: relative;
+  container-name: eterx-conversation-layout;
+  container-type: inline-size;
+}
+.eterx-conversation-layout > .eterx-conversation-pane {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+.eterx-chat-column[data-proxy-active="true"],
+.eterx-chat-column[data-panel-split="true"] {
+  min-width: 0 !important;
+  max-width: 100%;
+}
+
 /* Each conversation measures its own width, excluding the terminal. */
 .eterx-chat-column[data-terminal-placement="right"] {
   container-type: normal;
@@ -26,7 +50,7 @@
 .eterx-conversation-pane:not(.eterx-workspace-side-conversation) .eterx-chat-feed-scroll {
   scrollbar-gutter: stable both-edges;
 }
-.eterx-chat-column[data-terminal-placement="right"] > .eterx-conversation-pane {
+.eterx-chat-column[data-terminal-placement="right"] .eterx-conversation-layout > .eterx-conversation-pane {
   flex: 1 1 0%;
   overflow: clip;
 }
@@ -46,14 +70,16 @@
   min-width: min(240px, 45%);
   max-width: calc(100% - min(320px, 55%));
 }
-.eterx-chat-column[data-terminal-placement="right"] .eterx-proxy-dock {
-  position: relative !important;
-  inset: auto !important;
-  transform: none !important;
-  translate: none !important;
-  width: 100% !important;
-  flex: 0 0 auto;
-  transition: none !important;
+.eterx-conversation-layout > .eterx-proxy-dock {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 12px;
 }
 .eterx-proxy-compact-bar {
   display: flex;
@@ -61,8 +87,8 @@
   gap: 0;
   min-height: 34px;
   width: fit-content;
-  max-width: calc(100% - 20px);
-  margin: 6px 10px;
+  max-width: 100%;
+  margin: 0;
   padding: 2px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -84,17 +110,146 @@
 }
 .eterx-proxy-compact-bar button:hover { background: var(--sidebar-toggle-hover-bg); }
 .eterx-proxy-compact-bar button:focus-visible { outline: 2px solid var(--muted-foreground); }
-.eterx-proxy-compact-bar .eterx-proxy-compact-title { margin-right: 0; padding-inline: 8px; }
+.eterx-proxy-compact-bar .eterx-proxy-compact-title { flex-shrink: 1; min-width: 0; margin-right: 0; padding-inline: 8px; }
+.eterx-proxy-compact-title > span:not(.eterx-proxy-status-dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .eterx-proxy-compact-bar > button + button { border-left: 1px solid var(--border); border-radius: 0 7px 7px 0; padding-inline: 8px; }
-.eterx-proxy-status-dot { width: 6px; height: 6px; border-radius: 50%; background: #55ad84; }
+.eterx-proxy-status-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: #55ad84; }
 .eterx-proxy-status-dot.is-paused { background: var(--muted-foreground); }
-.eterx-chat-column[data-terminal-placement="right"] .eterx-proxy-card {
+.eterx-conversation-layout .eterx-proxy-card {
+  display: none;
   position: absolute;
-  top: calc(100% + 6px);
-  left: 10px;
-  width: min(224px, calc(100% - 20px));
+  top: 100%;
+  right: 12px;
+  width: 224px;
+  min-width: 0;
+  min-height: 0;
+  max-width: calc(100% - 24px);
+  max-height: min(440px, calc(100dvh - var(--eterx-shell-topbar-height, 40px) - var(--eterx-main-header-height, 56px) - 72px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
-.eterx-proxy-card[hidden] { display: none !important; }
+.eterx-proxy-dock[data-controls-open="true"] .eterx-proxy-card {
+  display: flex;
+}
+
+/* Sidebar and workspace resizing switch to a controls column only when the
+   conversation has enough room, independently of the viewport width. */
+@container eterx-conversation-layout (min-width: 1000px) {
+  .eterx-conversation-layout > .eterx-conversation-pane {
+    grid-column: 1;
+    grid-row: 1 / -1;
+  }
+  .eterx-conversation-layout > .eterx-proxy-dock {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    align-self: center;
+    width: 224px;
+    max-height: calc(100% - 24px);
+    margin: 12px 12px 12px 0;
+    padding: 0;
+  }
+  .eterx-conversation-layout .eterx-proxy-compact-bar {
+    display: none;
+  }
+  .eterx-conversation-layout .eterx-proxy-card {
+    display: flex;
+    position: relative;
+    inset: auto;
+    width: 100%;
+    max-width: 100%;
+    max-height: inherit;
+  }
+}
+
+/* The floating chat has an explicit size. Bound its growing sections to that
+   size so long drafts and expanded context leave room for the message feed. */
+.eterx-proxy-chat-window {
+  container-name: eterx-proxy-chat;
+  container-type: size;
+  min-width: 0;
+  min-height: 0;
+}
+.eterx-proxy-chat-header {
+  min-width: 0;
+  gap: 12px;
+}
+.eterx-proxy-context-panel {
+  min-width: 0;
+  min-height: 0;
+  max-height: 24cqh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+}
+.eterx-proxy-message-feed > * {
+  flex-shrink: 0;
+}
+.eterx-proxy-message-feed,
+.eterx-proxy-composer,
+.eterx-proxy-input-wrapper {
+  min-width: 0;
+  max-width: 100%;
+}
+.eterx-proxy-textarea {
+  max-height: clamp(32px, 30cqh, 240px);
+  overflow-y: auto;
+}
+.eterx-proxy-composer-actions > button {
+  flex-shrink: 0;
+}
+
+/* A side conversation owns the same controller layout as Main. Its own
+   container decides between the top bar and the full controls column. */
+.eterx-workspace-side-layout {
+  container-type: size;
+  isolation: isolate;
+}
+.eterx-workspace-side-layout .eterx-proxy-card {
+  max-height: min(440px, max(0px, calc(100cqh - 52px)));
+}
+.eterx-proxy-dock button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.eterx-workspace-proxy-chat {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 70;
+  width: min(340px, calc(100% - 24px));
+  height: min(460px, calc(100% - 24px));
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+}
+.eterx-workspace-proxy-chat[data-expanded="true"] {
+  width: calc(100% - 24px);
+  height: calc(100% - 24px);
+}
+.eterx-workspace-side-layout .eterx-workspace-proxy-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0.7);
+}
+.eterx-workspace-proxy-icon:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.eterx-workspace-proxy-chat .proxy-manager-markdown {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.eterx-workspace-proxy-chat .proxy-manager-markdown :is(pre, img, video, .eterx-markdown-table-wrap) {
+  min-width: 0;
+  max-width: 100%;
+}
+.eterx-workspace-proxy-chat .proxy-manager-markdown :is(pre, .eterx-markdown-table-wrap) {
+  overflow-x: auto;
+}
 
 /* During dragging, allow either panel to shrink past its normal minimum.
    Releasing near the outer edge hides it without terminating its sessions. */
@@ -106,30 +261,3 @@
 .eterx-terminal-dock[data-close-ready="true"] .eterx-terminal-host,
 .eterx-terminal-dock[data-close-ready="true"] .eterx-terminal-empty,
 .eterx-terminal-dock[data-close-ready="true"] .eterx-terminal-error { visibility: hidden; }
-
-/* At tight widths Proxy floats within the conversation instead of consuming
-   another row. It stays still while the transcript beneath it scrolls. */
-.eterx-chat-column[data-terminal-placement="right"] .eterx-conversation-pane[data-proxy-layout="floating"] .eterx-proxy-dock {
-  position: absolute !important;
-  top: 8px !important;
-  right: 10px !important;
-  left: auto !important;
-  bottom: auto !important;
-  width: fit-content !important;
-  max-width: calc(100% - 20px);
-}
-.eterx-conversation-pane[data-proxy-layout="floating"] .eterx-proxy-compact-bar {
-  min-height: 32px;
-  padding: 2px 4px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--background) 92%, var(--foreground) 8%);
-  margin: 0;
-  max-width: 100%;
-}
-.eterx-chat-column[data-terminal-placement="right"] .eterx-conversation-pane[data-proxy-layout="floating"] .eterx-proxy-card {
-  left: auto;
-  right: 0;
-  width: 224px;
-  max-width: calc(100cqw - 20px);
-}

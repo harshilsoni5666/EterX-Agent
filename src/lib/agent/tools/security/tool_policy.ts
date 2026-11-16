@@ -1,5 +1,5 @@
 import type { ToolDefinition } from '../../schemas';
-import { isConfiguredToolAllowed, isComputerUseDisabled } from '../../builtin-agent-tool-policy';
+import { isConfiguredToolAllowed, isComputerUseDisabled, isBrowserAccessDisabled } from '../../builtin-agent-tool-policy';
 import { swarmCoordinator, SWARM_LIMITS } from '../../swarm-coordinator';
 
 export type ToolCapabilityDecision = {
@@ -97,6 +97,9 @@ export function enforceToolCapability(
     };
   }
   const capability = CAPABILITY_BY_TOOL[toolName] || inferCapability(toolName);
+  if (capability === 'browser.control' && (isBrowserAccessDisabled() || context?.allowBrowserControl === false)) {
+    return { allowed: false, capability, reason: 'Browser control is disabled. Desktop access does not enable browser control.' };
+  }
 
   // An explicit desktop setting takes precedence over an inherited capability
   // or an unsafe-tools flag. Tool registration alone never enables the device.

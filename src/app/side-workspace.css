@@ -1,5 +1,8 @@
 /* EterX workspace: quiet surfaces, compact controls, and one independent pane. */
-.eterx-main-panel[data-workspace-open="true"] { --eterx-side-pane-size:min(var(--eterx-side-workspace-width,50%),calc(100% - min(320px,45%))); }
+/* Both halves use the same remaining workspace width. Clamp the displayed
+   size without changing the saved ratio as the sidebar opens or closes. */
+.eterx-main-panel[data-workspace-open="true"] { --eterx-side-pane-min:min(260px,45%); --eterx-side-pane-size:clamp(var(--eterx-side-pane-min),var(--eterx-side-workspace-width,50%),calc(100% - min(320px,45%))); }
+.eterx-main-panel[data-workspace-open="true"]:has(> .eterx-side-workspace[data-workspace-resizing="true"]) { --eterx-side-pane-min:0px; }
 .eterx-main-panel[data-workspace-open="true"] > .eterx-main-header,.eterx-main-panel[data-workspace-open="true"] .eterx-chat-column { width:calc(100% - var(--eterx-side-pane-size)) !important; max-width:calc(100% - var(--eterx-side-pane-size)); transition:none !important; }
 .eterx-main-panel[data-workspace-open="true"] > .eterx-side-workspace { position:absolute; inset:0 0 0 auto; height:100%; width:var(--eterx-side-pane-size) !important; min-width:0; max-width:none; z-index:60; }
 .eterx-main-panel[data-workspace-expanded="true"] { --eterx-side-pane-size:100%; }
@@ -492,6 +495,8 @@ html[data-theme="light"] .eterx-workspace-change-status.is-deleted,html[data-the
 .eterx-workspace-diff-row.diff-removed { background:var(--ws-removed-bg); color:var(--ws-removed); }
 .eterx-workspace-diff-row code,.eterx-workspace-diff-cell code { tab-size:4; }
 .eterx-workspace-side-conversation { display:flex; flex-direction:column; flex:1 1 0%; min-height:0; min-width:0; overflow:clip; position:relative; container-type:inline-size; container-name:eterx-conversation; }
+/* Agent and model selectors use the viewport width, so let them extend past a narrow chat pane. */
+.eterx-conversation-pane:has(.eterx-agent-popout, .eterx-model-menu-popout) { overflow:visible !important; }
 .eterx-workspace-chat-navigation .eterx-workspace-chat-title { flex:1; min-width:0; justify-content:flex-start; }
 .eterx-workspace-chat-navigation button { display:flex; align-items:center; justify-content:center; min-width:29px; height:29px; padding:0 6px; border-radius:8px; color:var(--ws-muted); }
 .eterx-workspace-chat-title span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; font-size:12px; }

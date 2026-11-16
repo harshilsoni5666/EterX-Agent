@@ -1,6 +1,6 @@
 'use client';
 
-import { useLayoutEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { isAppVisible, subscribeAppVisibility } from '../../lib/app-visibility';
 import { Shimmer } from '../ui/shimmer';
 
@@ -14,6 +14,7 @@ const initialLabel = (mode: PendingMode): PendingLabel =>
 /** Presentation-only timers; real activity always owns whether this is active. */
 export function useLiveFallbackLabel(active: boolean, mode: PendingMode, activityVersion = '') {
   const [label, setLabel] = useState<PendingLabel>(() => initialLabel(mode));
+  const startupHasReachedThinking = useRef(false);
 
   useLayoutEffect(() => {
     if (!active) {
@@ -21,11 +22,17 @@ export function useLiveFallbackLabel(active: boolean, mode: PendingMode, activit
       return;
     }
 
-    let current = mode === 'group'
+    let current = mode === 'startup' && startupHasReachedThinking.current
+      ? 'Thinking' as PendingLabel
+      : mode === 'group'
       ? (Math.random() < 0.5 ? 'Thinking' : 'Working') as PendingLabel
       : initialLabel(mode);
     setLabel(current);
-    let remaining = mode === 'group' ? randomDelay(6000, 12000) : randomDelay(1000, 3000);
+    let remaining = mode === 'group'
+      ? randomDelay(6000, 12000)
+      : mode === 'startup'
+        ? randomDelay(2000, 3000)
+        : randomDelay(1000, 3000);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let deadline = 0;
     let finished = false;
@@ -35,11 +42,17 @@ export function useLiveFallbackLabel(active: boolean, mode: PendingMode, activit
       deadline = performance.now() + remaining;
       timer = setTimeout(() => {
         timer = undefined;
+        if (mode === 'startup') {
+          startupHasReachedThinking.current = true;
+          current = 'Thinking';
+          setLabel(current);
+          finished = true;
+          return;
+        }
         current = current === 'Thinking' ? 'Working' : 'Thinking';
         setLabel(current);
-        // Startup stays Thinking until content arrives. Longer gaps elsewhere
-        // alternate at a calm, variable cadence rather than on every poll.
-        finished = mode === 'startup';
+        // Longer gaps elsewhere alternate at a calm, variable cadence rather
+        // than on every poll.
         remaining = randomDelay(6000, 12000);
         schedule();
       }, remaining);
@@ -78,12 +91,14 @@ export function LivePendingIndicator({ mode, activityVersion, className = '' }: 
       aria-live="polite"
       aria-atomic="true"
     >
-      <Shimmer
-        durationMs={2400}
-        className="eterx-live-status-label min-w-0 truncate"
-      >
-        {label}
-      </Shimmer>
+      <span className="eterx-thought-state-label">
+        <Shimmer
+          durationMs={2400}
+          className="eterx-thinking-shimmer min-w-0 truncate text-[15px] font-medium leading-[1.45] tracking-[-0.01em] text-[var(--eterx-ui-working-text)]"
+        >
+          {label}
+        </Shimmer>
+      </span>
     </div>
   );
 }

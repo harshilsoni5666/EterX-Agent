@@ -643,6 +643,70 @@
   line-height: 1.65;
 }
 
+/* Web activity shares the quiet action row; only verified source links expand. */
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-chip.eterx-web-source-row,
+.eterx-web-source-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 3px 0;
+  text-align: left;
+  color: var(--activity-ink, var(--foreground));
+}
+
+.eterx-web-source-row > .eterx-action-icon { flex: 0 0 20px; }
+.eterx-web-source-row > .eterx-action-verb { min-width: 0; overflow-wrap: anywhere; }
+.eterx-web-source-row:not(button) { cursor: default; }
+.eterx-web-source-row:focus-visible { outline: 2px solid var(--activity-focus, #90908a); outline-offset: 2px; }
+.eterx-source-summary { display: inline-flex; align-items: center; gap: 6px; margin-left: 5px; color: var(--activity-muted, #8e8d89); }
+.eterx-source-summary-label, .eterx-source-more { font-size: 11px; line-height: 18px; }
+.eterx-source-stack { display: inline-flex; align-items: center; isolation: isolate; }
+.eterx-source-favicon { position: relative; display: inline-flex; flex: 0 0 18px; width: 18px; height: 18px; align-items: center; justify-content: center; color: var(--activity-muted, #8e8d89); }
+.eterx-source-favicon img { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; object-fit: contain; }
+.eterx-source-stack .eterx-source-favicon { box-sizing: content-box; width: 18px; height: 18px; border: 2px solid var(--activity-surface, var(--background)); border-radius: 50%; background: var(--activity-surface, var(--background)); }
+.eterx-source-stack .eterx-source-favicon + .eterx-source-favicon { margin-left: -6px; }
+.eterx-source-chevron { flex: 0 0 14px; color: var(--activity-muted, #8e8d89); transition: transform 160ms ease; }
+.eterx-web-source-row[aria-expanded="true"] .eterx-source-chevron { transform: rotate(90deg); }
+.eterx-web-activity[data-status="failed"] .eterx-action-verb { color: var(--activity-alert, #d99076) !important; }
+
+.eterx-web-sources-panel.eterx-activity-child-panel {
+  height: auto;
+  margin: 5px 0 8px 26px;
+  border: 1px solid var(--activity-border, #2b2b2b);
+  border-radius: 10px;
+  background: var(--activity-surface, var(--background));
+}
+.eterx-web-sources-panel .eterx-tool-result-content { padding: 10px; }
+.eterx-source-chips { display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.eterx-source-item { display: inline-flex; min-width: 0; max-width: 100%; }
+.eterx-source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 30px;
+  padding: 5px 10px 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--activity-ink, var(--foreground)) 8%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--activity-ink, var(--foreground)) 10%, transparent);
+  color: var(--activity-ink, var(--foreground));
+  font: 400 12px/18px var(--activity-font, var(--font-sans));
+  text-decoration: none;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.eterx-source-chip:hover { background: color-mix(in srgb, var(--activity-ink, var(--foreground)) 17%, transparent); border-color: color-mix(in srgb, var(--activity-ink, var(--foreground)) 18%, transparent); }
+.eterx-source-chip:focus-visible { outline: 2px solid var(--activity-focus, #90908a); outline-offset: 2px; }
+.eterx-source-domain { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eterx-tool-media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(120px, 100%), 1fr)); gap: 8px; }
+.eterx-tool-failure-label { color: var(--activity-alert, #d99076); font-size: 11px; }
+:root[data-theme] :is(.eterx-chat-feed, .eterx-chat-column, .eterx-workspace-side-conversation) .eterx-action-chip[data-status="failed"] { grid-template-columns: 20px auto minmax(0, 1fr) auto; }
+@media (prefers-reduced-motion: reduce) { .eterx-source-chevron, .eterx-source-chip { transition: none; } }
+
 /* One vertical reading area per result, rather than a separate rail for each
    paragraph, source list, object and table inside it. */
 .eterx-tool-result-content .eterx-scrollbar {

@@ -29,6 +29,7 @@ export const FilePanelOwner = FilePanelOwnerContext.Provider;
 export const useFilePanelOwner = () => useContext(FilePanelOwnerContext);
 const FilePanelRevealContext = createContext<(() => void) | undefined>(undefined);
 export const FilePanelReveal = FilePanelRevealContext.Provider;
+export const useFilePanelReveal = () => useContext(FilePanelRevealContext);
 
 function mergeDefinedPanelProps(current: FilePanelProps, next: FilePanelProps): FilePanelProps {
   const merged = { ...current };

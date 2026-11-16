@@ -4717,7 +4717,7 @@ app.on('ready', async () => {
   migrateLegacyUserData();
 
   try {
-    computerUseOverlay = await require('./computer-use-overlay').startComputerUseOverlay(getEterxDataRoot());
+    computerUseOverlay = await require('./computer-use-overlay').startComputerUseOverlay(getEterxDataRoot(), logToFile);
   } catch (error) {
     logToFile(`[computer-use] Desktop overlay could not start: ${error.message || error}`);
   }

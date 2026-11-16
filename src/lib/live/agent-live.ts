@@ -327,7 +327,8 @@ export class AgentLiveSession implements LiveSession {
   private playbackCharCount = 0;
 
   private chatId: string;
-  private readonly desktopRunId = `live-${crypto.randomUUID()}`;
+  private desktopRunId = `live-${crypto.randomUUID()}`;
+  private desktopSessionRequested = false;
 
   constructor(_apiKey: string, chatId: string, callbacks: LiveSessionCallbacks, options?: LiveSessionOptions) {
     this.chatId = chatId;
@@ -1422,11 +1423,11 @@ export class AgentLiveSession implements LiveSession {
                 },
                 {
                   name: 'computer_control',
-                  description: 'Observe and control the native desktop when Computer Use is enabled. Select exact windows with list_apps and see. Use current element_token or screenshot pixel coordinates; inspect after input. Never repeat actionStatus=sent/unknown without observing. Escape is reserved for the user to stop control.',
+                  description: 'Operate native desktop apps in a persistent observe-act-observe session when Computer Use is enabled. Start with session_start or see, select exact windows, and inspect the screenshot returned after each input. Use current tokens or screenshot pixels. observationRequired with not_sent means no input ran. Never repeat sent/unknown input without observing. Call session_stop when desktop work finishes or when yielding control. Browser control is separate. Escape is reserved for the user.',
                   parameters: {
                     type: 'OBJECT',
                     properties: {
-                      action: { type: 'STRING', description: 'see, list_apps, get_active, launch_app, open_file, open_url, focus_app, click, right_click, double_click, hover, type, set_value, invoke_menu, key, scroll, drag, find, read, get_controls, wait_text, wait_change, wait_ms, set_window_frame, clipboard_get, clipboard_set, select_all, copy, paste, save, undo, close_window, stream_start or stream_stop.' },
+                      action: { type: 'STRING', description: 'session_start, session_stop, see, list_apps, get_active, launch_app, open_file, open_url, focus_app, click, right_click, double_click, hover, type, set_value, invoke_menu, key, scroll, drag, find, read, get_controls, wait_text, wait_change, wait_ms, set_window_frame, clipboard_get, clipboard_set, select_all, copy, paste, save, undo, close_window, stream_start or stream_stop.' },
                       x: { type: 'NUMBER', description: 'Start X coordinate.' },
                       y: { type: 'NUMBER', description: 'Start Y coordinate.' },
                       x2: { type: 'NUMBER', description: 'End X coordinate for drag.' },
@@ -2392,7 +2393,13 @@ export class AgentLiveSession implements LiveSession {
                     const toolName = fc.name === 'browser_control' ? 'browser_control' : 'screen_agent';
                     const { action_verb: _verb, action_target: _target, ...toolInput } = fc.args || {};
                     let computerUseEnabled = false;
-                    try { computerUseEnabled = JSON.parse(appStorage.getItem('eterx_settings') || '{}').computerUse === true; } catch { /* Keep desktop access off. */ }
+                    if (fc.name === 'computer_control') this.desktopSessionRequested = true;
+                    let browserAccessEnabled = false;
+                    try {
+                      const settings = JSON.parse(appStorage.getItem('eterx_settings') || '{}');
+                      computerUseEnabled = settings.computerUse === true;
+                      browserAccessEnabled = settings.browserAccess !== false;
+                    } catch { /* Keep access off when preferences cannot be read. */ }
                     const res = await fetch('/api/live/tool', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
@@ -2402,6 +2409,7 @@ export class AgentLiveSession implements LiveSession {
                         toolName,
                         runId: this.desktopRunId,
                         computerUseEnabled,
+                        browserAccessEnabled,
                         input: toolInput,
                       }),
                     });
@@ -3333,6 +3341,15 @@ Current Day: ${new Date().toLocaleDateString('en-US', { weekday: 'long' })}${wor
    * Internal cleanup of all WebSocket, audio capture, and playback resources.
    */
   private cleanup(preserveVisualCapture = false): void {
+    if (!preserveVisualCapture) {
+      const closingDesktopRun = this.desktopRunId;
+      this.desktopRunId = `live-${crypto.randomUUID()}`;
+      if (this.desktopSessionRequested && this.chatId) void fetch('/api/live/tool', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({ chatId: this.chatId, runId: closingDesktopRun, endDesktopRun: true, toolName: 'screen_agent', input: { action: 'session_stop' } }),
+      }).catch(() => {});
+      this.desktopSessionRequested = false;
+    }
     this.interactionStatus = null;
     this.isInterruptedThisTurn = false;
     this.localInterruptionPending = false;

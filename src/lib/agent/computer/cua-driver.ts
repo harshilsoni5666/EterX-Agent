@@ -32,6 +32,7 @@ export type CuaActionResult = {
   vision?: { inlineData: { data: string; mimeType: 'image/png' | 'image/jpeg' } } | null;
   observation?: Record<string, any>;
   observationError?: string;
+  observationRequired?: boolean;
   actionStatus?: 'not_sent' | 'sent' | 'unknown';
 };
 
@@ -108,8 +109,8 @@ export async function runCua(args: string[], timeout = 8000, signal?: AbortSigna
   } catch (error: any) {
     // execFile's message contains the entire argv, including text being typed.
     // Do not echo that into the chat or the monitor on a process failure.
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('Desktop input stopped. Observe the target before repeating any input that may already have been sent.');
     daemonCache = null;
-    if (signal?.aborted) throw new Error('Computer action cancelled. Observe the target before repeating any input that may already have been sent.');
     const structured = parseJson<any>(String(error?.stdout || ''));
     if (args[0] === 'call' && !error?.killed && structured
       && (structured.isError || structured.error || structured.success === false || structured.ok === false)) {

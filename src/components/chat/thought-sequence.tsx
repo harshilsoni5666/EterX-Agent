@@ -6,6 +6,8 @@ import { ActivityDisclosure } from './activity-disclosure';
 import { ToolResultScroll } from './tool-result-scroll';
 import { HighlightedDiffCode, isPlaceholderDiffGap, useCodeSyntax, useDiffSyntax } from './diff-syntax';
 import { getActionSummary } from './action-summary';
+import { extractWebSources, getToolMedia, getWebActivity, hasDesignedToolPreview, parseToolResult, toolResultFailed } from '../../lib/tool-result-presentation';
+import { WebSourceActivity, WebSourceChips } from './web-source-activity';
 import { getTextPlaybackId, usePacedText } from './use-paced-text';
 import { LivePendingIndicator, useLiveFallbackLabel } from './live-pending-indicator';
 import { createPortal } from 'react-dom';
@@ -1048,32 +1050,6 @@ const TrpCard = React.memo(({ icon, title, badge, children, flush = false }: {
 TrpCard.displayName = 'TrpCard';
 
 
-// ─── Domain extractor for clean source display ─────────────────────────────
-function extractDomain(url: string): string {
-  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
-}
-
-// ─── Source list used by multiple views ────────────────────────────────────
-const TrpSources = React.memo(({ sources }: { sources: string[] }) => {
-  if (!sources.length) return null;
-  return (
-    <div className="mt-3 border-t border-white/[0.055] pt-3">
-      <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[#5E5A55]">{sources.length} sources</div>
-      <div className="flex flex-col gap-1 max-h-[130px] overflow-y-auto eterx-scrollbar">
-        {sources.map((src, i) => (
-          <a key={i} href={src} target="_blank" rel="noopener noreferrer"
-            className="group flex items-center gap-2 rounded-[6px] px-2 py-1 text-[11.5px] hover:bg-white/[0.035] transition-colors">
-            <ExternalLink className="w-2.5 h-2.5 shrink-0 text-[#545148] group-hover:text-[#94C7E0] transition-colors" />
-            <span className="truncate font-medium text-[#7E9BAD] group-hover:text-[#94C7E0] transition-colors">{extractDomain(src)}</span>
-            <span className="ml-auto shrink-0 truncate text-[10px] text-[#47443F] max-w-[180px] hidden sm:block">{src}</span>
-          </a>
-        ))}
-      </div>
-    </div>
-  );
-});
-TrpSources.displayName = 'TrpSources';
-
 // ─── Memoized markdown renderer ────────────────────────────────────────────
 const TrpMarkdown = React.memo(({ content }: { content: string }) => (
   <div className="
@@ -1107,84 +1083,6 @@ const TrpMarkdown = React.memo(({ content }: { content: string }) => (
 ));
 TrpMarkdown.displayName = 'TrpMarkdown';
 
-const ObjectCard = React.memo(({ item, primaryKey, secondaryKey, metaKeys }: {
-  item: any;
-  primaryKey: string;
-  secondaryKey: string;
-  metaKeys: string[];
-}) => {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <div className="rounded-[7px] bg-white/[0.02] border border-white/[0.04] px-2.5 py-2 hover:border-white/[0.08] transition-colors">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          {primaryKey && item[primaryKey] != null && (
-            <div className="text-[12px] font-semibold text-[#C0B8B0] leading-tight mb-0.5 truncate select-all">{String(item[primaryKey])}</div>
-          )}
-          {secondaryKey && item[secondaryKey] != null && (
-            <div className="text-[11.5px] text-[#7A7470] leading-snug line-clamp-2 select-text">{String(item[secondaryKey])}</div>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
-          className="shrink-0 text-[10px] font-medium text-[#6B9AB8] hover:text-[#94C7E0] hover:bg-white/[0.04] transition-all px-1.5 py-0.5 rounded-sm border border-white/[0.06] shadow-none"
-        >
-          {expanded ? 'Hide Details' : 'Show Details'}
-        </button>
-      </div>
-
-      {metaKeys.length > 0 && !expanded && (
-        <div className="mt-1.5 flex gap-x-2.5 gap-y-0.5 flex-wrap">
-          {metaKeys.map(mk => item[mk] != null && (
-            <span key={mk} className="text-[10px] font-mono text-[#5E5A55] select-text">
-              <span className="text-[#4E4A46] font-medium">{mk}:</span> {String(item[mk])}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {expanded && (
-        <div className="mt-2.5 rounded-[5px] bg-black/35 border border-white/[0.05] p-2 max-h-[200px] overflow-auto eterx-scrollbar font-mono text-[10.5px] leading-[1.5] text-[#9A9288] whitespace-pre select-text">
-          {JSON.stringify(item, null, 2)}
-        </div>
-      )}
-    </div>
-  );
-});
-ObjectCard.displayName = 'ObjectCard';
-
-const ResultDetails = ({ result, label = 'Raw result' }: { result: any; label?: string }) => {
-  const [open, setOpen] = useState(false);
-  return (
-    <details className="eterx-result-details" onToggle={event => setOpen(event.currentTarget.open)}>
-      <summary>{label}</summary>
-      {open && <pre className="eterx-result-code">{JSON.stringify(result, null, 2)}</pre>}
-    </details>
-  );
-};
-
-// Compaction envelopes describe retained evidence, not a grid of user-facing fields.
-const CondensedToolResult = ({ result, flush }: { result: any; flush: boolean }) => {
-  const message = typeof result.message === 'string' ? result.message : '';
-  const evidence = typeof result.evidence === 'string' ? result.evidence : '';
-  const failed = result.success === false || result.isError === true || Boolean(result.error);
-  return (
-    <TrpCard flush={flush}>
-      <div className="eterx-result-caption">Condensed output</div>
-      {failed && <p className="eterx-result-error">{formatDisplayValue(result.error, 'The action did not complete successfully.')}</p>}
-      {message && <p className="eterx-result-prose">{message}</p>}
-      {evidence && (
-        <details className="eterx-result-details" open={!message || undefined}>
-          <summary>Retained output</summary>
-          <pre className="eterx-result-code">{evidence}</pre>
-        </details>
-      )}
-      <ResultDetails result={result} />
-    </TrpCard>
-  );
-};
-
 const AgentWorkResult = ({ result, flush }: { result: any; flush: boolean }) => {
   const agents = (Array.isArray(result.agents) ? result.agents : Array.isArray(result.graph?.nodes) ? result.graph.nodes : [])
     .filter((agent: any) => agent && typeof agent === 'object');
@@ -1205,14 +1103,12 @@ const AgentWorkResult = ({ result, flush }: { result: any; flush: boolean }) => 
               {agent.error && <p className="eterx-result-error">{formatDisplayValue(agent.error, '')}</p>}
               {typeof agent.result === 'string' && agent.result.trim() && <TrpMarkdown content={agent.result} />}
               {agent.payloadTruncated && <p className="eterx-result-caption">Partial report — more output is available.</p>}
-              <ResultDetails result={agent} label="Agent details" />
             </details>
           ))}
         </div>
       )}
       {Number(result.unresolvedCount) > 0 && <p className="eterx-result-caption">{result.unresolvedCount} unresolved agent{Number(result.unresolvedCount) === 1 ? '' : 's'}</p>}
       {result.nextOffset != null && <p className="eterx-result-caption">More agents are available beyond this page.</p>}
-      <ResultDetails result={result} />
     </TrpCard>
   );
 };
@@ -1220,7 +1116,8 @@ const AgentWorkResult = ({ result, flush }: { result: any; flush: boolean }) => 
 // ─── Main component ────────────────────────────────────────────────────────
 const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }: { toolName: string; args: any; result: any; flush?: boolean }) => {
   toolName = normalizeToolTraceName(toolName);
-  if (result?.__eterxContextDigest === true) return <CondensedToolResult result={result} flush={flush} />;
+  result = parseToolResult(result);
+  if (result?.__eterxContextDigest === true) return null;
   if (toolName === 'spawn_sub_agent' && result && typeof result === 'object' && !Array.isArray(result)) {
     return <AgentWorkResult result={result} flush={flush} />;
   }
@@ -1332,9 +1229,8 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
   // Keep the document full width and bound it to the viewport with its own
   // scroll surface so the chat feed remains usable while reading it.
   if (toolName === 'get_skill_guidelines' || toolName === 'skill_loader') {
-    const guidelines = typeof result === 'string'
-      ? result
-      : String(result?.guidelines ?? result?.output?.guidelines ?? result?.content ?? result?.output ?? result?.text ?? result?.message ?? '');
+    const guidelines = [result, result?.guidelines, result?.output?.guidelines, result?.content, result?.output, result?.text, result?.message]
+      .find(value => typeof value === 'string' && value.trim()) || '';
     const skillName = String(args?.skill_name ?? args?.skillId ?? args?.skill ?? '').trim();
 
     return (
@@ -1362,53 +1258,10 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
     );
   }
 
-  // ── web_search ────────────────────────────────────────────────────────────
-  if (toolName === 'web_search') {
-    const summary: string = result?.ai_summary || result?.answer || result?.summary || '';
-    const items: any[] = Array.isArray(result?.results) ? result.results : Array.isArray(result) ? result : [];
-    const images: any[] = Array.isArray(result?.images) ? result.images : [];
-    return (
-      <TrpCard flush={flush}>
-        {summary && (
-          <div className="mb-3 rounded-[8px] bg-white/[0.025] border border-white/[0.05] p-2.5 text-[12.5px] leading-[1.65] text-[#C0B8B0]">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46] mb-1.5">Summary</div>
-            {summary}
-          </div>
-        )}
-        {items.length > 0 ? (
-          <div className="flex flex-col gap-1.5 max-h-[300px] overflow-y-auto pr-0.5 eterx-scrollbar">
-            {items.map((item: any, idx: number) => (
-              <div key={idx} className="rounded-[8px] bg-white/[0.02] border border-white/[0.045] p-2.5 hover:border-white/[0.09] transition-colors">
-                <div className="flex items-start justify-between gap-2 mb-1">
-                  <a href={item.url} target="_blank" rel="noopener noreferrer"
-                    className="text-[12.5px] font-semibold text-[#6B9AB8] hover:text-[#94C7E0] hover:underline flex items-center gap-1.5 min-w-0 transition-colors">
-                    <span className="truncate">{item.title || extractDomain(item.url)}</span>
-                    <ExternalLink className="w-2.5 h-2.5 shrink-0 opacity-50" />
-                  </a>
-                  {item.score !== undefined && (
-                    <span className="shrink-0 text-[9.5px] font-mono text-[#4E4A46]">{(item.score * 100).toFixed(0)}%</span>
-                  )}
-                </div>
-                {item.content && <p className="text-[11.5px] leading-[1.5] text-[#7A7470] line-clamp-2">{item.content}</p>}
-                <span className="mt-1 block text-[10px] text-[#3E3A36] font-mono truncate">{item.url}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="py-6 text-center text-[12px] text-[#4E4A46] italic">No results returned.</div>
-        )}
-        {images.length > 0 && (
-          <div className="mt-3 pt-2.5 border-t border-white/[0.05]">
-            <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">Images</div>
-            <div className="flex gap-2 overflow-x-auto pb-1 eterx-scrollbar">
-              {images.map((img: any, i: number) => (
-                <span key={i} className="shrink-0 w-28"><ReplyImage src={img.url} alt={img.title || ''} /></span>
-              ))}
-            </div>
-          </div>
-        )}
-      </TrpCard>
-    );
+  const webActivity = getWebActivity({ toolName, toolArgs: args }, result);
+  if (webActivity) {
+    const sources = extractWebSources(result);
+    return sources.length ? <TrpCard flush={flush}><WebSourceChips sources={sources} /></TrpCard> : null;
   }
 
   // ── 6. database / db_query ────────────────────────────────────────────────
@@ -1453,256 +1306,19 @@ const ToolResultPreview = React.memo(({ toolName, args, result, flush = false }:
   }
 
 
-  // ── Universal smart renderer ──────────────────────────────────────────────
-  // Detects the shape of ANY tool result and renders it properly.
-  // No tool name matching — purely data-driven.
-
-  // ── Helpers ────────────────────────────────────────────────────────────────
-  const IMG_EXT = /\.(jpe?g|png|gif|webp|svg|avif|bmp)(\?.*)?$/i;
-  const isImgSrc = (v: string) => IMG_EXT.test(v) || v.startsWith('data:image/') || /\/(image|photo|img|thumb|asset)s?\//i.test(v);
-  const isUrl = (v: string) => /^https?:\/\//i.test(v);
-  const isFilePath = (v: string) => /^[A-Za-z]:[\\\/]/.test(v) || v.startsWith('/') || v.startsWith('./');
-  const hasImgExt = (v: string) => IMG_EXT.test(v);
-
-  // Flatten: result can be an object or array
-  const rootArr: any[] | null = Array.isArray(result) ? result : null;
-  const obj: Record<string, any> = typeof result === 'object' && result !== null && !Array.isArray(result) ? result : {};
-
-  // Primary message/text
-  const getPrimaryText = () => {
-    if (typeof result === 'string') return result;
-    const candidates = ['message', 'content', 'guidelines', 'text', 'output', 'stdout', 'stderr', 'logs', 'response', 'result', 'summary', 'answer', 'report'];
-    for (const key of candidates) {
-      if (typeof obj[key] === 'string' && obj[key].trim().length > 0) {
-        return obj[key];
-      }
-    }
-    return '';
-  };
-  const primaryText = getPrimaryText();
-  const hasPrimaryText = primaryText.trim().length > 0;
-  const primaryIsMd = hasPrimaryText && /^#{1,3}\s|\*\*|\n#{1,3}\s|\[.+?\]\(.+?\)/.test(primaryText);
-
-  // Collect ALL arrays in the result
-  const SKIP_ARRAY_KEYS = new Set(['sources', 'urls', 'links', 'checks']);
-  const arrayFields: Array<{ key: string; items: any[] }> = [];
-  for (const [k, v] of Object.entries(obj)) {
-    if (Array.isArray(v) && v.length > 0 && !SKIP_ARRAY_KEYS.has(k)) {
-      arrayFields.push({ key: k, items: v });
-    }
+  // Media tools expose their actual artifacts without provider payloads or raw JSON.
+  if (['image_generator', 'image_asset_search', 'video_generator'].includes(toolName)) {
+    const media = getToolMedia(result);
+    if (!media.length) return null;
+    return <TrpCard flush={flush}>
+      <div className="eterx-tool-media-grid">
+        {media.map(item => /\.(?:mp4|webm|mov)(?:[?#]|$)/i.test(item.src)
+          ? <LocalFileLinkChip key={item.src} filePath={item.src} compact />
+          : <ReplyImage key={item.src} src={item.src} alt={item.label} />)}
+      </div>
+    </TrpCard>;
   }
-  if (rootArr && rootArr.length > 0) arrayFields.push({ key: '', items: rootArr });
-
-  // Secondary scalar fields use compact definition rows.
-  const SKIP_SCALAR = new Set([
-    'success', 'passed', 'ok', 'error', 'message', 'content', 'guidelines', 'text',
-    'output', 'stdout', 'stderr', 'logs', 'response', 'result', 'summary',
-    'answer', 'report', '_cached', '_traceIdx', 'timestamp', 'data',
-    '__eterxContextDigest', '_compacted', 'originalChars', 'exactContextPageRef', 'recovery', 'historical'
-  ]);
-  const scalarFields: [string, any][] = Object.entries(obj).filter(
-    ([k, v]) => !SKIP_SCALAR.has(k) && !Array.isArray(v) && typeof v !== 'object' && v !== null && v !== undefined && String(v).trim().length > 0
-  );
-
-  // Source links
-  const linkSources: string[] = Array.isArray(obj.sources) ? obj.sources
-    : Array.isArray(obj.urls) ? obj.urls
-      : Array.isArray(obj.links) ? obj.links : [];
-
-  // Detect image assets in arrays
-  const findImageAssets = (items: any[]): any[] => {
-    return items.filter((item: any) => {
-      if (typeof item === 'string') return hasImgExt(item) || (isUrl(item) && isImgSrc(item));
-      if (typeof item === 'object' && item !== null) {
-        const imgFields = ['publicPath', 'url', 'src', 'localPath', 'filepath', 'path', 'thumbnail', 'imageUrl'];
-        return imgFields.some(f => item[f] && (isImgSrc(String(item[f])) || hasImgExt(String(item[f]))));
-      }
-      return false;
-    });
-  };
-  const getImgSrc = (item: any): string => {
-    if (typeof item === 'string') return item;
-    return item.displayUrl || (String(item.src || '').startsWith('/api/chat/media?') ? item.src : '')
-      || item.localPath || item.filePath || item.filepath || item.path
-      || item.url || item.src || item.publicPath || item.thumbnail || item.imageUrl || '';
-  };
-  const getItemLabel = (item: any): string => {
-    if (typeof item === 'string') return item.split(/[\\/]/).pop() || item;
-    return item.filename || item.name || item.title || item.alt || '';
-  };
-
-  // Classify arrays
-  const classifyArray = (items: any[]): 'images' | 'files' | 'urls' | 'objects' | 'strings' => {
-    if (items.length === 0) return 'strings';
-    const first = items[0];
-    if (typeof first === 'string') {
-      if (findImageAssets(items).length > items.length * 0.4) return 'images';
-      if (items.every(v => isUrl(String(v)))) return 'urls';
-      if (items.every(v => isFilePath(String(v)))) return 'files';
-      return 'strings';
-    }
-    if (typeof first === 'object' && first !== null) {
-      if (findImageAssets(items).length > items.length * 0.4) return 'images';
-      return 'objects';
-    }
-    return 'strings';
-  };
-
-  const hasAnyContent = hasPrimaryText || arrayFields.length > 0 || scalarFields.length > 0;
-
-  return (
-    <TrpCard flush={flush}>
-      {/* Error banner */}
-      {obj.error && (
-        <div className="mb-3 rounded-[7px] bg-red-500/8 border border-red-500/15 px-3 py-2 text-[11.5px] font-mono text-red-300/80">
-          {formatDisplayValue(obj.error, 'The action failed.')}
-        </div>
-      )}
-
-      {/* Primary text/markdown */}
-      {hasPrimaryText && (
-        <div className="mb-3 max-h-[280px] overflow-y-auto overflow-x-hidden eterx-scrollbar">
-          {primaryIsMd ? (
-            <TrpMarkdown content={primaryText} />
-          ) : ['stdout', 'stderr', 'logs'].some(key => obj[key] === primaryText) ? (
-            <pre className="font-mono text-[11px] leading-[1.6] text-[#9A9288] whitespace-pre-wrap break-words select-text rounded-[7px] bg-black/20 border border-white/[0.04] p-2.5 max-h-[240px] overflow-y-auto eterx-scrollbar">{primaryText}</pre>
-          ) : (
-            <p className="text-[12.5px] leading-[1.7] text-[#C0B8B0] whitespace-pre-wrap break-words select-text">{primaryText}</p>
-          )}
-        </div>
-      )}
-
-      {/* Smart array renderers */}
-      {arrayFields.map(({ key, items }) => {
-        const kind = classifyArray(items);
-        const imgAssets = kind === 'images' ? findImageAssets(items) : [];
-        const sectionLabel = key ? key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : null;
-
-        // ── Image gallery ──────────────────────────────────────────────────
-        if (kind === 'images') {
-          return (
-            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
-              {sectionLabel && (
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</span>
-                  <span className="text-[10px] text-[#4E4A46]">{imgAssets.length} item{imgAssets.length !== 1 ? 's' : ''}</span>
-                </div>
-              )}
-              <div className="grid grid-cols-3 gap-1.5">
-                {imgAssets.map((item: any, i: number) => {
-                  const src = getImgSrc(item);
-                  const label = getItemLabel(item);
-                  const role = typeof item === 'object' ? (item.visualRole || item.role || item.category || '') : '';
-                  return (
-                    <ReplyImage key={i} src={src} alt={label || role} />
-                  );
-                })}
-              </div>
-            </div>
-          );
-        }
-
-        // ── URL list ────────────────────────────────────────────────────────
-        if (kind === 'urls') {
-          return (
-            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
-              {sectionLabel && <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</div>}
-              <div className="flex flex-col gap-1 max-h-[160px] overflow-y-auto eterx-scrollbar">
-                {items.map((url: string, i: number) => (
-                  <a key={i} href={url} target="_blank" rel="noopener noreferrer"
-                    className="group flex items-center gap-2 rounded-[6px] px-2 py-1 text-[11.5px] hover:bg-white/[0.035] transition-colors">
-                    <ExternalLink className="w-2.5 h-2.5 shrink-0 text-[#4E4A46] group-hover:text-[#94C7E0] transition-colors" />
-                    <span className="font-medium text-[#6B9AB8] group-hover:text-[#94C7E0] transition-colors truncate">{extractDomain(url)}</span>
-                    <span className="ml-auto shrink-0 text-[9.5px] text-[#3E3A36] truncate max-w-[160px] hidden sm:block">{url}</span>
-                  </a>
-                ))}
-              </div>
-            </div>
-          );
-        }
-
-        // ── File path list ───────────────────────────────────────────────────
-        if (kind === 'files') {
-          return (
-            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
-              {sectionLabel && <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</div>}
-              <div className="flex flex-col gap-0.5 max-h-[160px] overflow-y-auto eterx-scrollbar">
-                {items.map((f: string, i: number) => (
-                  <div key={i} className="flex items-center gap-2 py-[3px] px-1 rounded-[4px] hover:bg-white/[0.02] font-mono text-[11px] text-[#9A9288]">
-                    <span className="text-[9px] text-[#3E3A36]">·</span>
-                    <span className="truncate select-all">{f}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        }
-
-        // ── String chip list ─────────────────────────────────────────────────
-        if (kind === 'strings') {
-          return (
-            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
-              {sectionLabel && <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</div>}
-              <div className="flex flex-wrap gap-1.5">
-                {items.map((s: any, i: number) => (
-                  <span key={i} className="inline-flex items-center rounded-[5px] bg-white/[0.035] border border-white/[0.06] px-2 py-0.5 text-[11.5px] text-[#9A9288] font-mono select-all">{String(s)}</span>
-                ))}
-              </div>
-            </div>
-          );
-        }
-
-        // ── Object cards ─────────────────────────────────────────────────────
-        if (kind === 'objects') {
-          const cardKeys = items.length > 0
-            ? Object.keys(items[0]).filter(k => typeof items[0][k] !== 'object' && !Array.isArray(items[0][k])).slice(0, 4)
-            : [];
-          const primaryKey = cardKeys.find(k => /title|name|label|filename|query|subject/i.test(k)) || cardKeys[0] || '';
-          const secondaryKey = cardKeys.find(k => k !== primaryKey && /content|description|text|message|value|status/i.test(k)) || cardKeys[1] || '';
-          const metaKeys = cardKeys.filter(k => k !== primaryKey && k !== secondaryKey).slice(0, 2);
-          return (
-            <div key={key} className={hasPrimaryText && key ? 'mt-3 pt-2.5 border-t border-white/[0.05]' : ''}>
-              {sectionLabel && (
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-[10px] font-semibold uppercase tracking-widest text-[#4E4A46]">{sectionLabel}</span>
-                  <span className="text-[10px] text-[#4E4A46]">{items.length} item{items.length !== 1 ? 's' : ''}</span>
-                </div>
-              )}
-              <div className="flex flex-col gap-1.5 max-h-[280px] overflow-y-auto eterx-scrollbar">
-                {items.map((item: any, i: number) => (
-                  <ObjectCard key={i} item={item} primaryKey={primaryKey} secondaryKey={secondaryKey} metaKeys={metaKeys} />
-                ))}
-              </div>
-            </div>
-          );
-        }
-
-        return null;
-      })}
-
-      {/* Quiet metadata rows keep long values readable without creating a tile grid. */}
-      {scalarFields.length > 0 && (
-        <dl className="eterx-result-fields">
-          {scalarFields.map(([k, v]) => (
-            <div key={k}>
-              <dt>{k.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')}</dt>
-              <dd>{String(v)}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
-
-      {/* Absolute last resort: raw JSON if nothing was rendered */}
-      {!hasAnyContent && (
-        <div className="max-h-[200px] overflow-auto eterx-scrollbar rounded-[7px] bg-black/25 border border-white/[0.05] p-2.5 font-mono text-[10.5px] leading-[1.5] text-[#7A7470] whitespace-pre select-text">
-          {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
-        </div>
-      )}
-
-      <TrpSources sources={linkSources} />
-      {hasAnyContent && typeof result === 'object' && result !== null && <ResultDetails result={result} />}
-    </TrpCard>
-  );
+  return null;
 });
 ToolResultPreview.displayName = 'ToolResultPreview';
 
@@ -3624,7 +3240,7 @@ const ActionChip = ({
     : log.secondary && log.secondary !== log.filename
       ? normalizeToolTraceText(log.secondary).substring(0, 120)
       : '';
-  const preview = useMemo(() => {
+  const resultPreview = useMemo(() => {
     // Builder mutations are already summarized by their professional action
     // row and the persistent profile. They are intentionally non-expandable;
     // this also protects reopened chats containing older result-preview logs.
@@ -3675,6 +3291,7 @@ const ActionChip = ({
         || candidates.find((item: any) => item?.type === 'file_preview' && item?.isEdit)
         || [...candidates].reverse().find((item: any) => item?.type === 'console_output' && (item?.exitCode !== undefined || item?.isStreaming === false))
         || [...candidates].reverse().find((item: any) => item?.type === 'console_output')
+        || [...candidates].reverse().find((item: any) => item?.type === 'tool_result_preview')
         || candidates[0];
       if (best?.type !== 'file_preview') return best;
       return {
@@ -3743,18 +3360,24 @@ const ActionChip = ({
     });
     return Array.from(streams.values());
   }, [allLogs, log]);
+  const toolResult = resultPreview?.result ?? resultPreview?.output ?? resultPreview?.content ?? log.toolResult ?? log.result ?? log.output;
+  const webActivity = getWebActivity({ ...log, toolArgs: log.toolArgs || log.args || resultPreview?.toolArgs }, toolResult);
+  const webSources = useMemo(() => webActivity ? extractWebSources(toolResult) : [], [webActivity, toolResult]);
+  const preview = resultPreview?.type === 'tool_result_preview'
+    && !hasDesignedToolPreview(resultPreview.toolName || displayToolName, resultPreview.result)
+      ? null : resultPreview;
   const [isExpanded, setIsExpanded] = useState(false);
   const previewIsLive = isEdit && preview?.type === 'file_preview' && isFeedTraceOpen(preview);
   const previewOwnsActionLifecycle = Boolean(
-    preview &&
-    ['file_preview', 'console_output', 'tool_result_preview'].includes(String(preview.type || ''))
+    resultPreview &&
+    ['file_preview', 'console_output', 'tool_result_preview'].includes(String(resultPreview.type || ''))
   );
   // The preview is the authoritative completion signal for file mutations.
   // The same applies to terminal/tool results: the enclosing agent can keep
   // working after this action settles, so group liveness must not leave an
   // already-finished row shimmering until the next model event arrives.
   const actionIsLive = previewOwnsActionLifecycle
-    ? isFeedTraceOpen(preview)
+    ? isFeedTraceOpen(resultPreview)
     : isLiveChip;
   const fileTargets = useMemo(() => collectFileTargets(log, preview), [log, preview]);
   const primaryTarget = fileTargets[0] || null;
@@ -3874,6 +3497,10 @@ const ActionChip = ({
   const cleanVerb = displayVerb.replace(/\s+files?$/i, '').trim();
   const displayVerbLabel = hasFile ? stripTrailingFileName(cleanVerb, fileName) : cleanVerb;
   const fileDisplayVerb = isRead ? (actionIsLive ? 'Reading' : 'Read') : displayVerbLabel;
+  if (webActivity) {
+    return <WebSourceActivity activity={webActivity} sources={webSources} live={actionIsLive}
+      failed={toolResultFailed(toolResult) || log.status === 'failed'} inCard={inCard} />;
+  }
   const isTerminalAction = isTerminalActionLike(log, preview);
   if (isTerminalAction) {
     if (ownedConsolePreviews.length > 1) {
@@ -3954,14 +3581,16 @@ const ActionChip = ({
     e.stopPropagation();
     if (preview) setIsExpanded(open => !open);
   };
+  const actionFailed = !actionIsLive && (toolResultFailed(toolResult) || log.status === 'failed' || log.status === 'error');
 
   return (
     <div className="w-full">
       <div
         role={preview ? 'button' : undefined}
+        data-status={actionFailed ? 'failed' : undefined}
         tabIndex={preview ? 0 : undefined}
         aria-expanded={preview ? isExpanded : undefined}
-        onClick={handleTogglePreview}
+        onClick={preview ? handleTogglePreview : undefined}
         onKeyDown={(e) => {
           if (!preview || (e.key !== 'Enter' && e.key !== ' ')) return;
           e.preventDefault();
@@ -4040,6 +3669,7 @@ const ActionChip = ({
         )}
         {!hasFile && !subtitle && <span className="min-w-0" />}
         <span className="flex shrink-0 items-center justify-end gap-2 justify-self-end">
+          {actionFailed && <span className="eterx-tool-failure-label">Failed</span>}
           {preview && (
             <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-all ${ isExpanded ? 'rotate-90 text-[#C8C1B8]' : 'text-[#898176]' } group-hover:text-[#C8C1B8]`} />
           )}

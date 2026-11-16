@@ -216,7 +216,8 @@ export class ProviderLiveSession implements LiveSession {
   private playbackSampleRate = 24000;
   private manualDisconnect = false;
   private lifecycleId = 0;
-  private readonly desktopRunId = `live-${crypto.randomUUID()}`;
+  private desktopRunId = `live-${crypto.randomUUID()}`;
+  private desktopSessionRequested = false;
   private connectPromise: Promise<void> | null = null;
   private connectionController: AbortController | null = null;
   private transportReadyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -664,8 +665,8 @@ export class ProviderLiveSession implements LiveSession {
         text: { type: 'string' }, key: { type: 'string' }, value: { type: 'string' }, direction: { type: 'string' },
         amount: { type: 'number' }, tabId: { type: 'string' }, mode: { type: 'string' }, ...uiFields,
       }, ['action', 'action_verb', 'action_target']),
-      tool('computer_control', 'Observe and control the native desktop when Computer Use is enabled. Select exact windows with list_apps and see. Use current element_token or screenshot pixel coordinates. Inspect after input; never repeat actionStatus=sent/unknown without observing. Escape is reserved for the user to stop control.', {
-        action: { type: 'string', description: 'see, list_apps, get_active, launch_app, open_file, open_url, focus_app, click, right_click, double_click, hover, type, set_value, invoke_menu, key, scroll, drag, find, read, get_controls, wait_text, wait_change, wait_ms, set_window_frame, clipboard_get, clipboard_set, select_all, copy, paste, save, undo, close_window, stream_start or stream_stop.' },
+      tool('computer_control', 'Operate native desktop apps in a persistent observe-act-observe session when Computer Use is enabled. Start with session_start or see, select exact windows, and inspect the screenshot returned after each input. Use current tokens or screenshot pixels. observationRequired with not_sent means no input ran. Never repeat sent/unknown input without observing. Call session_stop when desktop work finishes or when yielding control. Browser control is separate. Escape is reserved for the user.', {
+        action: { type: 'string', description: 'session_start, session_stop, see, list_apps, get_active, launch_app, open_file, open_url, focus_app, click, right_click, double_click, hover, type, set_value, invoke_menu, key, scroll, drag, find, read, get_controls, wait_text, wait_change, wait_ms, set_window_frame, clipboard_get, clipboard_set, select_all, copy, paste, save, undo, close_window, stream_start or stream_stop.' },
         x: { type: 'number' }, y: { type: 'number' }, x2: { type: 'number' }, y2: { type: 'number' },
         app: { type: 'string' }, pid: { type: 'number' }, window_id: { type: 'number' }, scope: { type: 'string', enum: ['desktop', 'window'] },
         element_token: { type: 'string' }, capture_id: { type: 'string' }, delivery_mode: { type: 'string', enum: ['background', 'foreground'] },
@@ -1309,7 +1310,13 @@ export class ProviderLiveSession implements LiveSession {
         throw new Error('This Live transport cannot receive desktop images. Computer use requires image input; desktop control was not started.');
       }
       let computerUseEnabled = false;
-      try { computerUseEnabled = JSON.parse(appStorage.getItem('eterx_settings') || '{}').computerUse === true; } catch { /* Keep desktop access off. */ }
+      if (name === 'computer_control') this.desktopSessionRequested = true;
+      let browserAccessEnabled = false;
+      try {
+        const settings = JSON.parse(appStorage.getItem('eterx_settings') || '{}');
+        computerUseEnabled = settings.computerUse === true;
+        browserAccessEnabled = settings.browserAccess !== false;
+      } catch { /* Keep access off when preferences cannot be read. */ }
       const response = await fetch('/api/live/tool', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1319,6 +1326,7 @@ export class ProviderLiveSession implements LiveSession {
           runId: this.desktopRunId,
           toolName: name === 'computer_control' ? 'screen_agent' : 'browser_control',
           computerUseEnabled,
+          browserAccessEnabled,
           input: toolInput,
         }),
       });
@@ -2165,6 +2173,13 @@ export class ProviderLiveSession implements LiveSession {
   }
 
   private cleanup(): void {
+    const closingDesktopRun = this.desktopRunId;
+    this.desktopRunId = `live-${crypto.randomUUID()}`;
+    if (this.desktopSessionRequested && this.chatId) void fetch('/api/live/tool', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+      body: JSON.stringify({ chatId: this.chatId, runId: closingDesktopRun, endDesktopRun: true, toolName: 'screen_agent', input: { action: 'session_stop' } }),
+    }).catch(() => {});
+    this.desktopSessionRequested = false;
     this.connectionController?.abort();
     this.connectionController = null;
     if (this.transportReadyTimer) clearTimeout(this.transportReadyTimer);

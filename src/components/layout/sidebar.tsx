@@ -9,8 +9,10 @@ import { Tooltip } from '../ui/tooltip';
 import { appStorage, appStorageReady } from '../../lib/client-storage';
 import { preloadAppPanel } from '../../lib/preload-app-panel';
 import { IMPORT_LABELS, type ImportOrigin } from '../../lib/imports/types';
+import { chatMatchesScope, chatWorkspaceKey, RECENTS_CHAT_SCOPE, type ChatScope } from '../../lib/chat-scope';
 
-const SIDEBAR_DEFAULT_WIDTH = 256;
+const SIDEBAR_DEFAULT_WIDTH = 308;
+const SIDEBAR_LEGACY_DEFAULT_WIDTH = 256;
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 420;
 const SIDEBAR_AUTO_CLOSE_EDGE = 28;
@@ -469,11 +471,22 @@ const lightweightSidebarCss = `
   }
 
   .eterx-sidebar-project-menu {
+    --eterx-sb-size: 14px;
     background: color-mix(in srgb, var(--sidebar-bg) 88%, var(--sidebar-strong-text) 12%);
     border-color: transparent !important;
     box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28) !important;
     scrollbar-gutter: auto !important;
     transform-origin: top left;
+  }
+
+  .eterx-sidebar-project-menu::-webkit-scrollbar-button:single-button:vertical:decrement,
+  .eterx-sidebar-project-menu::-webkit-scrollbar-button:single-button:vertical:increment {
+    height: 18px !important;
+    background-size: 7px 5px !important;
+  }
+
+  .eterx-sidebar-project-menu::-webkit-scrollbar-thumb {
+    border-width: 3px !important;
   }
 
   .eterx-sidebar-project-search {
@@ -1126,7 +1139,7 @@ interface SidebarProject {
   updatedAt: number;
 }
 
-const normalizeProjectPath = (value: unknown) => String(value || '').trim().replace(/[\\/]+$/, '');
+const normalizeProjectPath = (value: unknown) => String(value || '').trim();
 
 const projectNameFromPath = (value: string) => {
   const normalized = normalizeProjectPath(value);
@@ -1138,6 +1151,8 @@ interface SidebarProps {
   titlebarToggleExternal?: boolean;
   setIsOpen: (open: boolean) => void;
   createNewChat: () => void;
+  chatScope: ChatScope;
+  onChatScopeChange: (scope: ChatScope) => void;
   chats: ChatSession[];
   isLoadingChats?: boolean;
   historyError?: string | null;
@@ -1163,7 +1178,7 @@ interface SidebarProps {
 
 export const Sidebar = React.memo<SidebarProps>(
   ({
-    isOpen, titlebarToggleExternal = false, setIsOpen, createNewChat, chats, isLoadingChats = false, historyError, retryHistory, activeChatId, additionalActiveChatIds, loadChat, copyChat, openChatWindow, deleteChat, deleteChats, renameChat, toggleFavorite, moveChatToProject, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
+    isOpen, titlebarToggleExternal = false, setIsOpen, createNewChat, chatScope, onChatScopeChange, chats, isLoadingChats = false, historyError, retryHistory, activeChatId, additionalActiveChatIds, loadChat, copyChat, openChatWindow, deleteChat, deleteChats, renameChat, toggleFavorite, moveChatToProject, onSearchClick, activeView, setActiveView, runningChats, unreadChats, onSettingsClick, isThinking
 }) => {
   const reduceMotion = useReducedMotion();
   const [menuState, setMenuState] = React.useState<{ id: string, x: number, y: number, dropUp: boolean, anchoredToButton?: boolean } | null>(null);
@@ -1194,9 +1209,11 @@ export const Sidebar = React.memo<SidebarProps>(
   const [viewportWidth, setViewportWidth] = React.useState(1440);
   const [sidebarWidth, setSidebarWidth] = React.useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = React.useState(false);
-  const [selectedProjectPath, setSelectedProjectPath] = React.useState<string | null>(null);
-  const [selectedImportFolder, setSelectedImportFolder] = React.useState<string | null>(null);
-  const importFolders = React.useMemo(() => [...new Set(chats.map(chat => chat.importFolder).filter((folder): folder is string => Boolean(folder)))].sort((a, b) => a.localeCompare(b)), [chats]);
+  const selectedProjectPath = chatScope.kind === 'project' ? chatScope.path : null;
+  const selectedImportFolder = chatScope.kind === 'folder' ? chatScope.name : null;
+  const importFolders = React.useMemo(() => [...new Set([
+    ...chats.map(chat => chat.importFolder), selectedImportFolder,
+  ].filter((folder): folder is string => Boolean(folder)))].sort((a, b) => a.localeCompare(b)), [chats, selectedImportFolder]);
   const [projectMenuOpen, setProjectMenuOpen] = React.useState(false);
   const [projectMenuPosition, setProjectMenuPosition] = React.useState({ top: 0, left: 0 });
   const projectMenuRef = React.useRef<HTMLDivElement>(null);
@@ -1277,10 +1294,17 @@ export const Sidebar = React.memo<SidebarProps>(
 
   const projects = React.useMemo<SidebarProject[]>(() => {
     const byPath = new Map<string, SidebarProject>();
+    if (selectedProjectPath) {
+      byPath.set(chatWorkspaceKey(selectedProjectPath), {
+        path: selectedProjectPath,
+        name: projectNameFromPath(selectedProjectPath),
+        updatedAt: 0,
+      });
+    }
     chats.forEach(chat => {
       const path = normalizeProjectPath(chat.workspacePath);
       if (!path) return;
-      const key = path.toLowerCase();
+      const key = chatWorkspaceKey(path);
       const existing = byPath.get(key);
       if (!existing || chat.updatedAt > existing.updatedAt) {
         byPath.set(key, {
@@ -1294,7 +1318,7 @@ export const Sidebar = React.memo<SidebarProps>(
       if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
       return a.name.localeCompare(b.name);
     });
-  }, [chats]);
+  }, [chats, selectedProjectPath]);
 
   const matchingMoveProjects = React.useMemo(() => {
     const query = projects.length > 6 ? moveProjectSearch.trim().toLowerCase() : '';
@@ -1332,37 +1356,19 @@ export const Sidebar = React.memo<SidebarProps>(
   }, [moveProjectMenuOpen, matchingMoveProjects.length]);
 
   const activeProject = React.useMemo(
-    () => projects.find(project => project.path.toLowerCase() === normalizeProjectPath(selectedProjectPath).toLowerCase()) || null,
+    () => projects.find(project => chatWorkspaceKey(project.path) === chatWorkspaceKey(selectedProjectPath)) || null,
     [projects, selectedProjectPath],
   );
-  const filteredChats = React.useMemo(() => {
-    if (selectedImportFolder) return chats.filter(chat => chat.importFolder === selectedImportFolder);
-    const selectedPath = normalizeProjectPath(selectedProjectPath).toLowerCase();
-    if (!selectedPath) return chats;
-    return chats.filter(chat => normalizeProjectPath(chat.workspacePath).toLowerCase() === selectedPath);
-  }, [chats, selectedProjectPath, selectedImportFolder]);
+  const filteredChats = React.useMemo(
+    () => chatScope.kind === 'recents' ? chats : chats.filter(chat => chatMatchesScope(chat, chatScope)),
+    [chats, chatScope],
+  );
   const [visibleChatCount, setVisibleChatCount] = React.useState(CHAT_RENDER_BATCH);
   const [recentScrollFades, setRecentScrollFades] = React.useState({ top: false, bottom: false });
   const visibleChats = React.useMemo(
     () => filteredChats.slice(0, visibleChatCount),
     [filteredChats, visibleChatCount]
   );
-
-  React.useEffect(() => {
-    if (!activeChatId) return;
-    const activeIndex = filteredChats.findIndex(chat => chat.id === activeChatId);
-    if (activeIndex >= visibleChatCount) {
-      setVisibleChatCount(Math.ceil((activeIndex + 1) / CHAT_RENDER_BATCH) * CHAT_RENDER_BATCH);
-    }
-  }, [activeChatId, filteredChats, visibleChatCount]);
-
-  React.useEffect(() => {
-    if (selectedProjectPath && !activeProject) setSelectedProjectPath(null);
-  }, [activeProject, selectedProjectPath]);
-  React.useEffect(() => {
-    if (selectedImportFolder && !importFolders.includes(selectedImportFolder)) setSelectedImportFolder(null);
-    setVisibleChatCount(CHAT_RENDER_BATCH);
-  }, [selectedImportFolder, importFolders]);
 
   React.useEffect(() => {
     if (!projectMenuOpen) return;
@@ -1454,6 +1460,13 @@ export const Sidebar = React.memo<SidebarProps>(
     const restoreWidth = () => {
       const storedWidth = Number(appStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY));
       if (Number.isFinite(storedWidth) && storedWidth >= SIDEBAR_MIN_WIDTH && storedWidth <= SIDEBAR_MAX_WIDTH) {
+        if (storedWidth === SIDEBAR_LEGACY_DEFAULT_WIDTH) {
+          const upgradedWidth = getAdaptiveSidebarDefault(window.innerWidth);
+          appStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(upgradedWidth));
+          resizeCurrentWidthRef.current = upgradedWidth;
+          setSidebarWidth(upgradedWidth);
+          return;
+        }
         const nextWidth = clampSidebarWidth(storedWidth);
         resizeCurrentWidthRef.current = nextWidth;
         setSidebarWidth(nextWidth);
@@ -1561,14 +1574,44 @@ export const Sidebar = React.memo<SidebarProps>(
   // Smart drag selection states
   const [isDragSelecting, setIsDragSelecting] = React.useState(false);
   const [dragSelectState, setDragSelectState] = React.useState<boolean>(true);
+  const previousChatScopeRef = React.useRef<ChatScope | null>(null);
+  const revealedActiveChatRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
-    setVisibleChatCount(CHAT_RENDER_BATCH);
-    setProjectMenuOpen(false);
-    setIsSelectMode(false);
-    setSelectedChatIds(new Set());
-    selectedChatIdsRef.current = new Set();
-  }, [selectedProjectPath]);
+    const activeIndex = activeChatId ? filteredChats.findIndex(chat => chat.id === activeChatId) : -1;
+    const requiredCount = Math.max(CHAT_RENDER_BATCH, Math.ceil((activeIndex + 1) / CHAT_RENDER_BATCH) * CHAT_RENDER_BATCH);
+    if (previousChatScopeRef.current !== chatScope) {
+      previousChatScopeRef.current = chatScope;
+      revealedActiveChatRef.current = null;
+      setVisibleChatCount(requiredCount);
+      setProjectMenuOpen(false);
+      setMenuState(null);
+      setIsSelectMode(false);
+      setSelectedChatIds(new Set());
+      selectedChatIdsRef.current = new Set();
+      if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
+    } else if (activeIndex >= visibleChatCount) {
+      setVisibleChatCount(requiredCount);
+    }
+  }, [activeChatId, chatScope, filteredChats, visibleChatCount]);
+
+  React.useEffect(() => {
+    if (!isOpen || !activeChatId || activeView !== 'chat') {
+      revealedActiveChatRef.current = null;
+      return;
+    }
+    if (revealedActiveChatRef.current === activeChatId) return;
+    const container = scrollContainerRef.current;
+    const row = container && Array.from(container.querySelectorAll<HTMLElement>('[data-chat-id]'))
+      .find(element => element.dataset.chatId === activeChatId);
+    if (!container || !row) return;
+    const top = row.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+    if (top < container.scrollTop) container.scrollTop = top;
+    else if (top + row.offsetHeight > container.scrollTop + container.clientHeight) {
+      container.scrollTop = top + row.offsetHeight - container.clientHeight;
+    }
+    revealedActiveChatRef.current = activeChatId;
+  }, [activeChatId, activeView, chatScope, isOpen, visibleChatCount]);
 
   React.useEffect(() => {
     const container = scrollContainerRef.current;
@@ -1581,7 +1624,7 @@ export const Sidebar = React.memo<SidebarProps>(
     const observer = new ResizeObserver(refreshFades);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [isOpen, isProjectPending, isSelectMode, filteredChats.length, selectedProjectPath, updateRecentScrollFades, visibleChatCount]);
+  }, [isOpen, isProjectPending, isSelectMode, filteredChats.length, selectedProjectPath, selectedImportFolder, updateRecentScrollFades, visibleChatCount]);
 
   const isNewChatActive = activeView === 'chat' && !activeChatId;
   const [glassClick, setGlassClick] = React.useState<{ key: string; x: number; y: number; tick: number } | null>(null);
@@ -1885,13 +1928,12 @@ export const Sidebar = React.memo<SidebarProps>(
   };
 
   const handleProjectSelect = React.useCallback((path: string | null) => {
-    setSelectedImportFolder(null);
     const normalizedPath = normalizeProjectPath(path);
-    const currentPath = normalizeProjectPath(selectedProjectPath);
     setProjectMenuOpen(false);
-    if (normalizedPath.toLowerCase() === currentPath.toLowerCase()) return;
-    startProjectTransition(() => setSelectedProjectPath(normalizedPath || null));
-  }, [selectedProjectPath, startProjectTransition]);
+    startProjectTransition(() => onChatScopeChange(normalizedPath
+      ? { kind: 'project', path: normalizedPath }
+      : RECENTS_CHAT_SCOPE));
+  }, [onChatScopeChange, startProjectTransition]);
 
   React.useEffect(() => {
     const handleClickOutside = () => setMenuState(null);
@@ -2136,14 +2178,14 @@ export const Sidebar = React.memo<SidebarProps>(
                       </button>
 
                       {importFolders.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-[var(--sidebar-muted-text)]">Folders</div>}
-                      {importFolders.map(folder => <button key={folder} type="button" role="menuitemradio" aria-checked={selectedImportFolder === folder} onClick={() => { setProjectMenuOpen(false); setSelectedProjectPath(null); startProjectTransition(() => setSelectedImportFolder(folder)); }} className="eterx-sidebar-project-menu-item group/menu-item"><FolderClosed className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">{folder}</span>{selectedImportFolder === folder && <Check className="h-3.5 w-3.5" />}</button>)}
+                      {importFolders.map(folder => <button key={folder} type="button" role="menuitemradio" aria-checked={selectedImportFolder === folder} onClick={() => { setProjectMenuOpen(false); startProjectTransition(() => onChatScopeChange({ kind: 'folder', name: folder })); }} className="eterx-sidebar-project-menu-item group/menu-item"><FolderClosed className="h-3.5 w-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">{folder}</span>{selectedImportFolder === folder && <Check className="h-3.5 w-3.5" />}</button>)}
                       {importFolders.length > 0 && projects.length > 0 && <div className="px-2 pt-2 pb-1 text-[10px] text-[var(--sidebar-muted-text)]">Projects</div>}
                       {projects.map(project => (
                         <button
                           key={project.path}
                           type="button"
                           role="menuitemradio"
-                          aria-checked={activeProject?.path.toLowerCase() === project.path.toLowerCase()}
+                          aria-checked={chatWorkspaceKey(activeProject?.path) === chatWorkspaceKey(project.path)}
                           title={project.path}
                           onClick={() => handleProjectSelect(project.path)}
                           className="eterx-sidebar-project-menu-item group/menu-item"
@@ -2262,7 +2304,7 @@ export const Sidebar = React.memo<SidebarProps>(
                 ) : null}
                 {filteredChats.length === 0 ? (isLoadingChats || isProjectPending || historyError ? null : (
                   <div className="eterx-sidebar-empty px-3 py-2 text-[12.5px] text-[var(--sidebar-muted-text)]">
-                    {selectedProjectPath ? 'No chats in this project yet' : 'No recent chats'}
+                    {selectedImportFolder ? 'No chats in this folder yet' : selectedProjectPath ? 'No chats in this project yet' : 'No recent chats'}
                   </div>
                 )) : (
                   visibleChats.map((chat) => {
@@ -2685,12 +2727,12 @@ export const Sidebar = React.memo<SidebarProps>(
                 </div>
               )}
               <div className="eterx-move-project-list min-h-0 overflow-y-auto overscroll-contain" role="group" aria-label="Destinations">
-              {[{ path: null, name: 'Recents' }, ...matchingMoveProjects].map(project => {
-                const currentPath = normalizeProjectPath(chats.find(chat => chat.id === menuState.id)?.workspacePath).toLowerCase();
-                const isCurrent = currentPath === normalizeProjectPath(project.path).toLowerCase();
+              {[{ path: null, name: 'No project' }, ...matchingMoveProjects].map(project => {
+                const currentPath = chatWorkspaceKey(chats.find(chat => chat.id === menuState.id)?.workspacePath);
+                const isCurrent = currentPath === chatWorkspaceKey(project.path);
                 return (
                   <button
-                    key={project.path || 'recents'}
+                    key={project.path || 'no-project'}
                     type="button"
                     role="menuitemradio"
                     aria-checked={isCurrent}
@@ -2699,8 +2741,6 @@ export const Sidebar = React.memo<SidebarProps>(
                     onClick={() => {
                       const chatId = menuState.id;
                       if (!isCurrent) moveChatToProject(chatId, project.path);
-                      setSelectedImportFolder(null);
-                      setSelectedProjectPath(project.path);
                       setMoveProjectMenu(null);
                       setMenuState(null);
                       restoreChatMenuFocus(chatId);

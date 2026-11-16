@@ -7,9 +7,11 @@ import { recordBrowserHistory } from './browser-history';
 
 export type WorkspaceKind = 'review' | 'changes' | 'terminal' | 'browser' | 'files' | 'chat' | 'subagents' | 'git';
 export type WorkspaceReviewState = { scope: 'chat' | 'working' | 'branch'; selected: string; filter: string; expanded: boolean; split: boolean; showTree: boolean; root: string; wrap?: boolean; loadFull?: boolean; richPreview?: boolean; ignoreWhitespace?: boolean; wordHighlights?: 'enabled' | 'disabled'; viewed?: string[]; hideViewed?: boolean; compactFolders?: boolean; baseRefs?: Record<string, string> };
-export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges; git?: { root: string; view: import('./git/types').GitView; drafts: Record<string, string> } };
-type WorkspaceState = { open: boolean; width: number | null; expanded: boolean; tabs: WorkspaceTab[]; activeId: string | null; folders?: string[] };
-const empty: WorkspaceState = { open: false, width: null, expanded: false, tabs: [], activeId: null };
+export type WorkspaceTab = { id: string; kind: WorkspaceKind; title: string; url?: string; favicon?: string; browserNavigation?: { url: string }; path?: string; root?: string; chatId?: string; chatHistory?: string[]; chatPosition?: number; review?: WorkspaceReviewState; reviewPathRequest?: number; treeWidth?: number; changes?: TurnChanges; git?: { root: string; view: import('./git/types').GitView; drafts: Record<string, string> } };
+// Keep the user's split relative to the workspace after the sidebar is laid
+// out. Pixel widths become stale when the sidebar or window changes size.
+type WorkspaceState = { open: boolean; widthRatio: number; expanded: boolean; tabs: WorkspaceTab[]; activeId: string | null; folders?: string[] };
+const empty: WorkspaceState = { open: false, widthRatio: 0.5, expanded: false, tabs: [], activeId: null };
 const states = new Map<string, WorkspaceState>();
 const transferredOwners = new Map<string, string>();
 const disposedOwners = new Set<string>();
@@ -103,6 +105,20 @@ export function addWorkspaceTab(owner: string, kind: WorkspaceKind, details: Par
   const tab = { ...details, id: crypto.randomUUID(), kind, title: details.title || titles[kind] };
   updateWorkspace(owner, { open: true, tabs: [...state.tabs, tab], activeId: tab.id });
   return tab.id;
+}
+/** Source clicks focus an existing page or navigate the active browser immediately. */
+export function openWorkspaceBrowser(owner: string, url: string, details: { title?: string; favicon?: string } = {}) {
+  const destination = new URL(url);
+  if (!['http:', 'https:'].includes(destination.protocol) || destination.username || destination.password) return;
+  const state = read(owner);
+  const browsers = state.tabs.filter(tab => tab.kind === 'browser');
+  const matching = browsers.find(tab => tab.url === destination.href);
+  if (matching) { updateWorkspace(owner, { open: true, activeId: matching.id }); return matching.id; }
+  const current = browsers.find(tab => tab.id === state.activeId) || (browsers.length >= 12 ? browsers[browsers.length - 1] : undefined);
+  if (!current) return addWorkspaceTab(owner, 'browser', { ...details, url: destination.href });
+  updateWorkspace(owner, { open: true, activeId: current.id, tabs: state.tabs.map(tab => tab.id === current.id
+    ? { ...tab, ...details, url: destination.href, browserNavigation: { url: destination.href } } : tab) });
+  return current.id;
 }
 export function updateWorkspaceTab(owner: string, id: string, patch: Partial<WorkspaceTab>) {
   const state = read(owner);

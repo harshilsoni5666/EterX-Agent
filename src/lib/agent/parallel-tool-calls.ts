@@ -138,12 +138,14 @@ export function isParallelSafeToolCall(call: ParallelToolCallLike): boolean {
   return false;
 }
 
-/** Polling one terminal task shares an output cursor, even though it reads. */
-function parallelReadResource(call: ParallelToolCallLike): string | undefined {
-  if (getParallelToolCallName(call).toLowerCase() !== 'workspace_run_command') return;
+/** Overlapping terminal observations stay ordered, including grouped waits. */
+function parallelReadResources(call: ParallelToolCallLike): string[] {
+  if (getParallelToolCallName(call).toLowerCase() !== 'workspace_run_command') return [];
   const args = getParallelToolCallArgs(call);
-  if (!/^(?:check|wait)$/.test(String(args.mode || '').toLowerCase())) return;
-  return `terminal-task:${String(args.taskId || '').trim()}`;
+  if (!/^(?:check|wait)$/.test(String(args.mode || '').toLowerCase())) return [];
+  const taskIds = Array.isArray(args.tasks) ? args.tasks.map((task: any) => task?.taskId) : [args.taskId];
+  return [...new Set(taskIds.map(taskId =>
+    `terminal-task:${String(taskId || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100)}`))];
 }
 
 export interface ParallelToolExecutionOptions<TCall, TResult> {
@@ -187,13 +189,12 @@ export async function executeParallelToolCalls<TCall extends ParallelToolCallLik
           // A second wait/check of one process stays behind its first poll;
           // unrelated reads can still occupy the other available slots.
           const ready = queue.findIndex(index => {
-            const resource = parallelReadResource(calls[index]);
-            return !resource || !resources.has(resource);
+            return parallelReadResources(calls[index]).every(resource => !resources.has(resource));
           });
           if (ready < 0) break;
           const [index] = queue.splice(ready, 1);
-          const resource = parallelReadResource(calls[index]);
-          if (resource) resources.add(resource);
+          const callResources = parallelReadResources(calls[index]);
+          callResources.forEach(resource => resources.add(resource));
           const pending: Promise<void> = Promise.resolve().then(async () => {
             // Cancellation can arrive between reservation and execution.
             if (options.shouldStop?.()) {
@@ -206,7 +207,7 @@ export async function executeParallelToolCalls<TCall extends ParallelToolCallLik
             failures.push({ index, reason });
           }).finally(() => {
             active.delete(pending);
-            if (resource) resources.delete(resource);
+            callResources.forEach(resource => resources.delete(resource));
           });
           active.add(pending);
         }
@@ -248,10 +249,10 @@ export function splitLeadingParallelToolCalls<T extends ParallelToolCallLike>(
   let orderedStarted = false;
 
   for (const call of calls) {
-    const resource = parallelReadResource(call);
-    if (!orderedStarted && isParallelSafeToolCall(call) && (!resource || !resources.has(resource))) {
+    const callResources = parallelReadResources(call);
+    if (!orderedStarted && isParallelSafeToolCall(call) && callResources.every(resource => !resources.has(resource))) {
       parallel.push(call);
-      if (resource) resources.add(resource);
+      callResources.forEach(resource => resources.add(resource));
     } else {
       orderedStarted = true;
       ordered.push(call);
@@ -274,9 +275,9 @@ export function groupParallelToolCalls<T extends ParallelToolCallLike>(calls: T[
   };
   for (const call of calls) {
     if (isParallelSafeToolCall(call)) {
-      const resource = parallelReadResource(call);
-      if (resource && resources.has(resource)) flush();
-      if (resource) resources.add(resource);
+      const callResources = parallelReadResources(call);
+      if (callResources.some(resource => resources.has(resource))) flush();
+      callResources.forEach(resource => resources.add(resource));
       reads.push(call);
       if (reads.length === limit) flush();
     } else {

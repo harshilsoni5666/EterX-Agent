@@ -11,6 +11,24 @@ export type ProxyControlSettings = {
   followChatModel?: boolean;
 };
 
+export type ProxyManagerSnapshot = {
+  success: boolean;
+  messages: Array<{ id: string; role: 'user' | 'proxy'; text: string; requestId?: string; delivery?: string }>;
+  processing: boolean;
+  control?: ProxyControlSettings & { revision: number };
+  context?: { run?: { runId?: string; status?: string }; [key: string]: unknown };
+};
+
+export async function readProxyManagerSnapshot(chatId: string): Promise<ProxyManagerSnapshot> {
+  await waitForProxyControlWrites(chatId);
+  const response = await fetch(`/api/agent/proxy-manager?chatId=${encodeURIComponent(chatId)}`, {
+    cache: 'no-store', signal: AbortSignal.timeout(15_000),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.success) throw new Error(data.error || 'Could not load Proxy messages.');
+  return { ...data, messages: Array.isArray(data.messages) ? data.messages : [], processing: data.processing === true };
+}
+
 export function hasPendingProxyControlWrites(chatId: string): boolean {
   return controlWrites.has(chatId);
 }
@@ -111,7 +129,7 @@ export async function captureProxyScreenshot(): Promise<File> {
   }
 }
 
-export async function readProxyManagerResponse(response: Response, onProgress: (event: any) => void): Promise<any> {
+async function consumeProxyManagerResponse(response: Response, onProgress: (event: any) => void): Promise<any> {
   if (!response.ok) {
     const failure = await response.json().catch(() => ({}));
     throw new Error(failure.error || 'Proxy Manager request failed.');
@@ -150,4 +168,59 @@ export async function readProxyManagerResponse(response: Response, onProgress: (
     void reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
+}
+
+export async function readProxyManagerResponse(response: Response | Promise<Response>, onProgress: (event: any) => void, recovery?: {
+  chatId: string;
+  requestId: string;
+  onAdmission?: (accepted: boolean) => void;
+}): Promise<any> {
+  let rejected = false;
+  let failure: unknown;
+  try {
+    const admitted = await response;
+    rejected = !admitted.ok;
+    recovery?.onAdmission?.(admitted.ok);
+    const result = await consumeProxyManagerResponse(admitted, onProgress);
+    if (result.message?.delivery === 'unavailable') {
+      rejected = true;
+      recovery?.onAdmission?.(false);
+      throw new Error(result.message.text || 'Proxy could not deliver this request. Please retry.');
+    }
+    return result;
+  } catch (error) {
+    if (rejected || !recovery) throw error;
+    failure = error;
+  }
+
+  // An accepted turn runs independently of its connection. Recover that
+  // exact request from its chat's history; never submit a second request.
+  onProgress({ type: 'status', text: 'Reconnecting to saved Proxy progress…', phase: 'reconnecting', timestamp: Date.now() });
+  const deadline = Date.now() + 180_000;
+  let missingReads = 0;
+  while (Date.now() < deadline) {
+    let snapshot: ProxyManagerSnapshot | undefined;
+    try { snapshot = await readProxyManagerSnapshot(recovery.chatId); }
+    catch { missingReads = 0; }
+    if (snapshot) {
+      const replies = snapshot.messages.filter(message => message.role === 'proxy' && message.requestId === recovery.requestId);
+      const reply = replies.findLast(message => message.delivery !== 'unavailable');
+      if (reply) return {
+        success: true, message: reply, history: snapshot.messages, context: snapshot.context,
+        wakeRequested: reply.delivery === 'active' || snapshot.context?.run?.status === 'running',
+      };
+      if (!snapshot.processing && replies.length) {
+        recovery.onAdmission?.(false);
+        throw new Error(replies[replies.length - 1].text || 'Proxy could not complete this request. Please retry.');
+      }
+      const admitted = snapshot.messages.some(message => message.requestId === recovery.requestId || message.id === recovery.requestId);
+      missingReads = !admitted && !snapshot.processing ? missingReads + 1 : 0;
+      if (missingReads >= 2) {
+        recovery.onAdmission?.(false);
+        throw failure;
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  throw failure;
 }

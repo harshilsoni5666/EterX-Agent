@@ -7,12 +7,13 @@ type AdaptiveMenuProps = Omit<React.HTMLAttributes<HTMLDivElement>, 'onDrag' | '
   preferredSide?: 'top' | 'bottom';
   heightLimit?: number;
   allowFlip?: boolean;
+  constrainToPane?: boolean;
   motionProps?: Pick<MotionProps, 'initial' | 'animate' | 'exit' | 'transition'>;
 };
 
 /** Keeps an anchored menu in the visible viewport without changing its DOM
  * ancestry (theme selectors and outside-click handlers keep working). */
-export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allowFlip = true, motionProps, ...props }: AdaptiveMenuProps) {
+export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allowFlip = true, constrainToPane = true, motionProps, ...props }: AdaptiveMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -31,9 +32,9 @@ export function AdaptiveMenu({ preferredSide = 'bottom', heightLimit = 480, allo
       let topEdge = (viewport?.offsetTop ?? 0) + 12;
       let rightEdge = leftEdge + (viewport?.width ?? document.documentElement.clientWidth) - 24;
       let bottomEdge = topEdge + (viewport?.height ?? document.documentElement.clientHeight) - 24;
-      // A side terminal makes the conversation a smaller clipping boundary
-      // than the window. Keep composer menus within that visible pane.
-      const pane = anchor.closest<HTMLElement>('.eterx-conversation-pane');
+      // A side terminal can make the conversation narrower than the window.
+      // Most composer menus stay inside it, while selectors may use viewport space.
+      const pane = constrainToPane ? anchor.closest<HTMLElement>('.eterx-conversation-pane') : null;
       if (pane) {
         const bounds = pane.getBoundingClientRect();
         leftEdge = Math.max(leftEdge, bounds.left + 8);

@@ -288,8 +288,10 @@ async function runProxyManagerTurn(input: ProxyManagerInput, signal: AbortSignal
   // A model may change while this turn waits behind another request. Resolve
   // from the saved controls when work starts, not from the earlier UI snapshot.
   const resolved = resolveModel(parseModelEntryKey(admissionControl.modelSelection) || input.model);
-  const existingReply = input.requestId ? store.messages.find(item => item.role === 'proxy' && item.requestId === input.requestId) : undefined;
-  if (existingReply) return { message: existingReply, history: store.messages, model: { provider: resolved.provider, modelId: resolved.modelId }, wakeRequested: agentRegistry.getProxyManagerContext(input.chatId)?.run?.status === 'running' };
+  // Only a completed reply settles an idempotent request. A failed attempt
+  // must remain retryable instead of returning its cached error as success.
+  const existingReply = input.requestId ? store.messages.find(item => item.role === 'proxy' && item.requestId === input.requestId && item.delivery !== 'unavailable') : undefined;
+  if (existingReply) return { message: existingReply, history: store.messages, model: { provider: resolved.provider, modelId: resolved.modelId }, wakeRequested: existingReply.delivery === 'active' || agentRegistry.getProxyManagerContext(input.chatId)?.run?.status === 'running' };
   const userMessage: ProxyManagerChatMessage = {
     id: input.requestId || randomUUID(),
     requestId: input.requestId,

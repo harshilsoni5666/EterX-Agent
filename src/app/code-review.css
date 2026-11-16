@@ -253,11 +253,31 @@
 .eterx-turn-diff-line > code, .eterx-workspace-diff-cell > code { padding-left: 10px; }
 .eterx-workspace-diff-row > b { text-align: center; margin-right: 10px; }
 .eterx-inline-diff-content { padding-left: 10px; }
+/* Expanded chat files and side-panel source share the bundled code font and
+   compact sizing. Conversation labels keep their own typography. */
 .eterx-inline-diff-scroll,
-.eterx-inline-code-scroll {
-  font-family: var(--font-mono, Consolas, monospace);
+.eterx-inline-code-scroll,
+.eterx-side-workspace :is(.eterx-workspace-code, .eterx-workspace-diff-row, .eterx-workspace-diff-cell, .eterx-turn-diff-lines),
+.eterx-review-code-body,
+.eterx-review-diff-body {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.65;
+  letter-spacing: 0;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  tab-size: 4;
+}
+
+.eterx-review-code-body {
   font-size: 13px;
-  line-height: 1.7;
+}
+
+.eterx-side-workspace :is(.eterx-workspace-code, .eterx-workspace-diff-row, .eterx-workspace-diff-cell, .eterx-turn-diff-lines) code {
+  font: inherit;
+  font-variant-ligatures: inherit;
+  font-feature-settings: inherit;
 }
 
 .eterx-code-word-change { color: inherit; border-radius: 3px; padding: 0; }

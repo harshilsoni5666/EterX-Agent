@@ -10,13 +10,16 @@ import {
   getTerminalBackgroundTaskStatus,
   killTerminalBackgroundTask,
   listTerminalBackgroundTasks,
+  readTerminalTasks,
   runTerminalCommandWithCheckIn,
+  type TerminalTaskReadRequest,
 } from '../core/terminal_background';
 import { findExecutable, resolveTerminalShell } from '../core/shell_resolver';
 import { authorizeToolCommand } from '../security/command_broker';
 import { environmentForExplicitProgram } from '../../runtime/python-runtime';
 import { formatTerminalProgram } from '../../terminal-invocation';
 import { executeParallelToolCalls } from '../../parallel-tool-calls';
+import { boundTerminalBatchEntries } from '../../terminal-batch-output';
 import { isSourceReadShellCommand } from '../../shell-command-shape';
 import {
   MIN_TERMINAL_OUTPUT_CHARS, MAX_TERMINAL_OUTPUT_CHARS, explicitOutputChars,
@@ -63,6 +66,7 @@ type TerminalCommandResult = {
   timeoutMs?: number;
   processId?: string;
   taskId?: string;
+  tasks?: TerminalTaskReadRequest[];
   outputEnd?: number;
   outputStart?: number;
   hasMoreOutput?: boolean;
@@ -380,6 +384,58 @@ async function executeTerminalCommand(
   }
 }
 
+function terminalTaskResult(task: any, taskId: string, mode: string): any {
+  if (!task?.terminalTask) {
+    return {
+      success: false, command: '', stdout: '',
+      stderr: task?.error || `Managed terminal task not found: ${taskId}`,
+      exitCode: 1, mode, taskId,
+    };
+  }
+  const running = Boolean(task.running || task.status === 'running');
+  const status = String(task.status || (running ? 'running' : 'unknown'));
+  const killed = status === 'killed';
+  return {
+    success: mode === 'kill' ? killed : running || task.success !== false,
+    command: task.command,
+    program: task.program,
+    args: task.args,
+    outputKind: task.outputKind ?? resolveTerminalOutputKind(String(task.command || '')),
+    // Output is the chronological combined stream; return it only once.
+    stdout: String(task.output ?? task.stdout ?? ''),
+    stderr: '',
+    exitCode: running || status === 'unknown' ? null : task.exitCode ?? (task.success === false ? 1 : 0),
+    timedOut: Boolean(task.timedOut),
+    stillRunning: running,
+    backgroundTaskId: task.background ? taskId : undefined,
+    taskId,
+    streamId: task.streamId,
+    nextActionNote: task.nextActionNote,
+    totalOutputChars: task.totalOutputChars,
+    droppedOutputChars: task.droppedOutputChars,
+    outputStart: task.outputStart,
+    outputEnd: task.outputEnd,
+    hasMoreOutput: task.hasMoreOutput,
+    nextOutputOffset: task.nextOutputOffset,
+    outputLimited: task.outputLimited,
+    outputFile: task.outputFile,
+    outputReadError: task.outputReadError,
+    outputPersistenceError: task.outputPersistenceError,
+    statusPersistenceError: task.statusPersistenceError,
+    hasNewOutput: task.hasNewOutput,
+    cwd: task.cwd,
+    shell: task.shell,
+    mode,
+    status,
+    _consoleTraceEmitted: task._consoleTraceEmitted === true,
+    message: mode === 'kill'
+      ? killed
+        ? `Managed terminal task ${taskId} terminated.`
+        : `Managed terminal task ${taskId} was not running (status: ${status}).`
+      : task.message,
+  };
+}
+
 /**
  * One terminal primitive covers repository discovery, targeted file reads,
  * search, execution, and verification on Windows, macOS, and Linux. It also
@@ -387,18 +443,22 @@ async function executeTerminalCommand(
  */
 export const workspaceRunCommandTool: ToolDefinition = {
   name: 'workspace_run_command',
-  modelDescription: 'Use program + args for native executables and Python/Node scripts without shell quoting; command is for shell syntax. Host and chat paths are supplied automatically in runtime context. Reuse successful discoveries. Foreground is the default. A check-in returns control to the agent without making the command a background task. Use mode=wait with taskId and sinceOffset to wait efficiently, or the wait_timer tool followed by mode=check. Only background=true on launch or mode=background on an existing task explicitly backgrounds it. Never execute list, check, or task IDs as shell commands. For a running command, use the returned taskId in mode=check or mode=kill. Use mode=list to recover task IDs from earlier turns in this chat. An empty output delta means no new output, not completion; inspect status and stillRunning. mode=run (default): provide exactly one of command, program (+ args), or commands:[{command or program,...}]. Batch independent reads/searches; up to six safe reads run concurrently, mutations stay ordered; parallel=false preserves dependencies. File/code/content reads return bounded verbatim pages; exact output is retained. If hasMoreOutput is true, use mode=check with taskId and sinceOffset=outputEnd for the next page, or narrow the search. Never rerun a command just to page its output. Auto-detection covers literal readers/searches; set outputKind=read for other readers, log for noisy execution. maxOutputChars limits all response pages, including reads/searches. Read complete relevant files/sections, not project dumps: model context is finite. background=true returns a task ID, not completion. mode=check/wait/background/kill requires returned taskId; check reuses outputEnd as sinceOffset. mode=list needs no taskId. Edit with workspace_edit_file.',
+  modelDescription: 'Use program + args for native executables and Python/Node scripts without shell quoting; command is for shell syntax. Host/chat paths are supplied in runtime context. mode=run (default): provide exactly one of command, program (+ args), or commands:[{command or program,...}]. Batch independent reads/searches; up to six safe reads run concurrently, mutations stay ordered; parallel=false preserves dependencies. Foreground is the default. A check-in returns control without backgrounding or stopping the command. Only background=true on launch or mode=background explicitly backgrounds it. Continue independent work while it runs. mode=check reads now; mode=wait waits for output or completion. For several tasks, use one call with tasks:[{taskId,sinceOffset},...] instead of polling each separately. A grouped wait returns all snapshots when ANY task has output or settles, under one timeout; include only tasks still needing observation. For one task, use taskId and sinceOffset. Reuse each result’s outputEnd as its next sinceOffset; automatic runtime status is not delivered output. Empty output is not completion: inspect status/stillRunning. mode=list recovers IDs from this chat; background/kill require a single taskId. Never run task IDs or control modes as shell commands or relaunch a pending command. File/content reads retain exact output in bounded verbatim pages. If hasMoreOutput, check the returned taskId(s) from outputEnd, or narrow the search. Never rerun just to page output. Auto-detection covers literal readers/searches; outputKind=read supports other readers, log bounds noisy output. maxOutputChars is shared across batch output. Read complete relevant files/sections, not project dumps. Edit with workspace_edit_file.',
   description: 'Cross-platform workspace terminal for inspection, search, execution, package commands, managed processes, and verification. mode=run executes command or a commands batch. background=true returns a managed task immediately. mode=check/list/kill reads or controls managed tasks. File/code/content is retained exactly and delivered in bounded verbatim pages; use taskId and outputEnd to read remaining pages. Author source and text with workspace_edit_file; run generators, converters, builds and package tools here when the task requires them.',
   category: 'workspace',
   inputSchema: z.object({
-    mode: z.enum(['run', 'check', 'wait', 'background', 'list', 'kill']).optional().describe('Defaults to run. check/wait/background/kill use a taskId. Host environment and workspace paths are already supplied in runtime context.'),
+    mode: z.enum(['run', 'check', 'wait', 'background', 'list', 'kill']).optional().describe('Defaults to run. check/wait accept taskId or tasks. background/kill use one taskId. wait returns on any watched output or completion.'),
     command: z.string().min(1).optional().describe('One command. For multiple independent reads/searches, prefer commands instead. Read complete small files or relevant function/type ranges in large files; do not repeatedly request tiny slices.'),
     program: z.string().min(1).optional().describe('Native executable name or absolute path. python/python3 select this chat’s runtime; explicit paths are honored. Use program + args to bypass shell quoting. Provide exactly one of command, program, or commands.'),
     args: z.array(z.string()).optional().describe('Arguments passed unchanged to program. Do not shell-quote individual arguments.'),
     shell: z.string().optional().describe('Shell preference for shell commands only; defaults to the chat setting.'),
     env: z.record(z.string(), z.string()).optional().describe('Environment overrides scoped to this invocation.'),
     commands: z.array(commandRequestSchema).min(1).max(32).optional().describe('Batch mode for independent terminal operations, especially parallel file reads and searches. Do not also provide command.'),
-    taskId: z.string().optional().describe('Managed terminal task ID required by mode=check or mode=kill.'),
+    taskId: z.string().optional().describe('One managed task for check/wait/background/kill. For several checks/waits, use tasks instead.'),
+    tasks: z.array(z.object({
+      taskId: z.string().min(1).describe('Managed task ID returned by a previous launch/check.'),
+      sinceOffset: z.number().int().min(0).optional().describe('This task’s last delivered outputEnd. Omit only for its first read; runtime status does not advance this cursor.'),
+    })).min(1).max(32).optional().describe('For check/wait only: read multiple tasks in one response under a shared output budget. wait returns when any has output or settles. Do not also supply taskId or a top-level sinceOffset.'),
     sinceOffset: z.number().int().min(0).optional().describe('For mode=check/wait, read from this character offset. Reuse outputEnd for the next exact page when hasMoreOutput is true, including after the command completes.'),
     cwd: z.string().optional().describe('Defaults to this chat selected project or dedicated working folder. Relative paths are literal. Use absolute OS folder paths from runtime context for Desktop/Documents/Downloads, or ~ for the home directory.'),
     timeoutSeconds: z.number().optional().describe('Foreground check-in in seconds, up to 120. This does not kill the command.'),
@@ -461,8 +521,62 @@ export const workspaceRunCommandTool: ToolDefinition = {
     if (!['run', 'check', 'wait', 'background', 'list', 'kill'].includes(mode)) {
       return { success: false, stdout: '', stderr: `Unsupported terminal mode: ${mode}. Host paths and shell details are already supplied in runtime context. Use run for a real command or list/check/wait/background/kill for managed processes.`, exitCode: 1, mode };
     }
+    if (input.tasks !== undefined && mode !== 'check' && mode !== 'wait') {
+      return { success: false, stdout: '', stderr: 'tasks is supported only for mode=check or mode=wait.', exitCode: 1, mode };
+    }
     if (mode !== 'run' && !ownerChatId(context)) {
       return { success: false, stdout: '', stderr: 'A chat context is required to list, check, or stop terminal tasks.', exitCode: 1, mode };
+    }
+    if ((mode === 'check' || mode === 'wait') && input.tasks !== undefined) {
+      if (!Array.isArray(input.tasks) || input.tasks.length < 1 || input.tasks.length > 32
+        || input.taskId !== undefined || input.sinceOffset !== undefined) {
+        return { success: false, stdout: '', stderr: 'Provide 1-32 tasks with their own sinceOffset values, without a top-level taskId or sinceOffset.', exitCode: 1, mode };
+      }
+      const requests = input.tasks.map(task => ({ taskId: safeTaskId(task?.taskId), sinceOffset: task?.sinceOffset }));
+      if (requests.some(task => !task.taskId || (task.sinceOffset !== undefined && (!Number.isSafeInteger(task.sinceOffset) || task.sinceOffset < 0)))
+        || new Set(requests.map(task => task.taskId)).size !== requests.length) {
+        return { success: false, stdout: '', stderr: 'Each task needs a distinct taskId and an optional nonnegative integer sinceOffset.', exitCode: 1, mode };
+      }
+      const maxOutputChars = terminalOutputPageChars(input.maxOutputChars, context?.contextCompaction?.activeContextWindow);
+      const snapshots = await readTerminalTasks(requests, ownerChatId(context)!, {
+        timeoutMs: mode === 'wait'
+          ? normalizeTimeoutMs(input.timeoutSeconds == null ? undefined : Math.max(1000, input.timeoutSeconds * 1000)) : 0,
+        signal: context?.abortSignal,
+        maxOutputChars,
+      });
+      const entries = snapshots.map((task, index) => {
+        const result = terminalTaskResult(task, requests[index].taskId, mode);
+        // One group hint replaces repeated per-task status prose. Keep recovery
+        // details for missing handles, persistence failures, and unreadable pages.
+        if (task?.terminalTask && result.status !== 'unknown' && !result.outputReadError
+          && !result.outputPersistenceError && !result.statusPersistenceError) {
+          result.message = undefined;
+          result.nextActionNote = undefined;
+        }
+        return result;
+      });
+      const results = boundTerminalBatchEntries(entries, maxOutputChars);
+      const runningCount = results.filter(task => task.stillRunning).length;
+      const unknown = results.some(task => task.status === 'unknown');
+      const success = results.every(task => task.success);
+      const hasMoreOutput = results.some(task => task.hasMoreOutput);
+      const reads = results.map(task => task.outputKind === 'read');
+      return {
+        success, stdout: '', stderr: '', batch: true, mode, results,
+        outputKind: reads.every(Boolean) ? 'read' : reads.some(Boolean) ? 'mixed' : 'log',
+        stillRunning: runningCount > 0,
+        exitCode: runningCount > 0 || unknown ? null : success ? 0 : 1,
+        status: unknown ? 'unknown' : undefined,
+        timedOut: results.some(task => task.timedOut),
+        hasMoreOutput,
+        hasNewOutput: results.some(task => task.hasNewOutput),
+        outputLimited: results.some(task => task.outputLimited),
+        _consoleTraceEmitted: results.every(task => task._consoleTraceEmitted === true),
+        message: `${results.length} terminal task(s); ${runningCount} still running.`,
+        nextActionNote: hasMoreOutput || runningCount > 0
+          ? 'Use one check/wait with tasks:[{taskId,sinceOffset:outputEnd},...] for tasks with unread output or ongoing work. Remove settled tasks whose output is consumed; keep each task’s own delivered cursor. A wait returns when any watched task has output or settles.'
+          : undefined,
+      };
     }
     if (mode === 'list') {
       const tasks = await listTerminalBackgroundTasks(ownerChatId(context));
@@ -501,60 +615,7 @@ export const workspaceRunCommandTool: ToolDefinition = {
       } catch (error) {
         return { success: false, stdout: '', stderr: error instanceof Error ? error.message : String(error), exitCode: 1, mode, taskId };
       }
-      if (!task?.terminalTask) {
-        return {
-          success: false,
-          stdout: '',
-          stderr: `Managed terminal task not found: ${taskId}`,
-          exitCode: 1,
-          mode,
-          taskId,
-        };
-      }
-      const running = Boolean(task.running || task.status === 'running');
-      const status = String(task.status || (running ? 'running' : 'unknown'));
-      const killed = status === 'killed';
-      const output = String(task.output ?? task.stdout ?? '');
-      return {
-        success: mode === 'kill' ? killed : running || task.success !== false,
-        command: task.command,
-        program: task.program,
-        args: task.args,
-        outputKind: task.outputKind ?? resolveTerminalOutputKind(String(task.command || '')),
-        // `output` is the chronological combined stream. Returning stdout,
-        // stderr, and output repeated the same terminal text up to three times.
-        stdout: output,
-        stderr: '',
-        exitCode: running || status === 'unknown' ? null : task.exitCode ?? (task.success === false ? 1 : 0),
-        timedOut: Boolean(task.timedOut),
-        stillRunning: running,
-        backgroundTaskId: task.background ? taskId : undefined,
-        taskId,
-        streamId: task.streamId,
-        nextActionNote: task.nextActionNote,
-        totalOutputChars: task.totalOutputChars,
-        droppedOutputChars: task.droppedOutputChars,
-        outputStart: task.outputStart,
-        outputEnd: task.outputEnd,
-        hasMoreOutput: task.hasMoreOutput,
-        nextOutputOffset: task.nextOutputOffset,
-        outputLimited: task.outputLimited,
-        outputFile: task.outputFile,
-        outputReadError: task.outputReadError,
-        outputPersistenceError: task.outputPersistenceError,
-        statusPersistenceError: task.statusPersistenceError,
-        hasNewOutput: task.hasNewOutput,
-        cwd: task.cwd,
-        shell: task.shell,
-        mode,
-        status,
-        _consoleTraceEmitted: task._consoleTraceEmitted === true,
-        message: mode === 'kill'
-          ? killed
-            ? `Managed terminal task ${taskId} terminated.`
-            : `Managed terminal task ${taskId} was not running (status: ${status}).`
-          : task.message,
-      };
+      return terminalTaskResult(task, taskId, mode);
     }
 
     const hasSingle = typeof input.command === 'string' && input.command.trim().length > 0;
@@ -621,16 +682,27 @@ export const workspaceRunCommandTool: ToolDefinition = {
         ? `[command ${index + 1}] ${result.command}\n${result[field as 'stdout' | 'stderr']}` : '',
       preserve: reads[index],
     })));
-    const views = fitBatchOutput(sections, terminalOutputPageChars(input.maxOutputChars, context?.contextCompaction?.activeContextWindow));
+    const views = fitBatchOutput(sections, terminalOutputPageChars(input.maxOutputChars, context?.contextCompaction?.activeContextWindow))
+      .map((view, index) => {
+        const commandIndex = Math.floor(index / 2);
+        const headerLength = `[command ${commandIndex + 1}] ${results[commandIndex].command}\n`.length;
+        // An allowance smaller than the label delivered no source characters.
+        // Omit that label so exact read lengths still frame the other siblings.
+        return sections[index].preserve && view.text.length > 0 && view.text.length <= headerLength
+          ? { text: '', dropped: sections[index].text.length } : view;
+      });
     const stdout = views.filter((_, index) => index % 2 === 0).map(view => view.text).filter(Boolean).join('\n\n');
     const stderr = views.filter((_, index) => index % 2 === 1).map(view => view.text).filter(Boolean).join('\n\n');
     const metadata = results.map(({ stdout, stderr: _stderr, ...result }, index) => {
-      if (!reads[index] || !result.taskId || result.outputReadError) return result;
+      // Frame the presentation without parsing delimiters inside arbitrary
+      // command output. The model compactor removes this internal field.
+      const framed = { ...result, _outputSectionChars: [views[index * 2].text.length, views[index * 2 + 1].text.length] };
+      if (!reads[index] || !result.taskId || result.outputReadError) return framed;
       const delivered = Math.max(0, stdout.length - views[index * 2].dropped);
       const outputEnd = (result.outputStart || 0) + delivered;
       const hasMoreOutput = outputEnd < Number(result.totalOutputChars || 0);
       return {
-        ...result, outputEnd, hasMoreOutput, outputLimited: result.outputLimited || hasMoreOutput,
+        ...framed, outputEnd, hasMoreOutput, outputLimited: result.outputLimited || hasMoreOutput,
         nextOutputOffset: hasMoreOutput ? outputEnd : undefined,
         nextActionNote: hasMoreOutput
           ? `Read the next exact page with mode="check", taskId="${result.taskId}", sinceOffset=${outputEnd}. Do not rerun this command to retrieve output.`
@@ -652,8 +724,10 @@ export const workspaceRunCommandTool: ToolDefinition = {
       timedOut: results.some(result => result.timedOut),
       stillRunning: runningTasks.length > 0,
       nextActionNote: runningTasks.length > 0
-        ? `${runningTasks.length} command(s) continue as managed background tasks; use their task IDs with mode=wait or mode=check to inspect later output; they are background tasks only when explicitly requested.`
-        : undefined,
+        ? `${runningTasks.length} command(s) are still running. Use one mode=wait/check with tasks:[{taskId,sinceOffset:outputEnd},...] for their results. They are background tasks only when explicitly requested.`
+        : metadata.some(result => result.hasMoreOutput)
+          ? 'Read remaining pages together with mode=check and tasks:[{taskId,sinceOffset:outputEnd},...]. Use each result’s own offset; do not rerun commands.'
+          : undefined,
       totalOutputChars: results.reduce((sum, result) => sum + Number(result.totalOutputChars ?? result.stdout.length + result.stderr.length), 0),
       droppedOutputChars: results.reduce((sum, result) => sum + Number(result.droppedOutputChars || 0), 0)
         + views.reduce((sum, view, index) => sum + (sections[index].preserve ? 0 : view.dropped), 0),

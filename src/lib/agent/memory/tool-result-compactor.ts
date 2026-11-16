@@ -10,6 +10,7 @@ import { distillEvidence } from './evidence-distiller';
 import { getToolResultOutcome } from '../tool-semantics';
 import { resolveTerminalOutputKind, terminalOutputPageChars } from '../source-read-policy';
 import { splitComputerToolResult } from '../computer/tool-vision';
+import { boundTerminalBatchEntries, structuredTerminalBatch } from '../terminal-batch-output';
 
 function isSourceRead(toolName: string, args: Record<string, any>, result?: any): boolean {
   if (toolName === 'context_memory' && args.action === 'open') return true;
@@ -49,6 +50,7 @@ function outcomeEnvelope(result: any): Record<string, any> {
       if (pending.length) envelope.pendingTasks = pending.slice(0, 32).map((entry: any) => ({
         taskId: entry.taskId || entry.backgroundTaskId,
         command: String(entry.command || '').slice(0, 300),
+        outputEnd: entry.outputEnd,
       }));
     }
   }
@@ -78,6 +80,13 @@ export class ToolResultCompactor {
    */
   compact(toolName: string, args: Record<string, any>, result: any): any {
     if (result === null || result === undefined) return result;
+    if (toolName === 'workspace_run_command') {
+      result = structuredTerminalBatch(result);
+      if (this.isStructuredTerminalBatch(result)) {
+        return this.compactTerminalBatchOutput(result, isSourceRead(toolName, args, result)
+          ? terminalOutputPageChars(args.maxOutputChars) : MAX_COMPACT_SIZE);
+      }
+    }
     if (toolName === 'computer' || toolName === 'screen_agent') {
       const desktop = splitComputerToolResult(toolName, result);
       const output = this.compactComputerResult(desktop.output, MAX_COMPACT_SIZE);
@@ -176,6 +185,10 @@ export class ToolResultCompactor {
     result: any,
     maxChars: number,
   ): any {
+    if (toolName === 'workspace_run_command') {
+      result = structuredTerminalBatch(result);
+      if (this.isStructuredTerminalBatch(result)) return this.compactTerminalBatchOutput(result, maxChars);
+    }
     if (isSourceRead(toolName, args, result)) return this.pageReadOutput(toolName, result, maxChars);
     if (toolName === 'computer' || toolName === 'screen_agent') return this.compactComputerResult(result, maxChars);
     const exactContextPageRef = typeof result?.exactContextPageRef === 'string'
@@ -326,7 +339,10 @@ export class ToolResultCompactor {
   }
 
   private pageReadOutput(toolName: string, result: any, budget: number): any {
-    const output = this.preserveReadOutput(result);
+    const output = this.preserveReadOutput(toolName === 'workspace_run_command' ? structuredTerminalBatch(result) : result);
+    if (toolName === 'workspace_run_command' && this.isStructuredTerminalBatch(output)) {
+      return this.compactTerminalBatchOutput(output, budget);
+    }
     if (this.estimateSize(output) <= budget || !output || typeof output !== 'object') return output;
     // Apply to recoverable protocols only. Unknown read formats must not lose
     // content merely because they contain a string named "content" or "stdout".
@@ -362,7 +378,7 @@ export class ToolResultCompactor {
           nextOutputOffset: item.outputStart || 0, hasMoreOutput: Number(item.totalOutputChars || 0) > 0,
           nextActionNote: `Read retained output with mode="check", taskId="${item.taskId}", sinceOffset=${item.outputStart || 0}.`,
         })),
-        nextActionNote: 'Batch output is retained. Open only the relevant command pages using their task IDs and outputEnd offsets below.',
+        nextActionNote: 'Batch output is retained. Read relevant pages together with mode="check", tasks:[{taskId,sinceOffset:outputEnd},...] using each result’s own offset below.',
       };
     }
     if (!build) return output;
@@ -370,6 +386,61 @@ export class ToolResultCompactor {
     // prefix that fits, rather than assuming one source character is one byte.
     let low = 0;
     let high = length;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (this.estimateSize(build(middle)) <= budget) low = middle;
+      else high = middle - 1;
+    }
+    return build(low);
+  }
+
+  private isStructuredTerminalBatch(result: any): boolean {
+    return result?.batch === true && Array.isArray(result.results)
+      && result.results.every((entry: any) => typeof entry.stdout === 'string');
+  }
+
+  /** Keep useful output from every sibling instead of discarding the whole batch. */
+  private compactTerminalBatchOutput(result: any, budget: number): any {
+    const entries = result.results.map((entry: any) => {
+      const {
+        program: _program, args: _args, processId: _processId, streamId: _streamId,
+        _consoleTraceEmitted: _trace, outputFile, cwd, shell, nextActionNote, message, ...rest
+      } = entry;
+      const command = String(entry.command || '');
+      // Task IDs identify these observations. Do not spend the output budget
+      // repeating a potentially huge script already present in the invocation.
+      return {
+        ...rest,
+        command: command.length > 320 ? `${command.slice(0, 317)}...` : command,
+        commandTruncated: entry.commandTruncated || command.length > 320 || undefined,
+        ...(cwd && cwd !== result.cwd ? { cwd } : {}),
+        ...(shell && shell !== result.shell ? { shell } : {}),
+        ...(entry.outputReadError ? { outputFile } : {}),
+        ...(entry.status === 'unknown' || entry.outputReadError || entry.outputPersistenceError || entry.statusPersistenceError
+          ? { nextActionNote, message } : {}),
+      };
+    });
+    const build = (chars: number) => {
+      const results = boundTerminalBatchEntries(entries, chars);
+      const hasMoreOutput = results.some(entry => entry.hasMoreOutput);
+      const stillRunning = results.some(entry => entry.stillRunning);
+      return {
+        ...result, stdout: '', stderr: '', results, hasMoreOutput,
+        hasNewOutput: results.some(entry => entry.stdout || entry.stderr),
+        outputLimited: result.outputLimited || results.some(entry => entry.outputLimited),
+        droppedOutputChars: results.reduce((sum, entry) => sum + Number(entry.droppedOutputChars || 0), 0),
+        _compacted: result._compacted || results.some((entry, index) =>
+          entry.stdout !== String(entries[index].stdout || '') || entry.stderr !== String(entries[index].stderr || '')) || undefined,
+        nextActionNote: hasMoreOutput || stillRunning
+          ? 'Continue relevant tasks together with mode="check" or "wait", tasks:[{taskId,sinceOffset:outputEnd},...]. Use each delivered outputEnd; remove settled tasks with no unread output.'
+          : result.nextActionNote,
+      };
+    };
+    let low = 0;
+    let high = entries.reduce((sum: number, entry: any) => sum + String(entry.stdout || '').length + String(entry.stderr || '').length, 0);
+    const complete = build(high);
+    if (this.estimateSize(complete) <= budget) return complete;
+    // Include JSON escaping and per-task metadata in the wire allowance.
     while (low < high) {
       const middle = Math.ceil((low + high) / 2);
       if (this.estimateSize(build(middle)) <= budget) low = middle;

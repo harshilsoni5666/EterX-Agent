@@ -63,7 +63,8 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
   const panel = useRef<HTMLElement>(null);
   const [containerWidth, setContainerWidth] = useState(1000);
   const maxWorkspaceWidth = containerWidth - Math.min(320, containerWidth * .45);
-  const minWorkspaceWidth = Math.min(260, maxWorkspaceWidth);
+  const minWorkspaceWidth = Math.min(260, containerWidth * .45);
+  const workspaceWidth = state.expanded ? '100%' : `${state.widthRatio * 100}%`;
   useLayoutEffect(() => {
     const parent = panel.current?.parentElement;
     if (!parent) return;
@@ -74,15 +75,15 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
   useWorkspaceScrollBoundary(panel);
   const strip = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ start: number; width: number; next: number; max: number; frame: number }>(undefined);
+  const drag = useRef<{ start: number; width: number; next: number; moved: boolean; frame: number }>(undefined);
   const active = state.tabs.find(tab => tab.id === state.activeId);
   useLayoutEffect(() => {
     const parent = panel.current?.parentElement;
     if (!parent) return;
-    parent.style.setProperty('--eterx-side-workspace-width', state.expanded ? '100%' : state.width === null ? '50%' : `${state.width}px`);
+    parent.style.setProperty('--eterx-side-workspace-width', workspaceWidth);
     parent.dataset.workspaceExpanded = String(state.expanded);
     return () => { parent.style.removeProperty('--eterx-side-workspace-width'); delete parent.dataset.workspaceExpanded; };
-  }, [state.width, state.expanded]);
+  }, [workspaceWidth, state.expanded]);
   const candidates = useMemo(() => {
     return folderState.roots;
   }, [folderState.roots]);
@@ -157,9 +158,17 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
     cancelAnimationFrame(movement.frame); drag.current = undefined;
     delete panel.current.dataset.workspaceResizing;
     delete panel.current.dataset.closeReady;
-    panel.current.style.width = state.width === null ? '50%' : `${state.width}px`;
-    panel.current.parentElement?.style.setProperty('--eterx-side-workspace-width', state.width === null ? '50%' : `${state.width}px`);
-    if (!cancel) updateWorkspace(owner, movement.next < 100 ? { open: false } : { width: Math.max(260, movement.next) });
+    panel.current.style.width = workspaceWidth;
+    panel.current.parentElement?.style.setProperty('--eterx-side-workspace-width', workspaceWidth);
+    if (cancel || !movement.moved) return;
+    const parentWidth = panel.current.parentElement?.clientWidth;
+    if (!parentWidth) return;
+    const min = Math.min(260, parentWidth * .45);
+    const max = parentWidth - Math.min(320, parentWidth * .45);
+    const nextWidth = Math.max(min, Math.min(max, movement.next));
+    updateWorkspace(owner, movement.next < Math.min(100, min / 2)
+      ? { open: false }
+      : { widthRatio: nextWidth / parentWidth });
   };
   const openFile = useCallback((path: string, root?: string) => {
     if (!workspacePath && !path && root) addWorkspaceFolder(owner, root);
@@ -171,20 +180,45 @@ export function SideWorkspace({ owner, mainChatId, workspacePath, traceLogs, cha
     const anchor = menuRef.current.getBoundingClientRect();
     panel.current.style.setProperty('--workspace-menu-left', `${Math.max(8, Math.min(bounds.width - 240, anchor.left - bounds.left))}px`);
   }, [menu]);
-  return <aside ref={panel} className="eterx-side-workspace" data-expanded={state.expanded} style={{ width: state.expanded ? '100%' : state.width ?? '50%' }} aria-label="Side workspace">
-    <div className="eterx-workspace-resize" role="separator" aria-label="Resize side workspace" aria-orientation="vertical" aria-valuemin={Math.round(minWorkspaceWidth)} aria-valuemax={Math.round(maxWorkspaceWidth)} aria-valuenow={Math.round(Math.max(minWorkspaceWidth, Math.min(maxWorkspaceWidth, state.width ?? containerWidth / 2)))} tabIndex={0}
-      onDoubleClick={() => updateWorkspace(owner, { width: null, expanded: false })}
+  return <aside ref={panel} className="eterx-side-workspace" data-expanded={state.expanded} style={{ width: workspaceWidth }} aria-label="Side workspace">
+    <div className="eterx-workspace-resize" role="separator" aria-label="Resize side workspace" aria-orientation="vertical" aria-valuemin={Math.round(minWorkspaceWidth)} aria-valuemax={Math.round(maxWorkspaceWidth)} aria-valuenow={Math.round(Math.max(minWorkspaceWidth, Math.min(maxWorkspaceWidth, containerWidth * state.widthRatio)))} title="Drag to resize. Double-click to restore an equal split." tabIndex={0}
+      onDoubleClick={() => updateWorkspace(owner, { widthRatio: 0.5, expanded: false })}
       onKeyDown={event => {
         if (!['Escape','Home','End','ArrowLeft','ArrowRight'].includes(event.key)) return;
         event.preventDefault(); event.stopPropagation();
         if (event.key === 'Escape') { finish(true); return; }
-        const parent = panel.current?.parentElement?.clientWidth || 1000;
-        const max = parent - Math.min(320, parent * .45), min = Math.min(260, max);
-        const size = event.key === 'Home' ? min : event.key === 'End' ? max : Math.max(min, Math.min(max, (panel.current?.clientWidth || 480) + (event.key === 'ArrowLeft' ? 32 : -32)));
-        updateWorkspace(owner, { width: size });
+        const parent = panel.current?.parentElement?.clientWidth;
+        if (!parent) return;
+        const max = parent - Math.min(320, parent * .45), min = Math.min(260, parent * .45);
+        const size = event.key === 'Home' ? min : event.key === 'End' ? max : Math.max(min, Math.min(max, (panel.current?.clientWidth || parent / 2) + (event.key === 'ArrowLeft' ? 32 : -32)));
+        updateWorkspace(owner, { widthRatio: size / parent });
       }}
-      onPointerDown={event => { if (event.button !== 0 || !panel.current) return; event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); const width = panel.current.clientWidth; const parent = panel.current.parentElement?.clientWidth || 1000; drag.current = { start: event.clientX, width, next: width, max: parent - Math.min(320, parent * .45), frame: 0 }; panel.current.dataset.workspaceResizing = 'true'; }}
-      onPointerMove={event => { const movement = drag.current; if (!movement) return; movement.next = Math.max(0, Math.min(movement.max, movement.width + movement.start - event.clientX)); if (!movement.frame) movement.frame = requestAnimationFrame(() => { movement.frame = 0; if (panel.current) { panel.current.style.width = `${movement.next}px`; panel.current.parentElement?.style.setProperty('--eterx-side-workspace-width', `${movement.next}px`); panel.current.dataset.closeReady = String(movement.next < 100); } }); }}
+      onPointerDown={event => {
+        if (event.button !== 0 || !panel.current) return;
+        event.preventDefault();
+        event.currentTarget.focus({ preventScroll: true });
+        event.currentTarget.setPointerCapture(event.pointerId);
+        const width = panel.current.getBoundingClientRect().width;
+        drag.current = { start: event.clientX, width, next: width, moved: false, frame: 0 };
+        panel.current.dataset.workspaceResizing = 'true';
+      }}
+      onPointerMove={event => {
+        const movement = drag.current;
+        const parentWidth = panel.current?.parentElement?.clientWidth;
+        if (!movement || !parentWidth) return;
+        const delta = movement.start - event.clientX;
+        if (!movement.moved && Math.abs(delta) < 1) return;
+        movement.moved = true;
+        const max = parentWidth - Math.min(320, parentWidth * .45);
+        movement.next = Math.max(0, Math.min(max, movement.width + delta));
+        if (!movement.frame) movement.frame = requestAnimationFrame(() => {
+          movement.frame = 0;
+          if (!panel.current) return;
+          panel.current.style.width = `${movement.next}px`;
+          panel.current.parentElement?.style.setProperty('--eterx-side-workspace-width', `${movement.next}px`);
+          panel.current.dataset.closeReady = String(movement.next < Math.min(100, Math.min(260, parentWidth * .45) / 2));
+        });
+      }}
       onPointerUp={event => { finish(); if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} onPointerCancel={() => finish(true)} onLostPointerCapture={() => finish(true)} />
     <div className="eterx-workspace-toolbar" data-empty={!state.tabs.length}>
       

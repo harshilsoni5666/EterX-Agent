@@ -40,8 +40,21 @@ async function writeJsonAtomic(filePath: string, data: unknown): Promise<void> {
   const dir = path.dirname(filePath);
   await fs.ensureDir(dir);
   const tmpPath = path.join(dir, `.${path.basename(filePath)}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
-  await fs.writeJson(tmpPath, data, { spaces: 2 });
-  await fs.move(tmpPath, filePath, { overwrite: true });
+  try {
+    await fs.writeJson(tmpPath, data, { spaces: 2, mode: 0o600 });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // Replace atomically without removing the previous session first.
+        await fs.rename(tmpPath, filePath);
+        break;
+      } catch (error: any) {
+        if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error?.code) || attempt >= 5) throw error;
+        await new Promise(resolve => setTimeout(resolve, 80 * (attempt + 1)));
+      }
+    }
+  } finally {
+    await fs.remove(tmpPath).catch(() => {});
+  }
 }
 
 // ═══════════════════════════════════════
@@ -111,14 +124,15 @@ export class BrowserSessionManager {
     const profileName = safeProfileName(name);
     const profileDir = this.profileDir(profileName);
     await fs.ensureDir(profileDir);
+    const existing = await this.getProfile(profileName);
 
     const profile: BrowserProfile = {
       name: profileName,
-      createdAt: Date.now(),
+      createdAt: existing?.createdAt || Date.now(),
       lastUsed: Date.now(),
       userDataDir: profileDir,
-      cookies: 0,
-      notes,
+      cookies: existing?.cookies || 0,
+      notes: notes ?? existing?.notes,
     };
 
     await writeJsonAtomic(this.profileMetadataPath(profileName), profile);
@@ -131,16 +145,18 @@ export class BrowserSessionManager {
    */
   async listProfiles(): Promise<BrowserProfile[]> {
     await fs.ensureDir(this.profilesDir);
-    const dirs = await fs.readdir(this.profilesDir);
+    const dirs = await fs.readdir(this.profilesDir, { withFileTypes: true });
     const profiles: BrowserProfile[] = [];
 
-    for (const dir of dirs) {
+    for (const entry of dirs) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const dir = entry.name;
       const profileDir = resolveUnder(this.profilesDir, dir);
       const profilePath = resolveUnder(profileDir, 'profile.json');
       try {
         if (await fs.pathExists(profilePath)) {
           const profile = await fs.readJson(profilePath);
-          profiles.push(profile);
+          profiles.push({ ...profile, name: dir, userDataDir: profileDir });
         } else {
           // Profile dir exists but no metadata — create it
           profiles.push({
@@ -193,6 +209,8 @@ export class BrowserSessionManager {
     try {
       if (await fs.pathExists(profileDir)) {
         await fs.remove(profileDir);
+        await fs.remove(this.stateFile(profileName, 'cookies'));
+        await fs.remove(this.stateFile(profileName, 'state'));
         console.log(`[BrowserSession] 🗑️ Deleted profile: ${profileName}`);
         return true;
       }
@@ -235,7 +253,7 @@ export class BrowserSessionManager {
       return cookies;
     } catch (err: any) {
       console.error(`[BrowserSession] Cookie export failed:`, err.message);
-      return [];
+      throw err;
     }
   }
 
@@ -248,6 +266,7 @@ export class BrowserSessionManager {
       if (!(await fs.pathExists(cookiePath))) return 0;
       
       const cookies = await fs.readJson(cookiePath);
+      if (!Array.isArray(cookies)) throw new Error('Saved browser cookies are not a valid list.');
       
       // Filter out expired cookies
       const now = Math.floor(Date.now() / 1000);
@@ -261,7 +280,7 @@ export class BrowserSessionManager {
       return validCookies.length;
     } catch (err: any) {
       console.error(`[BrowserSession] Cookie import failed:`, err.message);
-      return 0;
+      throw err;
     }
   }
 
@@ -326,6 +345,7 @@ export class BrowserSessionManager {
       console.log(`[BrowserSession] 💾 Saved state for profile: ${profile} (${cookies.length} cookies, ${Object.keys(storage.localStorage).length} localStorage items)`);
     } catch (err: any) {
       console.error(`[BrowserSession] State save failed:`, err.message);
+      throw err;
     }
   }
 

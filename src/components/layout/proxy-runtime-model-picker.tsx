@@ -58,7 +58,7 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
   }, [open]);
 
   const close = () => { setOpen(false); triggerRef.current?.focus(); };
-  return <div className="relative min-w-0" onKeyDown={event => {
+  return <div className="relative min-w-0 max-w-[160px] flex-1" onKeyDown={event => {
     if (event.key === 'Escape' && open) { event.preventDefault(); event.stopPropagation(); close(); }
   }}>
     <button
@@ -73,7 +73,7 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
       onKeyDown={event => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); }
       }}
-      className="flex h-[32px] min-w-0 max-w-[160px] items-center gap-1 rounded-lg px-2 text-[12px] font-medium text-white/70 hover:bg-white/[0.06] hover:text-white focus-visible:outline focus-visible:outline-1 focus-visible:outline-white/40"
+      className="flex h-[32px] w-full min-w-0 items-center gap-1 rounded-lg px-2 text-[12px] font-medium text-white/70 hover:bg-white/[0.06] hover:text-white focus-visible:outline focus-visible:outline-1 focus-visible:outline-white/40"
     >
       <span className="min-w-0 truncate">{name}</span>
       <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
@@ -110,7 +110,7 @@ export function ProxyChatModelPicker({ selection, entries, onSelect }: {
           className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left hover:bg-white/[0.08] focus:bg-white/[0.08] focus:outline-hidden"
         >
           <span className="min-w-0 flex-1">
-            <span className="block break-words text-[12px]">{formatModelName(entry.modelId)}</span>
+            <span className="block [overflow-wrap:anywhere] text-[12px]">{formatModelName(entry.modelId)}</span>
             <span className="block text-[10px] text-white/45">{entry.provider}</span>
           </span>
           {selected && <Check className="h-3.5 w-3.5 shrink-0 text-white/75" />}

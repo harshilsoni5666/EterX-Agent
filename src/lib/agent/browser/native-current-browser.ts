@@ -613,7 +613,7 @@ class NativeCurrentBrowserController {
     if (action === 'type' && targetRef) nativeAction = 'click';
 
     const tabIndexMatch = String(input.tabId || '').match(/(\d+)$/);
-    if (action === 'switch_tab') {
+    if (action === 'switch_tab' || action === 'close_tab' || (action === 'duplicate_tab' && input.tabId)) {
       const tabs = this.lastState?.tabs || [];
       const index = tabIndexMatch ? Number(tabIndexMatch[1]) : -1;
       if (index < 0 || !tabs.some(tab => tab.id === input.tabId) || (process.platform !== 'darwin' && index >= 8 && index !== tabs.length - 1)) {
@@ -638,6 +638,15 @@ class NativeCurrentBrowserController {
     };
 
     try {
+      if ((action === 'close_tab' || action === 'duplicate_tab') && input.tabId) {
+        const current = await this.run('connect', { ...payload, capture: false });
+        const tabs = normalizeArray(current.state?.tabs) as NativeState['tabs'];
+        const previousTabs = this.lastState?.tabs || [];
+        if (tabs.length !== previousTabs.length || tabs.some((tab, index) => tab.id !== previousTabs[index]?.id || tab.title !== previousTabs[index]?.title)) {
+          throw new Error('The browser tab list changed. Take a fresh snapshot before selecting a tab to close or duplicate.');
+        }
+        await this.run('switch_tab', { ...payload, capture: false });
+      }
       if (['type', 'fill', 'clear'].includes(action) && x != null && y != null) {
         await this.run('click', { ...payload, capture: false });
         nativeAction = action;
@@ -649,7 +658,7 @@ class NativeCurrentBrowserController {
       state.tabs = normalizeArray(state.tabs);
       this.lastState = state;
       this.refs = new Map(state.refs.map((ref) => [Number(ref.ref), ref]));
-      this.active = true;
+      this.active = !(action === 'close_tab' && !state.tabs.length);
       if (action === 'get_url' && !state.url) throw new Error('This native provider cannot read the current URL. Use CDP browser control.');
       if (['read_page', 'get_text'].includes(action) && process.platform === 'linux') throw new Error('Native Linux control does not expose page text. Use a screenshot or CDP browser control.');
 
@@ -687,6 +696,7 @@ class NativeCurrentBrowserController {
         screenshotMimeType: raw.screenshot ? (String(raw.screenshot).startsWith('iVBORw0KGgo') ? 'image/png' : 'image/jpeg') : undefined,
       };
     } catch (error: any) {
+      this.disconnect();
       const recovery = process.platform === 'darwin'
         ? 'Allow EterX in macOS Automation, Accessibility, and Screen Recording settings, then retry.'
         : process.platform === 'linux'
@@ -975,4 +985,5 @@ class NativeCurrentBrowserController {
   }
 }
 
-export const nativeCurrentBrowser = new NativeCurrentBrowserController();
+const globalForNativeBrowser = globalThis as typeof globalThis & { __eterxNativeBrowser?: NativeCurrentBrowserController };
+export const nativeCurrentBrowser = globalForNativeBrowser.__eterxNativeBrowser ||= new NativeCurrentBrowserController();

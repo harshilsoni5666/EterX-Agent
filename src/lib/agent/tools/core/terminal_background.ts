@@ -652,14 +652,59 @@ export async function listTerminalBackgroundTasks(ownerChatId?: string, backgrou
 export function getLiveTerminalTaskContext(ownerChatId: string): any[] {
   if (!ownerChatId) return [];
   return [...terminalTasks.values()]
-    .filter(task => task.ownerChatId === ownerChatId)
+    // Completed foreground commands already returned their result. Repeating
+    // them in every runtime prompt adds noise; handed-off work still needs status.
+    .filter(task => task.ownerChatId === ownerChatId && (task.status === 'running' || task.handedOff))
     .sort((a, b) => Number(b.status === 'running') - Number(a.status === 'running') || b.startedAt - a.startedAt)
     .slice(0, 12)
     .map(task => ({
-      taskId: task.id, command: task.command, cwd: task.cwd, shell: task.shell,
-      status: task.status, exitCode: task.exitCode, outputEnd: task.totalOutputChars,
+      taskId: task.id, command: task.command.length > 240 ? `${task.command.slice(0, 237)}...` : task.command,
+      commandTruncated: task.command.length > 240 || undefined,
+      cwd: task.cwd, shell: task.shell,
+      // This snapshot contains status, not output. It must not advertise a read
+      // cursor that would let an agent skip text it has never received.
+      status: task.status, exitCode: task.exitCode, totalOutputChars: task.totalOutputChars,
       background: task.background === true,
     }));
+}
+
+export interface TerminalTaskReadRequest {
+  taskId: string;
+  sinceOffset?: number;
+}
+
+/**
+ * One shared deadline for a group: return all snapshots as soon as any task has
+ * output, settles, disappears, or cannot be read. A quiet server must not hold
+ * up a finished sibling. No per-task waiters survive this call or cancellation.
+ */
+export async function readTerminalTasks(
+  requests: TerminalTaskReadRequest[],
+  ownerChatId: string,
+  options: { timeoutMs?: number; signal?: AbortSignal; maxOutputChars?: number } = {},
+): Promise<any[]> {
+  const timeoutMs = options.timeoutMs && Number.isFinite(options.timeoutMs)
+    ? Math.max(0, Math.min(120_000, options.timeoutMs)) : 0;
+  const deadline = Date.now() + timeoutMs;
+  const snapshot = () => Promise.all(requests.map(async request => {
+    try {
+      return await getTerminalBackgroundTaskStatus(request.taskId, ownerChatId, request.sinceOffset, options.maxOutputChars);
+    } catch (error) {
+      return { terminalTask: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }));
+  let results = await snapshot();
+  while (results.length > 0 && results.every(result => result?.running && !result.hasNewOutput)
+    && !options.signal?.aborted && Date.now() < deadline) {
+    await new Promise<void>(resolve => {
+      const done = () => { clearTimeout(timer); options.signal?.removeEventListener('abort', done); resolve(); };
+      const timer = setTimeout(done, Math.min(500, Math.max(0, deadline - Date.now())));
+      options.signal?.addEventListener('abort', done, { once: true });
+      if (options.signal?.aborted) done();
+    });
+    results = await snapshot();
+  }
+  return results;
 }
 
 export async function waitTerminalTask(taskId: string, ownerChatId: string, timeoutMs: number, sinceOffset?: number, signal?: AbortSignal, maxOutputChars?: number): Promise<any | null> {

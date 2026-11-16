@@ -2067,6 +2067,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   }, [initialTab, isOpen]);
   const [browserRuntimeStatus, setBrowserRuntimeStatus] = useState<any>(null);
   const [browserRuntimeBusy, setBrowserRuntimeBusy] = useState(false);
+  const browserRuntimeBusyRef = useRef(false);
+  const browserRuntimeRequestRef = useRef(0);
+  const browserRuntimeErrorRef = useRef(false);
   const [searchProbe, setSearchProbe] = useState<{ provider: SearchProvider; status: 'idle' | 'testing' | 'success' | 'failed'; message: string }>({ provider: 'tavily', status: 'idle', message: '' });
   const [browserRuntimeMessage, setBrowserRuntimeMessage] = useState('Checking browser runtime…');
   const [availableTerminalShells, setAvailableTerminalShells] = useState<string[]>([]);
@@ -2183,37 +2186,55 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
   const selectedSearchServices = searchSettings.enabledServices[searchSettings.provider] || [...SEARCH_SERVICE_IDS];
 
   const refreshBrowserRuntimeStatus = useCallback(async () => {
+    if (browserRuntimeBusyRef.current) return;
+    const requestId = ++browserRuntimeRequestRef.current;
     try {
       const response = await fetch('/api/browser/status', { cache: 'no-store', signal: AbortSignal.timeout(12000) });
       const payload = await response.json();
+      if (requestId !== browserRuntimeRequestRef.current || browserRuntimeBusyRef.current) return;
       setBrowserRuntimeStatus(payload);
-      if (!payload?.success) setBrowserRuntimeMessage(payload?.error || 'Browser status unavailable.');
-      else setBrowserRuntimeMessage(payload?.signedBrowser ? 'Signed-in browser control is ready.' : payload?.managedBrowser ? 'Isolated browser control is ready.' : payload?.signedBrowserReason || 'Choose a browser mode.');
+      if (!response.ok || !payload?.success) setBrowserRuntimeMessage(payload?.error || 'Browser status unavailable.');
+      else if (!browserRuntimeErrorRef.current) setBrowserRuntimeMessage(payload?.browserAccess === false ? 'Browser control is disabled.' : payload?.signedBrowser ? 'Signed-in browser control is ready.' : payload?.managedBrowser ? 'Isolated browser control is ready.' : payload?.remoteBrowser ? 'Remote browser control is ready.' : payload?.preferredMode === 'managed' ? 'Isolated browser selected. It will open when the agent needs it.' : payload?.signedBrowserReason || 'Choose a browser mode.');
     } catch (error: any) {
+      if (requestId !== browserRuntimeRequestRef.current || browserRuntimeBusyRef.current || browserRuntimeErrorRef.current) return;
       setBrowserRuntimeMessage(error?.name === 'TimeoutError' ? 'Browser status check timed out.' : 'Could not reach the browser runtime.');
     }
   }, []);
 
   const runBrowserRuntimeAction = useCallback(async (action: 'connect_signed' | 'launch_managed' | 'disconnect') => {
+    if (browserRuntimeBusyRef.current) return;
+    if (action !== 'disconnect' && !settingsRef.current.browserAccess) {
+      browserRuntimeErrorRef.current = true;
+      setBrowserRuntimeMessage('Enable browser control before connecting a browser.');
+      return;
+    }
+    browserRuntimeBusyRef.current = true;
+    browserRuntimeErrorRef.current = false;
+    ++browserRuntimeRequestRef.current;
     setBrowserRuntimeBusy(true);
     setBrowserRuntimeMessage(action === 'connect_signed' ? 'Connecting to signed-in browser…' : action === 'launch_managed' ? 'Starting managed browser…' : 'Disconnecting browser…');
     try {
+      // Complete a pending access-setting write before asking the server to launch.
+      await runtimeSettingsWriteRef.current;
       const response = await fetch('/api/browser/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
-        signal: AbortSignal.timeout(25000),
+        signal: AbortSignal.timeout(65000),
       });
       const payload = await response.json();
       setBrowserRuntimeStatus(payload);
-      setBrowserRuntimeMessage(payload?.success ? payload.message || 'Browser action completed.' : payload?.error || 'Browser action failed.');
+      browserRuntimeErrorRef.current = !response.ok || !payload?.success;
+      setBrowserRuntimeMessage(!browserRuntimeErrorRef.current ? payload.message || 'Browser action completed.' : payload?.error || 'Browser action failed.');
     } catch (error: any) {
+      browserRuntimeErrorRef.current = true;
       setBrowserRuntimeMessage(error?.name === 'TimeoutError'
-        ? 'Browser action timed out. Close the browser once, then retry.'
+        ? 'Browser connection timed out. Refresh status before retrying.'
         : 'Browser action could not be completed.');
     } finally {
+      browserRuntimeBusyRef.current = false;
       setBrowserRuntimeBusy(false);
-      window.setTimeout(() => { void refreshBrowserRuntimeStatus(); }, 250);
+      void refreshBrowserRuntimeStatus();
     }
   }, [refreshBrowserRuntimeStatus]);
 
@@ -2395,7 +2416,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
         fetch('/api/settings/runtime', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ settings: { ...snapshot, computerUse } }),
+          body: JSON.stringify({ settings: { ...snapshot, computerUse, browserAccess: settingsRef.current.browserAccess } }),
           signal: AbortSignal.timeout(10_000),
         }).then(response => {
           if (!response.ok) throw new Error(`Folder runtime settings HTTP ${ response.status }`);
@@ -2988,6 +3009,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       if (typeof folderRuntimeSettings?.computerUse === 'boolean') {
         nextSettings.computerUse = folderRuntimeSettings.computerUse;
       }
+      if (typeof folderRuntimeSettings?.browserAccess === 'boolean') {
+        nextSettings.browserAccess = folderRuntimeSettings.browserAccess;
+      }
       if (
         (!saved || !Object.prototype.hasOwnProperty.call(JSON.parse(saved), 'selfImprovementEnabled'))
         && folderRuntimeSettings?.selfImprovement
@@ -3292,6 +3316,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
       const nextAppSettings = normalizeAppSettings({
         ...settingsRef.current, ...storedSettings,
         ...(typeof runtime.computerUse === 'boolean' ? { computerUse: runtime.computerUse } : {}),
+        ...(typeof runtime.browserAccess === 'boolean' ? { browserAccess: runtime.browserAccess } : {}),
       });
       settingsRef.current = nextAppSettings;
       setSettings(nextAppSettings);
@@ -3525,6 +3550,31 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = React.memo(({ isOpen,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ settings: { apiRetries: next.maxRetries } }),
         }).catch(error => console.warn('Could not persist API retry setting:', error));
+      }
+      if (key === 'browserAccess') {
+        const write = async () => {
+          const browserAccess = settingsRef.current.browserAccess;
+          try {
+            const response = await fetch('/api/settings/runtime', {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ settings: { browserAccess } }),
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (!response.ok) throw new Error('Browser access could not be saved.');
+            if (settingsRef.current.browserAccess === browserAccess) {
+              browserRuntimeErrorRef.current = false;
+              setBrowserRuntimeMessage(browserAccess ? 'Browser control enabled.' : 'Browser control disabled.');
+            }
+            return true;
+          } catch {
+            if (settingsRef.current.browserAccess === browserAccess) {
+              browserRuntimeErrorRef.current = true;
+              setBrowserRuntimeMessage('Browser access could not be saved. Save settings again before continuing.');
+            }
+            return false;
+          }
+        };
+        runtimeSettingsWriteRef.current = runtimeSettingsWriteRef.current.then(write, write);
       }
       if (key === 'computerUse') {
         setComputerAccessError('');

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ChevronRight, LockKeyhole, RefreshCw } from 'lucide-react';
 import styles from './computer-use-settings.module.css';
 
@@ -15,14 +15,14 @@ interface RuntimeStatus {
   signedBrowserAvailable?: boolean;
   signedBrowserReason?: string;
   browser?: { mode?: string };
-  computer?: {
-    screenProvider?: string;
-    inputProvider?: string;
-    cuaDriver?: {
-      healthy?: boolean; installed?: boolean; version?: string; daemonRunning?: boolean;
-      overall?: string; message?: string;
-      health?: { checks?: Array<{ name?: string; status?: string; message?: string; hint?: string }> };
-    };
+}
+
+interface DesktopRuntimeStatus {
+  platform?: string;
+  driver?: {
+    healthy?: boolean; installed?: boolean; version?: string; daemonRunning?: boolean;
+    overall?: string; message?: string;
+    health?: { checks?: Array<{ name?: string; status?: string; message?: string; hint?: string }> };
   };
 }
 
@@ -87,9 +87,10 @@ export function ComputerUseSettings({
   const [refreshing, setRefreshing] = useState(false);
   const [desktopBusy, setDesktopBusy] = useState(false);
   const [desktopMessage, setDesktopMessage] = useState('');
-  const driver = runtime?.computer?.cuaDriver;
+  const [desktopRuntime, setDesktopRuntime] = useState<DesktopRuntimeStatus | null>(null);
+  const driver = desktopRuntime?.driver;
   const browserConnected = Boolean(runtime?.signedBrowser || runtime?.managedBrowser);
-  const platformId = runtime?.platform || platform;
+  const platformId = desktopRuntime?.platform || runtime?.platform || platform;
   const platformLabel: Record<string, string> = {
     win32: 'Windows', windows: 'Windows', darwin: 'macOS', mac: 'macOS', linux: 'Linux', unknown: 'Detecting…',
   };
@@ -98,6 +99,32 @@ export function ComputerUseSettings({
   const desktopState = !settings.computerUse ? 'Off' : desktopBusy ? 'Starting…' : checkingDesktop ? 'Checking…' : driver?.healthy ? 'Ready' : driver?.daemonRunning ? 'Needs attention' : driver?.installed ? 'Stopped' : 'Setup required';
   const browserSession = runtime?.signedBrowser ? 'Existing browser' : runtime?.managedBrowser ? 'Isolated browser' : 'No active session';
   const driverState = checkingDesktop ? 'Checking…' : driver?.healthy ? (driver.version ? `Cua ${driver.version}` : 'Ready') : driver?.daemonRunning ? 'Needs attention' : driver?.installed ? 'Stopped' : 'Not installed';
+
+  const refreshDesktop = useCallback(async (force = false, signal?: AbortSignal) => {
+    try {
+      const response = await fetch(`/api/computer/status${force ? '?refresh=1' : ''}`, {
+        cache: 'no-store', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.success) throw new Error(payload.error || 'Desktop status is unavailable.');
+      if (!signal?.aborted) setDesktopRuntime(payload);
+    } catch (error: any) {
+      if (!signal?.aborted) setDesktopMessage(error?.message || 'Could not refresh desktop status.');
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let pending = false;
+    const refresh = async () => {
+      if (pending || document.visibilityState === 'hidden') return;
+      pending = true;
+      try { await refreshDesktop(false, controller.signal); } finally { pending = false; }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 8000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, [refreshDesktop]);
 
   const setupDesktop = async (action: 'start' | 'permissions') => {
     setDesktopBusy(true);
@@ -112,7 +139,7 @@ export function ComputerUseSettings({
     } catch {
       setDesktopMessage('Could not finish desktop setup. Refresh status to see the current state.');
     } finally {
-      try { await onRefresh(); }
+      try { await refreshDesktop(true); }
       catch { setDesktopMessage('Could not refresh desktop status. Try Refresh again.'); }
       finally { setDesktopBusy(false); }
     }
@@ -121,9 +148,8 @@ export function ComputerUseSettings({
   const refresh = async () => {
     setRefreshing(true);
     try {
-      await fetch('/api/computer/status?refresh=1', { cache: 'no-store', signal: AbortSignal.timeout(20_000) }).catch(() => undefined);
-      await onRefresh();
       setDesktopMessage('');
+      await Promise.all([refreshDesktop(true), onRefresh()]);
     } catch {
       setDesktopMessage('Could not refresh desktop status. Try Refresh again.');
     } finally {
@@ -198,7 +224,7 @@ export function ComputerUseSettings({
           onChange={value => onSettingChange('computerUse', value)}
         />
         {accessError && <p className={styles.notice} role="alert">{accessError}</p>}
-        <p className={styles.hint}>Desktop work uses screenshots with your selected model. Choose a model that accepts images and tools; changing provider does not change desktop access. In the desktop app, a soft blue border shows active computer use. Press Escape to stop it.</p>
+        <p className={styles.hint}>Desktop work uses screenshots with your selected model. Choose a model that accepts images and tools. The agent captures the screen, acts, and captures the result automatically. The blue border stays active between actions until the agent ends desktop control or the task finishes. Press Escape to stop it. Browser control has its own connection and access setting.</p>
         {!checkingDesktop && !driver?.healthy && (
           <div className={styles.session}>
             <p className={styles.description}>{driver?.message || 'Set up desktop access on this device.'}</p>
@@ -227,8 +253,8 @@ export function ComputerUseSettings({
               ['Browser mode', browserConnected ? runtime?.browser?.mode || browserSession : 'Not connected'],
               ['Desktop driver', driverState],
               ['Service', checkingDesktop ? 'Checking…' : driver?.daemonRunning ? 'Running' : 'Stopped'],
-              ['Screen provider', runtime?.computer?.screenProvider || (runtime ? 'Unavailable' : 'Checking…')],
-              ['Input provider', runtime?.computer?.inputProvider || (runtime ? 'Unavailable' : 'Checking…')],
+              ['Screen provider', driver?.installed ? 'Cua Driver' : desktopRuntime ? 'Not configured' : 'Checking…'],
+              ['Input provider', driver?.installed ? 'Cua Driver' : desktopRuntime ? 'Not configured' : 'Checking…'],
             ].map(([label, value]) => (
               <div className={styles.metadataRow} key={label}>
                 <dt>{label}</dt>

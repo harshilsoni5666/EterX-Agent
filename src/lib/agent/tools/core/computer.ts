@@ -21,12 +21,15 @@ async function executePortableComputerAction(action: string, input: any, ctx: an
 
   if (action === 'get_stats') {
     const { getLiveStreamStats, isLiveStreaming } = await import('../../computer/live-stream');
+    const { desktopSessionStatus } = await import('../../computer/desktop-session');
+    const desktopSession = await desktopSessionStatus({ ...ctx, chatId });
     return {
       success: true,
       action,
       result: {
         provider: (await getCuaDriverStatus()).installed ? cuaDriverProvider() : 'Not configured',
-        streaming: isLiveStreaming(),
+        streaming: desktopSession.preview || isLiveStreaming(),
+        desktopSession,
         streamStats: getLiveStreamStats(),
         monitorStats: monitorEmitter.getStats(),
       },
@@ -80,6 +83,8 @@ async function executePortableComputerAction(action: string, input: any, ctx: an
 
   const screenAction: Record<string, string> = {
     see: 'see',
+    session_start: 'session_start',
+    session_stop: 'session_stop',
     stream_start: 'stream_start',
     stream_stop: 'stream_stop',
     list_apps: 'list_apps',
@@ -99,6 +104,7 @@ async function executePortableComputerAction(action: string, input: any, ctx: an
 export const computerTool: ToolDefinition = {
   name: 'computer',
   description: `Inspect and control native desktop apps on Windows, macOS and Linux when Computer Use is enabled for this task.
+Native control persists between actions. session_start or see begins the observe-act-observe loop, input returns an updated screenshot, and session_stop ends control when the desktop work is complete or you yield to the user. Task completion also closes the session. Desktop preview refreshes automatically while you decide; it does not invalidate your action tokens. Browser tools and sessions are separate.
 Start with list_apps, then see_window with a unique app/title or exact pid and window_id. The returned observation and screenshot refer to that window; selecting it does not raise it. focus_app explicitly raises it.
 get_controls returns accessibility labels, roles and element_token values. read_text reads the selected window. click_in and type_into accept a fresh element_token or a unique control name; ambiguous matches are returned for selection. Pixel input uses coordinates from the latest screenshot of that same target.
 connect selects an existing app window or requests an app launch. launch_app reports the actual launch state; a launch request alone does not prove a window is ready. In the desktop app, open_file opens an absolute file/folder/application path and open_url opens an HTTP(S) URL with its default app. Select and observe the resulting window before input. get_active reports the foreground window and selected target. see captures the selected target; scope=desktop explicitly returns to the desktop. stream_start/stream_stop control the preview; get_stats reports runtime information.
@@ -108,7 +114,7 @@ Desktop and browser access are separate settings. Use screen_agent for detailed 
 
   inputSchema: z.object({
     action: z.enum([
-      'see', 'see_window', 'stream_start', 'stream_stop',
+      'see', 'see_window', 'session_start', 'session_stop', 'stream_start', 'stream_stop',
       'list_apps', 'find_app', 'focus_app', 'launch_app', 'open_file', 'open_url', 'connect',
       'get_controls', 'read_text', 'type_into', 'click_in',
       'get_active', 'get_stats',

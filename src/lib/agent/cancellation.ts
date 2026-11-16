@@ -52,6 +52,8 @@ export function createToolExecutionContext(baseContext: any = {}, onTrace?: (tra
     context: {
       ...baseContext,
       _onTrace: onTrace || baseContext?._onTrace,
+      runAbortSignal: baseContext?.runAbortSignal || baseContext?.abortSignal || baseContext?.signal,
+      runIsCancelled: baseContext?.runIsCancelled || (() => isCancelled(chatId)),
       abortSignal: controller.signal,
       signal: controller.signal,
       isCancelled: () => controller.signal.aborted || isCancelled(chatId),

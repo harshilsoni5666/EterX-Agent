@@ -27,6 +27,8 @@ import net from 'net';
 import { randomUUID } from 'crypto';
 import { buildTerminalShellInvocation } from '../tools/core/shell_resolver';
 import { getEterxWorkspaceDir } from '../storage-paths';
+import { readStoredRuntimeSettings } from '../runtime-settings-store';
+import { browserSessionManager } from './session';
 
 const execFileAsync = promisify(execFile);
 
@@ -80,7 +82,7 @@ function allowUserChromeAccess(): boolean {
 }
 
 function shouldRunHeadless(requested?: boolean): boolean {
-  return requested === true && process.env.ETERX_BROWSER_ALLOW_HEADLESS === '1';
+  return requested === true && process.env.ETERX_BROWSER_ALLOW_HEADLESS !== '0';
 }
 
 function allowCustomUserDataDir(): boolean {
@@ -200,6 +202,8 @@ export class BrowserEngine {
   private pageSequence: number = 0;
   private connectionQueue: Promise<unknown> = Promise.resolve();
   private connectionOptions: LaunchOptions = {};
+  private pageListeners = new Map<any, Array<[string, (...args: any[]) => void]>>();
+  private selectedFrames = new WeakMap<object, any>();
 
   // Per-page state
   private consoleLogs: Map<string, ConsoleEntry[]> = new Map();
@@ -218,14 +222,35 @@ export class BrowserEngine {
    * Priority: reuse an existing connection, attach to the signed-in default
    * browser, or launch an explicitly requested managed/remote browser.
    */
-  async launch(options: LaunchOptions = {}): Promise<any> {
+  resolveLaunchMode(options: LaunchOptions = {}): ConnectionMode {
+    return options.mode || (options.cdpEndpoint ? 'cdp' : options.wsEndpoint ? 'remote' : undefined)
+      || (options.profile || options.userDataDir ? 'managed' : undefined)
+      || (this.isConnected ? this.connectionMode : this.connectionOptions.mode)
+      || readStoredRuntimeSettings().browserMode || 'cdp';
+  }
+
+  async launch(options: LaunchOptions = {}, signal?: AbortSignal): Promise<any> {
     const pending = this.connectionQueue.then(async () => {
+      signal?.throwIfAborted();
+      const previousContext = this.context;
+      // Undefined fields must not erase the selected profile or endpoint when
+      // the next agent launch reuses the active connection.
+      let requested = Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)) as LaunchOptions;
+      if (requested.profile !== undefined) requested.profile = safeProfileName(requested.profile);
+      if (requested.userDataDir) requested.userDataDir = path.resolve(requested.userDataDir);
+      const mode = this.resolveLaunchMode(requested);
+      if (!this.isConnected && this.connectionOptions.mode === mode
+        && !['profile', 'userDataDir', 'cdpEndpoint', 'wsEndpoint'].some(key => key in requested)) {
+        requested = { ...this.connectionOptions, ...requested };
+      }
       try {
-        const page = await this.launchCurrent(options);
-        this.connectionOptions = { ...this.connectionOptions, ...options, mode: this.connectionMode };
+        const page = await this.launchCurrent({ ...requested, mode });
+        signal?.throwIfAborted();
+        this.connectionOptions = { ...this.connectionOptions, ...requested, mode: this.connectionMode };
+        if (this.connectionMode === 'managed') this.connectionOptions.profile = safeProfileName(this.connectionOptions.profile || 'default');
         return page;
       } catch (error) {
-        await this.disconnectCurrent();
+        if (this.context !== previousContext || !this.isConnected) await this.disconnectCurrent();
         throw error;
       }
     });
@@ -234,6 +259,16 @@ export class BrowserEngine {
   }
 
   private async launchCurrent(options: LaunchOptions): Promise<any> {
+    if (options.userDataDir && !allowCustomUserDataDir()) throw new Error('Custom browser profile directories are disabled. Use a named isolated profile or explicitly enable ETERX_BROWSER_ALLOW_CUSTOM_USER_DATA_DIR.');
+    for (const [endpoint, protocols] of [[options.cdpEndpoint, ['http:', 'https:', 'ws:', 'wss:']], [options.wsEndpoint, ['ws:', 'wss:']]] as const) {
+      if (endpoint && !protocols.some(protocol => protocol === new URL(endpoint).protocol)) throw new Error('Invalid browser connection endpoint protocol.');
+    }
+    if (options.mode === 'remote' && !options.wsEndpoint && !(this.isConnected && this.connectionMode === 'remote')) {
+      throw new Error('wsEndpoint required for remote connection');
+    }
+    if (options.mode === 'cdp' && !allowUserChromeAccess()) {
+      throw new Error('Signed-in browser control is disabled. Choose an isolated browser in Settings.');
+    }
     this.pruneClosedPages();
     // ─── 1. REUSE existing connection if still alive ───
     if (this.isConnected && this.context) {
@@ -241,7 +276,9 @@ export class BrowserEngine {
         const page = await this.getActivePage();
         const requestedMode = options.mode;
         const sameTarget = (['profile', 'userDataDir', 'cdpEndpoint', 'wsEndpoint'] as const).every(key => options[key] === undefined || options[key] === this.connectionOptions[key]);
-        if (page && !page.isClosed() && sameTarget && (!requestedMode || requestedMode === this.connectionMode)) {
+        const sameVisibility = this.connectionMode !== 'managed' || options.headless === undefined
+          || shouldRunHeadless(options.headless) === shouldRunHeadless(this.connectionOptions.headless);
+        if (page && !page.isClosed() && sameTarget && sameVisibility && (!requestedMode || requestedMode === this.connectionMode)) {
           console.log('[BrowserEngine] Reusing existing browser connection');
           return page;
         }
@@ -274,6 +311,7 @@ export class BrowserEngine {
         }
       } catch (err: any) {
         console.log(`[BrowserEngine] CDP auto-detect: ${err.message?.substring(0, 60)}`);
+        if (this.browser || this.context) await this.disconnectCurrent();
       }
     }
 
@@ -437,7 +475,7 @@ export class BrowserEngine {
 
   /**
    * Launch a managed Chromium instance with Playwright (fallback mode).
-   * Uses persistent profile for session persistence + debug port for future CDP.
+   * Uses a persistent isolated profile and Playwright's private control pipe.
    */
   private async launchManaged(options: LaunchOptions): Promise<any> {
     const pw = getPlaywright();
@@ -448,9 +486,6 @@ export class BrowserEngine {
       ? path.resolve(options.userDataDir)
       : '';
     const userDataDir = customUserDataDir || resolveUnder(this.profilesDir, profileName);
-    if (options.userDataDir && !customUserDataDir) {
-      console.warn('[BrowserEngine] Ignoring custom userDataDir because ETERX_BROWSER_ALLOW_CUSTOM_USER_DATA_DIR is not enabled.');
-    }
     await fs.ensureDir(userDataDir);
 
     const launchArgs = [
@@ -469,28 +504,41 @@ export class BrowserEngine {
       launchArgs.push('--start-maximized');
     }
 
-    const debugPort = await this.findAvailableDebugPort([9223, 9333, 18800, 18801, 18802]);
-    if (debugPort) {
-      launchArgs.push(`--remote-debugging-port=${debugPort}`);
+    // Playwright manages this connection over its pipe. A second debugging
+    // port is unnecessary and can be mistaken for the user's signed-in browser.
+    const configuredPath = process.env.ETERX_BROWSER_EXECUTABLE_PATH?.trim();
+    let chromePath: string | null = configuredPath ? findExecutableOnPath(configuredPath) : null;
+    if (configuredPath && !chromePath) throw new Error('ETERX_BROWSER_EXECUTABLE_PATH does not point to an executable browser.');
+    if (!chromePath) {
+      try { chromePath = await this.findChromePath(false); }
+      catch (error) {
+        // playwright-core does not download browsers. Use an already installed
+        // Playwright Chromium when no system Chrome, Edge or Brave is available.
+        chromePath = findExecutableOnPath(pw.chromium.executablePath());
+        if (!chromePath) throw error;
+      }
     }
-
-    const chromePath = await this.findChromePath(false);
     const browserLaunchOptions: Record<string, any> = {
       headless,
       args: launchArgs,
-      viewport: options.viewport === null ? null : (options.viewport || { width: 1920, height: 1080 }),
+      viewport: options.viewport === undefined ? (headless ? { width: 1920, height: 1080 } : null) : options.viewport,
+      timeout: Math.min(60000, Math.max(1000, options.timeout || 30000)),
       ignoreDefaultArgs: ['--enable-automation'],
       acceptDownloads: true,
       ...(options.proxy ? { proxy: options.proxy } : {}),
     };
-    if (chromePath && chromePath !== 'chrome') {
-      browserLaunchOptions.executablePath = chromePath;
-    } else {
-      browserLaunchOptions.channel = 'chrome';
-    }
+    browserLaunchOptions.executablePath = chromePath;
 
     // Use persistent context — sessions/cookies persist across restarts
-    this.context = await pw.chromium.launchPersistentContext(userDataDir, browserLaunchOptions);
+    try {
+      this.context = await pw.chromium.launchPersistentContext(userDataDir, browserLaunchOptions);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/ProcessSingleton|SingletonLock|profile.*(?:in use|locked)|user data directory.*in use/i.test(message)) {
+        throw new Error(`The isolated browser profile "${profileName}" is already in use. Close its browser window or choose a different profile, then retry.`);
+      }
+      throw error;
+    }
     this.browser = null;
     this.ownsBrowserConnection = true;
     this.pages.clear();
@@ -510,6 +558,11 @@ export class BrowserEngine {
     this.activePageId = [...this.pages.entries()].find(([, candidate]) => candidate === page)?.[0] || 'main';
     this.isConnected = true;
     await page.bringToFront().catch(() => {});
+    if (!customUserDataDir) {
+      await browserSessionManager.createProfile(profileName).catch(error => {
+        console.warn('[BrowserEngine] Could not update browser profile metadata:', error?.message || error);
+      });
+    }
     
     console.log(`[BrowserEngine] 🚀 Launched Chrome with persistent profile: ${profileName}`);
     return page;
@@ -609,6 +662,7 @@ export class BrowserEngine {
     // completes so the remote transport is released as well as its context.
     const browser = this.browser;
     const context = this.context;
+    for (const page of this.pageListeners.keys()) this.removePageHandlers(page);
     if (this.ownsBrowserConnection) {
       try { if (context) await context.close(); } catch {}
     }
@@ -622,6 +676,10 @@ export class BrowserEngine {
     this.browser = null;
     this.context = null;
     this.ownsBrowserConnection = false;
+    this.activePageId = 'main';
+    this.selectedFrames = new WeakMap();
+    this.dialogHandler = null;
+    this.defaultDialogAction = 'accept';
     console.log(`[BrowserEngine] 🔌 Disconnected`);
   }
 
@@ -654,6 +712,41 @@ export class BrowserEngine {
     }
 
     throw new Error('Browser connection lost. Reconnect required.');
+  }
+
+  /** Monitoring and status reads must never reopen a tab the user just closed. */
+  getExistingActivePage(): any | null {
+    this.pruneClosedPages();
+    const active = this.pages.get(this.activePageId);
+    if (active) return active;
+    const next = this.pages.entries().next().value;
+    if (!next) return null;
+    this.activePageId = next[0];
+    return next[1];
+  }
+
+  /** Keep iframe selection scoped to its tab while mouse/keyboard stay on Page. */
+  getPageTarget(page: any): any {
+    const frame = this.selectedFrames.get(page);
+    if (frame && !frame.isDetached()) return frame;
+    this.selectedFrames.delete(page);
+    return page;
+  }
+
+  async selectPageFrame(page: any, selector: string): Promise<any> {
+    let frame = page.frame({ name: selector });
+    if (!frame) {
+      const element = await this.getPageTarget(page).$(selector);
+      try { frame = await element?.contentFrame(); }
+      finally { await element?.dispose(); }
+    }
+    if (!frame || frame.isDetached()) throw new Error(`Frame not found: ${selector}`);
+    this.selectedFrames.set(page, frame);
+    return frame;
+  }
+
+  selectMainFrame(page: any): void {
+    this.selectedFrames.delete(page);
   }
 
   /**
@@ -745,9 +838,7 @@ export class BrowserEngine {
     const page = this.pages.get(id);
     if (!page) return false;
 
-    try {
-      if (!page.isClosed()) await page.close();
-    } catch {}
+    if (!page.isClosed()) await page.close();
 
     this.pages.delete(id);
     this.consoleLogs.delete(id);
@@ -773,15 +864,12 @@ export class BrowserEngine {
 
   async closeOtherPages(keepId?: string): Promise<string[]> {
     const retained = keepId || this.activePageId;
+    // Reject a stale ID before closing anything, otherwise every tab is lost.
+    await this.getPage(retained);
     const closed: string[] = [];
-    for (const [id, page] of [...this.pages.entries()]) {
+    for (const id of [...this.pages.keys()]) {
       if (id === retained) continue;
-      try {
-        if (!page.isClosed()) await page.close();
-        closed.push(id);
-      } catch {}
-      this.pages.delete(id);
-      this.consoleLogs.delete(id);
+      if (await this.closePage(id)) closed.push(id);
     }
     if (this.pages.has(retained)) this.activePageId = retained;
     return closed;
@@ -889,12 +977,17 @@ export class BrowserEngine {
     return this.activePageId;
   }
 
+  get activeProfile(): string | undefined {
+    return this.connectionMode === 'managed' ? safeProfileName(this.connectionOptions.profile || 'default') : undefined;
+  }
+
   get connectionInfo(): {
     connected: boolean;
     mode: ConnectionMode;
     activeTabId: string;
     tabCount: number;
     ownsBrowserConnection: boolean;
+    profile?: string;
   } {
     this.pruneClosedPages();
     return {
@@ -903,6 +996,7 @@ export class BrowserEngine {
       activeTabId: this.activePageId,
       tabCount: this.pages.size,
       ownsBrowserConnection: this.ownsBrowserConnection,
+      profile: this.activeProfile,
     };
   }
 
@@ -987,11 +1081,13 @@ export class BrowserEngine {
     const disconnected = () => {
       if (this.context !== context) return;
       this.isConnected = false;
+      for (const page of this.pageListeners.keys()) this.removePageHandlers(page);
       this.pages.clear();
       this.consoleLogs.clear();
       this.context = null;
       this.browser = null;
       this.ownsBrowserConnection = false;
+      this.selectedFrames = new WeakMap();
     };
     context.once('close', disconnected);
     this.browser?.once('disconnected', disconnected);
@@ -1014,6 +1110,12 @@ export class BrowserEngine {
   }
 
   private setupPageHandlers(page: any, pageId: string): void {
+    const listeners: Array<[string, (...args: any[]) => void]> = [];
+    this.pageListeners.set(page, listeners);
+    const listen = (event: string, handler: (...args: any[]) => void) => {
+      listeners.push([event, handler]);
+      page.on(event, handler);
+    };
     try {
       void page.addInitScript('var __name = globalThis.__name = globalThis.__name || ((fn, name) => fn);').catch(() => {});
       void page.evaluate('var __name = globalThis.__name = globalThis.__name || ((fn, name) => fn);').catch(() => {});
@@ -1021,7 +1123,7 @@ export class BrowserEngine {
 
     // Console capture
     this.consoleLogs.set(pageId, []);
-    page.on('console', (msg: any) => {
+    listen('console', (msg: any) => {
       const logs = this.consoleLogs.get(pageId) || [];
       logs.push({
         type: msg.type() as any,
@@ -1035,7 +1137,7 @@ export class BrowserEngine {
     });
 
     // Dialog handling (alerts, confirms, prompts)
-    page.on('dialog', async (dialog: any) => {
+    listen('dialog', async (dialog: any) => {
       console.log(`[BrowserEngine] 💬 Dialog: ${dialog.type()} — "${dialog.message()}"`);
       
       try {
@@ -1048,7 +1150,7 @@ export class BrowserEngine {
     });
 
     // Download tracking
-    page.on('download', async (download: any) => {
+    listen('download', async (download: any) => {
       const filename = safeDownloadFilename(download.suggestedFilename());
       const info: DownloadInfo = {
         filename,
@@ -1078,16 +1180,24 @@ export class BrowserEngine {
     });
 
     // Page crash recovery
-    page.on('crash', () => {
+    listen('crash', () => {
       console.error(`[BrowserEngine] 💥 Page ${pageId} crashed`);
       this.pages.delete(pageId);
+      this.consoleLogs.delete(pageId);
+      this.removePageHandlers(page);
     });
 
     // Track page closing
-    page.on('close', () => {
+    listen('close', () => {
       this.pages.delete(pageId);
       this.consoleLogs.delete(pageId);
+      this.removePageHandlers(page);
     });
+  }
+
+  private removePageHandlers(page: any): void {
+    for (const [event, handler] of this.pageListeners.get(page) || []) page.removeListener(event, handler);
+    this.pageListeners.delete(page);
   }
 
   /**
@@ -1143,6 +1253,11 @@ export class BrowserEngine {
         processName: 'Microsoft Edge',
         executablePaths: ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', path.join(home, 'Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge')],
         userDataDirCandidates: [path.join(home, 'Library', 'Application Support', 'Microsoft Edge')],
+      }, {
+        displayName: 'Chromium',
+        processName: 'Chromium',
+        executablePaths: ['/Applications/Chromium.app/Contents/MacOS/Chromium', path.join(home, 'Applications/Chromium.app/Contents/MacOS/Chromium')],
+        userDataDirCandidates: [path.join(home, 'Library', 'Application Support', 'Chromium')],
       }] : []),
       ...(process.platform === 'linux' ? [{
         displayName: 'Chrome',
@@ -1169,7 +1284,7 @@ export class BrowserEngine {
         displayName: 'Chrome',
         processName: 'chrome.exe',
         executablePaths: [
-          path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          path.join(process.env.ProgramW6432 || process.env.ProgramFiles || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
           path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
           localAppData ? path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
           'chrome.exe',
@@ -1182,7 +1297,7 @@ export class BrowserEngine {
         displayName: 'Brave',
         processName: 'brave.exe',
         executablePaths: [
-          path.join(process.env.ProgramFiles || 'C:\\Program Files', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
+          path.join(process.env.ProgramW6432 || process.env.ProgramFiles || 'C:\\Program Files', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
           path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'),
           localAppData ? path.join(localAppData, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe') : '',
           'brave.exe',
@@ -1196,7 +1311,7 @@ export class BrowserEngine {
         processName: 'msedge.exe',
         executablePaths: [
           path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
-          path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+          path.join(process.env.ProgramW6432 || process.env.ProgramFiles || 'C:\\Program Files', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
           localAppData ? path.join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe') : '',
           'msedge.exe',
         ],
@@ -1206,7 +1321,7 @@ export class BrowserEngine {
       }] : []),
     ];
 
-    const detectedDefaultBrowser = this.detectDefaultChromiumBrowser();
+    const detectedDefaultBrowser = requireSystemDefault ? this.detectDefaultChromiumBrowser() : null;
     // Browser control is allowed to use an installed supported Chromium
     // browser even when Firefox/Safari is the system default. Prefer a
     // supported default when one exists, then fall back to the first installed
@@ -1233,22 +1348,20 @@ export class BrowserEngine {
       }
     }
 
-    if (process.platform === 'win32') try {
-      const result = execFileSync(
-        'reg.exe',
-        ['query', 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe', '/ve'],
-        { encoding: 'utf-8', timeout: 3000, windowsHide: true }
-      );
-      const match = result.match(/REG_SZ\s+(.+\.exe)/i);
-      if (match) {
-        return {
-          displayName: 'Chrome',
-          executablePath: match[1].trim(),
-          processName: 'chrome.exe',
-          userDataDirCandidates: candidates[0].userDataDirCandidates,
-        };
+    if (process.platform === 'win32') {
+      for (const candidate of orderedCandidates) {
+        for (const hive of ['HKCU', 'HKLM']) {
+          try {
+            const { stdout } = await execFileAsync('reg.exe', [
+              'query', `${hive}\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\${candidate.processName}`, '/ve',
+            ], { encoding: 'utf-8', timeout: 1500, windowsHide: true });
+            const match = stdout.match(/REG_SZ\s+(.+\.exe)/i);
+            const executablePath = match ? findExecutableOnPath(match[1].trim().replace(/^"|"$/g, '')) : null;
+            if (executablePath) return { displayName: candidate.displayName, executablePath, processName: candidate.processName, userDataDirCandidates: candidate.userDataDirCandidates };
+          } catch {}
+        }
       }
-    } catch {}
+    }
 
     throw new Error(
       `No supported Chromium browser was found on ${process.platform}. ` +
@@ -1281,6 +1394,7 @@ export class BrowserEngine {
         if (output.includes('com.brave.browser')) return 'brave';
         if (output.includes('com.microsoft.edgemac')) return 'edge';
         if (output.includes('com.google.chrome')) return 'chrome';
+        if (output.includes('org.chromium.chromium')) return 'chromium';
         if (output.trim()) return 'unsupported';
       } else {
         const output = execFileSync('xdg-settings', ['get', 'default-web-browser'], {
@@ -1374,18 +1488,12 @@ export class BrowserEngine {
       if (match === 'host') return currentUrl.host === targetUrl.host;
       if (match === 'origin') return currentUrl.origin === targetUrl.origin;
 
-      const currentHref = this.stripUrlNoise(currentUrl);
-      const targetHref = this.stripUrlNoise(targetUrl);
-      return currentHref === targetHref;
+      // Hashes can be client-side routes and trailing slashes can select a
+      // different resource. Only reuse an exact URL for an exact match.
+      return currentUrl.href === targetUrl.href;
     } catch {
       return current === target;
     }
-  }
-
-  private stripUrlNoise(url: URL): string {
-    url.hash = '';
-    const href = url.href.replace(/\/$/, '');
-    return href;
   }
 
 }
@@ -1393,4 +1501,5 @@ export class BrowserEngine {
 // ═══════════════════════════════════════
 // GLOBAL SINGLETON
 // ═══════════════════════════════════════
-export const browserEngine = new BrowserEngine();
+const globalForBrowser = globalThis as typeof globalThis & { __eterxBrowserEngine?: BrowserEngine };
+export const browserEngine = globalForBrowser.__eterxBrowserEngine ||= new BrowserEngine();
