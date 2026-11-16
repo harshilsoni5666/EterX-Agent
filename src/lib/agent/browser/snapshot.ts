@@ -417,7 +417,7 @@ export class DOMSnapshot {
         });
         
         const submitBtn = formEl.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
-        if (submitBtn?.getAttribute('data-eterx-snapshot') === snapshotToken) {
+        if (submitBtn && submitBtn.getAttribute('data-eterx-snapshot') === snapshotToken) {
           form.submitButton = parseInt(submitBtn.getAttribute('data-ref') || '0') || undefined;
         }
       }

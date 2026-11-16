@@ -66,7 +66,6 @@ type TerminalCommandResult = {
   timeoutMs?: number;
   processId?: string;
   taskId?: string;
-  tasks?: TerminalTaskReadRequest[];
   outputEnd?: number;
   outputStart?: number;
   hasMoreOutput?: boolean;
@@ -94,6 +93,7 @@ type WorkspaceTerminalInput = Omit<TerminalCommandRequest, 'command'> & {
   command?: string;
   commands?: TerminalCommandRequest[];
   taskId?: string;
+  tasks?: TerminalTaskReadRequest[];
   sinceOffset?: number;
   parallel?: boolean;
 };

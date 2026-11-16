@@ -29,7 +29,7 @@ type ActionOptions = {
 const runtime = globalThis as typeof globalThis & {
   __eterxCuaActions?: { tail: Promise<void>; sessions: Map<string, Session>; pending?: number; previewController?: AbortController };
 };
-const shared = runtime.__eterxCuaActions ||= { tail: Promise.resolve(), sessions: new Map() };
+const shared: NonNullable<typeof runtime.__eterxCuaActions> = runtime.__eterxCuaActions ||= { tail: Promise.resolve(), sessions: new Map() };
 
 async function exclusive<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   signal?.throwIfAborted();

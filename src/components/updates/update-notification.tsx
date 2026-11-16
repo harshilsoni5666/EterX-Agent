@@ -15,7 +15,7 @@ export function UpdateNotification({ state, onOpen, onDismiss }: UpdateNotificat
   const previewRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
-  const notes = state.releaseNotes?.version === state.availableVersion ? state.releaseNotes : null;
+  const notes = state.releaseNotes && state.releaseNotes.version === state.availableVersion ? state.releaseNotes : null;
   const needsAttention = state.status === 'error';
   const StatusIcon = needsAttention ? AlertTriangle : state.downloadReady ? CheckCircle2 : Sparkles;
   const title = needsAttention ? 'Update needs attention' : state.downloadReady ? 'Ready to restart' : 'Update available';

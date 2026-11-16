@@ -12,7 +12,7 @@ export interface ReadonlyDatabase {
  * otherwise. Both paths open READONLY, including the source's committed WAL. */
 export function openReadonlyDatabase(file: string): ReadonlyDatabase {
   try {
-    const builtinRequire = createRequire(path.join(process.cwd(), 'package.json'));
+    const builtinRequire = createRequire(import.meta.url);
     const sqlite = builtinRequire('node:sqlite') as { DatabaseSync: new (file: string, options: { readOnly: boolean }) => ReadonlyDatabase };
     return new sqlite.DatabaseSync(file, { readOnly: true });
   } catch (error) {
