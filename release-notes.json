@@ -1,14 +1,14 @@
 {
   "$schema": "./docs/release-notes.schema.json",
-  "version": "0.1.45",
-  "summary": "See what changed before you update, with clear release highlights and more reliable restarts.",
+  "version": "0.1.46",
+  "summary": "This release improves chat continuity, side conversations, browser and desktop tools, and cross-platform updates.",
   "sections": [
     {
       "kind": "new",
       "items": [
         {
-          "title": "What’s New, inside EterX",
-          "description": "Read the highlights of each release in the update notification and in Settings. Open the notification to see the full details before deciding to update."
+          "title": "Release notes in EterX",
+          "description": "Preview highlights in the update notice and read the full notes in Settings."
         }
       ]
     },
@@ -16,12 +16,24 @@
       "kind": "improved",
       "items": [
         {
-          "title": "A quieter, more useful notification",
-          "description": "Long release notes stay within a compact notification, with a soft fade to show there is more to read. The complete notes are available in Settings."
+          "title": "Chat startup and recovery",
+          "description": "New chats briefly show startup status before Thinking. History recovery no longer blocks startup or saves; failed writes retry automatically. Activity markers track the answer or latest work note."
         },
         {
-          "title": "Clearer update recovery",
-          "description": "If a manual update check or installation cannot finish, EterX explains what happened and keeps the available update ready to retry."
+          "title": "Side chats and Proxy",
+          "description": "Models, reasoning, drafts, pinned files, and settings stay with each conversation. Proxy work resumes without repeating completed tasks."
+        },
+        {
+          "title": "Browser and computer tools",
+          "description": "Browser profiles persist across reconnects, with safer tab handling. Computer Use improves window targeting, text entry, dragging, and image delivery across supported providers."
+        },
+        {
+          "title": "Terminal and workspace navigation",
+          "description": "Grouped waits return on the first task update. Search previews sources and opens links in the side browser; Recents spans folders and workspace selection persists."
+        },
+        {
+          "title": "Chat and code formatting",
+          "description": "Chat input and sent prompts share a background; expanded edits use the side-panel diff font."
         }
       ]
     },
@@ -29,8 +41,8 @@
       "kind": "fixed",
       "items": [
         {
-          "title": "More reliable restarts across desktop platforms",
-          "description": "Windows waits for the installer to start before closing. macOS waits for the app to close before replacing it. Linux keeps your existing app and launcher in place until the replacement is ready."
+          "title": "Safer updates across Windows, macOS, and Linux",
+          "description": "Windows updates install silently and reopen EterX, including updates started by older clients. macOS can restore failed replacements; Linux keeps the previous AppImage until the new version starts. Stale installs are blocked and restart results are reported. System-wide Windows installs may need administrator approval."
         }
       ]
     }
