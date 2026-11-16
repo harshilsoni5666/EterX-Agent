@@ -1,6 +1,6 @@
 {
   "$schema": "./docs/release-notes.schema.json",
-  "version": "0.1.46",
+  "version": "0.1.47",
   "summary": "This release improves chat continuity, side conversations, browser and desktop tools, and cross-platform updates.",
   "sections": [
     {
